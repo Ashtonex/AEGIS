@@ -1,0 +1,184 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Brutalist Industrial Design System */
+    
+    /* Deep Steel / Concrete Grey Layers */
+    --snc-void: #070A0D; /* Slightly darker than Deep Steel for pure backgrounds */
+    --snc-navy: #0B0F14; /* Deep Steel */
+    --snc-navy-mid: #1C232B; /* Concrete Grey */
+    --snc-navy-raised: #1C232B; /* Concrete Grey */
+    --snc-navy-high: #242D37; /* Slightly lighter Concrete Grey */
+
+    /* Borders */
+    --snc-border: #1C232B;
+    --snc-border-gold: rgba(255, 106, 43, 0.4);
+    --snc-gold: #FF6A2B;
+
+    /* Construction Orange */
+    --snc-gold-primary: #FF6A2B; /* Construction Orange */
+    --snc-gold-hover: #FF8045; /* Lighter Orange */
+    --snc-gold-muted: #CC5522; /* Muted Orange */
+    --snc-gold-ghost: rgba(255, 106, 43, 0.08);
+    
+    /* Text / Structural White */
+    --snc-text-primary: #F5F7FA; /* Structural White */
+    --snc-text-secondary: #CBD5E1;
+    --snc-text-tertiary: #64748B;
+    --snc-text-disabled: #334155;
+
+    /* Semantic */
+    --snc-electric: #3498DB; /* Info */
+    --snc-electric-ghost: rgba(52, 152, 219, 0.08);
+    
+    /* System Aliases */
+    --snc-white: var(--snc-text-primary);
+    --snc-light-bg: var(--snc-navy);
+    --snc-text: var(--snc-text-primary);
+    --snc-mist: var(--snc-text-secondary);
+    --snc-grey: var(--snc-text-tertiary);
+    
+    --snc-danger: #E74C3C;
+    --snc-success: #2ECC71;
+    --snc-warning: #F39C12;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background-color: var(--snc-void);
+  }
+
+  body {
+    @apply bg-snc-void text-snc-text-primary font-sans antialiased;
+  }
+
+  /* Interaction Standards (Volume XIII) */
+  *:focus-visible {
+    outline: 2px solid var(--snc-gold-primary);
+    outline-offset: 2px;
+  }
+
+  *:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+    filter: grayscale(100%);
+  }
+}
+
+@layer components {
+  /* Typography Scale - Inter Strict */
+  .text-display-2xl {
+    font-family: var(--font-body);
+    font-size: clamp(56px, 8vw, 72px);
+    line-height: 0.95;
+    letter-spacing: -0.02em;
+    font-weight: 800;
+  }
+
+  .text-display-xl {
+    font-family: var(--font-body);
+    font-size: clamp(48px, 6vw, 64px);
+    line-height: 1.0;
+    letter-spacing: -0.02em;
+    font-weight: 800;
+  }
+
+  .text-display-lg {
+    font-family: var(--font-body);
+    font-size: clamp(40px, 5vw, 56px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    font-weight: 800;
+  }
+
+  .text-headline-xl {
+    font-family: var(--font-body);
+    font-size: clamp(40px, 5vw, 48px);
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+
+  .text-headline-lg {
+    font-family: var(--font-body);
+    font-size: clamp(28px, 3vw, 32px);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+
+  .text-headline-md {
+    font-family: var(--font-body);
+    font-size: clamp(20px, 2.5vw, 24px);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  .text-body-xl {
+    font-size: 20px;
+    font-weight: 400;
+    line-height: 32px;
+  }
+
+  .text-body-lg {
+    font-size: 18px;
+    font-weight: 400;
+    line-height: 28px;
+  }
+
+  .text-body {
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 24px;
+  }
+
+  .text-label {
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--snc-gold-primary);
+  }
+
+  .text-caption {
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 0.01em;
+    color: var(--snc-text-tertiary);
+  }
+
+  /* Skeleton Animation */
+  @keyframes shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0 50%; }
+  }
+
+  /* Blueprint Grid Layer */
+  .blueprint-grid {
+    background-image:
+      linear-gradient(rgba(200,150,12,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(200,150,12,0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  /* Scrollbar styling for premium feel */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--snc-void);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--snc-navy-raised);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--snc-navy-high);
+  }
+}

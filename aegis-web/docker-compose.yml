@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  aegis-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aegis-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://host.docker.internal:8000 # Adjust this to point to the FastAPI backend

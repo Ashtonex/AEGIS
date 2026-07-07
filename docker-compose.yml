@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  imperium-api:
+    build: 
+      context: ./imperium-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./imperium-api:/app
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=${DATABASE_URL}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
+      - SECRET_KEY=${SECRET_KEY}
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  aegis-web:
+    build:
+      context: ./aegis-web
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - INTERNAL_API_URL=http://imperium-api:8000
+    restart: unless-stopped
