@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: aegis-backend-api
+    env: docker
+    rootDir: imperium-api
+    plan: free # Can be upgraded in Render UI
+    region: frankfurt # Default region, can be changed
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: ALLOWED_ORIGINS
+        value: '*' # Update this to your Vercel URL once frontend is deployed
+      # The following must be securely added in the Render Dashboard:
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
