@@ -1,0 +1,43 @@
+{
+  "direct_costs": "134257.50",
+  "preliminaries": "9500.00",
+  "overhead_amount": "10781.81",
+  "contingency_amount": "9344.24",
+  "profit_amount": "17250.90",
+  "provisional_sums": "15000.00",
+  "subtotal": "196134.45",
+  "discount_amount": "2500.00",
+  "taxable_amount": "193634.45",
+  "tax_amount": "29045.17",
+  "grand_total": "222679.62",
+  "breakdown_log": {
+    "boq_item_count": 7,
+    "overhead_percentage": "7.500%",
+    "contingency_percentage": "6.500%",
+    "profit_percentage": "12.00%",
+    "tax_percentage": "15.00%",
+    "margin_policy_violated": false,
+    "margin_alerts": [],
+    "direct_costs_breakdown": {
+      "materials": "0.00",
+      "labour": "0.00",
+      "equipment": "0.00",
+      "subcontractors": "0.00",
+      "transport": "0.00",
+      "waste_allowance": "0.00"
+    }
+  },
+  "quotation_id": "SNC-FULL-QT-2026-001",
+  "revision_number": 2,
+  "assumptions": [
+    "Rates assume normal working hours and unobstructed site access.",
+    "Client will provide approved IFC drawings before mobilisation.",
+    "Quotation excludes statutory authority fees unless listed separately."
+  ],
+  "exclusions": [
+    "Rock blasting and contaminated soil remediation.",
+    "Client-side professional fees and third-party inspections.",
+    "Foreign exchange variation after quote validity period."
+  ],
+  "audit_trail_hash": "c7390a55c78067423181955b38d6587bc7c13bfe49db839ec2642338b002154e"
+}

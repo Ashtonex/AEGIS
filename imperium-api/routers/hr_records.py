@@ -1,147 +1,143 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from typing import Dict, Any
+from typing import Optional
+from uuid import UUID
+from pydantic import BaseModel, Field
 
 from core.database import get_db
 from core.security import require_permission, get_current_user
+from app.shared.pagination import ok
 
 router = APIRouter()
 
-"""
-Module: hr_records
-Description: Auto-generated CRUD endpoints for hr.records.
-"""
 
-@router.get("/")
-async def list_items(
-    user: dict = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+class LeaveRequestCreate(BaseModel):
+    employee_id: UUID
+    leave_type: str = Field(min_length=1, max_length=40)
+    start_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    end_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    days_requested: float = 1.0
+    reason: Optional[str] = None
+
+
+class LeaveDecision(BaseModel):
+    decision: str = Field(min_length=1, max_length=40)
+    reason: Optional[str] = None
+
+
+@router.get("/leave")
+async def list_leave_requests(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    employee_id: Optional[UUID] = None,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    # Fetch active records scoped to the user's organization
-    query = text("""
-        SELECT *
-        FROM hr.records
-        WHERE organization_id = :org_id AND is_deleted = false
-        ORDER BY created_at DESC
-        LIMIT 100
-    """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    """
+    List leave requests under the organization.
+    """
+    query_str = """
+        SELECT lr.*, e.employee_name
+        FROM hr.leave_requests lr
+        JOIN hr.employees e ON e.id = lr.employee_id AND e.organization_id = lr.organization_id
+        WHERE lr.organization_id = :org_id AND lr.is_deleted = false
+    """
+    params = {"org_id": user["org_id"]}
+    if employee_id:
+        query_str += " AND lr.employee_id = :employee_id"
+        params["employee_id"] = employee_id
+    if status_filter:
+        query_str += " AND lr.status = :status"
+        params["status"] = status_filter
+
+    query_str += " ORDER BY lr.created_at DESC"
+
+    result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
-    
-    return {"success": True, "data": items, "message": "hr_records listed.", "meta": {"total": len(items)}}
+    return ok(items, "Leave requests listed.")
 
-@router.post("/")
-async def create_item(
-    request: Request,
-    user: dict = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+
+@router.post("/leave", status_code=status.HTTP_201_CREATED)
+async def create_leave_request(
+    payload: LeaveRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    payload = await request.json()
-    
-    # Extract keys and values from JSON payload dynamically
-    # Exclude reserved keys to prevent override
-    safe_keys = [k for k in payload.keys() if k not in ['id', 'created_at', 'updated_at', 'organization_id', 'created_by', 'is_deleted']]
-    
-    if not safe_keys:
-        raise HTTPException(status_code=400, detail="Empty or invalid payload.")
+    """
+    Create a new leave request in hr.leave_requests.
+    """
+    # Verify employee
+    emp = await db.execute(
+        text(
+            "SELECT 1 FROM hr.employees WHERE id = :id AND organization_id = :org_id AND is_deleted = false"
+        ),
+        {"id": payload.employee_id, "org_id": user["org_id"]},
+    )
+    if not emp.first():
+        raise HTTPException(status_code=404, detail="Employee not found.")
 
-    columns = ", ".join(safe_keys) + ", organization_id, created_by"
-    binds = ", ".join([f":{k}" for k in safe_keys]) + ", :org_id, :user_id"
-    
-    params = {k: payload[k] for k in safe_keys}
-    params["org_id"] = user["org_id"]
-    params["user_id"] = user["sub"]
-
-    query = text(f"""
-        INSERT INTO hr.records ({columns})
-        VALUES ({binds})
-        RETURNING id
-    """)
-    
     try:
-        result = await db.execute(query, params)
+        leave_id = (
+            await db.execute(
+                text("""
+            INSERT INTO hr.leave_requests (
+                organization_id, employee_id, leave_type, start_date, end_date,
+                days_requested, reason, status, created_by
+            ) VALUES (
+                :org_id, :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
+                :days_requested, :reason, 'pending', :user_id
+            ) RETURNING id
+        """),
+                {
+                    "org_id": user["org_id"],
+                    "employee_id": payload.employee_id,
+                    "leave_type": payload.leave_type,
+                    "start_date": payload.start_date,
+                    "end_date": payload.end_date,
+                    "days_requested": payload.days_requested,
+                    "reason": payload.reason,
+                    "user_id": user["user_id"],
+                },
+            )
+        ).scalar()
         await db.commit()
-        new_id = str(result.scalar())
-        return {"success": True, "data": {"id": new_id}, "message": "hr_records created.", "meta": {}}
+        return ok({"id": str(leave_id)}, "Leave request submitted.")
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{item_id}")
-async def get_item(
-    item_id: str, 
-    user: dict = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
+
+@router.post("/leave/{leave_id}/decision")
+async def decide_leave_request(
+    leave_id: UUID,
+    payload: LeaveDecision,
+    user: dict = Depends(require_permission("hr.leave.approve")),
+    db: AsyncSession = Depends(get_db),
 ):
-    query = text("""
-        SELECT *
-        FROM hr.records
-        WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
-    """)
-    result = await db.execute(query, {"item_id": item_id, "org_id": user["org_id"]})
-    item = result.first()
-    
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-        
-    return {"success": True, "data": dict(item._mapping), "message": "hr_records retrieved.", "meta": {}}
-
-@router.put("/{item_id}")
-async def update_item(
-    item_id: str, 
-    request: Request,
-    user: dict = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
-):
-    payload = await request.json()
-    safe_keys = [k for k in payload.keys() if k not in ['id', 'created_at', 'updated_at', 'organization_id', 'created_by', 'is_deleted']]
-    
-    if not safe_keys:
-        return {"success": True, "data": {"id": item_id}, "message": "No fields to update."}
-
-    set_clause = ", ".join([f"{k} = :{k}" for k in safe_keys])
-    
-    params = {k: payload[k] for k in safe_keys}
-    params["item_id"] = item_id
-    params["org_id"] = user["org_id"]
-
-    query = text(f"""
-        UPDATE hr.records
-        SET {set_clause}, updated_at = NOW()
-        WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+    """
+    Approve or reject a leave request.
+    """
+    result = await db.execute(
+        text("""
+        UPDATE hr.leave_requests
+        SET status = :decision,
+            approved_by = CASE WHEN :decision = 'approved' THEN :user_id ELSE approved_by END,
+            approved_at = CASE WHEN :decision = 'approved' THEN NOW() ELSE approved_at END,
+            rejection_reason = CASE WHEN :decision = 'rejected' THEN :reason ELSE NULL END,
+            updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id AND is_deleted = false
         RETURNING id
-    """)
-    
-    try:
-        result = await db.execute(query, params)
-        if not result.first():
-            raise HTTPException(status_code=404, detail="Item not found")
-            
-        await db.commit()
-        return {"success": True, "data": {"id": item_id}, "message": "hr_records updated.", "meta": {}}
-    except HTTPException:
-        raise
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
-@router.delete("/{item_id}")
-async def delete_item(
-    item_id: str, 
-    user: dict = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
-):
-    query = text("""
-        UPDATE hr.records
-        SET is_deleted = true, updated_at = NOW()
-        WHERE id = :item_id AND organization_id = :org_id
-        RETURNING id
-    """)
-    
-    result = await db.execute(query, {"item_id": item_id, "org_id": user["org_id"]})
+    """),
+        {
+            "id": leave_id,
+            "decision": payload.decision,
+            "reason": payload.reason,
+            "user_id": user["user_id"],
+            "org_id": user["org_id"],
+        },
+    )
     if not result.first():
-        raise HTTPException(status_code=404, detail="Item not found")
-        
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Leave request not found.")
     await db.commit()
-    return {"success": True, "data": None, "message": "hr_records deleted (soft delete).", "meta": {}}
+    return ok({"id": str(leave_id)}, f"Leave request {payload.decision}.")

@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "items": [
+    {
+      "description": "Concrete footings",
+      "quantity": "10",
+      "unit": "m3",
+      "rate": "150",
+      "material_rate": "0",
+      "labour_rate": "0",
+      "equipment_rate": "0",
+      "subcontractor_rate": "0",
+      "transport_rate": "0",
+      "waste_allowance_rate": "0"
+    },
+    {
+      "description": "Steel fixing",
+      "quantity": "2",
+      "unit": "ton",
+      "rate": "800",
+      "material_rate": "0",
+      "labour_rate": "0",
+      "equipment_rate": "0",
+      "subcontractor_rate": "0",
+      "transport_rate": "0",
+      "waste_allowance_rate": "0"
+    }
+  ],
+  "warnings": [],
+  "summary": {
+    "total_rows_processed": 2,
+    "valid_items_imported": 2,
+    "total_direct_costs": "3100.00"
+  }
+}

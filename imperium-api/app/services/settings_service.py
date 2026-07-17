@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.system import Setting, FeatureFlag
-import logging
+
 
 class SettingsService:
     def __init__(self, db: AsyncSession):
@@ -17,7 +17,7 @@ class SettingsService:
         query = select(FeatureFlag).where(FeatureFlag.module_name == module_name)
         result = await self.db.execute(query)
         flag = result.scalar_one_or_none()
-        
+
         if not flag:
             return False
         return flag.status == "enabled"

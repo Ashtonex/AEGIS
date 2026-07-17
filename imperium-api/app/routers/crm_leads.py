@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
-from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.database import get_db
-from app.core.ml_engine import ml_engine
+from core.ml_engine import ml_engine
 
 router = APIRouter(prefix="/api/crm/leads", tags=["CRM Leads"])
+
 
 class LeadCreateSchema(BaseModel):
     company_name: str
@@ -19,6 +20,7 @@ class LeadCreateSchema(BaseModel):
     assigned_to: Optional[str] = None
     labels: Optional[str] = None
     expected_close_date: Optional[str] = None
+
 
 @router.get("/")
 async def get_leads(db: AsyncSession = Depends(get_db)):
@@ -35,20 +37,23 @@ async def get_leads(db: AsyncSession = Depends(get_db)):
     """)
     result = await db.execute(query)
     leads = result.mappings().all()
-    return {"success": True, "data": [dict(l) for l in leads]}
+    return {"success": True, "data": [dict(lead) for lead in leads]}
+
 
 @router.post("/")
-async def create_and_score_lead(lead: LeadCreateSchema, db: AsyncSession = Depends(get_db)):
+async def create_and_score_lead(
+    lead: LeadCreateSchema, db: AsyncSession = Depends(get_db)
+):
     """
     Creates a new lead and calculates its AI Score on the fly
     """
     # 1. Run through ML Engine
     scoring_result = ml_engine.score_lead(
-        sector=lead.sector, 
-        estimated_budget=lead.estimated_budget, 
-        lead_source=lead.lead_source
+        sector=lead.sector,
+        estimated_budget=lead.estimated_budget,
+        lead_source=lead.lead_source,
     )
-    
+
     ai_score = scoring_result["ai_score"]
     ai_rationale = scoring_result["ai_rationale"]
 
@@ -65,26 +70,34 @@ async def create_and_score_lead(lead: LeadCreateSchema, db: AsyncSession = Depen
             :assigned_to, :labels, :expected_close_date
         ) RETURNING id, ai_score
     """)
-    
-    result = await db.execute(query, {
-        "company_name": lead.company_name,
-        "contact_name": lead.contact_name,
-        "contact_email": lead.contact_email,
-        "contact_phone": lead.contact_phone,
-        "sector": lead.sector,
-        "estimated_budget": lead.estimated_budget,
-        "lead_source": lead.lead_source,
-        "assigned_to": lead.assigned_to,
-        "labels": lead.labels,
-        "expected_close_date": lead.expected_close_date,
-        "ai_score": ai_score,
-        "ai_rationale": ai_rationale
-    })
-    
+
+    result = await db.execute(
+        query,
+        {
+            "company_name": lead.company_name,
+            "contact_name": lead.contact_name,
+            "contact_email": lead.contact_email,
+            "contact_phone": lead.contact_phone,
+            "sector": lead.sector,
+            "estimated_budget": lead.estimated_budget,
+            "lead_source": lead.lead_source,
+            "assigned_to": lead.assigned_to,
+            "labels": lead.labels,
+            "expected_close_date": lead.expected_close_date,
+            "ai_score": ai_score,
+            "ai_rationale": ai_rationale,
+        },
+    )
+
     await db.commit()
     new_lead = result.mappings().first()
-    
-    return {"success": True, "message": "Lead created and scored successfully", "data": dict(new_lead)}
+
+    return {
+        "success": True,
+        "message": "Lead created and scored successfully",
+        "data": dict(new_lead),
+    }
+
 
 @router.post("/{lead_id}/qualify")
 async def qualify_lead(lead_id: str, db: AsyncSession = Depends(get_db)):
@@ -95,10 +108,10 @@ async def qualify_lead(lead_id: str, db: AsyncSession = Depends(get_db)):
     fetch_query = text("SELECT * FROM crm.leads WHERE id = :id AND is_deleted = false")
     result = await db.execute(fetch_query, {"id": lead_id})
     lead = result.mappings().first()
-    
+
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
-        
+
     # 2. Create Opportunity
     opp_query = text("""
         INSERT INTO crm.opportunities (
@@ -107,17 +120,20 @@ async def qualify_lead(lead_id: str, db: AsyncSession = Depends(get_db)):
             :org_id, :name, :client_name, 'Inquiry', :budget, :prob
         ) RETURNING id
     """)
-    await db.execute(opp_query, {
-        "org_id": lead.organization_id,
-        "name": f"{lead.company_name} - {lead.sector} Project",
-        "client_name": lead.company_name,
-        "budget": lead.estimated_budget,
-        "prob": lead.ai_score # We use the AI Score as the initial probability
-    })
-    
+    await db.execute(
+        opp_query,
+        {
+            "org_id": lead.organization_id,
+            "name": f"{lead.company_name} - {lead.sector} Project",
+            "client_name": lead.company_name,
+            "budget": lead.estimated_budget,
+            "prob": lead.ai_score,  # We use the AI Score as the initial probability
+        },
+    )
+
     # 3. Mark lead as Qualified
     update_query = text("UPDATE crm.leads SET status = 'Qualified' WHERE id = :id")
     await db.execute(update_query, {"id": lead_id})
-    
+
     await db.commit()
     return {"success": True, "message": "Lead qualified and converted to Opportunity"}

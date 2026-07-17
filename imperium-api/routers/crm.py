@@ -1,180 +1,468 @@
-from fastapi import APIRouter, Depends, HTTPException
+from decimal import Decimal
+from enum import Enum
+from typing import Any, Dict, List, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from typing import Dict, Any
+from sqlalchemy.exc import DataError, IntegrityError
 
 from core.database import get_db
-from core.security import require_permission, get_current_user
-from pydantic import BaseModel
+from core.ml_engine import risk_engine
+from core.security import require_permission
+from app.shared.sql import update_tenant_row_sql
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 router = APIRouter()
 
-class WebIntakeLead(BaseModel):
-    name: str
-    email: str
-    company: str = None
-    phone: str = None
-    project_type: str = None
-    message: str = None
 
-class OpportunityCreate(BaseModel):
-    name: str
-    stage: str = 'Inquiry'
-    budget: float = 0
-    probability: int = 0
+class OpportunityStage(str, Enum):
+    INQUIRY = "Inquiry"
+    QUALIFICATION = "Qualification"
+    SITE_VISIT = "Site Visit"
+    QUOTATION = "Quotation"
+    NEGOTIATION = "Negotiation"
+    CONTRACT = "Contract"
 
-class TenderCreate(BaseModel):
-    tender_name: str
-    stage: str = 'Tender Identified'
-    bid_amount: float = 0
+
+class TenderStage(str, Enum):
+    TENDER_IDENTIFIED = "Tender Identified"
+    BID_PREP = "Bid Prep"
+    SUBMITTED = "Submitted"
+    ADJUDICATION = "Adjudication"
+    AWARDED_LOST = "Awarded/Lost"
+
+
+OPPORTUNITY_STAGE_ALIASES = {
+    "inquiry": OpportunityStage.INQUIRY.value,
+    "qualification": OpportunityStage.QUALIFICATION.value,
+    "site visit": OpportunityStage.SITE_VISIT.value,
+    "quotation": OpportunityStage.QUOTATION.value,
+    "negotiation": OpportunityStage.NEGOTIATION.value,
+    "contract": OpportunityStage.CONTRACT.value,
+}
+
+TENDER_STAGE_ALIASES = {
+    "idd": TenderStage.TENDER_IDENTIFIED.value,
+    "tender identified": TenderStage.TENDER_IDENTIFIED.value,
+    "bid prep": TenderStage.BID_PREP.value,
+    "submitted": TenderStage.SUBMITTED.value,
+    "adjudication": TenderStage.ADJUDICATION.value,
+    "awarded/lost": TenderStage.AWARDED_LOST.value,
+    "awarded lost": TenderStage.AWARDED_LOST.value,
+}
+
+
+def _normalize_stage(value: Any, aliases: Dict[str, str]) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    key = " ".join(value.strip().replace("_", " ").split()).casefold()
+    return aliases.get(key, value)
+
+
+def _require_org_id(user: dict) -> Any:
+    org_id = user.get("org_id")
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CRM routes require an organization context.",
+        )
+    return org_id
+
+
+def _require_user_id(user: dict) -> Any:
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CRM routes require an authenticated user subject.",
+        )
+    return user_id
+
+
+def _pagination_params(limit: Optional[int], offset: int) -> Dict[str, Optional[int]]:
+    return {"limit": limit, "offset": offset}
+
+
+async def _list_meta(
+    db: AsyncSession,
+    count_sql: str,
+    org_id: Any,
+    items: List[Dict[str, Any]],
+    limit: Optional[int],
+    offset: int,
+) -> Dict[str, Any]:
+    if limit is None and offset == 0:
+        return {"total": len(items)}
+
+    result = await db.execute(text(count_sql), {"org_id": org_id})
+    return {"total": int(result.scalar() or 0), "limit": limit, "offset": offset}
+
+
+class CrmPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class OpportunityCreate(CrmPayload):
+    name: str = Field(..., min_length=1, max_length=255)
+    stage: OpportunityStage = Field(default=OpportunityStage.INQUIRY)
+    budget: Decimal = Field(
+        default=Decimal("0"),
+        ge=Decimal("0"),
+        le=Decimal("9999999999999.99"),
+        max_digits=15,
+        decimal_places=2,
+    )
+    probability: int = Field(default=0, ge=0, le=100)
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def normalize_stage(cls, value: Any) -> Any:
+        return _normalize_stage(value, OPPORTUNITY_STAGE_ALIASES)
+
+
+class OpportunityUpdate(CrmPayload):
+    """Validated, tenant-safe fields that may be changed on an opportunity."""
+
+    client_id: Optional[UUID] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    stage: Optional[OpportunityStage] = None
+    budget: Optional[Decimal] = Field(
+        default=None,
+        ge=Decimal("0"),
+        le=Decimal("9999999999999.99"),
+        max_digits=15,
+        decimal_places=2,
+    )
+    probability: Optional[int] = Field(default=None, ge=0, le=100)
+    expected_margin: Optional[Decimal] = Field(
+        default=None, ge=Decimal("0"), le=Decimal("100"), max_digits=5, decimal_places=2
+    )
+    risk_level: Optional[str] = Field(default=None, max_length=50)
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def normalize_stage(cls, value: Any) -> Any:
+        return _normalize_stage(value, OPPORTUNITY_STAGE_ALIASES)
+
+
+OPPORTUNITY_UPDATE_COLUMNS = (
+    "client_id",
+    "name",
+    "stage",
+    "budget",
+    "probability",
+    "expected_margin",
+    "risk_level",
+)
+
+
+class TenderCreate(CrmPayload):
+    tender_name: str = Field(..., min_length=1, max_length=255)
+    stage: TenderStage = Field(default=TenderStage.TENDER_IDENTIFIED)
+    bid_amount: Decimal = Field(
+        default=Decimal("0"),
+        ge=Decimal("0"),
+        le=Decimal("9999999999999.99"),
+        max_digits=15,
+        decimal_places=2,
+    )
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def normalize_stage(cls, value: Any) -> Any:
+        return _normalize_stage(value, TENDER_STAGE_ALIASES)
+
 
 @router.get("/opportunities")
 async def list_opportunities(
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_permission("crm.view_opportunities")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
+    pagination_params = _pagination_params(limit, offset)
     query = text("""
         SELECT o.id, o.name, o.stage, o.budget, o.probability, o.expected_margin, o.risk_level, c.contact_name as client_name
         FROM crm.opportunities o
         LEFT JOIN crm.contacts c ON o.client_id = c.id
         WHERE o.organization_id = :org_id AND o.is_deleted = false
         ORDER BY o.created_at DESC
+        LIMIT :limit OFFSET :offset
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {"org_id": org_id, **pagination_params})
     opportunities = [dict(row._mapping) for row in result]
-    
-    return {"success": True, "data": opportunities, "message": "Opportunities fetched.", "meta": {"total": len(opportunities)}}
+    meta = await _list_meta(
+        db,
+        """
+        SELECT COUNT(*)
+        FROM crm.opportunities o
+        WHERE o.organization_id = :org_id AND o.is_deleted = false
+        """,
+        org_id,
+        opportunities,
+        limit,
+        offset,
+    )
+
+    return {
+        "success": True,
+        "data": opportunities,
+        "message": "Opportunities fetched.",
+        "meta": meta,
+    }
+
 
 @router.get("/tenders")
 async def list_tenders(
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_permission("crm.view_tenders")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
+    pagination_params = _pagination_params(limit, offset)
     query = text("""
         SELECT id, tender_name, bid_amount, stage, submission_deadline, bid_bond_secured
         FROM crm.tenders
         WHERE organization_id = :org_id AND is_deleted = false
         ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {"org_id": org_id, **pagination_params})
     tenders = [dict(row._mapping) for row in result]
-    
-    return {"success": True, "data": tenders, "message": "Tenders fetched.", "meta": {"total": len(tenders)}}
+    meta = await _list_meta(
+        db,
+        """
+        SELECT COUNT(*)
+        FROM crm.tenders
+        WHERE organization_id = :org_id AND is_deleted = false
+        """,
+        org_id,
+        tenders,
+        limit,
+        offset,
+    )
+
+    return {
+        "success": True,
+        "data": tenders,
+        "message": "Tenders fetched.",
+        "meta": meta,
+    }
+
 
 @router.post("/opportunities")
 async def create_opportunity(
     payload: OpportunityCreate,
     user: dict = Depends(require_permission("crm.create_opportunities")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
+    user_id = _require_user_id(user)
     query = text("""
         INSERT INTO crm.opportunities (name, stage, budget, probability, organization_id, created_by)
         VALUES (:name, :stage, :budget, :probability, :org_id, :user_id)
         RETURNING id
     """)
-    result = await db.execute(query, {
-        "name": payload.name,
-        "stage": payload.stage,
-        "budget": payload.budget,
-        "probability": payload.probability,
-        "org_id": user["org_id"],
-        "user_id": user["sub"]
-    })
-    await db.commit()
-    
-    return {"success": True, "data": {"id": str(result.scalar())}, "message": "Opportunity created successfully.", "meta": {}}
+    try:
+        result = await db.execute(
+            query,
+            {
+                "name": payload.name,
+                "stage": payload.stage.value,
+                "budget": payload.budget,
+                "probability": payload.probability,
+                "org_id": org_id,
+                "user_id": user_id,
+            },
+        )
+        await db.commit()
+    except (DataError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Opportunity payload violates CRM database constraints.",
+        ) from exc
+
+    return {
+        "success": True,
+        "data": {"id": str(result.scalar())},
+        "message": "Opportunity created successfully.",
+        "meta": {},
+    }
+
+
+@router.put("/opportunities/{opportunity_id}")
+async def update_opportunity(
+    opportunity_id: str,
+    payload: OpportunityUpdate,
+    user: dict = Depends(require_permission("crm.update_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+
+    values = payload.model_dump(exclude_unset=True, exclude_none=False)
+    safe_keys = [column for column in OPPORTUNITY_UPDATE_COLUMNS if column in values]
+
+    if not safe_keys:
+        return {
+            "success": True,
+            "data": {"id": opportunity_id},
+            "message": "No fields to update.",
+        }
+
+    params = {k: values[k] for k in safe_keys}
+    if "stage" in params and params["stage"] is not None:
+        params["stage"] = params["stage"].value
+    params["opportunity_id"] = opportunity_id
+    params["org_id"] = org_id
+
+    query = update_tenant_row_sql(
+        "crm.opportunities",
+        safe_keys,
+        OPPORTUNITY_UPDATE_COLUMNS,
+        id_param="opportunity_id",
+        returning_id=True,
+    )
+
+    try:
+        result = await db.execute(query, params)
+        if not result.first():
+            raise HTTPException(status_code=404, detail="Opportunity not found")
+        await db.commit()
+        return {
+            "success": True,
+            "data": {"id": opportunity_id},
+            "message": "Opportunity updated successfully.",
+            "meta": {},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 
 @router.post("/tenders")
 async def create_tender(
     payload: TenderCreate,
     user: dict = Depends(require_permission("crm.create_tenders")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
     query = text("""
         INSERT INTO crm.tenders (tender_name, stage, bid_amount, organization_id)
         VALUES (:name, :stage, :amount, :org_id)
         RETURNING id
     """)
-    result = await db.execute(query, {
-        "name": payload.tender_name,
-        "stage": payload.stage,
-        "amount": payload.bid_amount,
-        "org_id": user["org_id"]
-    })
-    await db.commit()
-    
-    return {"success": True, "data": {"id": str(result.scalar())}, "message": "Tender created successfully.", "meta": {}}
+    try:
+        result = await db.execute(
+            query,
+            {
+                "name": payload.tender_name,
+                "stage": payload.stage.value,
+                "amount": payload.bid_amount,
+                "org_id": org_id,
+            },
+        )
+        await db.commit()
+    except (DataError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tender payload violates CRM database constraints.",
+        ) from exc
+
+    return {
+        "success": True,
+        "data": {"id": str(result.scalar())},
+        "message": "Tender created successfully.",
+        "meta": {},
+    }
+
 
 @router.get("/subcontractors")
 async def list_subcontractors(
+    limit: Optional[int] = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_permission("crm.view_subcontractors")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
+    pagination_params = _pagination_params(limit, offset)
     query = text("""
         SELECT id, name, capability_tags, compliance_status, nssa_number, praz_number, reliability_score, authorization_tier
         FROM crm.subcontractors
         WHERE organization_id = :org_id AND is_deleted = false
         ORDER BY reliability_score DESC, name ASC
+        LIMIT :limit OFFSET :offset
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {"org_id": org_id, **pagination_params})
     subcontractors = [dict(row._mapping) for row in result]
-    
-    return {"success": True, "data": subcontractors, "message": "Subcontractors fetched.", "meta": {"total": len(subcontractors)}}
+    meta = await _list_meta(
+        db,
+        """
+        SELECT COUNT(*)
+        FROM crm.subcontractors
+        WHERE organization_id = :org_id AND is_deleted = false
+        """,
+        org_id,
+        subcontractors,
+        limit,
+        offset,
+    )
 
-@router.post("/leads/web-intake")
-async def intake_web_lead(
-    payload: WebIntakeLead,
-    db: AsyncSession = Depends(get_db)
-):
-    # This is a public endpoint used by the website form. We assume organization_id logic is handled securely elsewhere or defaulted.
-    # We will log it directly to crm.website_enquiries which acts as the inbox for new leads.
-    query = text("""
-        INSERT INTO crm.website_enquiries (name, email, company, phone, project_type, message)
-        VALUES (:name, :email, :company, :phone, :project_type, :message)
-        RETURNING id
-    """)
-    result = await db.execute(query, {
-        "name": payload.name, "email": payload.email, "company": payload.company,
-        "phone": payload.phone, "project_type": payload.project_type, "message": payload.message
-    })
-    await db.commit()
-    
-    return {"success": True, "data": None, "message": "Enquiry received successfully.", "meta": {}}
+    return {
+        "success": True,
+        "data": subcontractors,
+        "message": "Subcontractors fetched.",
+        "meta": meta,
+    }
+
 
 @router.get("/accountability")
 async def get_accountability_metrics(
     user: dict = Depends(require_permission("crm.view_accountability")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
     query = text("""
         SELECT metric_name, target_value, current_value, period
         FROM crm.accountability_targets
         WHERE organization_id = :org_id
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {"org_id": org_id})
     metrics = [dict(row._mapping) for row in result]
-    
-    return {"success": True, "data": metrics, "message": "Accountability metrics fetched.", "meta": {}}
 
-from core.ml_engine import risk_engine
+    return {
+        "success": True,
+        "data": metrics,
+        "message": "Accountability metrics fetched.",
+        "meta": {},
+    }
+
 
 @router.get("/risk-matrices")
 async def get_risk_matrices(
     user: dict = Depends(require_permission("crm.view_accountability")),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     # In a real app we'd pass DB queries to the risk engine
     client_concentration = risk_engine.calculate_client_concentration()
     subcontractor_risk = risk_engine.calculate_subcontractor_risk()
     win_loss_diagnostic = risk_engine.calculate_win_loss_diagnostic()
-    
+
     return {
-        "success": True, 
+        "success": True,
         "data": {
             "client_concentration": client_concentration,
             "subcontractor_risk": subcontractor_risk,
-            "win_loss_diagnostic": win_loss_diagnostic
+            "win_loss_diagnostic": win_loss_diagnostic,
         },
         "message": "Risk matrices generated successfully.",
-        "meta": {}
+        "meta": {},
     }
