@@ -35,7 +35,10 @@ def _redact_sensitive_event(
     return event_dict
 
 
-def setup_logging(environment: str = "development", level: str | None = None) -> None:
+def setup_logging(environment: str = "development", level: str | None = None):
+    """
+    Configure structlog for request, worker and security-audit traceability.
+    """
     log_level = (level or "INFO").upper()
     renderer = (
         structlog.processors.JSONRenderer()

@@ -1,9 +1,62 @@
-fastapi==0.110.0
-uvicorn==0.28.0
-sqlalchemy==2.0.28
-asyncpg==0.29.0
-supabase==2.4.1
-pydantic-settings==2.2.1
-python-jose[cryptography]==3.3.0
-httpx==0.27.0
-email-validator>=2.1.0
+# ==============================================================================
+# PROJECT AEGIS - PINNED PYTHON RUNTIME AND DEVELOPMENT DEPENDENCIES
+# Python: 3.13.x project virtualenv
+# ==============================================================================
+
+# --- CORE API LAYER ---
+fastapi==0.139.0            # Core web framework for all API routers
+pydantic-settings==2.14.2   # Typed environment/settings management
+uvicorn[standard]==0.51.0   # ASGI server runtime
+httpx==0.28.1               # HTTP client for integrations and tests
+python-multipart==0.0.32    # Multipart uploads for documents and BOQ files
+email-validator==2.3.0      # Email validation for CRM/auth/public intake
+
+# --- DATABASE LAYER ---
+SQLAlchemy==2.0.51          # Async SQLAlchemy database layer
+alembic==1.18.5             # Alembic migration tooling where schema tracking is needed
+asyncpg==0.31.0             # PostgreSQL async driver
+supabase==2.31.0            # Supabase client for auth/storage/API integration
+
+# --- CACHING, EVENTS & WORKERS ---
+redis==5.3.1                # Redis client, including asyncio support
+arq==0.28.0                 # Async Redis-backed background jobs
+
+# --- DATA ANALYSIS, QUOTATIONS & REPORTING ---
+numpy==2.5.1                # Numeric calculations
+pandas==3.0.3               # BOQ/Excel/CSV dataframes
+scipy==1.18.0               # Statistical analytics
+statsmodels==0.14.6         # Forecasting/statistical modelling
+scikit-learn==1.9.0         # Future ML/risk analytics support
+openpyxl==3.1.5             # Excel import/read support
+XlsxWriter==3.2.9           # Excel export/report generation
+
+# --- DOCUMENT & PDF SERVICES ---
+reportlab==5.0.0            # PDF generation
+pymupdf==1.28.0             # PDF text extraction and merge operations
+pypdf==6.14.2               # PDF splitting, merging and metadata operations
+pdfplumber==0.11.10         # PDF table/text extraction for controlled imports
+python-docx==1.2.0          # Word document generation and inspection
+pillow==12.3.0              # Image support for document rendering
+defusedxml==0.7.1           # Safe XML parsing for office/document payloads
+bleach==6.4.0               # Controlled rich-text sanitisation where accepted
+puremagic==1.30             # Windows-compatible file signature detection
+
+# --- SECURITY & AUTHENTICATION ---
+cryptography==49.0.0        # Cryptographic primitives
+PyJWT==2.13.0               # JWT decoding and validation
+argon2-cffi==25.1.0         # Argon2id password hashing
+
+# --- SYSTEM LOGGING ---
+loguru==0.7.3               # Structured application logging
+structlog==25.5.0           # Approved structured logging library for new security work
+
+# --- TESTING & STATIC QUALITY ---
+pytest==9.1.1               # Test runner
+pytest-asyncio==1.4.0       # Async test support
+pytest-cov==7.1.0           # Coverage reporting
+hypothesis==6.136.9         # Property-based boundary testing
+ruff==0.15.22               # Linting/formatting
+mypy==2.3.0                 # Static type checking
+bandit==1.8.6               # Static security analysis
+pip-audit==2.9.0            # Dependency vulnerability scanning
+detect-secrets==1.5.0       # Secret scanning
