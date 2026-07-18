@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
     REDIS_URL: str = "redis://redis:6379/0"
+    BACKGROUND_JOBS_ENABLED: bool = False
     WORKER_QUEUE_NAME: str = "aegis:jobs"
     WORKER_JOB_TIMEOUT_SECONDS: int = Field(default=300, ge=1)
     WORKER_JOB_MAX_TRIES: int = Field(default=3, ge=1)
@@ -121,9 +122,11 @@ class Settings(BaseSettings):
             raise ValueError("ALLOWED_HOSTS must list explicit hosts in production.")
 
         local_redis_targets = ("redis://redis:", "redis://localhost", "redis://127.0.0.1")
-        if self.REDIS_URL.startswith(local_redis_targets):
+        if self.BACKGROUND_JOBS_ENABLED and self.REDIS_URL.startswith(
+            local_redis_targets
+        ):
             raise ValueError(
-                "REDIS_URL must point to a managed private Redis in production."
+                "REDIS_URL must point to a managed private Redis when background jobs are enabled in production."
             )
 
         return self

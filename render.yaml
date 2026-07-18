@@ -14,6 +14,8 @@ services:
         sync: false
       - key: ALLOWED_HOSTS
         sync: false
+      - key: BACKGROUND_JOBS_ENABLED
+        value: 'false'
       # The following must be securely added in the Render Dashboard:
       - key: DATABASE_URL
         sync: false

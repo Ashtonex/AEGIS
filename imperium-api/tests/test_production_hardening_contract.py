@@ -64,13 +64,24 @@ class ProductionHardeningContractTests(unittest.TestCase):
             ["aegis-backend-api.onrender.com"],
         )
 
+    def test_api_only_production_allows_dormant_local_redis_configuration(self):
+        settings = production_settings(
+            BACKGROUND_JOBS_ENABLED=False,
+            REDIS_URL="redis://redis:6379/0",
+        )
+
+        self.assertFalse(settings.BACKGROUND_JOBS_ENABLED)
+
     def test_production_rejects_debug_wildcard_cors_and_local_redis(self):
         unsafe_overrides = [
             {"DEBUG": True},
             {"ALLOWED_ORIGINS": "*"},
             {"ALLOWED_ORIGINS": "http://aegis.example.com"},
             {"ALLOWED_HOSTS": "*"},
-            {"REDIS_URL": "redis://redis:6379/0"},
+            {
+                "BACKGROUND_JOBS_ENABLED": True,
+                "REDIS_URL": "redis://redis:6379/0",
+            },
         ]
 
         for override in unsafe_overrides:
@@ -95,6 +106,10 @@ class ProductionHardeningContractTests(unittest.TestCase):
         self.assertIn("key: ALLOWED_ORIGINS\n        sync: false", RENDER_BLUEPRINT)
         self.assertIn("key: ALLOWED_HOSTS\n        sync: false", RENDER_BLUEPRINT)
         self.assertIn("key: REDIS_URL\n        sync: false", RENDER_BLUEPRINT)
+        self.assertIn(
+            "key: BACKGROUND_JOBS_ENABLED\n        value: 'false'",
+            RENDER_BLUEPRINT,
+        )
         self.assertIn("key: JWT_SECRET_KEY\n        sync: false", RENDER_BLUEPRINT)
         self.assertNotIn("value: '*'", RENDER_BLUEPRINT)
 
