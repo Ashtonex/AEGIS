@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
-import { Search, Menu, X } from "lucide-react";
+import { BriefcaseBusiness, Building2, ChevronDown, Search, ShieldCheck, Truck, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { transitions } from "@/lib/motion";
 
@@ -21,9 +21,11 @@ export function ExecutiveNav() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<string | null>(null);
+  const [portalMenuOpen, setPortalMenuOpen] = useState(false);
   const [metrics, setMetrics] = useState<{ activeSites: number; contractValue: number } | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pathname = usePathname();
+  const currentPathname = pathname ?? "/";
 
   useEffect(() => {
     // Prefetch metrics for Intelligence nav
@@ -56,6 +58,7 @@ export function ExecutiveNav() {
   useEffect(() => {
     setMobileMenuOpen(false);
     setActivePanel(null);
+    setPortalMenuOpen(false);
   }, [pathname]);
 
   const handleMouseEnter = (label: string, hasPanel: boolean) => {
@@ -73,6 +76,7 @@ export function ExecutiveNav() {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
       setActivePanel(null);
+      setPortalMenuOpen(false);
     }, 200);
   };
 
@@ -100,19 +104,19 @@ export function ExecutiveNav() {
         <div className="max-w-container mx-auto px-6 md:px-10 lg:px-16 xl:px-20 flex items-center justify-between">
           
           {/* LOGO */}
-          <Link href="/" className="group flex flex-col" aria-label="Six Nine Constructions — home">
+          <Link href="/" className="group flex flex-col" aria-label="Six Nine Construction — home">
             <span className="font-black text-[28px] leading-none text-signal tracking-[-0.02em]">
               SNC
             </span>
             <span className="font-mono font-medium text-[9px] tracking-[0.2em] text-slate-light mt-0.5 uppercase">
-              Six Nine Constructions
+              Six Nine Construction
             </span>
           </Link>
 
           {/* DESKTOP NAV */}
           <nav className="hidden md:flex items-center gap-12" aria-label="Primary navigation">
             {NAV_ITEMS.map((item) => {
-              const isActive = pathname.startsWith(item.href);
+              const isActive = currentPathname.startsWith(item.href);
               return (
                 <div
                   key={item.label}
@@ -145,16 +149,15 @@ export function ExecutiveNav() {
             >
               <Search className="w-4 h-4" />
             </button>
-            <Link href="/dashboard">
-              <motion.button
+            <div className="relative">
+              <Link
+                href="/login"
                 className="inline-flex items-center gap-2 bg-signal text-ink font-bold text-[12px] tracking-[0.08em] uppercase px-5 py-2.5 transition-colors duration-fast hover:bg-[#E8B422]"
-                whileHover={shouldReduceMotion ? {} : { y: -1 }}
-                transition={transitions.fast}
                 aria-label="Access secure portal"
               >
                 Secure Access
-              </motion.button>
-            </Link>
+              </Link>
+            </div>
           </div>
 
           {/* MOBILE TOGGLE */}

@@ -23,6 +23,7 @@ export function MegaNav() {
   const [activePanel, setActivePanel] = useState<string | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pathname = usePathname();
+  const currentPathname = pathname ?? "/";
 
   useEffect(() => {
     const handleScroll = () => {
@@ -69,13 +70,13 @@ export function MegaNav() {
           {/* LOGO */}
           <Link href="/" className="group flex flex-col">
             <span className="font-display text-[32px] leading-none text-snc-gold-primary">SNC</span>
-            <span className="font-sans font-medium text-[9px] tracking-[0.2em] text-snc-text-secondary mt-1">SIX NINE CONSTRUCTIONS</span>
+            <span className="font-sans font-medium text-[9px] tracking-[0.2em] text-snc-text-secondary mt-1">SIX NINE CONSTRUCTION</span>
           </Link>
 
           {/* DESKTOP NAV */}
           <nav className="hidden md:flex items-center gap-[40px]">
             {NAV_ITEMS.map((item) => {
-              const isActive = pathname.startsWith(item.href);
+              const isActive = currentPathname.startsWith(item.href);
               return (
                 <div 
                   key={item.label}
@@ -107,7 +108,7 @@ export function MegaNav() {
             <Link href="/tenders">
               <Button variant="ghostGold" size="sm">Tender Board</Button>
             </Link>
-            <Link href="#login">
+            <Link href="/login">
               <Button variant="primary" size="sm">Portal Login</Button>
             </Link>
           </div>
@@ -147,7 +148,7 @@ export function MegaNav() {
                   <Card padding="standard" className="h-full flex flex-col justify-center border-snc-navy-mid">
                     <span className="text-label mb-3">Featured Infrastructure</span>
                     <h3 className="text-headline-md text-snc-text-primary mb-2">Kariba Dam Rehabilitation</h3>
-                    <p className="text-body text-snc-text-secondary max-w-lg mb-6">A monumental feat of civil engineering extending the lifespan of Southern Africa's largest hydroelectric facility.</p>
+                    <p className="text-body text-snc-text-secondary max-w-lg mb-6">A monumental feat of civil engineering extending the lifespan of Southern Africa&apos;s largest hydroelectric facility.</p>
                     <Link href="/projects/kariba" className="text-[13px] font-semibold text-snc-gold-primary flex items-center gap-2 uppercase tracking-widest hover:text-snc-gold-hover transition-colors">
                       View Case Study <ChevronRight className="w-4 h-4" />
                     </Link>
@@ -184,7 +185,7 @@ export function MegaNav() {
               <Link href="/tenders">
                 <Button variant="ghostGold" size="full">Tender Board</Button>
               </Link>
-              <Link href="#login">
+              <Link href="/login">
                 <Button variant="primary" size="full">Portal Login</Button>
               </Link>
             </div>
