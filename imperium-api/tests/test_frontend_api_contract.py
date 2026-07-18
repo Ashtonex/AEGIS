@@ -13,6 +13,7 @@ BACKEND_URL = (
     ROOT.parent / "aegis-web" / "src" / "lib" / "backend-url.ts"
 ).read_text(encoding="utf-8")
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
+PORTALS_ROUTER = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 
 
 class FrontendApiContractTests(unittest.TestCase):
@@ -84,6 +85,18 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('@router.put("/subcontractors/{subcontractor_id}")', CRM_ROUTER)
         self.assertIn('require_permission("crm.create_subcontractors")', CRM_ROUTER)
         self.assertIn('require_permission("crm.update_subcontractors")', CRM_ROUTER)
+
+    def test_tender_scraper_contract_is_implemented_backend_side(self):
+        self.assertIn("getCrmTenderSignals", WEB_API)
+        self.assertIn("/api/v1/crm/tender-signals", WEB_API)
+        self.assertIn('@router.get("/tender-signals")', CRM_ROUTER)
+        self.assertIn('require_permission("crm.view_tenders")', CRM_ROUTER)
+
+    def test_password_setup_contract_is_implemented_backend_side(self):
+        self.assertIn("completePasswordSetup", WEB_API)
+        self.assertIn("/api/v1/portals/password-setup/complete", WEB_API)
+        self.assertIn('@router.post("/password-setup/complete")', PORTALS_ROUTER)
+        self.assertIn("must_change_password", PORTALS_ROUTER)
 
 if __name__ == "__main__":
     unittest.main()

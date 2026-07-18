@@ -4,18 +4,22 @@ Secrets are intentionally not accepted or persisted here. Store connection secre
 the deployment secret manager or Supabase Vault, not in the application database.
 """
 
+import asyncio
 from datetime import datetime
 import json
+import secrets
 from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+import httpx
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import get_db, supabase as supabase_admin
+from core.config import settings
 from core.security import require_permission
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql
 
@@ -84,6 +88,56 @@ class WebsiteContentPayload(Payload):
     body: Optional[str] = None
     status: Literal["draft", "published", "archived"] = "draft"
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+AccountKind = Literal["client", "supplier", "subcontractor"]
+AccessLevel = Literal["viewer", "contributor", "manager", "admin"]
+
+
+class ManagedAccountEmployeePayload(Payload):
+    full_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
+    job_title: Optional[str] = Field(default=None, max_length=100)
+    phone: Optional[str] = Field(default=None, max_length=50)
+    role_ids: list[UUID] = Field(default_factory=list, max_length=8)
+    module_permissions: list[str] = Field(default_factory=list, max_length=32)
+    access_level: AccessLevel = "viewer"
+    portal_access: bool = True
+
+    @field_validator("module_permissions")
+    @classmethod
+    def normalize_permissions(cls, values: list[str]) -> list[str]:
+        normalized = sorted({".".join(value.strip().split()) for value in values if value.strip()})
+        if any(len(value) > 100 for value in normalized):
+            raise ValueError("Permission keys must be 100 characters or fewer.")
+        return normalized
+
+
+class ManagedAccountPayload(Payload):
+    account_type: AccountKind
+    company_name: str = Field(min_length=1, max_length=255)
+    trading_name: Optional[str] = Field(default=None, max_length=255)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_number: Optional[str] = Field(default=None, max_length=100)
+    praz_number: Optional[str] = Field(default=None, max_length=100)
+    nssa_number: Optional[str] = Field(default=None, max_length=100)
+    industry: Optional[str] = Field(default=None, max_length=100)
+    website: Optional[str] = Field(default=None, max_length=255)
+    phone: Optional[str] = Field(default=None, max_length=80)
+    email: Optional[EmailStr] = None
+    address: Optional[str] = None
+    capability_tags: list[str] = Field(default_factory=list, max_length=24)
+    compliance_status: Literal["compliant", "non_compliant", "pending", "exempt"] = "pending"
+    authorization_tier: int = Field(default=1, ge=1, le=5)
+    employees: list[ManagedAccountEmployeePayload] = Field(default_factory=list, min_length=1, max_length=25)
+
+    @field_validator("capability_tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str]) -> list[str]:
+        normalized = sorted({value.strip() for value in values if value.strip()})
+        if any(len(value) > 80 for value in normalized):
+            raise ValueError("Capability tags must be 80 characters or fewer.")
+        return normalized
 
 
 PAGE_ACCESS = [
@@ -286,6 +340,11 @@ DEFAULT_WEBSITE_CONTENT = [
 ]
 
 SOLE_SUPERADMIN_EMAIL = "ashton@admin.com"
+PORTAL_ROLE_BY_ACCOUNT_TYPE = {
+    "client": "CLIENT",
+    "supplier": "SUPPLIER",
+    "subcontractor": "SUPPLIER",
+}
 
 
 def _response(data, message: str, *, total: Optional[int] = None):
@@ -391,6 +450,438 @@ def _enforce_sole_superadmin(target: Any, *, removing: bool = False) -> None:
             status_code=400,
             detail=f"The configured SUPERADMIN role cannot be removed from {SOLE_SUPERADMIN_EMAIL}.",
         )
+
+
+async def _permission_ids(
+    db: AsyncSession, permission_keys: list[str]
+) -> dict[str, UUID]:
+    if not permission_keys:
+        return {}
+    rows = (
+        (
+            await db.execute(
+                text("""
+        SELECT key, id FROM core.permissions WHERE key = ANY(:permission_keys)
+    """),
+                {"permission_keys": permission_keys},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    found = {str(row["key"]): row["id"] for row in rows}
+    missing = sorted(set(permission_keys) - set(found))
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown module permission(s): {', '.join(missing)}",
+        )
+    return found
+
+
+async def _role_id_by_name(db: AsyncSession, org_id: str, role_name: str) -> Optional[UUID]:
+    role_id = (
+        await db.execute(
+            text("""
+        SELECT id FROM core.roles
+        WHERE organization_id=:org_id AND name=:role_name AND is_deleted=false
+    """),
+            {"org_id": org_id, "role_name": role_name},
+        )
+    ).scalar()
+    return role_id
+
+
+async def _create_invited_auth_user(
+    employee: ManagedAccountEmployeePayload,
+    org_id: str,
+    account_type: AccountKind,
+) -> tuple[UUID, str]:
+    """Create a Supabase Auth user and return the Auth user id."""
+    temp_password = _generate_temporary_password()
+    payload = {
+        "email": str(employee.email),
+        "password": temp_password,
+        "email_confirm": True,
+        "user_metadata": {
+            "full_name": employee.full_name,
+            "organization_id": org_id,
+            "account_type": account_type,
+            "access_level": employee.access_level,
+        },
+        "app_metadata": {
+            "must_change_password": True,
+            "organization_id": org_id,
+            "account_type": account_type,
+            "access_level": employee.access_level,
+        },
+    }
+    try:
+        response = await asyncio.to_thread(
+            lambda: supabase_admin.auth.admin.create_user(payload)
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth could not create the provisioned user.",
+        ) from exc
+    auth_user = getattr(response, "user", None)
+    if not auth_user:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth rejected the user provisioning request.",
+        )
+    user_id = getattr(auth_user, "id", None)
+    if not user_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth did not return a provisioned user id.",
+        )
+    return UUID(str(user_id)), temp_password
+
+
+def _generate_temporary_password() -> str:
+    return f"SNC-{secrets.token_urlsafe(10)}!{secrets.randbelow(90) + 10}"
+
+
+async def _ensure_core_user(
+    db: AsyncSession,
+    org_id: str,
+    employee: ManagedAccountEmployeePayload,
+    account_type: AccountKind,
+) -> tuple[UUID, str]:
+    temp_password = _generate_temporary_password()
+    existing = (
+        await db.execute(
+            text("""
+        SELECT id FROM core.users
+        WHERE organization_id=:org_id AND lower(email)=lower(:email) AND is_deleted=false
+    """),
+            {"org_id": org_id, "email": str(employee.email)},
+        )
+    ).scalar()
+    if existing:
+        await asyncio.to_thread(
+            lambda: supabase_admin.auth.admin.update_user_by_id(
+                str(existing),
+                {
+                    "password": temp_password,
+                    "user_metadata": {
+                        "full_name": employee.full_name,
+                        "organization_id": org_id,
+                        "account_type": account_type,
+                        "access_level": employee.access_level,
+                    },
+                    "app_metadata": {
+                        "must_change_password": True,
+                        "organization_id": org_id,
+                        "account_type": account_type,
+                        "access_level": employee.access_level,
+                    },
+                    "email_confirm": True,
+                },
+            )
+        )
+        await db.execute(
+            text("""
+        UPDATE core.users
+        SET full_name = :full_name,
+            must_change_password = true,
+            is_active = true,
+            updated_at = NOW(),
+            is_deleted = false
+        WHERE id = :user_id AND organization_id = :org_id
+    """),
+            {
+                "user_id": existing,
+                "org_id": org_id,
+                "full_name": employee.full_name,
+            },
+        )
+        return existing, temp_password
+
+    user_id, temp_password = await _create_invited_auth_user(employee, org_id, account_type)
+    try:
+        await db.execute(
+            text("""
+        INSERT INTO core.users (id, organization_id, email, full_name, is_active, must_change_password)
+        VALUES (:user_id, :org_id, :email, :full_name, true, true)
+        ON CONFLICT (id) DO UPDATE SET
+            organization_id=EXCLUDED.organization_id,
+            email=EXCLUDED.email,
+            full_name=EXCLUDED.full_name,
+            is_active=true,
+            must_change_password=true,
+            updated_at=NOW(),
+            is_deleted=false
+    """),
+            {
+                "user_id": user_id,
+                "org_id": org_id,
+                "email": str(employee.email),
+                "full_name": employee.full_name,
+            },
+        )
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="A user with this email already exists in another organization.",
+        ) from exc
+    return user_id, temp_password
+
+
+async def _remove_unapproved_superadmin(
+    db: AsyncSession, org_id: str, user_id: UUID, email: str
+) -> None:
+    if email.lower() == SOLE_SUPERADMIN_EMAIL:
+        return
+    await db.execute(
+        text("""
+        DELETE FROM core.user_roles ur
+        USING core.roles r
+        WHERE ur.role_id=r.id
+          AND ur.user_id=:user_id
+          AND ur.organization_id=:org_id
+          AND r.organization_id=:org_id
+          AND r.name='SUPERADMIN'
+    """),
+        {"user_id": user_id, "org_id": org_id},
+    )
+
+
+async def _assign_roles(
+    db: AsyncSession,
+    org_id: str,
+    user_id: UUID,
+    role_ids: list[UUID],
+) -> None:
+    for role_id in role_ids:
+        role_exists = (
+            await db.execute(
+                text("""
+            SELECT 1 FROM core.roles
+            WHERE id=:role_id AND organization_id=:org_id AND is_deleted=false
+        """),
+                {"role_id": role_id, "org_id": org_id},
+            )
+        ).scalar()
+        if not role_exists:
+            raise HTTPException(status_code=404, detail="Selected role was not found.")
+        await db.execute(
+            text("""
+            INSERT INTO core.user_roles (user_id, role_id, organization_id)
+            VALUES (:user_id, :role_id, :org_id)
+            ON CONFLICT (user_id, role_id) DO NOTHING
+        """),
+            {"user_id": user_id, "role_id": role_id, "org_id": org_id},
+        )
+
+
+async def _create_employee_access_role(
+    db: AsyncSession,
+    org_id: str,
+    employee: ManagedAccountEmployeePayload,
+) -> Optional[UUID]:
+    if not employee.module_permissions:
+        return None
+    permission_ids = await _permission_ids(db, employee.module_permissions)
+    role_name = f"ACCESS:{str(employee.email).lower()[:42]}"
+    role_id = await _role_id_by_name(db, org_id, role_name)
+    if not role_id:
+        role_id = (
+            await db.execute(
+                text("""
+            INSERT INTO core.roles (organization_id, name, description)
+            VALUES (:org_id, :role_name, :description)
+            RETURNING id
+        """),
+                {
+                    "org_id": org_id,
+                    "role_name": role_name,
+                    "description": f"{employee.access_level.title()} module access for {employee.full_name}",
+                },
+            )
+        ).scalar()
+    if not role_id:
+        raise HTTPException(status_code=409, detail="Access role could not be created.")
+    for permission_id in permission_ids.values():
+        await db.execute(
+            text("""
+            INSERT INTO core.role_permissions (role_id, permission_id)
+            VALUES (:role_id, :permission_id)
+            ON CONFLICT DO NOTHING
+        """),
+            {"role_id": role_id, "permission_id": permission_id},
+        )
+    return role_id
+
+
+async def _create_client_account(
+    db: AsyncSession, payload: ManagedAccountPayload, user: dict
+) -> UUID:
+    row = await db.execute(
+        text("""
+        INSERT INTO crm.organizations (organization_id, name, industry, website, phone, email, address, created_by)
+        VALUES (:org_id, :name, :industry, :website, :phone, :email, :address, :user_id)
+        RETURNING id
+    """),
+        {
+            "org_id": user["org_id"],
+            "name": payload.company_name,
+            "industry": payload.industry,
+            "website": payload.website,
+            "phone": payload.phone,
+            "email": str(payload.email) if payload.email else None,
+            "address": payload.address,
+            "user_id": user["user_id"],
+        },
+    )
+    return row.scalar()
+
+
+async def _create_supplier_account(
+    db: AsyncSession, payload: ManagedAccountPayload, user: dict
+) -> UUID:
+    row = await db.execute(
+        text("""
+        INSERT INTO procurement.suppliers (
+            organization_id, created_by, supplier_name, trading_name, registration_number, tax_number,
+            praz_number, nssa_number, primary_contact_name, primary_contact_email, primary_contact_phone,
+            currency, status, compliance_status
+        )
+        VALUES (
+            :org_id, :user_id, :supplier_name, :trading_name, :registration_number, :tax_number,
+            :praz_number, :nssa_number, :primary_contact_name, :primary_contact_email, :primary_contact_phone,
+            'USD', 'pending_approval', :compliance_status
+        )
+        RETURNING id
+    """),
+        {
+            "org_id": user["org_id"],
+            "user_id": user["user_id"],
+            "supplier_name": payload.company_name,
+            "trading_name": payload.trading_name,
+            "registration_number": payload.registration_number,
+            "tax_number": payload.tax_number,
+            "praz_number": payload.praz_number,
+            "nssa_number": payload.nssa_number,
+            "primary_contact_name": payload.employees[0].full_name,
+            "primary_contact_email": str(payload.employees[0].email),
+            "primary_contact_phone": payload.employees[0].phone or payload.phone,
+            "compliance_status": payload.compliance_status,
+        },
+    )
+    return row.scalar()
+
+
+async def _create_subcontractor_profile(
+    db: AsyncSession, payload: ManagedAccountPayload, user: dict
+) -> UUID:
+    row = await db.execute(
+        text("""
+        INSERT INTO crm.subcontractors (
+            organization_id, name, capability_tags, compliance_status, nssa_number, praz_number,
+            reliability_score, authorization_tier, contact_name, contact_email, contact_phone,
+            address, submission_data, created_by
+        )
+        VALUES (
+            :org_id, :name, CAST(:capability_tags AS text[]), :compliance_status, :nssa_number, :praz_number,
+            0, :authorization_tier, :contact_name, :contact_email, :contact_phone,
+            :address, CAST(:submission_data AS jsonb), :user_id
+        )
+        RETURNING id
+    """),
+        {
+            "org_id": user["org_id"],
+            "name": payload.company_name,
+            "capability_tags": payload.capability_tags,
+            "compliance_status": payload.compliance_status,
+            "nssa_number": payload.nssa_number,
+            "praz_number": payload.praz_number,
+            "authorization_tier": payload.authorization_tier,
+            "contact_name": payload.employees[0].full_name,
+            "contact_email": str(payload.employees[0].email),
+            "contact_phone": payload.employees[0].phone or payload.phone,
+            "address": payload.address,
+            "submission_data": json.dumps(
+                {
+                    "account_type": payload.account_type,
+                    "trading_name": payload.trading_name,
+                    "registration_number": payload.registration_number,
+                    "tax_number": payload.tax_number,
+                    "email": str(payload.email) if payload.email else None,
+                    "website": payload.website,
+                }
+            ),
+            "user_id": user["user_id"],
+        },
+    )
+    return row.scalar()
+
+
+async def _create_client_contact(
+    db: AsyncSession,
+    org_id: str,
+    created_by: str,
+    client_org_id: UUID,
+    employee: ManagedAccountEmployeePayload,
+) -> UUID:
+    row = await db.execute(
+        text("""
+        INSERT INTO crm.contacts (organization_id, created_by, client_org_id, contact_name, email, phone, job_title)
+        VALUES (:org_id, :user_id, :client_org_id, :contact_name, :email, :phone, :job_title)
+        RETURNING id
+    """),
+        {
+            "org_id": org_id,
+            "user_id": created_by,
+            "client_org_id": client_org_id,
+            "contact_name": employee.full_name,
+            "email": str(employee.email),
+            "phone": employee.phone,
+            "job_title": employee.job_title,
+        },
+    )
+    return row.scalar()
+
+
+async def _create_employee_record(
+    db: AsyncSession,
+    org_id: str,
+    created_by: str,
+    employee: ManagedAccountEmployeePayload,
+    user_id: UUID,
+) -> UUID:
+    row = await db.execute(
+        text("""
+        INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, linked_user_id, employment_status)
+        VALUES (:org_id, :user_id, :employee_name, :job_title, :linked_user_id, 'active')
+        ON CONFLICT DO NOTHING
+        RETURNING id
+    """),
+        {
+            "org_id": org_id,
+            "user_id": created_by,
+            "employee_name": employee.full_name,
+            "job_title": employee.job_title,
+            "linked_user_id": user_id,
+        },
+    )
+    employee_id = row.scalar()
+    if employee_id:
+        return employee_id
+    existing = (
+        await db.execute(
+            text("""
+        SELECT id FROM hr.employees
+        WHERE organization_id=:org_id AND linked_user_id=:linked_user_id AND is_deleted=false
+    """),
+            {"org_id": org_id, "linked_user_id": user_id},
+        )
+    ).scalar()
+    if not existing:
+        raise HTTPException(status_code=409, detail="Employee profile could not be linked.")
+    return existing
 
 
 async def _audit_events(
@@ -847,6 +1338,137 @@ async def set_role_permission(
     )
     await db.commit()
     return _response(None, "Role permission updated.")
+
+
+@router.post("/managed-accounts")
+async def create_managed_account(
+    payload: ManagedAccountPayload,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    account_id: Optional[UUID] = None
+    supplier_id: Optional[UUID] = None
+    subcontractor_id: Optional[UUID] = None
+    created_users: list[dict[str, Any]] = []
+    try:
+        if payload.account_type == "client":
+            account_id = await _create_client_account(db, payload, user)
+        elif payload.account_type == "supplier":
+            supplier_id = await _create_supplier_account(db, payload, user)
+            subcontractor_id = await _create_subcontractor_profile(db, payload, user)
+            account_id = supplier_id
+        else:
+            subcontractor_id = await _create_subcontractor_profile(db, payload, user)
+            account_id = subcontractor_id
+
+        portal_role_name = PORTAL_ROLE_BY_ACCOUNT_TYPE[payload.account_type]
+        portal_role_id = await _role_id_by_name(db, org_id, portal_role_name)
+        if not portal_role_id:
+            raise HTTPException(
+                status_code=503,
+                detail=f"The {portal_role_name} portal role is not migrated yet. Run migration 014_portal_access_roles.sql.",
+            )
+
+        for employee in payload.employees:
+            invited_user_id, temp_password = await _ensure_core_user(
+                db, org_id, employee, payload.account_type
+            )
+            await _remove_unapproved_superadmin(
+                db, org_id, invited_user_id, str(employee.email)
+            )
+            assigned_role_ids = list(dict.fromkeys([*employee.role_ids, portal_role_id]))
+            custom_role_id = await _create_employee_access_role(db, org_id, employee)
+            if custom_role_id:
+                assigned_role_ids.append(custom_role_id)
+            await _assign_roles(db, org_id, invited_user_id, assigned_role_ids)
+
+            contact_id = None
+            employee_id = None
+            if payload.account_type == "client" and account_id:
+                contact_id = await _create_client_contact(
+                    db, org_id, user["user_id"], account_id, employee
+                )
+                if employee.portal_access:
+                    await db.execute(
+                        text("""
+                    INSERT INTO crm.client_portal_access (user_id, organization_id, contact_id, is_active)
+                    VALUES (:user_id, :org_id, :contact_id, true)
+                    ON CONFLICT (user_id, organization_id) DO UPDATE SET
+                        contact_id=EXCLUDED.contact_id, is_active=true, updated_at=NOW()
+                """),
+                        {
+                            "user_id": invited_user_id,
+                            "org_id": org_id,
+                            "contact_id": contact_id,
+                        },
+                    )
+            else:
+                employee_id = await _create_employee_record(
+                    db, org_id, user["user_id"], employee, invited_user_id
+                )
+                if employee.portal_access and subcontractor_id:
+                    await db.execute(
+                        text("""
+                    INSERT INTO crm.supplier_portal_access (user_id, organization_id, subcontractor_id, is_active)
+                    VALUES (:user_id, :org_id, :subcontractor_id, true)
+                    ON CONFLICT (user_id, organization_id) DO UPDATE SET
+                        subcontractor_id=EXCLUDED.subcontractor_id, is_active=true, updated_at=NOW()
+                """),
+                        {
+                            "user_id": invited_user_id,
+                            "org_id": org_id,
+                            "subcontractor_id": subcontractor_id,
+                        },
+                    )
+
+            created_users.append(
+                {
+                    "user_id": str(invited_user_id),
+                    "email": str(employee.email),
+                    "temporary_password": temp_password,
+                    "contact_id": str(contact_id) if contact_id else None,
+                    "employee_id": str(employee_id) if employee_id else None,
+                    "custom_role_id": str(custom_role_id) if custom_role_id else None,
+                    "access_level": employee.access_level,
+                }
+            )
+
+        await _write_audit(
+            db,
+            user,
+            "settings.managed_account.created",
+            "managed_account",
+            account_id,
+            {
+                "account_type": payload.account_type,
+                "company_name": payload.company_name,
+                "employee_count": len(payload.employees),
+                "supplier_id": str(supplier_id) if supplier_id else None,
+                "subcontractor_id": str(subcontractor_id) if subcontractor_id else None,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The managed account could not be created because one of the records already exists.",
+        ) from exc
+
+    return _response(
+        {
+            "id": str(account_id),
+            "account_type": payload.account_type,
+            "supplier_id": str(supplier_id) if supplier_id else None,
+            "subcontractor_id": str(subcontractor_id) if subcontractor_id else None,
+            "users": created_users,
+        },
+        "Managed account created and credential cards were issued.",
+    )
 
 
 @router.patch("/website-content")

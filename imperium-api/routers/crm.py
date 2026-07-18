@@ -12,6 +12,7 @@ from sqlalchemy.exc import DataError, IntegrityError
 from core.database import get_db
 from core.ml_engine import risk_engine
 from core.security import require_permission
+from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
 from app.shared.sql import update_tenant_row_sql
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -311,6 +312,40 @@ async def list_tenders(
         "data": tenders,
         "message": "Tenders fetched.",
         "meta": meta,
+    }
+
+
+@router.get("/tender-signals")
+async def list_tender_signals(
+    limit: Optional[int] = Query(default=12, ge=1, le=50),
+    sources: Optional[str] = Query(default=None),
+    include_internal_public_feed: bool = Query(default=True),
+    user: dict = Depends(require_permission("crm.view_tenders")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    if sources is None:
+        source_urls = configured_tender_sources()
+    else:
+        source_urls = [part.strip() for part in sources.split(",") if part.strip()]
+
+    signals = await collect_tender_signals(
+        db,
+        org_id,
+        source_urls,
+        include_internal_public_feed=include_internal_public_feed,
+        limit=limit or 12,
+    )
+    return {
+        "success": True,
+        "data": [signal.model_dump(by_alias=True) for signal in signals],
+        "message": "Tender signals fetched.",
+        "meta": {
+            "total": len(signals),
+            "limit": limit or 12,
+            "sources": source_urls,
+            "include_internal_public_feed": include_internal_public_feed,
+        },
     }
 
 

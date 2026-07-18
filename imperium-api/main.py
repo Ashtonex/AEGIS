@@ -7,7 +7,7 @@ from core.database import check_database_health
 from core.logging import logger, setup_logging
 from core.security import require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
-from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, website_enquiries, executive, crm, crm_organizations, crm_activities, crm_automations, public_intake, profiles, portals, settings as settings_router, analytics_ml  # fmt: skip
+from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, website_enquiries, executive, crm, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, settings as settings_router, analytics_ml  # fmt: skip
 
 
 def create_app() -> FastAPI:
@@ -100,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(crm.router, prefix="/api/v1/crm", tags=["CRM"])
     app.include_router(crm_organizations.router, prefix="/api/v1/crm-organizations", tags=["CRM Organizations"], dependencies=[Depends(require_resource_permission("crm_organizations"))])  # fmt: skip
     app.include_router(crm_activities.router, prefix="/api/v1/crm-activities", tags=["CRM Activities"], dependencies=[Depends(require_resource_permission("crm_activities"))])  # fmt: skip
+    app.include_router(crm_communications.router, prefix="/api/v1/crm-communications", tags=["CRM Communications"])  # fmt: skip
     app.include_router(crm_automations.router, prefix="/api/v1/crm-automations", tags=["CRM Automations"], dependencies=[Depends(require_resource_permission("crm_automations"))])  # fmt: skip
     app.include_router(
         public_intake.router, prefix="/api/v1/public/intake", tags=["Public Intake"]

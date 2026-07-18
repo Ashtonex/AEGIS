@@ -60,3 +60,9 @@ mypy==2.3.0                 # Static type checking
 bandit==1.8.6               # Static security analysis
 pip-audit==2.9.0            # Dependency vulnerability scanning
 detect-secrets==1.5.0       # Secret scanning
+
+# --- SCRAPING & LLM ---
+beautifulsoup4==4.12.3
+tenacity==8.3.0
+playwright>=1.48.0
+openai==1.30.1

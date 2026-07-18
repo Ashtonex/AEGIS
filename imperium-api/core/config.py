@@ -54,7 +54,17 @@ class Settings(BaseSettings):
     REPORT_OUTPUT_DIR: str = "generated/reports"
     REPORT_TEMPLATE_DIR: str = "templates/reports"
     EXTERNAL_API_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    TENDER_SCRAPER_SOURCES: str = "internal:public_tenders"
     NOTIFICATION_WEBHOOK_URL: Optional[str] = None
+    WHATSAPP_ACCESS_TOKEN: Optional[str] = None
+    WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
+    WHATSAPP_VERIFY_TOKEN: Optional[str] = None
+    WHATSAPP_GRAPH_API_VERSION: str = "v23.0"
+    WHATSAPP_APP_SECRET: Optional[str] = None
+    TWILIO_ACCOUNT_SID: Optional[str] = None
+    TWILIO_AUTH_TOKEN: Optional[str] = None
+    TWILIO_FROM_NUMBER: Optional[str] = None
+    TWILIO_WEBHOOK_BASE_URL: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

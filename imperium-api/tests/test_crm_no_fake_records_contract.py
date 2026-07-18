@@ -141,9 +141,8 @@ class CrmNoFakeRecordsContract(unittest.TestCase):
         self.assertNotIn("Lead queued locally", source)
         self.assertNotIn("Telemetry saved locally", source)
         self.assertIn("const externalProspects: ExternalProspectSignal[] = [];", source)
-        self.assertIn(
-            "const externalTenderSignals: ExternalTenderSignal[] = [];", source
-        )
+        self.assertIn("getCrmTenderSignals", source)
+        self.assertIn("setExternalTenderSignals(response.data)", source)
         self.assertIn(
             "const externalLinkedInProfiles: ExternalLinkedInProfile[] = [];", source
         )

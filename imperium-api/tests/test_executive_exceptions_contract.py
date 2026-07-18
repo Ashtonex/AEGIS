@@ -62,6 +62,18 @@ class ExecutiveExceptionsContractTests(unittest.TestCase):
         )
         self.assertIn("Evidence:", EXECUTIVE_PAGE)
 
+    def test_executive_dashboard_has_explicit_frontend_guard_and_degraded_state(self):
+        self.assertIn("RBACGuard", EXECUTIVE_PAGE)
+        self.assertIn('allowedRoles={["Executive (Admin)"]}', EXECUTIVE_PAGE)
+        self.assertIn("sourceWarningsFrom", EXECUTIVE_PAGE)
+        self.assertIn("Executive view is degraded", EXECUTIVE_PAGE)
+
+    def test_backend_reports_optional_source_failures_in_meta(self):
+        self.assertIn("executive_source_query_failed", EXECUTIVE_ROUTER)
+        self.assertIn('"source": source', EXECUTIVE_ROUTER)
+        self.assertIn('"status": "degraded"', EXECUTIVE_ROUTER)
+        self.assertIn('"source_errors": source_errors', EXECUTIVE_ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()

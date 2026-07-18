@@ -1,4 +1,5 @@
-from typing import Optional
+from datetime import datetime
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -28,6 +29,8 @@ class ProfileUpdate(BaseModel):
     website_url: Optional[HttpUrl] = None
     skills: Optional[list[str]] = Field(default=None, max_length=30)
     languages: Optional[list[str]] = Field(default=None, max_length=20)
+    theme_preference: Optional[Literal["ink", "paper", "slate", "contrast"]] = None
+    onboarding_completed_at: Optional[datetime] = None
 
 
 def _url(value: Optional[HttpUrl]) -> Optional[str]:
@@ -43,7 +46,8 @@ async def get_my_profile(
         SELECT u.id AS user_id, u.email, u.full_name, p.preferred_name, p.first_name, p.last_name,
                p.work_phone, p.job_title, p.department, p.location, p.timezone, p.bio,
                p.linkedin_url, p.portfolio_url, p.website_url, p.avatar_path, p.skills, p.languages,
-               p.profile_completed_at
+               p.theme_preference,
+               p.profile_completed_at, p.onboarding_completed_at
         FROM core.users u
         LEFT JOIN hr.employee_profiles p ON p.user_id = u.id AND p.organization_id = u.organization_id
         WHERE u.id = :user_id AND u.organization_id = :org_id AND u.is_deleted = false
@@ -105,7 +109,9 @@ async def update_my_profile(
                 "website_url",
                 "skills",
                 "languages",
+                "theme_preference",
                 "profile_completed_at",
+                "onboarding_completed_at",
             ),
             touch_profile_completed_at=True,
         ),

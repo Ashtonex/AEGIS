@@ -24,10 +24,20 @@ async def list_items(
 ):
     # Fetch active records scoped to the user's organization
     query = text("""
-        SELECT *
-        FROM crm.tickets
-        WHERE organization_id = :org_id AND is_deleted = false
-        ORDER BY created_at DESC
+        SELECT
+            t.*,
+            c.contact_name,
+            c.email,
+            co.name AS company_name
+        FROM crm.tickets t
+        LEFT JOIN crm.contacts c ON c.id = t.client_id
+         AND c.organization_id = t.organization_id
+         AND c.is_deleted = false
+        LEFT JOIN crm.organizations co ON co.id = c.client_org_id
+         AND co.organization_id = t.organization_id
+         AND co.is_deleted = false
+        WHERE t.organization_id = :org_id AND t.is_deleted = false
+        ORDER BY t.created_at DESC
         LIMIT 100
     """)
     result = await db.execute(query, {"org_id": user["org_id"]})
