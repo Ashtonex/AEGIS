@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Step 1: Base image
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 
 # Step 2: Install dependencies only when needed
 FROM base AS deps
@@ -21,8 +21,8 @@ COPY . .
 
 # Environment variables must be present at build time
 # https://nextjs.org/docs/api-reference/next.config.js/environment-variables
-ENV NEXT_TELEMETRY_DISABLED 1
-ENV NEXT_PUBLIC_BUILD_PHASE true
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_BUILD_PHASE=true
 
 ARG NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
@@ -33,6 +33,9 @@ ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
+ARG INTERNAL_API_URL
+ENV INTERNAL_API_URL=${INTERNAL_API_URL}
+
 # Build Next.js based on the preferred package manager
 RUN npm run build
 
@@ -40,8 +43,8 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app
 
-ENV NODE_ENV production
-ENV NEXT_TELEMETRY_DISABLED 1
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
@@ -60,9 +63,9 @@ USER nextjs
 
 EXPOSE 3000
 
-ENV PORT 3000
+ENV PORT=3000
 # set hostname to localhost
-ENV HOSTNAME "0.0.0.0"
+ENV HOSTNAME="0.0.0.0"
 
 # server.js is created by next build from the standalone output
 # https://nextjs.org/docs/pages/api-reference/next-config-js/output

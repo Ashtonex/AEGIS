@@ -1,10 +1,11 @@
 services:
   - type: web
     name: aegis-backend-api
-    env: docker
+    runtime: docker
     rootDir: imperium-api
     plan: free # Can be upgraded in Render UI
     region: frankfurt # Default region, can be changed
+    healthCheckPath: /health
     envVars:
       - key: ENVIRONMENT
         value: production
@@ -14,6 +15,11 @@ services:
         sync: false
       - key: ALLOWED_HOSTS
         sync: false
+      - key: FRONTEND_HOSTNAME
+        fromService:
+          type: web
+          name: aegis-frontend
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
       - key: BACKGROUND_JOBS_ENABLED
         value: 'false'
       # The following must be securely added in the Render Dashboard:
@@ -31,3 +37,33 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+
+  - type: web
+    name: aegis-frontend
+    runtime: docker
+    rootDir: aegis-web
+    plan: free # Can be upgraded in Render UI
+    region: frankfurt
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_TELEMETRY_DISABLED
+        value: '1'
+      # Free Render web services cannot receive private-network requests.
+      # Reference the backend's public hostname and add HTTPS in application code.
+      - key: INTERNAL_API_URL
+        fromService:
+          type: web
+          name: aegis-backend-api
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        fromService:
+          type: web
+          name: aegis-backend-api
+          envVarKey: SUPABASE_URL
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        fromService:
+          type: web
+          name: aegis-backend-api
+          envVarKey: SUPABASE_ANON_KEY

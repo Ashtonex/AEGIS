@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
+import { resolveBackendOrigin } from "@/lib/backend-url";
 
-const rawBackendUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const BASE_BACKEND_URL = `${rawBackendUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "")}/api/v1`;
+const BASE_BACKEND_URL = `${resolveBackendOrigin()}/api/v1`;
 
 // Proxy helper
 export async function proxyToBackend(req: Request, endpoint: string) {

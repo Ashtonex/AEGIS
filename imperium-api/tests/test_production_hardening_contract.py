@@ -53,11 +53,15 @@ class ProductionHardeningContractTests(unittest.TestCase):
             RENDER=True,
             RENDER_EXTERNAL_HOSTNAME="aegis-backend-api.onrender.com",
             RENDER_EXTERNAL_URL="https://aegis-backend-api.onrender.com",
+            FRONTEND_HOSTNAME="aegis-frontend.onrender.com",
         )
 
         self.assertEqual(
             settings.cors_origins,
-            ["https://aegis-backend-api.onrender.com"],
+            [
+                "https://aegis-backend-api.onrender.com",
+                "https://aegis-frontend.onrender.com",
+            ],
         )
         self.assertEqual(
             settings.allowed_hosts,
@@ -111,6 +115,12 @@ class ProductionHardeningContractTests(unittest.TestCase):
             RENDER_BLUEPRINT,
         )
         self.assertIn("key: JWT_SECRET_KEY\n        sync: false", RENDER_BLUEPRINT)
+        self.assertIn("name: aegis-frontend", RENDER_BLUEPRINT)
+        self.assertIn("healthCheckPath: /health", RENDER_BLUEPRINT)
+        self.assertIn("healthCheckPath: /api/health", RENDER_BLUEPRINT)
+        self.assertIn("key: INTERNAL_API_URL", RENDER_BLUEPRINT)
+        self.assertIn("envVarKey: RENDER_EXTERNAL_HOSTNAME", RENDER_BLUEPRINT)
+        self.assertIn("key: NEXT_PUBLIC_SUPABASE_URL", RENDER_BLUEPRINT)
         self.assertNotIn("value: '*'", RENDER_BLUEPRINT)
 
     def test_app_uses_trusted_host_middleware(self):

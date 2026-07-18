@@ -28,3 +28,21 @@ project-aegis/
 ```
 
 Please see the `docs/` directory for detailed architecture, database, API, and onboarding guides.
+
+## Render Deployment
+
+The root `render.yaml` deploys both applications as Docker web services in the
+same Render region:
+
+- `aegis-backend-api`: FastAPI backend with `/health` monitoring.
+- `aegis-frontend`: Next.js website with `/api/health` monitoring.
+
+Create or sync a Render Blueprint from this repository's `main` branch. On the
+initial Blueprint setup, provide the backend values marked `sync: false` in
+`render.yaml`. Render passes the backend's public hostname and Supabase public
+client configuration to the frontend automatically, so those values do not need
+to be duplicated on the frontend service.
+
+After both deploys are healthy, the public website is available from the
+`aegis-frontend` service's `onrender.com` URL. Custom domains can be attached to
+that service in the Render Dashboard without changing the container.

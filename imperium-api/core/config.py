@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     RENDER: bool = False
     RENDER_EXTERNAL_HOSTNAME: Optional[str] = None
     RENDER_EXTERNAL_URL: Optional[str] = None
+    FRONTEND_HOSTNAME: Optional[str] = None
 
     DATABASE_URL: str
     SUPABASE_URL: str
@@ -146,6 +147,10 @@ class Settings(BaseSettings):
             render_url = self.RENDER_EXTERNAL_URL.rstrip("/")
             if render_url not in origins:
                 origins.append(render_url)
+        if self.FRONTEND_HOSTNAME:
+            frontend_origin = f"https://{self.FRONTEND_HOSTNAME.strip().rstrip('/')}"
+            if frontend_origin not in origins:
+                origins.append(frontend_origin)
         return origins
 
     @property

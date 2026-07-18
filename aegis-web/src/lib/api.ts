@@ -1,6 +1,7 @@
 import { ApiResponse, PaginatedResponse, EnquiryPayload, TenderInterestPayload, JobApplicationPayload, SupplierRegistrationPayload } from "@/types/api";
 import { Project, Tender, Article, JobPosition, LeadershipProfile } from "@/types/website";
 import { API_BASE_URL } from "./constants";
+import { resolveBackendOrigin } from "./backend-url";
 import { getSupabase } from "./supabase";
 import { MOCK_TENDERS, MOCK_NEWS_ARTICLES, MOCK_KNOWLEDGE_ARTICLES } from "./mockArticles";
 import { MOCK_PROJECTS, getMockProjectBySlug } from "./mockProjects";
@@ -42,11 +43,6 @@ const SERVER_ROUTE_ALIASES: Record<string, string> = {
   "/api/cms/website-content": "/api/v1/public/intake/website-content",
   "/api/cms/broadcast-feeds": "/api/v1/public/intake/broadcast-feeds",
 };
-
-function resolveBackendOrigin(): string {
-  const rawBaseUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://imperium-api:8000";
-  return rawBaseUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
-}
 
 function resolveServerInternalEndpoint(endpoint: string): string {
   const [pathname, search = ""] = endpoint.split("?", 2);

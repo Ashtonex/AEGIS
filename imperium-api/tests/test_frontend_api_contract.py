@@ -6,6 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(
     encoding="utf-8"
 )
+BACKEND_URL = (
+    ROOT.parent / "aegis-web" / "src" / "lib" / "backend-url.ts"
+).read_text(encoding="utf-8")
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 
 
@@ -38,7 +41,8 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn("extractApiErrorMessage(parsed)", WEB_API)
 
     def test_server_side_api_v1_urls_preserve_backend_prefix(self):
-        self.assertIn("function resolveBackendOrigin()", WEB_API)
+        self.assertIn("function resolveBackendOrigin()", BACKEND_URL)
+        self.assertIn('trimmedUrl.endsWith(".onrender.com")', BACKEND_URL)
         self.assertIn("function resolveServerInternalEndpoint(endpoint: string)", WEB_API)
         self.assertIn("return isInternal ? resolveServerInternalEndpoint(endpoint)", WEB_API)
         self.assertNotIn('endpoint.replace("/api/", "/")', WEB_API)

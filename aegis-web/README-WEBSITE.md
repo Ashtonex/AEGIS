@@ -19,7 +19,7 @@ The frontend contains **zero** business logic and no direct database connections
 All dynamic data must be fetched via the Next.js Route Handlers (`src/app/api/...`), which securely proxy requests to the FastAPI backend (`process.env.NEXT_PUBLIC_API_URL`).
 
 ### Running Locally (Node)
-Use Node.js 20 or 22. Node.js 24 has been observed to leave `next build` resident during static generation on Windows for this project.
+Use Node.js 22. Node.js 24 has been observed to leave `next build` resident during static generation on Windows for this project.
 
 - `npm run dev` - Start development server
 - `npm run build` - Build production bundle
