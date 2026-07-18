@@ -46,6 +46,24 @@ class ProductionHardeningContractTests(unittest.TestCase):
             "postgresql+asyncpg://user:pass@db.example.com:5432/aegis",
         )
 
+    def test_render_replaces_legacy_wildcards_with_service_origin_and_host(self):
+        settings = production_settings(
+            ALLOWED_ORIGINS="*",
+            ALLOWED_HOSTS="*",
+            RENDER=True,
+            RENDER_EXTERNAL_HOSTNAME="aegis-backend-api.onrender.com",
+            RENDER_EXTERNAL_URL="https://aegis-backend-api.onrender.com",
+        )
+
+        self.assertEqual(
+            settings.cors_origins,
+            ["https://aegis-backend-api.onrender.com"],
+        )
+        self.assertEqual(
+            settings.allowed_hosts,
+            ["aegis-backend-api.onrender.com"],
+        )
+
     def test_production_rejects_debug_wildcard_cors_and_local_redis(self):
         unsafe_overrides = [
             {"DEBUG": True},

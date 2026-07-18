@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ALLOWED_ORIGINS: str = "http://localhost:3000"
     ALLOWED_HOSTS: str = "localhost,127.0.0.1"
+    RENDER: bool = False
+    RENDER_EXTERNAL_HOSTNAME: Optional[str] = None
+    RENDER_EXTERNAL_URL: Optional[str] = None
 
     DATABASE_URL: str
     SUPABASE_URL: str
@@ -101,7 +104,8 @@ class Settings(BaseSettings):
         if not self.SUPABASE_URL.startswith("https://"):
             raise ValueError("SUPABASE_URL must use HTTPS in production.")
 
-        if "*" in self.cors_origins:
+        configured_origins = self._configured_cors_origins
+        if "*" in configured_origins and not self.RENDER:
             raise ValueError("ALLOWED_ORIGINS must not contain '*' in production.")
         if not self.cors_origins or any(
             not origin.startswith("https://") for origin in self.cors_origins
@@ -110,7 +114,8 @@ class Settings(BaseSettings):
                 "ALLOWED_ORIGINS must list explicit HTTPS origins in production."
             )
 
-        if "*" in self.allowed_hosts:
+        configured_hosts = self._configured_allowed_hosts
+        if "*" in configured_hosts and not self.RENDER:
             raise ValueError("ALLOWED_HOSTS must not contain '*' in production.")
         if not self.allowed_hosts:
             raise ValueError("ALLOWED_HOSTS must list explicit hosts in production.")
@@ -124,7 +129,7 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def cors_origins(self) -> List[str]:
+    def _configured_cors_origins(self) -> List[str]:
         return [
             origin.strip()
             for origin in self.ALLOWED_ORIGINS.split(",")
@@ -132,12 +137,30 @@ class Settings(BaseSettings):
         ]
 
     @property
-    def allowed_hosts(self) -> List[str]:
+    def cors_origins(self) -> List[str]:
+        origins = [origin for origin in self._configured_cors_origins if origin != "*"]
+        if self.RENDER_EXTERNAL_URL:
+            render_url = self.RENDER_EXTERNAL_URL.rstrip("/")
+            if render_url not in origins:
+                origins.append(render_url)
+        return origins
+
+    @property
+    def _configured_allowed_hosts(self) -> List[str]:
         return [
             host.strip()
             for host in self.ALLOWED_HOSTS.split(",")
             if host.strip()
         ]
+
+    @property
+    def allowed_hosts(self) -> List[str]:
+        hosts = [host for host in self._configured_allowed_hosts if host != "*"]
+        if self.RENDER_EXTERNAL_HOSTNAME:
+            render_host = self.RENDER_EXTERNAL_HOSTNAME.strip()
+            if render_host and render_host not in hosts:
+                hosts.append(render_host)
+        return hosts
 
     @property
     def allowed_upload_extensions(self) -> List[str]:
