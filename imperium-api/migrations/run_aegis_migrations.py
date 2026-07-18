@@ -4,17 +4,10 @@ import os
 import sys
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import create_async_engine
-
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from core.config import settings  # noqa: E402
-from migration_ledger import (  # noqa: E402
-    apply_pending_migrations,
-    discover_migrations,
-    ensure_migration_log,
-)
+from migration_ledger import discover_migrations  # noqa: E402
 
 
 async def run(plan_only: bool = False, include_seed: bool = False) -> None:
@@ -25,6 +18,11 @@ async def run(plan_only: bool = False, include_seed: bool = False) -> None:
         for migration in migration_files:
             print(f"- {migration.sequence_number:03d} {migration.filename}")
         return
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from core.config import settings
+    from migration_ledger import apply_pending_migrations, ensure_migration_log
 
     engine = create_async_engine(
         settings.DATABASE_URL,
@@ -68,3 +66,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -28,17 +28,20 @@ def mock_require_permission(permission: str):
     return _mock
 
 
-# Inject mocks before importing main to override in routing definitions
-core.security.get_current_user = mock_get_current_user
-core.security.require_permission = mock_require_permission
+from fastapi.routing import APIRoute
 
-# Now import the app
-from main import app  # noqa: E402
-from fastapi.routing import APIRoute  # noqa: E402
 
-# Register overrides on the app
-app.dependency_overrides[core.security.get_current_user] = mock_get_current_user
-app.dependency_overrides[core.security.verify_token] = mock_get_current_user
+def create_spoof_app():
+    # Keep the security overrides local to explicit spoof-test execution. Pytest
+    # collects this file by name, so import-time mutation leaks into other tests.
+    core.security.get_current_user = mock_get_current_user
+    core.security.require_permission = mock_require_permission
+
+    from main import app
+
+    app.dependency_overrides[core.security.get_current_user] = mock_get_current_user
+    app.dependency_overrides[core.security.verify_token] = mock_get_current_user
+    return app
 
 
 def get_all_api_routes(app_or_router, prefix=""):
@@ -61,6 +64,8 @@ def get_all_api_routes(app_or_router, prefix=""):
 
 
 async def run_spoof_test_async():
+    app = create_spoof_app()
+
     print("=" * 50)
     print("SPOOF TESTING ALL AUTO-GENERATED API ENDPOINTS (ASYNC)")
     print("=" * 50)

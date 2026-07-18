@@ -3,6 +3,7 @@
 import { motion, useInView } from "framer-motion";
 import { useRef } from "react";
 import { cn } from "@/lib/utils";
+import { DXL_EASE, DURATION } from "@/lib/motion";
 
 interface RevealProps {
   children: React.ReactNode;
@@ -19,15 +20,16 @@ export const Reveal = ({ children, width = "100%", className, delay = 0 }: Revea
     <div ref={ref} style={{ width }} className={cn("relative overflow-hidden", className)}>
       <motion.div
         variants={{
-          hidden: { opacity: 0, y: 30 },
+          hidden: { opacity: 0, y: 24 },
           visible: { opacity: 1, y: 0 },
         }}
         initial="hidden"
         animate={isInView ? "visible" : "hidden"}
-        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1], delay }}
+        transition={{ duration: DURATION.reveal, ease: DXL_EASE, delay }}
       >
         {children}
       </motion.div>
     </div>
   );
 };
+

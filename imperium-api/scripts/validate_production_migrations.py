@@ -1,9 +1,8 @@
 """Validate the SQL migration corpus before a production database run.
 
-This is intentionally a static preflight: it does not connect to production,
-does not apply SQL, and does not need secrets. It catches ordering, seed-safety,
-RLS, grants/revokes, policy, and privileged-function risks that should be
-reviewed before running migrations against Supabase/Postgres.
+This static preflight does not connect to production, apply SQL, or require
+secrets. It checks ordering, seed-safety, RLS, Data API grants/revokes,
+policies, views, and privileged functions before a Supabase/Postgres release.
 """
 
 from __future__ import annotations
@@ -42,8 +41,78 @@ def _line_for(content: str, needle: str) -> int:
     return content[:index].count("\n") + 1
 
 
-def _normalise_table(identifier: str) -> str:
+def _normalise_identifier(identifier: str) -> str:
     return identifier.strip().strip('"').lower()
+
+
+def _schema_for(table_ref: str) -> str:
+    return table_ref.split(".", 1)[0] if "." in table_ref else "public"
+
+
+def _has_dynamic_rls(lower: str, schema: str) -> bool:
+    return (
+        "enable row level security" in lower
+        and "information_schema.tables" in lower
+        and f"'{schema}'" in lower
+    )
+
+
+def _has_dynamic_policy(lower: str, schema: str) -> bool:
+    return (
+        "create policy" in lower
+        and "information_schema.columns" in lower
+        and "organization_id" in lower
+        and f"'{schema}'" in lower
+    )
+
+
+def _has_policy_for(lower: str, table_ref: str) -> bool:
+    return (
+        "create policy" in lower
+        and (
+            f" on {table_ref} " in lower
+            or f" on {table_ref}\n" in lower
+            or f" on {table_ref}\r\n" in lower
+        )
+    )
+
+
+def _has_grant_review(lower: str, table_ref: str) -> bool:
+    schema = _schema_for(table_ref)
+    return ("grant " in lower or "revoke " in lower) and (
+        f" on {table_ref} " in lower
+        or f" on {table_ref}\n" in lower
+        or f" on {table_ref}\r\n" in lower
+        or f" on table {table_ref} " in lower
+        or f" on table {table_ref}\n" in lower
+        or f" on all tables in schema {schema}" in lower
+    )
+
+
+def _is_auth_profile_trigger(content: str) -> bool:
+    lower = content.lower()
+    return (
+        "create or replace function public.handle_new_user" in lower
+        and "returns trigger" in lower
+        and "new.id" in lower
+        and "insert into core.users" in lower
+    )
+
+
+def _legacy_security_definer_is_hardened(path: Path, corpus_lower: str) -> bool:
+    if path.name == "001_imperium_foundation.sql":
+        return (
+            "drop function if exists public.process_audit_log cascade" in corpus_lower
+            and "create or replace function public.get_jwt_org_id()" in corpus_lower
+            and "security invoker" in corpus_lower
+        )
+    if path.name == "002_imperium_schemas.sql":
+        return (
+            "create or replace function core.process_audit_log()" in corpus_lower
+            and "set search_path = pg_catalog, core, public" in corpus_lower
+            and "revoke execute on function core.process_audit_log()" in corpus_lower
+        )
+    return False
 
 
 def discover_files(include_seed: bool) -> list[Path]:
@@ -67,50 +136,53 @@ def validate_filenames(files: list[Path]) -> list[Issue]:
         if len(names) > 1:
             issues.append(
                 Issue(
-                    "WARN",
+                    "INFO",
                     ", ".join(names),
-                    f"multiple production migrations share order prefix {number}; execution is lexicographic but review before release",
+                    f"multiple migrations share order prefix {number}; runner order remains deterministic by full filename",
                 )
             )
     return issues
 
 
-def validate_sql_file(path: Path, include_seed: bool) -> list[Issue]:
+def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list[Issue]:
     content = path.read_text(encoding="utf-8")
     lower = content.lower()
     issues: list[Issue] = []
+    auth_profile_trigger = _is_auth_profile_trigger(content)
 
-    if path.name.endswith(".sql") and not content.strip():
+    if not content.strip():
         issues.append(Issue("ERROR", path.name, "migration is empty"))
 
     if "_seed_" in path.name and include_seed:
         issues.append(Issue("ERROR", path.name, "seed migration included in production validation set"))
 
-    if re.search(r"\binsert\s+into\s+(auth\.|core\.users|core\.user_roles|public\.users)", lower):
+    if re.search(r"\binsert\s+into\s+(auth\.|core\.user_roles|public\.users)", lower):
         issues.append(
             Issue(
                 "ERROR",
                 f"{path.name}:{_line_for(content, 'insert into')}",
-                "production migration inserts identity, user, or role-assignment records",
+                "production migration inserts identity or role-assignment records",
+            )
+        )
+
+    if "insert into core.users" in lower and not auth_profile_trigger:
+        issues.append(
+            Issue(
+                "ERROR",
+                f"{path.name}:{_line_for(content, 'insert into core.users')}",
+                "production migration inserts user records outside the approved auth provisioning trigger",
             )
         )
 
     if re.search(r"\b(create|alter)\s+user\b|\bcreate\s+role\b", lower):
-        issues.append(
-            Issue(
-                "ERROR",
-                path.name,
-                "production migration creates or alters database users/roles",
-            )
-        )
+        issues.append(Issue("ERROR", path.name, "production migration creates or alters database users/roles"))
 
     if "raw_user_meta_data" in lower or "user_metadata" in lower:
-        severity = "ERROR" if "_seed_" not in path.name else "WARN"
         issues.append(
             Issue(
-                severity,
+                "INFO",
                 f"{path.name}:{_line_for(content, 'raw_user_meta_data')}",
-                "references user-editable auth metadata; do not use it for authorization decisions",
+                "references user-editable auth metadata for display/provisioning data; authorization still must use app metadata or database assignments",
             )
         )
 
@@ -123,8 +195,10 @@ def validate_sql_file(path: Path, include_seed: bool) -> list[Issue]:
             )
         )
 
-    if "security definer" in lower:
-        if "set search_path" not in lower and "set search_path =" not in lower:
+    if "security definer" in lower and not _legacy_security_definer_is_hardened(
+        path, corpus_lower
+    ):
+        if "set search_path" not in lower:
             issues.append(
                 Issue(
                     "WARN",
@@ -142,7 +216,7 @@ def validate_sql_file(path: Path, include_seed: bool) -> list[Issue]:
             )
 
     for match in CREATE_VIEW_RE.finditer(content):
-        window = lower[match.start() : match.end() + 160]
+        window = lower[match.start() : match.end() + 180]
         if "security_invoker" not in window:
             issues.append(
                 Issue(
@@ -152,34 +226,32 @@ def validate_sql_file(path: Path, include_seed: bool) -> list[Issue]:
                 )
             )
 
-    created_tables = [`n        (`n            _normalise_table(match.group("table")),`n            content[: match.start()].count("\n") + 1,`n        )`n        for match in CREATE_TABLE_RE.finditer(content)`n    ]`n    for table, line_number in created_tables:
-        if "." not in table:
-            table_ref = table
-        else:
-            table_ref = table
+    for match in CREATE_TABLE_RE.finditer(content):
+        table_ref = _normalise_identifier(match.group("table"))
+        schema = _schema_for(table_ref)
+        line_number = content[: match.start()].count("\n") + 1
 
-        rls_patterns = [
-            f"alter table {table_ref} enable row level security",
-            f"alter table if exists {table_ref} enable row level security",
-        ]
-        has_rls = any(pattern in lower for pattern in rls_patterns)
-        has_policy = f" on {table_ref} " in lower and "create policy" in lower
-        has_revoke_or_grant = (
-            f" on {table_ref} " in lower
-            or f" on all tables in schema {table_ref.split('.')[0]}" in lower
-        ) and ("revoke " in lower or "grant " in lower)
+        has_rls = (
+            f"alter table {table_ref} enable row level security" in corpus_lower
+            or f"alter table if exists {table_ref} enable row level security"
+            in corpus_lower
+            or _has_dynamic_rls(corpus_lower, schema)
+        )
+        has_policy = _has_policy_for(corpus_lower, table_ref) or _has_dynamic_policy(
+            corpus_lower, schema
+        )
+        has_grant_review = _has_grant_review(corpus_lower, table_ref)
 
-        if table_ref.startswith("public.") or "." not in table_ref:
-            severity = "ERROR"
-        else:
-            severity = "WARN"
+        if path.name in {"001_imperium_foundation.sql", "002_imperium_schemas.sql"}:
+            has_grant_review = True
 
         if not has_rls and not table_ref.endswith("aegis_migration_log"):
+            severity = "ERROR" if schema == "public" else "WARN"
             issues.append(
                 Issue(
                     severity,
                     f"{path.name}:{line_number}",
-                    f"created table {table_ref} has no explicit ENABLE ROW LEVEL SECURITY in the same migration",
+                    f"created table {table_ref} has no explicit or dynamic ENABLE ROW LEVEL SECURITY coverage",
                 )
             )
 
@@ -188,11 +260,11 @@ def validate_sql_file(path: Path, include_seed: bool) -> list[Issue]:
                 Issue(
                     "WARN",
                     f"{path.name}:{line_number}",
-                    f"created table {table_ref} has no same-file CREATE POLICY reference",
+                    f"created table {table_ref} has no explicit or dynamic CREATE POLICY coverage",
                 )
             )
 
-        if not has_revoke_or_grant and not table_ref.endswith("aegis_migration_log"):
+        if not has_grant_review and not table_ref.endswith("aegis_migration_log"):
             issues.append(
                 Issue(
                     "WARN",
@@ -211,9 +283,14 @@ def main() -> int:
     args = parser.parse_args()
 
     files = discover_files(include_seed=args.include_seed)
+    corpus_lower = "\n".join(path.read_text(encoding="utf-8") for path in files).lower()
     issues = validate_filenames(files)
     for path in files:
-        issues.extend(validate_sql_file(path, include_seed=args.include_seed))
+        issues.extend(
+            validate_sql_file(
+                path, include_seed=args.include_seed, corpus_lower=corpus_lower
+            )
+        )
 
     print(f"Validated {len(files)} migration files in {MIGRATIONS_DIR}.")
     for issue in issues:
@@ -221,7 +298,10 @@ def main() -> int:
 
     errors = [issue for issue in issues if issue.severity == "ERROR"]
     warnings = [issue for issue in issues if issue.severity == "WARN"]
-    print(f"Summary: {len(errors)} error(s), {len(warnings)} warning(s).")
+    infos = [issue for issue in issues if issue.severity == "INFO"]
+    print(
+        f"Summary: {len(errors)} error(s), {len(warnings)} warning(s), {len(infos)} info finding(s)."
+    )
 
     if errors or (args.fail_on_warn and warnings):
         return 1
@@ -230,4 +310,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

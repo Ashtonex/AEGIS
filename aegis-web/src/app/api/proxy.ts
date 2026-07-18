@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
-import { API_BASE_URL } from "@/lib/constants";
+
+const rawBackendUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const BASE_BACKEND_URL = `${rawBackendUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "")}/api/v1`;
 
 // Proxy helper
 export async function proxyToBackend(req: Request, endpoint: string) {
   const url = new URL(req.url);
-  const backendUrl = `${API_BASE_URL}${endpoint}${url.search}`;
+  const backendUrl = `${BASE_BACKEND_URL}${endpoint}${url.search}`;
   
   try {
     const headers = new Headers(req.headers);
@@ -37,3 +39,4 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     );
   }
 }
+

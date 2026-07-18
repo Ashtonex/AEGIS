@@ -100,6 +100,28 @@ ALTER TABLE core.aegis_migration_log
 """
 
 
+LEDGER_TRIGGER_HARDENING_SQL = """
+DROP TRIGGER IF EXISTS trg_audit_aegis_migration_log ON core.aegis_migration_log;
+"""
+
+
+RAW_SCHEMA_ADOPTION_MARKERS = (
+    "select to_regclass('core.organizations') is not null",
+    "select to_regclass('core.domain_events') is not null",
+    "select to_regclass('compliance.corrective_actions') is not null",
+    """
+    select exists (
+        select 1
+        from information_schema.columns
+        where table_schema = 'compliance'
+          and table_name = 'deployment_gate_checks'
+          and column_name = 'override_by'
+    )
+    """,
+    "select exists (select 1 from core.permissions where key = 'users.delete')",
+)
+
+
 def _record_sql(*, update_existing: bool) -> str:
     conflict_action = (
         """
@@ -143,7 +165,9 @@ def _raise_if_checksum_changed(filename: str, existing: str, current: str) -> No
 
 
 async def ensure_migration_log(conn) -> None:
-    await conn.execute(text(LEDGER_DDL))
+    raw_conn = await conn.get_raw_connection()
+    await raw_conn.driver_connection.execute(LEDGER_DDL)
+    await raw_conn.driver_connection.execute(LEDGER_TRIGGER_HARDENING_SQL)
 
 
 async def applied_migrations(conn) -> dict[str, str]:
@@ -151,6 +175,13 @@ async def applied_migrations(conn) -> dict[str, str]:
         text("SELECT filename, checksum FROM core.aegis_migration_log;")
     )
     return {row.filename: row.checksum for row in result}
+
+
+async def has_adoptable_raw_schema(conn) -> bool:
+    for marker in RAW_SCHEMA_ADOPTION_MARKERS:
+        if not await conn.scalar(text(marker)):
+            return False
+    return True
 
 
 async def execute_sql_file(conn, path: Path) -> None:
@@ -167,6 +198,7 @@ async def record_migration(
     applied_by: str = "raw-sql-runner",
     update_existing: bool = False,
 ) -> None:
+    await ensure_migration_log(conn)
     await conn.execute(
         text(_record_sql(update_existing=update_existing)),
         {
@@ -190,6 +222,16 @@ async def apply_pending_migrations(
     await ensure_migration_log(conn)
     applied = await applied_migrations(conn)
     applied_now: list[str] = []
+
+    if not applied and await has_adoptable_raw_schema(conn):
+        for migration in migrations:
+            await record_migration(
+                conn,
+                migration,
+                alembic_revision=alembic_revision,
+                applied_by=f"{applied_by}-adopted",
+            )
+        return []
 
     for migration in migrations:
         existing_checksum = applied.get(migration.filename)
@@ -219,7 +261,8 @@ async def apply_pending_migrations(
 
 
 def ensure_migration_log_sync(conn) -> None:
-    conn.exec_driver_sql(LEDGER_DDL)
+    execute_driver_sql_sync(conn, LEDGER_DDL)
+    execute_driver_sql_sync(conn, LEDGER_TRIGGER_HARDENING_SQL)
 
 
 def applied_migrations_sync(conn) -> dict[str, str]:
@@ -229,8 +272,24 @@ def applied_migrations_sync(conn) -> dict[str, str]:
     return {row.filename: row.checksum for row in result}
 
 
+def has_adoptable_raw_schema_sync(conn) -> bool:
+    for marker in RAW_SCHEMA_ADOPTION_MARKERS:
+        if not conn.execute(text(marker)).scalar():
+            return False
+    return True
+
+
 def execute_sql_file_sync(conn, path: Path) -> None:
-    conn.exec_driver_sql(path.read_text(encoding="utf-8"))
+    execute_driver_sql_sync(conn, path.read_text(encoding="utf-8"))
+
+
+def execute_driver_sql_sync(conn, sql: str) -> None:
+    adapted_connection = getattr(conn.connection, "dbapi_connection", None)
+    if adapted_connection is not None and hasattr(adapted_connection, "run_async"):
+        adapted_connection.run_async(lambda driver_connection: driver_connection.execute(sql))
+        return
+
+    conn.exec_driver_sql(sql)
 
 
 def record_migration_sync(
@@ -241,6 +300,7 @@ def record_migration_sync(
     applied_by: str = "alembic",
     update_existing: bool = False,
 ) -> None:
+    ensure_migration_log_sync(conn)
     conn.execute(
         text(_record_sql(update_existing=update_existing)),
         {
@@ -264,6 +324,16 @@ def apply_pending_migrations_sync(
     ensure_migration_log_sync(conn)
     applied = applied_migrations_sync(conn)
     applied_now: list[str] = []
+
+    if not applied and has_adoptable_raw_schema_sync(conn):
+        for migration in migrations:
+            record_migration_sync(
+                conn,
+                migration,
+                alembic_revision=alembic_revision,
+                applied_by=f"{applied_by}-adopted",
+            )
+        return []
 
     for migration in migrations:
         existing_checksum = applied.get(migration.filename)
@@ -290,3 +360,4 @@ def apply_pending_migrations_sync(
         applied_now.append(migration.filename)
 
     return applied_now
+

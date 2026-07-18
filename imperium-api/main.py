@@ -1,5 +1,6 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from core.config import settings
 from core.logging import setup_logging
 from core.security import require_resource_permission
@@ -18,6 +19,7 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(StructuredLoggingMiddleware)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

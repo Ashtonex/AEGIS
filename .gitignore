@@ -37,6 +37,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!aegis-web/src/lib/
+!aegis-web/src/lib/**
 parts/
 sdist/
 var/
@@ -58,3 +60,6 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local scratch files may contain environment-specific diagnostics
+scratch/

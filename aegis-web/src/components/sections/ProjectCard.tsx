@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { Project } from "@/types/website";
 import { Card } from "../ui/Card";
 import { MapPin, ArrowRight } from "lucide-react";
@@ -20,7 +21,15 @@ export function ProjectCard({ project, variant = "grid", className }: ProjectCar
           <div className="aspect-[16/10] bg-snc-navy-mid relative overflow-hidden">
             <div className="absolute inset-0 bg-gradient-to-t from-snc-navy-high via-snc-navy-raised/40 to-transparent z-10" />
             {project.featuredImage ? (
-              <img src={project.featuredImage} alt={project.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc" />
+              <Image
+                src={project.featuredImage}
+                alt={project.title}
+                width={800}
+                height={500}
+                quality={85}
+                sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 800px"
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc"
+              />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-snc-text-tertiary group-hover:scale-105 transition-transform duration-700">IMAGE PLACEHOLDER</div>
             )}
@@ -44,7 +53,15 @@ export function ProjectCard({ project, variant = "grid", className }: ProjectCar
       <Card variant="project" padding="none" className={cn("h-full flex flex-col overflow-hidden", className)}>
         <div className="aspect-video bg-snc-navy-mid relative overflow-hidden">
           {project.featuredImage ? (
-            <img src={project.featuredImage} alt={project.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc" />
+            <Image
+              src={project.featuredImage}
+              alt={project.title}
+              width={640}
+              height={360}
+              quality={85}
+              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 640px"
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc"
+            />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-snc-text-tertiary group-hover:scale-105 transition-transform duration-700">IMAGE PLACEHOLDER</div>
           )}

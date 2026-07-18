@@ -211,7 +211,7 @@ export function PortalSequence() {
               </p>
             </div>
             <Link 
-                href="/login?type=partner" 
+                href="/login" 
                 className="inline-flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] uppercase text-paper/60 mt-6 hover:text-paper transition-colors duration-300"
               >
                 Enter Portal
@@ -237,7 +237,7 @@ export function PortalSequence() {
               </p>
             </div>
             <Link 
-                href="/login?type=staff" 
+                href="/login" 
                 className="inline-flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] uppercase text-paper/60 mt-6 hover:text-paper transition-colors duration-300"
               >
                 Secured Access

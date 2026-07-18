@@ -1,3 +1,17 @@
+export interface SubProject {
+  id: string;
+  title: string;
+  status: ProjectStatus;
+  budget: string;
+  value: number;
+  duration: string;
+  scopeSummary: string;
+  challenge: string;
+  approach: string;
+  outcomes: string[];
+  gallery: string[];
+}
+
 export interface Project {
   id: string;
   slug: string;
@@ -21,6 +35,7 @@ export interface Project {
   featuredImage: string;
   gallery: string[];
   documents?: ProjectDocument[];
+  subProjects?: SubProject[];
 }
 
 export type ProjectCategory = 
@@ -28,7 +43,17 @@ export type ProjectCategory =
   | "Commercial Construction"
   | "Mining Infrastructure"
   | "Earthworks & Grading"
-  | "Structural Engineering";
+  | "Structural Engineering"
+  | "Industrial Infrastructure"
+  | "Institutional Buildings"
+  | "Residential Development"
+  | "Industrial Engineering"
+  | "Industrial Plant"
+  | "Commercial Renovation"
+  | "Institutional Renovation"
+  | "Civil Paving"
+  | "Hospitality Renovation"
+  | "Industrial Construction";
 
 export type Industry = 
   | "Mining"
@@ -38,9 +63,11 @@ export type Industry =
   | "Energy"
   | "Transport"
   | "Agriculture"
-  | "Infrastructure";
+  | "Infrastructure"
+  | "Education"
+  | "Hospitality";
 
-export type ProjectStatus = "Active" | "Completed" | "Upcoming";
+export type ProjectStatus = "Active" | "Completed" | "Upcoming" | "In Progress";
 
 export interface ProjectDocument {
   title: string;

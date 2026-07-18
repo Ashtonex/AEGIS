@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import List, Literal, Optional
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     SECRET_KEY: str
     ALLOWED_ORIGINS: str = "http://localhost:3000"
+    ALLOWED_HOSTS: str = "localhost,127.0.0.1"
 
     DATABASE_URL: str
     SUPABASE_URL: str
@@ -56,9 +57,13 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL")
     @classmethod
     def validate_async_database_url(cls, value: str) -> str:
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql+asyncpg://", 1)
         if not value.startswith("postgresql+asyncpg://"):
             raise ValueError(
-                "DATABASE_URL must use the postgresql+asyncpg:// SQLAlchemy asyncpg driver."
+                "DATABASE_URL must be a PostgreSQL URL compatible with the SQLAlchemy asyncpg driver."
             )
         return value
 
@@ -69,12 +74,69 @@ class Settings(BaseSettings):
             raise ValueError("SUPABASE_URL must be an absolute URL.")
         return value
 
+    @model_validator(mode="after")
+    def validate_production_hardening(self) -> "Settings":
+        if not self.is_production:
+            return self
+
+        if self.DEBUG:
+            raise ValueError("DEBUG must be false in production.")
+
+        placeholder_fragments = ("your-", "[", "]", "placeholder", "changeme")
+        secret_values = {
+            "SECRET_KEY": self.SECRET_KEY,
+            "SUPABASE_ANON_KEY": self.SUPABASE_ANON_KEY,
+            "SUPABASE_SERVICE_KEY": self.SUPABASE_SERVICE_KEY,
+        }
+        if self.JWT_SECRET_KEY:
+            secret_values["JWT_SECRET_KEY"] = self.JWT_SECRET_KEY
+        for name, value in secret_values.items():
+            if len(value) < 32 or any(
+                fragment in value.lower() for fragment in placeholder_fragments
+            ):
+                raise ValueError(
+                    f"{name} must be a rotated production secret with at least 32 characters."
+                )
+
+        if not self.SUPABASE_URL.startswith("https://"):
+            raise ValueError("SUPABASE_URL must use HTTPS in production.")
+
+        if "*" in self.cors_origins:
+            raise ValueError("ALLOWED_ORIGINS must not contain '*' in production.")
+        if not self.cors_origins or any(
+            not origin.startswith("https://") for origin in self.cors_origins
+        ):
+            raise ValueError(
+                "ALLOWED_ORIGINS must list explicit HTTPS origins in production."
+            )
+
+        if "*" in self.allowed_hosts:
+            raise ValueError("ALLOWED_HOSTS must not contain '*' in production.")
+        if not self.allowed_hosts:
+            raise ValueError("ALLOWED_HOSTS must list explicit hosts in production.")
+
+        local_redis_targets = ("redis://redis:", "redis://localhost", "redis://127.0.0.1")
+        if self.REDIS_URL.startswith(local_redis_targets):
+            raise ValueError(
+                "REDIS_URL must point to a managed private Redis in production."
+            )
+
+        return self
+
     @property
     def cors_origins(self) -> List[str]:
         return [
             origin.strip()
             for origin in self.ALLOWED_ORIGINS.split(",")
             if origin.strip()
+        ]
+
+    @property
+    def allowed_hosts(self) -> List[str]:
+        return [
+            host.strip()
+            for host in self.ALLOWED_HOSTS.split(",")
+            if host.strip()
         ]
 
     @property

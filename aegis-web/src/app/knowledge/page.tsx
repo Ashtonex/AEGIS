@@ -7,7 +7,7 @@ import { SectionLabel } from "@/components/ui/SectionLabel";
 import { Button } from "@/components/ui/Button";
 
 export const metadata = constructMetadata({
-  title: "Knowledge Centre | Six Nine Constructions",
+  title: "Knowledge Centre | Six Nine Construction",
   description: "Engineering insights, technical papers, and industry reports from SNC.",
 });
 
@@ -32,7 +32,7 @@ export default async function KnowledgePage() {
           {articles.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-24">
                {articles.map(article => (
-                 <ArticleCard key={article.id} article={article} />
+                 <ArticleCard key={article.id} article={article} basePath="/knowledge" />
                ))}
             </div>
           ) : (

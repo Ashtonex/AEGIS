@@ -12,7 +12,7 @@ import { StaggerContainer, StaggerItem } from "@/components/ui/StaggerContainer"
 import { Card } from "@/components/ui/Card";
 
 export const metadata = constructMetadata({
-  title: "About Us | Six Nine Constructions",
+  title: "About Us | Six Nine Construction",
   description: "Learn about SNC's mission, vision, values, and the leadership team driving our infrastructure projects.",
 });
 

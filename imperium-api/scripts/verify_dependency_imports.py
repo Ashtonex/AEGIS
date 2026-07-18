@@ -41,7 +41,7 @@ APPROVED_IMPORTS = {
     "mypy": "mypy",
     "bandit": "Bandit",
     "pip_audit": "pip-audit",
-    "detect_secrets": "detect-secrets",
+    "detect_secrets": "detect-secrets",  # pragma: allowlist secret
 }
 
 

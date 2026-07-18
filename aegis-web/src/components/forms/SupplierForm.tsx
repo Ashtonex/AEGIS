@@ -31,11 +31,6 @@ export function SupplierForm({ className }: SupplierFormProps) {
     defaultValues: {
       categories: ["Construction Materials"],
       provinces: ["Harare"],
-      documents: {
-        profileUrl: "pending",
-        taxClearanceUrl: "pending",
-        incorporationUrl: "pending"
-      }
     }
   });
 
@@ -65,10 +60,6 @@ export function SupplierForm({ className }: SupplierFormProps) {
         <CheckCircle2 className="w-16 h-16 text-[var(--snc-success)] mx-auto mb-6" />
         <h3 className="text-2xl font-bold text-[var(--snc-white)] mb-4">Registration Submitted</h3>
         <p className="text-[var(--snc-mist)] mb-8 max-w-lg mx-auto">Your supplier application has been received. Our procurement team will review your credentials and you will be notified of the outcome.</p>
-        <div className="p-4 bg-[#050A14] inline-block rounded-sm border border-[var(--snc-navy-border)]">
-          <p className="text-xs text-[var(--snc-grey)] uppercase tracking-widest mb-1">Application Reference</p>
-          <p className="font-mono text-[var(--snc-gold)] text-lg">SUP-{Math.floor(1000 + Math.random() * 9000)}-2025</p>
-        </div>
       </div>
     );
   }
@@ -173,27 +164,11 @@ export function SupplierForm({ className }: SupplierFormProps) {
       {step === 3 && (
         <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
           <div>
-            <h3 className="text-xl font-bold text-[var(--snc-white)] mb-1">Required Documentation</h3>
-            <p className="text-sm text-[var(--snc-mist)]">Step 3 of 3: Upload supporting documents.</p>
+            <h3 className="text-xl font-bold text-[var(--snc-white)] mb-1">Declaration</h3>
+            <p className="text-sm text-[var(--snc-mist)]">Step 3 of 3: Confirm your registration details.</p>
           </div>
 
-          <div className="space-y-4">
-            {[
-              { label: "Company Profile", required: true },
-              { label: "Tax Clearance Certificate", required: true },
-              { label: "Certificate of Incorporation", required: true },
-              { label: "PRAZ Certificate", required: false },
-              { label: "ISO / Quality Certifications", required: false },
-            ].map(doc => (
-              <div key={doc.label} className="p-4 border border-[var(--snc-navy-border)] rounded-sm bg-[var(--snc-navy-mid)] flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h4 className="text-sm font-semibold text-[var(--snc-white)]">{doc.label} {doc.required && <span className="text-[var(--snc-danger)]">*</span>}</h4>
-                  <p className="text-xs text-[var(--snc-grey)]">PDF format only, max 5MB</p>
-                </div>
-                <input type="file" className="text-sm text-[var(--snc-mist)] file:mr-4 file:py-2 file:px-4 file:rounded-sm file:border-0 file:text-xs file:font-semibold file:bg-[var(--snc-navy)] file:text-[var(--snc-mist)] file:border file:border-[var(--snc-navy-border)] hover:file:bg-[var(--snc-navy-raised)]" />
-              </div>
-            ))}
-          </div>
+          <p className="text-sm text-[var(--snc-mist)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form.</p>
 
           <div className="pt-6 space-y-4">
             <div className="flex items-start gap-3">

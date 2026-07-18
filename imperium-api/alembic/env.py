@@ -76,6 +76,7 @@ async def run_async_migrations() -> None:
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
+        connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0},
         poolclass=pool.NullPool,
     )
 

@@ -2,8 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Users, Briefcase, Truck, Settings, LogOut, Activity } from 'lucide-react';
-import { useAuth } from '@/hooks/useAuth';
+import { LayoutDashboard, Users, Briefcase, Truck, Settings, LogOut, Activity, ClipboardCheck } from 'lucide-react';
+import { useAuth } from '@/lib/auth/AuthContext';
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -13,6 +13,7 @@ export default function Sidebar() {
     { name: 'Command Centre', href: '/dashboard', icon: LayoutDashboard },
     { name: 'Commercial Command', href: '/dashboard/crm', icon: Activity },
     { name: 'Projects', href: '/dashboard/projects', icon: Briefcase },
+    { name: 'Site Operations', href: '/dashboard/site-operations', icon: ClipboardCheck },
     { name: 'Fleet', href: '/dashboard/fleet', icon: Truck },
     { name: 'Workforce', href: '/dashboard/workforce', icon: Users },
     { name: 'System Settings', href: '/dashboard/settings', icon: Settings },

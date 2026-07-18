@@ -72,7 +72,7 @@ export function RelationshipSequence() {
             </h3>
             
             <p className="text-[18px] md:text-[22px] leading-[1.5] text-slate max-w-lg">
-              Engage Six Nine Constructions for national-scale infrastructure delivery, 
+              Engage Six Nine Construction for national-scale infrastructure delivery, 
               structural works, and heavy plant deployment.
             </p>
           </motion.div>

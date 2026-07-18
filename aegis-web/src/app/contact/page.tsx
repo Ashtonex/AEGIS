@@ -6,7 +6,7 @@ import { SITE_CONFIG } from "@/lib/constants";
 import { MapPin, Phone, Mail, Clock } from "lucide-react";
 
 export const metadata = constructMetadata({
-  title: "Contact Us | Six Nine Constructions",
+  title: "Contact Us | Six Nine Construction",
   description: "Get in touch with SNC for your next infrastructure project.",
 });
 

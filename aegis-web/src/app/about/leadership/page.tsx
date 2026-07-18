@@ -5,8 +5,8 @@ import { LeadershipCard } from "@/components/sections/LeadershipCard";
 import { getLeadership } from "@/lib/api";
 
 export const metadata = constructMetadata({
-  title: "Leadership | Six Nine Constructions",
-  description: "Meet the executive team driving Six Nine Constructions.",
+  title: "Leadership | Six Nine Construction",
+  description: "Meet the executive team driving Six Nine Construction.",
 });
 
 export default async function LeadershipPage() {

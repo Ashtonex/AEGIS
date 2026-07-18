@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { Card } from "../ui/Card";
 import { ArrowRight, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -21,7 +22,13 @@ export function CapabilityCard({ title, description, slug, icon, image, classNam
         {image && (
           <div className="w-full h-56 relative overflow-hidden bg-snc-navy-mid">
             <div className="absolute inset-0 bg-gradient-to-t from-snc-navy-raised to-transparent z-10" />
-            <img src={image} alt={title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc opacity-80" />
+            <Image
+              src={image}
+              alt={title}
+              width={600}
+              height={224}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc opacity-80"
+            />
             <div className="absolute top-6 left-6 z-20 w-12 h-12 rounded-sm bg-[rgba(10,22,40,0.8)] backdrop-blur-md border border-snc-border flex items-center justify-center text-snc-gold-primary">
               {icon || <ChevronRight className="w-5 h-5" />}
             </div>

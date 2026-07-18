@@ -37,7 +37,7 @@ const TIMELINE = [
   {
     year: "2019",
     headline: "Establishment",
-    summary: "Six Nine Constructions incorporated. First civil contract awarded.",
+    summary: "Six Nine Construction incorporated. First civil contract awarded.",
     milestones: [
       { ref: "M-001", label: "Incorporation", desc: "SNC registered as private company, Harare." },
       { ref: "M-002", label: "First Contract", desc: "USD 2.1M civil works contract awarded by Harare Municipality." },

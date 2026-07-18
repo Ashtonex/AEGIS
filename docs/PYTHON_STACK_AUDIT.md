@@ -70,7 +70,7 @@ Decision: `imperium-api/requirements.txt` is the source of truth for builds. The
 1. The active backend still has two package layouts: top-level `core`/`routers` and the `app` package. Current code bridges them, but a future cleanup should consolidate layout or formalize the split.
 2. Migration execution is now deterministic through `run_aegis_migrations.py`, but live migration execution still depends on the target Supabase environment and should be run deliberately per environment.
 3. Some legacy generic CRUD routers remain. New business workflows should follow the typed quotation, procurement, workforce, fleet, and site-report patterns.
-4. Alembic currently has no revision files; offline `upgrade head --sql` succeeds, but the real migration corpus still lives under `imperium-api/migrations`.
+4. Alembic now has a bridge revision for the raw SQL migration ledger. The real migration corpus still lives under `imperium-api/migrations`; `alembic upgrade head` and `migrations/run_aegis_migrations.py` share the same discovery and checksum logic.
 5. Report and document outputs are now service-backed, but production storage policy, retention, and signed-download flows still need to be finalized.
 
 ## Module development policy
@@ -85,3 +85,4 @@ For new AEGIS backend modules:
 - Use Arq for asynchronous side effects: PDF rendering, Excel exports, email/webhook notifications, scheduled reporting, and external API synchronization.
 - Use pandas/openpyxl for BOQ and Excel intake, XlsxWriter for workbook exports, ReportLab for generated PDFs, and PyMuPDF for PDF extraction or merge operations.
 - Keep analytics dependencies limited to the declared stack until a concrete AI workflow justifies expansion.
+

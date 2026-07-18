@@ -2,13 +2,11 @@
 
 import React from 'react';
 import { usePathname } from 'next/navigation';
-import { useAuth } from '@/lib/auth/AuthContext';
 import { ExecutiveNav } from './ExecutiveNav';
 import { Footer } from './Footer';
 
 export const NavigationWrapper = ({ children }: { children: React.ReactNode }) => {
   const pathname = usePathname();
-  const { session } = useAuth();
 
   const isDashboardOrLogin = pathname?.startsWith('/dashboard') || pathname === '/login';
   const shouldHideNavAndFooter = isDashboardOrLogin;

@@ -5,8 +5,8 @@ import { Timeline } from "@/components/ui/Timeline";
 import { SectionLabel } from "@/components/ui/SectionLabel";
 
 export const metadata = constructMetadata({
-  title: "Our Story | Six Nine Constructions",
-  description: "The founding and growth narrative of Six Nine Constructions.",
+  title: "Our Story | Six Nine Construction",
+  description: "The founding and growth narrative of Six Nine Construction.",
 });
 
 export default function StoryPage() {
@@ -14,7 +14,7 @@ export default function StoryPage() {
     {
       year: "2010",
       title: "Foundation",
-      description: "Six Nine Constructions was established in Harare, Zimbabwe, initially focusing on specialized civil engineering sub-contracts."
+      description: "Six Nine Construction was established in Harare, Zimbabwe, initially focusing on specialized civil engineering sub-contracts."
     },
     {
       year: "2014",
@@ -59,7 +59,7 @@ export default function StoryPage() {
         <div className="container max-w-4xl">
           <div className="prose prose-invert prose-lg max-w-none mb-24">
             <p className="text-xl leading-loose text-[var(--snc-white)] font-medium mb-8">
-              The infrastructure deficit in Southern Africa is not a problem of capital—it is a problem of execution. Six Nine Constructions was founded to solve this exact challenge.
+              The infrastructure deficit in Southern Africa is not a problem of capital—it is a problem of execution. Six Nine Construction was founded to solve this exact challenge.
             </p>
             
             <p className="text-[var(--snc-mist)] leading-relaxed mb-6">
@@ -67,7 +67,7 @@ export default function StoryPage() {
             </p>
 
             <blockquote className="border-l-4 border-[var(--snc-gold)] pl-8 my-12 py-4 bg-[var(--snc-navy)]/50 italic text-[var(--snc-white)] text-xl">
-              "We don't just build structures. We engineer certainty into unpredictable environments."
+              &quot;We don&apos;t just build structures. We engineer certainty into unpredictable environments.&quot;
             </blockquote>
 
             <p className="text-[var(--snc-mist)] leading-relaxed mb-6">

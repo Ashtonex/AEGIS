@@ -37,7 +37,7 @@ export function GlobalAmbition() {
             <SectionLabel label="Expansion" />
             <h2 className="text-display-xl text-snc-text-primary mt-4 mb-8">Building Across<br />Southern Africa</h2>
             <p className="text-body-xl text-snc-text-secondary leading-relaxed max-w-2xl mb-12">
-              From our foundation in Zimbabwe, Six Nine Constructions is executing a disciplined expansion strategy. We are deploying our engineered operational model, Project AEGIS, and our proven delivery capability to critical infrastructure projects across the SADC region.
+              From our foundation in Zimbabwe, Six Nine Construction is executing a disciplined expansion strategy. We are deploying our engineered operational model, Project AEGIS, and our proven delivery capability to critical infrastructure projects across the SADC region.
             </p>
             
             <div className="flex flex-wrap items-center gap-4 text-[11px] font-sans font-semibold tracking-widest uppercase text-snc-text-tertiary">

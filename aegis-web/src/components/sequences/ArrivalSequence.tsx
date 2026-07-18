@@ -36,6 +36,8 @@ import {
   transitions,
 } from "@/lib/motion";
 
+const MotionLink = motion(Link);
+
 // ── Cinematic background images ───────────────────────────────────────────────
 // [PLACEHOLDER] Replace with real SNC photography per Volume II library spec
 const ARRIVAL_IMAGES = [
@@ -194,7 +196,7 @@ export function ArrivalSequence() {
             initial="hidden"
             animate={isLoaded ? "visible" : "hidden"}
           >
-            Six Nine Constructions delivers civil engineering, structural
+            Six Nine Construction delivers civil engineering, structural
             construction, and plant logistics at national scale — on time,
             on budget, without compromise.
           </motion.p>
@@ -208,29 +210,27 @@ export function ArrivalSequence() {
             animate={isLoaded ? "visible" : "hidden"}
           >
             {/* Primary Commit */}
-            <Link href="/tenders" className="group">
-              <motion.button
-                className="inline-flex items-center gap-3 bg-signal text-ink font-bold text-[13px] tracking-[0.08em] uppercase px-8 py-4 transition-colors duration-fast ease-dxl hover:bg-[#E8B422]"
-                whileHover={shouldReduceMotion ? {} : { y: -2 }}
-                transition={transitions.fast}
-                aria-label="View open tender opportunities"
-              >
-                Tender Opportunities
-                <ArrowRight className="w-4 h-4 transition-transform duration-fast group-hover:translate-x-1" />
-              </motion.button>
-            </Link>
+            <MotionLink
+              href="/tenders"
+              className="group inline-flex items-center gap-3 bg-signal text-ink font-bold text-[13px] tracking-[0.08em] uppercase px-8 py-4 transition-colors duration-fast ease-dxl hover:bg-[#E8B422]"
+              whileHover={shouldReduceMotion ? {} : { y: -2 }}
+              transition={transitions.fast}
+              aria-label="View open tender opportunities"
+            >
+              Tender Opportunities
+              <ArrowRight className="w-4 h-4 transition-transform duration-fast group-hover:translate-x-1" />
+            </MotionLink>
 
             {/* Secondary Commit */}
-            <Link href="/projects" className="group">
-              <motion.button
-                className="inline-flex items-center gap-3 border border-paper/30 text-paper font-semibold text-[13px] tracking-[0.08em] uppercase px-8 py-4 transition-all duration-fast ease-dxl hover:border-paper/70 hover:bg-paper/5"
-                whileHover={shouldReduceMotion ? {} : { y: -2 }}
-                transition={transitions.fast}
-                aria-label="Explore SNC project portfolio"
-              >
-                View Portfolio
-              </motion.button>
-            </Link>
+            <MotionLink
+              href="/projects"
+              className="group inline-flex items-center gap-3 border border-paper/30 text-paper font-semibold text-[13px] tracking-[0.08em] uppercase px-8 py-4 transition-all duration-fast ease-dxl hover:border-paper/70 hover:bg-paper/5"
+              whileHover={shouldReduceMotion ? {} : { y: -2 }}
+              transition={transitions.fast}
+              aria-label="Explore SNC project portfolio"
+            >
+              View Portfolio
+            </MotionLink>
           </motion.div>
 
           {/* ── Trust indicators — ISO, certifications ───────────────────── */}

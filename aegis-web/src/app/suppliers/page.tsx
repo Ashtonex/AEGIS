@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ShieldCheck, FileText, CheckCircle2 } from "lucide-react";
 
 export const metadata = constructMetadata({
-  title: "Supplier Portal | Six Nine Constructions",
+  title: "Supplier Portal | Six Nine Construction",
   description: "Information and pre-qualification requirements for SNC suppliers.",
 });
 
@@ -28,7 +28,7 @@ export default function SuppliersPage() {
             <div>
               <h2 className="text-2xl font-bold text-[var(--snc-white)] mb-6">Procurement Policy</h2>
               <p className="text-[var(--snc-mist)] leading-relaxed mb-6">
-                Six Nine Constructions operates a transparent, competitive, and equitable procurement system. Our supply chain is a critical component of our ability to deliver institutional-grade infrastructure. We actively seek out suppliers and sub-contractors who align with our standards for Zero Harm, technical excellence, and environmental stewardship.
+                Six Nine Construction operates a transparent, competitive, and equitable procurement system. Our supply chain is a critical component of our ability to deliver institutional-grade infrastructure. We actively seek out suppliers and sub-contractors who align with our standards for Zero Harm, technical excellence, and environmental stewardship.
               </p>
               <Button variant="outline">Download Policy PDF</Button>
             </div>

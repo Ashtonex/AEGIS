@@ -5,38 +5,26 @@ import { Badge } from "@/components/ui/Badge";
 import { formatDate } from "@/lib/utils";
 import { Linkedin, Twitter, Link as LinkIcon, ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
+import { getMockArticleBySlug } from "@/lib/mockArticles";
+import { notFound } from "next/navigation";
 
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
-  // Mock metadata logic for demonstration
+  const article = getMockArticleBySlug(params.slug);
   return constructMetadata({
-    title: `News Article | Six Nine Constructions`,
+    title: `${article ? article.title : 'News Article'} | Six Nine Construction`,
+    description: article?.excerpt,
   });
 }
 
 export default async function ArticleDetailPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
-  // Mock article
-  const article = {
-    title: "SNC Awarded Phase 2 of Platinum Processing Plant Expansion",
-    category: "Project Update",
-    publishDate: "2025-06-15T00:00:00Z",
-    author: "Corporate Communications",
-    featuredImage: "", // Mock
-    content: `
-      <p class="lead">Six Nine Constructions (SNC) is pleased to announce the successful award of the Phase 2 expansion contract for the Global Platinum Resources processing plant in the Midlands Province.</p>
-      
-      <p>Following the successful, early completion of Phase 1, SNC has been retained as the principal contractor for the $45M expansion phase. The scope of work encompasses major civil works, structural steel erection, and the installation of secondary milling circuits.</p>
-      
-      <h3>Engineering Complexity</h3>
-      <p>The primary challenge of Phase 2 involves executing deep foundation works adjacent to the live Phase 1 plant without disrupting ongoing operations. SNC will leverage its proprietary digital command center, Project AEGIS, to synchronize construction activities with the plant's operational schedule.</p>
-      
-      <p>"This award validates our engineering-led approach to construction," stated the Managing Director of SNC. "Our ability to provide absolute transparency through AEGIS, combined with our rigorous safety standards, makes us the partner of choice for complex brownfield expansions."</p>
-      
-      <h3>Timeline and Mobilization</h3>
-      <p>Site mobilization is scheduled for Q3 2025, with an anticipated practical completion date of Q4 2026. The project is expected to create over 300 jobs during the peak construction phase, aligning with SNC's commitment to local skills development.</p>
-    `
-  };
+  const article = getMockArticleBySlug(params.slug);
+  
+  if (!article) {
+    notFound();
+  }
 
   return (
     <PageWrapper>
@@ -45,7 +33,14 @@ export default async function ArticleDetailPage(props: { params: Promise<{ slug:
         <div className="relative pt-[104px] border-b border-[var(--snc-navy-border)]">
           {article.featuredImage ? (
             <div className="absolute inset-0 z-0">
-               <img src={article.featuredImage} alt={article.title} className="w-full h-full object-cover" />
+               <Image
+                 src={article.featuredImage}
+                 alt={article.title}
+                 fill
+                 priority
+                 sizes="100vw"
+                 className="w-full h-full object-cover"
+               />
                <div className="absolute inset-0 bg-gradient-to-t from-[var(--snc-void)] to-[var(--snc-void)]/40" />
             </div>
           ) : (

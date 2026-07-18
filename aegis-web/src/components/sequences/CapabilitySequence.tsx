@@ -55,7 +55,7 @@ const CAPABILITIES = [
     detail: "Active on 12 concurrent civil infrastructure programmes across Zimbabwe.",
     image: "/cap-civil.jpg",
     imageAlt: "Rebar grid before concrete pour — SNC civil engineering programme",
-    href: "/capabilities#civil",
+    href: "/capabilities/civil-infrastructure",
   },
   {
     id: "plant",
@@ -67,7 +67,7 @@ const CAPABILITIES = [
     detail: "Current fleet utilisation rate: 94.2% across all active deployments.",
     image: "/cap-plant.jpg",
     imageAlt: "Earthmoving excavator at dusk — Dreamcast fleet operations",
-    href: "/capabilities#plant",
+    href: "/capabilities/heavy-plant-operations",
   },
   {
     id: "structural",
@@ -79,7 +79,7 @@ const CAPABILITIES = [
     detail: "Delivered across mining, government, commercial, and industrial sectors.",
     image: "/cap-structural.jpg",
     imageAlt: "Structural steel weld detail — SNC construction programme",
-    href: "/capabilities#structural",
+    href: "/capabilities/structural-engineering",
   },
   {
     id: "advisory",
@@ -91,7 +91,7 @@ const CAPABILITIES = [
     detail: "Engaged on pre-construction advisory for USD 180M+ in planned infrastructure.",
     image: "/cap-advisory.jpg",
     imageAlt: "Engineer reviewing blueprint drawings — SNC technical advisory",
-    href: "/capabilities#advisory",
+    href: "/capabilities",
   },
 ] as const;
 

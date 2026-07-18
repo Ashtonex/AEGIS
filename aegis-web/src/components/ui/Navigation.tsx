@@ -11,13 +11,13 @@ export function Navigation() {
       
       <div className="hidden md:flex space-x-8 text-sm font-medium">
         <Link href="/about" className="hover:text-brand-gold transition-colors">About</Link>
-        <Link href="/services" className="hover:text-brand-gold transition-colors">Services</Link>
+        <Link href="/capabilities" className="hover:text-brand-gold transition-colors">Capabilities</Link>
         <Link href="/projects" className="hover:text-brand-gold transition-colors">Projects</Link>
         <Link href="/contact" className="hover:text-brand-gold transition-colors">Contact</Link>
       </div>
       
       <div className="flex space-x-4">
-        <Link href="/dashboard" className="px-4 py-2 bg-brand-gold text-brand-navy font-bold rounded-sm hover:bg-yellow-500 transition-all text-sm">
+        <Link href="/login" className="px-4 py-2 bg-brand-gold text-brand-navy font-bold rounded-sm hover:bg-yellow-500 transition-all text-sm">
           Portal Login
         </Link>
       </div>

@@ -1,8 +1,12 @@
-version: '3.8'
-
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   imperium-api:
-    build: 
+    build:
       context: ./imperium-api
     ports:
       - "8000:8000"
@@ -12,10 +16,32 @@ services:
       - ENVIRONMENT=development
       - DATABASE_URL=${DATABASE_URL}
       - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
       - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  imperium-worker:
+    build:
+      context: ./imperium-api
+    volumes:
+      - ./imperium-api:/app
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=${DATABASE_URL}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    command: arq app.workers.arq_worker.WorkerSettings
+    depends_on:
+      - redis
     restart: unless-stopped
 
   aegis-web:

@@ -20,7 +20,7 @@ export async function generateMetadata(props: { params: Promise<{ slug: string }
   if (!ind) return {};
   
   return constructMetadata({
-    title: `${ind} Sector | Six Nine Constructions`,
+    title: `${ind} Sector | Six Nine Construction`,
     description: `SNC's infrastructure delivery expertise in the ${ind} sector.`,
   });
 }
@@ -52,7 +52,7 @@ export default async function IndustryDetailPage(props: { params: Promise<{ slug
             <div className="lg:col-span-8 prose prose-invert prose-lg max-w-none">
               <h2 className="text-3xl font-display text-[var(--snc-white)] mb-6">Expertise in {indName}</h2>
               <p className="text-[var(--snc-mist)] leading-relaxed mb-8">
-                The {indName} sector demands a unique intersection of heavy engineering capability, stringent safety protocols, and the ability to operate in challenging environments without disrupting ongoing operations. Six Nine Constructions has developed specialized methodologies to meet these exact requirements.
+                The {indName} sector demands a unique intersection of heavy engineering capability, stringent safety protocols, and the ability to operate in challenging environments without disrupting ongoing operations. Six Nine Construction has developed specialized methodologies to meet these exact requirements.
               </p>
 
               <h3 className="text-2xl font-bold text-[var(--snc-white)] mt-12 mb-6">Key Challenges We Solve</h3>

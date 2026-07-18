@@ -105,7 +105,7 @@ export function PageHero({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 1.0 }}
             >
-              Southern Africa's premier contractor for high-stakes civil engineering, commercial construction, and mining infrastructure.
+              Southern Africa&apos;s premier contractor for high-stakes civil engineering, commercial construction, and mining infrastructure.
             </motion.p>
 
             <motion.div 

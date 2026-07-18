@@ -26,6 +26,7 @@
  */
 
 import { useRef, useState, useEffect } from "react";
+import Link from "next/link";
 import { motion, useInView, useReducedMotion } from "framer-motion";
 import { sequenceRevealVariants, sequenceFadeVariants, transitions } from "@/lib/motion";
 
@@ -147,7 +148,7 @@ export function EvidenceSequence() {
           {/* [PLACEHOLDER] Wire to Imperium API: latestMilestone */}
           Latest milestone: Zimplats Phase IV access road, 14.2km, completed ahead of schedule — Q2 2026
         </p>
-        <a
+        <Link
           href="/projects"
           className="group inline-flex items-center gap-3 font-mono text-[11px] tracking-[0.1em] uppercase text-ink border-b border-ink/30 pb-0.5 transition-colors duration-fast hover:text-signal hover:border-signal"
           aria-label="View full project portfolio"
@@ -156,7 +157,7 @@ export function EvidenceSequence() {
           <svg viewBox="0 0 16 8" fill="none" className="w-4 h-4 transition-transform duration-fast group-hover:translate-x-1" aria-hidden="true">
             <path d="M0 4h14M11 1l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-        </a>
+        </Link>
       </motion.div>
     </section>
   );

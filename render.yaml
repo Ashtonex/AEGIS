@@ -8,16 +8,24 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: production
+      - key: DEBUG
+        value: 'false'
       - key: ALLOWED_ORIGINS
-        value: '*' # Update this to your Vercel URL once frontend is deployed
+        sync: false
+      - key: ALLOWED_HOSTS
+        sync: false
       # The following must be securely added in the Render Dashboard:
       - key: DATABASE_URL
         sync: false
       - key: SECRET_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
         sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
       - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: REDIS_URL
         sync: false

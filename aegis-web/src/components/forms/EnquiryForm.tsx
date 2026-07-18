@@ -50,7 +50,7 @@ export function EnquiryForm({ defaultType = "General", className }: EnquiryFormP
       <div className={cn("p-12 text-center border border-[var(--snc-success)]/30 rounded-sm bg-[var(--snc-navy-raised)]", className)}>
         <CheckCircle2 className="w-12 h-12 text-[var(--snc-success)] mx-auto mb-4" />
         <h3 className="text-xl font-bold text-[var(--snc-white)] mb-2">Enquiry Received</h3>
-        <p className="text-[var(--snc-mist)] mb-6">Thank you for contacting Six Nine Constructions. Our commercial team will be in touch shortly.</p>
+        <p className="text-[var(--snc-mist)] mb-6">Thank you for contacting Six Nine Construction. Our commercial team will be in touch shortly.</p>
         <Button variant="outline" onClick={() => setStatus("idle")}>Send Another</Button>
       </div>
     );
@@ -117,7 +117,12 @@ export function EnquiryForm({ defaultType = "General", className }: EnquiryFormP
         />
         <FormField
           label="Estimated Budget (Optional)"
-          {...register("budget")}
+          type="number"
+          min="0"
+          step="0.01"
+          {...register("budget", {
+            setValueAs: (value) => value === "" ? undefined : Number(value),
+          })}
           error={errors.budget?.message}
         />
       </div>

@@ -33,10 +33,6 @@ export function ApplicationForm({ positionId = "speculative", positionTitle = "S
     resolver: zodResolver(JobApplicationSchema),
     defaultValues: {
       positionId,
-      documents: {
-        cvUrl: "pending-upload-via-supabase", // Normally this would be handled by a file upload component
-        idUrl: "pending-upload-via-supabase"
-      }
     },
   });
 
@@ -127,12 +123,8 @@ export function ApplicationForm({ positionId = "speculative", positionTitle = "S
 
       {step === 3 && (
         <div className="space-y-4 animate-in fade-in slide-in-from-right-4">
-          <h3 className="text-lg font-bold text-[var(--snc-white)] mb-4">Documents & Declaration</h3>
-          <p className="text-sm text-[var(--snc-mist)] mb-4">Upload your CV and ID Document (PDF format only, max 5MB).</p>
-          
-          <div className="p-6 border border-dashed border-[var(--snc-navy-border)] rounded-sm bg-[var(--snc-navy-mid)]">
-            <input type="file" className="block w-full text-sm text-[var(--snc-mist)] file:mr-4 file:py-2 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-semibold file:bg-[var(--snc-gold)] file:text-[var(--snc-navy)] hover:file:bg-[var(--snc-gold-bright)]" />
-          </div>
+          <h3 className="text-lg font-bold text-[var(--snc-white)] mb-4">Declaration</h3>
+          <p className="text-sm text-[var(--snc-mist)] mb-4">Your CV and supporting documents may be requested by HR after this application is reviewed.</p>
 
           <div className="flex items-start gap-3 mt-6">
             <input type="checkbox" id="declaration" className="mt-1" required />

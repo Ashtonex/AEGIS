@@ -1,6 +1,7 @@
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
+  message?: string;
   error?: ApiError;
   meta?: ApiMeta;
 }
@@ -8,6 +9,7 @@ export interface ApiResponse<T> {
 export interface PaginatedResponse<T> {
   success: boolean;
   data: T[];
+  message?: string;
   meta: {
     total: number;
     page: number;
@@ -44,13 +46,6 @@ export interface SupplierRegistrationPayload {
   description: string;
   provinces: string[];
   references: string;
-  documents: {
-    profileUrl: string;
-    taxClearanceUrl: string;
-    incorporationUrl: string;
-    prazUrl?: string;
-    isoUrl?: string;
-  };
 }
 
 export interface EnquiryPayload {
@@ -61,9 +56,8 @@ export interface EnquiryPayload {
   phone: string;
   type: string;
   province: string;
-  budget?: string;
+  budget?: number;
   message: string;
-  attachmentUrl?: string;
 }
 
 export interface TenderInterestPayload {
@@ -87,9 +81,4 @@ export interface JobApplicationPayload {
   highestQualification: string;
   institution: string;
   coverNote: string;
-  documents: {
-    cvUrl: string;
-    idUrl: string;
-    certificatesUrl?: string;
-  };
 }

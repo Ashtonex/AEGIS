@@ -20,15 +20,11 @@ import { PortalSequence } from "@/components/sequences/PortalSequence";
 import { RelationshipSequence } from "@/components/sequences/RelationshipSequence";
 
 // ── Sequences 02–07 are built one at a time with directorial review ──────────
-// [TODO] EvidenceSequence
-// [TODO] CapabilitySequence
-// [TODO] InfrastructureSequence
-// [TODO] OperationsSequence
-// [TODO] PortalSequence
-// [TODO] RelationshipSequence
+// All sequences now render directly; keep polish work focused on copy,
+// motion timing, and visual consistency across the public reel.
 
 export const metadata = constructMetadata({
-  title: "Six Nine Constructions | Infrastructure Built to Last",
+  title: "Six Nine Construction | Infrastructure Built to Last",
   description:
     "Civil engineering, structural construction, and plant logistics at national scale. On time, on budget, without compromise.",
   image: "/arrival-01.jpg",

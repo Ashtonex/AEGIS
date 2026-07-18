@@ -4,13 +4,14 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/Button";
 import Link from "next/link";
+import Image from "next/image";
 import { Reveal } from "@/components/ui/Reveal";
 
 const HERO_IMAGES = [
-  "https://images.unsplash.com/photo-1541888081622-6316fa7b1207?q=80&w=2070&auto=format&fit=crop",
-  "https://images.unsplash.com/photo-1503387762-592deb58ef4e?q=80&w=2070&auto=format&fit=crop",
-  "https://images.unsplash.com/photo-1581094288338-2314dddb7ece?q=80&w=2070&auto=format&fit=crop",
-  "https://images.unsplash.com/photo-1504307651254-35680f356dfd?q=80&w=2070&auto=format&fit=crop",
+  "/hero_cinematic.png",
+  "/proj-highway.jpg",
+  "/snc_civil_yard.png",
+  "/snc_industrial_warehouse.png",
 ];
 
 export const HeroCarousel = () => {
@@ -35,9 +36,12 @@ export const HeroCarousel = () => {
           transition={{ duration: 1.2, ease: "easeInOut" }}
           className="absolute inset-0 z-0"
         >
-          <img
+          <Image
             src={HERO_IMAGES[currentIndex]}
             alt="Six Nine Construction Sites"
+            fill
+            priority
+            sizes="100vw"
             className="w-full h-full object-cover"
           />
         </motion.div>
@@ -54,7 +58,7 @@ export const HeroCarousel = () => {
             <div className="inline-flex items-center gap-2 px-4 py-1.5 mb-8 rounded-full border border-[var(--snc-border)]/20 bg-white/10 backdrop-blur-md">
               <div className="w-2 h-2 rounded-full bg-[var(--snc-red)] animate-pulse" />
               <span className="text-xs font-semibold tracking-[0.2em] uppercase text-[var(--snc-white)]">
-                BUILDING ZIMBABWE'S FUTURE
+                BUILDING ZIMBABWE&apos;S FUTURE
               </span>
             </div>
           </Reveal>

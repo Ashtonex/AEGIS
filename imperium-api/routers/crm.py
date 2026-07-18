@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -174,6 +175,64 @@ class TenderCreate(CrmPayload):
     @classmethod
     def normalize_stage(cls, value: Any) -> Any:
         return _normalize_stage(value, TENDER_STAGE_ALIASES)
+
+
+class SubcontractorCreate(CrmPayload):
+    name: str = Field(..., min_length=1, max_length=255)
+    capability_tags: Optional[List[str]] = None
+    compliance_status: Optional[str] = Field(default=None, max_length=50)
+    nssa_number: Optional[str] = Field(default=None, max_length=100)
+    praz_number: Optional[str] = Field(default=None, max_length=100)
+    reliability_score: int = Field(default=0, ge=0, le=100)
+    authorization_tier: int = Field(default=1, ge=1, le=5)
+    contact_name: Optional[str] = Field(default=None, max_length=255)
+    contact_email: Optional[str] = Field(default=None, max_length=255)
+    contact_phone: Optional[str] = Field(default=None, max_length=50)
+    physical_address: Optional[str] = None
+    capability_matrix: Optional[List[Dict[str, Any]]] = None
+
+
+class SubcontractorUpdate(CrmPayload):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    capability_tags: Optional[List[str]] = None
+    compliance_status: Optional[str] = Field(default=None, max_length=50)
+    nssa_number: Optional[str] = Field(default=None, max_length=100)
+    praz_number: Optional[str] = Field(default=None, max_length=100)
+    reliability_score: Optional[int] = Field(default=None, ge=0, le=100)
+    authorization_tier: Optional[int] = Field(default=None, ge=1, le=5)
+    contact_name: Optional[str] = Field(default=None, max_length=255)
+    contact_email: Optional[str] = Field(default=None, max_length=255)
+    contact_phone: Optional[str] = Field(default=None, max_length=50)
+    physical_address: Optional[str] = None
+    capability_matrix: Optional[List[Dict[str, Any]]] = None
+
+
+SUBCONTRACTOR_COLUMNS = (
+    "name",
+    "capability_tags",
+    "compliance_status",
+    "nssa_number",
+    "praz_number",
+    "reliability_score",
+    "authorization_tier",
+    "contact_name",
+    "contact_email",
+    "contact_phone",
+    "address",
+    "submission_data",
+)
+
+
+def _subcontractor_db_values(values: Dict[str, Any]) -> Dict[str, Any]:
+    db_values = dict(values)
+    if "physical_address" in db_values:
+        db_values["address"] = db_values.pop("physical_address")
+    if "capability_matrix" in db_values:
+        capability_matrix = db_values.pop("capability_matrix")
+        db_values["submission_data"] = json.dumps(
+            {"capability_matrix": capability_matrix}
+        )
+    return db_values
 
 
 @router.get("/opportunities")
@@ -385,6 +444,131 @@ async def create_tender(
     }
 
 
+@router.post("/subcontractors")
+async def create_subcontractor(
+    payload: SubcontractorCreate,
+    user: dict = Depends(require_permission("crm.create_subcontractors")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    user_id = _require_user_id(user)
+    values = _subcontractor_db_values(payload.model_dump())
+    query = text("""
+        INSERT INTO crm.subcontractors (
+            name,
+            capability_tags,
+            compliance_status,
+            nssa_number,
+            praz_number,
+            reliability_score,
+            authorization_tier,
+            contact_name,
+            contact_email,
+            contact_phone,
+            address,
+            submission_data,
+            organization_id,
+            created_by
+        )
+        VALUES (
+            :name,
+            CAST(:capability_tags AS text[]),
+            :compliance_status,
+            :nssa_number,
+            :praz_number,
+            :reliability_score,
+            :authorization_tier,
+            :contact_name,
+            :contact_email,
+            :contact_phone,
+            :address,
+            CAST(:submission_data AS jsonb),
+            :org_id,
+            :user_id
+        )
+        RETURNING id
+    """)
+
+    try:
+        result = await db.execute(
+            query,
+            {
+                **values,
+                "org_id": org_id,
+                "user_id": user_id,
+            },
+        )
+        await db.commit()
+    except (DataError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subcontractor payload violates CRM database constraints.",
+        ) from exc
+
+    return {
+        "success": True,
+        "data": {"id": str(result.scalar())},
+        "message": "Subcontractor created successfully.",
+        "meta": {},
+    }
+
+
+@router.put("/subcontractors/{subcontractor_id}")
+async def update_subcontractor(
+    subcontractor_id: str,
+    payload: SubcontractorUpdate,
+    user: dict = Depends(require_permission("crm.update_subcontractors")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    values = _subcontractor_db_values(
+        payload.model_dump(exclude_unset=True, exclude_none=False)
+    )
+    safe_keys = [column for column in SUBCONTRACTOR_COLUMNS if column in values]
+
+    if not safe_keys:
+        return {
+            "success": True,
+            "data": {"id": subcontractor_id},
+            "message": "No fields to update.",
+            "meta": {},
+        }
+
+    query = update_tenant_row_sql(
+        "crm.subcontractors",
+        safe_keys,
+        SUBCONTRACTOR_COLUMNS,
+        id_param="subcontractor_id",
+        returning_id=True,
+        casts={"capability_tags": "text[]", "submission_data": "jsonb"},
+    )
+
+    try:
+        result = await db.execute(
+            query,
+            {**values, "subcontractor_id": subcontractor_id, "org_id": org_id},
+        )
+        if not result.first():
+            raise HTTPException(status_code=404, detail="Subcontractor not found")
+        await db.commit()
+    except HTTPException:
+        raise
+    except (DataError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subcontractor payload violates CRM database constraints.",
+        ) from exc
+
+    return {
+        "success": True,
+        "data": {"id": subcontractor_id},
+        "message": "Subcontractor updated successfully.",
+        "meta": {},
+    }
+
+
 @router.get("/subcontractors")
 async def list_subcontractors(
     limit: Optional[int] = Query(default=None, ge=1, le=500),
@@ -395,7 +579,20 @@ async def list_subcontractors(
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
     query = text("""
-        SELECT id, name, capability_tags, compliance_status, nssa_number, praz_number, reliability_score, authorization_tier
+        SELECT
+            id,
+            name,
+            capability_tags,
+            compliance_status,
+            nssa_number,
+            praz_number,
+            reliability_score,
+            authorization_tier,
+            contact_name,
+            contact_email,
+            contact_phone,
+            address AS physical_address,
+            submission_data -> 'capability_matrix' AS capability_matrix
         FROM crm.subcontractors
         WHERE organization_id = :org_id AND is_deleted = false
         ORDER BY reliability_score DESC, name ASC

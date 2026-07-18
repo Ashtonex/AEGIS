@@ -6,6 +6,9 @@ import { CAPABILITIES } from "@/lib/constants";
 import { notFound } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 import { SectionLabel } from "@/components/ui/SectionLabel";
+import { getProjectsByCapability } from "@/lib/mockProjects";
+import { ProjectCard } from "@/components/sections/ProjectCard";
+import { Project } from "@/types/website";
 
 export async function generateStaticParams() {
   return CAPABILITIES.map((cap) => ({
@@ -19,7 +22,7 @@ export async function generateMetadata(props: { params: Promise<{ slug: string }
   if (!cap) return {};
   
   return constructMetadata({
-    title: `${cap} | Capabilities | Six Nine Constructions`,
+    title: `${cap} | Capabilities | Six Nine Construction`,
     description: `SNC's expertise and methodology in ${cap}.`,
   });
 }
@@ -45,6 +48,28 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
       "Real-time progress tracking via digital site reporting."
     ]
   };
+
+  const relatedProjects: Project[] = getProjectsByCapability(capName).map(p => ({
+    id: p.id,
+    slug: p.slug,
+    title: p.title,
+    category: p.category,
+    industry: p.industry,
+    province: p.province,
+    status: p.status,
+    value: p.value,
+    description: p.scopeSummary,
+    client: p.client,
+    timeline: p.timeline,
+    contractType: p.contractType,
+    scopeSummary: p.scopeSummary,
+    challenge: p.challenge,
+    approach: p.approach,
+    outcomes: p.outcomes,
+    featuredImage: p.image,
+    gallery: p.gallery,
+    documents: p.documents,
+  }));
 
   return (
     <PageWrapper>
@@ -87,6 +112,17 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
             </div>
           </div>
 
+          {relatedProjects.length > 0 && (
+            <div className="mb-24">
+              <SectionLabel>Related Projects</SectionLabel>
+              <div className="grid md:grid-cols-2 gap-8 mt-8">
+                {relatedProjects.map((project) => (
+                  <ProjectCard key={project.id} project={project} />
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="p-12 border border-[var(--snc-navy-border)] bg-[var(--snc-navy-raised)] rounded-sm relative overflow-hidden">
             <div className="absolute inset-0 bg-blueprint opacity-20 pointer-events-none" />
             <div className="relative z-10 max-w-3xl">
@@ -101,3 +137,4 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
     </PageWrapper>
   );
 }
+

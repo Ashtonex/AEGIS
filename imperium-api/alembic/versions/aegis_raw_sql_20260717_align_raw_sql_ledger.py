@@ -7,7 +7,6 @@ Create Date: 2026-07-17 00:00:00.000000
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from typing import Sequence, Union
@@ -50,3 +49,4 @@ def downgrade() -> None:
     raise NotImplementedError(
         "AEGIS raw SQL migrations are forward-only; restore from backup for rollback."
     )
+

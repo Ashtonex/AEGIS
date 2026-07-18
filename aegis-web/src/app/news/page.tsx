@@ -3,9 +3,10 @@ import { PageWrapper } from "@/components/layout/PageWrapper";
 import { PageHero } from "@/components/ui/PageHero";
 import { ArticleCard } from "@/components/sections/ArticleCard";
 import { getArticles } from "@/lib/api";
+import Link from "next/link";
 
 export const metadata = constructMetadata({
-  title: "Newsroom | Six Nine Constructions",
+  title: "Newsroom | Six Nine Construction",
   description: "Latest news, press releases, and project updates from SNC.",
 });
 
@@ -32,18 +33,23 @@ export default async function NewsIndexPage(props: {
       <section className="py-8 bg-[var(--snc-navy)] border-b border-[var(--snc-navy-border)] sticky top-[104px] z-30">
         <div className="container">
           <div className="flex gap-2 overflow-x-auto hide-scrollbar">
-            {["All", "Press Release", "Project Update", "Company News", "Award", "Industry"].map((cat, i) => (
-              <button 
-                key={cat}
-                className={`px-4 py-2 rounded-sm text-sm font-semibold tracking-wider uppercase whitespace-nowrap transition-colors ${
-                  i === 0 
-                    ? "bg-[var(--snc-gold)] text-[var(--snc-navy)]" 
-                    : "border border-[var(--snc-navy-border)] text-[var(--snc-mist)] hover:border-[var(--snc-mist)]"
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
+            {["All", "Press Release", "Project Update", "Company News", "Award", "Industry"].map((cat) => {
+              const isActive = (cat === "All" && !category) || category === cat;
+              const href = cat === "All" ? "/news" : `/news?category=${encodeURIComponent(cat)}`;
+              return (
+                <Link 
+                  key={cat}
+                  href={href}
+                  className={`px-4 py-2 rounded-sm text-sm font-semibold tracking-wider uppercase whitespace-nowrap transition-colors ${
+                    isActive 
+                      ? "bg-[var(--snc-gold)] text-[var(--snc-navy)]" 
+                      : "border border-[var(--snc-navy-border)] text-[var(--snc-mist)] hover:border-[var(--snc-mist)] bg-transparent"
+                  }`}
+                >
+                  {cat}
+                </Link>
+              );
+            })}
           </div>
         </div>
       </section>

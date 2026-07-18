@@ -36,6 +36,15 @@ class PublicIntakeContractTests(unittest.TestCase):
         for route, target in routes.items():
             self.assertIn(target, route.read_text(encoding="utf-8"), route)
 
+    def test_public_content_proxy_routes_target_public_intake_api(self) -> None:
+        routes = {
+            WEB / "app" / "api" / "cms" / "website-content" / "route.ts": "/public/intake/website-content",
+            WEB / "app" / "api" / "cms" / "broadcast-feeds" / "route.ts": "/public/intake/broadcast-feeds",
+            WEB / "app" / "api" / "tenders" / "route.ts": "/public/intake/tenders",
+        }
+        for route, target in routes.items():
+            self.assertIn(target, route.read_text(encoding="utf-8"), route)
+
     def test_client_submissions_include_idempotency_keys(self) -> None:
         source = (WEB / "lib" / "api.ts").read_text(encoding="utf-8")
         for function in (

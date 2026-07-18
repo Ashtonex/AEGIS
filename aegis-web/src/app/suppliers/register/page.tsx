@@ -4,8 +4,8 @@ import { PageHero } from "@/components/ui/PageHero";
 import { SupplierForm } from "@/components/forms/SupplierForm";
 
 export const metadata = constructMetadata({
-  title: "Supplier Registration | Six Nine Constructions",
-  description: "Register as an approved vendor for Six Nine Constructions.",
+  title: "Supplier Registration | Six Nine Construction",
+  description: "Register as an approved vendor for Six Nine Construction.",
 });
 
 export default function SupplierRegistrationPage() {

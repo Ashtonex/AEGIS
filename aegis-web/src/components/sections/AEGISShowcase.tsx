@@ -31,7 +31,7 @@ export function AEGISShowcase() {
             <SectionLabel label="Platform" />
             <h2 className="text-headline-xl text-snc-text-primary mt-4 mb-6">Engineered Operations.<br className="hidden md:block"/> Complete Visibility.</h2>
             <p className="text-body-lg text-snc-text-secondary leading-relaxed max-w-2xl">
-              Six Nine Constructions operates on PROJECT AEGIS — a bespoke enterprise resource planning ecosystem built specifically for construction. Every project, every asset, every person, every document — unified.
+              Six Nine Construction operates on PROJECT AEGIS — a bespoke enterprise resource planning ecosystem built specifically for construction. Every project, every asset, every person, every document — unified.
             </p>
           </div>
         </RevealOnScroll>
@@ -53,7 +53,7 @@ export function AEGISShowcase() {
         </StaggerContainer>
 
         <RevealOnScroll delay={0.4} className="text-center">
-          <Link href="/platform">
+          <Link href="/login">
             <Button variant="ghostWhite" className="border-snc-electric/50 text-snc-electric hover:border-snc-electric hover:bg-snc-electric-ghost">
               THE TECHNOLOGY BEHIND SNC
             </Button>

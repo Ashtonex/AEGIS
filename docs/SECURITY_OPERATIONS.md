@@ -13,13 +13,14 @@ Run from `imperium-api` unless noted:
 ..\venv\Scripts\python.exe -m mypy .
 ..\venv\Scripts\python.exe -m pip_audit -r requirements.txt
 ..\venv\Scripts\python.exe -m bandit -r . -x .\tests,.\tmp,.\output -s B608,B110 -q
+..\venv\Scripts\python.exe scripts\validate_production_migrations.py
 ..\venv\Scripts\python.exe migrations\run_aegis_migrations.py --plan
 ```
 
 Run the secret scan from the repository root:
 
 ```powershell
-venv\Scripts\detect-secrets.exe scan .env.example README.md docs imperium-api aegis-web\src aegis-web\package.json aegis-web\package-lock.json --exclude-files '(package-lock\.json|requirements\.lock\.txt|tsconfig\.tsbuildinfo|tmp/|output/|__pycache__/)'
+venv\Scripts\detect-secrets.exe scan .env.example README.md docs imperium-api aegis-web\src aegis-web\package.json aegis-web\package-lock.json --exclude-files '(package-lock\.json|requirements\.lock\.txt|tsconfig\.tsbuildinfo|tmp[\\/]|output[\\/]|generated[\\/]|__pycache__[\\/])'
 ```
 
 Bandit exclusions are intentionally narrow:
@@ -43,6 +44,8 @@ Introduce the new signing or verification key, configure the grace period, deplo
 
 Rotate exposed Supabase, database, Redis, JWT, webhook and storage credentials immediately. Update deployment secrets first, then local `.env` files. Never commit rotated values.
 
+For Supabase database credential incidents, use `docs/SECRET_ROTATION_RUNBOOK.md`.
+
 ## Incident Logging
 
 Record actor, timestamp, source channel, affected resource, suspected action, containment decision, evidence references and follow-up owner. Do not paste passwords, tokens or private keys into incident notes.
@@ -62,3 +65,4 @@ Emergency access must be time boxed, approved by business leadership, logged wit
 ## Production Checklist
 
 Production must use non-debug mode, explicit CORS origins, HTTPS, restricted database credentials, private Redis, rotated secrets, current migrations, passing tests, passing scans or documented exceptions, and reviewed deployment logs.
+

@@ -7,7 +7,7 @@ import { HardHat, Building2, Pickaxe, TrendingUp, Cpu, Truck, LayoutDashboard, Z
 import { Reveal } from "@/components/ui/Reveal";
 
 export const metadata = constructMetadata({
-  title: "Our Capabilities | Six Nine Constructions",
+  title: "Our Capabilities | Six Nine Construction",
   description: "End-to-end construction capabilities across civil infrastructure, commercial construction, and mining.",
 });
 
@@ -28,14 +28,14 @@ export default function CapabilitiesIndexPage() {
 
   const getImage = (name: string) => {
     switch (name) {
-      case "Civil Infrastructure": return "https://picsum.photos/seed/civil/1024/768";
-      case "Commercial Construction": return "https://picsum.photos/seed/building/1024/768";
-      case "Mining Infrastructure": return "https://picsum.photos/seed/mine/1024/768";
-      case "Earthworks & Grading": return "https://picsum.photos/seed/earth/1024/768";
-      case "Structural Engineering": return "https://picsum.photos/seed/steel/1024/768";
-      case "Heavy Plant Operations": return "https://picsum.photos/seed/plant/1024/768";
-      case "Project Controls": return "https://picsum.photos/seed/control/1024/768";
-      case "Design & Build": return "https://picsum.photos/seed/design/1024/768";
+      case "Civil Infrastructure": return "/cap-civil.jpg";
+      case "Commercial Construction": return "/proj-commercial.jpg";
+      case "Mining Infrastructure": return "/proj-mining.jpg";
+      case "Earthworks & Grading": return "/proj-earthworks.jpg";
+      case "Structural Engineering": return "/cap-structural.jpg";
+      case "Heavy Plant Operations": return "/cap-plant.jpg";
+      case "Project Controls": return "/project_portal_dashboard.png";
+      case "Design & Build": return "/snc_commercial_office.png";
       default: return "";
     }
   };
@@ -63,7 +63,7 @@ export default function CapabilitiesIndexPage() {
           { label: "Home", href: "/" },
           { label: "Capabilities" }
         ]}
-        backgroundImage="https://images.unsplash.com/photo-1504307651254-35680f356f27?q=80&w=2940&auto=format&fit=crop"
+        backgroundImage="/hero_cinematic.png"
       />
 
       <section className="py-24 bg-[var(--snc-white)] relative">

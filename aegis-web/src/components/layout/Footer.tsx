@@ -1,94 +1,143 @@
 import Link from "next/link";
+import { ArrowUpRight } from "lucide-react";
 import { SITE_CONFIG } from "@/lib/constants";
+
+const FOOTER_SECTIONS = [
+  {
+    title: "Company",
+    items: [
+      { label: "About Us", href: "/about" },
+      { label: "Leadership", href: "/about/leadership" },
+      { label: "Certifications", href: "/about#certifications" },
+      { label: "ESG & Sustainability", href: "/about#esg" },
+    ],
+  },
+  {
+    title: "Work",
+    items: [
+      { label: "Capabilities", href: "/capabilities" },
+      { label: "Industries", href: "/industries" },
+      { label: "Projects", href: "/projects" },
+      { label: "Knowledge", href: "/knowledge" },
+    ],
+  },
+  {
+    title: "Connect",
+    items: [
+      { label: "Tenders", href: "/tenders" },
+      { label: "Suppliers", href: "/suppliers" },
+      { label: "Careers", href: "/careers" },
+      { label: "Contact", href: "/contact" },
+    ],
+  },
+  {
+    title: "Portals",
+    items: [
+      { label: "Client Portal", href: "/login" },
+      { label: "Supplier Portal", href: "/login" },
+      { label: "Employee Login", href: "/login" },
+      { label: "Privacy", href: "/privacy" },
+    ],
+  },
+] as const;
+
+const socialLinks = [
+  { label: "LinkedIn", href: SITE_CONFIG.social.linkedin, short: "LI" },
+  { label: "X", href: SITE_CONFIG.social.x, short: "X" },
+  { label: "YouTube", href: SITE_CONFIG.social.youtube, short: "YT" },
+] as const;
 
 export function Footer() {
   return (
-    <footer className="bg-[var(--snc-navy)] border-t border-[var(--snc-navy-mid)] pt-20 pb-8 text-sm">
-      <div className="container">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-12 mb-16">
-          
-          <div className="lg:col-span-1">
-            <Link href="/" className="flex flex-col mb-6">
-              <span className="font-display text-[28px] text-[var(--snc-red)] leading-none tracking-wide">
+    <footer className="bg-ink border-t border-ink-mid text-paper">
+      <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 py-16 md:py-20">
+        <div className="grid gap-14 lg:grid-cols-[1.35fr_0.65fr_0.65fr_0.65fr_0.65fr]">
+          <div className="max-w-md">
+            <Link href="/" className="inline-flex flex-col">
+              <span className="font-black text-[30px] leading-none tracking-[-0.02em] text-signal">
                 SNC
               </span>
-              <span className="font-sans font-medium text-[10px] text-white tracking-widest leading-none mt-1">
-                SIX NINE CONSTRUCTIONS
+              <span className="mt-1 font-mono text-[10px] tracking-[0.18em] uppercase text-slate-light">
+                Six Nine Construction
               </span>
             </Link>
-            <p className="text-[var(--snc-mist)] mb-6 max-w-sm leading-relaxed">
-              {SITE_CONFIG.tagline}
+
+            <p className="mt-6 max-w-sm text-[15px] leading-[1.7] text-slate-light">
+              {SITE_CONFIG.tagline} Civil engineering, structural construction,
+              and plant logistics delivered with the same operational discipline
+              on every site.
             </p>
-            <div className="flex gap-4">
-              <a href={SITE_CONFIG.social.linkedin} target="_blank" rel="noreferrer" className="text-[var(--snc-mist)] hover:text-white transition-colors">LI</a>
-              <a href={SITE_CONFIG.social.x} target="_blank" rel="noreferrer" className="text-[var(--snc-mist)] hover:text-white transition-colors">X</a>
-              <a href={SITE_CONFIG.social.youtube} target="_blank" rel="noreferrer" className="text-[var(--snc-mist)] hover:text-white transition-colors">YT</a>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              <Link
+                href="/projects"
+                className="inline-flex items-center gap-2 border border-paper/15 px-4 py-2 text-[11px] font-semibold tracking-[0.12em] uppercase text-paper transition-colors duration-fast hover:border-signal hover:text-signal"
+              >
+                View projects
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+              <Link
+                href="/tenders"
+                className="inline-flex items-center gap-2 bg-signal px-4 py-2 text-[11px] font-bold tracking-[0.12em] uppercase text-ink transition-colors duration-fast hover:bg-[#E8B422]"
+              >
+                Open tenders
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
+
+            <div className="mt-8 flex flex-wrap gap-3">
+              {socialLinks.map((link) => (
+                <a
+                  key={link.label}
+                  href={link.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-10 w-10 items-center justify-center border border-paper/15 text-[10px] font-bold tracking-[0.14em] uppercase text-slate-light transition-colors duration-fast hover:border-signal hover:text-signal"
+                  aria-label={link.label}
+                >
+                  {link.short}
+                </a>
+              ))}
             </div>
           </div>
 
-          <div>
-            <h4 className="text-white font-semibold mb-6">Company</h4>
-            <ul className="space-y-4 text-[var(--snc-mist)]">
-              <li><Link href="/about" className="hover:text-white transition-colors">About Us</Link></li>
-              <li><Link href="/about/leadership" className="hover:text-white transition-colors">Leadership</Link></li>
-              <li><Link href="/about#certifications" className="hover:text-white transition-colors">Certifications</Link></li>
-              <li><Link href="/about#esg" className="hover:text-white transition-colors">ESG & Sustainability</Link></li>
-              <li><Link href="/about#awards" className="hover:text-white transition-colors">Awards</Link></li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-white font-semibold mb-6">Work</h4>
-            <ul className="space-y-4 text-[var(--snc-mist)]">
-              <li><Link href="/capabilities" className="hover:text-white transition-colors">Capabilities</Link></li>
-              <li><Link href="/industries/mining" className="hover:text-white transition-colors">Industries</Link></li>
-              <li><Link href="/projects" className="hover:text-white transition-colors">Projects</Link></li>
-              <li><Link href="/capabilities/heavy-plant" className="hover:text-white transition-colors">Plant & Equipment</Link></li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-white font-semibold mb-6">Connect</h4>
-            <ul className="space-y-4 text-[var(--snc-mist)]">
-              <li><Link href="/tenders" className="hover:text-white transition-colors">Tenders</Link></li>
-              <li><Link href="/suppliers" className="hover:text-white transition-colors">Suppliers</Link></li>
-              <li><Link href="/careers" className="hover:text-white transition-colors">Careers</Link></li>
-              <li><Link href="/news" className="hover:text-white transition-colors">News</Link></li>
-              <li><Link href="/knowledge" className="hover:text-white transition-colors">Knowledge</Link></li>
-            </ul>
-          </div>
-
-          <div>
-            <h4 className="text-white font-semibold mb-6">Portals</h4>
-            <ul className="space-y-4 text-[var(--snc-mist)]">
-              <li><Link href="/platform" className="hover:text-[var(--snc-red)] transition-colors">Client Portal</Link></li>
-              <li><Link href="/suppliers" className="hover:text-[var(--snc-red)] transition-colors">Supplier Portal</Link></li>
-              <li><Link href="/platform" className="hover:text-[var(--snc-red)] transition-colors">Employee Login</Link></li>
-            </ul>
-          </div>
-
+          {FOOTER_SECTIONS.map((section) => (
+            <div key={section.title}>
+              <h4 className="dxl-eyebrow mb-5">{section.title}</h4>
+              <ul className="space-y-3 text-[14px] leading-[1.6] text-slate-light">
+                {section.items.map((item) => (
+                  <li key={item.label}>
+                    <Link
+                      href={item.href}
+                      className="transition-colors duration-fast hover:text-paper"
+                    >
+                      {item.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
 
-        <div className="border-t border-[var(--snc-navy-mid)] pt-8 flex flex-col lg:flex-row justify-between items-center gap-4 text-[var(--snc-mist)] text-xs">
-          <div>
-            © {new Date().getFullYear()} Six Nine Constructions (Pvt) Ltd. All rights reserved.
+        <div className="mt-14 border-t border-ink-mid pt-8 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+          <div className="text-[11px] tracking-[0.12em] uppercase text-slate-light">
+            © {new Date().getFullYear()} Six Nine Construction (Pvt) Ltd.
           </div>
-          <div className="flex gap-4 font-semibold tracking-wider opacity-50">
+          <div className="flex flex-wrap gap-4 text-[11px] tracking-[0.12em] uppercase text-slate-light">
             <span>PRAZ</span>
             <span>CIFOZ</span>
             <span>ZBCA</span>
             <span>ZIDA</span>
           </div>
-          <div className="flex gap-4">
-            <Link href="/privacy" className="hover:text-white transition-colors">Privacy Policy</Link>
-            <Link href="/terms" className="hover:text-white transition-colors">Terms</Link>
+          <div className="flex flex-wrap gap-5 text-[11px] tracking-[0.12em] uppercase text-slate-light">
+            <Link href="/privacy" className="transition-colors duration-fast hover:text-paper">
+              Privacy
+            </Link>
+            <Link href="/terms" className="transition-colors duration-fast hover:text-paper">
+              Terms
+            </Link>
           </div>
-        </div>
-        
-        <div className="mt-8 text-center">
-          <span className="text-[10px] text-[var(--snc-slate)]/50 tracking-widest uppercase">
-            Platform Architecture by <a href="#" className="hover:text-white transition-colors">Flectēre</a>
-          </span>
         </div>
       </div>
     </footer>

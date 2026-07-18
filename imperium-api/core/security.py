@@ -3,9 +3,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 import jwt
+import httpx
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from core.database import get_db, supabase
+from core.database import get_db
 from core.config import settings
 
 security = HTTPBearer()
@@ -89,18 +90,28 @@ def _get_metadata(payload: dict, key: str) -> dict:
 def verify_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> dict:
-    """Validate the bearer token with Supabase Auth, not a local copied JWT secret."""
+    """Validate the bearer token against Supabase Auth, not a local copied JWT secret."""
     token = credentials.credentials
     try:
-        response = supabase.auth.get_user(token)
-        authenticated_user = response.user
-        if not authenticated_user:
+        auth_url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/user"
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(
+                auth_url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": settings.SUPABASE_ANON_KEY,
+                    "Accept": "application/json",
+                },
+            )
+        response.raise_for_status()
+        authenticated_user = response.json()
+        if not isinstance(authenticated_user, dict) or not authenticated_user.get("id"):
             raise ValueError("Supabase did not return a user for this token.")
         return {
-            "sub": authenticated_user.id,
-            "email": authenticated_user.email,
-            "app_metadata": authenticated_user.app_metadata or {},
-            "user_metadata": authenticated_user.user_metadata or {},
+            "sub": str(authenticated_user.get("id")),
+            "email": authenticated_user.get("email"),
+            "app_metadata": authenticated_user.get("app_metadata") or {},
+            "user_metadata": authenticated_user.get("user_metadata") or {},
             "role": "authenticated",
         }
     except Exception as exc:

@@ -1,6 +1,7 @@
 "use client";
 
 import { LeadershipProfile } from "@/types/website";
+import Image from "next/image";
 import { Card } from "../ui/Card";
 import { Linkedin } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -15,7 +16,13 @@ export function LeadershipCard({ profile, className }: LeadershipCardProps) {
     <Card padding="none" className={cn("overflow-hidden flex flex-col group", className)}>
       <div className="aspect-[4/5] bg-snc-navy-mid relative overflow-hidden">
         {profile.image ? (
-          <img src={profile.image} alt={profile.name} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500 ease-snc" />
+          <Image
+            src={profile.image}
+            alt={profile.name}
+            width={400}
+            height={500}
+            className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all duration-500 ease-snc"
+          />
         ) : (
           <div className="w-full h-full bg-[linear-gradient(to_top_right,var(--snc-navy-mid),var(--snc-navy-high))] flex flex-col items-center justify-center text-snc-text-tertiary group-hover:scale-105 transition-transform duration-500">
              <div className="w-24 h-24 rounded-full border border-snc-border/50 mb-4" />

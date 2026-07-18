@@ -1,6 +1,6 @@
 # PROJECT AEGIS - Enterprise Operations Platform
 
-Project AEGIS is a comprehensive Enterprise Resource Planning (ERP) ecosystem designed specifically for Six Nine Constructions (Private) Limited (SNC).
+Project AEGIS is a comprehensive Enterprise Resource Planning (ERP) ecosystem designed specifically for Six Nine Construction (Private) Limited (SNC).
 
 ## Project Imperium (Core Platform)
 

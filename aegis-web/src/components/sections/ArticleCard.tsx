@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { Article } from "@/types/website";
 import { Card } from "../ui/Card";
 import { ArrowRight } from "lucide-react";
@@ -10,16 +11,23 @@ interface ArticleCardProps {
   article: Article;
   variant?: "grid" | "featured";
   className?: string;
+  basePath?: string;
 }
 
-export function ArticleCard({ article, variant = "grid", className }: ArticleCardProps) {
+export function ArticleCard({ article, variant = "grid", className, basePath = "/news" }: ArticleCardProps) {
   if (variant === "featured") {
     return (
-      <Link href={`/news/${article.slug}`} className="block h-full group">
+      <Link href={`${basePath}/${article.slug}`} className="block h-full group">
         <Card padding="none" className={cn("h-full flex flex-col md:flex-row overflow-hidden", className)}>
           <div className="w-full md:w-1/2 aspect-video md:aspect-auto bg-snc-navy-mid relative overflow-hidden">
             {article.featuredImage ? (
-              <img src={article.featuredImage} alt={article.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc" />
+              <Image
+                src={article.featuredImage}
+                alt={article.title}
+                width={800}
+                height={450}
+                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc"
+              />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-snc-text-tertiary group-hover:scale-105 transition-transform duration-700">IMAGE PLACEHOLDER</div>
             )}
@@ -41,11 +49,17 @@ export function ArticleCard({ article, variant = "grid", className }: ArticleCar
   }
 
   return (
-    <Link href={`/news/${article.slug}`} className="block h-full group">
+    <Link href={`${basePath}/${article.slug}`} className="block h-full group">
       <Card padding="none" className={cn("h-full flex flex-col overflow-hidden", className)}>
         <div className="aspect-video bg-snc-navy-mid relative overflow-hidden">
           {article.featuredImage ? (
-            <img src={article.featuredImage} alt={article.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc" />
+            <Image
+              src={article.featuredImage}
+              alt={article.title}
+              width={640}
+              height={360}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-snc"
+            />
           ) : (
              <div className="w-full h-full flex items-center justify-center text-snc-text-tertiary group-hover:scale-105 transition-transform duration-700">IMAGE PLACEHOLDER</div>
           )}

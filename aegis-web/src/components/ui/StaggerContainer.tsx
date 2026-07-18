@@ -2,6 +2,7 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 import { useInView } from "@/hooks/useInView";
+import { DXL_EASE, DURATION } from "@/lib/motion";
 
 interface StaggerContainerProps {
   children: React.ReactNode;
@@ -21,7 +22,8 @@ export function StaggerContainer({ children, className = "" }: StaggerContainerP
     show: {
       opacity: 1,
       transition: {
-        staggerChildren: 0.09,
+        staggerChildren: 0.1,
+        delayChildren: 0.05,
       },
     },
   };
@@ -47,13 +49,13 @@ export const StaggerItem = ({ children, className = "" }: { children: React.Reac
   }
   
   const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
+    hidden: { opacity: 0, y: 16 },
     show: { 
       opacity: 1, 
       y: 0,
       transition: {
-        duration: 0.5,
-        ease: [0.25, 0.46, 0.45, 0.94]
+        duration: DURATION.reveal,
+        ease: DXL_EASE
       }
     },
   };
@@ -64,3 +66,4 @@ export const StaggerItem = ({ children, className = "" }: { children: React.Reac
     </motion.div>
   );
 };
+

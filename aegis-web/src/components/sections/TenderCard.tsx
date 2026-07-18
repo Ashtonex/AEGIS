@@ -6,6 +6,7 @@ import { Calendar, MapPin, FileDown, ArrowRight } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { Card } from "../ui/Card";
 import { Button } from "../ui/Button";
+import { motion } from "framer-motion";
 
 interface TenderCardProps {
   tender: Tender;
@@ -17,6 +18,15 @@ interface TenderCardProps {
 export function TenderCard({ tender, variant = "row", className, onRegisterInterest }: TenderCardProps) {
   const isRow = variant === "row";
   
+  // A tender is "new" if issued within 7 days of current mock time (July 13, 2026)
+  const isNew = (() => {
+    if (!tender.issueDate) return false;
+    const issueTime = new Date(tender.issueDate).getTime();
+    const currentTime = new Date("2026-07-13T09:44:09+02:00").getTime();
+    const diffDays = (currentTime - issueTime) / (1000 * 60 * 60 * 24);
+    return diffDays >= 0 && diffDays <= 7;
+  })();
+
   const StatusBadge = () => {
     let colorClass = "text-snc-text-tertiary border-snc-border bg-transparent";
     if (tender.status === "Open") colorClass = "text-snc-success border-snc-success/30 bg-snc-success/10";
@@ -31,12 +41,37 @@ export function TenderCard({ tender, variant = "row", className, onRegisterInter
     );
   };
 
+  const NewIndicator = () => {
+    if (!isNew) return null;
+    return (
+      <motion.span
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ 
+          opacity: [0.8, 1, 0.8],
+          scale: [0.98, 1.02, 0.98]
+        }}
+        transition={{ 
+          duration: 2, 
+          repeat: Infinity,
+          ease: "easeInOut"
+        }}
+        className="px-2 py-0.5 text-[9px] font-sans font-semibold uppercase tracking-widest bg-snc-gold-primary/20 text-snc-gold-primary border border-snc-gold-primary/40 rounded-sm flex items-center gap-1"
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-snc-gold-primary animate-ping" />
+        New
+      </motion.span>
+    );
+  };
+
   if (isRow) {
     return (
       <div className={cn("grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 p-6 border-b border-snc-border hover:bg-snc-navy-raised/50 transition-colors group", className)}>
         <div className="lg:col-span-2 flex flex-col items-start gap-2">
           <span className="text-[12px] font-mono text-snc-text-tertiary">{tender.reference}</span>
-          <StatusBadge />
+          <div className="flex flex-wrap gap-2 items-center">
+            <StatusBadge />
+            <NewIndicator />
+          </div>
         </div>
         <div className="lg:col-span-4">
           <h4 className="font-sans font-semibold text-[15px] text-snc-text-primary group-hover:text-snc-gold-primary transition-colors mb-1">{tender.title}</h4>
@@ -65,7 +100,10 @@ export function TenderCard({ tender, variant = "row", className, onRegisterInter
     <Card variant="tender" padding="standard" className={cn("h-full flex flex-col", className)}>
       <div className="flex justify-between items-start mb-6">
         <span className="text-[12px] font-mono text-snc-text-tertiary">{tender.reference}</span>
-        <StatusBadge />
+        <div className="flex flex-wrap gap-2 items-center justify-end">
+          <StatusBadge />
+          <NewIndicator />
+        </div>
       </div>
       <h4 className="text-headline-md text-snc-text-primary mb-4 flex-1">{tender.title}</h4>
       <div className="space-y-2 text-caption mb-8">

@@ -1,5 +1,6 @@
 import asyncio
-import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 from app.workers.arq_worker import (
@@ -74,33 +75,27 @@ class BackgroundWorkersIntegrationTests(unittest.TestCase):
             ],
         }
 
-        pdf_path = "test_arq_output.pdf"
-        excel_path = "test_arq_output.xlsx"
+        with TemporaryDirectory() as tmp_dir:
+            pdf_path = str(Path(tmp_dir) / "test_arq_output.pdf")
+            excel_path = str(Path(tmp_dir) / "test_arq_output.xlsx")
 
-        # Clean up files if they exist
-        for p in (pdf_path, excel_path):
-            if os.path.exists(p):
-                os.remove(p)
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(
+                    generate_quotation_documents_job(
+                        ctx, payload, pdf_path, excel_path
+                    )
+                )
+                self.assertTrue(result)
 
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(
-                generate_quotation_documents_job(ctx, payload, pdf_path, excel_path)
-            )
-            self.assertTrue(result)
+                # Verify output files were actually created by our renderers
+                self.assertTrue(Path(pdf_path).exists())
+                self.assertTrue(Path(excel_path).exists())
 
-            # Verify output files were actually created by our renderers
-            self.assertTrue(os.path.exists(pdf_path))
-            self.assertTrue(os.path.exists(excel_path))
-
-            # Verify Redis idempotency key was saved
-            mock_redis.setex.assert_called_once()
-        finally:
-            # Clean up
-            for p in (pdf_path, excel_path):
-                if os.path.exists(p):
-                    os.remove(p)
-            loop.close()
+                # Verify Redis idempotency key was saved
+                mock_redis.setex.assert_called_once()
+            finally:
+                loop.close()
 
 
 if __name__ == "__main__":
