@@ -6,6 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(
     encoding="utf-8"
 )
+PORTAL_LOGIN = (
+    ROOT.parent / "aegis-web" / "src" / "components" / "auth" / "PortalLogin.tsx"
+).read_text(encoding="utf-8")
 BACKEND_URL = (
     ROOT.parent / "aegis-web" / "src" / "lib" / "backend-url.ts"
 ).read_text(encoding="utf-8")
@@ -52,6 +55,9 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('"/api/tenders": "/api/v1/public/intake/tenders"', WEB_API)
         self.assertIn('"/api/cms/website-content": "/api/v1/public/intake/website-content"', WEB_API)
         self.assertIn('"/api/cms/broadcast-feeds": "/api/v1/public/intake/broadcast-feeds"', WEB_API)
+
+    def test_portal_login_surfaces_actionable_api_failures(self):
+        self.assertIn("setError(accessError.message)", PORTAL_LOGIN)
 
     def test_enquiry_budget_matches_backend_decimal_contract(self):
         api_types = (ROOT.parent / "aegis-web" / "src" / "types" / "api.ts").read_text(encoding="utf-8")

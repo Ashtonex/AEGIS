@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import List, Literal, Optional
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -105,6 +106,16 @@ class Settings(BaseSettings):
 
         if not self.SUPABASE_URL.startswith("https://"):
             raise ValueError("SUPABASE_URL must use HTTPS in production.")
+
+        database_host = urlsplit(self.DATABASE_URL).hostname or ""
+        if (
+            self.RENDER
+            and database_host.startswith("db.")
+            and database_host.endswith(".supabase.co")
+        ):
+            raise ValueError(
+                "DATABASE_URL must use the IPv4-compatible Supavisor session pooler on Render."
+            )
 
         configured_origins = self._configured_cors_origins
         if "*" in configured_origins and not self.RENDER:

@@ -23,6 +23,8 @@ services:
       - key: BACKGROUND_JOBS_ENABLED
         value: 'false'
       # The following must be securely added in the Render Dashboard:
+      # Use the Supabase Supavisor session pooler URL (port 5432), because
+      # Render cannot reach Supabase's IPv6-only direct database hostname.
       - key: DATABASE_URL
         sync: false
       - key: SECRET_KEY

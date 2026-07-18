@@ -35,6 +35,8 @@ export function PortalLogin() {
       } else if (accessError instanceof ApiError && accessError.status === 401) {
         await supabase.auth.signOut();
         setError("Your session could not be verified. Please sign in again.");
+      } else if (accessError instanceof ApiError) {
+        setError(accessError.message);
       } else {
         setError("Unable to verify portal access. Please try again in a moment.");
       }

@@ -1,8 +1,10 @@
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from core.config import settings
-from core.logging import setup_logging
+from core.database import check_database_health
+from core.logging import logger, setup_logging
 from core.security import require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
 from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, website_enquiries, executive, crm, crm_organizations, crm_activities, crm_automations, public_intake, profiles, portals, settings as settings_router, analytics_ml  # fmt: skip
@@ -36,9 +38,27 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["System"])
     async def health_check():
+        try:
+            database_health = await check_database_health()
+        except Exception:
+            logger.exception("Database health check failed")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "data": {"status": "degraded", "database": "unavailable"},
+                    "message": "Project Imperium database is unavailable.",
+                    "meta": {},
+                },
+            )
+
         return {
             "success": True,
-            "data": {"status": "operational", "environment": settings.ENVIRONMENT},
+            "data": {
+                "status": "operational",
+                "environment": settings.ENVIRONMENT,
+                "database": database_health["status"],
+            },
             "message": "Project Imperium is online.",
             "meta": {},
         }

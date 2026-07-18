@@ -46,6 +46,18 @@ class ProductionHardeningContractTests(unittest.TestCase):
             "postgresql+asyncpg://user:pass@db.example.com:5432/aegis",
         )
 
+    def test_render_rejects_ipv6_only_supabase_direct_database_url(self):
+        with self.assertRaisesRegex(
+            ValidationError, "Supavisor session pooler on Render"
+        ):
+            production_settings(
+                RENDER=True,
+                DATABASE_URL=(
+                    "postgresql+asyncpg://postgres:pass@"
+                    "db.project-ref.supabase.co:5432/postgres"
+                ),
+            )
+
     def test_render_replaces_legacy_wildcards_with_service_origin_and_host(self):
         settings = production_settings(
             ALLOWED_ORIGINS="*",
@@ -126,6 +138,11 @@ class ProductionHardeningContractTests(unittest.TestCase):
     def test_app_uses_trusted_host_middleware(self):
         self.assertIn("TrustedHostMiddleware", MAIN)
         self.assertIn("allowed_hosts=settings.allowed_hosts", MAIN)
+
+    def test_health_check_probes_database_and_returns_degraded_status(self):
+        self.assertIn("await check_database_health()", MAIN)
+        self.assertIn("status_code=503", MAIN)
+        self.assertIn('"database": "unavailable"', MAIN)
 
 
 if __name__ == "__main__":
