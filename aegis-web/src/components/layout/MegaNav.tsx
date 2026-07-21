@@ -68,9 +68,12 @@ export function MegaNav() {
         <div className="max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 flex items-center justify-between">
           
           {/* LOGO */}
-          <Link href="/" className="group flex flex-col">
-            <span className="font-display text-[32px] leading-none text-snc-gold-primary">SNC</span>
-            <span className="font-sans font-medium text-[9px] tracking-[0.2em] text-snc-text-secondary mt-1">SIX NINE CONSTRUCTION</span>
+          <Link href="/" className="group flex flex-col items-center justify-center">
+            <img 
+              src="/logo.png" 
+              alt="SNC Logo" 
+              className="h-[48px] w-auto object-contain transition-transform duration-300 group-hover:scale-105"
+            />
           </Link>
 
           {/* DESKTOP NAV */}

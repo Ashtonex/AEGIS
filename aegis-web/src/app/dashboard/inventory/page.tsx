@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   ArrowDown,
@@ -37,6 +39,16 @@ import {
 
 type Rec = Record<string, any> & { id: string };
 type ActiveTab = "stock" | "catalogue" | "stores" | "movements";
+const TAB_ROUTES: Record<ActiveTab, string> = {
+  stock: "/dashboard/inventory/stock",
+  catalogue: "/dashboard/inventory/catalogue",
+  stores: "/dashboard/inventory/stores",
+  movements: "/dashboard/inventory/movements",
+};
+
+function normalizeTab(value: string | null | undefined): ActiveTab {
+  return value && value in TAB_ROUTES ? (value as ActiveTab) : "stock";
+}
 
 function tx(v: unknown, fallback = "\u2014") {
   return typeof v === "string" && v.trim() ? v.trim() : (v != null && String(v).trim() ? String(v).trim() : fallback);
@@ -88,7 +100,8 @@ export default function InventoryPage() {
 }
 
 function InventoryWorkspace() {
-  const [tab, setTab] = useState<ActiveTab>("stock");
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<ActiveTab>(() => normalizeTab(searchParams?.get("tab")));
   const [stockLevels, setStockLevels] = useState<Rec[]>([]);
   const [catalogue, setCatalogue] = useState<Rec[]>([]);
   const [stores, setStores] = useState<Rec[]>([]);
@@ -150,6 +163,7 @@ function InventoryWorkspace() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setTab(normalizeTab(searchParams?.get("tab"))); }, [searchParams]);
 
   const metrics = useMemo(() => {
     const outOfStock = stockLevels.filter((r) => num(r.available_qty ?? r.quantity ?? r.stock_quantity) <= 0);
@@ -278,15 +292,15 @@ function InventoryWorkspace() {
         {(["stock", "catalogue", "stores", "movements"] as ActiveTab[]).map((t) => {
           const labels: Record<ActiveTab, string> = { stock: "Stock Levels", catalogue: "Item Catalogue", stores: "Stores", movements: "Stock Movements" };
           return (
-            <button
+            <Link
               key={t}
-              onClick={() => setTab(t)}
+              href={TAB_ROUTES[t]}
               className={`px-5 py-3 font-mono text-xs uppercase tracking-wider transition-colors ${
                 tab === t ? "border-b-2 border-signal text-signal" : "text-slate-light hover:text-paper"
               }`}
             >
               {labels[t]}
-            </button>
+            </Link>
           );
         })}
       </div>

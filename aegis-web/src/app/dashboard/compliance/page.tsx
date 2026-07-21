@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, X, FileText, ClipboardList, ShieldAlert, CheckCircle2,
@@ -25,6 +27,20 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
+type ComplianceTab = "obligations" | "employees" | "equipment" | "deployment-gates" | "corrective-actions" | "incidents";
+
+const TAB_ROUTES: Record<ComplianceTab, string> = {
+  obligations: "/dashboard/compliance/obligations",
+  employees: "/dashboard/compliance/employees",
+  equipment: "/dashboard/compliance/equipment",
+  "deployment-gates": "/dashboard/compliance/deployment-gates",
+  "corrective-actions": "/dashboard/compliance/corrective-actions",
+  incidents: "/dashboard/compliance/incidents",
+};
+
+function normalizeTab(value: string | null | undefined): ComplianceTab {
+  return value && value in TAB_ROUTES ? (value as ComplianceTab) : "obligations";
+}
 
 function textValue(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -81,7 +97,8 @@ export default function ComplianceDashboard() {
 }
 
 function ComplianceWorkspace() {
-  const [activeTab, setActiveTab] = useState<"obligations" | "employees" | "equipment" | "deployment-gates" | "corrective-actions" | "incidents">("obligations");
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<ComplianceTab>(() => normalizeTab(searchParams?.get("tab")));
   const [obligations, setObligations] = useState<RecordData[]>([]);
   const [empCredentials, setEmpCredentials] = useState<RecordData[]>([]);
   const [eqCredentials, setEqCredentials] = useState<RecordData[]>([]);
@@ -166,6 +183,10 @@ function ComplianceWorkspace() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    setActiveTab(normalizeTab(searchParams?.get("tab")));
+  }, [searchParams]);
 
   const handleCreateObligation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -364,42 +385,42 @@ function ComplianceWorkspace() {
 
       {/* Tabs */}
       <div className="flex border-b border-ink-mid">
-        <button
-          onClick={() => setActiveTab("obligations")}
+        <Link
+          href={TAB_ROUTES.obligations}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "obligations" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Obligation Register
-        </button>
-        <button
-          onClick={() => setActiveTab("employees")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.employees}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "employees" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Employee Credentials
-        </button>
-        <button
-          onClick={() => setActiveTab("equipment")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.equipment}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "equipment" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Equipment Licenses
-        </button>
-        <button
-          onClick={() => setActiveTab("deployment-gates")}
+        </Link>
+        <Link
+          href={TAB_ROUTES["deployment-gates"]}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "deployment-gates" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Deployment Gates
-        </button>
-        <button
-          onClick={() => setActiveTab("corrective-actions")}
+        </Link>
+        <Link
+          href={TAB_ROUTES["corrective-actions"]}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "corrective-actions" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Corrective Actions (CAPA)
-        </button>
-        <button
-          onClick={() => setActiveTab("incidents")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.incidents}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "incidents" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           HSE Incidents
-        </button>
+        </Link>
       </div>
 
       {/* Tab Panels */}

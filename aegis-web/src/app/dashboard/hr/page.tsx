@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, Users, X, CalendarCheck, CalendarDays, Award, Briefcase, CheckCircle2
@@ -20,6 +22,18 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
+type HRTab = "employees" | "attendance" | "leave" | "payroll";
+
+const TAB_ROUTES: Record<HRTab, string> = {
+  employees: "/dashboard/hr/employees",
+  attendance: "/dashboard/hr/attendance",
+  leave: "/dashboard/hr/leave",
+  payroll: "/dashboard/hr/payroll",
+};
+
+function normalizeTab(value: string | null | undefined): HRTab {
+  return value && value in TAB_ROUTES ? (value as HRTab) : "employees";
+}
 
 function textValue(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -79,7 +93,8 @@ export default function HRDashboard() {
 }
 
 function HRWorkspace() {
-  const [activeTab, setActiveTab] = useState<"employees" | "attendance" | "leave" | "skills" | "certifications">("employees");
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<HRTab>(() => normalizeTab(searchParams?.get("tab")));
   const [employees, setEmployees] = useState<RecordData[]>([]);
   const [attendance, setAttendance] = useState<RecordData[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<RecordData[]>([]);
@@ -143,6 +158,10 @@ function HRWorkspace() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    setActiveTab(normalizeTab(searchParams?.get("tab")));
+  }, [searchParams]);
 
   const loadEmployeeDetail = async (id: string) => {
     setSelectedEmployeeId(id);
@@ -334,24 +353,30 @@ function HRWorkspace() {
 
       {/* Tabs */}
       <div className="flex border-b border-ink-mid">
-        <button
-          onClick={() => setActiveTab("employees")}
+        <Link
+          href={TAB_ROUTES.employees}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "employees" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Employee Register
-        </button>
-        <button
-          onClick={() => setActiveTab("attendance")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.attendance}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "attendance" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Attendance Log
-        </button>
-        <button
-          onClick={() => setActiveTab("leave")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.leave}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "leave" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Leave Management
-        </button>
+        </Link>
+        <Link
+          href={TAB_ROUTES.payroll}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "payroll" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Payroll Runs
+        </Link>
       </div>
 
       {/* Main Grid */}
@@ -543,6 +568,22 @@ function HRWorkspace() {
                   )}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {activeTab === "payroll" && (
+            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
+                <span className="font-mono text-xs tracking-wider uppercase text-slate">Payroll Processing</span>
+              </div>
+              <div className="p-6 text-center text-slate">
+                <AlertTriangle className="h-8 w-8 text-signal/50 mx-auto mb-2" />
+                <p className="text-sm font-medium text-paper">Manual Payroll is Active</p>
+                <p className="text-xs mt-1">Payroll runs and payslips are currently handled manually via external registers.</p>
+                <button className="mt-4 px-4 py-2 bg-signal text-ink text-sm font-semibold rounded hover:bg-signal/90">
+                  Manage Payroll
+                </button>
+              </div>
             </div>
           )}
         </div>

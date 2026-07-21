@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { 
   Target, Zap, AlertTriangle, ShieldCheck, Clock, TrendingUp, 
@@ -9,7 +9,7 @@ import {
   Send, HelpCircle, CheckSquare, Sliders, ExternalLink, Lock,
   Filter, Globe, Database, UserCheck, RefreshCw, Layout, Smartphone
 } from 'lucide-react';
-import { getCrmLeads, qualifyCrmLead, createCrmLead } from '@/lib/api';
+import { getCrmLeads, getCrmTenderSignals, qualifyCrmLead, createCrmLead } from '@/lib/api';
 
 // Define types based on our backend schema
 interface Lead {
@@ -645,14 +645,43 @@ export default function CRMLeadsApp() {
   // ==========================================================================
   // STATE: TENDER SCRAPING Feed
   // ==========================================================================
-  const externalTenderSignals: ExternalTenderSignal[] = [];
-
+  const [externalTenderSignals, setExternalTenderSignals] = useState<ExternalTenderSignal[]>([]);
+  const [tenderSignalsLoading, setTenderSignalsLoading] = useState(false);
+  const [tenderSignalsError, setTenderSignalsError] = useState<string | null>(null);
+  const [lastTenderSignalsSync, setLastTenderSignalsSync] = useState<string | null>(null);
   const [tendersSectorFilter, setTendersSectorFilter] = useState("All");
   const [tendersSearch, setTendersSearch] = useState("");
   const [tendersMinBudget, setTendersMinBudget] = useState<number>(0);
   const [tendersMaxBudget, setTendersMaxBudget] = useState<number>(10000000);
   const [importingTenderId, setImportingTenderId] = useState<string | null>(null);
   const [importedTenderIds, setImportedTenderIds] = useState<string[]>([]);
+
+  const loadTenderSignals = useCallback(async () => {
+    setTenderSignalsLoading(true);
+    setTenderSignalsError(null);
+    try {
+      const response = await getCrmTenderSignals({ includeInternalPublicFeed: true, limit: 12 });
+      if (response.success && Array.isArray(response.data)) {
+        setExternalTenderSignals(response.data);
+        setLastTenderSignalsSync(new Date().toISOString());
+      } else {
+        setExternalTenderSignals([]);
+        setTenderSignalsError("Tender signals could not be loaded from the CRM service.");
+      }
+    } catch (error) {
+      console.error("Error fetching tender signals", error);
+      setExternalTenderSignals([]);
+      setTenderSignalsError("Tender signals could not be loaded from the CRM service.");
+    } finally {
+      setTenderSignalsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'tender_scraping' && externalTenderSignals.length === 0 && !tenderSignalsLoading) {
+      loadTenderSignals();
+    }
+  }, [activeTab, externalTenderSignals.length, tenderSignalsLoading, loadTenderSignals]);
 
   const filteredTenders = externalTenderSignals.filter(t => {
     const matchesSearch = t.title.toLowerCase().includes(tendersSearch.toLowerCase()) || 
@@ -1450,6 +1479,15 @@ export default function CRMLeadsApp() {
             </h1>
             <p className="text-xs text-slate-light font-mono tracking-widest uppercase">Live feeds from PRAZ & Mining Procurement Portals</p>
           </div>
+          <button
+            type="button"
+            onClick={loadTenderSignals}
+            disabled={tenderSignalsLoading}
+            className="flex items-center gap-2 border border-[#1c1c1c] bg-[#050505] px-3 py-2 text-xs font-mono uppercase tracking-wider text-white transition-colors hover:border-[#3B82F6]/40 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${tenderSignalsLoading ? 'animate-spin' : ''}`} />
+            Refresh Feed
+          </button>
         </header>
 
         {/* Filters */}
@@ -1521,8 +1559,32 @@ export default function CRMLeadsApp() {
           </div>
         </div>
 
+        {tenderSignalsError ? (
+          <div className="mb-6 border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-200">
+            {tenderSignalsError}
+          </div>
+        ) : null}
+
+        {lastTenderSignalsSync ? (
+          <div className="mb-6 text-[11px] font-mono uppercase tracking-widest text-slate-light">
+            Last sync: {new Date(lastTenderSignalsSync).toLocaleString()}
+          </div>
+        ) : null}
+
+        {tenderSignalsLoading ? (
+          <div className="flex items-center gap-3 border border-[#1c1c1c] bg-[#0a0a0a] px-4 py-5 text-sm text-slate-light">
+            <Loader2 className="w-4 h-4 animate-spin text-[#3B82F6]" />
+            Loading tender signals from the CRM service...
+          </div>
+        ) : null}
+
         {/* Feed List */}
         <div className="space-y-4 pb-12">
+          {!tenderSignalsLoading && filteredTenders.length === 0 ? (
+            <div className="border border-dashed border-[#1c1c1c] bg-[#050505] px-5 py-8 text-sm text-slate-light">
+              No tender signals were returned by the scraper yet.
+            </div>
+          ) : null}
           {filteredTenders.map((tender) => {
             const isImported = importedTenderIds.includes(tender.id);
             const isImporting = importingTenderId === tender.id;

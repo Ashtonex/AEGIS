@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
+import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useAuth } from "@/lib/auth/AuthContext";
 import {
   getActiveExecutiveProjects,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/api";
 
 type ApiData = Record<string, unknown>;
+type SettledApiResult = PromiseSettledResult<{ data?: unknown; meta?: unknown }>;
 
 function titleCase(value: string) {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -27,6 +29,18 @@ function displayValue(value: unknown) {
   return String(value);
 }
 
+function sourceErrorsFromMeta(meta: unknown) {
+  if (!meta || typeof meta !== "object") return [];
+  const sourceErrors = (meta as { source_errors?: unknown }).source_errors;
+  return Array.isArray(sourceErrors) ? (sourceErrors as ApiData[]) : [];
+}
+
+function sourceWarningsFrom(result: SettledApiResult, label: string) {
+  if (result.status === "rejected") return [`${label} could not be loaded.`];
+  const errors = sourceErrorsFromMeta(result.value.meta);
+  return errors.map((error) => `${label}: ${displayValue(error.source)} is ${displayValue(error.status)}.`);
+}
+
 function greetingForNow(date: Date) {
   const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "2-digit", hour12: false, timeZone: "Africa/Harare" }).format(date));
   if (hour < 12) return "Good morning";
@@ -35,9 +49,19 @@ function greetingForNow(date: Date) {
 }
 
 export default function ExecutiveCommandCentre() {
+  return (
+    <RBACGuard allowedRoles={["Executive (Admin)"]}>
+      <ExecutiveCommandCentreWorkspace />
+    </RBACGuard>
+  );
+}
+
+function ExecutiveCommandCentreWorkspace() {
   const { session } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [kpis, setKpis] = useState<ApiData>({});
   const [stats, setStats] = useState<ApiData>({});
   const [modules, setModules] = useState<ApiData[]>([]);
@@ -67,6 +91,15 @@ export default function ExecutiveCommandCentre() {
     if (projectResult.status === "fulfilled") setActiveProjects(projectResult.value.data || []);
     if (healthResult.status === "fulfilled") setDataHealth(healthResult.value.data || []);
     if (exceptionResult.status === "fulfilled") setExceptions(exceptionResult.value.data || []);
+    setLoadWarnings([
+      ...sourceWarningsFrom(kpiResult, "Executive KPIs"),
+      ...sourceWarningsFrom(statsResult, "Operational control ledger"),
+      ...sourceWarningsFrom(moduleResult, "Module gateway"),
+      ...sourceWarningsFrom(regionResult, "Regional footprint"),
+      ...sourceWarningsFrom(projectResult, "Active projects"),
+      ...sourceWarningsFrom(healthResult, "Data confidence"),
+      ...sourceWarningsFrom(exceptionResult, "Executive exceptions"),
+    ]);
     setLoading(false);
     setRefreshing(false);
   };
@@ -91,10 +124,17 @@ export default function ExecutiveCommandCentre() {
   const openProject = async (project: ApiData) => {
     setSelectedProject(project);
     setProjectDetail(null);
+    setDetailError(null);
     setDetailLoading(true);
     try {
       const response = await getExecutiveProjectDetail(String(project.id));
       setProjectDetail(response.data || {});
+      const errors = sourceErrorsFromMeta(response.meta);
+      if (errors.length) {
+        setDetailError(errors.map((error) => `${displayValue(error.source)} is ${displayValue(error.status)}`).join(" · "));
+      }
+    } catch {
+      setDetailError("Project detail could not be loaded.");
     } finally {
       setDetailLoading(false);
     }
@@ -110,6 +150,7 @@ export default function ExecutiveCommandCentre() {
     </header>
 
     <DataConfidence sources={dataHealth} />
+    <SourceWarnings warnings={loadWarnings} />
 
     <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
       {metricCards.map((card) => <button key={card.key} onClick={() => setSelectedMetric(card.key)} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-sm p-3 hover:border-signal focus-visible:outline focus-visible:outline-signal">
@@ -127,7 +168,7 @@ export default function ExecutiveCommandCentre() {
     <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricFields data={selectedCard.key === "safety" ? stats : kpis} />}</Modal>}
-    {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <ProjectDetail detail={projectDetail} />}</Modal>}
+    {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} /></>}</Modal>}
   </div>;
 }
 
@@ -136,6 +177,7 @@ function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5
 function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (project: ApiData) => void }) { if (!projects.length) return <p className="text-slate-light mt-6">No active project records were found.</p>; return <div className="mt-5 space-y-2">{projects.map((project) => <button key={String(project.id)} onClick={() => void onSelect(project)} className="w-full flex justify-between gap-3 text-left border border-ink-mid p-3 hover:border-signal"><span className="text-paper">{displayValue(project.name)}</span><span className="font-mono text-xs text-slate-light">{displayValue(project.status)}</span></button>)}</div>; }
 function ProjectDetail({ detail }: { detail: ApiData | null }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
 function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter((source) => !["current", "no_data"].includes(String(source.status))); if (!issues.length) return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className="w-4 h-4 text-green-500"/>Data sources are connected. Empty sources are shown as no data, not zero.</div>; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Some executive data needs attention</p><p className="text-xs text-slate-light mt-1">{issues.map((source) => `${displayValue(source.source)}: ${displayValue(source.status)}`).join(" · ")}</p></div></div>; }
+function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
 function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) { return <section className="bg-ink border border-ink-mid rounded-sm"><div className="p-4 border-b border-ink-mid flex justify-between gap-4"><div><h2 className="font-mono text-xs tracking-widest text-paper uppercase">Executive Exceptions</h2><p className="text-xs text-slate-light mt-1">Conditions requiring a decision or intervention, with source evidence and drill-through where a project is linked.</p></div><span className="font-mono text-[10px] text-slate">{exceptions.length} OPEN</span></div>{exceptions.length ? <div className="divide-y divide-ink-mid">{exceptions.map((item, index) => { const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null); return <button key={`${String(item.category)}-${String(item.id)}-${index}`} onClick={() => drillProjectId && void onProject({ id: drillProjectId, name: item.title })} className="w-full p-4 flex flex-wrap justify-between gap-3 text-left hover:bg-ink-light disabled:hover:bg-transparent" disabled={!drillProjectId}><div><p className="font-mono text-[10px] text-signal uppercase">{displayValue(item.category)}</p><p className="text-sm text-paper mt-1">{displayValue(item.title ?? item.severity ?? item.certificate_name)}</p><p className="text-xs text-slate-light mt-1">{displayValue(item.action)}</p>{item.evidence ? <p className="mt-2 max-w-3xl break-words font-mono text-[10px] text-slate">Evidence: {displayValue(item.evidence)}</p> : null}</div><span className="font-mono text-xs text-slate-light">{displayValue(item.evidence_date ?? item.expiry_date ?? item.incident_date ?? item.viability_status)}</span></button>; })}</div> : <p className="p-4 text-sm text-slate-light">No configured executive exceptions are currently recorded.</p>}</section>; }
 function ModuleGateway({ modules }: { modules: ApiData[] }) {
   const [selectedId, setSelectedId] = useState("");

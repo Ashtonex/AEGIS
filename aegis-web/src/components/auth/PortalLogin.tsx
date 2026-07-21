@@ -79,7 +79,7 @@ export function PortalLogin() {
           <p className="font-mono text-[10px] tracking-widest text-signal uppercase">AEGIS secure access</p>
           <h1 className="font-display text-3xl mt-2">AEGIS Portal Access</h1>
           <p className="text-sm text-slate-light mt-2">
-            Enter your credentials to access your provisioned workspace (Executives, Employees, Clients, or Suppliers).
+            Enter your credentials to access your provisioned workspace (Executives, Foremen, Employees, Clients, or Suppliers).
           </p>
         </div>
 
@@ -129,7 +129,7 @@ export function PortalLogin() {
           </button>
         </form>
         <p className="mt-6 text-xs text-slate-light">
-          Portal access is activated by invitation. Contact your AEGIS administrator if you need an account.
+          Use the credentials card issued by your AEGIS administrator. Contact them if you need access provisioned.
         </p>
       </section>
     </main>

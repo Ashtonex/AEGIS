@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, Loader2, RefreshCw, X, TrendingUp, TrendingDown,
   Activity, Users, Truck, ShoppingCart, ShieldCheck, Flame, PieChart, BarChart
@@ -15,6 +17,18 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
+type AnalyticsTab = "projects" | "equipment" | "procurement" | "workforce";
+
+const TAB_ROUTES: Record<AnalyticsTab, string> = {
+  projects: "/dashboard/analytics/projects",
+  equipment: "/dashboard/analytics/equipment",
+  procurement: "/dashboard/analytics/procurement",
+  workforce: "/dashboard/analytics/workforce",
+};
+
+function normalizeTab(value: string | null | undefined): AnalyticsTab {
+  return value && value in TAB_ROUTES ? (value as AnalyticsTab) : "projects";
+}
 
 function money(value: unknown) {
   const num = Number(value);
@@ -71,7 +85,8 @@ export default function AnalyticsDashboard() {
 }
 
 function AnalyticsWorkspace() {
-  const [activeTab, setActiveTab] = useState<"projects" | "equipment" | "procurement" | "workforce">("projects");
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<AnalyticsTab>(() => normalizeTab(searchParams?.get("tab")));
   const [exceptions, setExceptions] = useState<RecordData[]>([]);
   const [projectPerformance, setProjectPerformance] = useState<RecordData[]>([]);
   const [equipmentIntel, setEquipmentIntel] = useState<RecordData[]>([]);
@@ -119,6 +134,10 @@ function AnalyticsWorkspace() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    setActiveTab(normalizeTab(searchParams?.get("tab")));
+  }, [searchParams]);
 
   if (loading) {
     return (
@@ -188,30 +207,30 @@ function AnalyticsWorkspace() {
 
       {/* Tabs */}
       <div className="flex border-b border-ink-mid">
-        <button
-          onClick={() => setActiveTab("projects")}
+        <Link
+          href={TAB_ROUTES.projects}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "projects" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Project Margin Trends
-        </button>
-        <button
-          onClick={() => setActiveTab("equipment")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.equipment}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "equipment" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Fleet Productivity
-        </button>
-        <button
-          onClick={() => setActiveTab("procurement")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.procurement}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "procurement" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Spend & Supplier SLA
-        </button>
-        <button
-          onClick={() => setActiveTab("workforce")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.workforce}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "workforce" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Labour Allocation
-        </button>
+        </Link>
       </div>
 
       {/* Tab Panels */}

@@ -1,0 +1,48 @@
+{
+  "direct_costs": "362498.00",
+  "preliminaries": "28500",
+  "overhead_amount": "39099.80",
+  "contingency_amount": "48874.75",
+  "profit_amount": "70379.64",
+  "provisional_sums": "42000",
+  "subtotal": "591352.19",
+  "discount_amount": "0",
+  "taxable_amount": "591352.19",
+  "tax_amount": "88702.83",
+  "grand_total": "680055.02",
+  "breakdown_log": {
+    "boq_item_count": 19,
+    "overhead_percentage": "10.00%",
+    "contingency_percentage": "12.500%",
+    "profit_percentage": "18.00%",
+    "tax_percentage": "15.00%",
+    "margin_policy_violated": false,
+    "margin_alerts": [],
+    "direct_costs_breakdown": {
+      "materials": "0.00",
+      "labour": "0.00",
+      "equipment": "0.00",
+      "subcontractors": "0.00",
+      "transport": "0.00",
+      "waste_allowance": "0.00"
+    }
+  },
+  "quotation_id": "SNC-STRICKLAND-QT-2026-001",
+  "revision_number": 1,
+  "assumptions": [
+    "Budgetary pricing only: derived from one A3 floor-plan PDF with no structural, MEP, elevation, finish, soil, survey, or specification pack.",
+    "Pricing is in USD and assumes October to mid-March Zimbabwe rainy-season work, including productivity loss, protection, wet-weather access, stormwater diversion, and programme risk.",
+    "Measured allowance assumes approximately 316 m2 enclosed floor area and approximately 380 m2 roof/covered envelope, subject to CAD/BIM or IFC remeasurement.",
+    "Rates assume conventional masonry construction, reinforced concrete substructure and slab, standard lodge-grade finishes, and normal day-shift labour.",
+    "No client budget was provided; pricing is cost-plus with overhead, rainy-season contingency, provisional sums, and profit separated for audit.",
+    "Final tender must be revised after site visit, soil confirmation, finish schedule, door/window schedule, sanitary schedule, electrical layout, drainage design, and supplier quotations."
+  ],
+  "exclusions": [
+    "Land, statutory approvals, professional fees, utility connection fees, permits, levies, and authority charges.",
+    "Abnormal ground, rock excavation, exceptional dewatering, contaminated material, retaining walls, major earthworks, and off-site roadworks.",
+    "Furniture, loose appliances, curtains, linen, signage, landscaping, borehole/water storage, solar/PV, generator, air-conditioning, CCTV, Wi-Fi, and specialist lodge equipment.",
+    "Price escalation, foreign-exchange movement, customs/duty shocks, and material price changes beyond quote validity.",
+    "Any scope not visible or inferable from the single floor-plan drawing."
+  ],
+  "audit_trail_hash": "d506e4c7f33d25ff4a2405354f478263ed3ae14ff866c7a3fac2c2aaf7b8de2b"
+}

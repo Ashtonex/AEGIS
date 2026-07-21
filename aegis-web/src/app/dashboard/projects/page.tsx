@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { 
   AlertTriangle, 
   BriefcaseBusiness, 
@@ -64,6 +66,19 @@ type Detail = Record<string, unknown> & {
   subcontractors?: Record<string, unknown>[] 
 };
 
+type ProjectTab = "overview" | "schedule" | "financials" | "materials";
+
+const TAB_ROUTES: Record<ProjectTab, string> = {
+  overview: "/dashboard/projects/overview",
+  schedule: "/dashboard/projects/schedule",
+  financials: "/dashboard/projects/financials",
+  materials: "/dashboard/projects/materials",
+};
+
+function normalizeTab(value: string | null | undefined): ProjectTab {
+  return value && value in TAB_ROUTES ? (value as ProjectTab) : "overview";
+}
+
 const activeStatuses = new Set(["active", "in progress", "ongoing", "live", "execution"]);
 const riskStatuses = new Set(["at risk", "critical", "blocked", "delayed"]);
 
@@ -103,6 +118,8 @@ export default function ProjectsDashboard() {
 }
 
 function ProjectsWorkspace() {
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<ProjectTab>(() => normalizeTab(searchParams?.get("tab")));
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -142,6 +159,10 @@ function ProjectsWorkspace() {
   useEffect(() => { 
     void load(); 
   }, [load]);
+
+  useEffect(() => {
+    setActiveTab(normalizeTab(searchParams?.get("tab")));
+  }, [searchParams]);
 
   const openProject = useCallback(async (project: Project) => {
     setSelected(project); 

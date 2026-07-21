@@ -16,6 +16,7 @@ SQLAlchemy==2.0.51          # Async SQLAlchemy database layer
 alembic==1.18.5             # Alembic migration tooling where schema tracking is needed
 asyncpg==0.31.0             # PostgreSQL async driver
 supabase==2.31.0            # Supabase client for auth/storage/API integration
+pywebpush==2.3.0            # Web Push delivery for browser subscriptions
 
 # --- CACHING, EVENTS & WORKERS ---
 redis==5.3.1                # Redis client, including asyncio support

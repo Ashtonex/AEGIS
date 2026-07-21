@@ -26,6 +26,7 @@ const OPERATIONAL_DASHBOARD_PREFIXES = [
   "/api/v1/crm-contacts/",
   "/api/v1/crm-organizations/",
   "/api/v1/crm-activities/",
+  "/api/v1/crm-communications/",
   "/api/v1/crm-automations/",
   "/api/v1/executive/",
   "/api/v1/workforce/",
@@ -36,6 +37,7 @@ const OPERATIONAL_DASHBOARD_PREFIXES = [
   "/api/v1/hse-incidents/",
   "/api/v1/settings/",
   "/api/v1/procurement/",
+  "/api/v1/notifications/",
 ];
 
 const SERVER_ROUTE_ALIASES: Record<string, string> = {
@@ -454,13 +456,15 @@ export async function createBroadcastFeed(payload: { title: string; description?
 // --- EXECUTIVE MODULE 07 ---
 export async function getExecutiveKPIs(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/kpis`, {
-    cache: 'no-store'
+    cache: 'no-store',
+    allowFallback: false
   });
 }
 
 export async function getModulesStatus(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/modules`, {
-    cache: 'no-store'
+    cache: 'no-store',
+    allowFallback: false
   });
 }
 
@@ -479,6 +483,29 @@ export async function createCrmOpportunity(data: { name: string, stage: string, 
 
 export async function getCrmTenders() {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/crm/tenders', { cache: 'no-store' });
+}
+
+export async function getCrmTenderSignals(params?: {
+  limit?: number;
+  sources?: string[];
+  includeInternalPublicFeed?: boolean;
+}): Promise<ApiResponse<any[]>> {
+  const searchParams = new URLSearchParams();
+  if (typeof params?.limit === "number") {
+    searchParams.set("limit", String(params.limit));
+  }
+  if (typeof params?.includeInternalPublicFeed === "boolean") {
+    searchParams.set("include_internal_public_feed", String(params.includeInternalPublicFeed));
+  }
+  if (params?.sources?.length) {
+    searchParams.set("sources", params.sources.join(","));
+  }
+
+  const query = searchParams.toString();
+  return await fetchApi<ApiResponse<any[]>>(
+    `/api/v1/crm/tender-signals${query ? `?${query}` : ""}`,
+    { cache: "no-store" }
+  );
 }
 
 export async function createCrmTender(data: { tender_name: string, stage: string, bid_amount?: number }): Promise<ApiResponse<any>> {
@@ -665,6 +692,106 @@ export async function deleteCrmActivity(id: string): Promise<ApiResponse<any>> {
   });
 }
 
+// --- CRM COMMUNICATIONS --- //
+export async function getCrmCommunications(params?: {
+  contact_id?: string;
+  recipient_user_id?: string;
+  lead_id?: string;
+  opportunity_id?: string;
+  channel?: string;
+  limit?: number;
+}): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.contact_id) search.set("contact_id", params.contact_id);
+  if (params?.recipient_user_id) search.set("recipient_user_id", params.recipient_user_id);
+  if (params?.lead_id) search.set("lead_id", params.lead_id);
+  if (params?.opportunity_id) search.set("opportunity_id", params.opportunity_id);
+  if (params?.channel) search.set("channel", params.channel);
+  if (params?.limit) search.set("limit", String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-communications/${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmCommunication(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-communications/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateCrmCommunication(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-communications/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function sendCrmWhatsAppMessage(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-communications/whatsapp/messages', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getUsers(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/users/', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export interface SystemNotification {
+  id: string;
+  title: string;
+  message?: string;
+  notification_type?: string;
+  priority?: "low" | "normal" | "high" | "urgent";
+  action_url?: string;
+  metadata?: Record<string, unknown>;
+  is_read: boolean;
+  read_at?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
+
+export async function getNotifications(params?: { unread_only?: boolean; limit?: number }): Promise<ApiResponse<SystemNotification[]>> {
+  const search = new URLSearchParams();
+  if (params?.unread_only) search.set("unread_only", "true");
+  if (params?.limit) search.set("limit", String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<SystemNotification[]>>(`/api/v1/notifications/${query}`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function getNotificationSummary(): Promise<ApiResponse<{ unread_count: number; total_count: number; latest_at?: string }>> {
+  return fetchApi<ApiResponse<{ unread_count: number; total_count: number; latest_at?: string }>>(`/api/v1/notifications/summary`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function markNotificationRead(id: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/notifications/${id}/read`, {
+    method: "PATCH",
+    allowFallback: false,
+  });
+}
+
+export async function markAllNotificationsRead(): Promise<ApiResponse<{ count: number }>> {
+  return fetchApi<ApiResponse<{ count: number }>>(`/api/v1/notifications/read-all`, {
+    method: "PATCH",
+    allowFallback: false,
+  });
+}
+
 // --- CRM AUTOMATIONS --- //
 export async function getCrmAutomations(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>('/api/v1/crm-automations/', { cache: 'no-store' });
@@ -840,20 +967,21 @@ export async function decideSupplierInvoicePayment(id: string, decision: "approv
 
 export async function getExecutiveStats(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/stats`, {
-    cache: 'no-store'
+    cache: 'no-store',
+    allowFallback: false
   });
 }
 
 export async function getExecutiveRegions(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/regions`, { cache: 'no-store' });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/regions`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function getActiveExecutiveProjects(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/projects/active`, { cache: 'no-store' });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/projects/active`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function getExecutiveProjectDetail(projectId: string): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store' });
+  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store', allowFallback: false });
 }
 
 /** Internal project register. Operational screens must not fall back to website demo data. */
@@ -862,14 +990,14 @@ export async function getInternalProjects(): Promise<ApiResponse<any[]>> {
 }
 
 export async function getExecutiveDataHealth(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store' });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function getExecutiveExceptions(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store' });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store', allowFallback: false });
 }
 
-export async function getPortalAccess(portal: "executive" | "employee" | "client" | "supplier", accessToken?: string): Promise<ApiResponse<{ portal: string; destination: string }>> {
+export async function getPortalAccess(portal: "executive" | "employee" | "foreman" | "client" | "supplier", accessToken?: string): Promise<ApiResponse<{ portal: string; destination: string }>> {
   return fetchApi<ApiResponse<{ portal: string; destination: string }>>(`/api/v1/portals/access/${portal}`, {
     cache: 'no-store',
     allowFallback: false,
@@ -882,6 +1010,113 @@ export async function resolvePortalAccess(accessToken?: string): Promise<ApiResp
     cache: 'no-store',
     allowFallback: false,
     headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+  });
+}
+
+export async function completePasswordSetup(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/portals/password-setup/complete`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getPwaConfig(): Promise<ApiResponse<{ push_enabled: boolean; vapid_public_key: string | null; app_name: string }>> {
+  return fetchApi<ApiResponse<{ push_enabled: boolean; vapid_public_key: string | null; app_name: string }>>('/api/v1/pwa/config', { cache: 'no-store', allowFallback: false });
+}
+
+export async function savePushSubscription(subscription: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/pwa/subscriptions', {
+    method: 'POST',
+    body: JSON.stringify({ subscription }),
+    allowFallback: false,
+  });
+}
+
+export async function deletePushSubscription(endpoint: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/pwa/subscriptions', {
+    method: 'DELETE',
+    body: JSON.stringify({ endpoint }),
+    allowFallback: false,
+  });
+}
+
+export async function sendPushTestNotification(payload: { title?: string; message?: string; action_url?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/pwa/subscriptions/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export interface ClientPortalTicket {
+  id: string;
+  issue_description: string;
+  created_at: string;
+  updated_at?: string;
+  contact_name?: string;
+  email?: string;
+  company_name?: string;
+}
+
+export interface PortalCommunicationMessage {
+  id: string;
+  channel: string;
+  direction: "inbound" | "outbound" | "internal";
+  subject?: string;
+  body?: string;
+  status?: string;
+  started_at?: string;
+  created_at?: string;
+  actor_name?: string;
+  actor_email?: string;
+  recipient_name?: string;
+  recipient_email?: string;
+  contact_name?: string;
+  email?: string;
+  company_name?: string;
+}
+
+export interface ClientPortalWorkspace {
+  client: {
+    contact_id: string;
+    contact_name: string;
+    email?: string;
+    phone?: string;
+    job_title?: string;
+    company_name?: string;
+  };
+  tickets: ClientPortalTicket[];
+  messages?: PortalCommunicationMessage[];
+  modules: Array<{ key: string; label: string; status: "active" | "pending" }>;
+}
+
+export async function getClientPortalWorkspace(): Promise<ApiResponse<ClientPortalWorkspace>> {
+  return fetchApi<ApiResponse<ClientPortalWorkspace>>(`/api/v1/portals/client/workspace`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createClientPortalTicket(issue_description: string): Promise<ApiResponse<ClientPortalTicket>> {
+  return fetchApi<ApiResponse<ClientPortalTicket>>(`/api/v1/portals/client/tickets`, {
+    method: "POST",
+    body: JSON.stringify({ issue_description }),
+    allowFallback: false,
+  });
+}
+
+export async function createClientPortalMessage(payload: { subject?: string; body: string }): Promise<ApiResponse<PortalCommunicationMessage>> {
+  return fetchApi<ApiResponse<PortalCommunicationMessage>>(`/api/v1/portals/client/messages`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getClientPortalTickets(): Promise<ApiResponse<ClientPortalTicket[]>> {
+  return fetchApi<ApiResponse<ClientPortalTicket[]>>(`/api/v1/client-portal-tickets/`, {
+    cache: 'no-store',
+    allowFallback: false,
   });
 }
 
@@ -1057,6 +1292,14 @@ export async function setSettingsRolePermission(roleId: string, permissionKey: s
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/roles/${roleId}/permissions`, {
     method: 'PATCH',
     body: JSON.stringify({ permission_key: permissionKey, enabled }),
+    allowFallback: false,
+  });
+}
+
+export async function createSettingsManagedAccount(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/settings/managed-accounts`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
     allowFallback: false,
   });
 }
@@ -1319,6 +1562,97 @@ export async function addInventoryStore(payload: Record<string, unknown>): Promi
   });
 }
 
+
+export async function getFinanceCashAccounts(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>("/api/v1/financial-performance/cash-accounts", { cache: "no-store", allowFallback: false });
+}
+
+export async function createFinanceCashAccount(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/cash-accounts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.cash_account_id) search.set("cash_account_id", params.cash_account_id);
+  if (params?.project_id) search.set("project_id", params.project_id);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/cashbook${query}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function postFinanceCashbookTransaction(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/cashbook", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function allocateFinanceReceipt(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/receipts/allocate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getFinanceSupplierPayments(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>("/api/v1/financial-performance/supplier-payments", { cache: "no-store", allowFallback: false });
+}
+
+export async function postFinanceSupplierPaymentBatch(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/supplier-payments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getFinancePayrollProfiles(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>("/api/v1/financial-performance/payroll/profiles", { cache: "no-store", allowFallback: false });
+}
+
+export async function upsertFinancePayrollProfile(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/payroll/profiles", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getFinancePayrollRuns(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>("/api/v1/financial-performance/payroll/runs", { cache: "no-store", allowFallback: false });
+}
+
+export async function getFinancePayrollRunItems(runId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/payroll/runs/${runId}/items`, { cache: "no-store", allowFallback: false });
+}
+
+export async function createFinancePayrollRun(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/payroll/runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function decideFinancePayrollRun(runId: string, decision: "approved" | "cancelled"): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/payroll/runs/${runId}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ decision }),
+    allowFallback: false,
+  });
+}
+
+export async function postFinancePayrollRun(runId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/payroll/runs/${runId}/post`, {
+    method: "POST",
+    allowFallback: false,
+  });
+}
 // --- HR & WORKFORCE --- //
 
 export async function getHREmployees(params?: { status?: string; department?: string }): Promise<ApiResponse<any[]>> {
@@ -1620,3 +1954,43 @@ export async function forecastMaterialRate(history: any[], forecastSteps = 3): P
     allowFallback: false,
   });
 }
+
+// --- BANKING & PAYROLL --- //
+
+export async function getBankAccounts(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/bank-accounts/', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createBankAccount(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/bank-accounts/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getBankTransactions(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/bank-transactions/', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createBankTransaction(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/bank-transactions/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getPayrollRuns(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/payroll-runs/', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createPayrollRun(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/payroll-runs/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+

@@ -14,6 +14,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.shared.pwa import dispatch_user_pushes
+
 
 async def emit_event(
     db: AsyncSession,
@@ -86,16 +88,100 @@ async def emit_notification(
     user_id: str,
     title: str,
     message: str,
+    notification_type: str = "system",
+    priority: str = "normal",
+    action_url: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> None:
     """Insert a notification into core.notifications.
 
     This is a synchronous write-path notification.  Asynchronous delivery
     (email, push) is handled separately by workers when they are wired.
     """
-    await db.execute(
+    result = await db.execute(
         text("""
-            INSERT INTO core.notifications (organization_id, user_id, title, message)
-            VALUES (:org_id, :user_id, :title, :message)
+            INSERT INTO core.notifications (
+                organization_id, user_id, title, message, notification_type,
+                priority, action_url, metadata
+            )
+            VALUES (
+                :org_id, :user_id, :title, :message, :notification_type,
+                :priority, :action_url, CAST(:metadata AS jsonb)
+            )
+            RETURNING id
         """),
-        {"org_id": org_id, "user_id": user_id, "title": title, "message": message},
+        {
+            "org_id": org_id,
+            "user_id": user_id,
+            "title": title,
+            "message": message,
+            "notification_type": notification_type,
+            "priority": priority,
+            "action_url": action_url,
+            "metadata": json.dumps(metadata or {}, default=str),
+        },
     )
+    row = result.first()
+    if row:
+        await dispatch_user_pushes(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            payload={
+                "id": str(row.id),
+                "title": title,
+                "message": message,
+                "notification_type": notification_type,
+                "priority": priority,
+                "action_url": action_url,
+                "metadata": metadata or {},
+            },
+        )
+
+
+async def emit_role_notification(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    role_names: list[str],
+    title: str,
+    message: str,
+    notification_type: str = "system",
+    priority: str = "normal",
+    action_url: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> int:
+    """Insert one notification per active user assigned to any listed role."""
+    recipients = (
+        await db.execute(
+            text("""
+            SELECT DISTINCT u.id
+            FROM core.users u
+            JOIN core.user_roles ur ON ur.user_id = u.id
+             AND ur.organization_id = u.organization_id
+            JOIN core.roles r ON r.id = ur.role_id
+             AND r.organization_id = u.organization_id
+             AND r.is_deleted = false
+            WHERE u.organization_id = :org_id
+              AND u.is_active = true
+              AND u.is_deleted = false
+              AND upper(r.name) = ANY(:role_names)
+        """),
+            {"org_id": org_id, "role_names": [role.upper() for role in role_names]},
+        )
+    ).scalars().all()
+
+    for recipient_id in recipients:
+        await emit_notification(
+            db,
+            org_id=org_id,
+            user_id=str(recipient_id),
+            title=title,
+            message=message,
+            notification_type=notification_type,
+            priority=priority,
+            action_url=action_url,
+            metadata=metadata,
+        )
+
+    return len(recipients)

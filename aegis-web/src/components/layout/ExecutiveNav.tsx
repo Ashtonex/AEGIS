@@ -104,13 +104,12 @@ export function ExecutiveNav() {
         <div className="max-w-container mx-auto px-6 md:px-10 lg:px-16 xl:px-20 flex items-center justify-between">
           
           {/* LOGO */}
-          <Link href="/" className="group flex flex-col" aria-label="Six Nine Construction — home">
-            <span className="font-black text-[28px] leading-none text-signal tracking-[-0.02em]">
-              SNC
-            </span>
-            <span className="font-mono font-medium text-[9px] tracking-[0.2em] text-slate-light mt-0.5 uppercase">
-              Six Nine Construction
-            </span>
+          <Link href="/" className="group flex flex-col items-center justify-center" aria-label="Six Nine Construction — home">
+            <img 
+              src="/logo.png" 
+              alt="SNC Logo" 
+              className="h-[48px] w-auto object-contain transition-transform duration-300 group-hover:scale-105"
+            />
           </Link>
 
           {/* DESKTOP NAV */}

@@ -9,6 +9,7 @@ const {
 } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawnSync } = require("node:child_process");
+const packageJson = require("../package.json");
 
 process.env.NEXT_PUBLIC_BUILD_PHASE = process.env.NEXT_PUBLIC_BUILD_PHASE || "true";
 process.env.NEXT_TELEMETRY_DISABLED = process.env.NEXT_TELEMETRY_DISABLED || "1";
@@ -54,6 +55,21 @@ function acquireBuildLock() {
   }
 }
 
+function writeVersionManifest() {
+  const gitResult = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const commitSha = gitResult.status === 0 ? String(gitResult.stdout || "").trim() : "";
+  const manifest = {
+    app_version: packageJson.version,
+    build_timestamp: new Date().toISOString(),
+    commit_sha: commitSha || null,
+  };
+  const versionPath = join(process.cwd(), "public", "version.json");
+  writeFileSync(versionPath, JSON.stringify(manifest, null, 2), "utf8");
+}
+
 function runBuild() {
   return spawnSync(process.execPath, [nextBin, "build"], {
     env: { ...process.env, AEGIS_SKIP_NEXT_TYPECHECK: "1" },
@@ -62,6 +78,7 @@ function runBuild() {
 }
 
 function build() {
+  writeVersionManifest();
   const typecheck = spawnSync(
     process.execPath,
     [tscBin, "--noEmit", "--pretty", "false", "--incremental", "false"],

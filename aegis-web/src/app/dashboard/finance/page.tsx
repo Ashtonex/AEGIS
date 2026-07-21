@@ -1,12 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, TrendingUp, TrendingDown, Users, X, BarChart3, Receipt,
   FileText, ClipboardList, CheckCircle2, AlertCircle
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
 import {
   getFinanceProjectSummaries,
   getFinanceProjectDetail,
@@ -20,6 +23,24 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll";
+
+const TAB_ROUTES: Record<FinanceTab, string> = {
+  "project-financials": "/dashboard/finance/project-financials",
+  "cost-codes": "/dashboard/finance/cost-codes",
+  variations: "/dashboard/finance/variations",
+  "progress-claims": "/dashboard/finance/progress-claims",
+  budgets: "/dashboard/finance/budgets",
+  banking: "/dashboard/finance/banking",
+  "cash-accounts": "/dashboard/finance/cash-accounts",
+  cashbook: "/dashboard/finance/cashbook",
+  "supplier-payments": "/dashboard/finance/supplier-payments",
+  payroll: "/dashboard/finance/payroll",
+};
+
+function normalizeTab(value: string | null | undefined): FinanceTab {
+  return value && value in TAB_ROUTES ? (value as FinanceTab) : "project-financials";
+}
 
 function money(value: unknown) {
   const num = typeof value === "number" ? value : Number(value);
@@ -76,7 +97,8 @@ export default function FinanceDashboard() {
 }
 
 function FinanceWorkspace() {
-  const [activeTab, setActiveTab] = useState<"project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets">("project-financials");
+  const searchParams = useSearchParams();
+  const [activeTab, setActiveTab] = useState<FinanceTab>(() => normalizeTab(searchParams?.get("tab")));
   const [projects, setProjects] = useState<RecordData[]>([]);
   const [costCodes, setCostCodes] = useState<RecordData[]>([]);
   const [variations, setVariations] = useState<RecordData[]>([]);
@@ -143,6 +165,10 @@ function FinanceWorkspace() {
     void loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    setActiveTab(normalizeTab(searchParams?.get("tab")));
+  }, [searchParams]);
+
   const loadProjectDetail = async (id: string) => {
     setSelectedProjectId(id);
     if (!id) {
@@ -193,6 +219,8 @@ function FinanceWorkspace() {
   };
 
   // Aggregated KPIs
+  const operationalTabs: FinanceTab[] = ["banking", "cash-accounts", "cashbook", "supplier-payments", "payroll"];
+
   const kpis = useMemo(() => {
     let contractTotal = 0;
     let certifiedTotal = 0;
@@ -333,42 +361,76 @@ function FinanceWorkspace() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-ink-mid">
-        <button
-          onClick={() => setActiveTab("project-financials")}
+      <div className="flex flex-wrap border-b border-ink-mid">
+        <Link
+          href={TAB_ROUTES["project-financials"]}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "project-financials" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Project Financials
-        </button>
-        <button
-          onClick={() => setActiveTab("cost-codes")}
+        </Link>
+        <Link
+          href={TAB_ROUTES["cost-codes"]}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "cost-codes" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Cost Codes
-        </button>
-        <button
-          onClick={() => setActiveTab("variations")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.variations}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "variations" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Variations
-        </button>
-        <button
-          onClick={() => setActiveTab("progress-claims")}
+        </Link>
+        <Link
+          href={TAB_ROUTES["progress-claims"]}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "progress-claims" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Progress Claims
-        </button>
-        <button
-          onClick={() => setActiveTab("budgets")}
+        </Link>
+        <Link
+          href={TAB_ROUTES.budgets}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "budgets" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Budgets
-        </button>
+        </Link>
+        <Link
+          href={TAB_ROUTES.banking}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "banking" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Banking & Cash
+        </Link>
+        <Link
+          href={TAB_ROUTES["cash-accounts"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "cash-accounts" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Accounts
+        </Link>
+        <Link
+          href={TAB_ROUTES.cashbook}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "cashbook" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Cashbook
+        </Link>
+        <Link
+          href={TAB_ROUTES["supplier-payments"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "supplier-payments" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Supplier Pay
+        </Link>
+        <Link
+          href={TAB_ROUTES.payroll}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "payroll" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Payroll
+        </Link>
       </div>
 
       {/* Tab Panels */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
+          {operationalTabs.includes(activeTab) && (
+            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll"} projects={projects} />
+          )}
+
           {activeTab === "project-financials" && (
             <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
@@ -595,6 +657,22 @@ function FinanceWorkspace() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {activeTab === "banking" && (
+            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
+                <span className="font-mono text-xs tracking-wider uppercase text-slate">Company Bank Accounts</span>
+              </div>
+              <div className="p-6 text-center text-slate">
+                <AlertCircle className="h-8 w-8 text-signal/50 mx-auto mb-2" />
+                <p className="text-sm font-medium text-paper">Manual Banking is Active</p>
+                <p className="text-xs mt-1">Bank accounts and transactions are currently managed manually via the ledger.</p>
+                <button className="mt-4 px-4 py-2 bg-signal text-ink text-sm font-semibold rounded hover:bg-signal/90">
+                  Manage Bank Accounts
+                </button>
               </div>
             </div>
           )}
@@ -865,3 +943,10 @@ function FinanceWorkspace() {
     </div>
   );
 }
+
+
+
+
+
+
+

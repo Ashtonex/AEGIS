@@ -29,6 +29,11 @@ MAPPING = {
     'documents.py': 'core.documents',
     'crm_contacts.py': 'crm.contacts',
     'crm_leads.py': 'crm.leads',
+    'bank_accounts.py': 'finance.bank_accounts',
+    'bank_transactions.py': 'finance.bank_transactions',
+    'payments.py': 'finance.payments',
+    'payroll_runs.py': 'hr.payroll_runs',
+    'payslips.py': 'hr.payslips',
 }
 
 SKIP = ['auth.py', 'users.py', 'crm.py', 'executive.py']

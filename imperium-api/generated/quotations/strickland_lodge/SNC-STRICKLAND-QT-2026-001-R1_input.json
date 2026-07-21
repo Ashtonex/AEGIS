@@ -1,0 +1,145 @@
+{
+  "quotation_id": "SNC-STRICKLAND-QT-2026-001",
+  "revision_number": 1,
+  "project_title": "Strickland Lodge Motel - Budgetary Quote",
+  "reference_number": "SNC-STRICKLAND-QT-2026-001-R1",
+  "client_name": "Eastern Highlands Trust / Strickland Lodge",
+  "items": [
+    {
+      "description": "Site establishment and rain protection",
+      "quantity": "1",
+      "unit": "item",
+      "rate": "9500"
+    },
+    {
+      "description": "Clearing, levels and cart-away",
+      "quantity": "420",
+      "unit": "m2",
+      "rate": "9.50"
+    },
+    {
+      "description": "Substructure and DPM",
+      "quantity": "316",
+      "unit": "m2",
+      "rate": "122"
+    },
+    {
+      "description": "Ground slab and screed",
+      "quantity": "316",
+      "unit": "m2",
+      "rate": "68"
+    },
+    {
+      "description": "Masonry walls and partitions",
+      "quantity": "560",
+      "unit": "m2",
+      "rate": "78"
+    },
+    {
+      "description": "RC columns, beams and lintels",
+      "quantity": "1",
+      "unit": "item",
+      "rate": "24500"
+    },
+    {
+      "description": "Roof structure and coverings",
+      "quantity": "380",
+      "unit": "m2",
+      "rate": "105"
+    },
+    {
+      "description": "Plaster, skim and paint",
+      "quantity": "1120",
+      "unit": "m2",
+      "rate": "19.50"
+    },
+    {
+      "description": "Ceilings and cornices",
+      "quantity": "316",
+      "unit": "m2",
+      "rate": "37"
+    },
+    {
+      "description": "Floor finishes",
+      "quantity": "316",
+      "unit": "m2",
+      "rate": "38"
+    },
+    {
+      "description": "Wet-area tiling",
+      "quantity": "205",
+      "unit": "m2",
+      "rate": "46"
+    },
+    {
+      "description": "Doors and ironmongery",
+      "quantity": "24",
+      "unit": "no",
+      "rate": "420"
+    },
+    {
+      "description": "Windows, glazing and bars",
+      "quantity": "22",
+      "unit": "no",
+      "rate": "365"
+    },
+    {
+      "description": "Plumbing and sanitary works",
+      "quantity": "1",
+      "unit": "item",
+      "rate": "33500"
+    },
+    {
+      "description": "Electrical installation",
+      "quantity": "316",
+      "unit": "m2",
+      "rate": "58"
+    },
+    {
+      "description": "Cupboards, kitchens and joinery",
+      "quantity": "1",
+      "unit": "item",
+      "rate": "28500"
+    },
+    {
+      "description": "Verandahs and external concrete",
+      "quantity": "90",
+      "unit": "m2",
+      "rate": "72"
+    },
+    {
+      "description": "Stormwater and erosion control",
+      "quantity": "1",
+      "unit": "item",
+      "rate": "14500"
+    },
+    {
+      "description": "Clean, snagging and handover",
+      "quantity": "1",
+      "unit": "item",
+      "rate": "6500"
+    }
+  ],
+  "preliminaries": "28500",
+  "overhead_rate": "0.10",
+  "contingency_rate": "0.125",
+  "profit_rate": "0.18",
+  "discount": "0",
+  "tax_rate": "0.15",
+  "provisional_sums": "42000",
+  "assumptions": [
+    "Budgetary pricing only: derived from one A3 floor-plan PDF with no structural, MEP, elevation, finish, soil, survey, or specification pack.",
+    "Pricing is in USD and assumes October to mid-March Zimbabwe rainy-season work, including productivity loss, protection, wet-weather access, stormwater diversion, and programme risk.",
+    "Measured allowance assumes approximately 316 m2 enclosed floor area and approximately 380 m2 roof/covered envelope, subject to CAD/BIM or IFC remeasurement.",
+    "Rates assume conventional masonry construction, reinforced concrete substructure and slab, standard lodge-grade finishes, and normal day-shift labour.",
+    "No client budget was provided; pricing is cost-plus with overhead, rainy-season contingency, provisional sums, and profit separated for audit.",
+    "Final tender must be revised after site visit, soil confirmation, finish schedule, door/window schedule, sanitary schedule, electrical layout, drainage design, and supplier quotations."
+  ],
+  "exclusions": [
+    "Land, statutory approvals, professional fees, utility connection fees, permits, levies, and authority charges.",
+    "Abnormal ground, rock excavation, exceptional dewatering, contaminated material, retaining walls, major earthworks, and off-site roadworks.",
+    "Furniture, loose appliances, curtains, linen, signage, landscaping, borehole/water storage, solar/PV, generator, air-conditioning, CCTV, Wi-Fi, and specialist lodge equipment.",
+    "Price escalation, foreign-exchange movement, customs/duty shocks, and material price changes beyond quote validity.",
+    "Any scope not visible or inferable from the single floor-plan drawing."
+  ]
+}

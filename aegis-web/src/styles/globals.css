@@ -73,6 +73,78 @@
     --snc-warning:      var(--dxl-warning);
   }
 
+  html[data-theme="paper"] {
+    --dxl-ink: #F5F5F0;
+    --dxl-ink-light: #FFFFFF;
+    --dxl-ink-mid: #D7D3C7;
+    --dxl-signal: #8B6A08;
+    --dxl-signal-muted: #B28916;
+    --dxl-signal-ghost: rgba(139, 106, 8, 0.10);
+    --dxl-paper: #102033;
+    --dxl-paper-warm: #15263C;
+    --dxl-slate: #526074;
+    --dxl-slate-light: #6C7A8B;
+    --dxl-slate-dark: #3A4657;
+    --snc-void: #F5F5F0;
+    --snc-navy: var(--dxl-ink);
+    --snc-navy-mid: var(--dxl-ink-mid);
+    --snc-navy-raised: var(--dxl-ink-light);
+    --snc-navy-high: #E6E2D7;
+    --snc-border: var(--dxl-ink-mid);
+    --snc-text-primary: var(--dxl-paper);
+    --snc-text-secondary: var(--dxl-slate-light);
+    --snc-text-tertiary: var(--dxl-slate);
+    --snc-text-disabled: var(--dxl-slate-dark);
+  }
+
+  html[data-theme="slate"] {
+    --dxl-ink: #0E1724;
+    --dxl-ink-light: #172436;
+    --dxl-ink-mid: #24364C;
+    --dxl-signal: #C8960C;
+    --dxl-signal-muted: #9B760A;
+    --dxl-signal-ghost: rgba(200, 150, 12, 0.08);
+    --dxl-paper: #F3F6FA;
+    --dxl-paper-warm: #E9EEF5;
+    --dxl-slate: #7B8CA3;
+    --dxl-slate-light: #9AA8BA;
+    --dxl-slate-dark: #425367;
+    --snc-void: #0B1220;
+    --snc-navy: var(--dxl-ink);
+    --snc-navy-mid: var(--dxl-ink-mid);
+    --snc-navy-raised: var(--dxl-ink-light);
+    --snc-navy-high: #1D2B3F;
+    --snc-border: var(--dxl-ink-mid);
+    --snc-text-primary: var(--dxl-paper);
+    --snc-text-secondary: var(--dxl-slate-light);
+    --snc-text-tertiary: var(--dxl-slate);
+    --snc-text-disabled: var(--dxl-slate-dark);
+  }
+
+  html[data-theme="contrast"] {
+    --dxl-ink: #000000;
+    --dxl-ink-light: #101010;
+    --dxl-ink-mid: #2A2A2A;
+    --dxl-signal: #FFD24A;
+    --dxl-signal-muted: #C6A023;
+    --dxl-signal-ghost: rgba(255, 210, 74, 0.12);
+    --dxl-paper: #FFFFFF;
+    --dxl-paper-warm: #F2F2F2;
+    --dxl-slate: #9A9A9A;
+    --dxl-slate-light: #C4C4C4;
+    --dxl-slate-dark: #595959;
+    --snc-void: #000000;
+    --snc-navy: var(--dxl-ink);
+    --snc-navy-mid: var(--dxl-ink-mid);
+    --snc-navy-raised: var(--dxl-ink-light);
+    --snc-navy-high: #151515;
+    --snc-border: var(--dxl-ink-mid);
+    --snc-text-primary: var(--dxl-paper);
+    --snc-text-secondary: var(--dxl-slate-light);
+    --snc-text-tertiary: var(--dxl-slate);
+    --snc-text-disabled: var(--dxl-slate-dark);
+  }
+
   /* ── Base Document ──────────────────────────────────────────────────────── */
   html {
     scroll-behavior: smooth;
@@ -92,7 +164,7 @@
   /* ── Selection ──────────────────────────────────────────────────────────── */
   ::selection {
     background-color: var(--dxl-signal);
-    color: var(--dxl-ink);
+    color: #040810;
   }
 
   /* ── Focus States — deliberate, not browser default ─────────────────────── */

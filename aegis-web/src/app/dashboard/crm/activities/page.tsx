@@ -24,10 +24,13 @@ import {
 } from "lucide-react";
 import {
   getCrmActivities,
-  createCrmActivity,
+  getCrmCommunications,
+  createCrmCommunication,
   getCrmContacts,
   getCrmOpportunities,
   updateCrmActivity,
+  updateCrmCommunication,
+  sendCrmWhatsAppMessage,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 
@@ -36,10 +39,18 @@ import { useAuth } from "@/lib/auth/AuthContext";
 interface ActivityRecord {
   id: string;
   type: string;
+  channel?: string;
+  direction?: "inbound" | "outbound" | "internal";
   subject: string;
   description?: string;
+  body?: string;
   activity_date: string;
+  started_at?: string;
+  duration_seconds?: number;
   status: string;
+  outcome?: string;
+  response_summary?: string;
+  next_action?: string;
   contact_id?: string;
   lead_id?: string;
   opportunity_id?: string;
@@ -47,6 +58,7 @@ interface ActivityRecord {
   lead_company?: string;
   opportunity_name?: string;
   created_at?: string;
+  actor_name?: string;
 }
 
 type ViewMode = "list" | "calendar";
@@ -55,7 +67,7 @@ type DateGroup = "today" | "yesterday" | "this-week" | "earlier";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const ACTIVITY_TYPES = ["Call", "Meeting", "Email", "Site Visit", "WhatsApp"] as const;
+const ACTIVITY_TYPES = ["Call", "WhatsApp", "WhatsApp Call", "Email", "Meeting", "Site Visit", "Manual Note"] as const;
 
 /** Monochrome-plus-signal palette per type. Calendar dots + icon bg tints. */
 const TYPE_CONFIG: Record<
@@ -67,6 +79,8 @@ const TYPE_CONFIG: Record<
   Email:      { color: "text-slate-300",  bg: "bg-slate-500/10",  border: "border-slate-400/25",  dot: "#94a3b8" },
   "Site Visit": { color: "text-emerald-300", bg: "bg-emerald-500/10", border: "border-emerald-500/25", dot: "#34d399" },
   WhatsApp:   { color: "text-violet-300", bg: "bg-violet-500/10", border: "border-violet-500/25", dot: "#a78bfa" },
+  "WhatsApp Call": { color: "text-cyan-300", bg: "bg-cyan-500/10", border: "border-cyan-500/25", dot: "#67e8f9" },
+  "Manual Note": { color: "text-zinc-300", bg: "bg-zinc-500/10", border: "border-zinc-400/25", dot: "#d4d4d8" },
 };
 const DEFAULT_TYPE_CONFIG = { color: "text-paper/60", bg: "bg-white/5", border: "border-white/10", dot: "#94a3b8" };
 
@@ -92,6 +106,51 @@ function getActivityIcon(type: string, sizeClass = "w-3.5 h-3.5") {
     case "Site Visit": return <MapPin className={cls} />;
     default:           return <Clock className={cls} />;
   }
+}
+
+function typeToChannel(type: string): string {
+  const map: Record<string, string> = {
+    Call: "phone_call",
+    WhatsApp: "whatsapp_message",
+    "WhatsApp Call": "whatsapp_call",
+    Email: "email",
+    Meeting: "meeting",
+    "Site Visit": "site_visit",
+    "Manual Note": "manual_note",
+  };
+  return map[type] ?? "manual_note";
+}
+
+function channelToType(channel?: string, fallback = "Manual Note"): string {
+  const map: Record<string, string> = {
+    phone_call: "Call",
+    whatsapp_message: "WhatsApp",
+    whatsapp_call: "WhatsApp Call",
+    email: "Email",
+    meeting: "Meeting",
+    site_visit: "Site Visit",
+    manual_note: "Manual Note",
+  };
+  return channel ? map[channel] ?? fallback : fallback;
+}
+
+function normalizeCommunicationRecord(item: any): ActivityRecord {
+  const type = channelToType(item.channel, item.type ?? "Manual Note");
+  const details = [
+    item.body,
+    item.outcome ? `Outcome: ${item.outcome}` : null,
+    item.response_summary ? `Response: ${item.response_summary}` : null,
+    item.next_action ? `Next action: ${item.next_action}` : null,
+    item.duration_seconds ? `Duration: ${item.duration_seconds} seconds` : null,
+  ].filter(Boolean).join("\n");
+  return {
+    ...item,
+    type,
+    subject: item.subject || item.outcome || "CRM communication",
+    description: item.description || details,
+    activity_date: item.activity_date || item.started_at || item.created_at,
+    status: item.status === "planned" || item.status === "pending" ? "Pending" : item.status === "failed" ? "Failed" : item.status === "received" ? "Received" : "Completed",
+  };
 }
 
 function formatDate(dateStr: string) {
@@ -322,6 +381,17 @@ function ActivityCard({ act, onToggleStatus }: ActivityCardProps) {
             <span className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-sm text-slate-light border border-white/5">
               <User className="w-2 h-2 text-signal" />
               {act.contact_name}
+            </span>
+          )}
+          {act.actor_name && (
+            <span className="flex items-center gap-1 bg-white/5 px-1.5 py-0.5 rounded-sm text-slate-light border border-white/5">
+              <Users className="w-2 h-2 text-amber-300" />
+              {act.actor_name}
+            </span>
+          )}
+          {act.direction && (
+            <span className="bg-white/5 px-1.5 py-0.5 rounded-sm text-slate-light border border-white/5 uppercase">
+              {act.direction}
             </span>
           )}
           {act.opportunity_name && (
@@ -608,7 +678,7 @@ function CalendarView({ activities }: { activities: ActivityRecord[] }) {
 // ─── Quick Log Panel ──────────────────────────────────────────────────────────
 
 interface QuickLogPanelProps {
-  contacts: { id: string; contact_name: string; email?: string }[];
+  contacts: { id: string; contact_name: string; email?: string; phone?: string }[];
   opportunities: { id: string; name: string; budget?: number; stage?: string }[];
   onClose: () => void;
   onSuccess: () => void;
@@ -624,6 +694,12 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
   const [formContactId, setFormContactId] = useState("");
   const [formOpportunityId, setFormOpportunityId] = useState("");
   const [formStatus, setFormStatus] = useState("Completed");
+  const [formDirection, setFormDirection] = useState<"outbound" | "inbound" | "internal">("outbound");
+  const [formOutcome, setFormOutcome] = useState("");
+  const [formResponse, setFormResponse] = useState("");
+  const [formNextAction, setFormNextAction] = useState("");
+  const [formDurationMinutes, setFormDurationMinutes] = useState("");
+  const [sendViaWhatsApp, setSendViaWhatsApp] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -632,6 +708,8 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
     if (!formSubject.trim()) e.subject = "Subject is required.";
     if (!formDate) e.date = "Date is required.";
     if (!formTime) e.time = "Time is required.";
+    if (formDurationMinutes.trim() && Number.isNaN(Number(formDurationMinutes))) e.duration = "Duration must be a number.";
+    if (sendViaWhatsApp && formType === "WhatsApp" && !formContactId) e.contact = "Choose a contact before sending through WhatsApp.";
     return e;
   };
 
@@ -646,16 +724,30 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
     setIsSubmitting(true);
     try {
       const activityDateTime = new Date(`${formDate}T${formTime}:00`).toISOString();
+      const channel = typeToChannel(formType);
+      const duration_seconds = formDurationMinutes.trim() ? Math.round(Number(formDurationMinutes) * 60) : undefined;
       const payload = {
-        type: formType,
+        channel,
+        direction: formDirection,
         subject: formSubject.trim(),
-        description: formNotes.trim() || undefined,
-        activity_date: activityDateTime,
-        status: formStatus,
+        body: formNotes.trim() || undefined,
+        started_at: activityDateTime,
+        status: formStatus.toLowerCase(),
+        outcome: formOutcome.trim() || undefined,
+        response_summary: formResponse.trim() || undefined,
+        next_action: formNextAction.trim() || undefined,
+        duration_seconds,
         contact_id: formContactId || undefined,
         opportunity_id: formOpportunityId || undefined,
       };
-      const response = await createCrmActivity(payload) as { success: boolean; error?: { message?: string } };
+      const response = sendViaWhatsApp && channel === "whatsapp_message"
+        ? await sendCrmWhatsAppMessage({
+            body: formNotes.trim() || formSubject.trim(),
+            subject: formSubject.trim(),
+            contact_id: formContactId || undefined,
+            opportunity_id: formOpportunityId || undefined,
+          }) as { success: boolean; error?: { message?: string } }
+        : await createCrmCommunication(payload) as { success: boolean; error?: { message?: string } };
       if (!response.success) {
         throw new Error("Could not log activity.");
       }
@@ -668,7 +760,7 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
   };
 
   const typeEmoji: Record<string, string> = {
-    Call: "📞", Meeting: "🤝", Email: "✉️", "Site Visit": "📍", WhatsApp: "💬",
+    Call: "📞", Meeting: "🤝", Email: "✉️", "Site Visit": "📍", WhatsApp: "💬", "WhatsApp Call": "☎️", "Manual Note": "•",
   };
 
   return (
@@ -731,6 +823,29 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
 
         {/* Form body */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto custom-scrollbar px-5 py-4 space-y-4">
+          {/* Direction */}
+          <div>
+            <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
+              Direction
+            </label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(["outbound", "inbound", "internal"] as const).map((direction) => (
+                <button
+                  key={direction}
+                  type="button"
+                  onClick={() => setFormDirection(direction)}
+                  className={`px-2 py-1.5 rounded-sm border font-mono text-[8px] uppercase tracking-wider transition-all ${
+                    formDirection === direction
+                      ? "bg-signal/10 border-signal/40 text-signal"
+                      : "bg-white/3 border-white/8 text-slate-light hover:border-white/20"
+                  }`}
+                >
+                  {direction}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Subject */}
           <div>
             <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
@@ -803,6 +918,47 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
             </div>
           </div>
 
+          {/* Outcome and duration */}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
+                Outcome
+              </label>
+              <select
+                value={formOutcome}
+                onChange={(e) => setFormOutcome(e.target.value)}
+                className="w-full bg-ink/80 border border-white/10 rounded-sm px-2.5 py-2 text-xs text-paper focus:border-signal outline-none font-sans"
+              >
+                <option value="">Not set</option>
+                <option value="connected">Connected</option>
+                <option value="no_answer">No answer</option>
+                <option value="interested">Interested</option>
+                <option value="not_interested">Not interested</option>
+                <option value="quote_requested">Quote requested</option>
+                <option value="follow_up_required">Follow-up required</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </div>
+            <div>
+              <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
+                Duration minutes
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={formDurationMinutes}
+                onChange={(e) => setFormDurationMinutes(e.target.value)}
+                className={`w-full bg-ink/80 border rounded-sm px-2.5 py-2 text-xs text-paper focus:border-signal outline-none font-mono ${
+                  formErrors.duration ? "border-red-500/60" : "border-white/10"
+                }`}
+              />
+              {formErrors.duration && (
+                <p className="font-mono text-[9px] text-red-400 mt-1">{formErrors.duration}</p>
+              )}
+            </div>
+          </div>
+
           {/* Contact */}
           <div>
             <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
@@ -817,10 +973,13 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
               <option value="">— None —</option>
               {contacts.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.contact_name} {c.email ? `(${c.email})` : ""}
+                  {c.contact_name} {c.phone ? `(${c.phone})` : c.email ? `(${c.email})` : ""}
                 </option>
               ))}
             </select>
+            {formErrors.contact && (
+              <p className="font-mono text-[9px] text-red-400 mt-1">{formErrors.contact}</p>
+            )}
           </div>
 
           {/* Opportunity */}
@@ -846,7 +1005,7 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
           {/* Notes */}
           <div>
             <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
-              Notes / Description
+              Notes / Message Body
             </label>
             <textarea
               value={formNotes}
@@ -856,6 +1015,47 @@ function QuickLogPanel({ contacts, opportunities, onClose, onSuccess }: QuickLog
               className="w-full bg-ink/80 border border-white/10 rounded-sm px-2.5 py-2 text-xs text-paper focus:border-signal outline-none font-sans resize-none"
             />
           </div>
+
+          <div className="grid grid-cols-1 gap-3">
+            <label className="block">
+              <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
+                Response summary
+              </span>
+              <textarea
+                value={formResponse}
+                onChange={(e) => setFormResponse(e.target.value)}
+                placeholder="What did they say or confirm?"
+                rows={2}
+                className="w-full bg-ink/80 border border-white/10 rounded-sm px-2.5 py-2 text-xs text-paper focus:border-signal outline-none font-sans resize-none"
+              />
+            </label>
+            <label className="block">
+              <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1.5">
+                Next action
+              </span>
+              <input
+                value={formNextAction}
+                onChange={(e) => setFormNextAction(e.target.value)}
+                placeholder="e.g. Send BOQ tomorrow"
+                className="w-full bg-ink/80 border border-white/10 rounded-sm px-2.5 py-2 text-xs text-paper focus:border-signal outline-none font-sans"
+              />
+            </label>
+          </div>
+
+          {formType === "WhatsApp" && (
+            <label className="flex items-start gap-2 bg-violet-500/10 border border-violet-500/25 rounded-sm p-3 text-xs text-violet-100">
+              <input
+                type="checkbox"
+                checked={sendViaWhatsApp}
+                onChange={(e) => setSendViaWhatsApp(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block font-mono text-[9px] uppercase tracking-widest text-violet-200">Send through WhatsApp Cloud API</span>
+                <span className="mt-1 block text-[10px] leading-relaxed text-violet-100/80">Leave unchecked to manually log a WhatsApp message that was sent outside AEGIS.</span>
+              </span>
+            </label>
+          )}
 
           {submitError && (
             <div className="flex items-center gap-2 bg-red-950/30 border border-red-500/30 p-2.5 rounded-sm">
@@ -896,7 +1096,7 @@ export default function CRMActivitiesPage() {
   const { session } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [activities, setActivities] = useState<ActivityRecord[]>([]);
-  const [contacts, setContacts] = useState<{ id: string; contact_name: string; email?: string }[]>([]);
+  const [contacts, setContacts] = useState<{ id: string; contact_name: string; email?: string; phone?: string }[]>([]);
   const [opportunities, setOpportunities] = useState<{ id: string; name: string; budget?: number; stage?: string }[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("list");
@@ -907,15 +1107,19 @@ export default function CRMActivitiesPage() {
     setLoadError(null);
     try {
       const [actRes, contactsRes, oppsRes] = await Promise.allSettled([
-        getCrmActivities(),
+        getCrmCommunications({ limit: 250 }),
         getCrmContacts(),
         getCrmOpportunities(),
       ]);
 
       if (actRes.status === "fulfilled" && actRes.value.success) {
-        setActivities(actRes.value.data || []);
+        setActivities((actRes.value.data || []).map(normalizeCommunicationRecord));
       } else {
-        console.warn("Failed to load activities");
+        const fallback = await getCrmActivities();
+        setActivities((fallback.data || []).map((item: any) => ({
+          ...item,
+          activity_date: item.activity_date || item.created_at,
+        })));
       }
       if (contactsRes.status === "fulfilled" && contactsRes.value.success) {
         setContacts(contactsRes.value.data || []);
@@ -943,7 +1147,11 @@ export default function CRMActivitiesPage() {
         prev.map((a) => (a.id === activity.id ? { ...a, status: nextStatus } : a))
       );
       try {
-        await updateCrmActivity(activity.id, { status: nextStatus });
+        if (activity.channel) {
+          await updateCrmCommunication(activity.id, { status: nextStatus.toLowerCase() });
+        } else {
+          await updateCrmActivity(activity.id, { status: nextStatus });
+        }
       } catch {
         // Revert on failure
         setActivities((prev) =>

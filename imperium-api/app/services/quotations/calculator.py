@@ -52,6 +52,11 @@ class QuotationCalculationInput(BaseModel):
     assumptions: List[str] = Field(default_factory=list)
     exclusions: List[str] = Field(default_factory=list)
 
+    # Estimation Enhancements for Workflow alignment
+    built_area_sqm: Decimal = Field(default=Decimal("0"), description="Total built area in square meters for benchmarking")
+    price_validity_days: int = Field(default=30, description="Validity period of pricing in days")
+    is_inflation_adjusted: bool = Field(default=False, description="Flag indicating if quote is adjusted for current material inflation")
+
 
 class QuotationCalculationResult(BaseModel):
     direct_costs: Decimal
@@ -73,6 +78,11 @@ class QuotationCalculationResult(BaseModel):
     assumptions: List[str]
     exclusions: List[str]
     audit_trail_hash: str
+
+    # Estimation Enhancements for Workflow alignment
+    built_area_sqm: Decimal = Field(default=Decimal("0"))
+    price_validity_days: int = Field(default=30)
+    is_inflation_adjusted: bool = Field(default=False)
 
 
 class QuotationCalculator:
@@ -108,6 +118,11 @@ class QuotationCalculator:
 
         assumptions = [str(x) for x in input_data.get("assumptions", [])]
         exclusions = [str(x) for x in input_data.get("exclusions", [])]
+
+        # Parse estimation controls & workflow enhancements
+        built_area_sqm = cls.sanitize_decimal(input_data.get("built_area_sqm"))
+        price_validity_days = int(input_data.get("price_validity_days", 30))
+        is_inflation_adjusted = bool(input_data.get("is_inflation_adjusted", False))
 
         raw_items = input_data.get("items", [])
         boq_items: List[BOQItem] = []
@@ -253,6 +268,24 @@ class QuotationCalculator:
             unauthorised_margins = True
             alerts.append("Overhead rate exceeds maximum corporate threshold of 25%.")
 
+        # Benchmarking finished price per sqm ($450–$800 USD/sqm)
+        sqm_benchmark_status = "not_applicable"
+        finished_price_per_sqm = Decimal("0")
+        if built_area_sqm > 0:
+            finished_price_per_sqm = (grand_total / built_area_sqm).quantize(rounding_prec, rounding=ROUND_HALF_UP)
+            if finished_price_per_sqm < Decimal("450"):
+                sqm_benchmark_status = "below_range"
+                alerts.append(f"Finished price of ${finished_price_per_sqm}/m² is below the standard corporate benchmark range ($450 - $800/m²). Ensure cost recovery is sufficient.")
+            elif finished_price_per_sqm > Decimal("800"):
+                sqm_benchmark_status = "above_range"
+                alerts.append(f"Finished price of ${finished_price_per_sqm}/m² exceeds the standard corporate benchmark range ($450 - $800/m²). Review premium finish specification or markup.")
+            else:
+                sqm_benchmark_status = "within_range"
+        
+        # Inflation check warning
+        if not is_inflation_adjusted:
+            alerts.append("Pricing represents historical rates and has not been inflation-adjusted for current material price fluctuations. Recommend review against cost catalog.")
+
         breakdown_log = {
             "boq_item_count": len(boq_items),
             "overhead_percentage": f"{overhead_rate * 100}%",
@@ -269,6 +302,13 @@ class QuotationCalculator:
                 "transport": str(total_transport),
                 "waste_allowance": str(total_waste),
             },
+            "estimation_controls": {
+                "built_area_sqm": str(built_area_sqm),
+                "finished_price_per_sqm": str(finished_price_per_sqm),
+                "sqm_benchmark_status": sqm_benchmark_status,
+                "price_validity_days": price_validity_days,
+                "is_inflation_adjusted": is_inflation_adjusted,
+            }
         }
 
         # Secure Checksum/Audit Hash (prevent pricing database tampering)
@@ -280,6 +320,8 @@ class QuotationCalculator:
             "overhead_rate": str(overhead_rate),
             "profit_rate": str(profit_rate),
             "margin_policy_violated": unauthorised_margins,
+            "built_area_sqm": str(built_area_sqm),
+            "is_inflation_adjusted": is_inflation_adjusted,
         }
         checksum_str = json.dumps(checksum_payload, sort_keys=True)
         audit_trail_hash = hashlib.sha256(checksum_str.encode("utf-8")).hexdigest()
@@ -302,4 +344,7 @@ class QuotationCalculator:
             assumptions=assumptions,
             exclusions=exclusions,
             audit_trail_hash=audit_trail_hash,
+            built_area_sqm=built_area_sqm,
+            price_validity_days=price_validity_days,
+            is_inflation_adjusted=is_inflation_adjusted,
         )

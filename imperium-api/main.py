@@ -7,7 +7,7 @@ from core.database import check_database_health
 from core.logging import logger, setup_logging
 from core.security import require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
-from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, website_enquiries, executive, crm, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, settings as settings_router, analytics_ml  # fmt: skip
+from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, website_enquiries, executive, crm, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa  # fmt: skip
 
 
 def create_app() -> FastAPI:
@@ -96,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(maintenance_schedules.router, prefix="/api/v1/maintenance-schedules", tags=["Maintenance Schedules"], dependencies=[Depends(require_resource_permission("maintenance_schedules"))])  # fmt: skip
     app.include_router(automated_reports.router, prefix="/api/v1/automated-reports", tags=["Automated Reports"], dependencies=[Depends(require_resource_permission("automated_reports"))])  # fmt: skip
     app.include_router(website_enquiries.router, prefix="/api/v1/website-enquiries", tags=["Website Enquiries"], dependencies=[Depends(require_resource_permission("website_enquiries"))])  # fmt: skip
+
     app.include_router(executive.router, prefix="/api/v1/executive", tags=["Executive"])
     app.include_router(crm.router, prefix="/api/v1/crm", tags=["CRM"])
     app.include_router(crm_organizations.router, prefix="/api/v1/crm-organizations", tags=["CRM Organizations"], dependencies=[Depends(require_resource_permission("crm_organizations"))])  # fmt: skip
@@ -107,10 +108,17 @@ def create_app() -> FastAPI:
     )
     app.include_router(profiles.router, prefix="/api/v1/profile", tags=["Profile"])
     app.include_router(portals.router, prefix="/api/v1/portals", tags=["Portals"])
+    app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])  # fmt: skip
+    app.include_router(pwa.router, prefix="/api/v1/pwa", tags=["PWA"])
     app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["Settings"])  # fmt: skip
     app.include_router(
         analytics_ml.router, prefix="/api/v1/analytics-ml", tags=["Analytics ML"]
     )
+    app.include_router(bank_accounts.router, prefix="/api/v1/bank-accounts", tags=["Bank Accounts"])
+    app.include_router(bank_transactions.router, prefix="/api/v1/bank-transactions", tags=["Bank Transactions"])
+    app.include_router(payments.router, prefix="/api/v1/payments", tags=["Payments"])
+    app.include_router(payroll_runs.router, prefix="/api/v1/payroll-runs", tags=["Payroll Runs"])
+    app.include_router(payslips.router, prefix="/api/v1/payslips", tags=["Payslips"])
 
     return app
 

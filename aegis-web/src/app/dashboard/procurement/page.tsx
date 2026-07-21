@@ -7,6 +7,8 @@ import {
   useMemo,
   useState,
 } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   ArrowRight,
@@ -151,17 +153,33 @@ function normalizeActionError(reason: unknown, fallback: string) {
 // ─── Page export ──────────────────────────────────────────────────────────────
 
 export default function ProcurementPage() {
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams?.get("tab");
+  const initialTab: Tab =
+    requestedTab === "rfqs" || requestedTab === "orders" || requestedTab === "suppliers" || requestedTab === "invoices"
+      ? (requestedTab === "orders" ? "orders" : requestedTab)
+      : "requisitions";
+
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Project Manager", "Finance Manager", "Site Agent"]}>
-      <ProcurementWorkspace />
+      <ProcurementWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
 }
 
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
-function ProcurementWorkspace() {
-  const [tab, setTab] = useState<Tab>("requisitions");
+const TAB_ROUTES: Record<Tab, string> = {
+  requisitions: "/dashboard/procurement/requisitions",
+  rfqs: "/dashboard/procurement/rfqs",
+  orders: "/dashboard/procurement/purchase-orders",
+  suppliers: "/dashboard/procurement/suppliers",
+  invoices: "/dashboard/procurement/invoices",
+};
+
+function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Tab }) {
+  const router = useRouter();
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [projects, setProjects] = useState<Rec[]>([]);
   const [suppliers, setSuppliers] = useState<Rec[]>([]);
   const [stores, setStores] = useState<Rec[]>([]);
@@ -188,6 +206,10 @@ function ProcurementWorkspace() {
   const [receivingPO, setReceivingPO] = useState<Rec | null>(null);
   const [invoicingPO, setInvoicingPO] = useState<Rec | null>(null);
   const [paymentEvidenceInvoice, setPaymentEvidenceInvoice] = useState<Rec | null>(null);
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -268,7 +290,7 @@ function ProcurementWorkspace() {
       await createPurchaseOrderFromRequisition({ requisition_id: pr.id, supplier_id: supplierId, notes: supplierSelectionReason });
       setNotice("Purchase order created from approved requisition.");
       setCreatingPOFromPR(null);
-      setTab("orders");
+      router.push(TAB_ROUTES.orders);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Purchase order creation failed.")); }
     finally { setSaving(null); }
@@ -280,7 +302,7 @@ function ProcurementWorkspace() {
       await createProcurementRfq({ requisition_id: pr.id, ...payload });
       setNotice("RFQ issued from approved requisition.");
       setCreatingRfqFromPR(null);
-      setTab("rfqs");
+      router.push(TAB_ROUTES.rfqs);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "RFQ creation failed.")); }
     finally { setSaving(null); }
@@ -312,7 +334,7 @@ function ProcurementWorkspace() {
     try {
       await createPurchaseOrderFromRfq({ rfq_response_id: response.id });
       setNotice("Purchase order created from selected supplier quotation.");
-      setTab("orders");
+      router.push(TAB_ROUTES.orders);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Purchase order creation from quotation failed.")); }
     finally { setSaving(null); }
@@ -348,7 +370,7 @@ function ProcurementWorkspace() {
       setNotice("Supplier invoice registered.");
       setInvoicingPO(null);
       setSelectedPO(null);
-      setTab("invoices");
+      router.push(TAB_ROUTES.invoices);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Invoice registration failed.")); }
     finally { setSaving(null); }
@@ -465,23 +487,32 @@ function ProcurementWorkspace() {
       {sourceWarnings.length > 0 && <div className="mb-6 space-y-2">{sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}</div>}
       {notice && <Banner tone="info" message={notice} onClose={() => setNotice(null)} />}
 
-      {/* Tab bar */}
+      {/* Module bar */}
       <div className="flex border-b border-ink-mid">
-        {(["requisitions", "rfqs", "orders", "suppliers", "invoices"] as Tab[]).map((t) => (
-          <button key={t} onClick={() => { setTab(t); setQuery(""); }}
-            className={`px-5 py-3 font-mono text-xs font-bold uppercase tracking-widest transition-colors ${tab === t ? "border-b-2 border-signal text-signal" : "text-slate hover:text-paper"}`}>
-            {t === "requisitions" && "Requisitions"}
-            {t === "rfqs" && "RFQs"}
-            {t === "orders" && "Purchase Orders"}
-            {t === "suppliers" && "Suppliers"}
-            {t === "invoices" && (
-              <span className="flex items-center gap-1.5">
-                Invoices
-                {unmatchedCount > 0 && !loading && <span className="rounded-full bg-red-600 px-1.5 py-0.5 font-mono text-[10px] text-white">{unmatchedCount}</span>}
-              </span>
-            )}
-          </button>
-        ))}
+        {(["requisitions", "rfqs", "orders", "suppliers", "invoices"] as Tab[]).map((item) => {
+          const isCurrent = tab === item;
+          const label =
+            item === "requisitions" ? "Requisitions" :
+            item === "rfqs" ? "RFQs" :
+            item === "orders" ? "Purchase Orders" :
+            item === "suppliers" ? "Suppliers" :
+            "Invoices";
+          return (
+            <Link
+              key={item}
+              href={TAB_ROUTES[item]}
+              onClick={() => setQuery("")}
+              className={`px-5 py-3 font-mono text-xs font-bold uppercase tracking-widest transition-colors ${isCurrent ? "border-b-2 border-signal text-signal" : "text-slate hover:text-paper"}`}
+            >
+              {item === "invoices" ? (
+                <span className="flex items-center gap-1.5">
+                  {label}
+                  {unmatchedCount > 0 && !loading && <span className="rounded-full bg-red-600 px-1.5 py-0.5 font-mono text-[10px] text-white">{unmatchedCount}</span>}
+                </span>
+              ) : label}
+            </Link>
+          );
+        })}
       </div>
 
       {/* Filter bar */}

@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_FROM_NUMBER: Optional[str] = None
     TWILIO_WEBHOOK_BASE_URL: Optional[str] = None
+    PWA_VAPID_SUBJECT: str = "mailto:alerts@aegis.local"
+    PWA_VAPID_PRIVATE_KEY_PEM: Optional[str] = None
+    PWA_VAPID_PRIVATE_KEY_PATH: str = ".aegis-runtime/pwa/vapid_private.pem"
+    PWA_VAPID_PUBLIC_KEY_PATH: str = ".aegis-runtime/pwa/vapid_public.pem"
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"

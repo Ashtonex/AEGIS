@@ -17,7 +17,9 @@
     "profit_percentage": "12.00%",
     "tax_percentage": "15.00%",
     "margin_policy_violated": false,
-    "margin_alerts": [],
+    "margin_alerts": [
+      "Pricing represents historical rates and has not been inflation-adjusted for current material price fluctuations. Recommend review against cost catalog."
+    ],
     "direct_costs_breakdown": {
       "materials": "0.00",
       "labour": "0.00",
@@ -25,6 +27,13 @@
       "subcontractors": "0.00",
       "transport": "0.00",
       "waste_allowance": "0.00"
+    },
+    "estimation_controls": {
+      "built_area_sqm": "0",
+      "finished_price_per_sqm": "0",
+      "sqm_benchmark_status": "not_applicable",
+      "price_validity_days": 30,
+      "is_inflation_adjusted": false
     }
   },
   "quotation_id": "SNC-FULL-QT-2026-001",
@@ -39,5 +48,8 @@
     "Client-side professional fees and third-party inspections.",
     "Foreign exchange variation after quote validity period."
   ],
-  "audit_trail_hash": "c7390a55c78067423181955b38d6587bc7c13bfe49db839ec2642338b002154e"
+  "audit_trail_hash": "83fb7048306a0de2f889ae89a9f52b8f397fa6f81ce751f0a088fb4b75a7e235",
+  "built_area_sqm": "0",
+  "price_validity_days": 30,
+  "is_inflation_adjusted": false
 }
