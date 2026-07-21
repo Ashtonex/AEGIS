@@ -8,12 +8,6 @@ import { Button } from "@/components/ui/Button";
 import Link from "next/link";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
 
-export async function generateStaticParams() {
-  return INDUSTRIES.map((ind) => ({
-    slug: ind.toLowerCase(),
-  }));
-}
-
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
   const ind = INDUSTRIES.find(i => i.toLowerCase() === params.slug);

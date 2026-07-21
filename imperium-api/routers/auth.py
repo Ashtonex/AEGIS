@@ -1,15 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from schemas.auth import UserRegister, UserLogin, TokenRefresh
 from core.database import supabase
 from core.security import get_current_user
+from core.rate_limit import limiter
 
 router = APIRouter()
 
 
 @router.post("/register")
-async def register_user(payload: UserRegister):
+@limiter.limit("5/minute")
+async def register_user(request: Request, payload: UserRegister):
     try:
-        # 1. Create user in Supabase Auth
         res = supabase.auth.sign_up(
             {
                 "email": payload.email,
@@ -22,11 +23,6 @@ async def register_user(payload: UserRegister):
                 },
             }
         )
-
-        # 2. Insert into our public.users table would typically be handled by a Supabase Database trigger
-        # after auth.users insertion to guarantee consistency. However, since the prompt didn't specify the trigger,
-        # the service role could insert it here if needed. We assume the trigger handles it for absolute consistency.
-
         return {
             "success": True,
             "data": {"user_id": res.user.id if res.user else None},
@@ -38,7 +34,8 @@ async def register_user(payload: UserRegister):
 
 
 @router.post("/login")
-async def login_user(payload: UserLogin):
+@limiter.limit("10/minute;3/second")
+async def login_user(request: Request, payload: UserLogin):
     try:
         res = supabase.auth.sign_in_with_password(
             {"email": payload.email, "password": payload.password}
@@ -60,8 +57,6 @@ async def login_user(payload: UserLogin):
 @router.post("/logout")
 async def logout_user(user: dict = Depends(get_current_user)):
     try:
-        # Supabase client handles signout per session, but REST API client usually drops local state.
-        # True invalidation requires server-side token blacklisting or Supabase admin sign_out.
         return {
             "success": True,
             "data": None,
@@ -83,7 +78,8 @@ async def get_me(user: dict = Depends(get_current_user)):
 
 
 @router.post("/refresh")
-async def refresh_token(payload: TokenRefresh):
+@limiter.limit("20/minute")
+async def refresh_token(request: Request, payload: TokenRefresh):
     try:
         res = supabase.auth.refresh_session(payload.refresh_token)
         return {

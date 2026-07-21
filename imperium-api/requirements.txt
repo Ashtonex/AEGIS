@@ -46,6 +46,7 @@ puremagic==1.30             # Windows-compatible file signature detection
 cryptography==49.0.0        # Cryptographic primitives
 PyJWT==2.13.0               # JWT decoding and validation
 argon2-cffi==25.1.0         # Argon2id password hashing
+slowapi==0.1.9              # Rate limiting for FastAPI (brute-force protection)
 
 # --- SYSTEM LOGGING ---
 loguru==0.7.3               # Structured application logging

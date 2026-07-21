@@ -10,12 +10,6 @@ import { getProjectsByCapability } from "@/lib/mockProjects";
 import { ProjectCard } from "@/components/sections/ProjectCard";
 import { Project } from "@/types/website";
 
-export async function generateStaticParams() {
-  return CAPABILITIES.map((cap) => ({
-    slug: cap.toLowerCase().replace(/ & /g, '-').replace(/\s+/g, '-'),
-  }));
-}
-
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
   const cap = CAPABILITIES.find(c => c.toLowerCase().replace(/ & /g, '-').replace(/\s+/g, '-') === params.slug);

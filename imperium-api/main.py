@@ -20,6 +20,14 @@ def create_app() -> FastAPI:
         version="1.1.0",
     )
 
+    from core.rate_limit import limiter, rate_limit_exceeded_handler
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.middleware import SlowAPIMiddleware
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
     app.add_middleware(StructuredLoggingMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     app.add_middleware(
