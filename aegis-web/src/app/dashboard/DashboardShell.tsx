@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -361,14 +361,80 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             {time}
           </div>
           
-          <div className="flex items-center space-x-3 border-l border-ink-mid pl-6 cursor-pointer group" data-tour="dashboard-profile">
-            <div className="text-right">
-              <p className="text-sm font-medium text-paper group-hover:text-signal transition-colors">{displayName}</p>
-              <p className="text-[10px] font-mono tracking-widest text-slate uppercase">{userRole}</p>
-            </div>
-            <div className="w-8 h-8 rounded-sm bg-ink-light border border-ink-mid flex items-center justify-center text-slate group-hover:border-signal/50 transition-colors">
-              <User className="w-4 h-4" />
-            </div>
+          <div className="relative" ref={userMenuRef} data-tour="dashboard-profile">
+            <button
+              type="button"
+              onClick={() => setUserMenuOpen((prev) => !prev)}
+              className="flex items-center space-x-3 border-l border-ink-mid pl-6 cursor-pointer group focus:outline-none"
+              aria-expanded={userMenuOpen}
+              aria-haspopup="true"
+            >
+              <div className="text-right">
+                <p className="text-sm font-medium text-paper group-hover:text-signal transition-colors">{displayName}</p>
+                <p className="text-[10px] font-mono tracking-widest text-slate uppercase">{userRole}</p>
+              </div>
+              <div className="w-8 h-8 rounded-sm bg-ink-light border border-ink-mid flex items-center justify-center text-slate group-hover:border-signal/50 transition-colors relative">
+                <User className="w-4 h-4" />
+                <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-ink" title="Active Session" />
+              </div>
+              <ChevronDown className={`w-3.5 h-3.5 text-slate transition-transform duration-200 ${userMenuOpen ? "rotate-180 text-signal" : ""}`} />
+            </button>
+
+            {/* USER PROFILE DROPDOWN MENU */}
+            {userMenuOpen && (
+              <div className="absolute right-0 mt-2 w-64 bg-ink-light border border-white/10 rounded-sm shadow-2xl z-50 py-2 animate-in fade-in slide-in-from-top-2 duration-150">
+                {/* User Identity Header */}
+                <div className="px-4 py-3 border-b border-white/10">
+                  <p className="text-xs font-semibold text-paper truncate">{userEmail}</p>
+                  <div className="mt-1.5 flex items-center justify-between">
+                    <span className="inline-block px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider bg-signal/10 text-signal border border-signal/30 rounded-xs font-bold">
+                      {userRole}
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-light">Six Nine Construction</span>
+                  </div>
+                </div>
+
+                {/* Quick Navigation Links */}
+                <div className="py-1">
+                  <Link
+                    href="/dashboard/settings"
+                    onClick={() => setUserMenuOpen(false)}
+                    className="flex items-center space-x-2.5 px-4 py-2 text-xs text-slate-light hover:text-paper hover:bg-white/5 transition-colors"
+                  >
+                    <Settings className="w-4 h-4 text-slate" />
+                    <span>System Settings &amp; Profile</span>
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      openTour();
+                    }}
+                    className="w-full flex items-center space-x-2.5 px-4 py-2 text-xs text-slate-light hover:text-paper hover:bg-white/5 transition-colors text-left"
+                  >
+                    <CircleHelp className="w-4 h-4 text-slate" />
+                    <span>Replay Onboarding Tour</span>
+                  </button>
+                </div>
+
+                <div className="border-t border-white/10 my-1" />
+
+                {/* LOG OUT BUTTON */}
+                <div className="px-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      void signOut();
+                    }}
+                    className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-semibold text-red-400 hover:text-red-300 hover:bg-red-950/40 border border-red-500/20 hover:border-red-500/40 rounded-sm transition-all"
+                  >
+                    <LogOut className="w-4 h-4 text-red-400" />
+                    <span>Log Out</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </header>
