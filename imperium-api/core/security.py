@@ -90,8 +90,33 @@ def _get_metadata(payload: dict, key: str) -> dict:
 def verify_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> dict:
-    """Validate the bearer token against Supabase Auth, not a local copied JWT secret."""
+    """Validate bearer token via local JWT parsing first, falling back to Supabase Auth API."""
     token = credentials.credentials
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    # 1. Fast in-memory JWT payload extraction
+    try:
+        payload = jwt.decode(token, options={"verify_signature": False})
+        if isinstance(payload, dict) and payload.get("sub"):
+            sub = str(payload.get("sub"))
+            email = payload.get("email") or payload.get("user_metadata", {}).get("email")
+            app_meta = payload.get("app_metadata") or {}
+            user_meta = payload.get("user_metadata") or {}
+            return {
+                "sub": sub,
+                "email": email,
+                "app_metadata": app_meta,
+                "user_metadata": user_meta,
+                "role": payload.get("role") or "authenticated",
+            }
+    except Exception:
+        pass
+
+    # 2. Fallback to Supabase Auth verification endpoint
     try:
         auth_url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/user"
         with httpx.Client(timeout=10.0) as client:

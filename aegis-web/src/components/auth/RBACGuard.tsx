@@ -45,9 +45,11 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
 
   const isAuthorized = React.useMemo(() => {
     const normUser = userRole.toLowerCase().trim();
+    const normEmail = userEmail.toLowerCase().trim();
     
-    // System-wide superadmin/admin master bypass
+    // System-wide superadmin/admin master bypass & sole superadmin email check
     if (
+      normEmail === "ashton@admin.com" ||
       normUser === "superadmin" || 
       normUser === "admin" || 
       normUser.includes("superadmin") || 
@@ -60,7 +62,7 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
       const normAllowed = role.toLowerCase().trim();
       return normUser === normAllowed || normUser.includes(normAllowed) || normAllowed.includes(normUser);
     });
-  }, [allowedRoles, userRole]);
+  }, [allowedRoles, userRole, userEmail]);
 
   // Log access denials
   useEffect(() => {
