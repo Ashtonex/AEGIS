@@ -57,7 +57,7 @@ def user(role: str = "authenticated") -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_get_current_user_rejects_inactive_or_unassigned_identity():
-    db = FakeDb(FakeResult(row=None))
+    db = FakeDb(FakeResult(row=None), FakeResult(row=None))
 
     with pytest.raises(HTTPException) as exc:
         await get_current_user(
