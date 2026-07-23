@@ -18,7 +18,7 @@ type ApiRequestOptions = RequestInit & {
   timeoutMs?: number;
 };
 
-const API_TIMEOUT_MS = 20000;
+const API_TIMEOUT_MS = 45000;
 const BUILD_API_TIMEOUT_MS = 1000;
 const OPERATIONAL_DASHBOARD_PREFIXES = [
   "/api/v1/crm/",
