@@ -79,10 +79,10 @@ export default function QuotationsDashboard() {
             Estimating &amp; Quotations Command
           </h1>
           <p className="text-sm text-slate mt-1">
-            Build robust cost structures, manage margins, and generate client-ready construction proposals.
+            Build robust cost structures, manage margins, and run commercial controls across all construction projects.
           </p>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button 
             onClick={loadData}
             className="p-2 border border-ink-mid rounded-sm bg-ink hover:border-signal/50 text-slate hover:text-white transition-all"
@@ -91,18 +91,25 @@ export default function QuotationsDashboard() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-signal' : ''}`} />
           </button>
           <Link
+            href="/dashboard/quotations/builder"
+            className="flex items-center space-x-2 border border-signal/40 text-signal px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-signal/10 transition-all"
+          >
+            <Plus className="w-3.5 h-3.5 stroke-[3px]" />
+            <span>Manual Calculator / Builder</span>
+          </Link>
+          <Link
+            href="/dashboard/quotations/ccb"
+            className="flex items-center space-x-2 border border-amber-500/40 text-amber-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-amber-500/10 transition-all"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Commercial Control Brain (CCB)</span>
+          </Link>
+          <Link
             href="/dashboard/quotations/intelligence"
-            className="flex items-center space-x-2 bg-gradient-to-r from-signal via-amber-400 to-amber-500 text-ink px-4 py-2 text-sm font-bold rounded-sm hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
+            className="flex items-center space-x-2 bg-gradient-to-r from-signal via-amber-400 to-amber-500 text-ink px-4 py-2 text-xs font-bold rounded-sm hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
           >
             <Brain className="w-4 h-4 text-ink" />
             <span>Quotation Intelligence Engine</span>
-          </Link>
-          <Link
-            href="/dashboard/quotations/builder"
-            className="flex items-center space-x-2 border border-signal/40 text-signal px-4 py-2 text-sm font-semibold rounded-sm hover:bg-signal/10 transition-all"
-          >
-            <Plus className="w-4 h-4 stroke-[3px]" />
-            <span>New Estimate</span>
           </Link>
         </div>
       </div>
