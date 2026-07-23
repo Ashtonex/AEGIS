@@ -63,10 +63,22 @@ def insert_returning_id_sql(
     allowed_columns: Iterable[str],
     *,
     include_audit_columns: bool = True,
+    json_columns: Iterable[str] = (),
 ) -> TextClause:
+    """Build an INSERT ... RETURNING id statement.
+
+    ``json_columns`` marks which of ``columns`` bind to a jsonb column. asyncpg's
+    jsonb codec calls ``.encode()`` on the bound value, so callers must pass an
+    already ``json.dumps``-serialized string for those columns; this only adds
+    the matching ``CAST(:col AS jsonb)`` on the SQL side.
+    """
     safe_table = safe_table_name(table, {table})
     safe = safe_columns(columns, allowed_columns)
-    bind_names = [f":{column}" for column in safe]
+    json_cols = frozenset(json_columns)
+    bind_names = [
+        f"CAST(:{column} AS jsonb)" if column in json_cols else f":{column}"
+        for column in safe
+    ]
     if include_audit_columns:
         safe = [*safe, "organization_id", "created_by"]
         bind_names = [*bind_names, ":org_id", ":user_id"]
@@ -86,10 +98,18 @@ def update_returning_id_sql(
     table: str,
     columns: Iterable[str],
     allowed_columns: Iterable[str],
+    *,
+    json_columns: Iterable[str] = (),
 ) -> TextClause:
+    """Build an UPDATE ... RETURNING id statement. See ``insert_returning_id_sql``
+    for why ``json_columns`` needs to be listed explicitly."""
     safe_table = safe_table_name(table, {table})
     safe = safe_columns(columns, allowed_columns)
-    set_sql = ", ".join(f"{column} = :{column}" for column in safe)
+    json_cols = frozenset(json_columns)
+    set_sql = ", ".join(
+        f"{column} = CAST(:{column} AS jsonb)" if column in json_cols else f"{column} = :{column}"
+        for column in safe
+    )
     # Table and column identifiers are allowlist-validated above.
     return text(
         f"""

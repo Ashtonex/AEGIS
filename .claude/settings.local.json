@@ -1,4 +1,36 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/quotations/intelligence_engine.py'\\).read\\(\\)\\)\")",
+      "Bash(python -m pytest tests/test_quotation_intelligence_engine.py -q)",
+      "Bash(.venv/Scripts/python.exe -m pip list)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_quotation_intelligence_engine.py -v)",
+      "Bash(npx tsc *)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('routers/quotations.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_quotation_stack_contract.py tests/test_quotation_intelligence_engine.py -q)",
+      "Bash(npx eslint *)",
+      "Bash(.venv/Scripts/python.exe -c \"import routers.quotations as q; print\\('routes:', len\\(q.router.routes\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_quotation_stack_contract.py -q)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('app/services/quotations/intelligence_engine.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_quotation_intelligence_engine.py -q)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('app/services/documents/renderers.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"from app.services.documents.renderers import CommercialControlPDFRenderer; print\\('import ok'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import openpyxl; print\\(openpyxl.__version__\\)\")",
+      "Bash(\"G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe\" build_crm_starter_workbook.py)",
+      "Bash(G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe -c ' *)",
+      "Bash(cp \"C:\\\\Users\\\\ashjx\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\G--work-ATMCAPPROJECTS-Mudekwa-AEGIS\\\\64a1a469-99f7-4fb0-8831-19fa5cd8ec9f\\\\scratchpad\\\\AEGIS_Manual_CRM_Starter_Kit.xlsx\" \"C:\\\\Users\\\\ashjx\\\\Desktop\\\\AEGIS_Manual_CRM_Starter_Kit.xlsx\")",
+      "Read(//c/Users/ashjx/Desktop/**)",
+      "Bash(grep -RniE \"mock|dummy|fake|placeholder|hardcoded|TODO|FIXME|stub|sample|Acme|example\\\\.com|John Doe|Jane Doe|Lorem ipsum|\\\\\"John\\\\\"|\\\\\\\\\\\\$100,000|test@|demo\" src/app/dashboard src/lib --include=\"*.ts\" --include=\"*.tsx\" -c)",
+      "Bash(sort -t: -k2 -n -r)",
+      "Bash(.venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('routers/settings.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_migration_ledger_alignment.py -q)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_crm_no_fake_records_contract.py tests/test_migration_ledger_alignment.py -v)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_crm_no_fake_records_contract.py -v)",
+      "Bash(git checkout *)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

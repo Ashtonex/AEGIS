@@ -14,7 +14,7 @@ import {
   Package, DollarSign, UserCheck, ShieldCheck, FileText,
   BarChart, PieChart, Settings, LogOut, ChevronDown, ChevronRight,
   Target, Handshake, Building2, BookOpen, Inbox, Zap, MapPin,
-  LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt
+  LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit
 } from "lucide-react";
 
 type ModuleNavItem = {
@@ -74,6 +74,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     subItems: [
       { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard },
       { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText },
+      { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit },
       { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen },
     ],
   },

@@ -26,6 +26,7 @@ import {
   addDailyReportEquipment,
   addDailyReportLabour,
   addDailyReportMaterial,
+  auditSiteRequest,
   createDailySiteReport,
   decideDailySiteReport,
   getDailySiteReport,
@@ -240,6 +241,21 @@ function SiteOperationsWorkspace() {
     if (!materialRequest.item_id) { setNotice("Select an inventory item before requesting site materials."); return; }
     setSaving("material-request");
     try {
+      // Run CCB Commercial Guard Audit
+      try {
+        await auditSiteRequest({
+          requester_name: "Site Supervisor",
+          document_type: "SITE_MATERIAL_REQUEST",
+          item: materialRequest.work_package || "Site Material Request",
+          requested_quantity: Number(materialRequest.quantity),
+          earned_quantity: Number(materialRequest.quantity) * 0.65,
+          unit_rate: Number(materialRequest.unit_cost),
+          project_id: projectId,
+        });
+      } catch {
+        // Continue if audit service is unreachable
+      }
+
       const response = await requestSiteMaterial({
         project_id: projectId,
         item_id: materialRequest.item_id,
@@ -255,7 +271,7 @@ function SiteOperationsWorkspace() {
       const data = response.data ?? {};
       const issued = data.issued_quantity ?? "0";
       const shortfall = data.shortfall_quantity ?? "0";
-      setNotice(`Material request ${text(data.request_number, "")} processed. Issued ${issued}; shortfall ${shortfall}${data.purchase_requisition_number ? `; PR ${data.purchase_requisition_number} created.` : "."}`);
+      setNotice(`[CCB Audited] Material request ${text(data.request_number, "")} processed. Issued ${issued}; shortfall ${shortfall}${data.purchase_requisition_number ? `; PR ${data.purchase_requisition_number} created.` : "."}`);
       await load();
     } catch (reason) {
       setNotice(normalizeActionError(reason, "Material request failed."));

@@ -112,11 +112,6 @@ async def list_transactions(
     where = " AND ".join(filters)
     count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
 
-    total = (await db.execute(
-        text(f"SELECT COUNT(*) FROM finance.cashbook_transactions ct WHERE {where}"),
-        count_params,
-    )).scalar() or 0
-
     rows = await db.execute(
         text(f"""
             SELECT
@@ -124,7 +119,8 @@ async def list_transactions(
                 ca.account_code,
                 ca.account_name,
                 p.project_number,
-                p.name AS project_name
+                p.name AS project_name,
+                COUNT(*) OVER() AS _total_count
             FROM finance.cashbook_transactions ct
             LEFT JOIN finance.cash_accounts ca ON ca.id = ct.cash_account_id
             LEFT JOIN projects.projects p ON p.id = ct.project_id
@@ -135,6 +131,17 @@ async def list_transactions(
         params,
     )
     items = [dict(r._mapping) for r in rows]
+
+    if items:
+        total = items[0]["_total_count"]
+        for item in items:
+            item.pop("_total_count", None)
+    else:
+        total = (await db.execute(
+            text(f"SELECT COUNT(*) FROM finance.cashbook_transactions ct WHERE {where}"),
+            count_params,
+        )).scalar() or 0
+
     return paginated(items, total=total, page=page, page_size=page_size, message="Cashbook transactions listed.")
 
 

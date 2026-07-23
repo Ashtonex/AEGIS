@@ -113,7 +113,7 @@ def _source_name(source_url: str) -> str:
 
 def _stable_id(*parts: str) -> str:
     payload = "||".join(parts).encode("utf-8")
-    return hashlib.sha1(payload).hexdigest()[:16]
+    return hashlib.sha1(payload, usedforsecurity=False).hexdigest()[:16]
 
 
 def _extract_reference(text_value: str) -> str:

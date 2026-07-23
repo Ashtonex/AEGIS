@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import require_permission
+from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 
 router = APIRouter()
 
@@ -1221,8 +1222,56 @@ async def create_purchase_order(
         project_id=req["project_id"],
         payload={"po_number": po_no, "requisition_id": str(payload.requisition_id)},
     )
+
+    # CCB Rate Interception & Commercial Audit Check
+    ccb_outliers = []
+    for line in lines:
+        desc = str(line.get("description") or "Item")
+        unit_price = float(line.get("estimated_unit_cost") or 0)
+        eval_res = RateIntelligenceEngine.evaluate_rate(desc, unit_price)
+        if eval_res.get("is_outlier"):
+            ccb_outliers.append(eval_res.get("recommendation"))
+
+    if ccb_outliers:
+        try:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO finance.commercial_guard_audits (
+                        organization_id, project_id, requester_id, requester_name, document_type,
+                        item_description, input_amount, status, anomaly_reason, evidence_pack
+                    ) VALUES (
+                        :org_id, :project_id, :requester_id, :requester_name, 'PURCHASE_ORDER',
+                        :item, 0, 'FLAGGED', :reason, :evidence
+                    )
+                    """
+                ),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": str(req["project_id"]) if req.get("project_id") else None,
+                    "requester_id": user["user_id"],
+                    "requester_name": user.get("email", "Buyer"),
+                    "item": f"PO {po_no} Rate Outlier",
+                    "reason": " | ".join(ccb_outliers),
+                    "evidence": json.dumps({"po_id": str(po_id), "outliers": ccb_outliers}),
+                },
+            )
+        except Exception:
+            pass
+
     await db.commit()
-    return ok({"id": str(po_id), "po_number": po_no}, "Purchase order created.")
+    return ok(
+        {
+            "id": str(po_id),
+            "po_number": po_no,
+            "ccb_audit": {
+                "flagged": len(ccb_outliers) > 0,
+                "outliers_count": len(ccb_outliers),
+                "warnings": ccb_outliers,
+            },
+        },
+        "Purchase order created." if not ccb_outliers else "Purchase order created with CCB rate outlier warnings.",
+    )
 
 
 @router.post("/purchase-orders/{po_id}/issue")

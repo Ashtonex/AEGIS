@@ -93,27 +93,14 @@ async def list_cash_accounts(
         params["is_active"] = is_active
 
     where = " AND ".join(filters)
-
-    count_q = await db.execute(
-        text(f"SELECT COUNT(*) FROM finance.cash_accounts ca WHERE {where}"),
-        {k: v for k, v in params.items() if k not in ("limit", "offset")},
-    )
-    total = count_q.scalar() or 0
+    count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
 
     rows = await db.execute(
         text(f"""
             SELECT
                 ca.*,
-                COALESCE(
-                    (SELECT SUM(CASE WHEN ct.transaction_type = 'receipt' THEN ct.amount
-                                     WHEN ct.transaction_type = 'payment' THEN -ct.amount
-                                     ELSE 0 END)
-                     FROM finance.cashbook_transactions ct
-                     WHERE ct.cash_account_id = ca.id
-                       AND ct.is_deleted = false
-                       AND ct.is_posted = true),
-                    0
-                ) + ca.opening_balance AS running_balance
+                ca.current_balance AS running_balance,
+                COUNT(*) OVER() AS _total_count
             FROM finance.cash_accounts ca
             WHERE {where}
             ORDER BY ca.account_code ASC
@@ -122,6 +109,17 @@ async def list_cash_accounts(
         params,
     )
     items = [dict(r._mapping) for r in rows]
+
+    if items:
+        total = items[0]["_total_count"]
+        for item in items:
+            item.pop("_total_count", None)
+    else:
+        total = (await db.execute(
+            text(f"SELECT COUNT(*) FROM finance.cash_accounts ca WHERE {where}"),
+            count_params,
+        )).scalar() or 0
+
     return paginated(items, total=total, page=page, page_size=page_size, message="Cash accounts listed.")
 
 
@@ -180,17 +178,7 @@ async def get_cash_account(
     org_id = _require_org(user)
     result = await db.execute(
         text("""
-            SELECT
-                ca.*,
-                COALESCE(
-                    (SELECT SUM(CASE WHEN ct.transaction_type = 'receipt' THEN ct.amount
-                                     WHEN ct.transaction_type = 'payment' THEN -ct.amount
-                                     ELSE 0 END)
-                     FROM finance.cashbook_transactions ct
-                     WHERE ct.cash_account_id = ca.id
-                       AND ct.is_deleted = false AND ct.is_posted = true),
-                    0
-                ) + ca.opening_balance AS running_balance
+            SELECT ca.*, ca.current_balance AS running_balance
             FROM finance.cash_accounts ca
             WHERE ca.id = :account_id AND ca.organization_id = :org_id AND ca.is_deleted = false
         """),

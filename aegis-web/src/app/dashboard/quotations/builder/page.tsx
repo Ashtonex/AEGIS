@@ -305,7 +305,7 @@ export default function QuotationBuilder() {
     
     // Construct calculation dictionary for the backend
     const apiPayload = {
-      quotation_id: printQuoteData.metadata?.reference_number || "SNC-QT-MOCK",
+      quotation_id: printQuoteData.metadata?.reference_number || "SNC-QT-UNSPECIFIED",
       revision_number: 1,
       currency_rounding_decimals: 2,
       preliminaries: Number(printQuoteData.metadata?.preliminaries) || 0,
@@ -1104,7 +1104,7 @@ export default function QuotationBuilder() {
                   <tbody>
                     <tr>
                       <td className="pr-3 text-slate font-bold">DOC REF:</td>
-                      <td className="text-white print:text-black font-bold">{printQuoteData.metadata?.reference_number || "SNC-QT-MOCK"}</td>
+                      <td className="text-white print:text-black font-bold">{printQuoteData.metadata?.reference_number || "SNC-QT-UNSPECIFIED"}</td>
                     </tr>
                     <tr>
                       <td className="pr-3 text-slate">DATE:</td>

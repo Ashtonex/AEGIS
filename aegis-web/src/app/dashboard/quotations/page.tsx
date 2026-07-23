@@ -5,7 +5,7 @@ import Link from "next/link";
 import { 
   FileText, Plus, Trash2, CheckCircle, 
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
-  TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers
+  TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain
 } from "lucide-react";
 import { getQuotations, getProjects } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -91,8 +91,15 @@ export default function QuotationsDashboard() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-signal' : ''}`} />
           </button>
           <Link
+            href="/dashboard/quotations/intelligence"
+            className="flex items-center space-x-2 bg-gradient-to-r from-signal via-amber-400 to-amber-500 text-ink px-4 py-2 text-sm font-bold rounded-sm hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
+          >
+            <Brain className="w-4 h-4 text-ink" />
+            <span>Quotation Intelligence Engine</span>
+          </Link>
+          <Link
             href="/dashboard/quotations/builder"
-            className="flex items-center space-x-2 bg-signal text-ink px-4 py-2 text-sm font-semibold rounded-sm hover:bg-signal-hover hover:scale-[1.02] active:scale-[0.98] transition-all"
+            className="flex items-center space-x-2 border border-signal/40 text-signal px-4 py-2 text-sm font-semibold rounded-sm hover:bg-signal/10 transition-all"
           >
             <Plus className="w-4 h-4 stroke-[3px]" />
             <span>New Estimate</span>
@@ -272,6 +279,25 @@ export default function QuotationsDashboard() {
                 <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
+          </div>
+
+          <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
+            <div className="w-10 h-10 rounded-sm bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-300">
+              <Brain className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-display font-semibold text-white">Commercial Control Brain</h3>
+              <p className="text-xs text-slate mt-1">
+                Convert an estimate into material demand, spend guardrails, output targets, margin protection, and exception flags.
+              </p>
+            </div>
+            <Link
+              href="/dashboard/quotations/ccb"
+              className="flex items-center space-x-2 text-xs text-signal font-semibold hover:text-signal-hover transition-colors font-mono"
+            >
+              <span>Open CCB</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
           </div>
 
           {/* Historical link card */}

@@ -45,6 +45,12 @@ CRM_AUTOMATIONS_PAGE = (
     / "automations"
     / "page.tsx"
 )
+CRM_LEADS_ENGINE_MIGRATION = (
+    ROOT / "imperium-api" / "migrations" / "003_crm_leads_engine.sql"
+)
+REMOVE_DUMMY_LEADS_MIGRATION = (
+    ROOT / "imperium-api" / "migrations" / "040_remove_dummy_crm_leads.sql"
+)
 
 
 class CrmNoFakeRecordsContract(unittest.TestCase):
@@ -161,6 +167,34 @@ class CrmNoFakeRecordsContract(unittest.TestCase):
             "Automation rules could not be loaded from the CRM service.", source
         )
         self.assertIn("No production telemetry was written.", source)
+
+
+    def test_dummy_demo_leads_from_migration_003_are_cleaned_up_by_migration_040(self):
+        # Migration 003_crm_leads_engine.sql INSERTs 3 hardcoded demo leads
+        # directly into crm.leads for every organization at deploy time
+        # ("Insert some dummy leads for testing the Intelligence Grid") — not
+        # seed data quarantined behind the `_seed_` skip flag, a normal
+        # migration, so the fake leads land in every real database that runs
+        # migrations from scratch.
+        #
+        # 003 is intentionally left untouched here: the migration runner
+        # checksums every already-applied file (migration_ledger.py's
+        # _raise_if_checksum_changed) and hard-fails all future migrations if
+        # an applied file's content changes. The fix is a corrective
+        # migration that deletes the 3 fabricated rows by exact match, so it
+        # cleans up a database where 003 already ran AND neutralizes a fresh
+        # database where 003 runs and 040 immediately follows it.
+        engine_source = CRM_LEADS_ENGINE_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("INSERT INTO crm.leads", engine_source)
+
+        cleanup = REMOVE_DUMMY_LEADS_MIGRATION.read_text(encoding="utf-8")
+        self.assertIn("DELETE FROM crm.leads", cleanup)
+        self.assertIn("Ministry of Transport", cleanup)
+        self.assertIn("Zimplats", cleanup)
+        self.assertIn("Local Supermarket Chain", cleanup)
+        self.assertIn("ai_score = 92", cleanup)
+        self.assertIn("ai_score = 85", cleanup)
+        self.assertIn("ai_score = 31", cleanup)
 
 
 if __name__ == "__main__":

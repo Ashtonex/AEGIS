@@ -1937,6 +1937,194 @@ export async function updateQuotation(id: string, payload: Record<string, unknow
   });
 }
 
+// --- QUOTATION INTELLIGENCE ENGINE --- //
+
+export async function evaluateQuotationIntelligence(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/evaluate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+export async function generateAutonomousQuote(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/generate-quote', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getConstructionAssemblies(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/quotations/assemblies', { cache: 'no-store', allowFallback: false });
+}
+
+export async function calculateAssemblyBreakdown(assemblyCode: string, quantity: number): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/assemblies/calculate', {
+    method: 'POST',
+    body: JSON.stringify({ assembly_code: assemblyCode, quantity }),
+    allowFallback: false,
+  });
+}
+
+export async function benchmarkRate(itemCode: string, rate: number): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/rates/benchmark?item_code=${encodeURIComponent(itemCode)}&rate=${rate}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function generateSpendForecast(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/spend-forecast', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function auditSiteRequest(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/guard/audit', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function watchDocumentRevision(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/documents/watch', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCommercialBaselineHistory(params: { quotationId?: string; projectId?: string } = {}): Promise<ApiResponse<any[]>> {
+  const query = new URLSearchParams();
+  if (params.quotationId) query.set('quotation_id', params.quotationId);
+  if (params.projectId) query.set('project_id', params.projectId);
+  const qs = query.toString();
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/intelligence/baselines${qs ? `?${qs}` : ''}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getGuardAuditHistory(projectId?: string): Promise<ApiResponse<any[]>> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/guard/audits${qs}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function saveCcbOverride(payload: {
+  quotation_id: string;
+  flag_title: string;
+  approver_role: string;
+  baseline_id?: string | null;
+  notes?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/override', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function simulateCcbScenario(payload: {
+  base_payload: Record<string, unknown>;
+  material_price_hike_pct?: number;
+  subcontractor_rate_hike_pct?: number;
+  productivity_change_pct?: number;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/simulate-scenario', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getRecommendedSubcontractors(category = 'Concrete & Structure'): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/intelligence/subcontractors/recommended?category=${encodeURIComponent(category)}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function forecastInflationImpact(payload: {
+  base_cost: number;
+  duration_weeks: number;
+  currency?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/inflation-forecast', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function classifyBoqDescription(description: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/classify-description', {
+    method: 'POST',
+    body: JSON.stringify({ description }),
+    allowFallback: false,
+  });
+}
+
+export async function getDocumentChangeHistory(projectId?: string): Promise<ApiResponse<any[]>> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/documents/changes${qs}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function exportCcbControlFilePdf(payload: Record<string, unknown>): Promise<Blob> {
+  const url = resolveApiUrl('/api/v1/quotations/intelligence/export-pdf');
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+  if (!response.ok) {
+    throw await buildApiError(response);
+  }
+  return response.blob();
+}
+
+export async function createCustomAssembly(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/assemblies', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteCustomAssembly(assemblyId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/assemblies/${assemblyId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function listRateBenchmarks(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/quotations/rates/benchmarks', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createRateBenchmark(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/rates/benchmarks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteRateBenchmark(benchmarkId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/rates/benchmarks/${benchmarkId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
 // --- ANALYTICS MACHINE LEARNING --- //
 
 export async function simulateSchedule(tasks: any[], iterations = 1000): Promise<ApiResponse<any>> {
@@ -1992,5 +2180,6 @@ export async function createPayrollRun(payload: Record<string, unknown>): Promis
     allowFallback: false,
   });
 }
+
 
 

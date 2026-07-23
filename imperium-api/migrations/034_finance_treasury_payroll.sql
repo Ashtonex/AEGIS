@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS finance.cashbook_transactions (
     reconciled_at       TIMESTAMPTZ,
     reconciled_by       UUID REFERENCES core.users(id),
     posted_by           UUID REFERENCES core.users(id),
+    is_posted           BOOLEAN NOT NULL DEFAULT true,
     posted_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     is_deleted          BOOLEAN NOT NULL DEFAULT false,

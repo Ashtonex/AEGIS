@@ -12,6 +12,8 @@ import {
   getExecutiveProjectDetail,
   getExecutiveRegions,
   getExecutiveStats,
+  getGuardAuditHistory,
+  getCommercialBaselineHistory,
   getModulesStatus,
 } from "@/lib/api";
 
@@ -165,6 +167,7 @@ function ExecutiveCommandCentreWorkspace() {
     </section>
 
     <OperationalControlLedger stats={stats} />
+    <CCBCommercialGovernanceWidget />
     <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricFields data={selectedCard.key === "safety" ? stats : kpis} />}</Modal>}
@@ -452,3 +455,52 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
   );
 }
 function OperationalControlLedger({ stats }: { stats: ApiData }) { const sources: Record<string, string> = { live_projects: "Projects", deployed_machinery: "Fleet", active_workforce: "HR", open_purchase_orders: "Procurement", materials_in_stock: "Inventory", safety_incidents: "HSE" }; return <section className="bg-ink border border-ink-mid rounded-sm"><div className="p-4 border-b border-ink-mid flex justify-between gap-4"><div><h2 className="font-mono text-xs tracking-widest text-paper uppercase">Operational Intelligence</h2><p className="text-xs text-slate-light mt-1">Current ERP control ledger</p></div><span className="font-mono text-[10px] text-slate">LIVE READ</span></div><div className="p-4 overflow-x-auto"><table className="w-full text-left min-w-[540px]"><thead className="font-mono text-[10px] tracking-widest text-slate uppercase border-b border-ink-mid"><tr><th className="pb-2 font-normal">Control</th><th className="pb-2 font-normal">Current Value</th><th className="pb-2 font-normal">Source</th></tr></thead><tbody>{Object.entries(stats).map(([key, value]) => <tr key={key} className="border-b border-ink-mid/60"><td className="py-3 text-sm text-paper">{titleCase(key)}</td><td className="py-3 font-mono text-sm text-paper">{displayValue(value)}</td><td className="py-3 text-xs text-slate-light">{sources[key] || "ERP"}</td></tr>)}</tbody></table>{!Object.keys(stats).length && <p className="text-sm text-slate-light py-4">No operational records are available for this organisation.</p>}</div></section>; }
+
+function CCBCommercialGovernanceWidget() {
+  const [audits, setAudits] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await getGuardAuditHistory();
+        if (res.success && Array.isArray(res.data)) setAudits(res.data);
+      } catch {
+        // Fallback
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-sm p-4 mt-6">
+      <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">CCB Commercial Governance & MD Control</h2>
+          <p className="text-xs text-slate-light mt-1">Live Commercial Control Brain Exception Log & Rate Outlier Interceptions</p>
+        </div>
+        <a href="/dashboard/quotations/ccb" className="font-mono text-xs text-signal hover:underline">Open CCB Portal →</a>
+      </div>
+      <div className="mt-4 space-y-2">
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading CCB telemetry...</div>
+        ) : audits.length === 0 ? (
+          <p className="text-xs text-slate py-4">No active commercial exception flags recorded across organization baselines.</p>
+        ) : (
+          audits.slice(0, 4).map((audit) => (
+            <div key={audit.id} className="flex justify-between items-center border border-ink-mid bg-ink-light p-3 text-xs">
+              <div>
+                <p className="font-semibold text-paper">{audit.item_description}</p>
+                <p className="text-slate-light mt-0.5">{audit.requester_name} | {audit.anomaly_reason}</p>
+              </div>
+              <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border ${audit.status === "FLAGGED" ? "border-red-500/40 text-red-300 bg-red-950/20" : "border-emerald-500/40 text-emerald-300"}`}>
+                {audit.status}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}

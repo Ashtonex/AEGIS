@@ -63,3 +63,7 @@ Thumbs.db
 
 # Local scratch files may contain environment-specific diagnostics
 scratch/
+
+# Frontend build artifacts that must never be committed
+aegis-web/.aegis-build.lock
+*.tsbuildinfo
