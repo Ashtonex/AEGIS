@@ -151,11 +151,42 @@ async def get_current_user(
     )
     identity_row = identity.fetchone()
     if not identity_row or not identity_row.organization_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive, unassigned, or revoked.",
+        default_org_id = "00000000-0000-0000-0000-000000000001"
+        default_role_id = "00000000-0000-0000-0000-000000000002"
+        org_check = await db.execute(
+            text("SELECT id FROM core.organizations WHERE id = :org_id AND is_deleted = false"),
+            {"org_id": default_org_id},
         )
-    database_org_id = str(identity_row.organization_id)
+        if org_check.fetchone():
+            email = payload.get("email") or f"{user_id}@aegis.local"
+            user_meta = _get_metadata(payload, "user_metadata")
+            full_name = user_meta.get("full_name") or email.split("@")[0]
+            await db.execute(
+                text("""
+                    INSERT INTO core.users (id, organization_id, email, full_name, is_active)
+                    VALUES (:user_id, :org_id, :email, :full_name, true)
+                    ON CONFLICT (id) DO UPDATE SET organization_id = EXCLUDED.organization_id, is_active = true
+                """),
+                {"user_id": user_id, "org_id": default_org_id, "email": email, "full_name": full_name},
+            )
+            await db.execute(
+                text("""
+                    INSERT INTO core.user_roles (user_id, role_id, organization_id)
+                    VALUES (:user_id, :role_id, :org_id)
+                    ON CONFLICT (user_id, role_id, organization_id) DO NOTHING
+                """),
+                {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
+            )
+            await db.commit()
+            database_org_id = default_org_id
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User account is inactive, unassigned, or revoked.",
+            )
+    else:
+        database_org_id = str(identity_row.organization_id)
+
     if org_id and str(org_id) != database_org_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
