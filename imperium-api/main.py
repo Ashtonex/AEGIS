@@ -17,7 +17,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Project Imperium API",
         description="The foundational API layer for PROJECT AEGIS.",
-        version="1.1.0",
+        version="1.1.1",
     )
 
     from core.rate_limit import limiter, rate_limit_exceeded_handler
