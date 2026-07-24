@@ -244,11 +244,15 @@ function extractApiErrorMessage(parsed: unknown): string | undefined {
 }
 
 async function buildApiError(response: Response): Promise<ApiError> {
-  let message = "The requested data could not be loaded.";
+  let message = "The requested data could not be loaded. Please retry in a moment.";
   if (response.status === 401) message = "Your session could not be verified. Please sign in again.";
   if (response.status === 403) message = "You do not have permission to access this resource.";
-  if (response.status === 404) message = "Requested data could not be loaded.";
-  if (response.status >= 500) message = "The service is temporarily unavailable. Please try again.";
+  if (response.status === 404) message = "Requested resource was not found.";
+  if (response.status === 502 || response.status === 503 || response.status === 504) {
+    message = "The backend service is waking up or temporarily unavailable. Please retry in a few seconds.";
+  } else if (response.status >= 500) {
+    message = "The service is temporarily unavailable. Please try again.";
+  }
 
   try {
     const body = await response.text();
