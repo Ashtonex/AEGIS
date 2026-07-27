@@ -30,7 +30,7 @@ class CrmSupportPagesContractTests(unittest.TestCase):
 
     def test_inbox_workspace_degrades_partial_sources(self):
         self.assertIn("Promise.allSettled", INBOX_PAGE)
-        self.assertIn("Website enquiries could not be loaded.", INBOX_PAGE)
+        self.assertIn("CRM communications could not be loaded.", INBOX_PAGE)
         self.assertIn("CRM contacts could not be loaded.", INBOX_PAGE)
         self.assertIn("CRM organizations could not be loaded.", INBOX_PAGE)
         self.assertIn("sourceWarnings.length > 0", INBOX_PAGE)

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.database import get_db
 from core.security import require_permission
+from app.services.crm.automation_engine import fire_trigger
 
 router = APIRouter()
 
@@ -228,6 +229,17 @@ async def _insert_communication(
     )
     communication_id = row.scalar()
     await _mirror_activity(db, org_id=org_id, user_id=user_id, communication_id=communication_id)
+    if values.get("direction", "outbound") == "inbound":
+        await fire_trigger(
+            db, org_id, user_id, "communication_received",
+            {
+                "id": str(communication_id),
+                "contact_id": values.get("contact_id"),
+                "lead_id": values.get("lead_id"),
+                "opportunity_id": values.get("opportunity_id"),
+                "channel": values["channel"],
+            },
+        )
     return communication_id
 
 
@@ -475,6 +487,20 @@ async def verify_whatsapp_webhook(
     raise HTTPException(status_code=403, detail="WhatsApp webhook verification failed.")
 
 
+async def _single_tenant_org_id(db: AsyncSession) -> Optional[str]:
+    """Strict single-tenant fallback: only usable when exactly one organization
+    exists. Mirrors public_intake.py's _public_org_id() rather than guessing
+    "the first organization" when multiple tenants are provisioned."""
+    rows = (
+        await db.execute(
+            text("SELECT id FROM core.organizations WHERE is_deleted = false ORDER BY created_at LIMIT 2")
+        )
+    ).scalars().all()
+    if len(rows) != 1:
+        return None
+    return str(rows[0])
+
+
 async def _org_for_whatsapp_phone_id(
     db: AsyncSession, phone_number_id: Optional[str]
 ) -> Optional[str]:
@@ -497,37 +523,28 @@ async def _org_for_whatsapp_phone_id(
     if row:
         return str(row.organization_id)
     if settings.WHATSAPP_PHONE_NUMBER_ID == phone_number_id:
-        org = (
-            await db.execute(
-                text("SELECT id FROM core.organizations WHERE is_deleted=false ORDER BY created_at LIMIT 1")
-            )
-        ).scalar()
-        return str(org) if org else None
+        return await _single_tenant_org_id(db)
     return None
 
 
 async def _org_for_twilio_number(db: AsyncSession, from_number: Optional[str]) -> Optional[str]:
-    row = (
+    if not from_number:
+        return None
+    rows = (
         await db.execute(
             text("""
-        SELECT organization_id
+        SELECT organization_id, external_reference
         FROM settings.integration_connections
         WHERE provider='twilio'
           AND is_deleted=false
-        ORDER BY updated_at DESC
-        LIMIT 25
     """)
         )
     ).mappings().all()
-    for item in row:
-        return str(item["organization_id"])
+    for item in rows:
+        if _phone_matches(item.get("external_reference"), from_number):
+            return str(item["organization_id"])
     if settings.TWILIO_FROM_NUMBER and _phone_matches(settings.TWILIO_FROM_NUMBER, from_number):
-        org = (
-            await db.execute(
-                text("SELECT id FROM core.organizations WHERE is_deleted=false ORDER BY created_at LIMIT 1")
-            )
-        ).scalar()
-        return str(org) if org else None
+        return await _single_tenant_org_id(db)
     return None
 
 
@@ -737,3 +754,117 @@ async def receive_whatsapp_webhook(
                 processed += 1
     await db.commit()
     return _response({"processed": processed}, "WhatsApp webhook processed.")
+
+
+class ConvertPayload(BaseModel):
+    target_type: Literal["lead", "ticket", "activity"]
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    task_subject: Optional[str] = None
+    task_due_at: Optional[str] = None
+
+
+@router.post("/{communication_id}/convert")
+async def convert_communication(
+    communication_id: UUID,
+    payload: ConvertPayload,
+    user: dict = Depends(require_permission("crm_communications.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    user_id = user["user_id"]
+    
+    # Verify communication exists
+    comm_res = await db.execute(
+        text("SELECT * FROM crm.communication_events WHERE id = :comm_id AND organization_id = :org_id AND is_deleted = false"),
+        {"comm_id": communication_id, "org_id": org_id},
+    )
+    comm = comm_res.fetchone()
+    if not comm:
+        raise HTTPException(status_code=404, detail="Communication event not found.")
+    
+    comm_dict = dict(comm._mapping)
+    
+    if payload.target_type == "lead":
+        result = await db.execute(
+            text("""
+                INSERT INTO crm.leads (
+                    organization_id, company_name, contact_name, contact_email, contact_phone, lead_source, status, created_by
+                ) VALUES (
+                    :org_id, :company, :contact_name, :email, :phone, :source, 'New', :user_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "company": payload.company_name or "Converted Lead",
+                "contact_name": payload.contact_name or comm_dict.get("from_address") or "Converted Contact",
+                "email": payload.contact_email or (comm_dict.get("from_address") if "@" in str(comm_dict.get("from_address")) else None),
+                "phone": payload.contact_phone or (comm_dict.get("from_address") if "@" not in str(comm_dict.get("from_address")) else None),
+                "source": "Inbox Conversation",
+                "user_id": user_id,
+            }
+        )
+        lead_id = str(result.scalar())
+        await db.execute(
+            text("UPDATE crm.communication_events SET lead_id = :lead_id WHERE id = :comm_id AND organization_id = :org_id"),
+            {"lead_id": lead_id, "comm_id": communication_id, "org_id": org_id}
+        )
+        await db.commit()
+        return {"success": True, "message": "Communication converted to Lead.", "data": {"lead_id": lead_id}}
+        
+    elif payload.target_type == "ticket":
+        result = await db.execute(
+            text("""
+                INSERT INTO crm.support_tickets (
+                    organization_id, created_by, subject, description, status, priority,
+                    contact_id, client_org_id
+                ) VALUES (
+                    :org_id, :user_id, :subject, :description, 'new', 'normal',
+                    :contact_id, :client_org_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "user_id": user_id,
+                "subject": comm_dict.get("subject") or "Converted Ticket",
+                "description": comm_dict.get("body") or "No description provided.",
+                "contact_id": comm_dict.get("contact_id"),
+                "client_org_id": comm_dict.get("client_org_id"),
+            }
+        )
+        ticket_id = str(result.scalar())
+        await db.execute(
+            text("UPDATE crm.communication_events SET ticket_id = :ticket_id WHERE id = :comm_id AND organization_id = :org_id"),
+            {"ticket_id": ticket_id, "comm_id": communication_id, "org_id": org_id}
+        )
+        await db.commit()
+        return {"success": True, "message": "Communication converted to Support Ticket.", "data": {"ticket_id": ticket_id}}
+
+    elif payload.target_type == "activity":
+        result = await db.execute(
+            text("""
+                INSERT INTO crm.activities (
+                    organization_id, created_by, contact_id, lead_id, opportunity_id,
+                    type, subject, description, activity_date, status
+                ) VALUES (
+                    :org_id, :user_id, :contact_id, :lead_id, :opportunity_id,
+                    'Task', :subject, :description, COALESCE(:due_at, NOW()), 'Pending'
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "user_id": user_id,
+                "contact_id": comm_dict.get("contact_id"),
+                "lead_id": comm_dict.get("lead_id"),
+                "opportunity_id": comm_dict.get("opportunity_id"),
+                "subject": payload.task_subject or comm_dict.get("subject") or "Follow up on communication",
+                "description": comm_dict.get("body") or "",
+                "due_at": payload.task_due_at,
+            }
+        )
+        activity_id = str(result.scalar())
+        await db.commit()
+        return {"success": True, "message": "Communication converted to follow-up activity.", "data": {"activity_id": activity_id}}
+

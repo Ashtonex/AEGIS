@@ -6,13 +6,14 @@ from decimal import Decimal
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+from core.rate_limit import limiter
 
 router = APIRouter()
 
@@ -281,7 +282,9 @@ async def list_public_tenders(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/enquiry")
+@limiter.limit("10/minute")
 async def submit_enquiry(
+    request: Request,
     payload: EnquiryPayload,
     idempotency_key: Optional[str] = Header(default=None),
     db: AsyncSession = Depends(get_db),
@@ -368,7 +371,9 @@ async def submit_enquiry(
 
 
 @router.post("/supplier")
+@limiter.limit("10/minute")
 async def submit_supplier(
+    request: Request,
     payload: SupplierPayload,
     idempotency_key: Optional[str] = Header(default=None),
     db: AsyncSession = Depends(get_db),
@@ -419,7 +424,9 @@ async def submit_supplier(
 
 
 @router.post("/application")
+@limiter.limit("10/minute")
 async def submit_application(
+    request: Request,
     payload: ApplicationPayload,
     idempotency_key: Optional[str] = Header(default=None),
     db: AsyncSession = Depends(get_db),
@@ -460,7 +467,9 @@ async def submit_application(
 
 
 @router.post("/tender-interest/{tender_id}")
+@limiter.limit("10/minute")
 async def submit_tender_interest(
+    request: Request,
     tender_id: str,
     payload: TenderInterestPayload,
     idempotency_key: Optional[str] = Header(default=None),

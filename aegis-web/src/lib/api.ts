@@ -337,7 +337,7 @@ export async function getProjects(params?: { featured?: boolean; limit?: number;
   if (params?.featured) searchParams.set("featured", "true");
   if (params?.limit) searchParams.set("limit", params.limit.toString());
   if (params?.category) searchParams.set("category", params.category);
-  
+
   return fetchApi<PaginatedResponse<Project>>(`/api/projects?${searchParams.toString()}`, {
     next: { revalidate: 3600 }
   });
@@ -544,6 +544,33 @@ export async function qualifyCrmLead(leadId: string, payload?: any): Promise<Api
   });
 }
 
+export async function disqualifyCrmLead(leadId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-leads/${leadId}/disqualify`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+    allowFallback: false,
+  });
+}
+
+export async function findDuplicateCrmLeads(params: { email?: string; phone?: string; company_name?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params.email) search.set("email", params.email);
+  if (params.phone) search.set("phone", params.phone);
+  if (params.company_name) search.set("company_name", params.company_name);
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-leads/duplicates?${search.toString()}`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function mergeCrmLeads(leadId: string, sourceLeadIds: string[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-leads/${leadId}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ source_lead_ids: sourceLeadIds }),
+    allowFallback: false,
+  });
+}
+
 export async function createCrmLead(data: {
   company_name: string;
   contact_name: string;
@@ -743,6 +770,282 @@ export async function sendCrmWhatsAppMessage(payload: Record<string, unknown>): 
   });
 }
 
+export async function convertCrmCommunication(communicationId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-communications/${communicationId}/convert`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+// --- CRM LIFECYCLE / CUSTOMER 360 --- //
+export async function getCrmCustomer360(organizationAccountId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/customer-360/${organizationAccountId}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmLifecycleReport(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/reports/lifecycle', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmMarketingReport(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/reports/marketing', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmSalesReport(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/reports/sales', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmExecutiveCrmReport(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/reports/executive', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmCampaigns(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm/campaigns', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmCampaign(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/campaigns', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmSegments(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm/segments', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmSegment(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/segments', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmWinLossReasons(reasonType?: 'won' | 'lost'): Promise<ApiResponse<any[]>> {
+  const query = reasonType ? `?reason_type=${reasonType}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm/win-loss-reasons${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmWinLossReason(payload: { reason_type: 'won' | 'lost'; label: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/win-loss-reasons', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmNurtureSequences(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm/nurture-sequences', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmNurtureSequence(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/nurture-sequences', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateCrmNurtureSequence(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/nurture-sequences/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmSequenceSteps(sequenceId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm/nurture-sequences/${sequenceId}/steps`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmSequenceStep(sequenceId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/nurture-sequences/${sequenceId}/steps`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmMessageTemplates(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm/templates', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmMessageTemplate(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/templates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmSupportTickets(params?: { status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.status) search.set("status", params.status);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-lifecycle/support/tickets${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmSupportTicket(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-lifecycle/support/tickets', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateCrmSupportTicket(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-lifecycle/support/tickets/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmTicketComments(ticketId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-lifecycle/support/tickets/${ticketId}/comments`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createCrmTicketComment(ticketId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-lifecycle/support/tickets/${ticketId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function escalateCrmSupportTicket(ticketId: string, payload: { escalated_to: string; reason: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-lifecycle/support/tickets/${ticketId}/escalate`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmTicketEscalations(ticketId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-lifecycle/support/tickets/${ticketId}/escalations`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function attachCrmTicketDocument(ticketId: string, payload: { document_id: string; link_role?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-lifecycle/support/tickets/${ticketId}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmTicketAttachments(ticketId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-lifecycle/support/tickets/${ticketId}/attachments`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmSupportDashboard(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-lifecycle/support/dashboard', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmSlaPolicies(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-lifecycle/support/sla-policies', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function upsertCrmSlaPolicy(payload: { priority: string; response_hours: number; resolution_hours: number }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-lifecycle/support/sla-policies', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function sendCrmCampaign(campaignId: string, templateId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/campaigns/${campaignId}/send`, {
+    method: 'POST',
+    body: JSON.stringify({ template_id: templateId }),
+    allowFallback: false,
+  });
+}
+
+export async function createCrmOpportunityQuotation(opportunityId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${opportunityId}/create-quotation`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function markCrmOpportunityWon(opportunityId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${opportunityId}/mark-won`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function markCrmOpportunityLost(opportunityId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${opportunityId}/mark-lost`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function executeCrmAutomations(payload: Record<string, unknown>): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-lifecycle/automations/execute', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getUsers(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>('/api/v1/users/', {
     cache: 'no-store',
@@ -819,6 +1122,45 @@ export async function deleteCrmAutomation(id: string): Promise<ApiResponse<any>>
   return fetchApi<ApiResponse<any>>(`/api/v1/crm-automations/${id}`, {
     method: 'DELETE'
   });
+}
+
+export async function getCrmAutomationRuns(ruleId?: string): Promise<ApiResponse<any[]>> {
+  const query = ruleId ? `?rule_id=${encodeURIComponent(ruleId)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-automations/runs${query}`, { cache: 'no-store' });
+}
+
+// --- CRM IMPORT / EXPORT --- //
+
+export async function importCrmCsv(file: File, targetType: "contacts" | "leads" | "organizations"): Promise<ApiResponse<{ imported: number }>> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const url = resolveApiUrl(`/api/v1/crm-import-export/import/csv?target_type=${targetType}`);
+  const headers = await getApiHeaders();
+  headers.delete("Content-Type"); // let the browser set the multipart boundary
+  const response = await fetch(url, { method: "POST", headers, body: formData });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(response.status, body?.detail || body?.message || "CSV import failed.");
+  return body;
+}
+
+export async function importCrmVCard(file: File): Promise<ApiResponse<{ imported: number }>> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const url = resolveApiUrl("/api/v1/crm-import-export/import/vcard");
+  const headers = await getApiHeaders();
+  headers.delete("Content-Type");
+  const response = await fetch(url, { method: "POST", headers, body: formData });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(response.status, body?.detail || body?.message || "vCard import failed.");
+  return body;
+}
+
+export async function downloadCrmCsvExport(targetType: "contacts" | "leads" | "opportunities" | "tickets"): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/crm-import-export/export/csv?target_type=${targetType}`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: "GET", headers });
+  if (!response.ok) throw new ApiError(response.status, "CSV export failed.");
+  return response.blob();
 }
 
 // --- PROCUREMENT CONTROL TOWER --- //
@@ -2184,6 +2526,3 @@ export async function createPayrollRun(payload: Record<string, unknown>): Promis
     allowFallback: false,
   });
 }
-
-
-

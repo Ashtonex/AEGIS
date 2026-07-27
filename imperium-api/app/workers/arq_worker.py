@@ -3,14 +3,19 @@ import time
 import os
 import json
 from urllib.parse import urlparse
+from arq import Retry
 from arq.connections import RedisSettings
+from arq.cron import cron
+from sqlalchemy import text
 from core.config import settings
+from core.database import AsyncSessionLocal
 from core.logging import logger, correlation_id_ctx, worker_job_id_ctx
 from app.services.quotations.calculator import QuotationCalculator
 from app.services.documents.renderers import (
     QuotationPDFRenderer,
     QuotationExcelExporter,
 )
+from app.services.crm.automation_engine import evaluate_and_run_automations
 
 
 # 1. Retry Policy Helper
@@ -129,6 +134,61 @@ async def compliance_check_reminder_job(
     return True
 
 
+async def poll_ticket_sla_triggers_job(ctx):
+    """Periodic cron job (Phase 9 automation engine): finds support tickets whose
+    resolution SLA is about to breach or already has, and fires the matching
+    automation trigger for each org's active rules. Dedupes per ticket per day via
+    a Redis key so the same ticket doesn't re-fire every poll interval.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    redis_pool = ctx["redis"]
+    fired = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(text("""
+                SELECT id, organization_id, assigned_to, resolution_due_at
+                FROM crm.support_tickets
+                WHERE is_deleted = false
+                  AND status NOT IN ('resolved', 'closed')
+                  AND resolution_due_at IS NOT NULL
+                  AND resolution_due_at < NOW() + INTERVAL '2 hours'
+                LIMIT 500
+            """))).mappings().all()
+
+            for row in rows:
+                ticket_id = str(row["id"])
+                org_id = str(row["organization_id"])
+                trigger_type = "ticket_overdue" if row["resolution_due_at"] < time_now() else "ticket_sla_near_breach"
+                dedupe_key = f"aegis:automation:{trigger_type}:{ticket_id}:{time_today()}"
+                if await redis_pool.get(dedupe_key):
+                    continue
+                await evaluate_and_run_automations(
+                    db, org_id, str(row["assigned_to"]) if row["assigned_to"] else None,
+                    trigger_type, {"id": ticket_id, "ticket_id": ticket_id},
+                )
+                await redis_pool.setex(dedupe_key, 86400, "true")
+                fired += 1
+
+        if fired:
+            logger.info(f"Ticket SLA automation poll fired {fired} trigger(s).")
+        return True
+    except Exception as exc:
+        logger.exception(f"Ticket SLA automation poll failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+def time_now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def time_today():
+    return time_now().date().isoformat()
+
+
 # 3. Failed Job Handling
 async def on_job_failure(ctx, exp: Exception):
     job_id = ctx.get("job_id", "unknown")
@@ -195,6 +255,10 @@ class WorkerSettings:
         generate_quotation_documents_job,
         send_notification_job,
         compliance_check_reminder_job,
+        poll_ticket_sla_triggers_job,
+    ]
+    cron_jobs = [
+        cron(poll_ticket_sla_triggers_job, minute={0, 15, 30, 45}, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

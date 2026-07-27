@@ -641,6 +641,12 @@ export default function ClientOrganizationsRegistry() {
                         <Building2 className="w-5 h-5 text-signal" />
                         <h2 className="font-sans font-black text-base text-paper leading-tight">{selectedOrg.name}</h2>
                       </div>
+                      <Link
+                        href={`/dashboard/crm/organizations/${selectedOrg.id}`}
+                        className="font-mono text-[9px] px-2 py-1 border border-signal/40 bg-signal/10 text-signal hover:bg-signal hover:text-ink transition-colors uppercase"
+                      >
+                        Customer 360
+                      </Link>
                       <span className="font-mono text-[9px] px-1.5 py-0.5 bg-ink border border-ink-mid text-slate-light uppercase">
                         {selectedOrg.industry || 'Infrastructure'}
                       </span>

@@ -45,6 +45,18 @@ CRM_AUTOMATIONS_PAGE = (
     / "automations"
     / "page.tsx"
 )
+CRM_TICKETS_PAGE = (
+    ROOT / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "tickets" / "page.tsx"
+)
+CRM_IMPORT_PAGE = (
+    ROOT / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "import" / "page.tsx"
+)
+CRM_SUPPORT_PAGE = (
+    ROOT / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "support" / "page.tsx"
+)
+CRM_MARKETING_PAGE = (
+    ROOT / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "marketing" / "page.tsx"
+)
 CRM_LEADS_ENGINE_MIGRATION = (
     ROOT / "imperium-api" / "migrations" / "003_crm_leads_engine.sql"
 )
@@ -167,7 +179,49 @@ class CrmNoFakeRecordsContract(unittest.TestCase):
             "Automation rules could not be loaded from the CRM service.", source
         )
         self.assertIn("No production telemetry was written.", source)
+        self.assertNotIn("Offline simulation stub created", source)
+        self.assertNotIn("rule-${Date.now()}", source)
 
+    def test_crm_tickets_workspace_has_no_mock_fallback_or_fake_local_comments(self):
+        source = CRM_TICKETS_PAGE.read_text(encoding="utf-8")
+
+        self.assertNotIn("getMockTickets", source)
+        self.assertNotIn("getMockComments", source)
+        self.assertNotIn("Excavator Hydraulic Seal Failure", source)
+        self.assertNotIn("SNC Operator", source)
+        self.assertNotIn("Simulate state injection", source)
+        self.assertNotIn("Math.random()", source)
+        self.assertIn(
+            "Support tickets could not be loaded from the CRM support service.",
+            source,
+        )
+
+    def test_crm_import_wizard_has_no_hardcoded_duplicates_or_fake_import_counts(self):
+        source = CRM_IMPORT_PAGE.read_text(encoding="utf-8")
+
+        self.assertNotIn("Sarah Connor", source)
+        self.assertNotIn("John A. Doe", source)
+        self.assertNotIn("148 new contact records", source)
+        self.assertNotIn("setTimeout(() => {\n      setIsProcessing(false);\n      setStep(3);\n    }, 1500)", source)
+        self.assertIn("importCrmCsv", source)
+        self.assertIn("importCrmVCard", source)
+        self.assertIn("downloadCrmCsvExport", source)
+
+
+    def test_crm_support_sla_policy_editor_calls_the_real_backend_not_a_fake_save(self):
+        source = CRM_SUPPORT_PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("getCrmSlaPolicies", source)
+        self.assertIn("upsertCrmSlaPolicy", source)
+        self.assertNotIn("SLA policy saved.", source)
+        self.assertIn("SLA policy save failed", source)
+
+    def test_crm_marketing_campaign_send_reports_the_real_sent_count_not_a_canned_message(self):
+        source = CRM_MARKETING_PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("sendCrmCampaign", source)
+        self.assertNotIn('"Campaign sent successfully"', source)
+        self.assertIn("Send failed", source)
 
     def test_dummy_demo_leads_from_migration_003_are_cleaned_up_by_migration_040(self):
         # Migration 003_crm_leads_engine.sql INSERTs 3 hardcoded demo leads

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Dict, Any, Optional
@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from core.database import get_db
 from core.security import require_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
+from app.services.crm.automation_engine import fire_trigger
 
 router = APIRouter()
 
@@ -39,6 +40,11 @@ MUTABLE_COLUMNS = {
     "assigned_to",
     "labels",
     "expected_close_date",
+    "disqualification_reason",
+    "client_org_id",
+    "contact_id",
+    "opportunity_id",
+    "campaign_id",
 }
 
 """
@@ -76,18 +82,41 @@ def _require_org_id(user: dict) -> str:
 
 @router.get("/")
 async def list_items(
+    source: Optional[str] = Query(default=None),
+    owner: Optional[str] = Query(default=None),
+    sector: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    min_score: Optional[int] = Query(default=None, ge=0, le=100),
     user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
     db: AsyncSession = Depends(get_db),
 ):
     # Fetch active records scoped to the user's organization
-    query = text("""
+    query_sql = """
         SELECT *
         FROM crm.leads
         WHERE organization_id = :org_id AND is_deleted = false
+    """
+    params: Dict[str, Any] = {"org_id": _require_org_id(user)}
+    if source:
+        query_sql += " AND lead_source = :source"
+        params["source"] = source
+    if owner:
+        query_sql += " AND (assigned_to::text = :owner OR owner_user_id::text = :owner)"
+        params["owner"] = owner
+    if sector:
+        query_sql += " AND sector = :sector"
+        params["sector"] = sector
+    if status:
+        query_sql += " AND lower(status) = lower(:status)"
+        params["status"] = status
+    if min_score is not None:
+        query_sql += " AND COALESCE(ai_score, 0) >= :min_score"
+        params["min_score"] = min_score
+    query_sql += """
         ORDER BY created_at DESC
         LIMIT 100
-    """)
-    result = await db.execute(query, {"org_id": _require_org_id(user)})
+    """
+    result = await db.execute(text(query_sql), params)
     items = [dict(row._mapping) for row in result]
 
     return {
@@ -96,6 +125,36 @@ async def list_items(
         "message": "crm_leads listed.",
         "meta": {"total": len(items)},
     }
+
+
+@router.get("/duplicates")
+async def find_duplicates(
+    email: Optional[str] = Query(default=None),
+    phone: Optional[str] = Query(default=None),
+    company_name: Optional[str] = Query(default=None),
+    user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    if not (email or phone or company_name):
+        raise HTTPException(status_code=422, detail="email, phone, or company_name is required.")
+    org_id = _require_org_id(user)
+    query = """
+        SELECT id, company_name, contact_name, contact_email, contact_phone, status, ai_score, created_at
+        FROM crm.leads
+        WHERE organization_id=:org_id AND is_deleted=false AND (
+            (:email IS NOT NULL AND lower(contact_email)=lower(:email))
+            OR (:phone IS NOT NULL AND regexp_replace(COALESCE(contact_phone, ''), '[^0-9]', '', 'g') = regexp_replace(:phone, '[^0-9]', '', 'g'))
+            OR (:company_name IS NOT NULL AND lower(company_name)=lower(:company_name))
+        )
+        ORDER BY created_at DESC
+        LIMIT 25
+    """
+    rows = await db.execute(
+        text(query),
+        {"org_id": org_id, "email": email, "phone": phone, "company_name": company_name},
+    )
+    items = [dict(row._mapping) for row in rows]
+    return {"success": True, "data": items, "message": "Duplicate lead candidates fetched.", "meta": {"total": len(items)}}
 
 
 @router.post("/")
@@ -117,12 +176,40 @@ async def create_item(
     params["org_id"] = _require_org_id(user)
     params["user_id"] = user["sub"]
 
+    duplicate = await db.execute(
+        text("""
+        SELECT id
+        FROM crm.leads
+        WHERE organization_id=:org_id
+          AND is_deleted=false
+          AND (
+            (:contact_email IS NOT NULL AND lower(contact_email)=lower(:contact_email))
+            OR (:contact_phone IS NOT NULL AND regexp_replace(COALESCE(contact_phone, ''), '[^0-9]', '', 'g') = regexp_replace(:contact_phone, '[^0-9]', '', 'g'))
+            OR (:company_name IS NOT NULL AND lower(company_name)=lower(:company_name))
+          )
+        LIMIT 1
+        """),
+        {
+            "org_id": params["org_id"],
+            "contact_email": params.get("contact_email"),
+            "contact_phone": params.get("contact_phone"),
+            "company_name": params.get("company_name"),
+        },
+    )
+    duplicate_id = duplicate.scalar()
+    if duplicate_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Duplicate lead candidate exists: {duplicate_id}",
+        )
+
     query = insert_returning_id_sql("crm.leads", safe_keys, MUTABLE_COLUMNS)
 
     try:
         result = await db.execute(query, params)
         await db.commit()
         new_id = str(result.scalar())
+        await fire_trigger(db, params["org_id"], user["sub"], "lead_created", {**params, "id": new_id})
         return {
             "success": True,
             "data": {"id": new_id},
@@ -190,6 +277,11 @@ async def update_item(
             raise HTTPException(status_code=404, detail="Item not found")
 
         await db.commit()
+        if "ai_score" in params:
+            await fire_trigger(
+                db, params["org_id"], user["sub"], "lead_score_changed",
+                {"id": item_id, "lead_id": item_id, "ai_score": params["ai_score"]},
+            )
         return {
             "success": True,
             "data": {"id": item_id},
@@ -268,6 +360,78 @@ class QualifyLeadPayload(BaseModel):
     activity: Optional[ActivityQualify] = None
 
 
+class DisqualifyLeadPayload(BaseModel):
+    reason: str
+
+
+class MergeLeadPayload(BaseModel):
+    source_lead_ids: list[str]
+
+
+@router.post("/{lead_id}/disqualify")
+async def disqualify_lead(
+    lead_id: str,
+    payload: DisqualifyLeadPayload,
+    user: dict = Depends(require_permission(LEAD_UPDATE_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        text("""
+        UPDATE crm.leads
+        SET status='disqualified',
+            disqualification_reason=:reason,
+            updated_at=NOW()
+        WHERE id=:lead_id AND organization_id=:org_id AND is_deleted=false
+        RETURNING id
+        """),
+        {"lead_id": lead_id, "org_id": _require_org_id(user), "reason": payload.reason},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await db.commit()
+    return {"success": True, "data": {"id": lead_id}, "message": "Lead disqualified.", "meta": {}}
+
+
+@router.post("/{lead_id}/merge")
+async def merge_leads(
+    lead_id: str,
+    payload: MergeLeadPayload,
+    user: dict = Depends(require_permission(LEAD_UPDATE_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    if not payload.source_lead_ids:
+        raise HTTPException(status_code=422, detail="At least one source lead is required.")
+    org_id = _require_org_id(user)
+    result = await db.execute(
+        text("""
+        UPDATE crm.leads
+        SET is_deleted=true,
+            updated_at=NOW(),
+            disqualification_reason=COALESCE(disqualification_reason, 'Merged into lead ' || :lead_id)
+        WHERE id::text = ANY(:source_ids)
+          AND id::text <> :lead_id
+          AND organization_id=:org_id
+          AND is_deleted=false
+        RETURNING id
+        """),
+        {"lead_id": lead_id, "source_ids": payload.source_lead_ids, "org_id": org_id},
+    )
+    merged_ids = [str(row.id) for row in result]
+    await db.execute(
+        text("""
+        UPDATE crm.leads
+        SET labels = array(
+                SELECT DISTINCT unnest(COALESCE(labels, '{}'::text[]) || ARRAY['merged'])
+            ),
+            updated_at=NOW()
+        WHERE id=:lead_id AND organization_id=:org_id AND is_deleted=false
+        """),
+        {"lead_id": lead_id, "org_id": org_id},
+    )
+    await db.commit()
+    return {"success": True, "data": {"id": lead_id, "merged_ids": merged_ids}, "message": "Duplicate leads merged.", "meta": {"merged": len(merged_ids)}}
+
+
 @router.post("/{lead_id}/qualify")
 async def qualify_lead(
     lead_id: str,
@@ -285,7 +449,7 @@ async def qualify_lead(
         async with db.begin():
             # 0. Fetch and verify Lead exists and belongs to the user's organization
             lead_query = text("""
-                SELECT id FROM crm.leads
+                SELECT id, campaign_id FROM crm.leads
                 WHERE id = :lead_id AND organization_id = :org_id AND is_deleted = false
             """)
             lead_res = await db.execute(
@@ -420,17 +584,58 @@ async def qualify_lead(
                     },
                 )
 
-            # 5. Mark the lead status = 'Qualified'
+            # 5. Mark the lead converted and persist relationship links for traceability.
             update_lead_query = text("""
                 UPDATE crm.leads
-                SET status = 'Qualified', updated_at = NOW()
+                SET status = 'converted',
+                    client_org_id = :client_org_id,
+                    contact_id = :contact_id,
+                    opportunity_id = :opportunity_id,
+                    converted_at = NOW(),
+                    updated_at = NOW()
                 WHERE id = :lead_id AND organization_id = :org_id
             """)
-            await db.execute(update_lead_query, {"lead_id": lead_id, "org_id": org_id})
+            await db.execute(
+                update_lead_query,
+                {
+                    "lead_id": lead_id,
+                    "org_id": org_id,
+                    "client_org_id": client_org_id,
+                    "contact_id": contact_id,
+                    "opportunity_id": opportunity_id,
+                },
+            )
+            if lead_row.campaign_id:
+                await db.execute(
+                    text("""
+                    INSERT INTO crm.campaign_members (
+                        organization_id, campaign_id, lead_id, contact_id, opportunity_id,
+                        member_status, source, created_by
+                    )
+                    VALUES (
+                        :org_id, :campaign_id, :lead_id, :contact_id, :opportunity_id,
+                        'converted', 'lead_qualification', :user_id
+                    )
+                    """),
+                    {
+                        "org_id": org_id,
+                        "campaign_id": lead_row.campaign_id,
+                        "lead_id": lead_id,
+                        "contact_id": contact_id,
+                        "opportunity_id": opportunity_id,
+                        "user_id": user_id,
+                    },
+                )
 
         return {
             "success": True,
+            "data": {
+                "organization_id": str(client_org_id),
+                "contact_id": str(contact_id),
+                "opportunity_id": str(opportunity_id),
+            },
             "message": "Lead qualified and converted to Opportunity",
+            "meta": {},
         }
     except HTTPException:
         raise

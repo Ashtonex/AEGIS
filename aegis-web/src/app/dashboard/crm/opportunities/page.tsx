@@ -3,20 +3,25 @@
 import React, { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 
-import { 
-  Briefcase, Plus, X, ChevronLeft, ChevronRight, 
-  DollarSign, Activity, AlertTriangle, ShieldCheck, 
+import {
+  Briefcase, Plus, X, ChevronLeft, ChevronRight,
+  DollarSign, Activity, AlertTriangle, ShieldCheck,
   MessageSquare, User, Mail, Calendar, Loader2, Save,
   ArrowRight, Landmark, Clock, ArrowLeft, Filter, Search
 } from 'lucide-react';
-import { 
-  getCrmOpportunities, 
-  createCrmOpportunity, 
-  updateCrmOpportunity, 
-  getCrmContacts, 
+import {
+  getCrmOpportunities,
+  createCrmOpportunity,
+  updateCrmOpportunity,
+  getCrmContacts,
   createCrmContact,
   getCrmActivities,
-  createCrmActivity
+  createCrmActivity,
+  createCrmOpportunityQuotation,
+  markCrmOpportunityWon,
+  markCrmOpportunityLost,
+  getCrmWinLossReasons,
+  createCrmWinLossReason,
 } from '@/lib/api';
 
 // Stages definition requested by user
@@ -44,6 +49,15 @@ const BACKEND_TO_FRONTEND_STAGE: Record<string, string> = {
   'Contract': 'Won'
 };
 
+const formatCurrency = (value: number | string) => {
+  const amount = Number(value || 0);
+  return amount.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  });
+};
+
 interface Opportunity {
   id: string;
   name: string;
@@ -54,6 +68,17 @@ interface Opportunity {
   risk_level?: string;
   client_id?: string;
   client_name?: string;
+  quote_id?: string;
+  quote_status?: string;
+  project_id?: string;
+  project_name?: string;
+  weighted_value?: number | string;
+  next_activity_due_at?: string;
+  win_loss_status?: string;
+  approval_status?: string;
+  margin_approval_required?: boolean;
+  risk_approval_required?: boolean;
+  is_stale?: boolean;
   created_at: string;
 }
 
@@ -83,6 +108,18 @@ export default function OpportunitiesKanban() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
 
+  // Close Win/Loss and Forecast States
+  const [showForecast, setShowForecast] = useState(false);
+  const [isCloseLossModalOpen, setIsCloseLossModalOpen] = useState(false);
+  const [lossReason, setLossReason] = useState('');
+  const [lossReasonOptions, setLossReasonOptions] = useState<any[]>([]);
+  const [selectedLossReasonId, setSelectedLossReasonId] = useState('');
+  const [isCloseWinModalOpen, setIsCloseWinModalOpen] = useState(false);
+  const [winNotes, setWinNotes] = useState('');
+  const [winReasonOptions, setWinReasonOptions] = useState<any[]>([]);
+  const [selectedWinReasonId, setSelectedWinReasonId] = useState('');
+
+
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
   const [minBudget, setMinBudget] = useState<number | ''>('');
@@ -104,7 +141,7 @@ export default function OpportunitiesKanban() {
     new_contact_name: '',
     new_contact_email: ''
   });
-  
+
   const [showNewContactFields, setShowNewContactFields] = useState(false);
 
   // Edit Drawer Form State
@@ -252,11 +289,11 @@ export default function OpportunitiesKanban() {
   const handleStageMove = async (oppId: string, currentFrontendStage: string, direction: 'prev' | 'next') => {
     const currentIndex = STAGES.indexOf(currentFrontendStage);
     if (currentIndex === -1) return;
-    
+
     let nextIndex = currentIndex;
     if (direction === 'prev' && currentIndex > 0) nextIndex--;
     if (direction === 'next' && currentIndex < STAGES.length - 1) nextIndex++;
-    
+
     if (nextIndex === currentIndex) return;
     const nextFrontendStage = STAGES[nextIndex];
     const backendStage = FRONTEND_TO_BACKEND_STAGE[nextFrontendStage];
@@ -420,12 +457,109 @@ export default function OpportunitiesKanban() {
     }
   };
 
+  const handleCreateQuotation = async () => {
+    if (!selectedOpportunityId || !selectedOpp) return;
+    setIsSubmitting(true);
+    try {
+      const response = await createCrmOpportunityQuotation(selectedOpportunityId, {
+        quote_amount: Number(selectedOpp.budget || selectedOpp.weighted_value || 0),
+        status: "sent"
+      });
+      if (!response?.data?.id) throw new Error("CRM quotation response did not include an id.");
+      await loadData();
+    } catch (error) {
+      console.warn("Quotation handoff failed", error);
+      alert("Quotation was not created. Check the CRM service connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleMarkWon = async () => {
+    setWinNotes('');
+    setSelectedWinReasonId('');
+    setIsCloseWinModalOpen(true);
+    try {
+      const res = await getCrmWinLossReasons('won');
+      if (res.success && Array.isArray(res.data)) setWinReasonOptions(res.data);
+    } catch {
+      setWinReasonOptions([]);
+    }
+  };
+
+  const handleConfirmMarkWon = async () => {
+    if (!selectedOpportunityId) return;
+    setIsSubmitting(true);
+    try {
+      let reasonId = selectedWinReasonId || undefined;
+      if (!reasonId && winNotes.trim()) {
+        const created = await createCrmWinLossReason({ reason_type: 'won', label: winNotes.trim() });
+        if (created.success) reasonId = created.data?.id;
+      }
+      await markCrmOpportunityWon(selectedOpportunityId, {
+        create_project: true,
+        win_loss_reason: winNotes.trim() || undefined,
+        win_loss_reason_id: reasonId,
+      });
+      await createCrmActivity({
+        type: 'System Log',
+        notes: `Deal Closed Won! Notes: ${winNotes}`,
+        opportunity_id: selectedOpportunityId
+      });
+      setIsCloseWinModalOpen(false);
+      await loadData();
+    } catch (error) {
+      console.warn("Project handoff failed", error);
+      alert("Opportunity was not marked won. Check the CRM service connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleMarkLost = async () => {
+    setLossReason('');
+    setSelectedLossReasonId('');
+    setIsCloseLossModalOpen(true);
+    try {
+      const res = await getCrmWinLossReasons('lost');
+      if (res.success && Array.isArray(res.data)) setLossReasonOptions(res.data);
+    } catch {
+      setLossReasonOptions([]);
+    }
+  };
+
+  const handleConfirmMarkLost = async () => {
+    if (!selectedOpportunityId) return;
+    setIsSubmitting(true);
+    try {
+      let reasonId = selectedLossReasonId || undefined;
+      if (!reasonId && lossReason.trim()) {
+        const created = await createCrmWinLossReason({ reason_type: 'lost', label: lossReason.trim() });
+        if (created.success) reasonId = created.data?.id;
+      }
+      await markCrmOpportunityLost(selectedOpportunityId, { win_loss_reason: lossReason.trim(), win_loss_reason_id: reasonId });
+      await createCrmActivity({
+        type: 'System Log',
+        notes: `Deal Closed Lost. Reason: ${lossReason}`,
+        opportunity_id: selectedOpportunityId
+      });
+      setIsCloseLossModalOpen(false);
+      await loadData();
+    } catch (error) {
+      console.warn("Lost opportunity update failed", error);
+      alert("Opportunity was not marked lost. Check the CRM service connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+
   // Filter application
   const filteredOpportunities = opportunities.filter(opp => {
     // Search filter
     const searchLower = searchQuery.toLowerCase();
     const nameMatch = opp.name.toLowerCase().includes(searchLower);
-    const clientMatch = opp.client_name?.toLowerCase().includes(searchLower) || 
+    const clientMatch = opp.client_name?.toLowerCase().includes(searchLower) ||
                        (opp.client_id ? (contacts.find(c => c.id === opp.client_id)?.contact_name.toLowerCase().includes(searchLower)) : false);
     const matchesSearch = searchQuery === '' || nameMatch || clientMatch;
 
@@ -451,7 +585,7 @@ export default function OpportunitiesKanban() {
 
   const selectedOpp = opportunities.find(o => o.id === selectedOpportunityId);
   const selectedOppActivities = activities.filter(a => a.opportunity_id === selectedOpportunityId);
-  const selectedOppContact = selectedOpp?.client_id 
+  const selectedOppContact = selectedOpp?.client_id
     ? contacts.find(c => c.id === selectedOpp.client_id)
     : null;
 
@@ -508,7 +642,7 @@ export default function OpportunitiesKanban() {
           >
             ← Back to Command
           </Link>
-          <button 
+          <button
             onClick={() => setIsModalOpen(true)}
             className="flex items-center space-x-1.5 px-4 py-1.5 bg-[#D4AF37] text-black hover:bg-[#D4AF37]/90 rounded-sm text-[10px] font-mono tracking-widest uppercase font-bold transition-all shadow-[0_0_15px_rgba(212,175,55,0.2)]"
           >
@@ -539,7 +673,7 @@ export default function OpportunitiesKanban() {
       )}
 
       {/* Pipeline stats banner */}
-      <div className="grid grid-cols-3 gap-2 mb-6 shrink-0 z-10">
+      <div className="grid grid-cols-4 gap-2 mb-6 shrink-0 z-10">
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1">Pipeline Total</span>
           <span className="font-mono text-lg font-bold text-paper tabular-nums">
@@ -558,7 +692,48 @@ export default function OpportunitiesKanban() {
             {(opportunities.reduce((sum, o) => sum + (Number(o.expected_margin) || 0), 0) / (opportunities.filter(o => o.expected_margin).length || 1)).toFixed(1)}%
           </span>
         </div>
+        <button
+          onClick={() => setShowForecast(prev => !prev)}
+          className={`border p-3 rounded-sm text-left transition-all ${
+            showForecast ? 'bg-[#3B82F6]/10 border-[#3B82F6]/40 text-[#3B82F6]' : 'bg-[#0A0A0A] border-white/5 text-slate-light hover:border-white/10'
+          }`}
+        >
+          <span className="block font-mono text-[9px] uppercase tracking-wider mb-1">Forecasting</span>
+          <span className="font-mono text-xs font-bold block mt-1">
+            {showForecast ? 'Hide Analysis' : 'Show Analysis'}
+          </span>
+        </button>
       </div>
+
+      {showForecast && (
+        <div className="bg-[#0B0F17]/95 border border-white/5 p-5 rounded-sm mb-6 animate-in slide-in-from-top duration-300">
+          <h3 className="font-mono text-xs uppercase tracking-widest text-[#3B82F6] font-bold mb-4">Weighted Sales Forecasting Analysis</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
+              <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">High Risk Weighted Exposure</h4>
+              <span className="text-xl font-mono text-rose-400 font-bold block">
+                ${opportunities.filter(o => o.risk_level === 'High').reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </span>
+              <p className="text-[9px] text-slate mt-1 italic">High risk pipelines require stricter milestone clearance reviews.</p>
+            </div>
+            <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
+              <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">Medium Risk Forecast</h4>
+              <span className="text-xl font-mono text-amber-400 font-bold block">
+                ${opportunities.filter(o => o.risk_level === 'Medium' || !o.risk_level).reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </span>
+              <p className="text-[9px] text-slate mt-1 italic">Balanced deals currently in negotiation or quotation phase.</p>
+            </div>
+            <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
+              <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">Low Risk Secure Pipeline</h4>
+              <span className="text-xl font-mono text-emerald-400 font-bold block">
+                ${opportunities.filter(o => o.risk_level === 'Low').reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </span>
+              <p className="text-[9px] text-slate mt-1 italic">Highly probable closures aligned with secure public tenders.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Search and Filters panel */}
       <div className="bg-[#0A0A0A] border border-white/5 p-4 rounded-sm mb-6 flex flex-col lg:flex-row gap-4 justify-between items-center shrink-0 z-10">
@@ -572,7 +747,7 @@ export default function OpportunitiesKanban() {
           />
           <Search className="w-4 h-4 text-slate absolute left-3 top-2.5" />
           {searchQuery && (
-            <button 
+            <button
               onClick={() => setSearchQuery('')}
               className="absolute right-2.5 top-2.5 text-slate hover:text-paper"
             >
@@ -580,7 +755,7 @@ export default function OpportunitiesKanban() {
             </button>
           )}
         </div>
-        
+
         <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto justify-end">
           {/* Minimum Budget Filter */}
           <div className="flex items-center space-x-2 bg-black border border-white/10 rounded-sm px-3 py-1.5 min-w-[160px]">
@@ -651,15 +826,15 @@ export default function OpportunitiesKanban() {
           const stageSum = stageOpps.reduce((sum, o) => sum + (Number(o.budget) || 0), 0);
 
           return (
-            <div 
+            <div
               key={stage}
               onDragOver={(e) => handleDragOver(e, stage)}
               onDragEnter={(e) => handleDragEnter(e, stage)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, stage)}
               className={`flex-1 min-w-[280px] max-w-[320px] rounded-sm p-3 flex flex-col max-h-full min-h-[400px] transition-all duration-200 ${
-                draggedOverStage === stage 
-                  ? 'bg-[#1a170f] border border-[#D4AF37]/40 shadow-[0_0_20px_rgba(212,175,55,0.08)] scale-[1.01]' 
+                draggedOverStage === stage
+                  ? 'bg-[#1a170f] border border-[#D4AF37]/40 shadow-[0_0_20px_rgba(212,175,55,0.08)] scale-[1.01]'
                   : 'bg-[#0A0A0A]/80 border border-white/5'
               }`}
             >
@@ -678,9 +853,9 @@ export default function OpportunitiesKanban() {
               <div className="flex-1 overflow-y-auto space-y-2.5 custom-scrollbar pr-1 min-h-0">
                 {stageOpps.map(opp => {
                   const oppContact = opp.client_id ? contacts.find(c => c.id === opp.client_id) : null;
-                  
+
                   return (
-                    <div 
+                    <div
                       key={opp.id}
                       draggable
                       onDragStart={(e) => handleDragStart(e, opp.id)}
@@ -706,17 +881,17 @@ export default function OpportunitiesKanban() {
                         <span className="font-mono text-[10px] font-bold text-[#3B82F6] tabular-nums">
                           ${(Number(opp.budget) || 0).toLocaleString()}
                         </span>
-                        
+
                         {/* Quick stage move control buttons */}
                         <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
-                          <button 
+                          <button
                             disabled={STAGES.indexOf(stage) === 0}
                             onClick={() => handleStageMove(opp.id, stage, 'prev')}
                             className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 disabled:opacity-30 disabled:pointer-events-none rounded-sm flex items-center justify-center transition-all text-slate-light"
                           >
                             <ChevronLeft className="w-3 h-3" />
                           </button>
-                          <button 
+                          <button
                             disabled={STAGES.indexOf(stage) === STAGES.length - 1}
                             onClick={() => handleStageMove(opp.id, stage, 'next')}
                             className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 disabled:opacity-30 disabled:pointer-events-none rounded-sm flex items-center justify-center transition-all text-slate-light"
@@ -744,15 +919,15 @@ export default function OpportunitiesKanban() {
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsModalOpen(false)} />
-          
+
           <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-lg rounded-sm shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden">
             <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.01]">
               <div className="flex items-center space-x-2">
                 <Briefcase className="w-4 h-4 text-[#D4AF37]" />
                 <h2 className="font-sans font-bold text-sm text-paper uppercase tracking-wider">Initialize New Opportunity</h2>
               </div>
-              <button 
-                onClick={() => setIsModalOpen(false)} 
+              <button
+                onClick={() => setIsModalOpen(false)}
                 className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -762,21 +937,21 @@ export default function OpportunitiesKanban() {
             <form onSubmit={handleCreateDeal} className="p-5 space-y-4">
               <div className="space-y-1">
                 <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Opportunity Name</label>
-                <input 
-                  required 
-                  type="text" 
-                  value={newDeal.name} 
+                <input
+                  required
+                  type="text"
+                  value={newDeal.name}
                   onChange={e => setNewDeal({ ...newDeal, name: e.target.value })}
-                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all placeholder:text-slate" 
-                  placeholder="e.g. Zimplats Haulage Road construction" 
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all placeholder:text-slate"
+                  placeholder="e.g. Zimplats Haulage Road construction"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Pipeline Stage</label>
-                  <select 
-                    value={newDeal.stage} 
+                  <select
+                    value={newDeal.stage}
                     onChange={e => setNewDeal({ ...newDeal, stage: e.target.value })}
                     className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                   >
@@ -786,8 +961,8 @@ export default function OpportunitiesKanban() {
 
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Risk Classification</label>
-                  <select 
-                    value={newDeal.risk_level} 
+                  <select
+                    value={newDeal.risk_level}
                     onChange={e => setNewDeal({ ...newDeal, risk_level: e.target.value })}
                     className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                   >
@@ -801,41 +976,41 @@ export default function OpportunitiesKanban() {
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Expected Value ($)</label>
-                  <input 
-                    required 
-                    type="number" 
-                    value={newDeal.budget} 
+                  <input
+                    required
+                    type="number"
+                    value={newDeal.budget}
                     onChange={e => setNewDeal({ ...newDeal, budget: e.target.value })}
-                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
-                    placeholder="Value in USD" 
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                    placeholder="Value in USD"
                   />
                 </div>
 
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Win Prob. (%)</label>
-                  <input 
-                    required 
-                    type="number" 
-                    min="0" 
+                  <input
+                    required
+                    type="number"
+                    min="0"
                     max="100"
-                    value={newDeal.probability} 
+                    value={newDeal.probability}
                     onChange={e => setNewDeal({ ...newDeal, probability: e.target.value })}
-                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
-                    placeholder="20" 
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                    placeholder="20"
                   />
                 </div>
 
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Est Margin (%)</label>
-                  <input 
-                    required 
-                    type="number" 
-                    min="0" 
+                  <input
+                    required
+                    type="number"
+                    min="0"
                     max="100"
-                    value={newDeal.expected_margin} 
+                    value={newDeal.expected_margin}
                     onChange={e => setNewDeal({ ...newDeal, expected_margin: e.target.value })}
-                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
-                    placeholder="15" 
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                    placeholder="15"
                   />
                 </div>
               </div>
@@ -854,8 +1029,8 @@ export default function OpportunitiesKanban() {
                 </div>
 
                 {!showNewContactFields ? (
-                  <select 
-                    value={newDeal.client_id} 
+                  <select
+                    value={newDeal.client_id}
                     onChange={e => setNewDeal({ ...newDeal, client_id: e.target.value })}
                     className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                   >
@@ -868,21 +1043,21 @@ export default function OpportunitiesKanban() {
                   <div className="grid grid-cols-2 gap-3 p-3 bg-white/[0.02] border border-white/5 rounded-sm">
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Contact Name</label>
-                      <input 
-                        type="text" 
-                        value={newDeal.new_contact_name} 
+                      <input
+                        type="text"
+                        value={newDeal.new_contact_name}
                         onChange={e => setNewDeal({ ...newDeal, new_contact_name: e.target.value })}
-                        className="w-full bg-black border border-white/10 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-sans" 
+                        className="w-full bg-black border border-white/10 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-sans"
                         placeholder="e.g. John Doe"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Email Address</label>
-                      <input 
-                        type="email" 
-                        value={newDeal.new_contact_email} 
+                      <input
+                        type="email"
+                        value={newDeal.new_contact_email}
                         onChange={e => setNewDeal({ ...newDeal, new_contact_email: e.target.value })}
-                        className="w-full bg-black border border-white/10 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-sans" 
+                        className="w-full bg-black border border-white/10 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-sans"
                         placeholder="john@company.com"
                       />
                     </div>
@@ -891,15 +1066,15 @@ export default function OpportunitiesKanban() {
               </div>
 
               <div className="pt-4 border-t border-white/5 flex justify-end space-x-2">
-                <button 
-                  type="button" 
+                <button
+                  type="button"
                   onClick={() => setIsModalOpen(false)}
                   className="px-4 py-2 font-mono text-[10px] text-slate-light hover:text-paper hover:bg-white/5 rounded-sm transition-all"
                 >
                   CANCEL
                 </button>
-                <button 
-                  type="submit" 
+                <button
+                  type="submit"
                   disabled={isSubmitting}
                   className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 transition-all uppercase"
                 >
@@ -929,7 +1104,7 @@ export default function OpportunitiesKanban() {
                   <h2 className="font-sans font-bold text-sm text-paper uppercase truncate max-w-[280px]">{selectedOpp.name}</h2>
                 </div>
               </div>
-              <button 
+              <button
                 onClick={() => setSelectedOpportunityId(null)}
                 className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
               >
@@ -939,13 +1114,65 @@ export default function OpportunitiesKanban() {
 
             {/* Drawer Body - Split into edit form and activity log */}
             <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
-              
+              <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Quote & Project Handoff</span>
+                  {selectedOpp.is_stale && (
+                    <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 px-1.5 py-0.5">Stale deal</span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-light">
+                  <div className="bg-black/40 border border-white/5 p-2">
+                    <div className="uppercase">Quote status</div>
+                    <div className="mt-1 text-paper">{selectedOpp.quote_status || (selectedOpp.quote_id ? "linked" : "not created")}</div>
+                  </div>
+                  <div className="bg-black/40 border border-white/5 p-2">
+                    <div className="uppercase">Project handoff</div>
+                    <div className="mt-1 text-paper">{selectedOpp.project_name || (selectedOpp.project_id ? "linked" : "pending")}</div>
+                  </div>
+                  <div className="bg-black/40 border border-white/5 p-2">
+                    <div className="uppercase">Weighted forecast</div>
+                    <div className="mt-1 text-[#D4AF37]">{formatCurrency(selectedOpp.weighted_value || 0)}</div>
+                  </div>
+                  <div className="bg-black/40 border border-white/5 p-2">
+                    <div className="uppercase">Approval</div>
+                    <div className="mt-1 text-paper">{selectedOpp.approval_status || "not_required"}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCreateQuotation}
+                    disabled={isSubmitting}
+                    className="px-2 py-2 bg-white/5 hover:bg-white/10 border border-white/10 font-mono text-[9px] uppercase text-paper disabled:opacity-40"
+                  >
+                    Create quote
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleMarkWon}
+                    disabled={isSubmitting}
+                    className="px-2 py-2 bg-[#D4AF37] hover:bg-[#D4AF37]/90 font-mono text-[9px] font-bold uppercase text-black disabled:opacity-40"
+                  >
+                    Mark won
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleMarkLost}
+                    disabled={isSubmitting}
+                    className="px-2 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 font-mono text-[9px] uppercase text-red-200 disabled:opacity-40"
+                  >
+                    Mark lost
+                  </button>
+                </div>
+              </section>
+
               {/* EDIT FORM BLOCK */}
               {editForm && (
                 <form onSubmit={handleUpdateDealDetails} className="space-y-4 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
                   <div className="flex justify-between items-center mb-1">
                     <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Deal Parameters</span>
-                    <button 
+                    <button
                       type="submit"
                       disabled={isSubmitting}
                       className="flex items-center space-x-1 text-[9px] font-mono bg-white/5 hover:bg-[#D4AF37] hover:text-black border border-white/10 px-2 py-0.5 rounded-sm uppercase transition-all"
@@ -957,19 +1184,19 @@ export default function OpportunitiesKanban() {
 
                   <div className="space-y-1">
                     <label className="block font-mono text-[8px] text-slate-light uppercase">Opportunity Title</label>
-                    <input 
-                      type="text" 
-                      value={editForm.name} 
+                    <input
+                      type="text"
+                      value={editForm.name}
                       onChange={e => setEditForm({ ...editForm, name: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all" 
+                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                     />
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Pipeline Stage</label>
-                      <select 
-                        value={editForm.stage} 
+                      <select
+                        value={editForm.stage}
                         onChange={e => setEditForm({ ...editForm, stage: e.target.value })}
                         className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                       >
@@ -979,8 +1206,8 @@ export default function OpportunitiesKanban() {
 
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Risk Classification</label>
-                      <select 
-                        value={editForm.risk_level} 
+                      <select
+                        value={editForm.risk_level}
                         onChange={e => setEditForm({ ...editForm, risk_level: e.target.value })}
                         className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                       >
@@ -994,35 +1221,35 @@ export default function OpportunitiesKanban() {
                   <div className="grid grid-cols-3 gap-3">
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Est Value ($)</label>
-                      <input 
-                        type="number" 
-                        value={editForm.budget} 
+                      <input
+                        type="number"
+                        value={editForm.budget}
                         onChange={e => setEditForm({ ...editForm, budget: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
                       />
                     </div>
 
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Win Prob (%)</label>
-                      <input 
-                        type="number" 
+                      <input
+                        type="number"
                         min="0"
                         max="100"
-                        value={editForm.probability} 
+                        value={editForm.probability}
                         onChange={e => setEditForm({ ...editForm, probability: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
                       />
                     </div>
 
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Margin (%)</label>
-                      <input 
-                        type="number" 
+                      <input
+                        type="number"
                         min="0"
                         max="100"
-                        value={editForm.expected_margin} 
+                        value={editForm.expected_margin}
                         onChange={e => setEditForm({ ...editForm, expected_margin: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
                       />
                     </div>
                   </div>
@@ -1030,8 +1257,8 @@ export default function OpportunitiesKanban() {
                   {/* Linked client display/change */}
                   <div className="space-y-1">
                     <label className="block font-mono text-[8px] text-slate-light uppercase">Client Contact Link</label>
-                    <select 
-                      value={editForm.client_id} 
+                    <select
+                      value={editForm.client_id}
                       onChange={e => setEditForm({ ...editForm, client_id: e.target.value })}
                       className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                     >
@@ -1047,7 +1274,7 @@ export default function OpportunitiesKanban() {
               {/* LINKED CONTACT DETAIL BLOCK */}
               <div className="space-y-2 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
                 <span className="block font-mono text-[9px] text-[#3B82F6] uppercase tracking-wider">Associated client profile</span>
-                
+
                 {selectedOppContact ? (
                   <div className="flex items-center space-x-3 pt-1">
                     <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-slate-light">
@@ -1093,7 +1320,7 @@ export default function OpportunitiesKanban() {
                       <option value="System Log">System Log</option>
                     </select>
 
-                    <button 
+                    <button
                       type="submit"
                       disabled={isSubmitting || !newNote.notes.trim()}
                       className="px-3 py-1 bg-[#D4AF37] hover:bg-[#D4AF37]/90 disabled:opacity-40 text-black font-mono font-bold text-[9px] rounded-sm transition-all"
@@ -1148,6 +1375,86 @@ export default function OpportunitiesKanban() {
           </div>
         )}
       </div>
+
+      {/* CLOSE WIN MODAL */}
+      {isCloseWinModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsCloseWinModalOpen(false)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-[#3B82F6] uppercase font-bold tracking-wider mb-2">Close Deal: Mark Won</h3>
+            <p className="text-xs text-slate-light mb-4">Complete the handoff notes to trigger target project deployment structures.</p>
+            <div className="space-y-4 text-xs">
+              {winReasonOptions.length > 0 && (
+                <div>
+                  <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Win Reason Category</label>
+                  <select
+                    value={selectedWinReasonId}
+                    onChange={(e) => setSelectedWinReasonId(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                  >
+                    <option value="">Custom (use notes below)</option>
+                    {winReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Handoff Notes / Specs</label>
+                <textarea
+                  value={winNotes}
+                  onChange={(e) => setWinNotes(e.target.value)}
+                  placeholder="Details regarding execution kick-off, site inspection dates, and contract terms..."
+                  rows={4}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setIsCloseWinModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+                <button onClick={handleConfirmMarkWon} className="px-3 py-1.5 bg-emerald-600 text-white font-mono text-[10px] uppercase font-bold">Confirm Win & Release Project</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CLOSE LOSS MODAL */}
+      {isCloseLossModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsCloseLossModalOpen(false)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-rose-400 uppercase font-bold tracking-wider mb-2">Close Deal: Mark Lost</h3>
+            <p className="text-xs text-slate-light mb-4">Specify the reason for the loss to optimize ML prediction engines.</p>
+            <div className="space-y-4 text-xs">
+              {lossReasonOptions.length > 0 && (
+                <div>
+                  <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Loss Reason Category</label>
+                  <select
+                    value={selectedLossReasonId}
+                    onChange={(e) => setSelectedLossReasonId(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                  >
+                    <option value="">Custom (use notes below)</option>
+                    {lossReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Loss Reason</label>
+                <textarea
+                  value={lossReason}
+                  onChange={(e) => setLossReason(e.target.value)}
+                  placeholder="Competitor price undercut, scope misalignment, or project cancelled..."
+                  rows={4}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setIsCloseLossModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+                <button onClick={handleConfirmMarkLost} className="px-3 py-1.5 bg-rose-600 text-white font-mono text-[10px] uppercase font-bold">Confirm Loss</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

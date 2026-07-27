@@ -10,17 +10,38 @@ from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 
 router = APIRouter()
 
-ORGANIZATION_COLUMNS = ("name", "industry", "website", "phone", "email", "address")
+ORGANIZATION_COLUMNS = (
+    "name",
+    "industry",
+    "sector",
+    "website",
+    "phone",
+    "email",
+    "address",
+    "registration_number",
+    "tax_id",
+    "credit_limit",
+    "total_contract_value",
+    "risk_rating",
+    "parent_org_id",
+)
 
 
 class OrganizationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     industry: Optional[str] = Field(default=None, max_length=100)
+    sector: Optional[str] = Field(default=None, max_length=100)
     website: Optional[str] = Field(default=None, max_length=255)
     phone: Optional[str] = Field(default=None, max_length=50)
     email: Optional[EmailStr] = None
     address: Optional[str] = None
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_id: Optional[str] = Field(default=None, max_length=100)
+    credit_limit: Optional[float] = None
+    total_contract_value: Optional[float] = None
+    risk_rating: Optional[str] = Field(default=None, max_length=50)
+    parent_org_id: Optional[str] = None
 
 
 def _payload_values(payload: OrganizationPayload) -> dict:

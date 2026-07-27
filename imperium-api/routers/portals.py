@@ -303,10 +303,10 @@ async def get_client_workspace(
     client = await _get_client_portal_context(user, db)
     ticket_rows = await db.execute(
         text("""
-        SELECT id, issue_description, created_at, updated_at
-        FROM crm.tickets
+        SELECT id, description AS issue_description, created_at, updated_at
+        FROM crm.support_tickets
         WHERE organization_id = :org_id
-          AND client_id = :contact_id
+          AND contact_id = :contact_id
           AND is_deleted = false
         ORDER BY created_at DESC
         LIMIT 50
@@ -376,19 +376,21 @@ async def create_client_ticket(
 
     result = await db.execute(
         text("""
-        INSERT INTO crm.tickets (
+        INSERT INTO crm.support_tickets (
             organization_id,
             created_by,
-            client_id,
-            issue_description
+            contact_id,
+            subject,
+            description
         )
-        VALUES (:org_id, :user_id, :contact_id, :issue_description)
-        RETURNING id, issue_description, created_at, updated_at
+        VALUES (:org_id, :user_id, :contact_id, :subject, :issue_description)
+        RETURNING id, description AS issue_description, created_at, updated_at
     """),
         {
             "org_id": user["org_id"],
             "user_id": user["user_id"],
             "contact_id": client["contact_id"],
+            "subject": issue_description[:255],
             "issue_description": issue_description,
         },
     )

@@ -18,6 +18,8 @@ CONTACT_COLUMNS = (
     "phone",
     "job_title",
     "project_id",
+    "whatsapp_preference",
+    "linkedin",
 )
 
 
@@ -31,6 +33,8 @@ class ContactPayload(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=50)
     job_title: Optional[str] = Field(default=None, max_length=100)
     project_id: Optional[UUID] = None
+    whatsapp_preference: Optional[bool] = None
+    linkedin: Optional[str] = Field(default=None, max_length=255)
 
 
 def _payload_values(payload: ContactPayload) -> dict:

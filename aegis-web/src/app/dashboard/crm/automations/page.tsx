@@ -8,11 +8,14 @@ import {
   Maximize2, Minimize2, ZoomIn, ZoomOut, CheckCircle2, ChevronRight, PlaySquare,
   Sparkles, Layers, Sliders, Database, ArrowDown, HelpCircle, Save, ArrowLeft, Filter
 } from 'lucide-react';
-import { 
-  getCrmAutomations, 
-  createCrmAutomation, 
-  updateCrmAutomation, 
-  deleteCrmAutomation 
+import {
+  getCrmAutomations,
+  createCrmAutomation,
+  updateCrmAutomation,
+  deleteCrmAutomation,
+  getCrmAutomationRuns,
+  getUsers,
+  getCrmMessageTemplates,
 } from '@/lib/api';
 
 interface AutomationRule {
@@ -25,6 +28,21 @@ interface AutomationRule {
   is_active: boolean;
   created_at: string;
 }
+
+// Field/operator/value defaults per real backend trigger type (see
+// app/services/crm/automation_engine.py's evaluate_and_run_automations callers).
+// A blank field always matches (conditions_match() treats a falsy field as "match").
+const TRIGGER_PRESETS: Record<string, { field: string; operator: string; value: string }> = {
+  lead_created: { field: '', operator: 'equals', value: '' },
+  lead_score_changed: { field: 'ai_score', operator: '>', value: '80' },
+  opportunity_stage_changed: { field: 'stage', operator: 'equals', value: 'Proposal' },
+  quote_sent: { field: '', operator: 'equals', value: '' },
+  quote_accepted: { field: '', operator: 'equals', value: '' },
+  ticket_created: { field: 'priority', operator: 'equals', value: 'urgent' },
+  ticket_sla_near_breach: { field: '', operator: 'equals', value: '' },
+  ticket_overdue: { field: '', operator: 'equals', value: '' },
+  communication_received: { field: 'channel', operator: 'equals', value: 'whatsapp_message' },
+};
 
 export default function CRMAutomationsPage() {
   const [rules, setRules] = useState<AutomationRule[]>([]);
@@ -44,7 +62,7 @@ export default function CRMAutomationsPage() {
   const [ruleName, setRuleName] = useState('');
   
   // Trigger parameters
-  const [triggerType, setTriggerType] = useState('lead_score_above');
+  const [triggerType, setTriggerType] = useState('lead_score_changed');
   const [triggerField, setTriggerField] = useState('ai_score');
   const [triggerOperator, setTriggerOperator] = useState('>');
   const [triggerValue, setTriggerValue] = useState('80');
@@ -57,15 +75,20 @@ export default function CRMAutomationsPage() {
   // Action parameters
   const [actionType, setActionType] = useState('send_notification');
   const [actionMessage, setActionMessage] = useState('Lead alert: Propensity score exceeded threshold.');
-  const [actionRecipient, setActionRecipient] = useState('Operations Command');
+  const [actionRecipient, setActionRecipient] = useState('');
+  const [actionTemplateId, setActionTemplateId] = useState('');
   const [delayHours, setDelayHours] = useState(0);
+  const [users, setUsers] = useState<any[]>([]);
+  const [messageTemplates, setMessageTemplates] = useState<any[]>([]);
 
   // Telemetry simulation states
   const [isSimulating, setIsSimulating] = useState(false);
   const [simulationLogs, setSimulationLogs] = useState<string[]>([]);
   const [activeSimulationNode, setActiveSimulationNode] = useState<string | null>(null);
 
-  const [telemetryLogs] = useState<Array<{ id: string; rule: string; status: string; trigger: string; action: string; timestamp: string }>>([]);
+  const [telemetryLogs, setTelemetryLogs] = useState<Array<{ id: string; rule: string; status: string; trigger: string; action: string; timestamp: string }>>([]);
+  const [isLoadingTelemetry, setIsLoadingTelemetry] = useState(false);
+  const [telemetryError, setTelemetryError] = useState<string | null>(null);
 
   const normalizeLoadError = useCallback((value: unknown, fallback: string) => {
     const message = value instanceof Error ? value.message : String(value ?? "");
@@ -136,43 +159,106 @@ export default function CRMAutomationsPage() {
     void fetchRules();
   }, [fetchRules]);
 
+  useEffect(() => {
+    void (async () => {
+      const [usersRes, templatesRes] = await Promise.allSettled([getUsers(), getCrmMessageTemplates()]);
+      if (usersRes.status === "fulfilled" && usersRes.value.success && Array.isArray(usersRes.value.data)) setUsers(usersRes.value.data);
+      if (templatesRes.status === "fulfilled" && templatesRes.value.success && Array.isArray(templatesRes.value.data)) setMessageTemplates(templatesRes.value.data);
+    })();
+  }, []);
+
+  const fetchTelemetryLogs = useCallback(async () => {
+    setIsLoadingTelemetry(true);
+    setTelemetryError(null);
+    try {
+      const response = await getCrmAutomationRuns();
+      if (response.success && Array.isArray(response.data)) {
+        const ruleNameById = new Map(rules.map((r) => [r.id, r.name]));
+        setTelemetryLogs(
+          response.data.map((run: any) => ({
+            id: run.id,
+            rule: ruleNameById.get(run.rule_id) || run.rule_id?.slice(0, 8) || "Unknown rule",
+            status: run.status || "unknown",
+            trigger: run.trigger_type || "unknown",
+            action: (() => {
+              try {
+                const result = typeof run.action_result === "string" ? JSON.parse(run.action_result) : run.action_result;
+                return result?.action_type || result?.reason || "recorded";
+              } catch {
+                return "recorded";
+              }
+            })(),
+            timestamp: run.created_at ? new Date(run.created_at).toLocaleString() : "",
+          }))
+        );
+      } else {
+        setTelemetryError("Automation run logs could not be loaded from the CRM service.");
+      }
+    } catch (error) {
+      setTelemetryError(normalizeLoadError(error, "Automation run logs could not be loaded from the CRM service."));
+    } finally {
+      setIsLoadingTelemetry(false);
+    }
+  }, [rules, normalizeLoadError]);
+
+  useEffect(() => {
+    if (activeTab === 'telemetry') {
+      void fetchTelemetryLogs();
+    }
+  }, [activeTab, fetchTelemetryLogs]);
+
   // Sync editor fields when selectedRule changes
   const selectedRule = rules.find(r => r.id === selectedRuleId);
   useEffect(() => {
     if (selectedRule) {
       setRuleName(selectedRule.name);
-      setTriggerType(selectedRule.trigger_type || 'lead_score_above');
-      setTriggerField(selectedRule.trigger_conditions?.field || 'ai_score');
+      setTriggerType(selectedRule.trigger_type || 'lead_score_changed');
+      setTriggerField(selectedRule.trigger_conditions?.field ?? 'ai_score');
       setTriggerOperator(selectedRule.trigger_conditions?.operator || '>');
-      setTriggerValue(selectedRule.trigger_conditions?.value || '80');
-      
+      setTriggerValue(selectedRule.trigger_conditions?.value ?? '80');
+
       setFilterField(selectedRule.trigger_conditions?.filter_field || 'sector');
       setFilterValue(selectedRule.trigger_conditions?.filter_val || 'Mining');
 
       setActionType(selectedRule.action_type || 'send_notification');
       setActionMessage(selectedRule.action_config?.message || '');
-      setActionRecipient(selectedRule.action_config?.recipient || 'Operations Command');
+      setActionRecipient(selectedRule.action_config?.user_id || selectedRule.action_config?.recipient || '');
+      setActionTemplateId(selectedRule.action_config?.template_id || '');
       setDelayHours(selectedRule.action_config?.delay_hours || 0);
     }
   }, [selectedRule]);
 
-  // Create new rule outline template
-  const handleAddNewRule = () => {
-    const nextId = `rule-${Date.now()}`;
-    const newRule: AutomationRule = {
-      id: nextId,
+  const handleAddNewRule = async () => {
+    setIsSaving(true);
+    const newRulePayload = {
       name: 'Unconfigured Pipeline Rule',
-      trigger_type: 'lead_score_above',
-      trigger_conditions: { field: 'ai_score', operator: '>', value: '75', filter_field: 'sector', filter_val: 'Private' },
+      trigger_type: 'lead_score_changed',
+      trigger_conditions: { field: 'ai_score', operator: '>', value: '75' },
       action_type: 'send_notification',
-      action_config: { message: 'Alert: Custom pipeline trigger matched criteria.', recipient: 'Sales Lead', delay_hours: 0 },
-      is_active: false,
-      created_at: new Date().toISOString()
+      action_config: { title: 'Unconfigured Pipeline Rule', message: 'Alert: Custom pipeline trigger matched criteria.' },
+      is_active: false
     };
-    setRules(prev => [...prev, newRule]);
-    setSelectedRuleId(nextId);
-    setActiveInspectorNode('trigger');
-    showToast("New workflow stub placed on editor canvas.");
+
+    try {
+      const res = await createCrmAutomation(newRulePayload);
+      if (res.success && res.data?.id) {
+        const newRule: AutomationRule = {
+          id: res.data.id,
+          ...newRulePayload,
+          created_at: new Date().toISOString()
+        };
+        setRules(prev => [...prev, newRule]);
+        setSelectedRuleId(res.data.id);
+        setActiveInspectorNode('trigger');
+        showToast("New workflow deployed to database.");
+      } else {
+        throw new Error("Creation failed");
+      }
+    } catch {
+      showToast("New rule was not created. Check the CRM automation service and retry.", "error");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Save changes to DB
@@ -188,11 +274,14 @@ export default function CRMAutomationsPage() {
       filter_val: filterValue
     };
 
-    const action_config = {
-      message: actionMessage,
-      recipient: actionRecipient,
-      delay_hours: Number(delayHours)
-    };
+    let action_config: Record<string, unknown>;
+    if (actionType === 'send_notification') {
+      action_config = { title: ruleName, message: actionMessage, user_id: actionRecipient || undefined };
+    } else if (actionType === 'send_template_message') {
+      action_config = { template_id: actionTemplateId || undefined };
+    } else {
+      action_config = { message: actionMessage, recipient: actionRecipient, delay_hours: Number(delayHours) };
+    }
 
     const payload = {
       name: ruleName,
@@ -666,48 +755,59 @@ export default function CRMAutomationsPage() {
                         <select
                           value={triggerType}
                           onChange={(e) => {
-                            setTriggerType(e.target.value);
-                            if (e.target.value === 'lead_score_above') {
-                              setTriggerField('ai_score');
-                              setTriggerOperator('>');
-                              setTriggerValue('80');
-                            } else if (e.target.value === 'bid_deadline_less_than') {
-                              setTriggerField('submission_deadline');
-                              setTriggerOperator('<');
-                              setTriggerValue('3');
+                            const next = e.target.value;
+                            setTriggerType(next);
+                            const preset = TRIGGER_PRESETS[next];
+                            if (preset) {
+                              setTriggerField(preset.field);
+                              setTriggerOperator(preset.operator);
+                              setTriggerValue(preset.value);
                             }
                           }}
                           className="w-full bg-ink border border-ink-mid p-2 font-mono text-xs text-paper focus:outline-none"
                         >
-                          <option value="lead_score_above">Lead AI Propensity Score Exceeds</option>
-                          <option value="bid_deadline_less_than">Tender Submission Deadline Nears</option>
+                          <option value="lead_created">Lead Created</option>
+                          <option value="lead_score_changed">Lead AI Score Changes</option>
+                          <option value="opportunity_stage_changed">Opportunity Stage Changes</option>
+                          <option value="quote_sent">Quotation Sent</option>
+                          <option value="quote_accepted">Quotation Accepted</option>
+                          <option value="ticket_created">Support Ticket Created</option>
+                          <option value="ticket_sla_near_breach">Ticket SLA Near Breach</option>
+                          <option value="ticket_overdue">Ticket Overdue</option>
+                          <option value="communication_received">Communication Received</option>
                         </select>
+                        <p className="mt-1 font-mono text-[8px] text-slate-light">Rules are matched by this exact trigger type when the CRM automation engine fires an event.</p>
                       </div>
 
                       <div className="grid grid-cols-3 gap-2">
                         <div className="col-span-2">
-                          <label className="block font-mono text-[9px] text-slate-light mb-1">Field Key</label>
-                          <input 
+                          <label className="block font-mono text-[9px] text-slate-light mb-1">Field Key (blank = always match)</label>
+                          <input
                             type="text"
                             value={triggerField}
-                            disabled
-                            className="w-full bg-ink/50 border border-ink-mid/45 p-1.5 font-mono text-xs text-slate-light"
+                            onChange={(e) => setTriggerField(e.target.value)}
+                            className="w-full bg-ink border border-ink-mid p-1.5 font-mono text-xs text-paper focus:outline-none focus:border-signal"
                           />
                         </div>
                         <div>
                           <label className="block font-mono text-[9px] text-slate-light mb-1">Operator</label>
-                          <input 
-                            type="text"
+                          <select
                             value={triggerOperator}
-                            disabled
-                            className="w-full bg-ink/50 border border-ink-mid/45 p-1.5 font-mono text-xs text-slate-light text-center"
-                          />
+                            onChange={(e) => setTriggerOperator(e.target.value)}
+                            className="w-full bg-ink border border-ink-mid p-1.5 font-mono text-xs text-paper text-center focus:outline-none"
+                          >
+                            <option value="equals">=</option>
+                            <option value="not_equals">!=</option>
+                            <option value=">">&gt;</option>
+                            <option value="<">&lt;</option>
+                            <option value="contains">contains</option>
+                          </select>
                         </div>
                       </div>
 
                       <div>
                         <label className="block font-mono text-[9px] text-slate-light mb-1">Threshold Parameter</label>
-                        <input 
+                        <input
                           type="text"
                           value={triggerValue}
                           onChange={(e) => setTriggerValue(e.target.value)}
@@ -772,25 +872,59 @@ export default function CRMAutomationsPage() {
                           onChange={(e) => setActionType(e.target.value)}
                           className="w-full bg-ink border border-ink-mid p-2 font-mono text-xs text-paper focus:outline-none"
                         >
-                          <option value="send_notification">Send System Notification</option>
-                          <option value="create_opportunity">Log Opportunity Deal Staging</option>
-                          <option value="log_activity">Log Interaction History Log</option>
+                          <option value="send_notification">Send In-App Notification</option>
+                          <option value="send_template_message">Send Template Message</option>
+                          <option value="log_activity">Log Follow-up Activity</option>
+                          <option value="create_ticket">Create Support Ticket</option>
+                          <option value="update_opportunity_stage">Update Opportunity Stage</option>
+                          <option value="assign_owner">Assign Owner</option>
+                          <option value="escalate_ticket">Escalate Ticket</option>
                         </select>
                       </div>
 
-                      <div>
-                        <label className="block font-mono text-[9px] text-slate-light mb-1">Routing Recipient</label>
-                        <input 
-                          type="text"
-                          value={actionRecipient}
-                          onChange={(e) => setActionRecipient(e.target.value)}
-                          className="w-full bg-ink border border-ink-mid p-2 font-mono text-xs text-paper focus:outline-none focus:border-signal"
-                        />
-                      </div>
+                      {actionType === "send_notification" && (
+                        <div>
+                          <label className="block font-mono text-[9px] text-slate-light mb-1">Notify User</label>
+                          <select
+                            value={actionRecipient}
+                            onChange={(e) => setActionRecipient(e.target.value)}
+                            className="w-full bg-ink border border-ink-mid p-2 font-mono text-xs text-paper focus:outline-none"
+                          >
+                            <option value="">Select a user...</option>
+                            {users.map((u) => <option key={u.id} value={u.id}>{u.full_name || u.email}</option>)}
+                          </select>
+                        </div>
+                      )}
+
+                      {actionType === "send_template_message" && (
+                        <div>
+                          <label className="block font-mono text-[9px] text-slate-light mb-1">Message Template</label>
+                          <select
+                            value={actionTemplateId}
+                            onChange={(e) => setActionTemplateId(e.target.value)}
+                            className="w-full bg-ink border border-ink-mid p-2 font-mono text-xs text-paper focus:outline-none"
+                          >
+                            <option value="">Select a template...</option>
+                            {messageTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                          </select>
+                        </div>
+                      )}
+
+                      {!["send_notification", "send_template_message"].includes(actionType) && (
+                        <div>
+                          <label className="block font-mono text-[9px] text-slate-light mb-1">Routing Recipient</label>
+                          <input
+                            type="text"
+                            value={actionRecipient}
+                            onChange={(e) => setActionRecipient(e.target.value)}
+                            className="w-full bg-ink border border-ink-mid p-2 font-mono text-xs text-paper focus:outline-none focus:border-signal"
+                          />
+                        </div>
+                      )}
 
                       <div>
                         <label className="block font-mono text-[9px] text-slate-light mb-1">Delay Mobilization (Hours)</label>
-                        <input 
+                        <input
                           type="number"
                           value={delayHours}
                           onChange={(e) => setDelayHours(Number(e.target.value))}
@@ -855,36 +989,59 @@ export default function CRMAutomationsPage() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left font-mono text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-ink-mid text-slate-light text-[10px] uppercase">
-                  <th className="pb-2 font-normal">Log ID</th>
-                  <th className="pb-2 font-normal">Rule Identity</th>
-                  <th className="pb-2 font-normal">Trigger Context</th>
-                  <th className="pb-2 font-normal">Committed Action</th>
-                  <th className="pb-2 font-normal">Timestamp</th>
-                  <th className="pb-2 font-normal text-right">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-mid/40">
-                {telemetryLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-ink/30 transition-colors">
-                    <td className="py-3 text-slate">{log.id}</td>
-                    <td className="py-3 font-semibold text-paper">{log.rule}</td>
-                    <td className="py-3 text-[#3B82F6]">{log.trigger}</td>
-                    <td className="py-3 text-paper/85">{log.action}</td>
-                    <td className="py-3 text-slate-light tabular-nums">{log.timestamp}</td>
-                    <td className="py-3 text-right">
-                      <span className="px-2 py-0.5 rounded-none font-bold text-[9px] bg-green-500/10 border border-green-500/20 text-green-500">
-                        {log.status}
-                      </span>
-                    </td>
+          {telemetryError && (
+            <div className="mb-3 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+              {telemetryError}
+            </div>
+          )}
+
+          {isLoadingTelemetry ? (
+            <div className="flex justify-center py-10">
+              <Loader2 className="h-6 w-6 animate-spin text-[#3B82F6]" />
+            </div>
+          ) : telemetryLogs.length === 0 ? (
+            <p className="py-10 text-center text-[11px] text-slate-light">No automation runs recorded yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left font-mono text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-ink-mid text-slate-light text-[10px] uppercase">
+                    <th className="pb-2 font-normal">Log ID</th>
+                    <th className="pb-2 font-normal">Rule Identity</th>
+                    <th className="pb-2 font-normal">Trigger Context</th>
+                    <th className="pb-2 font-normal">Committed Action</th>
+                    <th className="pb-2 font-normal">Timestamp</th>
+                    <th className="pb-2 font-normal text-right">Status</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-ink-mid/40">
+                  {telemetryLogs.map((log) => {
+                    const statusLower = log.status.toLowerCase();
+                    const statusClass =
+                      statusLower === "failed"
+                        ? "bg-rose-500/10 border-rose-500/20 text-rose-400"
+                        : statusLower === "skipped"
+                        ? "bg-slate-500/10 border-slate-500/20 text-slate-300"
+                        : "bg-green-500/10 border-green-500/20 text-green-500";
+                    return (
+                      <tr key={log.id} className="hover:bg-ink/30 transition-colors">
+                        <td className="py-3 text-slate">{log.id.slice(0, 8)}</td>
+                        <td className="py-3 font-semibold text-paper">{log.rule}</td>
+                        <td className="py-3 text-[#3B82F6]">{log.trigger}</td>
+                        <td className="py-3 text-paper/85">{log.action}</td>
+                        <td className="py-3 text-slate-light tabular-nums">{log.timestamp}</td>
+                        <td className="py-3 text-right">
+                          <span className={`px-2 py-0.5 rounded-none font-bold text-[9px] border ${statusClass}`}>
+                            {log.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

@@ -29,11 +29,13 @@ import {
   Briefcase,
   UserCheck
 } from "lucide-react";
-import { 
-  getWebsiteEnquiries, 
-  createCrmActivity,
+import {
+  getCrmCommunications,
+  createCrmCommunication,
+  convertCrmCommunication,
+  getCrmMessageTemplates,
   getCrmContacts,
-  getCrmOrganizations
+  getCrmOrganizations,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 
@@ -42,11 +44,13 @@ interface Message {
   sender: "client" | "user";
   body: string;
   timestamp: string;
+  channel: string;
+  status?: string;
 }
 
 interface Thread {
   id: string;
-  channel: "Email" | "WhatsApp";
+  channel: "Email" | "WhatsApp" | "Other";
   clientName: string;
   clientEmail?: string;
   clientPhone?: string;
@@ -58,46 +62,21 @@ interface Thread {
   projectType?: string;
   messages: Message[];
   contactId?: string;
+  leadId?: string;
+  opportunityId?: string;
+  ownerId?: string;
+  ownerName?: string;
+  linked: boolean;
 }
 
 interface ResponseTemplate {
+  id: string;
   name: string;
-  category: string;
-  subject: string;
-  templateText: string;
-  placeholders: string[]; // ['name', 'project', 'amount']
+  channel: string;
+  subject?: string;
+  body: string;
+  variables: string[];
 }
-
-const RESPONSE_TEMPLATES: ResponseTemplate[] = [
-  {
-    name: "Quotation Follow-up",
-    category: "Commercial Proposals",
-    subject: "Ref: Quotation Follow-up - {{ProjectName}}",
-    templateText: "Dear {{ClientName}},\n\nWe are following up on the commercial quotation submitted for your {{ProjectName}} project. We wanted to confirm if the technical specs and budget parameters meet your criteria, or if you require any adjustments.\n\nBest regards,\nSNC Commercial Operations Team",
-    placeholders: ["ClientName", "ProjectName"]
-  },
-  {
-    name: "Technical Site Visit Request",
-    category: "Operations",
-    subject: "Site Inspection Confirmation - {{ProjectName}}",
-    templateText: "Dear {{ClientName}},\n\nOur field engineering team is scheduling site inspections for the upcoming week. We would like to confirm access to {{ProjectName}} on {{DateString}} at 10:00 AM. Please ensure appropriate safety inductions and PPE requirements are ready.\n\nBest regards,\nSNC Field Operations",
-    placeholders: ["ClientName", "ProjectName", "DateString"]
-  },
-  {
-    name: "Draft Contract Review",
-    category: "Commercial Contracts",
-    subject: "Draft Contract Agreement - {{ProjectName}}",
-    templateText: "Dear {{ClientName}},\n\nPlease find attached the draft agreement for the {{ProjectName}} contract. The credit limit has been set to {{CreditLimit}} as per your corporate account limits. Kindly review the indemnity clauses and revert with markups.\n\nBest regards,\nSNC Commercial Director",
-    placeholders: ["ClientName", "ProjectName", "CreditLimit"]
-  },
-  {
-    name: "Credit limit Alert Notification",
-    category: "Finance",
-    subject: "Urgent: Account Credit Exposure - SNC",
-    templateText: "Dear {{ClientName}},\n\nThis is a standard notifications regarding your account credit limit. Our treasury system reports your current exposure is nearing the set limit. We request an interim billing clearance of {{PaymentAmount}} to avoid contract staging holds.\n\nBest regards,\nSNC Finance Desk",
-    placeholders: ["ClientName", "PaymentAmount"]
-  }
-];
 
 export default function CRMSalesInbox() {
   const { session } = useAuth();
@@ -106,7 +85,11 @@ export default function CRMSalesInbox() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [channelFilter, setChannelFilter] = useState<"All" | "Email" | "WhatsApp">("All");
+  const [channelFilter, setChannelFilter] = useState<"All" | "Email" | "WhatsApp" | "Other">("All");
+  const [ownerFilter, setOwnerFilter] = useState<string>("All");
+  const [clientFilter, setClientFilter] = useState<string>("All");
+  const [linkedFilter, setLinkedFilter] = useState<"All" | "Linked" | "Unlinked">("All");
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
   const [isSending, setIsSending] = useState(false);
@@ -114,12 +97,23 @@ export default function CRMSalesInbox() {
   // CRM lookup collections
   const [contacts, setContacts] = useState<any[]>([]);
   const [organizations, setOrganizations] = useState<any[]>([]);
+  const [templates, setTemplates] = useState<ResponseTemplate[]>([]);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
   // Template editor modal/popover states
   const [activeTemplateIdx, setActiveTemplateIdx] = useState<number | null>(null);
   const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
   const [gatewaySelection, setGatewaySelection] = useState<"Email" | "WhatsApp">("Email");
+
+  // Conversion States
+  const [isConvertModalOpen, setIsConvertModalOpen] = useState(false);
+  const [convertTarget, setConvertTarget] = useState<'lead' | 'ticket' | 'activity'>('lead');
+  const [convertForm, setConvertForm] = useState({
+    subject: '',
+    notes: '',
+    budget: '50000'
+  });
+
 
   const normalizeLoadError = (reason: unknown, fallback: string) => {
     const message = reason instanceof Error ? reason.message : String(reason ?? "");
@@ -129,48 +123,71 @@ export default function CRMSalesInbox() {
     return fallback;
   };
 
-  const loadInboxData = useCallback(async () => {
+  const isWhatsAppChannel = (channel: string) => channel?.startsWith("whatsapp");
+
+  const loadInboxData = useCallback(async (preserveSelection?: string) => {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const [enqRes, contactsRes, orgsRes] = await Promise.allSettled([
-        getWebsiteEnquiries(),
+      const [commsRes, contactsRes, orgsRes, templatesRes] = await Promise.allSettled([
+        getCrmCommunications({ limit: 200 }),
         getCrmContacts(),
-        getCrmOrganizations()
+        getCrmOrganizations(),
+        getCrmMessageTemplates(),
       ]);
 
-      let loadedThreads: Thread[] = [];
       const warnings: string[] = [];
+      const threadMap = new Map<string, Thread>();
 
-      // 1. Process real website enquiries (Emails)
-      if (enqRes.status === "fulfilled" && enqRes.value.success) {
-        const enquiries = enqRes.value.data || [];
-        
-        enquiries.forEach((enq: any) => {
-          loadedThreads.push({
-            id: `email-${enq.id}`,
-            channel: "Email",
-            clientName: enq.name,
-            clientEmail: enq.email,
-            clientPhone: enq.phone,
-            company: enq.company,
-            subject: enq.project_type ? `Project Enquiry: ${enq.project_type}` : "New Website Enquiry",
-            lastMessage: enq.message || "",
-            timestamp: enq.created_at,
-            unread: true,
-            projectType: enq.project_type || "General Construction",
-            messages: [
-              {
-                id: `enq-msg-${enq.id}`,
-                sender: "client",
-                body: enq.message || "No message body",
-                timestamp: enq.created_at
-              }
-            ]
-          });
+      if (commsRes.status === "fulfilled" && commsRes.value.success) {
+        const communications = (commsRes.value.data || []).slice().reverse(); // oldest first for message ordering
+        communications.forEach((c: any) => {
+          const key = c.contact_id || c.lead_id || c.opportunity_id || `standalone-${c.id}`;
+          const channel: Thread["channel"] = isWhatsAppChannel(c.channel) ? "WhatsApp" : c.channel === "email" ? "Email" : "Other";
+          const message: Message = {
+            id: c.id,
+            sender: c.direction === "inbound" ? "client" : "user",
+            body: c.body || "",
+            timestamp: c.started_at || c.created_at,
+            channel: c.channel,
+            status: c.status,
+          };
+          const ownerId = c.recipient_user_id || c.actor_user_id || undefined;
+          const ownerName = c.recipient_name || c.actor_name || undefined;
+          const existing = threadMap.get(key);
+          if (existing) {
+            existing.messages.push(message);
+            existing.lastMessage = message.body;
+            existing.timestamp = message.timestamp;
+            if (message.status && ["received", "pending"].includes(message.status)) existing.unread = true;
+            if (!existing.ownerId && ownerId) {
+              existing.ownerId = ownerId;
+              existing.ownerName = ownerName;
+            }
+          } else {
+            threadMap.set(key, {
+              id: key,
+              channel,
+              clientName: c.contact_name || c.lead_company || c.opportunity_name || c.from_address || "Unknown",
+              clientEmail: c.channel === "email" ? (c.direction === "inbound" ? c.from_address : c.to_address) : undefined,
+              clientPhone: isWhatsAppChannel(c.channel) ? (c.direction === "inbound" ? c.from_address : c.to_address) : undefined,
+              company: c.lead_company,
+              subject: c.subject || "CRM communication",
+              lastMessage: message.body,
+              timestamp: message.timestamp,
+              unread: ["received", "pending"].includes(String(c.status || "")),
+              messages: [message],
+              contactId: c.contact_id || undefined,
+              leadId: c.lead_id || undefined,
+              opportunityId: c.opportunity_id || undefined,
+              ownerId,
+              ownerName,
+              linked: Boolean(c.contact_id || c.lead_id || c.opportunity_id),
+            });
+          }
         });
       } else {
-        warnings.push("Website enquiries could not be loaded.");
+        warnings.push("CRM communications could not be loaded.");
       }
 
       if (contactsRes.status === "fulfilled" && contactsRes.value.success) {
@@ -183,13 +200,20 @@ export default function CRMSalesInbox() {
       } else {
         warnings.push("CRM organizations could not be loaded.");
       }
+      if (templatesRes.status === "fulfilled" && templatesRes.value.success) {
+        setTemplates(templatesRes.value.data || []);
+      } else {
+        warnings.push("Message templates could not be loaded.");
+      }
 
-      // Sort by timestamp descending
+      const loadedThreads = Array.from(threadMap.values());
       loadedThreads.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
       setThreads(loadedThreads);
 
-      if (loadedThreads.length > 0) {
+      if (preserveSelection && loadedThreads.some((t) => t.id === preserveSelection)) {
+        setSelectedThreadId(preserveSelection);
+      } else if (loadedThreads.length > 0) {
         setSelectedThreadId(loadedThreads[0].id);
       }
       setSourceWarnings(warnings);
@@ -216,41 +240,81 @@ export default function CRMSalesInbox() {
   // Sync gateway selection when thread changes
   useEffect(() => {
     if (selectedThread) {
-      setGatewaySelection(selectedThread.channel);
+      setGatewaySelection(selectedThread.channel === "WhatsApp" ? "WhatsApp" : "Email");
     }
   }, [selectedThread]);
 
-  // Handle template selection & setup placeholder variables
+  // Handle template selection & setup variable values
   const handlePickTemplate = (idx: number) => {
     setActiveTemplateIdx(idx);
-    const tmpl = RESPONSE_TEMPLATES[idx];
+    const tmpl = templates[idx];
+    if (!tmpl) return;
     const initialVals: Record<string, string> = {};
-    tmpl.placeholders.forEach(ph => {
-      if (ph === "ClientName") initialVals[ph] = selectedThread?.clientName || "";
-      else if (ph === "ProjectName") initialVals[ph] = selectedThread?.projectType || "";
-      else if (ph === "CreditLimit") {
-        const matchedOrg = organizations.find(o => o.name === selectedThread?.company);
-        initialVals[ph] = matchedOrg ? `$${Number(matchedOrg.credit_limit).toLocaleString()}` : "$100,000";
+    (tmpl.variables || []).forEach((variable) => {
+      if (/client/i.test(variable)) initialVals[variable] = selectedThread?.clientName || "";
+      else if (/project/i.test(variable)) initialVals[variable] = selectedThread?.projectType || "";
+      else if (/credit/i.test(variable)) {
+        const matchedOrgForTemplate = organizations.find(o => o.name === selectedThread?.company);
+        initialVals[variable] = matchedOrgForTemplate ? `$${Number(matchedOrgForTemplate.credit_limit).toLocaleString()}` : "";
       } else {
-        initialVals[ph] = "";
+        initialVals[variable] = "";
       }
     });
     setTemplateValues(initialVals);
   };
 
+  const handleConvertClick = (target: 'lead' | 'ticket' | 'activity') => {
+    if (!selectedThread) return;
+    setConvertTarget(target);
+    setConvertForm({
+      subject: selectedThread.subject || '',
+      notes: selectedThread.lastMessage || '',
+      budget: '50000'
+    });
+    setIsConvertModalOpen(true);
+  };
+
+  const handleConvertMessageSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedThread) return;
+    const latestMessage = selectedThread.messages[selectedThread.messages.length - 1];
+    if (!latestMessage) return;
+
+    setIsSending(true);
+    try {
+      const response = await convertCrmCommunication(latestMessage.id, {
+        target_type: convertTarget,
+        company_name: selectedThread.company || selectedThread.clientName,
+        contact_name: selectedThread.clientName,
+        contact_email: selectedThread.clientEmail,
+        contact_phone: selectedThread.clientPhone,
+        task_subject: convertForm.subject,
+      });
+      if (!response.success) throw new Error(response.message || "Conversion failed.");
+      showToast(response.message || `Message converted to ${convertTarget}.`);
+      setIsConvertModalOpen(false);
+    } catch (err: any) {
+      showToast(err?.message || "Conversion failed. The message was not converted.", "error");
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   // Compile template and insert into draft
   const handleInsertTemplate = () => {
     if (activeTemplateIdx === null) return;
-    const tmpl = RESPONSE_TEMPLATES[activeTemplateIdx];
-    let body = tmpl.templateText;
-    tmpl.placeholders.forEach(ph => {
-      const val = templateValues[ph] || `[${ph}]`;
-      body = body.replaceAll(`{{${ph}}}`, val);
+    const tmpl = templates[activeTemplateIdx];
+    if (!tmpl) return;
+    let body = tmpl.body;
+    (tmpl.variables || []).forEach((variable) => {
+      const val = templateValues[variable] || `[${variable}]`;
+      body = body.replaceAll(`{{${variable}}}`, val);
     });
     setReplyText(body);
     setActiveTemplateIdx(null);
     showToast("Template drafted to composer.");
   };
+
 
   // Send message and log activity in CRM database
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -266,43 +330,26 @@ export default function CRMSalesInbox() {
         (c) => c.phone && c.phone.replace(/[^0-9]/g, '') === selectedThread.clientPhone?.replace(/[^0-9]/g, '')
       );
 
-      // DB payload
-      const payload: any = {
-        type: gatewaySelection,
-        subject: `Outbox Reply: ${selectedThread.subject}`,
-        description: replyText.trim(),
-        activity_date: new Date().toISOString(),
-        status: "Completed",
-        contact_id: matchedContact ? matchedContact.id : undefined
-      };
-
-      await createCrmActivity(payload);
-      const newMessage: Message = {
-        id: `reply-${Date.now()}`,
-        sender: "user",
+      const channelValue = gatewaySelection === "WhatsApp" ? "whatsapp_message" : "email";
+      const payload: Record<string, unknown> = {
+        channel: channelValue,
+        direction: "outbound",
+        subject: selectedThread.subject,
         body: replyText.trim(),
-        timestamp: new Date().toISOString()
+        status: "sent",
+        contact_id: selectedThread.contactId || (matchedContact ? matchedContact.id : undefined),
+        lead_id: selectedThread.leadId,
+        opportunity_id: selectedThread.opportunityId,
+        to_address: gatewaySelection === "WhatsApp" ? selectedThread.clientPhone : selectedThread.clientEmail,
       };
 
-      const updatedThreads = threads.map((t) => {
-        if (t.id === selectedThread.id) {
-          return {
-            ...t,
-            lastMessage: replyText.trim(),
-            timestamp: new Date().toISOString(),
-            unread: false,
-            messages: [...t.messages, newMessage]
-          };
-        }
-        return t;
-      });
+      const response = await createCrmCommunication(payload);
+      if (!response.success) throw new Error(response.message || "Reply was not recorded.");
 
-      updatedThreads.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setThreads(updatedThreads);
-      showToast(`Reply recorded via ${gatewaySelection} workflow and logged to CRM.`);
+      showToast(`Reply sent via ${gatewaySelection} and logged to CRM.`);
       setReplyText("");
+      await loadInboxData(selectedThread.id);
     } catch (err) {
-      console.warn("Failed to complete CRM inbox reply workflow:", err);
       showToast(normalizeLoadError(err, `Reply was not recorded. Check the ${gatewaySelection} workflow connection and retry.`), "error");
     } finally {
       setIsSending(false);
@@ -333,8 +380,22 @@ export default function CRMSalesInbox() {
     const matchesChannel =
       channelFilter === "All" || thread.channel === channelFilter;
 
-    return matchesSearch && matchesChannel;
+    const matchesOwner =
+      ownerFilter === "All" || thread.ownerName === ownerFilter;
+
+    const matchesClient =
+      clientFilter === "All" || thread.clientName === clientFilter || thread.company === clientFilter;
+
+    const matchesLinked =
+      linkedFilter === "All" || (linkedFilter === "Linked" ? thread.linked : !thread.linked);
+
+    const matchesUnread = !unreadOnly || thread.unread;
+
+    return matchesSearch && matchesChannel && matchesOwner && matchesClient && matchesLinked && matchesUnread;
   });
+
+  const ownerOptions = Array.from(new Set(threads.map((t) => t.ownerName).filter(Boolean))) as string[];
+  const clientOptions = Array.from(new Set(threads.map((t) => t.clientName).filter(Boolean))) as string[];
 
   const formatMessageTime = (dateStr: string) => {
     try {
@@ -445,7 +506,7 @@ export default function CRMSalesInbox() {
 
               {/* Channel Filter Tab */}
               <div className="flex bg-ink border border-ink-mid p-0.5">
-                {(["All", "Email", "WhatsApp"] as const).map((ch) => (
+                {(["All", "Email", "WhatsApp", "Other"] as const).map((ch) => (
                   <button
                     key={ch}
                     onClick={() => setChannelFilter(ch)}
@@ -458,6 +519,44 @@ export default function CRMSalesInbox() {
                     {ch}
                   </button>
                 ))}
+              </div>
+
+              {/* Owner / Client / Linked-record / Unread filters */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <select
+                  value={ownerFilter}
+                  onChange={(e) => setOwnerFilter(e.target.value)}
+                  className="bg-ink border border-ink-mid text-[9px] font-mono text-slate-300 py-1 px-1 focus:outline-none"
+                >
+                  <option value="All">All Owners</option>
+                  {ownerOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <select
+                  value={clientFilter}
+                  onChange={(e) => setClientFilter(e.target.value)}
+                  className="bg-ink border border-ink-mid text-[9px] font-mono text-slate-300 py-1 px-1 focus:outline-none"
+                >
+                  <option value="All">All Clients</option>
+                  {clientOptions.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <select
+                  value={linkedFilter}
+                  onChange={(e) => setLinkedFilter(e.target.value as "All" | "Linked" | "Unlinked")}
+                  className="bg-ink border border-ink-mid text-[9px] font-mono text-slate-300 py-1 px-1 focus:outline-none"
+                >
+                  <option value="All">All Records</option>
+                  <option value="Linked">Linked to CRM</option>
+                  <option value="Unlinked">Unlinked</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setUnreadOnly((prev) => !prev)}
+                  className={`text-[9px] font-mono tracking-wider uppercase transition-all border ${
+                    unreadOnly ? "bg-signal text-black border-signal font-bold" : "border-ink-mid text-slate hover:text-paper"
+                  }`}
+                >
+                  Unread Only
+                </button>
               </div>
             </div>
 
@@ -493,9 +592,11 @@ export default function CRMSalesInbox() {
                           <span className={`p-0.5 border text-[9px] uppercase ${
                             thread.channel === "WhatsApp"
                               ? "bg-green-500/10 border-green-500/25 text-green-500"
-                              : "bg-blue-500/10 border-blue-500/25 text-blue-400"
+                              : thread.channel === "Email"
+                              ? "bg-blue-500/10 border-blue-500/25 text-blue-400"
+                              : "bg-slate-500/10 border-slate-500/25 text-slate-300"
                           }`}>
-                            {thread.channel === "WhatsApp" ? "WA" : "Mail"}
+                            {thread.channel === "WhatsApp" ? "WA" : thread.channel === "Email" ? "Mail" : "Other"}
                           </span>
                           <span className="font-bold text-xs text-paper truncate">
                             {thread.clientName}
@@ -542,13 +643,25 @@ export default function CRMSalesInbox() {
                       {selectedThread.subject}
                     </p>
                   </div>
-                  <span className={`font-mono text-[9px] px-1.5 py-0.5 border uppercase font-bold ${
-                    selectedThread.channel === "WhatsApp"
-                      ? "bg-green-500/10 border-green-500/25 text-green-500"
-                      : "bg-blue-500/10 border-blue-500/25 text-blue-400"
-                  }`}>
-                    {selectedThread.channel} Channel
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <div className="relative group">
+                      <button className="px-2.5 py-1 bg-white/5 border border-white/10 text-slate-light hover:text-paper font-mono text-[9px] uppercase tracking-wider rounded-sm flex items-center gap-1">
+                        Convert ⚙️
+                      </button>
+                      <div className="absolute right-0 top-full mt-1 bg-[#111827] border border-white/10 rounded-sm shadow-xl hidden group-hover:block z-50 w-36">
+                        <button onClick={() => handleConvertClick('lead')} className="w-full text-left px-3 py-1.5 hover:bg-white/5 text-[10px] font-mono uppercase text-slate-light hover:text-white">→ CRM Lead</button>
+                        <button onClick={() => handleConvertClick('ticket')} className="w-full text-left px-3 py-1.5 hover:bg-white/5 text-[10px] font-mono uppercase text-slate-light hover:text-white">→ Support Ticket</button>
+                        <button onClick={() => handleConvertClick('activity')} className="w-full text-left px-3 py-1.5 hover:bg-white/5 text-[10px] font-mono uppercase text-slate-light hover:text-white">→ Follow-up Activity</button>
+                      </div>
+                    </div>
+                    <span className={`font-mono text-[9px] px-1.5 py-0.5 border uppercase font-bold ${
+                      selectedThread.channel === "WhatsApp"
+                        ? "bg-green-500/10 border-green-500/25 text-green-500"
+                        : "bg-blue-500/10 border-blue-500/25 text-blue-400"
+                    }`}>
+                      {selectedThread.channel}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Message logs timeline */}
@@ -597,11 +710,12 @@ export default function CRMSalesInbox() {
                     {/* Quick template button trigger */}
                     <button
                       type="button"
+                      disabled={templates.length === 0}
                       onClick={() => handlePickTemplate(0)}
-                      className="flex items-center space-x-1 font-mono text-[9px] bg-signal/10 border border-signal/20 hover:border-signal text-signal px-2 py-0.5 transition-all"
+                      className="flex items-center space-x-1 font-mono text-[9px] bg-signal/10 border border-signal/20 hover:border-signal text-signal px-2 py-0.5 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <Sparkles className="w-3.5 h-3.5" />
-                      <span>SELECT RESPONSE TEMPLATE</span>
+                      <span>{templates.length === 0 ? "NO TEMPLATES AVAILABLE" : "SELECT RESPONSE TEMPLATE"}</span>
                     </button>
                   </div>
 
@@ -776,9 +890,9 @@ export default function CRMSalesInbox() {
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span>Enquiries Webhook:</span>
+                    <span>Communication Ledger:</span>
                     <span className="text-[#3b82f6] font-semibold flex items-center">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6] mr-1 animate-pulse" /> Listening
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6] mr-1 animate-pulse" /> Connected
                     </span>
                   </div>
                 </div>
@@ -794,7 +908,7 @@ export default function CRMSalesInbox() {
       )}
 
       {/* Response Template Selector & Variable Editor modal */}
-      {activeTemplateIdx !== null && (
+      {activeTemplateIdx !== null && templates[activeTemplateIdx] && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
           <div className="bg-ink-light border border-ink-mid w-full max-w-xl p-5 rounded-none">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3 mb-4">
@@ -814,9 +928,9 @@ export default function CRMSalesInbox() {
             <div className="grid grid-cols-3 gap-3 mb-4">
               <div className="col-span-1 border-r border-ink-mid pr-3 space-y-1">
                 <div className="font-mono text-[9px] text-slate-light tracking-widest uppercase mb-1.5">Templates</div>
-                {RESPONSE_TEMPLATES.map((tmpl, idx) => (
+                {templates.map((tmpl, idx) => (
                   <button
-                    key={tmpl.name}
+                    key={tmpl.id}
                     type="button"
                     onClick={() => handlePickTemplate(idx)}
                     className={`w-full text-left px-2 py-1.5 text-[10px] font-mono uppercase transition-all border ${
@@ -830,26 +944,26 @@ export default function CRMSalesInbox() {
                 ))}
               </div>
 
-              {/* Input placeholders variables editor */}
+              {/* Input variable values editor */}
               <div className="col-span-2 space-y-3.5">
                 <div>
                   <div className="font-mono text-[9px] text-slate-light tracking-widest uppercase mb-1">
-                    Template: {RESPONSE_TEMPLATES[activeTemplateIdx].name}
+                    Template: {templates[activeTemplateIdx].name}
                   </div>
                   <div className="font-mono text-[8px] bg-ink border border-ink-mid/45 p-1 text-slate uppercase inline-block">
-                    Category: {RESPONSE_TEMPLATES[activeTemplateIdx].category}
+                    Channel: {templates[activeTemplateIdx].channel}
                   </div>
                 </div>
 
                 <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                  {RESPONSE_TEMPLATES[activeTemplateIdx].placeholders.map((ph) => (
-                    <div key={ph}>
-                      <label className="block font-mono text-[9px] text-slate-light mb-1">Variable: &apos;{ph}&apos;</label>
-                      <input 
+                  {(templates[activeTemplateIdx].variables || []).map((variable) => (
+                    <div key={variable}>
+                      <label className="block font-mono text-[9px] text-slate-light mb-1">Variable: &apos;{variable}&apos;</label>
+                      <input
                         type="text"
-                        value={templateValues[ph] || ""}
-                        onChange={(e) => setTemplateValues(prev => ({ ...prev, [ph]: e.target.value }))}
-                        placeholder={`Enter value for {{${ph}}}`}
+                        value={templateValues[variable] || ""}
+                        onChange={(e) => setTemplateValues(prev => ({ ...prev, [variable]: e.target.value }))}
+                        placeholder={`Enter value for {{${variable}}}`}
                         className="w-full bg-ink border border-ink-mid p-1.5 font-mono text-xs text-paper focus:outline-none focus:border-signal"
                       />
                     </div>
@@ -863,10 +977,10 @@ export default function CRMSalesInbox() {
                   </div>
                   <p className="whitespace-pre-wrap">
                     {(() => {
-                      let text = RESPONSE_TEMPLATES[activeTemplateIdx].templateText;
-                      RESPONSE_TEMPLATES[activeTemplateIdx].placeholders.forEach(ph => {
-                        const val = templateValues[ph] || `{{${ph}}}`;
-                        text = text.replaceAll(`{{${ph}}}`, val);
+                      let text = templates[activeTemplateIdx].body;
+                      (templates[activeTemplateIdx].variables || []).forEach((variable) => {
+                        const val = templateValues[variable] || `{{${variable}}}`;
+                        text = text.replaceAll(`{{${variable}}}`, val);
                       });
                       return text;
                     })()}
@@ -894,6 +1008,67 @@ export default function CRMSalesInbox() {
             </div>
 
           </div>
+        </div>
+      )}
+
+      {/* CONVERT MESSAGE MODAL */}
+      {isConvertModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="absolute inset-0" onClick={() => setIsConvertModalOpen(false)} />
+          <div className="relative bg-[#111827] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10 text-xs">
+            <h3 className="font-mono text-sm text-[#3B82F6] uppercase font-bold tracking-wider mb-2">Convert Message to CRM Record</h3>
+            <p className="text-slate-400 mb-4">Convert the selected thread conversation from <span className="text-white font-bold">{selectedThread?.clientName}</span> into a live CRM entity.</p>
+            <form onSubmit={handleConvertMessageSubmit} className="space-y-4">
+              <div>
+                <label className="block text-slate-400 mb-1 font-mono uppercase text-[9px]">Conversion Entity Type</label>
+                <select 
+                  value={convertTarget}
+                  onChange={(e) => setConvertTarget(e.target.value as any)}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white"
+                >
+                  <option value="lead">CRM Lead</option>
+                  <option value="ticket">Help Desk Support Ticket</option>
+                  <option value="activity">Follow-up Activity</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-mono uppercase text-[9px]">Subject / Title</label>
+                <input
+                  type="text"
+                  value={convertForm.subject}
+                  onChange={(e) => setConvertForm(prev => ({ ...prev, subject: e.target.value }))}
+                  required
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-mono uppercase text-[9px]">Conversion Notes / AI Rationale</label>
+                <textarea 
+                  value={convertForm.notes}
+                  onChange={(e) => setConvertForm(prev => ({ ...prev, notes: e.target.value }))}
+                  rows={3}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-white/5">
+                <button type="button" onClick={() => setIsConvertModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+                <button type="submit" className="px-3 py-1.5 bg-[#3B82F6] hover:bg-[#2563EB] text-white font-mono text-[10px] uppercase font-bold">Convert Record</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* TOAST NOTIFICATION */}
+      {notification && (
+        <div className={`fixed bottom-4 right-4 z-50 px-4 py-3 rounded-lg border shadow-xl flex items-center gap-3 animate-in slide-in-from-bottom-2 ${
+          notification.type === 'error' ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+        }`}>
+          <CheckCircle2 className="h-4 w-4" />
+          <span className="text-xs font-semibold">{notification.message}</span>
         </div>
       )}
 

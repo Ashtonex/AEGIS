@@ -148,6 +148,43 @@ async def test_require_permission_denies_missing_role_permission():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "permission",
+    [
+        "crm.support.read",
+        "crm.support.create",
+        "crm.support.update",
+        "crm.automations.execute",
+        "crm.import",
+        "crm.export",
+        "crm.reports.read",
+        "crm.marketing.read",
+        "crm.marketing.create",
+        "crm.customer360.read",
+        "crm.opportunities.quote",
+        "crm.opportunities.close",
+    ],
+)
+async def test_require_permission_gates_consolidated_crm_permissions(permission: str):
+    """Phase 12 direct-coverage: the Phase 7-11 CRM work consolidated/introduced these
+    exact permission keys (support tickets, automation execution, import/export,
+    reports, marketing, customer-360, opportunity quote/close). Each must be
+    independently grantable and independently deniable through require_permission."""
+    allow_db = FakeDb(FakeResult(scalar_value=1))
+    allow_checker = require_permission(permission)
+    resolved = await allow_checker(user(), allow_db)
+    assert resolved["user_id"] == "user-1"
+    assert allow_db.calls[0]["params"]["permission_key"] == permission
+
+    deny_db = FakeDb(FakeResult(scalar_value=None))
+    deny_checker = require_permission(permission)
+    with pytest.raises(HTTPException) as exc:
+        await deny_checker(user(), deny_db)
+    assert exc.value.status_code == 403
+    assert exc.value.detail == f"Missing required permission: {permission}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("method", "permission"),
     [
         ("GET", "projects.read"),
@@ -190,7 +227,7 @@ def _seeded_permission_keys() -> set[str]:
     keys = set()
     migration_dir = ROOT / "migrations"
     for path in migration_dir.glob("*.sql"):
-        keys.update(re.findall(r"'([a-z_]+(?:[._][a-z_]+)+)'", path.read_text()))
+        keys.update(re.findall(r"'([a-z0-9_]+(?:[._][a-z0-9_]+)+)'", path.read_text()))
 
     generated = (migration_dir / "011_resource_action_permissions.sql").read_text()
     resource_array = re.search(r"ARRAY\[(.*?)\]\) AS resource", generated, re.S)

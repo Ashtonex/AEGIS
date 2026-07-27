@@ -563,6 +563,13 @@ export default function CRMCommercialEngine() {
           
           <div className="flex space-x-3">
             <Link 
+              href="/dashboard/crm/marketing"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <TrendingUp className="w-3.5 h-3.5 mr-1.5" />
+              MARKETING
+            </Link>
+            <Link 
               href="/dashboard/crm/leads"
               className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
             >
@@ -575,6 +582,27 @@ export default function CRMCommercialEngine() {
             >
               <Briefcase className="w-3.5 h-3.5 mr-1.5" />
               REGISTRY
+            </Link>
+            <Link
+              href="/dashboard/crm/support"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />
+              SUPPORT
+            </Link>
+            <Link
+              href="/dashboard/crm/tickets"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />
+              TICKETS
+            </Link>
+            <Link
+              href="/dashboard/crm/reports"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <TrendingUp className="w-3.5 h-3.5 mr-1.5" />
+              REPORTS
             </Link>
           </div>
         </header>
