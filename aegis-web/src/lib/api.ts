@@ -163,6 +163,65 @@ function timeoutReason(): Error | DOMException {
   return error;
 }
 
+function readCachedSupabaseAccessToken(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || !key.startsWith("sb-") || !key.endsWith("-auth-token")) {
+        continue;
+      }
+
+      const value = window.localStorage.getItem(key);
+      if (!value) {
+        continue;
+      }
+
+      const parsed = JSON.parse(value) as {
+        access_token?: unknown;
+        currentSession?: { access_token?: unknown };
+      };
+      const accessToken = parsed.access_token ?? parsed.currentSession?.access_token;
+      if (typeof accessToken === "string" && accessToken.length > 0) {
+        return accessToken;
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function getSupabaseAccessToken(timeoutMs = 2500): Promise<string | null> {
+  const cachedToken = readCachedSupabaseAccessToken();
+  if (cachedToken) {
+    return cachedToken;
+  }
+
+  const timeout = new Promise<null>((resolve) => {
+    setTimeout(() => resolve(null), timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([
+      getSupabase().auth.getSession(),
+      timeout,
+    ]);
+
+    if (!result) {
+      return null;
+    }
+
+    return result.data.session?.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
   const headers = new Headers(headersInit);
   if (!headers.has("Content-Type")) {
@@ -177,9 +236,7 @@ async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
     return headers;
   }
 
-  const { data: { session } } = await getSupabase().auth.getSession();
-  const token = session?.access_token;
-
+  const token = await getSupabaseAccessToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
