@@ -15,6 +15,7 @@ import {
   getGuardAuditHistory,
   getCommercialBaselineHistory,
   getModulesStatus,
+  ApiError,
 } from "@/lib/api";
 
 type ApiData = Record<string, unknown>;
@@ -38,7 +39,13 @@ function sourceErrorsFromMeta(meta: unknown) {
 }
 
 function sourceWarningsFrom(result: SettledApiResult, label: string) {
-  if (result.status === "rejected") return [`${label} could not be loaded.`];
+  if (result.status === "rejected") {
+    const reason = result.reason;
+    if (reason instanceof ApiError) {
+      return [`${label} could not be loaded (${reason.status}): ${reason.message}`];
+    }
+    return [`${label} could not be loaded.`];
+  }
   const errors = sourceErrorsFromMeta(result.value.meta);
   return errors.map((error) => `${label}: ${displayValue(error.source)} is ${displayValue(error.status)}.`);
 }
