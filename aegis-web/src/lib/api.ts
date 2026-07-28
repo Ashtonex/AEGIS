@@ -462,10 +462,13 @@ function bearerHeaders(accessToken?: string): HeadersInit | undefined {
   return accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
 }
 
+const EXECUTIVE_READ_TIMEOUT_MS = 120000;
+
 export async function getExecutiveKPIs(accessToken?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/kpis`, {
     cache: 'no-store',
     headers: bearerHeaders(accessToken),
+    timeoutMs: EXECUTIVE_READ_TIMEOUT_MS,
     allowFallback: false
   });
 }
@@ -474,6 +477,7 @@ export async function getModulesStatus(accessToken?: string): Promise<ApiRespons
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/modules`, {
     cache: 'no-store',
     headers: bearerHeaders(accessToken),
+    timeoutMs: EXECUTIVE_READ_TIMEOUT_MS,
     allowFallback: false
   });
 }
@@ -1321,20 +1325,21 @@ export async function getExecutiveStats(accessToken?: string): Promise<ApiRespon
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/stats`, {
     cache: 'no-store',
     headers: bearerHeaders(accessToken),
+    timeoutMs: EXECUTIVE_READ_TIMEOUT_MS,
     allowFallback: false
   });
 }
 
 export async function getExecutiveRegions(accessToken?: string): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/regions`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/regions`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
 export async function getActiveExecutiveProjects(accessToken?: string): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/projects/active`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/projects/active`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
 export async function getExecutiveProjectDetail(projectId: string, accessToken?: string): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
+  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
 /** Internal project register. Operational screens must not fall back to website demo data. */
@@ -1343,11 +1348,11 @@ export async function getInternalProjects(): Promise<ApiResponse<any[]>> {
 }
 
 export async function getExecutiveDataHealth(accessToken?: string): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
 export async function getExecutiveExceptions(accessToken?: string): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
 export async function getPortalAccess(portal: "executive" | "employee" | "foreman" | "client" | "supplier", accessToken?: string): Promise<ApiResponse<{ portal: string; destination: string }>> {

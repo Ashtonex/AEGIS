@@ -91,15 +91,27 @@ function ExecutiveCommandCentreWorkspace() {
   const loadDashboard = async () => {
     setRefreshing(true);
     const accessToken = session?.access_token;
-    const [kpiResult, statsResult, moduleResult, regionResult, projectResult, healthResult, exceptionResult] = await Promise.allSettled([
-      getExecutiveKPIs(accessToken), getExecutiveStats(accessToken), getModulesStatus(accessToken), getExecutiveRegions(accessToken), getActiveExecutiveProjects(accessToken), getExecutiveDataHealth(accessToken), getExecutiveExceptions(accessToken),
+    const [kpiResult, statsResult, moduleResult] = await Promise.allSettled([
+      getExecutiveKPIs(accessToken),
+      getExecutiveStats(accessToken),
+      getModulesStatus(accessToken),
     ]);
     if (kpiResult.status === "fulfilled") setKpis(kpiResult.value.data || {});
     if (statsResult.status === "fulfilled") setStats(statsResult.value.data || {});
     if (moduleResult.status === "fulfilled") setModules(moduleResult.value.data || []);
+
+    const [regionResult, projectResult, healthResult] = await Promise.allSettled([
+      getExecutiveRegions(accessToken),
+      getActiveExecutiveProjects(accessToken),
+      getExecutiveDataHealth(accessToken),
+    ]);
     if (regionResult.status === "fulfilled") setRegions(regionResult.value.data || []);
     if (projectResult.status === "fulfilled") setActiveProjects(projectResult.value.data || []);
     if (healthResult.status === "fulfilled") setDataHealth(healthResult.value.data || []);
+
+    const exceptionResult = await getExecutiveExceptions(accessToken)
+      .then((value) => ({ status: "fulfilled" as const, value }))
+      .catch((reason) => ({ status: "rejected" as const, reason }));
     if (exceptionResult.status === "fulfilled") setExceptions(exceptionResult.value.data || []);
     setLoadWarnings([
       ...sourceWarningsFrom(kpiResult, "Executive KPIs"),
