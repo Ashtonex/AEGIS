@@ -12,14 +12,11 @@ services:
       - key: DEBUG
         value: 'false'
       - key: ALLOWED_ORIGINS
-        sync: false
+        value: https://aegis-frontend-isbu.onrender.com
       - key: ALLOWED_HOSTS
-        sync: false
+        value: aegis-backend-api.onrender.com
       - key: FRONTEND_HOSTNAME
-        fromService:
-          type: web
-          name: aegis-frontend
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
+        value: aegis-frontend-isbu.onrender.com
       - key: BACKGROUND_JOBS_ENABLED
         value: 'false'
       # The following must be securely added in the Render Dashboard:
@@ -55,10 +52,9 @@ services:
       # Free Render web services cannot receive private-network requests.
       # Reference the backend's public hostname and add HTTPS in application code.
       - key: INTERNAL_API_URL
-        fromService:
-          type: web
-          name: aegis-backend-api
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
+        value: https://aegis-backend-api.onrender.com
+      - key: NEXT_PUBLIC_API_URL
+        value: https://aegis-backend-api.onrender.com
       - key: NEXT_PUBLIC_SUPABASE_URL
         fromService:
           type: web
