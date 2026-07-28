@@ -32,8 +32,11 @@ class SettingsRouterContractTests(unittest.TestCase):
         self.assertIn("async def _audit_events", ROUTER)
         self.assertIn("UNION ALL", ROUTER)
         self.assertIn("FROM core.audit_log", ROUTER)
+        self.assertIn("e.resource_id::text AS resource_id", ROUTER)
+        self.assertIn("a.record_id::text AS resource_id", ROUTER)
+        self.assertIn("e.organization_id=CAST(:org_id AS uuid)", ROUTER)
         self.assertIn(
-            "COALESCE(a.new_data->>'organization_id', a.old_data->>'organization_id')=:org_id",
+            "COALESCE(a.new_data->>'organization_id', a.old_data->>'organization_id')=CAST(:org_id AS text)",
             ROUTER,
         )
         self.assertIn("'settings.audit_events' AS source", ROUTER)

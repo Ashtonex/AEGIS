@@ -43,6 +43,7 @@ type SettingsOverview = {
   website_content: WebsiteContent[];
   integrations: Integration[];
   audit_events: AuditEvent[];
+  source_warnings: string[];
 };
 
 type ManagedAccountType = "client" | "supplier" | "subcontractor";
@@ -97,7 +98,7 @@ type ProvisionedAccountCard = {
   employees: ProvisionedEmployeeCard[];
 };
 
-const EMPTY_OVERVIEW: SettingsOverview = { settings: [], users: [], roles: [], permissions: [], page_access: [], website_content: [], integrations: [], audit_events: [] };
+const EMPTY_OVERVIEW: SettingsOverview = { settings: [], users: [], roles: [], permissions: [], page_access: [], website_content: [], integrations: [], audit_events: [], source_warnings: [] };
 
 const EMPTY_EMPLOYEE: ManagedEmployeeDraft = {
   full_name: "",
@@ -233,6 +234,7 @@ function normalizeOverview(payload: any): SettingsOverview {
     website_content: list(source.website_content).map((item: any) => ({ id: String(item.id ?? `${item.page_key}-${item.section_key}`), page_key: String(item.page_key), section_key: String(item.section_key), title: item.title ?? "", subtitle: item.subtitle ?? "", body: item.body ?? "", status: item.status ?? "draft", metadata: item.metadata ?? {}, updated_at: item.updated_at ?? null })),
     integrations: list(source.integrations).map((item: any) => ({ id: String(item.id ?? item.provider), name: text(item.display_name ?? item.name, "Unnamed integration"), provider: item.provider ?? null, status: item.status ?? null, updated_at: item.updated_at ?? null, scopes: list(item.scopes).map(String) })),
     audit_events: list(source.audit_events).map((item: any) => ({ id: String(item.id ?? `${item.event_type}-${item.occurred_at}`), occurred_at: String(item.occurred_at ?? ""), event: text(item.event_type ?? item.event ?? item.action, "Unspecified event"), actor: text(item.actor_name ?? item.actor_email ?? item.actor ?? item.user, "System"), resource: text(item.resource_type ?? item.resource, "System"), details: typeof item.details === "string" ? item.details : JSON.stringify(item.details ?? {}), status: String(item.status ?? item.outcome ?? "success").toLowerCase() as AuditStatus })),
+    source_warnings: list(source.source_warnings).map(String),
   };
 }
 
@@ -255,6 +257,22 @@ function normalizeActionError(reason: unknown, fallback: string) {
     return fallback;
   }
   return fallback;
+}
+
+function settingsLoadError(cause: unknown) {
+  if (cause instanceof ApiError) {
+    if (cause.status === 401) {
+      return "Your login session was not sent to the settings service. Sign in again, then reopen Settings.";
+    }
+    if (cause.status === 403) {
+      return "Your current role does not have permission to view system settings.";
+    }
+    if (cause.status >= 500) {
+      return `Settings service failed (${cause.status}): ${cause.message}`;
+    }
+    return `Settings data could not be loaded (${cause.status}): ${cause.message}`;
+  }
+  return normalizeLoadError(cause, "Settings data could not be loaded. Check the service connection and try again.");
 }
 
 function StatusBadge({ status }: { status?: string | null }) {
@@ -282,7 +300,7 @@ export default function SettingsPage() {
     background ? setRefreshing(true) : setLoading(true);
     setError(null);
     try { setOverview(normalizeOverview(await getSettingsOverview())); }
-    catch (cause) { setError(cause instanceof ApiError && cause.status === 403 ? "Your current role does not have permission to view system settings." : normalizeLoadError(cause, "Settings data could not be loaded. Check the service connection and try again.")); setOverview(EMPTY_OVERVIEW); }
+    catch (cause) { setError(settingsLoadError(cause)); setOverview(EMPTY_OVERVIEW); }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
 
@@ -360,6 +378,7 @@ export default function SettingsPage() {
   return <main className="h-full overflow-y-auto p-6 space-y-6">
     <header className="flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5"><div><p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal"><Settings2 className="h-3.5 w-3.5" /> System controls</p><h1 className="font-display text-3xl font-bold uppercase tracking-tight text-paper">System Settings</h1><p className="mt-1 text-sm text-slate-light">ERP configuration, access control, website content, integrations, and audit evidence.</p></div><button onClick={() => void load(true)} disabled={refreshing} className="inline-flex items-center gap-2 border border-ink-mid px-3 py-2 font-mono text-xs uppercase text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh</button></header>
     {error && <div className="flex gap-2 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle className="h-4 w-4 shrink-0" /> {error}</div>}
+    {overview.source_warnings.length > 0 && <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0" /> Partial settings source availability</div><ul className="list-disc space-y-1 pl-5 text-xs">{overview.source_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
     {notice && <div className="flex gap-2 border border-signal/40 bg-signal/10 p-3 text-sm text-paper"><ShieldCheck className="h-4 w-4 shrink-0 text-signal" /> {notice}</div>}
     <nav className="flex overflow-x-auto border-b border-ink-mid font-mono text-xs">{([ ["configuration", Database, "Configuration"], ["access", Users, "Access control"], ["accounts", Building2, "Account setup"], ["website", Globe2, "Website content"], ["audit", History, "Audit log"] ] as const).map(([value, Icon, label]) => <Link key={value} href={TAB_ROUTES[value]} className={`flex shrink-0 items-center gap-2 border-b-2 px-5 py-3 font-bold uppercase tracking-wider ${tab === value ? "border-signal bg-signal/5 text-signal" : "border-transparent text-slate hover:text-paper"}`}><Icon className="h-4 w-4" /> {label}</Link>)}</nav>
 

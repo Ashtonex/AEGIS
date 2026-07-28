@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import httpx
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db, supabase as supabase_admin
@@ -172,6 +172,12 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        "page": "CRM opportunities",
+        "route": "/dashboard/crm/opportunities",
+        "permission": "crm.opportunities.read",
+        "module": "Commercial",
+    },
+    {
         "page": "CRM leads",
         "route": "/dashboard/crm/leads",
         "permission": "crm_leads.read",
@@ -190,10 +196,76 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        "page": "CRM activities",
+        "route": "/dashboard/crm/activities",
+        "permission": "crm_activities.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "CRM communications",
+        "route": "/dashboard/crm/inbox",
+        "permission": "crm_communications.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "CRM automations",
+        "route": "/dashboard/crm/automations",
+        "permission": "crm_automations.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "CRM campaigns",
+        "route": "/dashboard/crm/campaigns",
+        "permission": "crm.campaigns.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "CRM reports",
+        "route": "/dashboard/crm/reports",
+        "permission": "crm.reports.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "CRM support",
+        "route": "/dashboard/crm/support",
+        "permission": "crm.support.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "CRM import/export",
+        "route": "/dashboard/crm/import",
+        "permission": "crm.import",
+        "module": "Commercial",
+    },
+    {
         "page": "Documents",
         "route": "/dashboard/crm/documents",
         "permission": "documents.read",
         "module": "Controls",
+    },
+    {
+        "page": "Site operations",
+        "route": "/dashboard/site-operations",
+        "permission": "site_operations.read",
+        "module": "Operations",
+    },
+    {
+        "page": "Equipment",
+        "route": "/dashboard/equipment",
+        "permission": "equipment_assets.read",
+        "module": "Operations",
+    },
+    {
+        "page": "Procurement",
+        "route": "/dashboard/procurement",
+        "permission": "procurement.requisition.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "Finance",
+        "route": "/dashboard/finance",
+        "permission": "finance.cash.read",
+        "module": "Finance",
     },
     {
         "page": "Settings",
@@ -277,6 +349,33 @@ async def _website_content(db: AsyncSession, org_id: str) -> list[dict[str, Any]
     except ProgrammingError as exc:
         await db.rollback()
         raise HTTPException(status_code=503, detail="Website content storage is not migrated yet. Run migration 020_settings_website_content.sql.") from exc  # fmt: skip
+
+
+async def _settings_rows(
+    db: AsyncSession,
+    sql: str,
+    params: dict[str, Any],
+    warnings: list[str],
+    source_name: str,
+) -> list[dict[str, Any]]:
+    try:
+        rows = (await db.execute(text(sql), params)).mappings().all()
+        return [dict(row) for row in rows]
+    except SQLAlchemyError:
+        await db.rollback()
+        warnings.append(f"{source_name} could not be loaded.")
+        return []
+
+
+async def _settings_first(
+    db: AsyncSession,
+    sql: str,
+    params: dict[str, Any],
+    warnings: list[str],
+    source_name: str,
+) -> Optional[dict[str, Any]]:
+    rows = await _settings_rows(db, sql, params, warnings, source_name)
+    return rows[0] if rows else None
 
 
 async def _target_user_and_role(
@@ -770,20 +869,20 @@ async def _audit_events(
                 text("""
         SELECT id, event_type, resource_type, resource_id, details, occurred_at, actor_name, actor_email, source
         FROM (
-            SELECT e.id, e.event_type, e.resource_type, e.resource_id, e.details, e.occurred_at,
+            SELECT e.id, e.event_type, e.resource_type, e.resource_id::text AS resource_id, e.details, e.occurred_at,
                    u.full_name AS actor_name, u.email AS actor_email, 'settings.audit_events' AS source
             FROM settings.audit_events e
             LEFT JOIN core.users u ON u.id=e.actor_id AND u.organization_id=e.organization_id
-            WHERE e.organization_id=:org_id
+            WHERE e.organization_id=CAST(:org_id AS uuid)
             UNION ALL
             SELECT a.id, lower(a.table_name || '.' || a.action) AS event_type, a.table_name AS resource_type,
-                   a.record_id AS resource_id,
+                   a.record_id::text AS resource_id,
                    jsonb_build_object('action', a.action, 'old_data', a.old_data, 'new_data', a.new_data) AS details,
                    a.created_at AS occurred_at,
                    u.full_name AS actor_name, u.email AS actor_email, 'core.audit_log' AS source
             FROM core.audit_log a
             LEFT JOIN core.users u ON u.id=a.created_by
-            WHERE COALESCE(a.new_data->>'organization_id', a.old_data->>'organization_id')=:org_id
+            WHERE COALESCE(a.new_data->>'organization_id', a.old_data->>'organization_id')=CAST(:org_id AS text)
         ) audit_events
         ORDER BY occurred_at DESC
         LIMIT :limit
@@ -803,66 +902,54 @@ async def overview(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = user["org_id"]
-    org = (
-        (
-            await db.execute(
-                text("""
+    source_warnings: list[str] = []
+    org = await _settings_first(
+        db,
+        """
         SELECT name, registration_number, updated_at FROM core.organizations
         WHERE id=:org_id AND is_deleted=false
-    """),
-                {"org_id": org_id},
-            )
-        )
-        .mappings()
-        .first()
+    """,
+        {"org_id": org_id},
+        source_warnings,
+        "Organization profile",
     )
-    organization = (
-        (
-            await db.execute(
-                text("""
+    organization = await _settings_first(
+        db,
+        """
         SELECT trading_name, legal_name, timezone, currency_code, fiscal_year_start_month,
                country_code, primary_contact_email, primary_contact_phone, address, updated_at
         FROM settings.organization_settings WHERE organization_id=:org_id
-    """),
-                {"org_id": org_id},
-            )
-        )
-        .mappings()
-        .first()
+    """,
+        {"org_id": org_id},
+        source_warnings,
+        "Organization settings",
     )
-    notifications = (
-        (
-            await db.execute(
-                text("""
+    notifications = await _settings_first(
+        db,
+        """
         SELECT email_enabled, in_app_enabled, daily_digest_enabled, incident_alerts_enabled,
                approval_alerts_enabled, updated_at
         FROM settings.notification_preferences WHERE organization_id=:org_id
-    """),
-                {"org_id": org_id},
-            )
-        )
-        .mappings()
-        .first()
+    """,
+        {"org_id": org_id},
+        source_warnings,
+        "Notification preferences",
     )
-    integrations = (
-        (
-            await db.execute(
-                text("""
+    integrations = await _settings_rows(
+        db,
+        """
         SELECT id, provider, display_name, status, account_label, endpoint_url, external_reference,
                scopes, sync_status, last_synced_at, updated_at
         FROM settings.integration_connections
         WHERE organization_id=:org_id AND is_deleted=false ORDER BY provider
-    """),
-                {"org_id": org_id},
-            )
-        )
-        .mappings()
-        .all()
+    """,
+        {"org_id": org_id},
+        source_warnings,
+        "Integration metadata",
     )
-    users = (
-        (
-            await db.execute(
-                text("""
+    users = await _settings_rows(
+        db,
+        """
         SELECT u.id, u.email, u.full_name, u.is_active, u.updated_at,
                COALESCE(jsonb_agg(jsonb_build_object('id', r.id, 'name', r.name) ORDER BY r.name) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles
         FROM core.users u
@@ -870,17 +957,14 @@ async def overview(
         LEFT JOIN core.roles r ON r.id=ur.role_id AND r.organization_id=u.organization_id AND r.is_deleted=false
         WHERE u.organization_id=:org_id AND u.is_deleted=false
         GROUP BY u.id ORDER BY u.full_name, u.email
-    """),
-                {"org_id": org_id},
-            )
-        )
-        .mappings()
-        .all()
+    """,
+        {"org_id": org_id},
+        source_warnings,
+        "User accounts",
     )
-    roles = (
-        (
-            await db.execute(
-                text("""
+    roles = await _settings_rows(
+        db,
+        """
         SELECT r.id, r.name, r.description,
                COALESCE(jsonb_agg(p.key ORDER BY p.key) FILTER (WHERE p.key IS NOT NULL), '[]'::jsonb) AS permissions
         FROM core.roles r
@@ -888,23 +972,29 @@ async def overview(
         LEFT JOIN core.permissions p ON p.id=rp.permission_id
         WHERE r.organization_id=:org_id AND r.is_deleted=false
         GROUP BY r.id ORDER BY r.name
-    """),
-                {"org_id": org_id},
-            )
-        )
-        .mappings()
-        .all()
+    """,
+        {"org_id": org_id},
+        source_warnings,
+        "Roles",
     )
-    permissions = (
-        (
-            await db.execute(
-                text("SELECT key, description FROM core.permissions ORDER BY key")
-            )
-        )
-        .mappings()
-        .all()
+    permissions = await _settings_rows(
+        db,
+        "SELECT key, description FROM core.permissions ORDER BY key",
+        {},
+        source_warnings,
+        "Permission catalog",
     )
-    audits = await _audit_events(db, org_id, 50)
+    try:
+        audits = await _audit_events(db, org_id, 50)
+    except SQLAlchemyError:
+        await db.rollback()
+        source_warnings.append("Audit events could not be loaded.")
+        audits = []
+    try:
+        website_content = await _website_content(db, org_id)
+    except HTTPException:
+        source_warnings.append("Website content could not be loaded.")
+        website_content = []
 
     org_defaults = {
         "trading_name": org["name"] if org else "AEGIS",
@@ -937,10 +1027,11 @@ async def overview(
             "roles": [dict(item) for item in roles],
             "permissions": [dict(item) for item in permissions],
             "page_access": PAGE_ACCESS,
-            "website_content": await _website_content(db, org_id),
+            "website_content": website_content,
             "audit_events": audits,
+            "source_warnings": source_warnings,
         },
-        "Settings overview retrieved.",
+        "Settings overview retrieved." if not source_warnings else "Settings overview retrieved with partial source availability.",
     )
 
 
