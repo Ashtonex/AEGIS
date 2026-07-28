@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
 
 type VersionPayload = {
@@ -37,12 +38,16 @@ async function fetchVersion(): Promise<VersionPayload | null> {
 }
 
 export function PwaRuntime() {
+  const pathname = usePathname();
+  const router = useRouter();
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [bannerVisible, setBannerVisible] = useState(true);
+  const [bannerVisible, setBannerVisible] = useState(false);
   const refreshRef = useRef<number | null>(null);
+
+  const isDashboard = pathname?.startsWith("/dashboard") ?? false;
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) {
@@ -141,6 +146,25 @@ export function PwaRuntime() {
     }
   }, [currentVersion]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    const publicInstalledRoute = pathname === "/" || pathname?.startsWith("/about") || pathname?.startsWith("/capabilities") || pathname?.startsWith("/projects") || pathname?.startsWith("/careers") || pathname?.startsWith("/contact") || pathname?.startsWith("/news") || pathname?.startsWith("/knowledge") || pathname?.startsWith("/suppliers") || pathname?.startsWith("/tenders");
+    if (standalone && publicInstalledRoute) {
+      router.replace("/login");
+    }
+  }, [pathname, router]);
+
+  useEffect(() => {
+    if (!updateAvailable || !latestVersion || !isDashboard) {
+      setBannerVisible(false);
+      return;
+    }
+
+    const dismissedVersion = readLocalVersion("aegis:dismissed-update-version");
+    setBannerVisible(dismissedVersion !== latestVersion);
+  }, [isDashboard, latestVersion, updateAvailable]);
+
   const versionLabel = useMemo(() => {
     if (!latestVersion) return "version pending";
     return latestVersion;
@@ -181,7 +205,12 @@ export function PwaRuntime() {
           </button>
           <button
             type="button"
-            onClick={() => setBannerVisible(false)}
+            onClick={() => {
+              if (latestVersion) {
+                writeLocalVersion("aegis:dismissed-update-version", latestVersion);
+              }
+              setBannerVisible(false);
+            }}
             className="inline-flex h-8 w-8 items-center justify-center border border-ink-mid text-slate-light hover:text-paper"
             aria-label="Dismiss update notice"
           >

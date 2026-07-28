@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
 import { getMyProfile, updateMyProfile } from "@/lib/api";
@@ -333,10 +334,12 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       {/* GLOBAL TOP NAVIGATION BAR */}
       <header className="h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-30 shrink-0">
         <div className="flex items-center space-x-8">
-          <Link href="/dashboard/executive" className="flex items-center space-x-3">
-            <div className="w-6 h-6 bg-signal rounded-sm flex items-center justify-center">
-              <span className="font-display text-ink font-bold text-sm">SNC</span>
-            </div>
+          <Link href="/dashboard/executive" className="flex items-center space-x-3" aria-label="SNC Imperium dashboard">
+            <img
+              src="/logo.png"
+              alt="SNC Logo"
+              className="h-9 w-auto object-contain"
+            />
             <span className="font-display text-lg tracking-tight text-paper">IMPERIUM</span>
           </Link>
           
@@ -356,6 +359,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <span className="text-data-sm font-mono text-slate-light tracking-widest uppercase">Six Nine Construction</span>
           </div>
           
+          <CalendarDropdown />
           <NotificationBell />
           <PwaPushButton />
 
