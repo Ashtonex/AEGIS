@@ -458,16 +458,22 @@ export async function createBroadcastFeed(payload: { title: string; description?
 }
 
 // --- EXECUTIVE MODULE 07 ---
-export async function getExecutiveKPIs(): Promise<ApiResponse<any>> {
+function bearerHeaders(accessToken?: string): HeadersInit | undefined {
+  return accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
+}
+
+export async function getExecutiveKPIs(accessToken?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/kpis`, {
     cache: 'no-store',
+    headers: bearerHeaders(accessToken),
     allowFallback: false
   });
 }
 
-export async function getModulesStatus(): Promise<ApiResponse<any[]>> {
+export async function getModulesStatus(accessToken?: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/modules`, {
     cache: 'no-store',
+    headers: bearerHeaders(accessToken),
     allowFallback: false
   });
 }
@@ -1311,23 +1317,24 @@ export async function decideSupplierInvoicePayment(id: string, decision: "approv
   });
 }
 
-export async function getExecutiveStats(): Promise<ApiResponse<any>> {
+export async function getExecutiveStats(accessToken?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/stats`, {
     cache: 'no-store',
+    headers: bearerHeaders(accessToken),
     allowFallback: false
   });
 }
 
-export async function getExecutiveRegions(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/regions`, { cache: 'no-store', allowFallback: false });
+export async function getExecutiveRegions(accessToken?: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/regions`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
 }
 
-export async function getActiveExecutiveProjects(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/projects/active`, { cache: 'no-store', allowFallback: false });
+export async function getActiveExecutiveProjects(accessToken?: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/projects/active`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
 }
 
-export async function getExecutiveProjectDetail(projectId: string): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store', allowFallback: false });
+export async function getExecutiveProjectDetail(projectId: string, accessToken?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
 }
 
 /** Internal project register. Operational screens must not fall back to website demo data. */
@@ -1335,12 +1342,12 @@ export async function getInternalProjects(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/projects/`, { cache: 'no-store', allowFallback: false });
 }
 
-export async function getExecutiveDataHealth(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', allowFallback: false });
+export async function getExecutiveDataHealth(accessToken?: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
 }
 
-export async function getExecutiveExceptions(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store', allowFallback: false });
+export async function getExecutiveExceptions(accessToken?: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store', headers: bearerHeaders(accessToken), allowFallback: false });
 }
 
 export async function getPortalAccess(portal: "executive" | "employee" | "foreman" | "client" | "supplier", accessToken?: string): Promise<ApiResponse<{ portal: string; destination: string }>> {

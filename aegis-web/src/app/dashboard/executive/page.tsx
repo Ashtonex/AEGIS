@@ -90,8 +90,9 @@ function ExecutiveCommandCentreWorkspace() {
 
   const loadDashboard = async () => {
     setRefreshing(true);
+    const accessToken = session?.access_token;
     const [kpiResult, statsResult, moduleResult, regionResult, projectResult, healthResult, exceptionResult] = await Promise.allSettled([
-      getExecutiveKPIs(), getExecutiveStats(), getModulesStatus(), getExecutiveRegions(), getActiveExecutiveProjects(), getExecutiveDataHealth(), getExecutiveExceptions(),
+      getExecutiveKPIs(accessToken), getExecutiveStats(accessToken), getModulesStatus(accessToken), getExecutiveRegions(accessToken), getActiveExecutiveProjects(accessToken), getExecutiveDataHealth(accessToken), getExecutiveExceptions(accessToken),
     ]);
     if (kpiResult.status === "fulfilled") setKpis(kpiResult.value.data || {});
     if (statsResult.status === "fulfilled") setStats(statsResult.value.data || {});
@@ -136,7 +137,7 @@ function ExecutiveCommandCentreWorkspace() {
     setDetailError(null);
     setDetailLoading(true);
     try {
-      const response = await getExecutiveProjectDetail(String(project.id));
+      const response = await getExecutiveProjectDetail(String(project.id), session?.access_token);
       setProjectDetail(response.data || {});
       const errors = sourceErrorsFromMeta(response.meta);
       if (errors.length) {
