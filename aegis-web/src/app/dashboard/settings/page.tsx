@@ -27,6 +27,7 @@ type Role = { id: string; name: string; description?: string | null; permissions
 type Permission = { key: string; description?: string | null };
 type AccessUser = { id: string; name: string; email: string; roles: { id: string; name: string }[]; status?: string | null; last_active_at?: string | null };
 type PageAccess = { page: string; route: string; permission: string; module: string };
+type PermissionOption = { permission: string; page: string; module: string; description?: string | null };
 type WebsiteContent = { id: string; page_key: string; section_key: string; title?: string | null; subtitle?: string | null; body?: string | null; status: "draft" | "published" | "archived"; metadata?: Record<string, unknown>; updated_at?: string | null };
 
 type SystemSetting = { id: string; section: "organization" | "notifications"; key: string; label: string; description: string; category: string; value: string | number | boolean | null; value_type: string; editable: boolean; updated_at?: string | null };
@@ -134,6 +135,49 @@ const ACCOUNT_TYPE_LABELS: Record<ManagedAccountType, string> = {
   subcontractor: "Subcontractor",
 };
 
+const ACCESS_PRESETS = [
+  {
+    id: "employee",
+    label: "Employee",
+    description: "Daily CRM, project, document, and notification access.",
+    access_level: "contributor" as const,
+    roleHints: ["EMPLOYEE"],
+    permissions: ["crm", "crm_leads", "crm_contacts", "crm_organizations", "documents", "projects", "notifications"],
+  },
+  {
+    id: "manager",
+    label: "Manager",
+    description: "Operational oversight across delivery, workforce, fleet, CRM, and documents.",
+    access_level: "manager" as const,
+    roleHints: ["MANAGER", "EMPLOYEE"],
+    permissions: ["crm", "crm_leads", "crm_contacts", "crm_organizations", "documents", "projects", "workforce", "fleet", "site_operations", "procurement", "notifications"],
+  },
+  {
+    id: "admin",
+    label: "Admin",
+    description: "Administration access without protected sole-superadmin ownership.",
+    access_level: "admin" as const,
+    roleHints: ["ADMIN", "EMPLOYEE"],
+    permissions: ["settings", "users", "crm", "crm_leads", "crm_contacts", "crm_organizations", "documents", "projects", "workforce", "fleet", "procurement", "notifications", "executive"],
+  },
+  {
+    id: "ceo",
+    label: "CEO",
+    description: "Executive visibility plus management access across all operational modules.",
+    access_level: "admin" as const,
+    roleHints: ["CEO", "EXECUTIVE", "ADMIN", "EMPLOYEE"],
+    permissions: ["executive", "settings", "crm", "crm_leads", "crm_contacts", "crm_organizations", "documents", "projects", "workforce", "fleet", "finance", "procurement", "notifications", "reports"],
+  },
+  {
+    id: "viewer",
+    label: "Viewer",
+    description: "Read-only visibility for selected modules.",
+    access_level: "viewer" as const,
+    roleHints: [],
+    permissions: ["read", "view"],
+  },
+];
+
 const FIELD_LABELS: Record<string, string> = {
   trading_name: "Trading name", legal_name: "Legal name", timezone: "Timezone", currency_code: "Currency", fiscal_year_start_month: "Fiscal year start", country_code: "Country", primary_contact_email: "Primary contact email", primary_contact_phone: "Primary contact phone",
   email_enabled: "Email notifications", in_app_enabled: "In-app notifications", daily_digest_enabled: "Daily digest", incident_alerts_enabled: "Incident alerts", approval_alerts_enabled: "Approval alerts",
@@ -155,6 +199,10 @@ function text(value: unknown, fallback = "Not recorded") { return typeof value =
 function dateTime(value?: string | null) { if (!value) return "Not recorded"; const date = new Date(value); return Number.isNaN(date.getTime()) ? "Not recorded" : date.toLocaleString("en-GB", { timeZone: "Africa/Harare" }); }
 function list(value: unknown): any[] { return Array.isArray(value) ? value : []; }
 function pretty(value: unknown) { return typeof value === "object" && value !== null ? JSON.stringify(value) : String(value ?? ""); }
+function moduleNameFromPermission(key: string) {
+  const prefix = key.split(".")[0].replace(/_/g, " ");
+  return prefix.replace(/\b\w/g, (char) => char.toUpperCase());
+}
 
 function normalizeSection(section: "organization" | "notifications", source: unknown): SystemSetting[] {
   if (!source || typeof source !== "object" || Array.isArray(source)) return [];
@@ -335,7 +383,41 @@ function SettingRow({ setting, saving, onSave }: { setting: SystemSetting; savin
 }
 
 function AccessTab({ overview, saving, assignRole, removeRole, togglePermission }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void> }) {
-  return <div className="space-y-6"><section className="border border-ink-mid bg-ink p-5"><h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Users className="h-4 w-4 text-signal" /> User role assignments</h2><div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} />)}</tbody></table></div></section><section className="border border-ink-mid bg-ink p-5"><h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><LockKeyhole className="h-4 w-4 text-signal" /> Page access by role</h2><div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">ERP page</th><th className="p-3">Permission</th>{overview.roles.map((role) => <th key={role.id} className="p-3 text-center">{role.name}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.page_access.map((page) => <tr key={page.route}><td className="p-3"><p className="font-semibold text-paper">{page.page}</p><p className="text-[11px] text-slate-light">{page.module} · {page.route}</p></td><td className="p-3 font-mono text-[11px] text-slate-light">{page.permission}</td>{overview.roles.map((role) => { const enabled = role.permissions.includes(page.permission); return <td key={role.id} className="p-3 text-center"><input type="checkbox" checked={enabled} disabled={saving === `${role.id}-${page.permission}`} onChange={(event) => void togglePermission(role.id, page.permission, event.target.checked)} /></td>; })}</tr>)}</tbody></table></div></section></div>;
+  return <div className="space-y-6">
+    <section className="border border-ink-mid bg-ink p-5">
+      <h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Users className="h-4 w-4 text-signal" /> User role assignments</h2>
+      <div className="hidden overflow-x-auto lg:block">
+        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} />)}</tbody></table>
+      </div>
+      <div className="grid gap-3 lg:hidden">
+        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} />)}
+      </div>
+    </section>
+    <section className="border border-ink-mid bg-ink p-5">
+      <h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><LockKeyhole className="h-4 w-4 text-signal" /> Page access by role</h2>
+      <div className="hidden overflow-x-auto xl:block">
+        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">ERP page</th><th className="p-3">Permission</th>{overview.roles.map((role) => <th key={role.id} className="p-3 text-center">{role.name}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.page_access.map((page) => <tr key={page.route}><td className="p-3"><p className="font-semibold text-paper">{page.page}</p><p className="text-[11px] text-slate-light">{page.module} · {page.route}</p></td><td className="p-3 font-mono text-[11px] text-slate-light">{page.permission}</td>{overview.roles.map((role) => { const enabled = role.permissions.includes(page.permission); return <td key={role.id} className="p-3 text-center"><input type="checkbox" checked={enabled} disabled={saving === `${role.id}-${page.permission}`} onChange={(event) => void togglePermission(role.id, page.permission, event.target.checked)} /></td>; })}</tr>)}</tbody></table>
+      </div>
+      <div className="grid gap-3 xl:hidden">
+        {overview.page_access.map((page) => <div key={page.route} className="border border-ink-mid/70 p-3">
+          <div className="mb-3">
+            <p className="font-semibold text-paper">{page.page}</p>
+            <p className="text-[11px] text-slate-light">{page.module} · {page.route}</p>
+            <p className="mt-1 break-all font-mono text-[10px] uppercase text-slate">{page.permission}</p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {overview.roles.map((role) => {
+              const enabled = role.permissions.includes(page.permission);
+              return <label key={role.id} className="flex min-w-0 items-center justify-between gap-3 border border-ink-mid/60 px-3 py-2 text-xs text-slate-light">
+                <span className="truncate text-paper">{role.name}</span>
+                <input type="checkbox" checked={enabled} disabled={saving === `${role.id}-${page.permission}`} onChange={(event) => void togglePermission(role.id, page.permission, event.target.checked)} />
+              </label>;
+            })}
+          </div>
+        </div>)}
+      </div>
+    </section>
+  </div>;
 }
 
 function UserAccessRow({ user, roles, saving, assignRole, removeRole }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void> }) {
@@ -344,18 +426,79 @@ function UserAccessRow({ user, roles, saving, assignRole, removeRole }: { user: 
   return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><p className="text-[11px] text-slate-light">{user.email}</p></td><td className="p-3"><StatusBadge status={user.status} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
 }
 
+function UserAccessCard({ user, roles, saving, assignRole, removeRole }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void> }) {
+  const [roleId, setRoleId] = useState("");
+  const assignedIds = new Set(user.roles.map((role) => role.id));
+  return <article className="border border-ink-mid/70 p-3">
+    <div className="mb-3 flex items-start justify-between gap-3">
+      <div className="min-w-0"><p className="truncate font-semibold text-paper">{user.name}</p><p className="break-all text-[11px] text-slate-light">{user.email}</p></div>
+      <StatusBadge status={user.status} />
+    </div>
+    <div className="mb-3 flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-xs text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div>
+    <div className="grid gap-2 sm:grid-cols-[1fr_auto]"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="min-w-0 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div>
+  </article>;
+}
+
 function ManagedAccountsTab({ overview, saving, createManagedAccount }: { overview: SettingsOverview; saving: boolean; createManagedAccount: (payload: Record<string, unknown>) => Promise<any> }) {
   const [draft, setDraft] = useState<ManagedAccountDraft>(EMPTY_MANAGED_ACCOUNT);
   const [formError, setFormError] = useState<string | null>(null);
   const [issuedCards, setIssuedCards] = useState<ProvisionedAccountCard[]>([]);
   const visibleRoles = overview.roles.filter((role) => !["SUPERADMIN"].includes(role.name.toUpperCase()));
-  const permissions = overview.page_access.filter((item, index, items) => items.findIndex((candidate) => candidate.permission === item.permission) === index);
+  const permissions: PermissionOption[] = useMemo(() => {
+    const byKey = new Map<string, PermissionOption>();
+    overview.permissions.forEach((permission) => {
+      byKey.set(permission.key, {
+        permission: permission.key,
+        page: permission.key.replace(/_/g, " ").replace(/\./g, " / "),
+        module: moduleNameFromPermission(permission.key),
+        description: permission.description,
+      });
+    });
+    overview.page_access.forEach((page) => {
+      byKey.set(page.permission, {
+        permission: page.permission,
+        page: page.page,
+        module: page.module,
+        description: byKey.get(page.permission)?.description ?? null,
+      });
+    });
+    return Array.from(byKey.values()).sort((a, b) => `${a.module}.${a.permission}`.localeCompare(`${b.module}.${b.permission}`));
+  }, [overview.page_access, overview.permissions]);
+  const permissionsByModule = useMemo(() => {
+    return permissions.reduce<Record<string, PermissionOption[]>>((groups, permission) => {
+      groups[permission.module] = [...(groups[permission.module] ?? []), permission];
+      return groups;
+    }, {});
+  }, [permissions]);
 
   const updateDraft = <K extends keyof ManagedAccountDraft>(key: K, value: ManagedAccountDraft[K]) => setDraft((prev) => ({ ...prev, [key]: value }));
   const updateEmployee = <K extends keyof ManagedEmployeeDraft>(index: number, key: K, value: ManagedEmployeeDraft[K]) => setDraft((prev) => ({ ...prev, employees: prev.employees.map((employee, employeeIndex) => employeeIndex === index ? { ...employee, [key]: value } : employee) }));
   const toggleEmployeeArray = (index: number, key: "role_ids" | "module_permissions", value: string) => {
     const current = draft.employees[index][key];
     updateEmployee(index, key, current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
+  };
+  const applyPreset = (index: number, presetId: string) => {
+    const preset = ACCESS_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    const roleIds = visibleRoles.filter((role) => preset.roleHints.some((hint) => role.name.toUpperCase().includes(hint))).map((role) => role.id);
+    const selectedPermissions = permissions
+      .filter((permission) => preset.permissions.some((match) => permission.permission.toLowerCase().includes(match) || permission.module.toLowerCase().includes(match)))
+      .map((permission) => permission.permission);
+    setDraft((prev) => ({
+      ...prev,
+      employees: prev.employees.map((employee, employeeIndex) => employeeIndex === index ? {
+        ...employee,
+        access_level: preset.access_level,
+        role_ids: Array.from(new Set([...employee.role_ids, ...roleIds])),
+        module_permissions: Array.from(new Set([...selectedPermissions])),
+      } : employee),
+    }));
+  };
+  const setModulePermissions = (index: number, module: string, enabled: boolean) => {
+    const modulePermissionKeys = permissionsByModule[module]?.map((permission) => permission.permission) ?? [];
+    const current = new Set(draft.employees[index].module_permissions);
+    modulePermissionKeys.forEach((permission) => enabled ? current.add(permission) : current.delete(permission));
+    updateEmployee(index, "module_permissions", Array.from(current));
   };
   const addEmployee = () => setDraft((prev) => ({ ...prev, employees: [...prev.employees, { ...EMPTY_EMPLOYEE }] }));
   const removeEmployee = (index: number) => setDraft((prev) => ({ ...prev, employees: prev.employees.filter((_, employeeIndex) => employeeIndex !== index) }));
@@ -484,11 +627,42 @@ function ManagedAccountsTab({ overview, saving, createManagedAccount }: { overvi
               </div>
               <div className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
                 <div className="space-y-3">
+                  <div>
+                    <p className="mb-2 font-mono text-[10px] uppercase text-slate">Access preset</p>
+                    <div className="grid gap-2">
+                      {ACCESS_PRESETS.map((preset) => <button key={preset.id} type="button" onClick={() => applyPreset(index, preset.id)} className="border border-ink-mid/70 px-3 py-2 text-left hover:border-signal hover:bg-signal/5">
+                        <span className="block font-mono text-[10px] uppercase tracking-wider text-paper">{preset.label}</span>
+                        <span className="mt-1 block text-[11px] leading-relaxed text-slate-light">{preset.description}</span>
+                      </button>)}
+                    </div>
+                  </div>
                   <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Access level</span><select value={employee.access_level} onChange={(event) => updateEmployee(index, "access_level", event.target.value as ManagedEmployeeDraft["access_level"])} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper"><option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>
                   <label className="flex items-center gap-2 text-xs text-slate-light"><input type="checkbox" checked={employee.portal_access} onChange={(event) => updateEmployee(index, "portal_access", event.target.checked)} /> Portal access enabled</label>
                   <div><p className="mb-2 font-mono text-[10px] uppercase text-slate">Roles</p><div className="max-h-36 space-y-1 overflow-y-auto border border-ink-mid/70 p-2">{visibleRoles.map((role) => <label key={role.id} className="flex items-center gap-2 text-xs text-slate-light"><input type="checkbox" checked={employee.role_ids.includes(role.id)} onChange={() => toggleEmployeeArray(index, "role_ids", role.id)} /> {role.name}</label>)}</div></div>
                 </div>
-                <div><p className="mb-2 font-mono text-[10px] uppercase text-slate">Module permissions</p><div className="grid max-h-52 gap-2 overflow-y-auto border border-ink-mid/70 p-3 md:grid-cols-2">{permissions.map((permission) => <label key={permission.permission} className="flex items-start gap-2 text-xs text-slate-light"><input type="checkbox" checked={employee.module_permissions.includes(permission.permission)} onChange={() => toggleEmployeeArray(index, "module_permissions", permission.permission)} className="mt-0.5" /><span><span className="block text-paper">{permission.page}</span><span className="font-mono text-[10px] uppercase text-slate">{permission.module} | {permission.permission}</span></span></label>)}</div></div>
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-mono text-[10px] uppercase text-slate">Module permissions</p>
+                    <span className="font-mono text-[10px] uppercase text-signal">{employee.module_permissions.length} selected</span>
+                  </div>
+                  <div className="max-h-[30rem] space-y-3 overflow-y-auto border border-ink-mid/70 p-3">
+                    {Object.entries(permissionsByModule).map(([module, modulePermissions]) => {
+                      const selectedCount = modulePermissions.filter((permission) => employee.module_permissions.includes(permission.permission)).length;
+                      return <div key={module} className="border border-ink-mid/50 p-3">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <div><p className="font-semibold text-paper">{module}</p><p className="font-mono text-[10px] uppercase text-slate">{selectedCount}/{modulePermissions.length} permissions</p></div>
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => setModulePermissions(index, module, true)} className="border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper">All</button>
+                            <button type="button" onClick={() => setModulePermissions(index, module, false)} className="border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-red-400 hover:text-paper">Clear</button>
+                          </div>
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {modulePermissions.map((permission) => <label key={permission.permission} className="flex min-w-0 items-start gap-2 text-xs text-slate-light"><input type="checkbox" checked={employee.module_permissions.includes(permission.permission)} onChange={() => toggleEmployeeArray(index, "module_permissions", permission.permission)} className="mt-0.5" /><span className="min-w-0"><span className="block truncate text-paper">{permission.page}</span><span className="block break-all font-mono text-[10px] uppercase text-slate">{permission.permission}</span></span></label>)}
+                        </div>
+                      </div>;
+                    })}
+                  </div>
+                </div>
               </div>
             </article>)}
           </div>
