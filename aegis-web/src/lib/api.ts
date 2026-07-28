@@ -173,6 +173,10 @@ async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
     return headers;
   }
 
+  if (headers.has("Authorization")) {
+    return headers;
+  }
+
   const { data: { session } } = await getSupabase().auth.getSession();
   const token = session?.access_token;
 
