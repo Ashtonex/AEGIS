@@ -87,10 +87,52 @@ def _get_metadata(payload: dict, key: str) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _local_issuers() -> list[str]:
+    """Acceptable `iss` claims: the app's own issuer plus Supabase's real Auth issuer."""
+    issuers = []
+    if settings.JWT_ISSUER:
+        issuers.append(settings.JWT_ISSUER)
+    if settings.SUPABASE_URL:
+        issuers.append(f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1")
+    return issuers
+
+
+def _decode_locally(token: str) -> dict | None:
+    """Attempt to verify the token's signature locally.
+
+    Returns the decoded payload only on a genuine signature match. Returns
+    None (never a payload) if the signature cannot be verified with any known
+    key/issuer combination, so the caller is forced to fall back to the
+    authoritative Supabase Auth API instead of trusting unverified claims.
+    """
+    keys_to_try = [k for k in (settings.JWT_SECRET_KEY, settings.SECRET_KEY) if k]
+    issuers_to_try = _local_issuers()
+    if not keys_to_try or not issuers_to_try:
+        return None
+
+    for key in keys_to_try:
+        for issuer in issuers_to_try:
+            try:
+                return jwt.decode(
+                    token,
+                    key,
+                    algorithms=[settings.JWT_ALGORITHM],
+                    audience=settings.JWT_AUDIENCE,
+                    issuer=issuer,
+                )
+            except jwt.ExpiredSignatureError:
+                raise
+            except jwt.PyJWTError:
+                continue
+    return None
+
+
 def verify_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> dict:
-    """Validate bearer token via local JWT parsing first, falling back to Supabase Auth API."""
+    """Validate bearer token via local signature verification first, falling
+    back to the Supabase Auth API. The token's signature is always verified
+    by one of these two paths before any claim in it is trusted."""
     token = credentials.credentials
     if not token:
         raise HTTPException(
@@ -98,25 +140,30 @@ def verify_token(
             detail="Not authenticated",
         )
 
-    # 1. Fast in-memory JWT payload extraction
+    # 1. Fast path: local signature verification against known keys/issuers.
     try:
-        payload = jwt.decode(token, options={"verify_signature": False})
-        if isinstance(payload, dict) and payload.get("sub"):
-            sub = str(payload.get("sub"))
-            email = payload.get("email") or payload.get("user_metadata", {}).get("email")
-            app_meta = payload.get("app_metadata") or {}
-            user_meta = payload.get("user_metadata") or {}
-            return {
-                "sub": sub,
-                "email": email,
-                "app_metadata": app_meta,
-                "user_metadata": user_meta,
-                "role": payload.get("role") or "authenticated",
-            }
-    except Exception:
-        pass
+        payload = _decode_locally(token)
+    except jwt.ExpiredSignatureError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has expired"
+        ) from e
 
-    # 2. Fallback to Supabase Auth verification endpoint
+    if isinstance(payload, dict) and payload.get("sub"):
+        sub = str(payload.get("sub"))
+        email = payload.get("email") or payload.get("user_metadata", {}).get("email")
+        app_meta = payload.get("app_metadata") or {}
+        user_meta = payload.get("user_metadata") or {}
+        return {
+            "sub": sub,
+            "email": email,
+            "app_metadata": app_meta,
+            "user_metadata": user_meta,
+            "role": payload.get("role") or "authenticated",
+        }
+
+    # 2. Fallback to Supabase Auth verification endpoint. This call has the
+    # Supabase service validate the token's signature server-side, so it
+    # remains secure even when local verification above can't confirm it.
     try:
         auth_url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/user"
         with httpx.Client(timeout=10.0) as client:
@@ -139,6 +186,22 @@ def verify_token(
             "user_metadata": authenticated_user.get("user_metadata") or {},
             "role": "authenticated",
         }
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication credentials.",
+        ) from exc
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        # The token itself was never rejected here - Supabase's auth API
+        # couldn't be reached in time. Reporting this as 401 would make a
+        # transient network blip look like an invalid session, prompting a
+        # needless sign-out. 503 lets callers retry instead.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -169,20 +232,48 @@ async def get_current_user(
 
     identity = await db.execute(
         text("""
-        SELECT organization_id FROM core.users
-        WHERE id = :user_id AND is_active = true AND is_deleted = false
+        SELECT organization_id, is_active, is_deleted FROM core.users
+        WHERE id = :user_id
     """),
         {"user_id": user_id},
     )
     identity_row = identity.fetchone()
+
+    # A row that exists but is deactivated/soft-deleted was deliberately
+    # revoked - reject it outright. Falling through to the auto-provisioning
+    # block below would silently reactivate it, since that block can't tell
+    # "revoked" apart from "never existed".
+    if identity_row and (not identity_row.is_active or identity_row.is_deleted):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive, unassigned, or revoked.",
+        )
+
     if not identity_row or not identity_row.organization_id:
         default_org_id = "00000000-0000-0000-0000-000000000001"
-        default_role_id = "00000000-0000-0000-0000-000000000002"
         org_check = await db.execute(
             text("SELECT id FROM core.organizations WHERE id = :org_id AND is_deleted = false"),
             {"org_id": default_org_id},
         )
         if org_check.fetchone():
+            # New/unrecognized identities are provisioned at the lowest
+            # privilege level (EMPLOYEE). Elevated roles must be granted
+            # explicitly by an admin afterwards, never auto-assigned here.
+            default_role = await db.execute(
+                text("""
+                    SELECT id FROM core.roles
+                    WHERE organization_id = :org_id AND name = 'EMPLOYEE' AND is_deleted = false
+                """),
+                {"org_id": default_org_id},
+            )
+            default_role_row = default_role.fetchone()
+            if not default_role_row:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="No default role configured for this organization.",
+                )
+            default_role_id = str(default_role_row.id)
+
             email = payload.get("email") or f"{user_id}@aegis.local"
             user_meta = _get_metadata(payload, "user_metadata")
             full_name = user_meta.get("full_name") or email.split("@")[0]
@@ -198,7 +289,7 @@ async def get_current_user(
                 text("""
                     INSERT INTO core.user_roles (user_id, role_id, organization_id)
                     VALUES (:user_id, :role_id, :org_id)
-                    ON CONFLICT (user_id, role_id, organization_id) DO NOTHING
+                    ON CONFLICT (user_id, role_id) DO NOTHING
                 """),
                 {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
             )
@@ -219,22 +310,31 @@ async def get_current_user(
         )
     org_id = database_org_id
 
-    # The role assignment in core is authoritative. App metadata is useful for
-    # token hints, but it can be stale until the session is refreshed.
-    superadmin_assignment = await db.execute(
+    # The role assignment in core is authoritative. Nothing keeps Supabase's
+    # app_metadata.role claim in sync with core.user_roles once an admin
+    # assigns a functional role via Settings, so the actual role name is
+    # looked up here rather than trusted from the token.
+    assigned_roles = await db.execute(
         text("""
-        SELECT 1 FROM core.user_roles ur
+        SELECT r.name FROM core.user_roles ur
         JOIN core.roles r ON r.id = ur.role_id
         WHERE ur.user_id = :user_id AND ur.organization_id = :org_id
-          AND r.organization_id = :org_id AND r.name = :superadmin AND r.is_deleted = false
+          AND r.organization_id = :org_id AND r.is_deleted = false
+        ORDER BY (r.name = :superadmin) DESC, (r.name = 'EMPLOYEE') ASC, r.name
     """),
         {"user_id": user_id, "org_id": org_id, "superadmin": SUPERADMIN_ROLE},
     )
-    user_email = (payload.get("email") or "").strip().lower()
-    if user_email == "ashton@admin.com":
+    # A user commonly holds both the default EMPLOYEE assignment from
+    # auto-provisioning and a specific functional role granted afterwards -
+    # the functional role should win. The ORDER BY above already puts any
+    # non-EMPLOYEE role ahead of EMPLOYEE, so the first row is correct.
+    role_names = [row.name for row in assigned_roles]
+    if SUPERADMIN_ROLE in role_names:
         resolved_role = SUPERADMIN_ROLE
+    elif role_names:
+        resolved_role = role_names[0]
     else:
-        resolved_role = SUPERADMIN_ROLE if superadmin_assignment.scalar() else role
+        resolved_role = role
 
     return {
         "user_id": user_id,

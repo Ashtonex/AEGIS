@@ -4,7 +4,7 @@ from sqlalchemy import text
 from pydantic import BaseModel
 
 from core.database import get_db
-from core.security import get_current_user
+from core.security import get_current_user, require_permission
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -21,7 +21,9 @@ Description: Auto-generated CRUD endpoints for crm.support_tickets.
 
 @router.get("/")
 async def list_items(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.read")),
 ):
     # Fetch active records scoped to the user's organization
     query = text("""
@@ -57,6 +59,7 @@ async def create_item(
     request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.create")),
 ):
     payload = await request.json()
 
@@ -125,6 +128,7 @@ async def get_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.read")),
 ):
     query = text("""
         SELECT *
@@ -151,6 +155,7 @@ async def update_item(
     request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.update")),
 ):
     payload = await request.json()
     safe_keys = safe_payload_columns(payload.keys())
@@ -192,6 +197,7 @@ async def delete_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.delete")),
 ):
     query = text("""
         UPDATE crm.support_tickets
@@ -224,6 +230,7 @@ async def create_ticket_comment(
     payload: CommentPayload,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.update")),
 ):
     # Verify ticket exists and scopes to organization
     ticket_row = await db.execute(
@@ -257,6 +264,7 @@ async def list_ticket_comments(
     ticket_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("client_portal_tickets.read")),
 ):
     # Verify ticket exists and scopes to organization
     ticket_row = await db.execute(

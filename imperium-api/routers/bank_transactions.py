@@ -83,6 +83,7 @@ async def list_transactions(
     page_size: int = Query(default=100, ge=1, le=500),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("finance.cash.read")),
 ):
     org_id = _require_org(user)
     limit, offset = page_offset(page, page_size)
@@ -210,6 +211,7 @@ async def get_transaction(
     transaction_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("finance.cash.read")),
 ):
     org_id = _require_org(user)
     result = await db.execute(

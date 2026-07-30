@@ -1,14 +1,25 @@
 import { SupabaseClient, createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder_key';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 let client: SupabaseClient | undefined;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn("Supabase credentials are not set in environment variables.");
+  console.error(
+    "NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY are not set. " +
+    "Auth and data calls will fail until these are configured for this build."
+  );
 }
 
 export function getSupabase(): SupabaseClient {
+  if (!supabaseUrl || !supabaseAnonKey) {
+    // Fail loudly rather than silently pointing at a fake project - a build
+    // missing these env vars must break visibly, not ship a client that
+    // quietly can't authenticate against anything.
+    throw new Error(
+      "Supabase is not configured: NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY are missing."
+    );
+  }
   client ??= createClient(supabaseUrl, supabaseAnonKey);
   return client;
 }

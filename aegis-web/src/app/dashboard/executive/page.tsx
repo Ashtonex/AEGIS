@@ -66,7 +66,7 @@ export default function ExecutiveCommandCentre() {
 }
 
 function ExecutiveCommandCentreWorkspace() {
-  const { session } = useAuth();
+  const { session, role } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
@@ -86,7 +86,7 @@ function ExecutiveCommandCentreWorkspace() {
 
   const userEmail = session?.user?.email || "System User";
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
-  const userRole = String(session?.user?.app_metadata?.role || "User");
+  const userRole = role || "User";
 
   const loadDashboard = async () => {
     setRefreshing(true);

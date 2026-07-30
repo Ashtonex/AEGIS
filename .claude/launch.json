@@ -1,0 +1,32 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aegis-backend",
+      "runtimeExecutable": "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--app-dir",
+        "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "aegis-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web"
+      ],
+      "port": 3000
+    }
+  ]
+}

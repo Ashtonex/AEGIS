@@ -48,7 +48,7 @@ class ProductionHardeningContractTests(unittest.TestCase):
 
     def test_render_rejects_ipv6_only_supabase_direct_database_url(self):
         with self.assertRaisesRegex(
-            ValidationError, "Supavisor session pooler on Render"
+            ValidationError, "IPv4-compatible Supavisor session pooler"
         ):
             production_settings(
                 RENDER=True,
@@ -57,6 +57,32 @@ class ProductionHardeningContractTests(unittest.TestCase):
                     "db.project-ref.supabase.co:5432/postgres"
                 ),
             )
+
+    def test_non_render_platforms_also_reject_ipv6_only_supabase_direct_database_url(self):
+        # Regression guard: this used to only fire when RENDER=True, silently
+        # letting the same misconfiguration through on DigitalOcean/Fly/
+        # Railway/Lightsail deploys, which are equally IPv4-only in practice.
+        with self.assertRaisesRegex(
+            ValidationError, "IPv4-compatible Supavisor session pooler"
+        ):
+            production_settings(
+                RENDER=False,
+                DATABASE_URL=(
+                    "postgresql+asyncpg://postgres:pass@"
+                    "db.project-ref.supabase.co:5432/postgres"
+                ),
+            )
+
+    def test_ipv6_capable_host_can_opt_out_of_the_pooler_requirement(self):
+        settings = production_settings(
+            RENDER=False,
+            DATABASE_HOST_SUPPORTS_IPV6=True,
+            DATABASE_URL=(
+                "postgresql+asyncpg://postgres:pass@"
+                "db.project-ref.supabase.co:5432/postgres"
+            ),
+        )
+        self.assertIn("db.project-ref.supabase.co", settings.DATABASE_URL)
 
     def test_render_replaces_legacy_wildcards_with_service_origin_and_host(self):
         settings = production_settings(
@@ -119,8 +145,15 @@ class ProductionHardeningContractTests(unittest.TestCase):
                     production_settings(**override)
 
     def test_render_blueprint_requires_runtime_managed_production_secrets(self):
-        self.assertIn("key: ALLOWED_ORIGINS\n        sync: false", RENDER_BLUEPRINT)
-        self.assertIn("key: ALLOWED_HOSTS\n        sync: false", RENDER_BLUEPRINT)
+        # ALLOWED_ORIGINS/ALLOWED_HOSTS are hardcoded to this deployment's
+        # known, explicit HTTPS origin/host (not secrets, not wildcards - the
+        # production-hardening validator above still rejects either of those)
+        # so a fresh deploy doesn't require a manual dashboard step for
+        # values that never change. Actual secrets stay sync: false below.
+        self.assertIn(
+            "key: ALLOWED_ORIGINS\n        value: https://", RENDER_BLUEPRINT
+        )
+        self.assertIn("key: ALLOWED_HOSTS\n        value: ", RENDER_BLUEPRINT)
         self.assertIn("key: REDIS_URL\n        sync: false", RENDER_BLUEPRINT)
         self.assertIn(
             "key: BACKGROUND_JOBS_ENABLED\n        value: 'false'",
@@ -130,9 +163,11 @@ class ProductionHardeningContractTests(unittest.TestCase):
         self.assertIn("name: aegis-frontend", RENDER_BLUEPRINT)
         self.assertIn("healthCheckPath: /health", RENDER_BLUEPRINT)
         self.assertIn("healthCheckPath: /api/health", RENDER_BLUEPRINT)
-        self.assertIn("key: INTERNAL_API_URL", RENDER_BLUEPRINT)
-        self.assertIn("envVarKey: RENDER_EXTERNAL_HOSTNAME", RENDER_BLUEPRINT)
-        self.assertIn("key: NEXT_PUBLIC_SUPABASE_URL", RENDER_BLUEPRINT)
+        self.assertIn("key: INTERNAL_API_URL\n        value: https://", RENDER_BLUEPRINT)
+        self.assertIn("key: NEXT_PUBLIC_API_URL\n        value: https://", RENDER_BLUEPRINT)
+        self.assertIn(
+            "key: NEXT_PUBLIC_SUPABASE_URL\n        fromService:", RENDER_BLUEPRINT
+        )
         self.assertNotIn("value: '*'", RENDER_BLUEPRINT)
 
     def test_app_uses_trusted_host_middleware(self):

@@ -112,6 +112,7 @@ async def list_payroll_runs(
     page_size: int = Query(default=50, ge=1, le=200),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("finance.payroll.read")),
 ):
     org_id = _require_org(user)
     limit, offset = page_offset(page, page_size)
@@ -309,6 +310,7 @@ async def get_payroll_run(
     run_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("finance.payroll.read")),
 ):
     org_id = _require_org(user)
     run = await db.execute(

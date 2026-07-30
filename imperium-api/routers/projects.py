@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import get_current_user
+from core.security import get_current_user, require_permission
 from app.shared.sql import safe_payload_columns, update_tenant_row_sql
 
 router = APIRouter()
@@ -126,7 +126,9 @@ def _result(data, message: str, total: Optional[int] = None):
 
 @router.get("/")
 async def list_projects(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
 ):
     rows = await db.execute(
         text("""
@@ -152,6 +154,7 @@ async def create_project(
     payload: ProjectCreate,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.create")),
 ):
     try:
         row = (
@@ -182,6 +185,7 @@ async def project_lifecycle(
     project_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
     params = {"project_id": project_id, "org_id": user["org_id"]}
@@ -220,6 +224,7 @@ async def add_milestone(
     payload: MilestonePayload,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
     row = (
@@ -245,6 +250,7 @@ async def add_change(
     payload: ChangePayload,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
     try:
@@ -276,6 +282,7 @@ async def add_risk(
     payload: RiskPayload,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
     row = (
@@ -300,6 +307,7 @@ async def get_project(
     project_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
 ):
     return _result(await _project_ref_or_404(db, project_id, user["org_id"]), "Project retrieved.")
 
@@ -310,6 +318,7 @@ async def update_project(
     payload: ProjectUpdate,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
     values = payload.model_dump(exclude_unset=True)
@@ -345,6 +354,7 @@ async def archive_project(
     project_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.delete")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
     await db.execute(

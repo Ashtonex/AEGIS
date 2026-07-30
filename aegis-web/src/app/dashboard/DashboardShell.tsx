@@ -223,7 +223,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { session, signOut } = useAuth();
+  const { session, role, isLoading, signOut } = useAuth();
   const [time, setTime] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [tourOpen, setTourOpen] = useState(false);
@@ -235,7 +235,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const userEmail = session?.user?.email || "System User";
   // Create a display name from email (e.g., admin@example.com -> Admin)
   const displayName = userEmail.split('@')[0].charAt(0).toUpperCase() + userEmail.split('@')[0].slice(1);
-  const userRole = String(session?.user?.app_metadata?.role || session?.user?.user_metadata?.role || "Employee");
+  const userRole = role || "EMPLOYEE";
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -328,9 +328,21 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     };
   }, [pathname, session, tourStorageKey]);
 
+  // Don't render dashboard chrome/content until the session check has
+  // resolved. Rendering nothing here (instead of the full shell with
+  // placeholder "System User" data) closes the window where protected
+  // content could flash before AuthContext's redirect-to-/login fires.
+  if (isLoading || !session) {
+    return (
+      <div className="min-h-screen bg-ink flex items-center justify-center">
+        <div className="h-6 w-6 rounded-full border-2 border-signal border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink">
-      
+
       {/* GLOBAL TOP NAVIGATION BAR */}
       <header className="h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-30 shrink-0">
         <div className="flex items-center space-x-8">

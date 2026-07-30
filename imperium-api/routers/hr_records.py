@@ -32,6 +32,7 @@ async def list_leave_requests(
     employee_id: Optional[UUID] = None,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("hr.leave.read")),
 ):
     """
     List leave requests under the organization.

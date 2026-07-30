@@ -1143,7 +1143,7 @@ async def sales_report(
         db,
         """
         SELECT
-            COALESCE(SUM(deal_value) FILTER (WHERE win_loss_status IS NULL), 0) AS pipeline_value,
+            COALESCE(SUM(COALESCE(deal_value, budget)) FILTER (WHERE win_loss_status IS NULL), 0) AS pipeline_value,
             COALESCE(SUM(weighted_value) FILTER (WHERE win_loss_status IS NULL), 0) AS weighted_forecast,
             COUNT(*) FILTER (WHERE win_loss_status = 'won') AS won_count,
             COUNT(*) FILTER (WHERE win_loss_status = 'lost') AS lost_count,
@@ -1221,7 +1221,7 @@ async def executive_crm_report(
         db,
         """
         SELECT
-            (SELECT COALESCE(SUM(deal_value), 0) FROM crm.opportunities WHERE organization_id=:org_id AND is_deleted=false AND win_loss_status IS NULL) AS revenue_pipeline,
+            (SELECT COALESCE(SUM(COALESCE(deal_value, budget)), 0) FROM crm.opportunities WHERE organization_id=:org_id AND is_deleted=false AND win_loss_status IS NULL) AS revenue_pipeline,
             (SELECT COALESCE(SUM(bid_amount), 0) FROM crm.tenders WHERE organization_id=:org_id AND is_deleted=false AND COALESCE(stage,'') NOT IN ('lost','withdrawn')) AS tender_pipeline,
             (SELECT COUNT(*) FROM crm.leads WHERE organization_id=:org_id AND is_deleted=false) AS total_leads,
             (SELECT COUNT(*) FROM finance.quotations WHERE organization_id=:org_id AND is_deleted=false) AS total_quotes,

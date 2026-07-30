@@ -255,12 +255,20 @@ export default function CRMLeadsApp() {
   // Filtered lists
   const activeLeads = leads.filter(l => !dismissedLeadIds.includes(l.id));
 
+  // The backend's default status for a newly-created lead is the lowercase
+  // string 'new' (a DB column default), not 'New' - compare case-
+  // insensitively so newly-created leads don't silently fall out of every
+  // column.
+  const normalizedStatus = (status?: string) => (status || '').trim().toLowerCase();
   const columns = {
-    'Inquiry': activeLeads.filter(l => l.status === 'Inquiry' || !l.status || l.status === 'New'),
-    'Identified': activeLeads.filter(l => l.status === 'Identified'),
-    'Contacted': activeLeads.filter(l => l.status === 'Contacted'),
-    'Qualified': activeLeads.filter(l => l.status === 'Qualified'),
-    'Disqualified': activeLeads.filter(l => l.status === 'Disqualified')
+    'Inquiry': activeLeads.filter(l => {
+      const s = normalizedStatus(l.status);
+      return s === 'inquiry' || s === 'new' || !s;
+    }),
+    'Identified': activeLeads.filter(l => normalizedStatus(l.status) === 'identified'),
+    'Contacted': activeLeads.filter(l => normalizedStatus(l.status) === 'contacted'),
+    'Qualified': activeLeads.filter(l => normalizedStatus(l.status) === 'qualified'),
+    'Disqualified': activeLeads.filter(l => normalizedStatus(l.status) === 'disqualified')
   };
 
   return (

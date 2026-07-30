@@ -9,8 +9,14 @@ from pathlib import Path
 from sqlalchemy import text
 
 
-MIGRATION_PATTERN = re.compile(r"^\d{3}_.+\.sql$")
+MIGRATION_PATTERN = re.compile(r"^(\d{3})_.+\.sql$")
 SEED_MIGRATION_MARKER = "_seed_"
+
+
+def _sequence_prefix(path: Path) -> str:
+    match = MIGRATION_PATTERN.match(path.name)
+    assert match is not None  # filtered by MIGRATION_PATTERN before this is called
+    return match.group(1)
 
 
 @dataclass(frozen=True)
@@ -48,11 +54,19 @@ def discover_migrations(
 ) -> list[SqlMigration]:
     directory = migrations_directory or migrations_dir()
     paths = sorted(
-        path
-        for path in directory.iterdir()
-        if path.is_file()
-        and MIGRATION_PATTERN.match(path.name)
-        and (include_seed or SEED_MIGRATION_MARKER not in path.name)
+        (
+            path
+            for path in directory.iterdir()
+            if path.is_file()
+            and MIGRATION_PATTERN.match(path.name)
+            and (include_seed or SEED_MIGRATION_MARKER not in path.name)
+        ),
+        # Explicit ordering key: numeric prefix first, filename as tie-break
+        # for the (historical, already-applied) migrations that share a
+        # number. This is equivalent to the old plain-filename sort for the
+        # existing zero-padded 3-digit prefixes, but makes the intent
+        # explicit instead of relying on that being a coincidence.
+        key=lambda path: (_sequence_prefix(path), path.name),
     )
     return [
         SqlMigration(sequence_number=index, path=path, checksum=checksum_for(path))
@@ -80,6 +94,40 @@ def validate_unique_filenames(migrations: list[SqlMigration]) -> None:
         )
 
 
+def validate_no_new_duplicate_sequence_numbers(
+    migrations: list[SqlMigration], applied: dict[str, str]
+) -> None:
+    """A number of historical migrations share a numeric prefix (e.g. 003,
+    004, 024, 032-034, 038, 041) - they're already applied, in that exact
+    filename form, to real environments, so renaming them now would make the
+    ledger (keyed by filename) treat them as brand-new and try to re-run
+    already-applied SQL. Those are left alone.
+
+    This only guards the future: a *new*, not-yet-applied migration must not
+    reuse a number some other migration (applied or not) already uses. Reusing
+    a number silently makes execution order depend on incidental alphabetical
+    sorting between two unrelated files instead of an explicit decision.
+    """
+    by_number: dict[str, list[str]] = {}
+    for migration in migrations:
+        match = MIGRATION_PATTERN.match(migration.filename)
+        if not match:
+            continue
+        by_number.setdefault(match.group(1), []).append(migration.filename)
+
+    for number, filenames in by_number.items():
+        if len(filenames) < 2:
+            continue
+        new_filenames = [name for name in filenames if name not in applied]
+        if not new_filenames:
+            continue  # every file sharing this number is already applied - historical, leave it
+        raise RuntimeError(
+            f"New migration(s) {new_filenames} reuse sequence number {number}, "
+            f"already used by {sorted(set(filenames) - set(new_filenames)) or filenames}. "
+            "Give new migrations the next unused sequence number instead."
+        )
+
+
 LEDGER_DDL = """
 CREATE SCHEMA IF NOT EXISTS core;
 
@@ -103,6 +151,24 @@ ALTER TABLE core.aegis_migration_log
 LEDGER_TRIGGER_HARDENING_SQL = """
 DROP TRIGGER IF EXISTS trg_audit_aegis_migration_log ON core.aegis_migration_log;
 """
+
+
+def allow_schema_adoption_from_environment() -> bool:
+    """Whether an empty ledger may be auto-certified as "fully migrated" based
+    on RAW_SCHEMA_ADOPTION_MARKERS. This only checks 5 markers against a
+    corpus of dozens of migrations with real RLS/GRANT differences, so a
+    near-miss schema (missing one policy from an unrelated migration) could
+    otherwise be falsely certified as fully migrated with nothing ever
+    detecting the gap. Requiring an explicit opt-in turns that into a
+    deliberate one-time decision instead of something that fires silently
+    whenever the ledger table happens to be empty (e.g. after a botched
+    ledger reset)."""
+    return os.getenv("AEGIS_ALLOW_SCHEMA_ADOPTION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 RAW_SCHEMA_ADOPTION_MARKERS = (
@@ -221,9 +287,14 @@ async def apply_pending_migrations(
     validate_unique_filenames(migrations)
     await ensure_migration_log(conn)
     applied = await applied_migrations(conn)
+    validate_no_new_duplicate_sequence_numbers(migrations, applied)
     applied_now: list[str] = []
 
-    if not applied and await has_adoptable_raw_schema(conn):
+    if (
+        not applied
+        and allow_schema_adoption_from_environment()
+        and await has_adoptable_raw_schema(conn)
+    ):
         for migration in migrations:
             await record_migration(
                 conn,
@@ -323,9 +394,14 @@ def apply_pending_migrations_sync(
     validate_unique_filenames(migrations)
     ensure_migration_log_sync(conn)
     applied = applied_migrations_sync(conn)
+    validate_no_new_duplicate_sequence_numbers(migrations, applied)
     applied_now: list[str] = []
 
-    if not applied and has_adoptable_raw_schema_sync(conn):
+    if (
+        not applied
+        and allow_schema_adoption_from_environment()
+        and has_adoptable_raw_schema_sync(conn)
+    ):
         for migration in migrations:
             record_migration_sync(
                 conn,

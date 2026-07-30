@@ -35,70 +35,80 @@ async def import_csv(
     reader = csv.DictReader(io.StringIO(decoded))
 
     imported_count = 0
-    if target_type == "contacts":
-        for row in reader:
-            await db.execute(
-                text("""
-                    INSERT INTO crm.contacts (organization_id, contact_name, email, phone, job_title, created_by)
-                    VALUES (:org_id, :name, :email, :phone, :job_title, :user_id)
-                """),
-                {
-                    "org_id": org_id,
-                    "name": row.get("contact_name") or row.get("name"),
-                    "email": row.get("email"),
-                    "phone": row.get("phone"),
-                    "job_title": row.get("job_title"),
-                    "user_id": user_id,
-                }
-            )
-            imported_count += 1
-    elif target_type == "leads":
-        for row in reader:
-            await db.execute(
-                text("""
-                    INSERT INTO crm.leads (organization_id, company_name, contact_name, contact_email, contact_phone, lead_source, status, created_by)
-                    VALUES (:org_id, :company, :name, :email, :phone, :source, 'New', :user_id)
-                """),
-                {
-                    "org_id": org_id,
-                    "company": row.get("company_name") or row.get("company"),
-                    "name": row.get("contact_name") or row.get("name"),
-                    "email": row.get("contact_email") or row.get("email"),
-                    "phone": row.get("contact_phone") or row.get("phone"),
-                    "source": row.get("lead_source") or "CSV Import",
-                    "user_id": user_id,
-                }
-            )
-            imported_count += 1
-    elif target_type == "organizations":
-        for row in reader:
-            name = row.get("name") or row.get("company_name")
-            if not name:
-                continue
-            await db.execute(
-                text("""
-                    INSERT INTO crm.organizations (organization_id, name, industry, sector, website, phone, email, address, registration_number, tax_id, created_by)
-                    VALUES (:org_id, :name, :industry, :sector, :website, :phone, :email, :address, :registration_number, :tax_id, :user_id)
-                    ON CONFLICT DO NOTHING
-                """),
-                {
-                    "org_id": org_id,
-                    "name": name,
-                    "industry": row.get("industry"),
-                    "sector": row.get("sector"),
-                    "website": row.get("website"),
-                    "phone": row.get("phone"),
-                    "email": row.get("email"),
-                    "address": row.get("address"),
-                    "registration_number": row.get("registration_number"),
-                    "tax_id": row.get("tax_id"),
-                    "user_id": user_id,
-                }
-            )
-            imported_count += 1
+    row_errors: list[dict] = []
+
+    for row_number, row in enumerate(reader, start=1):
+        try:
+            async with db.begin_nested():
+                if target_type == "contacts":
+                    await db.execute(
+                        text("""
+                            INSERT INTO crm.contacts (organization_id, contact_name, email, phone, job_title, created_by)
+                            VALUES (:org_id, :name, :email, :phone, :job_title, :user_id)
+                        """),
+                        {
+                            "org_id": org_id,
+                            "name": row.get("contact_name") or row.get("name"),
+                            "email": row.get("email"),
+                            "phone": row.get("phone"),
+                            "job_title": row.get("job_title"),
+                            "user_id": user_id,
+                        }
+                    )
+                elif target_type == "leads":
+                    await db.execute(
+                        text("""
+                            INSERT INTO crm.leads (organization_id, company_name, contact_name, contact_email, contact_phone, lead_source, status, created_by)
+                            VALUES (:org_id, :company, :name, :email, :phone, :source, 'New', :user_id)
+                        """),
+                        {
+                            "org_id": org_id,
+                            "company": row.get("company_name") or row.get("company"),
+                            "name": row.get("contact_name") or row.get("name"),
+                            "email": row.get("contact_email") or row.get("email"),
+                            "phone": row.get("contact_phone") or row.get("phone"),
+                            "source": row.get("lead_source") or "CSV Import",
+                            "user_id": user_id,
+                        }
+                    )
+                elif target_type == "organizations":
+                    name = row.get("name") or row.get("company_name")
+                    if not name:
+                        raise ValueError("Missing required 'name' (or 'company_name') column.")
+                    await db.execute(
+                        text("""
+                            INSERT INTO crm.organizations (organization_id, name, industry, sector, website, phone, email, address, registration_number, tax_id, created_by)
+                            VALUES (:org_id, :name, :industry, :sector, :website, :phone, :email, :address, :registration_number, :tax_id, :user_id)
+                            ON CONFLICT DO NOTHING
+                        """),
+                        {
+                            "org_id": org_id,
+                            "name": name,
+                            "industry": row.get("industry"),
+                            "sector": row.get("sector"),
+                            "website": row.get("website"),
+                            "phone": row.get("phone"),
+                            "email": row.get("email"),
+                            "address": row.get("address"),
+                            "registration_number": row.get("registration_number"),
+                            "tax_id": row.get("tax_id"),
+                            "user_id": user_id,
+                        }
+                    )
+        except Exception as exc:
+            row_errors.append({"row": row_number, "error": str(exc)})
+            continue
+        imported_count += 1
 
     await db.commit()
-    return {"success": True, "message": f"Successfully imported {imported_count} {target_type}.", "data": {"imported": imported_count}}
+    message = f"Imported {imported_count} {target_type}."
+    if row_errors:
+        message += f" {len(row_errors)} row(s) failed."
+    return {
+        "success": True,
+        "message": message,
+        "data": {"imported": imported_count, "failed": len(row_errors), "errors": row_errors},
+    }
 
 @router.post("/import/vcard")
 async def import_vcard(
@@ -114,8 +124,10 @@ async def import_vcard(
     
     # Basic vCard parser
     imported_count = 0
+    card_number = 0
+    row_errors: list[dict] = []
     current_contact = {}
-    
+
     for line in decoded.splitlines():
         if line.startswith("BEGIN:VCARD"):
             current_contact = {}
@@ -128,25 +140,38 @@ async def import_vcard(
         elif line.startswith("TITLE:"):
             current_contact["job_title"] = line.split(":", 1)[1].strip()
         elif line.startswith("END:VCARD"):
+            card_number += 1
             if current_contact.get("name"):
-                await db.execute(
-                    text("""
-                        INSERT INTO crm.contacts (organization_id, contact_name, email, phone, job_title, created_by)
-                        VALUES (:org_id, :name, :email, :phone, :job_title, :user_id)
-                    """),
-                    {
-                        "org_id": org_id,
-                        "name": current_contact["name"],
-                        "email": current_contact.get("email"),
-                        "phone": current_contact.get("phone"),
-                        "job_title": current_contact.get("job_title"),
-                        "user_id": user_id,
-                    }
-                )
+                try:
+                    async with db.begin_nested():
+                        await db.execute(
+                            text("""
+                                INSERT INTO crm.contacts (organization_id, contact_name, email, phone, job_title, created_by)
+                                VALUES (:org_id, :name, :email, :phone, :job_title, :user_id)
+                            """),
+                            {
+                                "org_id": org_id,
+                                "name": current_contact["name"],
+                                "email": current_contact.get("email"),
+                                "phone": current_contact.get("phone"),
+                                "job_title": current_contact.get("job_title"),
+                                "user_id": user_id,
+                            }
+                        )
+                except Exception as exc:
+                    row_errors.append({"card": card_number, "error": str(exc)})
+                    continue
                 imported_count += 1
-                
+
     await db.commit()
-    return {"success": True, "message": f"Successfully imported {imported_count} contacts from vCard.", "data": {"imported": imported_count}}
+    message = f"Imported {imported_count} contacts from vCard."
+    if row_errors:
+        message += f" {len(row_errors)} card(s) failed."
+    return {
+        "success": True,
+        "message": message,
+        "data": {"imported": imported_count, "failed": len(row_errors), "errors": row_errors},
+    }
 
 @router.get("/export/csv")
 async def export_csv(
@@ -179,7 +204,7 @@ async def export_csv(
             writer.writerow(list(row))
     elif target_type == "opportunities":
         writer.writerow(["name", "stage", "deal_value", "win_loss_status", "expected_close_date", "sales_owner_id"])
-        query = "SELECT name, stage, deal_value, win_loss_status, expected_close_date, sales_owner_id FROM crm.opportunities WHERE organization_id = :org_id AND is_deleted = false"
+        query = "SELECT name, stage, COALESCE(deal_value, budget) AS deal_value, win_loss_status, expected_close_date, sales_owner_id FROM crm.opportunities WHERE organization_id = :org_id AND is_deleted = false"
         params = {"org_id": org_id}
         if status_filter:
             query += " AND win_loss_status = :status_filter"

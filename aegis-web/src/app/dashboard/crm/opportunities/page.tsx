@@ -360,11 +360,11 @@ export default function OpportunitiesKanban() {
 
       if (res.success) {
         if ((res.data as any)?.id && (marginVal || newDeal.risk_level || finalClientId)) {
-          await updateCrmOpportunity((res.data as any).id, {
-            expected_margin: marginVal,
-            risk_level: newDeal.risk_level,
-            client_id: finalClientId
-          });
+          const enrichPayload: any = {};
+          if (marginVal) enrichPayload.expected_margin = marginVal;
+          if (newDeal.risk_level) enrichPayload.risk_level = newDeal.risk_level;
+          if (finalClientId) enrichPayload.client_id = finalClientId;
+          await updateCrmOpportunity((res.data as any).id, enrichPayload);
         }
 
         setNewDeal({

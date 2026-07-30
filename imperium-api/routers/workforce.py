@@ -184,7 +184,9 @@ async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> Non
 
 @router.get("/")
 async def list_employees(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("workforce.read")),
 ):
     rows = await db.execute(
         text("""
@@ -324,6 +326,7 @@ async def list_certifications(
     employee_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("workforce.read")),
 ):
     await employee_or_404(db, employee_id, user["org_id"])
     rows = await db.execute(
@@ -391,6 +394,7 @@ async def list_allocations(
     project_id: Optional[UUID] = None,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("workforce.read")),
 ):
     rows = await db.execute(
         text("""SELECT a.*, e.employee_name, p.name AS project_name FROM hr.project_allocations a
@@ -546,6 +550,7 @@ async def list_attendance(
     project_id: Optional[UUID] = None,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("workforce.read")),
 ):
     """
     List attendance records under organization scope.

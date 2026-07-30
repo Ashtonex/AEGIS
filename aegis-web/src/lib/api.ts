@@ -182,10 +182,18 @@ function readCachedSupabaseAccessToken(): string | null {
 
       const parsed = JSON.parse(value) as {
         access_token?: unknown;
-        currentSession?: { access_token?: unknown };
+        expires_at?: unknown;
+        currentSession?: { access_token?: unknown; expires_at?: unknown };
       };
       const accessToken = parsed.access_token ?? parsed.currentSession?.access_token;
+      const expiresAt = parsed.expires_at ?? parsed.currentSession?.expires_at;
       if (typeof accessToken === "string" && accessToken.length > 0) {
+        // expires_at is a unix-seconds timestamp. Treat a token within 30s of
+        // expiry as already stale rather than let it go out and bounce back
+        // as a 401 - Supabase's own getSession() would have refreshed it.
+        if (typeof expiresAt === "number" && expiresAt <= Date.now() / 1000 + 30) {
+          continue;
+        }
         return accessToken;
       }
     }
@@ -197,13 +205,11 @@ function readCachedSupabaseAccessToken(): string | null {
 }
 
 async function getSupabaseAccessToken(timeoutMs = 2500): Promise<string | null> {
-  const cachedToken = readCachedSupabaseAccessToken();
-  if (cachedToken) {
-    return cachedToken;
-  }
-
-  const timeout = new Promise<null>((resolve) => {
-    setTimeout(() => resolve(null), timeoutMs);
+  // getSession() is the authoritative path: it auto-refreshes an expired
+  // token instead of returning it as-is. It's the primary source; the raw
+  // localStorage read is only a fallback for when it's slow/unavailable.
+  const timeout = new Promise<"timeout">((resolve) => {
+    setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
   try {
@@ -212,14 +218,14 @@ async function getSupabaseAccessToken(timeoutMs = 2500): Promise<string | null> 
       timeout,
     ]);
 
-    if (!result) {
-      return null;
+    if (result !== "timeout") {
+      return result.data.session?.access_token ?? null;
     }
-
-    return result.data.session?.access_token ?? null;
   } catch {
-    return null;
+    // fall through to the cached-token fallback below
   }
+
+  return readCachedSupabaseAccessToken();
 }
 
 async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
@@ -1541,6 +1547,23 @@ export async function getClientPortalTickets(): Promise<ApiResponse<ClientPortal
 
 export async function getMyProfile(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/profile/me', { cache: 'no-store' });
+}
+
+export interface AuthenticatedUser {
+  user_id: string;
+  sub: string;
+  org_id: string;
+  email: string | null;
+  role: string;
+}
+
+// The authoritative role assignment lives in core.user_roles, not in the
+// Supabase session's app_metadata (nothing keeps that in sync once an admin
+// assigns a role via Settings). Callers that need to know "what can this
+// user actually do" - RBACGuard in particular - must use this, not
+// session.user.app_metadata.role.
+export async function getAuthMe(): Promise<ApiResponse<AuthenticatedUser>> {
+  return fetchApi<ApiResponse<AuthenticatedUser>>('/api/v1/auth/me', { cache: 'no-store', allowFallback: false });
 }
 
 export async function updateMyProfile(payload: Record<string, unknown>): Promise<ApiResponse<any>> {

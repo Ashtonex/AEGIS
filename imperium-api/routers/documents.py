@@ -15,13 +15,15 @@ router = APIRouter()
 class DocumentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    # Field names and set below mirror the actual core.documents columns
+    # (see migrations/006_crm_documents_expansion.sql) - this table has no
+    # doc_number/classification/project_id/description/status columns.
     title: str = Field(min_length=1, max_length=255)
-    category: str = Field(default="other", max_length=80)
-    classification: str = Field(default="internal", max_length=80)
-    project_id: Optional[UUID] = None
-    description: Optional[str] = None
+    category: str = Field(default="other", max_length=100)
+    opportunity_id: Optional[UUID] = None
+    tender_id: Optional[UUID] = None
     file_name: Optional[str] = None
-    size_bytes: Optional[int] = 0
+    file_size_bytes: Optional[int] = 0
 
 
 class StatusUpdate(BaseModel):
@@ -98,42 +100,59 @@ async def create_document(
     user: dict = Depends(require_permission("documents.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    # Generate human-readable document number
-    from app.shared.sequences import next_reference
+    if payload.opportunity_id:
+        opp_check = await db.execute(
+            text("""
+                SELECT 1 FROM crm.opportunities
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"id": payload.opportunity_id, "org_id": user["org_id"]},
+        )
+        if not opp_check.first():
+            raise HTTPException(status_code=404, detail="Opportunity not found.")
 
-    doc_no = await next_reference(db, user["org_id"], "document")
+    if payload.tender_id:
+        tender_check = await db.execute(
+            text("""
+                SELECT 1 FROM crm.tenders
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"id": payload.tender_id, "org_id": user["org_id"]},
+        )
+        if not tender_check.first():
+            raise HTTPException(status_code=404, detail="Tender not found.")
 
     try:
         doc_id = (
             await db.execute(
                 text("""
             INSERT INTO core.documents (
-                organization_id, doc_number, title, category, classification,
-                project_id, description, file_name, file_size_bytes, status, created_by
+                organization_id, title, category, opportunity_id, tender_id,
+                file_name, file_size_bytes, created_by
             ) VALUES (
-                :org_id, :doc_number, :title, :category, :classification,
-                :project_id, :description, :file_name, :size_bytes, 'draft', :user_id
+                :org_id, :title, :category, :opportunity_id, :tender_id,
+                :file_name, :file_size_bytes, :user_id
             ) RETURNING id
         """),
                 {
                     "org_id": user["org_id"],
-                    "doc_number": doc_no,
                     "title": payload.title,
                     "category": payload.category,
-                    "classification": payload.classification,
-                    "project_id": payload.project_id,
-                    "description": payload.description,
+                    "opportunity_id": payload.opportunity_id,
+                    "tender_id": payload.tender_id,
                     "file_name": payload.file_name,
-                    "size_bytes": payload.size_bytes,
+                    "file_size_bytes": payload.file_size_bytes,
                     "user_id": user["user_id"],
                 },
             )
         ).scalar()
         await db.commit()
         return ok(
-            {"id": str(doc_id), "doc_number": doc_no},
+            {"id": str(doc_id)},
             "Document registered successfully.",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

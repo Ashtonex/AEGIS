@@ -34,35 +34,31 @@ interface RBACGuardProps {
 }
 
 export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
-  const { user, session, isLoading } = useAuth();
+  const { user, session, role, isLoading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
 
   const [hasLoggedDenial, setHasLoggedDenial] = useState(false);
 
   const userEmail = session?.user?.email || user?.email || "Unknown User";
-  const userRole = String(session?.user?.app_metadata?.role || user?.app_metadata?.role || "Employee");
+  // The authoritative role from core.user_roles (resolved server-side via
+  // /auth/me), not session.user.app_metadata.role - nothing keeps that in
+  // sync once an admin assigns a functional role via Settings.
+  const userRole = role || "EMPLOYEE";
 
   const isAuthorized = React.useMemo(() => {
     const normUser = userRole.toLowerCase().trim();
-    const normEmail = userEmail.toLowerCase().trim();
-    
-    // System-wide superadmin/admin master bypass & sole superadmin email check
-    if (
-      normEmail === "ashton@admin.com" ||
-      normUser === "superadmin" || 
-      normUser === "admin" || 
-      normUser.includes("superadmin") || 
-      normUser.includes("admin")
-    ) {
+
+    // SUPERADMIN is the one role granted system-wide access. This mirrors the
+    // backend's authoritative role resolution (core.user_roles) - the role
+    // claim here is only ever set by the server, never derived from email or
+    // client-controlled state.
+    if (normUser === "superadmin") {
       return true;
     }
 
-    return allowedRoles.some((role) => {
-      const normAllowed = role.toLowerCase().trim();
-      return normUser === normAllowed || normUser.includes(normAllowed) || normAllowed.includes(normUser);
-    });
-  }, [allowedRoles, userRole, userEmail]);
+    return allowedRoles.some((role) => role.toLowerCase().trim() === normUser);
+  }, [allowedRoles, userRole]);
 
   // Log access denials
   useEffect(() => {

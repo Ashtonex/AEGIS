@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from core.database import get_db
-from core.security import get_current_user
+from core.security import get_current_user, require_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 
 router = APIRouter()
@@ -49,7 +49,9 @@ Description: Auto-generated CRUD endpoints for crm.contacts.
 
 @router.get("/")
 async def list_items(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("crm_contacts.read")),
 ):
     # Fetch active records scoped to the user's organization
     query = text("""
@@ -75,6 +77,7 @@ async def create_item(
     payload: ContactPayload,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("crm_contacts.create")),
 ):
     values = _payload_values(payload)
     safe_keys = [column for column in CONTACT_COLUMNS if column in values]
@@ -110,6 +113,7 @@ async def get_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("crm_contacts.read")),
 ):
     query = text("""
         SELECT *
@@ -136,6 +140,7 @@ async def update_item(
     payload: ContactPayload,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("crm_contacts.update")),
 ):
     values = _payload_values(payload)
     safe_keys = [column for column in CONTACT_COLUMNS if column in values]
@@ -177,6 +182,7 @@ async def delete_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("crm_contacts.delete")),
 ):
     query = text("""
         UPDATE crm.contacts

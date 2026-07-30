@@ -128,5 +128,23 @@ class CrmWriteFailureVisibilityContractTests(unittest.TestCase):
         self.assertNotIn('"message": "Campaign sent."', CRM_ROUTER)
 
 
+class CrmImportExportRowFailureVisibilityContractTests(unittest.TestCase):
+    """crm_import_export.py is intentionally excluded from ROUTER_SOURCES above:
+    a bulk import handler that aborts the whole batch and raises HTTPException
+    on the first bad row (the generic CRUD contract) is worse than one that
+    isolates each row failure. This contract instead guards that isolation is
+    real (a bad row can't corrupt the shared transaction for later rows) and
+    that failures are still visible in the response rather than silently
+    dropped from the reported count."""
+
+    def test_row_inserts_are_isolated_with_savepoints(self):
+        self.assertIn("async with db.begin_nested():", CRM_IMPORT_EXPORT_ROUTER)
+
+    def test_row_failures_are_collected_and_reported_not_swallowed(self):
+        self.assertIn("row_errors.append(", CRM_IMPORT_EXPORT_ROUTER)
+        self.assertIn('"failed": len(row_errors)', CRM_IMPORT_EXPORT_ROUTER)
+        self.assertIn('"errors": row_errors', CRM_IMPORT_EXPORT_ROUTER)
+
+
 if __name__ == "__main__":
     unittest.main()

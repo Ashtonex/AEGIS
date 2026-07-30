@@ -248,6 +248,11 @@ async def evaluate_and_run_automations(
                 trigger_type=trigger_type,
                 error=failure_reason,
             )
+            # A failed action may have left the transaction aborted at the
+            # database level. Roll back before issuing the audit INSERT
+            # below, otherwise that INSERT itself fails and the failure
+            # record (the whole point of this audit trail) is never written.
+            await db.rollback()
 
         triggering_record_id = None
         for key in ("lead_id", "opportunity_id", "contact_id", "ticket_id", "id"):

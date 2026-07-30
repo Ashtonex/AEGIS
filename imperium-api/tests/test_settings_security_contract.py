@@ -18,6 +18,9 @@ RBAC_GUARD = (WEB_ROOT / "src" / "components" / "auth" / "RBACGuard.tsx").read_t
 SETTINGS_PAGE = (
     WEB_ROOT / "src" / "app" / "dashboard" / "settings" / "page.tsx"
 ).read_text(encoding="utf-8")
+DASHBOARD_SHELL = (
+    WEB_ROOT / "src" / "app" / "dashboard" / "DashboardShell.tsx"
+).read_text(encoding="utf-8")
 
 
 class SettingsSecurityContractTests(unittest.TestCase):
@@ -63,11 +66,17 @@ class SettingsSecurityContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
 
-    def test_dashboard_redirect_waits_for_a_session_recheck(self):
-        self.assertIn("setTimeout(async () =>", AUTH_CONTEXT)
-        self.assertIn("supabase.auth.getSession()", AUTH_CONTEXT)
+    def test_dashboard_redirect_fires_immediately_with_no_content_flash(self):
+        # A setTimeout-delayed redirect (the old approach) left a window where
+        # protected dashboard chrome could render before the redirect fired.
+        # The fix is two-part: (1) AuthContext redirects the instant the
+        # initial session check resolves with no session, no artificial
+        # delay; (2) DashboardShell refuses to render chrome/content until
+        # that check has resolved and a session is confirmed present.
+        self.assertNotIn("setTimeout(async () =>", AUTH_CONTEXT)
         self.assertIn("router.push('/login')", AUTH_CONTEXT)
-        self.assertIn("clearTimeout(redirectTimerRef.current)", AUTH_CONTEXT)
+        self.assertIn("isLoading || session || !isProtectedRoute", AUTH_CONTEXT)
+        self.assertIn("if (isLoading || !session)", DASHBOARD_SHELL)
 
 
 if __name__ == "__main__":

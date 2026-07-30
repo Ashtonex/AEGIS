@@ -1,13 +1,18 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '../supabase';
 import { useRouter, usePathname } from 'next/navigation';
+import { getAuthMe } from '../api';
 
 interface AuthContextType {
   user: User | null;
   session: Session | null;
+  /** The user's actual assigned role from core.user_roles, resolved via the
+   * backend - not session.user.app_metadata.role, which nothing keeps in
+   * sync once an admin assigns a functional role via Settings. */
+  role: string | null;
   isLoading: boolean;
   signOut: () => Promise<void>;
 }
@@ -17,10 +22,24 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  const [role, setRole] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const router = useRouter();
   const pathname = usePathname();
+
+  const resolveRole = useCallback(async (hasSession: boolean) => {
+    if (!hasSession) {
+      setRole(null);
+      return;
+    }
+    try {
+      const response = await getAuthMe();
+      setRole(response.data?.role ?? null);
+    } catch (error) {
+      console.error("Error fetching resolved role:", error);
+      setRole(null);
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -29,14 +48,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error) throw error;
-        
+
         if (mounted) {
           setSession(session);
           setUser(session?.user ?? null);
-          setIsLoading(false);
+          await resolveRole(!!session);
         }
       } catch (error) {
         console.error("Error fetching session:", error);
+      } finally {
         if (mounted) {
           setIsLoading(false);
         }
@@ -47,11 +67,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        if (mounted) {
-          setSession(session);
-          setUser(session?.user ?? null);
-          setIsLoading(false);
-        }
+        if (!mounted) return;
+        setSession(session);
+        setUser(session?.user ?? null);
+        setIsLoading(true);
+        void resolveRole(!!session).finally(() => {
+          if (mounted) setIsLoading(false);
+        });
       }
     );
 
@@ -59,50 +81,33 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, []);
+  }, [resolveRole]);
 
-  // Simple route guard for /dashboard
+  // Route guard for /dashboard and /portal. Once the initial session check
+  // has resolved (isLoading is false), an absent session means redirect
+  // immediately - no artificial delay during which protected chrome could
+  // render. Consumers (e.g. DashboardShell) are responsible for not
+  // rendering protected content while isLoading is still true.
   useEffect(() => {
-    if (redirectTimerRef.current) {
-      clearTimeout(redirectTimerRef.current);
-      redirectTimerRef.current = null;
-    }
-
-    if (isLoading || session || !pathname?.startsWith('/dashboard')) {
+    const isProtectedRoute = pathname?.startsWith('/dashboard') || pathname?.startsWith('/portal');
+    if (isLoading || session || !isProtectedRoute) {
       return;
     }
-
-    redirectTimerRef.current = setTimeout(async () => {
-      try {
-        const { data: { session: latestSession } } = await supabase.auth.getSession();
-        if (!latestSession && pathname?.startsWith('/dashboard')) {
-          router.push('/login');
-        }
-      } catch {
-        if (pathname?.startsWith('/dashboard')) {
-          router.push('/login');
-        }
-      }
-    }, 400);
-
-    return () => {
-      if (redirectTimerRef.current) {
-        clearTimeout(redirectTimerRef.current);
-        redirectTimerRef.current = null;
-      }
-    };
+    router.push('/login');
   }, [isLoading, session, pathname, router]);
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
+    setRole(null);
     router.push('/login');
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ 
+    <AuthContext.Provider value={{
       user,
       session,
-      isLoading, 
+      role,
+      isLoading,
       signOut
     }}>
       {children}

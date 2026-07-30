@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
 from core.database import get_db
-from core.security import get_current_user
+from core.security import get_current_user, require_permission
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -20,7 +20,9 @@ Description: Auto-generated CRUD endpoints for procurement.procurement_orders.
 
 @router.get("/")
 async def list_items(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("procurement_orders.read")),
 ):
     # Fetch active records scoped to the user's organization
     query = text("""
@@ -46,6 +48,7 @@ async def create_item(
     request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("procurement_orders.create")),
 ):
     payload = await request.json()
 
@@ -82,6 +85,7 @@ async def get_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("procurement_orders.read")),
 ):
     query = text("""
         SELECT *
@@ -108,6 +112,7 @@ async def update_item(
     request: Request,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("procurement_orders.update")),
 ):
     payload = await request.json()
     safe_keys = safe_payload_columns(payload.keys())
@@ -149,6 +154,7 @@ async def delete_item(
     item_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("procurement_orders.delete")),
 ):
     query = text("""
         UPDATE procurement.procurement_orders

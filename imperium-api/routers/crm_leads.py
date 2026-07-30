@@ -183,17 +183,17 @@ async def create_item(
         WHERE organization_id=:org_id
           AND is_deleted=false
           AND (
-            (:contact_email IS NOT NULL AND lower(contact_email)=lower(:contact_email))
-            OR (:contact_phone IS NOT NULL AND regexp_replace(COALESCE(contact_phone, ''), '[^0-9]', '', 'g') = regexp_replace(:contact_phone, '[^0-9]', '', 'g'))
-            OR (:company_name IS NOT NULL AND lower(company_name)=lower(:company_name))
+            (CAST(:contact_email AS text) IS NOT NULL AND lower(contact_email)=lower(CAST(:contact_email AS text)))
+            OR (CAST(:contact_phone AS text) IS NOT NULL AND regexp_replace(COALESCE(contact_phone, ''), '[^0-9]', '', 'g') = regexp_replace(CAST(:contact_phone AS text), '[^0-9]', '', 'g'))
+            OR (CAST(:company_name AS text) IS NOT NULL AND lower(company_name)=lower(CAST(:company_name AS text)))
           )
         LIMIT 1
         """),
         {
             "org_id": params["org_id"],
-            "contact_email": params.get("contact_email"),
-            "contact_phone": params.get("contact_phone"),
-            "company_name": params.get("company_name"),
+            "contact_email": params.get("contact_email") or None,
+            "contact_phone": params.get("contact_phone") or None,
+            "company_name": params.get("company_name") or None,
         },
     )
     duplicate_id = duplicate.scalar()

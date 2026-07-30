@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+
+import jwt
+import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -62,3 +67,43 @@ def test_verify_token_uses_supabase_auth_payload(monkeypatch):
         "user_metadata": {"full_name": "Ashton"},
         "role": "authenticated",
     }
+
+
+def _forged_superadmin_token(secret: str = "attacker-guessed-or-wrong-secret") -> str:
+    """Craft a token the way a forger would: no knowledge of the real
+    Supabase JWT secret, just claiming SUPERADMIN for themselves."""
+    payload = {
+        "sub": "11111111-1111-1111-1111-111111111111",
+        "aud": "authenticated",
+        "role": "SUPERADMIN",
+        "app_metadata": {"role": "SUPERADMIN", "org_id": "00000000-0000-0000-0000-000000000001"},
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
+
+
+def test_verify_token_rejects_forged_signature_instead_of_trusting_claims(monkeypatch):
+    """Regression test for the JWT bypass: verify_token must never accept a
+    token's claims without a verified signature. A forged token (signed with
+    a secret the real backend never configured) must fail local verification
+    and must also be rejected by the Supabase Auth API fallback."""
+    forged = _forged_superadmin_token()
+
+    # Local verification must not match any configured key/issuer.
+    assert security._decode_locally(forged) is None
+
+    # The Supabase Auth API fallback authoritatively rejects the forged token.
+    unauthorized_response = _Response(401, {"message": "invalid JWT"})
+    monkeypatch.setattr(
+        security.httpx, "Client", lambda timeout: _Client(unauthorized_response)
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        security.verify_token(_Creds(forged))
+    assert exc_info.value.status_code == 401
+
+
+def test_decode_locally_never_returns_unverified_payload_for_garbage_token():
+    """A syntactically-invalid or unsigned token must never be treated as a
+    verified payload by the local fast path."""
+    assert security._decode_locally("not-a-jwt-at-all") is None

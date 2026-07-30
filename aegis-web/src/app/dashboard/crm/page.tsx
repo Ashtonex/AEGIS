@@ -229,7 +229,7 @@ export default function CRMCommercialEngine() {
           <Activity className="w-3.5 h-3.5 text-slate-light" />
           <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Weighted Forecast</h3>
         </div>
-        <span className="font-display text-lg text-signal tracking-tight">${calculateWeightedPipeline().toLocaleString()}</span>
+        <span className="font-display text-lg text-signal tracking-tight">${calculateWeightedPipeline().value.toLocaleString()}</span>
       </div>
 
       <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">

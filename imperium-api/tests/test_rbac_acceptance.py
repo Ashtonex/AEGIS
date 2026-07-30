@@ -17,15 +17,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeResult:
-    def __init__(self, *, scalar_value=None, row=None):
+    def __init__(self, *, scalar_value=None, row=None, rows=None):
         self.scalar_value = scalar_value
         self.row = row
+        self.rows = rows or []
 
     def scalar(self):
         return self.scalar_value
 
     def fetchone(self):
         return self.row
+
+    def __iter__(self):
+        return iter(self.rows)
 
 
 class FakeDb:
@@ -74,8 +78,32 @@ async def test_get_current_user_rejects_inactive_or_unassigned_identity():
 
 
 @pytest.mark.asyncio
+async def test_get_current_user_rejects_deactivated_identity_without_reprovisioning():
+    # Only one FakeResult is queued: if get_current_user fell through to the
+    # auto-provisioning branch (as it used to, since that branch can't
+    # distinguish "deactivated" from "never existed"), it would try to
+    # INSERT/UPDATE the user back to is_active=true and raise
+    # AssertionError("Unexpected database query.") here instead.
+    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=False, is_deleted=False)))
+
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user(
+            {
+                "sub": "user-1",
+                "email": "user@example.com",
+                "app_metadata": {"org_id": "org-1"},
+            },
+            db,
+        )
+
+    assert exc.value.status_code == 403
+    assert "inactive" in exc.value.detail
+    assert len(db.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_get_current_user_rejects_token_tenant_mismatch():
-    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1")))
+    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)))
 
     with pytest.raises(HTTPException) as exc:
         await get_current_user(
@@ -94,8 +122,8 @@ async def test_get_current_user_rejects_token_tenant_mismatch():
 @pytest.mark.asyncio
 async def test_get_current_user_resolves_superadmin_from_database_role():
     db = FakeDb(
-        FakeResult(row=SimpleNamespace(organization_id="org-1")),
-        FakeResult(scalar_value=1),
+        FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)),
+        FakeResult(rows=[SimpleNamespace(name=SUPERADMIN_ROLE)]),
     )
 
     resolved = await get_current_user(

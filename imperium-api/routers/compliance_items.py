@@ -113,6 +113,7 @@ async def list_obligations(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("compliance_items.read")),
 ):
     """List persisted regulatory obligations for the active tenant."""
     result = await db.execute(
@@ -186,6 +187,7 @@ async def list_employee_credentials(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("compliance_items.read")),
 ):
     """
     Fetch active employee safety certificates and clearances.
@@ -210,7 +212,9 @@ async def list_employee_credentials(
 
 @router.get("/equipment-credentials")
 async def list_equipment_credentials(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("compliance_items.read")),
 ):
     """Fetch equipment compliance inspections from the controlled fleet register."""
     rows = await db.execute(
@@ -658,7 +662,9 @@ async def override_deployment_gate_check(
 
 @router.get("/score")
 async def get_compliance_score(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("compliance_items.read")),
 ):
     row = (
         (

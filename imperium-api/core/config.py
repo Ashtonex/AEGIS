@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     RENDER_EXTERNAL_HOSTNAME: Optional[str] = None
     RENDER_EXTERNAL_URL: Optional[str] = None
     FRONTEND_HOSTNAME: Optional[str] = None
+    # Most PaaS egress networking (Render, DigitalOcean App Platform, Railway,
+    # AWS Lightsail) is IPv4-only, so Supabase's direct-connection host
+    # (IPv6-only) is unreachable regardless of platform. Default to false so
+    # the guard below protects every platform; set true only on a host that
+    # has confirmed outbound IPv6 connectivity.
+    DATABASE_HOST_SUPPORTS_IPV6: bool = False
 
     DATABASE_URL: str
     SUPABASE_URL: str
@@ -123,12 +129,15 @@ class Settings(BaseSettings):
 
         database_host = urlsplit(self.DATABASE_URL).hostname or ""
         if (
-            self.RENDER
+            not self.DATABASE_HOST_SUPPORTS_IPV6
             and database_host.startswith("db.")
             and database_host.endswith(".supabase.co")
         ):
             raise ValueError(
-                "DATABASE_URL must use the IPv4-compatible Supavisor session pooler on Render."
+                "DATABASE_URL must use the IPv4-compatible Supavisor session pooler "
+                "(this platform's egress networking is assumed IPv4-only; set "
+                "DATABASE_HOST_SUPPORTS_IPV6=true only if this host has confirmed "
+                "outbound IPv6 connectivity)."
             )
 
         configured_origins = self._configured_cors_origins
