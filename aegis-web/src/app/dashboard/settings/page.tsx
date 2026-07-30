@@ -415,10 +415,10 @@ function AccessTab({ overview, saving, assignRole, removeRole, togglePermission 
     <section className="border border-ink-mid bg-ink p-5">
       <h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><LockKeyhole className="h-4 w-4 text-signal" /> Page access by role</h2>
       <div className="hidden overflow-x-auto xl:block">
-        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">ERP page</th><th className="p-3">Permission</th>{overview.roles.map((role) => <th key={role.id} className="p-3 text-center">{role.name}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.page_access.map((page) => <tr key={page.route}><td className="p-3"><p className="font-semibold text-paper">{page.page}</p><p className="text-[11px] text-slate-light">{page.module} · {page.route}</p></td><td className="p-3 font-mono text-[11px] text-slate-light">{page.permission}</td>{overview.roles.map((role) => { const enabled = role.permissions.includes(page.permission); return <td key={role.id} className="p-3 text-center"><input type="checkbox" checked={enabled} disabled={saving === `${role.id}-${page.permission}`} onChange={(event) => void togglePermission(role.id, page.permission, event.target.checked)} /></td>; })}</tr>)}</tbody></table>
+        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">ERP page</th><th className="p-3">Permission</th>{overview.roles.map((role) => <th key={role.id} className="p-3 text-center">{role.name}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.page_access.map((page) => <tr key={`${page.route}|${page.permission}`}><td className="p-3"><p className="font-semibold text-paper">{page.page}</p><p className="text-[11px] text-slate-light">{page.module} · {page.route}</p></td><td className="p-3 font-mono text-[11px] text-slate-light">{page.permission}</td>{overview.roles.map((role) => { const enabled = role.permissions.includes(page.permission); return <td key={role.id} className="p-3 text-center"><input type="checkbox" checked={enabled} disabled={saving === `${role.id}-${page.permission}`} onChange={(event) => void togglePermission(role.id, page.permission, event.target.checked)} /></td>; })}</tr>)}</tbody></table>
       </div>
       <div className="grid gap-3 xl:hidden">
-        {overview.page_access.map((page) => <div key={page.route} className="border border-ink-mid/70 p-3">
+        {overview.page_access.map((page) => <div key={`${page.route}|${page.permission}`} className="border border-ink-mid/70 p-3">
           <div className="mb-3">
             <p className="font-semibold text-paper">{page.page}</p>
             <p className="text-[11px] text-slate-light">{page.module} · {page.route}</p>
@@ -500,8 +500,20 @@ function ManagedAccountsTab({ overview, saving, createManagedAccount }: { overvi
     const preset = ACCESS_PRESETS.find((item) => item.id === presetId);
     if (!preset) return;
     const roleIds = visibleRoles.filter((role) => preset.roleHints.some((hint) => role.name.toUpperCase().includes(hint))).map((role) => role.id);
+    // Match module hints (e.g. "crm_leads") against the permission's exact
+    // top-level segment, and generic action hints (e.g. "read") against its
+    // exact final segment - loose substring matching here previously swept
+    // in unrelated permissions (e.g. "documents" matched "crm.documents.x",
+    // "read" matched almost every permission key in the catalog), which
+    // could select 70+ permissions for a single preset and exceed the
+    // backend's module_permissions limit on account creation.
     const selectedPermissions = permissions
-      .filter((permission) => preset.permissions.some((match) => permission.permission.toLowerCase().includes(match) || permission.module.toLowerCase().includes(match)))
+      .filter((permission) => {
+        const segments = permission.permission.toLowerCase().split(".");
+        const topSegment = segments[0];
+        const lastSegment = segments[segments.length - 1];
+        return preset.permissions.some((match) => match === topSegment || match === lastSegment);
+      })
       .map((permission) => permission.permission);
     setDraft((prev) => ({
       ...prev,

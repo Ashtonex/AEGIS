@@ -13,6 +13,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 import httpx
+import structlog
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
@@ -22,6 +23,8 @@ from core.database import get_db, supabase as supabase_admin
 from core.config import settings
 from core.security import require_permission
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql
+
+logger = structlog.get_logger()
 
 router = APIRouter()
 
@@ -100,7 +103,11 @@ class ManagedAccountEmployeePayload(Payload):
     job_title: Optional[str] = Field(default=None, max_length=100)
     phone: Optional[str] = Field(default=None, max_length=50)
     role_ids: list[UUID] = Field(default_factory=list, max_length=8)
-    module_permissions: list[str] = Field(default_factory=list, max_length=32)
+    # The permission catalog has 250+ granular keys (e.g. 36 under "crm."
+    # alone), so a module-scoped or read-only preset can legitimately select
+    # well beyond a couple dozen entries. This still bounds the payload
+    # defensively short of the full catalog size.
+    module_permissions: list[str] = Field(default_factory=list, max_length=120)
     access_level: AccessLevel = "viewer"
     portal_access: bool = True
 
@@ -166,15 +173,23 @@ PAGE_ACCESS = [
         "module": "Operations",
     },
     {
+        # Commercial Command (the CRM hub/landing page) loads opportunities
+        # as its primary dataset, matching how other hub pages (Workforce,
+        # Fleet, Finance, Procurement) are gated by their primary resource.
         "page": "CRM",
         "route": "/dashboard/crm",
-        "permission": "crm.read",
+        "permission": "crm.view_opportunities",
         "module": "Commercial",
     },
     {
+        # "crm.opportunities.read" exists in core.permissions but is never
+        # checked by any endpoint - GET /api/v1/crm/opportunities (the real
+        # handler behind this page) requires crm.view_opportunities. Both
+        # rows share that permission intentionally; a role that can see the
+        # opportunities pipeline can see it from either entry point.
         "page": "CRM opportunities",
         "route": "/dashboard/crm/opportunities",
-        "permission": "crm.opportunities.read",
+        "permission": "crm.view_opportunities",
         "module": "Commercial",
     },
     {
@@ -272,12 +287,6 @@ PAGE_ACCESS = [
         "route": "/dashboard/settings",
         "permission": "settings.read",
         "module": "Administration",
-    },
-    {
-        "page": "Website enquiries",
-        "route": "/dashboard/crm/inbox",
-        "permission": "website_enquiries.read",
-        "module": "Public website",
     },
     {
         "page": "Website content",
@@ -492,10 +501,26 @@ async def _create_invited_auth_user(
         },
     }
     try:
-        response = await asyncio.to_thread(
-            lambda: supabase_admin.auth.admin.create_user(payload)
+        response = await asyncio.wait_for(
+            asyncio.to_thread(lambda: supabase_admin.auth.admin.create_user(payload)),
+            timeout=15,
         )
+    except asyncio.TimeoutError as exc:
+        # A slow/unreachable Supabase Auth API is not the same failure as a
+        # genuine rejection (e.g. duplicate email) - reporting 503 lets the
+        # admin retry instead of assuming the account request itself was bad.
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
     except Exception as exc:
+        logger.error("managed_account.create_auth_user_failed", email=str(employee.email), error=str(exc))
+        message = str(exc).lower()
+        if "already" in message and ("registered" in message or "exists" in message):
+            raise HTTPException(
+                status_code=409,
+                detail=f"An account with email {employee.email} already exists.",
+            ) from exc
         raise HTTPException(
             status_code=502,
             detail="Supabase Auth could not create the provisioned user.",

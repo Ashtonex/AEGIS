@@ -135,7 +135,8 @@ async def resolve_portal_access(
             "meta": {},
         }
 
-    # 4. Client check
+    # 4. Client check - external accounts are confined to the client portal,
+    # never falling through to the internal dashboard below.
     if "CLIENT" in role_names:
         client_access = (
             await db.execute(
@@ -153,8 +154,12 @@ async def resolve_portal_access(
                 "message": "Client portal access confirmed.",
                 "meta": {},
             }
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not provisioned for the client portal.",
+        )
 
-    # 5. Supplier check
+    # 5. Supplier check - same confinement as clients.
     if "SUPPLIER" in role_names:
         supplier_access = (
             await db.execute(
@@ -172,6 +177,23 @@ async def resolve_portal_access(
                 "message": "Supplier portal access confirmed.",
                 "meta": {},
             }
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not provisioned for the supplier portal.",
+        )
+
+    # 6. Any other internal role (Executive (Admin), Finance Manager, Project
+    # Manager, and the rest of the functional/management role catalog) lands
+    # on the internal ERP dashboard. Only the external CLIENT/SUPPLIER roles
+    # and the site-team roles above are confined elsewhere - everyone else
+    # holding a real, organization-scoped role is internal staff.
+    if role_names:
+        return {
+            "success": True,
+            "data": {"portal": "employee", "destination": "/dashboard/executive"},
+            "message": "Internal portal access confirmed.",
+            "meta": {},
+        }
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,

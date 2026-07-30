@@ -7,7 +7,7 @@ from core.database import check_database_health
 from core.logging import logger, setup_logging
 from core.security import require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
-from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, website_enquiries, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export  # fmt: skip
+from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, procurement_orders, inventory_items, budgets, financial_performance, quotations, hr_records, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export  # fmt: skip
 
 
 def create_app() -> FastAPI:
@@ -103,7 +103,6 @@ def create_app() -> FastAPI:
     app.include_router(tender_bids.router, prefix="/api/v1/tender-bids", tags=["Tender Bids"], dependencies=[Depends(require_resource_permission("tender_bids"))])  # fmt: skip
     app.include_router(maintenance_schedules.router, prefix="/api/v1/maintenance-schedules", tags=["Maintenance Schedules"], dependencies=[Depends(require_resource_permission("maintenance_schedules"))])  # fmt: skip
     app.include_router(automated_reports.router, prefix="/api/v1/automated-reports", tags=["Automated Reports"], dependencies=[Depends(require_resource_permission("automated_reports"))])  # fmt: skip
-    app.include_router(website_enquiries.router, prefix="/api/v1/website-enquiries", tags=["Website Enquiries"], dependencies=[Depends(require_resource_permission("website_enquiries"))])  # fmt: skip
 
     app.include_router(executive.router, prefix="/api/v1/executive", tags=["Executive"])
     app.include_router(crm.router, prefix="/api/v1/crm", tags=["CRM"])

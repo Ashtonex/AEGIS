@@ -1570,10 +1570,6 @@ export async function updateMyProfile(payload: Record<string, unknown>): Promise
   return fetchApi<ApiResponse<any>>('/api/v1/profile/me', { method: 'PATCH', body: JSON.stringify(payload) });
 }
 
-export async function getWebsiteEnquiries(): Promise<ApiResponse<any[]>> {
-  return await fetchApi<ApiResponse<any[]>>('/api/v1/website-enquiries/', { cache: 'no-store' });
-}
-
 export async function getWorkforce(): Promise<ApiResponse<any[]>> {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/workforce/', { cache: 'no-store' });
 }

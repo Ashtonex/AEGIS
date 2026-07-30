@@ -15,7 +15,7 @@ class GeneratedRouterRbacContractTests(unittest.TestCase):
             "budgets financial_performance quotations hr_records compliance_items hse_incidents documents "
             "crm_contacts crm_organizations crm_activities crm_automations client_portal_tickets supplier_records "
             "internal_messages kpi_metrics bi_reports risk_register tender_bids maintenance_schedules "
-            "automated_reports website_enquiries"
+            "automated_reports"
         ).split()
         for resource in resources:
             pattern = rf"include_router\({resource}\.router,.*dependencies=\[Depends\(require_resource_permission\(\"{resource}\"\)\)\]"
