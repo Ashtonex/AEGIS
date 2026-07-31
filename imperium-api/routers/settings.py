@@ -229,9 +229,11 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        # "crm.campaigns.read" exists in core.permissions but is never
+        # checked - GET /api/v1/crm/campaigns requires crm.marketing.read.
         "page": "CRM campaigns",
         "route": "/dashboard/crm/campaigns",
-        "permission": "crm.campaigns.read",
+        "permission": "crm.marketing.read",
         "module": "Commercial",
     },
     {
@@ -277,9 +279,13 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        # "finance.cash.read" only gates the cash-accounts sub-resource.
+        # The Finance dashboard's primary data load - GET
+        # /api/v1/financial-performance/projects - requires
+        # finance.cost.read instead.
         "page": "Finance",
         "route": "/dashboard/finance",
-        "permission": "finance.cash.read",
+        "permission": "finance.cost.read",
         "module": "Finance",
     },
     {
