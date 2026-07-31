@@ -58,15 +58,24 @@ async def update_user(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Only allow users to update themselves, or admins to update anyone.
-    if (
-        str(id) != user["user_id"]
-        and user["role"] != "ADMIN"
-        and user["role"] != "SUPERADMIN"
-    ):
-        raise HTTPException(
-            status_code=403, detail="Not authorized to update this user."
+    # Only allow users to update themselves, or holders of users.update to
+    # update anyone. (Not gated via Depends(require_permission(...)) because
+    # the self-service case must be allowed regardless of that permission.)
+    if str(id) != user["user_id"] and user["role"] != "SUPERADMIN":
+        has_permission = await db.execute(
+            text("""
+                SELECT 1 FROM core.permissions p
+                JOIN core.role_permissions rp ON p.id = rp.permission_id
+                JOIN core.user_roles ur ON rp.role_id = ur.role_id
+                JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
+                WHERE ur.user_id = :user_id AND ur.organization_id = :org_id AND p.key = 'users.update'
+            """),
+            {"user_id": user["user_id"], "org_id": user["org_id"]},
         )
+        if not has_permission.scalar():
+            raise HTTPException(
+                status_code=403, detail="Not authorized to update this user."
+            )
 
     if payload.is_active is not None and str(id) == user["user_id"]:
         raise HTTPException(
