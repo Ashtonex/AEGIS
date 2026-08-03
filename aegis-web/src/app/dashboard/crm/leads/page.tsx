@@ -8,7 +8,7 @@ import {
   Search, Eye, Linkedin, Inbox, Plus, Trash2, X, Copy, Check,
   Send, HelpCircle, CheckSquare, Sliders, ExternalLink, Lock,
   Filter, Globe, Database, UserCheck, RefreshCw, Layout, Smartphone,
-  UserPlus, HelpCircle as HelpIcon, MoreVertical
+  UserPlus, HelpCircle as HelpIcon, MoreVertical, UploadCloud
 } from 'lucide-react';
 import {
   getCrmLeads,
@@ -300,6 +300,13 @@ export default function CRMLeadsApp() {
             <Layout className="h-4 w-4 text-slate-400" />
             {viewMode === 'list' ? 'Kanban Board' : 'Table Feed'}
           </button>
+          <Link
+            href="/dashboard/crm/import"
+            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-white"
+          >
+            <UploadCloud className="h-4 w-4 text-slate-400" />
+            Import / Export
+          </Link>
           <button
             onClick={() => setIsManualModalOpen(true)}
             className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] transition text-white"

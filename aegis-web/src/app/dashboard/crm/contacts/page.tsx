@@ -4,9 +4,9 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { 
   ArrowLeft, Users, Mail, Phone, ExternalLink, Plus, Search, 
-  Linkedin, CheckCircle2, Loader2, MessageSquare, PlusSquare, 
+  Linkedin, CheckCircle2, Loader2, MessageSquare, PlusSquare,
   Calendar, FileText, CheckSquare, Bell, Clock, Building2,
-  Save, PhoneCall, Trash2, Edit2, AlertCircle
+  Save, PhoneCall, Trash2, Edit2, AlertCircle, UploadCloud
 } from 'lucide-react';
 import { 
   getCrmContacts, 
@@ -359,13 +359,22 @@ export default function ContactsRegistry() {
               <h1 className="font-sans font-black text-xl tracking-wide uppercase text-paper">Key Account Contacts</h1>
               <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase">Decision-Maker Directory & Interaction History</p>
             </div>
-            <button 
-              onClick={() => setIsContactModalOpen(true)}
-              className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>ADD NEW CONTACT</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/dashboard/crm/import"
+                className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>IMPORT / EXPORT</span>
+              </Link>
+              <button
+                onClick={() => setIsContactModalOpen(true)}
+                className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>ADD NEW CONTACT</span>
+              </button>
+            </div>
           </div>
         </header>
 

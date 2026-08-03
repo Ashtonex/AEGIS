@@ -6,7 +6,7 @@ import {
   ArrowLeft, Building2, ExternalLink, Phone, Mail, Plus, 
   Search, Filter, ShieldAlert, DollarSign, GitBranch, 
   ChevronDown, ChevronRight, Loader2, CheckCircle2, Globe, MapPin,
-  MessageSquare, Clock, PlusSquare, FileText, UserPlus, AlertCircle, Save
+  MessageSquare, Clock, PlusSquare, FileText, UserPlus, AlertCircle, Save, UploadCloud
 } from 'lucide-react';
 import { 
   getCrmOrganizations, 
@@ -409,13 +409,22 @@ export default function ClientOrganizationsRegistry() {
               <h1 className="font-sans font-black text-xl tracking-wide uppercase text-paper">Organizations & Corporate Accounts</h1>
               <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase">Structured Account Tree, Credit Limit & Risk Telemetry</p>
             </div>
-            <button 
-              onClick={() => setIsModalOpen(true)}
-              className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>REGISTER ACCOUNT</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/dashboard/crm/import"
+                className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>IMPORT / EXPORT</span>
+              </Link>
+              <button
+                onClick={() => setIsModalOpen(true)}
+                className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>REGISTER ACCOUNT</span>
+              </button>
+            </div>
           </div>
         </header>
 

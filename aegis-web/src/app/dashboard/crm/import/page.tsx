@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import {
-  UploadCloud, Check, AlertTriangle, ArrowRight,
+  UploadCloud, Check, AlertTriangle, ArrowRight, ArrowLeft,
   RefreshCw, ChevronRight, Download
 } from 'lucide-react';
 import { importCrmCsv, importCrmVCard, downloadCrmCsvExport, getCrmContacts, getCrmLeads, getCrmOrganizations } from '@/lib/api';
@@ -150,6 +150,9 @@ export default function ImportExportPage() {
     <main className="min-h-screen bg-[#0A0D14] text-[#E2E8F0] p-4 lg:p-8 font-sans">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-[#1E293B] pb-6 mb-6">
         <div>
+          <Link href="/dashboard/crm" className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-slate-400 hover:text-[#3B82F6] mb-2">
+            <ArrowLeft className="h-4 w-4" /> Back to CRM
+          </Link>
           <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
             <UploadCloud className="h-6 w-6 text-[#3B82F6]" />
             CSV / vCard Database Import
