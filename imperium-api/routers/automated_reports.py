@@ -62,7 +62,7 @@ async def _report_evidence_snapshot(
                 """
                 SELECT COUNT(*) FROM projects.daily_site_reports
                 WHERE organization_id=:org_id
-                  AND (:project_id IS NULL OR project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR project_id::text = CAST(:project_id AS text))
                   AND report_date BETWEEN :start_date AND :end_date
                   AND is_deleted=false
             """,
@@ -74,7 +74,7 @@ async def _report_evidence_snapshot(
                 SELECT COUNT(*) FROM projects.daily_report_labour l
                 JOIN projects.daily_site_reports r ON r.id=l.report_id AND r.organization_id=l.organization_id
                 WHERE l.organization_id=:org_id
-                  AND (:project_id IS NULL OR r.project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR r.project_id::text = CAST(:project_id AS text))
                   AND r.report_date BETWEEN :start_date AND :end_date
             """,
                 params,
@@ -85,7 +85,7 @@ async def _report_evidence_snapshot(
                 SELECT COUNT(*) FROM projects.daily_report_equipment e
                 JOIN projects.daily_site_reports r ON r.id=e.report_id AND r.organization_id=e.organization_id
                 WHERE e.organization_id=:org_id
-                  AND (:project_id IS NULL OR r.project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR r.project_id::text = CAST(:project_id AS text))
                   AND r.report_date BETWEEN :start_date AND :end_date
             """,
                 params,
@@ -96,7 +96,7 @@ async def _report_evidence_snapshot(
                 SELECT COUNT(*) FROM projects.daily_report_materials m
                 JOIN projects.daily_site_reports r ON r.id=m.report_id AND r.organization_id=m.organization_id
                 WHERE m.organization_id=:org_id
-                  AND (:project_id IS NULL OR r.project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR r.project_id::text = CAST(:project_id AS text))
                   AND r.report_date BETWEEN :start_date AND :end_date
             """,
                 params,
@@ -106,7 +106,7 @@ async def _report_evidence_snapshot(
                 """
                 SELECT COUNT(*) FROM procurement.purchase_orders
                 WHERE organization_id=:org_id
-                  AND (:project_id IS NULL OR project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR project_id::text = CAST(:project_id AS text))
                   AND created_at::date BETWEEN :start_date AND :end_date
                   AND is_deleted=false
             """,
@@ -117,7 +117,7 @@ async def _report_evidence_snapshot(
                 """
                 SELECT COUNT(*) FROM procurement.supplier_invoices
                 WHERE organization_id=:org_id
-                  AND (:project_id IS NULL OR project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR project_id::text = CAST(:project_id AS text))
                   AND invoice_date BETWEEN :start_date AND :end_date
                   AND is_deleted=false
             """,
@@ -128,7 +128,7 @@ async def _report_evidence_snapshot(
                 """
                 SELECT COUNT(*) FROM finance.cost_transactions
                 WHERE organization_id=:org_id
-                  AND (:project_id IS NULL OR project_id::text = :project_id)
+                  AND (CAST(:project_id AS text) IS NULL OR project_id::text = CAST(:project_id AS text))
                   AND transaction_date BETWEEN :start_date AND :end_date
             """,
                 params,

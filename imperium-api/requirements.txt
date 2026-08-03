@@ -41,6 +41,7 @@ pillow==12.3.0              # Image support for document rendering
 defusedxml==0.7.1           # Safe XML parsing for office/document payloads
 bleach==6.4.0               # Controlled rich-text sanitisation where accepted
 puremagic==1.30             # Windows-compatible file signature detection
+ezdxf==1.4.2                # DXF (CAD) drawing parsing for drawing takeoff
 
 # --- SECURITY & AUTHENTICATION ---
 cryptography==49.0.0        # Cryptographic primitives

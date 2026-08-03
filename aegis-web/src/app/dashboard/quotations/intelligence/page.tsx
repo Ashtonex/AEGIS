@@ -62,6 +62,7 @@ export default function QuotationIntelligencePage() {
   const [docRevision, setDocRevision] = useState("R2");
   const [docOrigCost, setDocOrigCost] = useState(100000);
   const [docRevisedCost, setDocRevisedCost] = useState(118400);
+  const [docContractValue, setDocContractValue] = useState(130000);
   const [docResult, setDocResult] = useState<any>(null);
 
   // --- INITIAL DATA LOAD --- //
@@ -200,7 +201,7 @@ export default function QuotationIntelligencePage() {
         original_direct_cost: docOrigCost,
         revised_direct_cost: docRevisedCost,
         current_margin_pct: profitRatePct,
-        contract_value: 135000,
+        contract_value: docContractValue,
       };
       const res = await watchDocumentRevision(payload);
       if (res.success) {
@@ -209,7 +210,7 @@ export default function QuotationIntelligencePage() {
     } catch (err: any) {
       setErrorMsg(err?.message || "Document watch evaluation failed.");
     }
-  }, [docName, docRevision, docOrigCost, docRevisedCost, profitRatePct]);
+  }, [docName, docRevision, docOrigCost, docRevisedCost, docContractValue, profitRatePct]);
 
   useEffect(() => {
     void handleEvaluateBrain();
@@ -1093,6 +1094,16 @@ export default function QuotationIntelligencePage() {
                     className="w-full bg-ink-light border border-ink-mid rounded p-2 text-white outline-none focus:border-signal"
                   />
                 </div>
+
+                <div>
+                  <label className="text-slate block mb-1">Contract Value ($)</label>
+                  <input
+                    type="number"
+                    value={docContractValue}
+                    onChange={(e) => setDocContractValue(Number(e.target.value))}
+                    className="w-full bg-ink-light border border-ink-mid rounded p-2 text-white outline-none focus:border-signal"
+                  />
+                </div>
               </div>
 
               <button
@@ -1130,7 +1141,11 @@ export default function QuotationIntelligencePage() {
 
                   <div>
                     <p className="text-slate uppercase text-[10px]">Revised Protected Margin</p>
-                    <p className="text-emerald-400 font-bold mt-1">{docResult.revised_margin_pct}%</p>
+                    <p className="text-emerald-400 font-bold mt-1">
+                      {docResult.revised_margin_pct === null || docResult.revised_margin_pct === undefined
+                        ? "N/A (no contract value)"
+                        : `${docResult.revised_margin_pct}%`}
+                    </p>
                   </div>
                 </div>
 

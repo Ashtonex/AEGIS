@@ -24,18 +24,24 @@ class BOQImportResult:
 
 class BOQImporter:
     @staticmethod
-    def _sanitize_decimal(val: Any) -> Decimal:
+    def _sanitize_decimal(val: Any) -> tuple[Decimal, bool]:
+        """Returns (value, parse_failed). parse_failed is only True when the
+        cell had content that wasn't a valid number - never for a genuinely
+        empty/NaN cell, so callers can warn without flagging every blank cell."""
         if pd.isna(val) or val is None:
-            return Decimal("0")
+            return Decimal("0"), False
         try:
             # Strip formatting characters like currency symbols or commas
             clean_str = str(val).replace("$", "").replace(",", "").strip()
+            # Accounting-style negatives, e.g. "(1,234.56)" -> -1234.56
+            if clean_str.startswith("(") and clean_str.endswith(")"):
+                clean_str = "-" + clean_str[1:-1]
             d = Decimal(clean_str)
             if d.is_nan():
-                return Decimal("0")
-            return d
+                return Decimal("0"), True
+            return d, False
         except Exception:
-            return Decimal("0")
+            return Decimal("0"), True
 
     @classmethod
     def import_boq(cls, file_content: bytes, file_extension: str) -> BOQImportResult:
@@ -119,9 +125,14 @@ class BOQImporter:
                 warnings.append(f"Row {idx + 1}: Empty description, skipping row.")
                 continue
 
-            qty = cls._sanitize_decimal(raw_qty)
+            qty, qty_parse_failed = cls._sanitize_decimal(raw_qty)
             unit = str(raw_unit).strip() if not pd.isna(raw_unit) else "item"
-            rate = cls._sanitize_decimal(raw_rate)
+            rate, rate_parse_failed = cls._sanitize_decimal(raw_rate)
+
+            if qty_parse_failed:
+                warnings.append(f"Row {idx + 1}: Could not parse quantity '{raw_qty}' as a number; treated as 0.")
+            if rate_parse_failed:
+                warnings.append(f"Row {idx + 1}: Could not parse rate '{raw_rate}' as a number; treated as 0.")
 
             if qty < 0:
                 warnings.append(f"Row {idx + 1}: Negative quantity ({qty}) set to 0.")

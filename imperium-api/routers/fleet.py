@@ -782,7 +782,7 @@ async def decide_defect(
 ):
     row = await db.execute(
         text("""UPDATE fleet.fleet_defects SET status=:status,resolution_notes=:resolution_notes,
-        resolved_at=CASE WHEN :status='resolved' THEN NOW() ELSE NULL END,resolved_by=CASE WHEN :status='resolved' THEN :user_id ELSE NULL END,updated_at=NOW()
+        resolved_at=CASE WHEN :status='resolved' THEN NOW() ELSE NULL END,resolved_by=CASE WHEN :status='resolved' THEN CAST(:user_id AS uuid) ELSE NULL END,updated_at=NOW()
         WHERE id=:id AND organization_id=:org_id AND is_deleted=false AND status <> 'resolved' RETURNING id"""),
         {
             **payload.model_dump(),
@@ -860,7 +860,7 @@ async def decide_work_order(
         project_id=COALESCE(project_id, :project_id),
         started_at=CASE WHEN CAST(:status AS varchar)='in_progress' THEN COALESCE(started_at,NOW()) ELSE started_at END,
         completed_at=CASE WHEN CAST(:status AS varchar)='completed' THEN NOW() ELSE completed_at END,
-        completed_by=CASE WHEN CAST(:status AS varchar)='completed' THEN :user_id ELSE completed_by END,updated_at=NOW()
+        completed_by=CASE WHEN CAST(:status AS varchar)='completed' THEN CAST(:user_id AS uuid) ELSE completed_by END,updated_at=NOW()
         WHERE id=:id AND organization_id=:org_id AND is_deleted=false AND status NOT IN ('completed','cancelled') RETURNING id"""),
         {
             **payload.model_dump(),

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -32,9 +33,16 @@ from app.services.quotations.intelligence_engine import (
     RATE_BENCHMARKS,
 )
 from app.shared.events import emit_role_notification
+from app.services.finance.project_forecast import (
+    check_and_alert_margin_threat,
+    refresh_project_forecast,
+    seed_project_budget_from_quotation,
+)
+from routers.sop_compliance import get_missing_required_sops
 from core.config import settings
 from core.database import get_db
-from core.security import SUPERADMIN_ROLE, get_current_user, require_permission
+from core.idempotency import begin_idempotent_request, complete_idempotent_request, fail_idempotent_request
+from core.security import SUPERADMIN_ROLE, get_current_user, is_self_certification, require_permission
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -42,6 +50,13 @@ from app.shared.sql import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# Real org roles for high-severity commercial/margin alerts. There is no "MD",
+# "COMMERCIAL_MANAGER", or bare "EXECUTIVE" role in this org's role catalog -
+# emit_role_notification matches role names exactly, so those strings resolve
+# to zero recipients.
+COMMERCIAL_ALERT_ROLES = ["Executive (Admin)", "Finance Manager", SUPERADMIN_ROLE]
 
 """
 Module: quotations
@@ -121,7 +136,10 @@ async def _persist_commercial_baseline(
                 },
             )
         except Exception:
-            pass
+            logger.exception(
+                "Failed to sync contract_value for project %s from baseline %s",
+                project_id, baseline_id,
+            )
 
     return baseline_id
 
@@ -347,7 +365,7 @@ async def evaluate_quotation_intelligence(
             await emit_role_notification(
                 db,
                 org_id=user["org_id"],
-                role_names=["MD", "COMMERCIAL_MANAGER", "EXECUTIVE", SUPERADMIN_ROLE],
+                role_names=COMMERCIAL_ALERT_ROLES,
                 title="CCB flagged a high-risk quotation",
                 message=f"{result.get('project_title', 'Quotation')} scored {result['worthiness_score']}/100 — {result['recommendation']}",
                 notification_type="ccb_evaluation",
@@ -484,8 +502,8 @@ async def list_commercial_baselines(
         """
         SELECT * FROM finance.project_commercial_baselines
         WHERE organization_id = :org_id AND is_deleted = false
-          AND (:quotation_id IS NULL OR quotation_id = :quotation_id)
-          AND (:project_id IS NULL OR project_id = :project_id)
+          AND (CAST(:quotation_id AS varchar) IS NULL OR quotation_id = CAST(:quotation_id AS varchar))
+          AND (CAST(:project_id AS varchar) IS NULL OR project_id = CAST(:project_id AS varchar))
         ORDER BY created_at DESC
         LIMIT 20
         """
@@ -534,7 +552,7 @@ async def save_commercial_override(
     """
     quotation_id = payload.get("quotation_id")
     flag_title = payload.get("flag_title", "Commercial Risk Flag")
-    approver_role = user.get("role") or "MD"
+    approver_role = user.get("role") or "Unknown"
     baseline_id = payload.get("baseline_id")
     notes = payload.get("notes", "Approved under commercial discretion.")
 
@@ -572,6 +590,14 @@ async def save_commercial_override(
             await db.commit()
         except Exception:
             await db.rollback()
+            logger.exception(
+                "Failed to persist CCB override for quotation %s (flag: %s)",
+                quotation_id, flag_title,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save the commercial override. It was not recorded.",
+            )
 
     return {
         "success": True,
@@ -622,7 +648,7 @@ async def get_recommended_subcontractors(
     return {
         "success": True,
         "data": vendors,
-        "message": "Recommended subcontractor vendors loaded.",
+        "message": "Recommended subcontractor vendors loaded." if vendors else f"No pre-vetted vendors on file for category '{category}'.",
         "meta": {"total": len(vendors)},
     }
 
@@ -1006,7 +1032,7 @@ async def audit_site_request(
             await emit_role_notification(
                 db,
                 org_id=user["org_id"],
-                role_names=["MD", "COMMERCIAL_MANAGER", "EXECUTIVE", SUPERADMIN_ROLE],
+                role_names=COMMERCIAL_ALERT_ROLES,
                 title=f"Commercial Guard flagged a {audit['risk_level'].lower()}-risk site request",
                 message=f"{requester_name}: {item} — {audit['anomaly_reason']}",
                 notification_type="commercial_guard",
@@ -1015,16 +1041,31 @@ async def audit_site_request(
             )
 
         await db.commit()
+        persistence_failed = False
     except Exception:
         await db.rollback()
+        logger.exception(
+            "Failed to persist commercial guard audit for requester %s, item %s (risk_level=%s)",
+            requester_id, item, audit.get("risk_level"),
+        )
         audit_id = None
         investigation_case_id = None
+        persistence_failed = True
 
     return {
         "success": True,
         "data": jsonable_encoder(audit),
-        "message": "Commercial guard audit complete.",
-        "meta": {"user_id": user["user_id"], "audit_id": audit_id, "investigation_case_id": investigation_case_id},
+        "message": (
+            "Commercial guard audit complete."
+            if not persistence_failed
+            else "Commercial guard audit complete, but the evidence log entry FAILED TO SAVE — this finding is not recorded."
+        ),
+        "meta": {
+            "user_id": user["user_id"],
+            "audit_id": audit_id,
+            "investigation_case_id": investigation_case_id,
+            "persistence_failed": persistence_failed,
+        },
     }
 
 
@@ -1039,7 +1080,7 @@ async def list_guard_audits(
         """
         SELECT * FROM finance.commercial_guard_audits
         WHERE organization_id = :org_id
-          AND (:project_id IS NULL OR project_id = :project_id)
+          AND (CAST(:project_id AS varchar) IS NULL OR project_id = CAST(:project_id AS varchar))
         ORDER BY created_at DESC
         LIMIT 50
         """
@@ -1114,7 +1155,7 @@ async def watch_document_revision(
             await emit_role_notification(
                 db,
                 org_id=user["org_id"],
-                role_names=["MD", "COMMERCIAL_MANAGER", "EXECUTIVE", SUPERADMIN_ROLE],
+                role_names=COMMERCIAL_ALERT_ROLES,
                 title="Document revision requires MD approval",
                 message=f"{doc_name} ({rev}): {result['governance_note']}",
                 notification_type="document_watcher",
@@ -1124,15 +1165,25 @@ async def watch_document_revision(
             )
 
         await db.commit()
+        persistence_failed = False
     except Exception:
         await db.rollback()
+        logger.exception(
+            "Failed to persist document change log for %s rev %s (approval_level=%s)",
+            doc_name, rev, result.get("approval_level_required"),
+        )
         change_id = None
+        persistence_failed = True
 
     return {
         "success": True,
         "data": jsonable_encoder(result),
-        "message": "Document revision commercial impact analyzed.",
-        "meta": {"user_id": user["user_id"], "change_id": change_id},
+        "message": (
+            "Document revision commercial impact analyzed."
+            if not persistence_failed
+            else "Document revision analyzed, but the change log entry FAILED TO SAVE — this review is not recorded."
+        ),
+        "meta": {"user_id": user["user_id"], "change_id": change_id, "persistence_failed": persistence_failed},
     }
 
 
@@ -1147,7 +1198,7 @@ async def list_document_changes(
         """
         SELECT * FROM finance.document_change_logs
         WHERE organization_id = :org_id
-          AND (:project_id IS NULL OR project_id = :project_id)
+          AND (CAST(:project_id AS varchar) IS NULL OR project_id = CAST(:project_id AS varchar))
         ORDER BY created_at DESC
         LIMIT 50
         """
@@ -1162,26 +1213,57 @@ async def list_document_changes(
     }
 
 
+_LIST_SORT_COLUMNS = {
+    "created_at": "created_at",
+    "client_name": "client_name",
+    "status": "status",
+    "quote_amount": "quote_amount",
+}
+
+
 @router.get("/")
 async def list_items(
-    user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    limit: int = 50,
+    offset: int = 0,
+    status: Optional[str] = None,
+    sort_by: str = "created_at",
+    sort_dir: str = "desc",
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     # Fetch active records scoped to the user's organization
-    query = text("""
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    sort_column = _LIST_SORT_COLUMNS.get(sort_by, "created_at")
+    sort_direction = "ASC" if sort_dir.lower() == "asc" else "DESC"
+
+    filters = "organization_id = :org_id AND is_deleted = false"
+    params: Dict[str, Any] = {"org_id": user["org_id"]}
+    if status:
+        filters += " AND status = :status"
+        params["status"] = status
+
+    total = (
+        await db.execute(
+            text(f"SELECT COUNT(*) FROM finance.quotations WHERE {filters}"), params
+        )
+    ).scalar()
+
+    query = text(f"""
         SELECT *
         FROM finance.quotations
-        WHERE organization_id = :org_id AND is_deleted = false
-        ORDER BY created_at DESC
-        LIMIT 100
+        WHERE {filters}
+        ORDER BY {sort_column} {sort_direction} NULLS LAST
+        LIMIT :limit OFFSET :offset
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {**params, "limit": limit, "offset": offset})
     items = [dict(row._mapping) for row in result]
 
     return {
         "success": True,
         "data": items,
         "message": "quotations listed.",
-        "meta": {"total": len(items)},
+        "meta": {"total": total, "limit": limit, "offset": offset},
     }
 
 
@@ -1192,12 +1274,23 @@ async def create_item(
     db: AsyncSession = Depends(get_db),
 ):
     payload = await request.json()
+    idempotency_key = request.headers.get("Idempotency-Key")
+    endpoint = "POST /quotations"
+
+    if idempotency_key:
+        cached = await begin_idempotent_request(
+            db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint, request_body=payload,
+        )
+        if cached is not None:
+            return cached
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
     safe_keys = safe_payload_columns(payload.keys())
 
     if not safe_keys:
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
         raise HTTPException(status_code=400, detail="Empty or invalid payload.")
 
     # dict/list values (e.g. metadata) bind to jsonb columns; asyncpg's jsonb codec
@@ -1216,7 +1309,7 @@ async def create_item(
         result = await db.execute(query, params)
         await db.commit()
         new_id = str(result.scalar())
-        return {
+        response = {
             "success": True,
             "data": {"id": new_id},
             "message": "quotations created.",
@@ -1224,7 +1317,16 @@ async def create_item(
         }
     except Exception as e:
         await db.rollback()
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    if idempotency_key:
+        await complete_idempotent_request(
+            db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint,
+            response_status=200, response_body=response,
+        )
+    return response
 
 
 @router.get("/{item_id}")
@@ -1249,6 +1351,68 @@ async def get_item(
         "data": dict(item._mapping),
         "message": "quotations retrieved.",
         "meta": {},
+    }
+
+
+_HISTORY_TRACKED_FIELDS = ["client_name", "quote_amount", "status", "project_id", "is_deleted"]
+
+
+@router.get("/{item_id}/history")
+async def get_quotation_history(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Surfaces the database-level audit trail (core.audit_log, populated by
+    the core.process_audit_log() trigger on every INSERT/UPDATE/DELETE) for a
+    single quotation - who changed what, when. Every write to
+    finance.quotations was already being captured; this just makes it
+    visible instead of leaving it a silent, unread table."""
+    owns_record = (
+        await db.execute(
+            text("SELECT id FROM finance.quotations WHERE id = :item_id AND organization_id = :org_id"),
+            {"item_id": item_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if not owns_record:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    rows = (
+        await db.execute(
+            text("""
+                SELECT a.id, a.action, a.old_data, a.new_data, a.created_at,
+                       u.full_name AS actor_name, u.email AS actor_email
+                FROM core.audit_log a
+                LEFT JOIN core.users u ON u.id = a.created_by
+                WHERE a.table_name = 'finance.quotations' AND a.record_id = CAST(:item_id AS uuid)
+                ORDER BY a.created_at DESC
+            """),
+            {"item_id": item_id},
+        )
+    ).mappings().all()
+
+    events = []
+    for row in rows:
+        old_data = row["old_data"] or {}
+        new_data = row["new_data"] or {}
+        changed_fields = [
+            f for f in _HISTORY_TRACKED_FIELDS
+            if str(old_data.get(f)) != str(new_data.get(f))
+        ] if row["action"] == "UPDATE" else []
+        events.append({
+            "id": str(row["id"]),
+            "action": row["action"],
+            "changed_fields": changed_fields,
+            "created_at": row["created_at"],
+            "actor_name": row["actor_name"],
+            "actor_email": row["actor_email"],
+        })
+
+    return {
+        "success": True,
+        "data": events,
+        "message": "Quotation history retrieved.",
+        "meta": {"total": len(events)},
     }
 
 
@@ -1324,7 +1488,166 @@ async def delete_item(
     }
 
 
+def _sum_buildup_by_type(item: Dict[str, Any], component_type: str) -> float:
+    return sum(
+        (float(b.get("qty", 0)) or 0) * (float(b.get("rate", 0)) or 0)
+        for b in (item.get("buildup") or [])
+        if b.get("type") == component_type
+    )
 
 
+@router.post("/{item_id}/decision")
+async def decide_quotation(
+    item_id: str,
+    payload: Dict[str, Any],
+    request: Request,
+    user: dict = Depends(require_permission("quotations.decide")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Marks a quotation as won or lost. Winning a quotation that is linked
+    to a project seeds that project's execution budget from the quotation's
+    own cost calculation, and takes an initial forecast snapshot - bridging
+    the CCB's projected numbers into the real budget-vs-actual tracking
+    instead of the two remaining disconnected systems.
 
+    Two controls gate a WIN specifically: the quotation's own author cannot
+    be the one to close it (self-certification is not a control), and every
+    SOP checklist flagged blocks_quotation_win must be complete first."""
+    decision = str(payload.get("status", "")).lower()
+    if decision not in ("won", "lost"):
+        raise HTTPException(status_code=400, detail="status must be 'won' or 'lost'.")
 
+    idempotency_key = request.headers.get("Idempotency-Key")
+    endpoint = f"POST /quotations/{item_id}/decision"
+    if idempotency_key:
+        cached = await begin_idempotent_request(
+            db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint, request_body=payload,
+        )
+        if cached is not None:
+            return cached
+
+    budget_id = None
+    forecast_metrics = None
+    alert_raised = False
+
+    try:
+        row = (
+            await db.execute(
+                text("""
+                    SELECT id, project_id, metadata, client_name, created_by
+                    FROM finance.quotations
+                    WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+                """),
+                {"item_id": item_id, "org_id": user["org_id"]},
+            )
+        ).first()
+        if not row:
+            raise HTTPException(status_code=404, detail="Quotation not found.")
+
+        quotation = dict(row._mapping)
+
+        if decision == "won" and user.get("role") != SUPERADMIN_ROLE:
+            if is_self_certification(user["sub"], quotation.get("created_by")):
+                raise HTTPException(
+                    status_code=403,
+                    detail="You authored this quotation and cannot also be the one to mark it won - get an independent commercial sign-off.",
+                )
+            missing_sops = await get_missing_required_sops(db, user["org_id"], item_id)
+            if missing_sops:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot mark this quotation won - required SOP checklist(s) not yet complete: {', '.join(missing_sops)}.",
+                )
+
+        metadata = quotation.get("metadata") or {}
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        metadata["status"] = decision
+        if payload.get("notes"):
+            metadata["decision_notes"] = payload["notes"]
+
+        await db.execute(
+            text("""
+                UPDATE finance.quotations
+                SET status = :status, metadata = CAST(:metadata AS jsonb), updated_at = NOW()
+                WHERE id = :item_id AND organization_id = :org_id
+            """),
+            {
+                "status": decision,
+                "metadata": json.dumps(metadata, default=str),
+                "item_id": item_id,
+                "org_id": user["org_id"],
+            },
+        )
+
+        if decision == "won" and quotation.get("project_id"):
+            calc_input = {
+                "quotation_id": item_id,
+                "preliminaries": metadata.get("preliminaries", 0),
+                "overhead_rate": float(metadata.get("overhead_pct", 0) or 0) / 100.0,
+                "contingency_rate": float(metadata.get("contingency_pct", 0) or 0) / 100.0,
+                "profit_rate": float(metadata.get("profit_pct", 0) or 0) / 100.0,
+                "discount": metadata.get("discount", 0),
+                "tax_rate": 0.15 if metadata.get("apply_vat") else 0,
+                "provisional_sums": metadata.get("provisional_sums", 0),
+                "built_area_sqm": metadata.get("built_area_sqm", 0),
+                "items": [
+                    {
+                        "description": it.get("description"),
+                        "quantity": it.get("qty"),
+                        "unit": it.get("unit"),
+                        "rate": it.get("rate"),
+                        "material_rate": _sum_buildup_by_type(it, "material"),
+                        "labour_rate": _sum_buildup_by_type(it, "labour"),
+                        "equipment_rate": _sum_buildup_by_type(it, "equipment"),
+                        "subcontractor_rate": _sum_buildup_by_type(it, "subcontractor"),
+                    }
+                    for it in (metadata.get("items") or [])
+                ],
+            }
+            calculation = QuotationCalculator.calculate(calc_input)
+            budget_id = await seed_project_budget_from_quotation(
+                db, user["org_id"], str(quotation["project_id"]), item_id, calculation, created_by=user["sub"],
+            )
+            forecast_metrics = await refresh_project_forecast(
+                db, user["org_id"], str(quotation["project_id"]), computed_by=user["sub"],
+            )
+            if forecast_metrics:
+                alert_raised = await check_and_alert_margin_threat(
+                    db, user["org_id"], str(quotation["project_id"]), forecast_metrics,
+                )
+
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
+        raise
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to record decision for quotation %s", item_id)
+        if idempotency_key:
+            await fail_idempotent_request(db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint)
+        raise HTTPException(status_code=500, detail="Failed to record the quotation decision.")
+
+    response = {
+        "success": True,
+        "data": {
+            "id": item_id,
+            "status": decision,
+            "budget_id": budget_id,
+            "forecast": forecast_metrics,
+            "margin_alert_raised": alert_raised,
+        },
+        "message": f"Quotation marked as {decision}." + (
+            " Project execution budget seeded from this quotation." if budget_id else ""
+        ),
+        "meta": {"user_id": user["user_id"]},
+    }
+
+    if idempotency_key:
+        await complete_idempotent_request(
+            db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint,
+            response_status=200, response_body=response,
+        )
+    return response

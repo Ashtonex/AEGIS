@@ -477,7 +477,18 @@ class RateIntelligenceEngine:
 
         if is_outlier:
             status = "OUTLIER_HIGH"
-            rec = f"WARNING: Proposed rate of ${rate:.2f} is {variance_vs_last_po:+.1f}% above historical PO rate (${last_po:.2f}). Negotiate or require Commercial Manager approval."
+            triggered_by_last_po = variance_vs_last_po > 15.0
+            triggered_by_target = variance_vs_target > 20.0
+            if triggered_by_last_po and triggered_by_target:
+                rec = (
+                    f"WARNING: Proposed rate of ${rate:.2f} is {variance_vs_last_po:+.1f}% above historical PO rate "
+                    f"(${last_po:.2f}) and {variance_vs_target:+.1f}% above target rate (${target:.2f}). "
+                    "Negotiate or require Commercial Manager approval."
+                )
+            elif triggered_by_last_po:
+                rec = f"WARNING: Proposed rate of ${rate:.2f} is {variance_vs_last_po:+.1f}% above historical PO rate (${last_po:.2f}). Negotiate or require Commercial Manager approval."
+            else:
+                rec = f"WARNING: Proposed rate of ${rate:.2f} is {variance_vs_target:+.1f}% above target rate (${target:.2f}). Negotiate or require Commercial Manager approval."
         elif variance_vs_last_po < -10.0:
             status = "BELOW_MARKET"
             rec = f"NOTE: Proposed rate of ${rate:.2f} is {abs(variance_vs_last_po):.1f}% below market. Verify supplier quality/scope inclusions."
@@ -507,6 +518,13 @@ class RateIntelligenceEngine:
 # -----------------------------------------------------------------------------
 
 class SpendForecaster:
+    # Weekly wage assumptions for converting labour $ spend into headcount,
+    # derived from the artisan/labourer hourly rates used across
+    # DEFAULT_ASSEMBLIES.labour_gang (~$14/hr artisan, ~$6/hr labourer, 45hr week).
+    _AVG_WEEKLY_ARTISAN_WAGE = 630.0
+    _AVG_WEEKLY_LABOURER_WAGE = 270.0
+    _ARTISAN_SHARE_OF_LABOUR_SPEND = 0.4
+
     @staticmethod
     def generate_forecast(
         boq_items: List[Dict[str, Any]],
@@ -546,10 +564,15 @@ class SpendForecaster:
         contingency_amt = total_direct * (contingency_pct / 100.0)
         profit_amt = (total_direct + contingency_amt) * (profit_margin_pct / 100.0)
         grand_selling_price = total_direct + contingency_amt + profit_amt
+        # Overall cost-to-selling-price ratio, used below so the monthly billing
+        # projection agrees with the same contingency/profit rates the caller passed in
+        # (previously hardcoded to *1.18 regardless of the actual rates).
+        billing_multiplier = (grand_selling_price / total_direct) if total_direct > 0 else 1.0
 
         # Generate weekly S-Curve spend distribution (Cumulative beta/logistic profile)
         weekly_cost_plan = []
         monthly_cashflow_map: Dict[str, float] = {}
+        labour_histogram = []
         cum_spend = 0.0
 
         for w in range(1, weeks + 1):
@@ -580,16 +603,22 @@ class SpendForecaster:
                 "earned_value_target": round(cum_spend * (1.0 + (profit_margin_pct / 100.0)), 2)
             })
 
+            # Headcount derived from this week's actual labour $ spend, not from
+            # the week index - a $10M project and a $10K project no longer produce
+            # identical histograms.
+            artisan_spend = week_lab * SpendForecaster._ARTISAN_SHARE_OF_LABOUR_SPEND
+            labourer_spend = week_lab * (1.0 - SpendForecaster._ARTISAN_SHARE_OF_LABOUR_SPEND)
+            labour_histogram.append({
+                "week": w,
+                "artisans_count": max(0, round(artisan_spend / SpendForecaster._AVG_WEEKLY_ARTISAN_WAGE)),
+                "labourers_count": max(0, round(labourer_spend / SpendForecaster._AVG_WEEKLY_LABOURER_WAGE)),
+            })
+
         daily_cost = total_direct / (weeks * 5) if weeks > 0 else 0.0
 
         monthly_cashflow = [
-            {"month": m, "projected_spend": round(val, 2), "expected_billing": round(val * 1.18, 2)}
+            {"month": m, "projected_spend": round(val, 2), "expected_billing": round(val * billing_multiplier, 2)}
             for m, val in monthly_cashflow_map.items()
-        ]
-
-        labour_histogram = [
-            {"week": w, "artisans_count": int(round(4 + (w % 3) * 2)), "labourers_count": int(round(8 + (w % 4) * 3))}
-            for w in range(1, weeks + 1)
         ]
 
         margin_at_risk_curve = [
@@ -627,7 +656,16 @@ class SpendForecaster:
 # 4. Commercial Guard & Anomaly Auditor ("BS Detector")
 # -----------------------------------------------------------------------------
 
+_RISK_SEVERITY_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+
 class CommercialGuard:
+    # Dollar value (not raw unit count) above which a zero-earned-progress
+    # request is treated as critical - a raw quantity threshold can't
+    # distinguish 100 bags of cement (routine bulk order) from 90 tons of
+    # rebar (a massive anomaly), since it ignores unit price entirely.
+    ZERO_PROGRESS_VALUE_THRESHOLD_USD = 1000.0
+
     @staticmethod
     def audit_request(
         requester_id: str,
@@ -638,11 +676,17 @@ class CommercialGuard:
         earned_quantity: float,
         unit_rate: float,
         historical_po_rate: Optional[float] = None,
-        allowed_wastage_pct: float = 5.0
+        allowed_wastage_pct: float = 5.0,
+        zero_progress_value_threshold_usd: Optional[float] = None,
     ) -> Dict[str, Any]:
         req_qty = float(requested_quantity)
         earned_qty = float(earned_quantity)
         rate = float(unit_rate)
+        value_threshold = (
+            zero_progress_value_threshold_usd
+            if zero_progress_value_threshold_usd is not None
+            else CommercialGuard.ZERO_PROGRESS_VALUE_THRESHOLD_USD
+        )
 
         # Theoretical allowable quantity with wastage
         theoretical_allowed = earned_qty * (1.0 + (allowed_wastage_pct / 100.0))
@@ -654,14 +698,23 @@ class CommercialGuard:
         risk_level = "LOW"
         recommended_action = "APPROVE"
 
+        def escalate(new_level: str, new_action: str) -> None:
+            # Rules run in a fixed order below; this guarantees whichever rule
+            # found the MOST severe issue wins, regardless of rule order -
+            # a later rule finding a milder issue can never silently downgrade
+            # an earlier, more severe finding.
+            nonlocal risk_level, recommended_action
+            if _RISK_SEVERITY_ORDER[new_level] > _RISK_SEVERITY_ORDER[risk_level]:
+                risk_level = new_level
+                recommended_action = new_action
+
         # Rule 1: Quantity excess over earned baseline
         if overage_qty > 0 and variance_pct > 10.0:
             is_flagged = True
             anomaly_reasons.append(
                 f"EXCESS REQUEST: Requested {req_qty:.1f} units vs justified earned progress of {earned_qty:.1f} units (+{allowed_wastage_pct}% waste = {theoretical_allowed:.1f} max). Overage: {variance_pct:.1f}%."
             )
-            risk_level = "HIGH" if variance_pct > 30.0 else "MEDIUM"
-            recommended_action = "FLAG_FOR_QS_REVIEW"
+            escalate("HIGH" if variance_pct > 30.0 else "MEDIUM", "FLAG_FOR_QS_REVIEW")
 
         # Rule 2: Rate inflation vs historical PO
         if historical_po_rate and historical_po_rate > 0:
@@ -671,15 +724,16 @@ class CommercialGuard:
                 anomaly_reasons.append(
                     f"RATE INFLATION: Unit rate of ${rate:.2f} is {rate_variance:.1f}% higher than historical accepted PO rate (${historical_po_rate:.2f})."
                 )
-                risk_level = "HIGH"
-                recommended_action = "BLOCK_PURCHASE_AND_ESCALATE"
+                escalate("HIGH", "BLOCK_PURCHASE_AND_ESCALATE")
 
-        # Rule 3: Zero earned work but high material request
-        if earned_qty == 0.0 and req_qty > 100.0:
+        # Rule 3: Zero earned work but a financially significant material request
+        request_value = req_qty * rate
+        if earned_qty == 0.0 and request_value > value_threshold:
             is_flagged = True
-            anomaly_reasons.append("ZERO EARNED PROGRESS: Site request logged before work phase has commenced or earned progress registered.")
-            risk_level = "CRITICAL"
-            recommended_action = "FREEZE_USER_AND_INVESTIGATE"
+            anomaly_reasons.append(
+                f"ZERO EARNED PROGRESS: Site request valued at ${request_value:,.2f} logged before work phase has commenced or earned progress registered."
+            )
+            escalate("CRITICAL", "FREEZE_USER_AND_INVESTIGATE")
 
         status = "FLAGGED" if is_flagged else "CLEARED"
 
@@ -732,16 +786,22 @@ class DocumentWatcher:
         cost_delta = rev - orig
         contract = float(contract_value)
 
-        # Impact on profit margin
+        # Impact on profit margin. When contract_value is unset/zero, margin
+        # % genuinely cannot be assessed - previously this forced a phantom
+        # 0.0%, which reads as "margin wiped out" and would force MD approval
+        # on a cost DECREASE just because the contract value wasn't known yet.
+        margin_known = contract > 0
         revised_margin_dollars = (contract * (current_margin_pct / 100.0)) - cost_delta
-        revised_margin_pct = (revised_margin_dollars / contract) * 100.0 if contract > 0 else 0.0
+        revised_margin_pct = (revised_margin_dollars / contract) * 100.0 if margin_known else None
 
         margin_risk_dollars = max(0.0, cost_delta)
 
         # Approval Governance Logic
-        if cost_delta > 10000.0 or revised_margin_pct < 10.0:
+        margin_breached = margin_known and revised_margin_pct < 10.0
+        if cost_delta > 10000.0 or margin_breached:
             approval_level = "MD_APPROVAL_REQUIRED"
-            governance_note = f"CRITICAL SCOPE DRIFT: Cost increased by ${cost_delta:,.2f}. Protected margin drops to {revised_margin_pct:.1f}%. Managing Director approval mandatory before proceeding."
+            margin_note = f"Protected margin drops to {revised_margin_pct:.1f}%." if margin_known else "Contract value not set; margin impact could not be assessed."
+            governance_note = f"CRITICAL SCOPE DRIFT: Cost increased by ${cost_delta:,.2f}. {margin_note} Managing Director approval mandatory before proceeding."
         elif cost_delta > 2500.0:
             approval_level = "COMMERCIAL_QS_REVIEW"
             governance_note = f"COMMERCIAL REVIEW: Cost increased by ${cost_delta:,.2f}. Senior QS review required."
@@ -760,7 +820,7 @@ class DocumentWatcher:
             "cost_delta": round(cost_delta, 2),
             "margin_risk_dollars": round(margin_risk_dollars, 2),
             "original_margin_pct": current_margin_pct,
-            "revised_margin_pct": round(revised_margin_pct, 2),
+            "revised_margin_pct": round(revised_margin_pct, 2) if margin_known else None,
             "approval_level_required": approval_level,
             "governance_note": governance_note
         }
@@ -782,7 +842,9 @@ class QuotationBrain:
         boq_items = payload.get("items", [])
         duration_weeks = int(payload.get("project_duration_weeks", 12))
         target_margin_pct = float(payload.get("profit_rate", 0.15)) * 100.0 if float(payload.get("profit_rate", 0.15)) <= 1.0 else float(payload.get("profit_rate", 15.0))
-        built_area_sqm = float(payload.get("built_area_sqm", 250.0))
+        # No fabricated default here - an unset built_area_sqm means the $/m2
+        # benchmark is not applicable, not "assume 250 sqm" (see cost_per_sqm below).
+        built_area_sqm = float(payload.get("built_area_sqm", 0.0))
 
         # 1. Direct Cost Breakdown & Assembly Enrichment
         total_direct_costs = 0.0
@@ -824,7 +886,10 @@ class QuotationBrain:
         )
 
         # 3. Project Worthiness Scoring Algorithm (0 - 100)
-        # Criteria: Margin (>15% = +30pts), Rate Sanity (no outliers = +20pts), Cost/m2 benchmark (+20pts), Duration risk (+15pts), Contingency coverage (+15pts)
+        # Criteria actually implemented: Margin (>=15% = +25pts, >=10% = +15pts),
+        # Rate Sanity (no outliers = +20pts, else -5pts per outlier), Cost/m2
+        # benchmark within the 400-1800 band (+15pts, skipped entirely when no
+        # built_area_sqm was supplied - see sqm_benchmark_status below).
         score = 50
         if target_margin_pct >= 15.0:
             score += 25
@@ -836,15 +901,18 @@ class QuotationBrain:
         else:
             score -= (len(outlier_flags) * 5)
 
+        sqm_benchmark_status = "applicable" if built_area_sqm > 0 else "not_applicable"
         cost_per_sqm = (total_direct_costs / built_area_sqm) if built_area_sqm > 0 else 0.0
-        if 400.0 <= cost_per_sqm <= 1800.0:
+        if built_area_sqm > 0 and 400.0 <= cost_per_sqm <= 1800.0:
             score += 15
 
         score = max(5, min(98, score))
 
+        # A high raw score never overrides the margin floor - a thin-margin
+        # project cannot be "highly viable" no matter how clean its rates are.
         is_worth_taking = score >= 65 and target_margin_pct >= 10.0
 
-        if score >= 80:
+        if score >= 80 and is_worth_taking:
             worthiness_rating = "HIGHLY_VIABLE"
             recommendation = "EXCELLENT PROJECT: High margin, low risk profile. Proceed with aggressive bidding."
         elif is_worth_taking:
@@ -876,6 +944,7 @@ class QuotationBrain:
                 "protected_profit_amount": forecast["protected_profit_amount"],
                 "protected_margin_pct": target_margin_pct,
                 "cost_per_built_sqm": round(cost_per_sqm, 2),
+                "sqm_benchmark_status": sqm_benchmark_status,
                 "average_daily_spend": forecast["average_daily_cost"],
                 "project_duration_weeks": duration_weeks
             },
@@ -941,7 +1010,7 @@ class InflationForecaster:
     RATES = {
         "USD": 0.035,  # 3.5% per annum
         "ZAR": 0.055,  # 5.5% per annum
-        "ZIG": 0.18,   # 18.0% per annum
+        "ZWG": 0.18,   # 18.0% per annum (Zimbabwe Gold)
     }
 
     @classmethod
@@ -983,22 +1052,30 @@ class ScenarioSimulator:
 
         material_mult = 1.0 + (material_price_hike_pct / 100.0)
         subby_mult = 1.0 + (subcontractor_rate_hike_pct / 100.0)
+        # A productivity drop means more labour-hours are needed for the same
+        # scope, i.e. effective labour cost goes UP as productivity goes DOWN
+        # (and vice versa) - clamp so a >=-100% input can't divide by zero/go negative.
+        productivity_factor = max(0.01, 1.0 + (productivity_change_pct / 100.0))
+        labour_mult = 1.0 / productivity_factor
 
         simulated_items = []
         for it in items:
             mat = float(it.get("material_rate", 0)) * material_mult
             sub = float(it.get("subcontractor_rate", 0)) * subby_mult
-            lab = float(it.get("labour_rate", 0))
+            lab = float(it.get("labour_rate", 0)) * labour_mult
             eqp = float(it.get("equipment_rate", 0))
             new_rate = mat + sub + lab + eqp
             simulated_items.append({
                 **it,
                 "material_rate": mat,
                 "subcontractor_rate": sub,
+                "labour_rate": lab,
                 "rate": new_rate if new_rate > 0 else float(it.get("rate", 0)) * material_mult,
             })
 
         modified_payload["items"] = simulated_items
+        base_duration_weeks = int(base_payload.get("project_duration_weeks", 12))
+        modified_payload["project_duration_weeks"] = max(1, math.ceil(base_duration_weeks / productivity_factor))
 
         base_eval = QuotationBrain.evaluate_project(base_payload)
         sim_eval = QuotationBrain.evaluate_project(modified_payload)
@@ -1045,8 +1122,10 @@ class SubcontractorBenchmarkEngine:
 
     @classmethod
     def recommend_vendors(cls, category: str = "Concrete & Structure") -> List[Dict[str, Any]]:
-        matched = [v for v in cls.VENDORS if category.lower() in v["category"].lower() or v["category"].lower() in category.lower()]
-        return matched if matched else cls.VENDORS
+        # No silent fallback to the full vendor list on a miss - that would
+        # present, say, a roofing specialist as "recommended" for a category
+        # they have nothing to do with, with no indication it wasn't a real match.
+        return [v for v in cls.VENDORS if category.lower() in v["category"].lower() or v["category"].lower() in category.lower()]
 
 
 # -----------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import os
 import logging
+import math
 from typing import Dict, Any, List
 from reportlab.lib import colors
 from reportlab.platypus import Flowable
@@ -9,6 +10,7 @@ from app.services.documents.interfaces import (
     TextExtractor,
     PDFMergeService,
 )
+from app.services.quotations.intelligence_engine import SpendForecaster
 
 
 class BarChartFlowable(Flowable):
@@ -76,7 +78,19 @@ class QuotationPDFRenderer(DocumentRenderer):
 
             # Setup margins and dimensions
             is_master = data.get("generate_master_pack") or (float(data.get("grand_total", 0)) >= 100000)
-            
+
+            # Real project figures - the master pack below is derived entirely from
+            # these instead of a fixed fictional narrative, so a $150k warehouse and
+            # a $2M residence each get their own numbers, not the same boilerplate.
+            grand_total_f = float(data.get("grand_total", 0))
+            direct_costs_f = float(data.get("direct_costs", 0))
+            profit_amount_f = float(data.get("profit_amount", 0))
+            profit_pct = round((profit_amount_f / grand_total_f * 100.0), 1) if grand_total_f > 0 else 0.0
+            duration_weeks = int(data.get("project_duration_weeks") or 12)
+            built_area_sqm = float(data.get("built_area_sqm", 0) or 0)
+            items_list = data.get("items") or []
+            cost_breakdown = (data.get("breakdown_log") or {}).get("direct_costs_breakdown") or {}
+
             doc = SimpleDocTemplate(
                 output_path,
                 pagesize=A4,
@@ -195,15 +209,15 @@ class QuotationPDFRenderer(DocumentRenderer):
                 story.append(Spacer(1, 100))
                 story.append(Paragraph("SIX NINE CONSTRUCTION (PVT) LTD", styles["CoverTitle"]))
                 story.append(Paragraph("Grade-1 Complete Construction Project Brief & Pack", styles["CoverTitle"]))
-                story.append(Paragraph(f"Client budget: USD {float(data.get('grand_total', 0)):,.2f} | 15% protected margin | 36-week programme", styles["CoverSub"]))
+                story.append(Paragraph(f"Client contract value: USD {grand_total_f:,.2f} | {profit_pct:.1f}% protected margin | {duration_weeks}-week programme", styles["CoverSub"]))
                 story.append(Paragraph(f"Project Reference ID: {data.get('quotation_id', 'SNC-HOUSE-500K')}", styles["CoverSub"]))
                 story.append(Spacer(1, 50))
-                
+
                 story.append(build_table([
                     ["Prepared For", data.get("client_name", "Corporate Client")],
-                    ["Project Name", data.get("project_title", "Private Residence Construction Design")],
-                    ["Target Budget", f"${float(data.get('grand_total', 0)):,.2f}"],
-                    ["Project Duration", "36 Weeks / 180 Workdays"],
+                    ["Project Name", data.get("project_title", "Construction Project")],
+                    ["Contract Value", f"${grand_total_f:,.2f}"],
+                    ["Project Duration", f"{duration_weeks} Weeks / {duration_weeks * 5} Workdays"],
                     ["Status", "Grade-1 Construction & Estimating Blueprint"],
                 ], [120, 380], header=False, font_size=9))
                 story.append(PageBreak())
@@ -223,7 +237,7 @@ class QuotationPDFRenderer(DocumentRenderer):
                     ["Section 8: Supplier RFQ & Verification Controls", "Page 10"],
                     ["Section 9: Material Margin Controls by Package", "Page 11"],
                     ["Section 10: Construction Operations & Controls", "Page 12"],
-                    ["Section 11: Monte Carlo Schedule Stress Test", "Page 13"],
+                    ["Section 11: Programme Sensitivity - Best/Expected/Delay Case", "Page 13"],
                     ["Section 12: Monthly Target Revenue & Spend Outlay", "Page 16"],
                     ["Section 13: Monthly Cash Flow S-Curve", "Page 17"],
                     ["Section 14: Weekly Execution Plan (Weeks 1 to 36)", "Page 18"],
@@ -239,12 +253,16 @@ class QuotationPDFRenderer(DocumentRenderer):
 
                 # 3. EXECUTIVE SUMMARY
                 story.append(Paragraph("<b>Executive Summary</b>", section_style))
+                scope_line = (
+                    f"{built_area_sqm:,.0f} m2 gross built area scope" if built_area_sqm > 0
+                    else "Scope as measured/allowed in the attached Bill of Quantities"
+                )
                 exec_rows = [
                     ["Item", "Detail"],
-                    ["Objective", "Simulate how a client with a USD 500,000 budget can deliver a complete private residence with controlled scope, phased procurement, weekly production targets, daily controls, and closeout documentation."],
-                    ["Assumed product", "Turnkey 4-bedroom high-spec residence, approximately 400-430 m2 gross built area, with garage, external works, basic landscaping, MEP systems, security/data rough-in, and quality-controlled handover."],
-                    ["Commercial result", f"Protected gross profit is ${float(data.get('profit_amount', 0)):,.2f}, equal to {data.get('profit_pct', 12)}% margin. Total contract budget is ${float(data.get('grand_total', 0)):,.2f}."],
-                    ["Programme result", "36 weeks from mobilisation to closeout, assuming approved drawings, clear site access, stable material supply, and no abnormal ground conditions."],
+                    ["Objective", f"Deliver {data.get('project_title', 'the contracted scope')} for {data.get('client_name', 'the client')} with controlled scope, phased procurement, weekly production targets, daily controls, and closeout documentation."],
+                    ["Assumed product", f"{scope_line}, priced from the {len(items_list)}-line Bill of Quantities attached to this pack."],
+                    ["Commercial result", f"Protected gross profit is ${profit_amount_f:,.2f}, equal to {profit_pct:.1f}% margin. Total contract value is ${grand_total_f:,.2f}."],
+                    ["Programme result", f"{duration_weeks} weeks from mobilisation to closeout, assuming approved drawings, clear site access, stable material supply, and no abnormal ground conditions."],
                     ["Decision required", "Client must approve final design, finishes schedule, provisional sums, authority route, payment milestones, and variation control before construction starts."],
                 ]
                 story.append(build_table(exec_rows, [150, 350], font_size=8))
@@ -271,36 +289,55 @@ class QuotationPDFRenderer(DocumentRenderer):
                     ["Preliminaries & General", f"${float(data.get('preliminaries', 0)):,.2f}", "Corporate mobilisation and site setups"],
                     ["Overheads", f"${float(data.get('overhead_amount', 0)):,.2f}", "Head office resource allocation"],
                     ["Contingency", f"${float(data.get('contingency_amount', 0)):,.2f}", "Held for measurable construction uncertainty"],
-                    ["Protected profit", f"${float(data.get('profit_amount', 0)):,.2f}", f"{data.get('profit_pct', 12)}% margin on client contract value"],
-                    ["Quotation total", f"${float(data.get('grand_total', 0)):,.2f}", "Client contract value"],
+                    ["Protected profit", f"${profit_amount_f:,.2f}", f"{profit_pct:.1f}% margin on client contract value"],
+                    ["Quotation total", f"${grand_total_f:,.2f}", "Client contract value"],
                 ]
                 story.append(build_table(summary_rows, [150, 100, 250], font_size=8))
                 story.append(Spacer(1, 10))
                 # Add BarChart
                 story.append(BarChartFlowable(
                     ["Directs", "Prelims", "Overheads", "Contingency", "Profit"],
-                    [float(data.get('direct_costs', 0)), float(data.get('preliminaries', 0)), float(data.get('overhead_amount', 0)), float(data.get('contingency_amount', 0)), float(data.get('profit_amount', 0))],
+                    [direct_costs_f, float(data.get('preliminaries', 0)), float(data.get('overhead_amount', 0)), float(data.get('contingency_amount', 0)), profit_amount_f],
                     500, 150
                 ))
                 story.append(PageBreak())
 
-                # 6. BOQ SUMMARY
+                # 6. BOQ SUMMARY - real cost-component split from the calculator's own
+                # direct_costs_breakdown when the BOQ items carry material/labour/
+                # equipment/subcontractor rate detail; otherwise (a common case when
+                # items only carry a flat rate) fall back to the highest-value real
+                # line items instead of inventing a fixed 25/35/40% category split.
                 story.append(Paragraph("<b>BOQ Section Totals Analysis</b>", section_style))
-                boq_totals = [
-                    ["Section", "Amount", "% of Budget"],
-                    ["Preliminaries", f"${float(data.get('preliminaries', 0)):,.2f}", "3.7%"],
-                    ["Earthworks & Substructures", f"${(float(data.get('direct_costs', 0)) * 0.25):,.2f}", "25.0%"],
-                    ["Superstructure Masonry & Shell", f"${(float(data.get('direct_costs', 0)) * 0.35):,.2f}", "35.0%"],
-                    ["Finishes & MEP Services", f"${(float(data.get('direct_costs', 0)) * 0.40):,.2f}", "40.0%"],
-                    ["Protected Profit", f"${float(data.get('profit_amount', 0)):,.2f}", f"{data.get('profit_pct', 12)}.0%"],
+
+                def _pct_of_contract(v: float) -> str:
+                    return f"{(v / grand_total_f * 100.0):.1f}%" if grand_total_f > 0 else "0.0%"
+
+                cat_labels = [
+                    ("Materials", "materials"), ("Labour", "labour"), ("Equipment / Plant", "equipment"),
+                    ("Subcontractors", "subcontractors"), ("Transport", "transport"), ("Waste Allowance", "waste_allowance"),
                 ]
+                cat_values = [(label, float(cost_breakdown.get(key, 0))) for label, key in cat_labels]
+                categorized_total = sum(v for _, v in cat_values)
+
+                boq_totals = [["Section", "Amount", "% of Contract Value"],
+                              ["Preliminaries", f"${float(data.get('preliminaries', 0)):,.2f}", _pct_of_contract(float(data.get('preliminaries', 0)))]]
+                if categorized_total > 0:
+                    for label, val in cat_values:
+                        if val > 0:
+                            boq_totals.append([label, f"${val:,.2f}", _pct_of_contract(val)])
+                else:
+                    top_items = sorted(items_list, key=lambda it: float(it.get("quantity", it.get("qty", 0))) * float(it.get("rate", 0)), reverse=True)[:8]
+                    for it in top_items:
+                        line_total = float(it.get("quantity", it.get("qty", 0))) * float(it.get("rate", 0))
+                        boq_totals.append([str(it.get("description", "Item"))[:45], f"${line_total:,.2f}", _pct_of_contract(line_total)])
+                boq_totals.append(["Protected Profit", f"${profit_amount_f:,.2f}", _pct_of_contract(profit_amount_f)])
                 story.append(build_table(boq_totals, [200, 150, 150], font_size=8))
                 story.append(PageBreak())
 
                 # 7. DETAILED BOQ PAGES
                 story.append(Paragraph("<b>Detailed Bill of Quantities Ledger</b>", section_style))
                 boq_rows = [["Code", "Section", "Description", "Unit", "Qty", "Rate", "Total"]]
-                for idx, item in enumerate(data.get("items", [])):
+                for idx, item in enumerate(items_list):
                     qty = float(item.get("quantity", item.get("qty", 1)))
                     rate = float(item.get("rate", 0))
                     total = qty * rate
@@ -332,16 +369,25 @@ class QuotationPDFRenderer(DocumentRenderer):
                 story.append(Paragraph("<i>Ruthless commercial rule: every requested upgrade, acceleration, rework, delay, scope clarification, or specification change must be priced before execution. Do not absorb client-driven costs inside contingency.</i>", body_style))
                 story.append(PageBreak())
 
-                # 9. MATERIALS targets
-                story.append(Paragraph("<b>Required Materials and Supplier Price Targets</b>", section_style))
-                mat_rows = [
-                    ["Package", "Material", "Qty", "Target Rate", "Preferred Supplier", "Lead Time", "Order Week"],
-                    ["Concrete", "Ready-mix concrete 25MPa", "175 m3", "$112.00", "Batch Plant A", "5 Days", "Week 4"],
-                    ["Masonry", "Cement Bags (50kg)", "1,850 bags", "$8.25", "Cement Dist A", "5 Days", "Week 5"],
-                    ["Masonry", "Common Clay Bricks", "62,000 pcs", "$0.12", "Brick Supplier A", "7 Days", "Week 4"],
-                    ["Steel", "Reinforcement rebar Y20", "18 Ton", "$980.00", "Steel Supplier A", "10 Days", "Week 3"],
-                ]
-                story.append(build_table(mat_rows, [80, 120, 70, 70, 100, 30, 30], font_size=7))
+                # 9. MATERIALS targets - real highest-value BOQ line items, since we
+                # have no actual supplier/lead-time data to attach to a fixed
+                # concrete/cement/brick/rebar list that ignores the real project.
+                story.append(Paragraph("<b>Highest-Value BOQ Line Items to Price-Lock First</b>", section_style))
+                mat_rows = [["Description", "Unit", "Qty", "Rate", "Total Value", "% of Direct Costs"]]
+                top_value_items = sorted(items_list, key=lambda it: float(it.get("quantity", it.get("qty", 0))) * float(it.get("rate", 0)), reverse=True)[:10]
+                for it in top_value_items:
+                    qty = float(it.get("quantity", it.get("qty", 0)))
+                    rate = float(it.get("rate", 0))
+                    line_total = qty * rate
+                    mat_rows.append([
+                        str(it.get("description", "Item"))[:45],
+                        it.get("unit", "unit"),
+                        f"{qty:,.2f}",
+                        f"${rate:,.2f}",
+                        f"${line_total:,.2f}",
+                        f"{(line_total / direct_costs_f * 100.0):.1f}%" if direct_costs_f > 0 else "0.0%",
+                    ])
+                story.append(build_table(mat_rows, [170, 50, 60, 60, 80, 80], font_size=7))
                 story.append(PageBreak())
 
                 # 10. SUPPLIER RFQ CONTROLS
@@ -380,15 +426,25 @@ class QuotationPDFRenderer(DocumentRenderer):
                 story.append(build_table(op_rows, [130, 200, 170], font_size=7))
                 story.append(PageBreak())
 
-                # 13. MONTE CARLO STRESS TEST
-                story.append(Paragraph("<b>Programme Stress Test - Monte Carlo Schedule Risk</b>", section_style))
+                # 13. SCHEDULE & MARGIN SENSITIVITY - a 3-point best/expected/delay
+                # case built from this project's real duration and margin, not a fixed
+                # 32/36/44-week, 16.5%/8.5% table. This is a sensitivity estimate, not
+                # an actual simulated Monte Carlo run - labelled accordingly.
+                story.append(Paragraph("<b>Programme Sensitivity - Best / Expected / Delay Case</b>", section_style))
+                best_weeks = max(1, round(duration_weeks * 0.9))
+                delay_weeks = max(duration_weeks + 1, round(duration_weeks * 1.25))
+                best_profit = profit_amount_f * 1.1
+                delay_profit = profit_amount_f * 0.7
+                best_margin_pct = (best_profit / grand_total_f * 100.0) if grand_total_f > 0 else 0.0
+                delay_margin_pct = (delay_profit / grand_total_f * 100.0) if grand_total_f > 0 else 0.0
                 stress_rows = [
                     ["Scenario", "Duration", "Protected Profit", "Margin", "Assumptions"],
-                    ["Best Case", "32 Weeks / 160 Days", f"${(float(data.get('profit_amount', 0)) * 1.1):,.2f}", "16.5%", "Fast approvals, stable weather, zero rework."],
-                    ["Expected Case", "36 Weeks / 180 Days", f"${float(data.get('profit_amount', 0)):,.2f}", f"{data.get('profit_pct', 12)}.0%", "Base quotation timeline. Normal lead times."],
-                    ["Delay Case", "44 Weeks / 220 Days", f"${(float(data.get('profit_amount', 0)) * 0.7):,.2f}", "8.5%", "Late drawings, rain delays, unrecovered overhead burn."],
+                    ["Best Case", f"{best_weeks} Weeks / {best_weeks * 5} Days", f"${best_profit:,.2f}", f"{best_margin_pct:.1f}%", "Fast approvals, stable weather, zero rework."],
+                    ["Expected Case", f"{duration_weeks} Weeks / {duration_weeks * 5} Days", f"${profit_amount_f:,.2f}", f"{profit_pct:.1f}%", "Base quotation timeline. Normal lead times."],
+                    ["Delay Case", f"{delay_weeks} Weeks / {delay_weeks * 5} Days", f"${delay_profit:,.2f}", f"{delay_margin_pct:.1f}%", "Late drawings, rain delays, unrecovered overhead burn."],
                 ]
                 story.append(build_table(stress_rows, [80, 120, 80, 60, 160], font_size=7))
+                story.append(Paragraph("<i>Best/delay case profit figures are a +/-10%/30% sensitivity assumption applied to this quotation's real protected profit, not the output of a statistical simulation.</i>", body_style))
                 story.append(PageBreak())
 
                 # 14. DRIVER SIMULATION
@@ -402,111 +458,100 @@ class QuotationPDFRenderer(DocumentRenderer):
                 story.append(build_table(drv_rows, [80, 100, 100, 100, 120], font_size=7))
                 story.append(PageBreak())
 
-                # 15. BASELINE weeks
-                story.append(Paragraph("<b>How the 36-Week Baseline Was Built</b>", section_style))
-                base_rows = [
-                    ["Phase", "Weeks", "Operational Logic"],
-                    ["Mobilisation & design freeze", "Weeks 1-4", "Allows contract setup, permits, safety plans, and long-lead orders before site risk starts."],
-                    ["Groundworks and foundations", "Weeks 5-8", "Covers site clearance, bulk earthworks, foundation trenching, and rebar setups."],
-                    ["Substructure & shell walls", "Weeks 9-13", "Covers slabs pouring, gables masonry, columns casting, and wall plate scaffolding."],
-                    ["Roof and envelope dry-in", "Weeks 14-16", "Gets the building weather-tight so internal wet trades and cabinetry can begin safely."],
+                # 15. BASELINE weeks - phase boundaries scaled proportionally to the
+                # real project_duration_weeks rather than a fixed 1-16 week range.
+                story.append(Paragraph(f"<b>How the {duration_weeks}-Week Baseline Was Built</b>", section_style))
+                phase_plan = [
+                    ("Mobilisation & design freeze", 0.0, 0.11, "Allows contract setup, permits, safety plans, and long-lead orders before site risk starts."),
+                    ("Groundworks and foundations", 0.11, 0.22, "Covers site clearance, bulk earthworks, foundation trenching, and rebar setups."),
+                    ("Substructure & shell walls", 0.22, 0.36, "Covers slabs pouring, gables masonry, columns casting, and wall plate scaffolding."),
+                    ("Roof and envelope dry-in", 0.36, 0.44, "Gets the building weather-tight so internal wet trades and cabinetry can begin safely."),
                 ]
+                base_rows = [["Phase", "Weeks", "Operational Logic"]]
+                for name, start_frac, end_frac, logic in phase_plan:
+                    wk_start = max(1, round(duration_weeks * start_frac) + 1)
+                    wk_end = max(wk_start, round(duration_weeks * end_frac))
+                    base_rows.append([name, f"Weeks {wk_start}-{wk_end}", logic])
                 story.append(build_table(base_rows, [120, 80, 300], font_size=7))
                 story.append(PageBreak())
 
-                # 16. MONTHLY TARGETS
+                # 16 & 17. MONTHLY TARGETS + S-CURVE CHART - both driven by the same
+                # SpendForecaster.generate_forecast() engine used elsewhere in this
+                # module, so the curve is a genuine logistic S-curve of the real
+                # direct costs (previously a flat grand_total*0.09 repeated 9 times).
+                spend_forecast = SpendForecaster.generate_forecast(
+                    items_list, project_duration_weeks=duration_weeks, profit_margin_pct=profit_pct,
+                )
+                monthly_cashflow = spend_forecast.get("monthly_cashflow", [])
+                total_projected_spend = sum(m["projected_spend"] for m in monthly_cashflow) or 1.0
+
                 story.append(Paragraph("<b>Monthly Targets, Spend and Protected Profit</b>", section_style))
-                mon_rows = [["Month", "Target Deliverable", "Spend Ceiling", "Planned Revenue", "Protected Profit"]]
-                for i in range(1, 10):
+                mon_rows = [["Month", "Target Deliverable", "Projected Spend", "Expected Billing", "Protected Profit"]]
+                for m in monthly_cashflow:
+                    month_profit_share = profit_amount_f * (m["projected_spend"] / total_projected_spend)
                     mon_rows.append([
-                        f"Month {i}",
-                        f"Deliverables phase for M{i}",
-                        f"${(float(data.get('grand_total', 0)) * 0.09):,.2f}",
-                        f"${(float(data.get('grand_total', 0)) * 0.11):,.2f}",
-                        f"${(float(data.get('profit_amount', 0)) * 0.11):,.2f}",
+                        m["month"],
+                        f"Deliverables phase for {m['month']}",
+                        f"${m['projected_spend']:,.2f}",
+                        f"${m['expected_billing']:,.2f}",
+                        f"${month_profit_share:,.2f}",
                     ])
                 story.append(build_table(mon_rows, [50, 150, 100, 100, 100], font_size=7))
                 story.append(PageBreak())
 
-                # 17. S-CURVE CHART
                 story.append(Paragraph("<b>Monthly Cash Flow Curve</b>", section_style))
                 story.append(Spacer(1, 10))
-                # Add S-Curve BarChart
                 story.append(BarChartFlowable(
-                    [f"M{i}" for i in range(1, 10)],
-                    [float(data.get('grand_total', 0)) * 0.09 for _ in range(1, 10)],
+                    [m["month"] for m in monthly_cashflow],
+                    [m["projected_spend"] for m in monthly_cashflow],
                     500, 150
                 ))
                 story.append(PageBreak())
 
-                # 18. WEEKLY EXECUTION
-                story.append(Paragraph("<b>Weekly Execution Plan - Weeks 1 to 9</b>", section_style))
-                wk_rows = [["Week", "Phase", "Activities & Targets", "Deliverables checklist"]]
-                for w in range(1, 10):
-                    wk_rows.append([
-                        f"Week {w}",
-                        "Mobilisation / Site Setup",
-                        f"Detailed site clearing, setting out, RFI lockups for week {w}.",
-                        f"Approved weekly report W{w}, inspection diary completed."
-                    ])
-                story.append(build_table(wk_rows, [50, 100, 200, 150], font_size=7))
-                story.append(PageBreak())
+                # 18-21. WEEKLY EXECUTION - paginated dynamically over the real
+                # duration_weeks (9 weeks per page) instead of 4 fixed pages
+                # hardcoded to a 36-week programme.
+                weekly_phase_plan = [
+                    "Mobilisation / Site Setup", "Substructure Concrete",
+                    "Superstructure Shell Walls", "Wet Trades & Finishes",
+                ]
+                weeks_per_page = 9
+                num_weekly_pages = max(1, math.ceil(duration_weeks / weeks_per_page))
+                for page_idx in range(num_weekly_pages):
+                    wk_start = page_idx * weeks_per_page + 1
+                    wk_end = min(duration_weeks, wk_start + weeks_per_page - 1)
+                    phase_label = weekly_phase_plan[min(page_idx, len(weekly_phase_plan) - 1)]
+                    story.append(Paragraph(f"<b>Weekly Execution Plan - Weeks {wk_start} to {wk_end}</b>", section_style))
+                    wk_rows = [["Week", "Phase", "Activities & Targets", "Deliverables checklist"]]
+                    for w in range(wk_start, wk_end + 1):
+                        wk_rows.append([
+                            f"Week {w}",
+                            phase_label,
+                            f"{phase_label} activities and RFI lockups for week {w}.",
+                            f"Approved weekly report W{w}, inspection diary completed."
+                        ])
+                    story.append(build_table(wk_rows, [50, 100, 200, 150], font_size=7))
+                    story.append(PageBreak())
 
-                # 19. WEEKLY EXECUTION 10-18
-                story.append(Paragraph("<b>Weekly Execution Plan - Weeks 10 to 18</b>", section_style))
-                wk_rows2 = [["Week", "Phase", "Activities & Targets", "Deliverables checklist"]]
-                for w in range(10, 19):
-                    wk_rows2.append([
-                        f"Week {w}",
-                        "Substructure Concrete",
-                        f"Reinforcement fixing, formwork setups, ready-mix batch checks week {w}.",
-                        f"Concrete cube tests results logged, slump test certifications."
-                    ])
-                story.append(build_table(wk_rows2, [50, 100, 200, 150], font_size=7))
-                story.append(PageBreak())
-
-                # 20. WEEKLY EXECUTION 19-27
-                story.append(Paragraph("<b>Weekly Execution Plan - Weeks 19 to 27</b>", section_style))
-                wk_rows3 = [["Week", "Phase", "Activities & Targets", "Deliverables checklist"]]
-                for w in range(19, 28):
-                    wk_rows3.append([
-                        f"Week {w}",
-                        "Superstructure Shell Walls",
-                        f"Masonry blockwork, lintel pouring, brick force setup week {w}.",
-                        f"Wall plate level inspection, joint size compliance checks."
-                    ])
-                story.append(build_table(wk_rows3, [50, 100, 200, 150], font_size=7))
-                story.append(PageBreak())
-
-                # 21. WEEKLY EXECUTION 28-36
-                story.append(Paragraph("<b>Weekly Execution Plan - Weeks 28 to 36</b>", section_style))
-                wk_rows4 = [["Week", "Phase", "Activities & Targets", "Deliverables checklist"]]
-                for w in range(28, 37):
-                    wk_rows4.append([
-                        f"Week {w}",
-                        "Wet Trades & Finishes",
-                        f"Ceiling installation, first coat painting, cabinetry manufacture week {w}.",
-                        f"Tiling substrate check, plaster level certification logged."
-                    ])
-                story.append(build_table(wk_rows4, [50, 100, 200, 150], font_size=7))
-                story.append(PageBreak())
-
-                # 22. DAILY EXECUTION (Days 1 to 180) - Compress to 15 pages (12 days per page)
-                # To make it exactly 15 pages of daily plans matching the template:
-                for page_idx in range(15):
+                # 22. DAILY EXECUTION - paginated over the real total workdays
+                # (duration_weeks * 5), 12 days per page, instead of a fixed 15
+                # pages/180 days regardless of the actual programme length.
+                total_days = duration_weeks * 5
+                num_daily_pages = max(1, math.ceil(total_days / 12))
+                for page_idx in range(num_daily_pages):
                     start_day = page_idx * 12 + 1
-                    end_day = start_day + 11
+                    end_day = min(total_days, start_day + 11)
                     story.append(Paragraph(f"<b>Daily Execution Plan - Days {start_day} to {end_day}</b>", section_style))
                     day_rows = [["Day", "Week", "Hrs", "Phase", "Daily Site Activities & Target Rhythm", "Spend", "Profit"]]
                     for d in range(start_day, end_day + 1):
                         day_rows.append([
                             str(d),
-                            str((d-1)//5 + 1),
+                            str((d - 1) // 5 + 1),
                             "8.0",
                             "Production",
-                            f"Daily construction operations rhythm. Coordinate crews, check material levels, log site photos.",
-                            f"${(float(data.get('direct_costs', 0)) / 180):,.2f}",
-                            f"${(float(data.get('profit_amount', 0)) / 180):,.2f}",
+                            "Daily construction operations rhythm. Coordinate crews, check material levels, log site photos.",
+                            f"${(direct_costs_f / total_days):,.2f}" if total_days else "$0.00",
+                            f"${(profit_amount_f / total_days):,.2f}" if total_days else "$0.00",
                         ])
                     story.append(build_table(day_rows, [30, 30, 30, 60, 230, 60, 60], font_size=6.6))
                     story.append(PageBreak())
@@ -568,14 +613,14 @@ class QuotationPDFRenderer(DocumentRenderer):
                 story.append(PageBreak())
 
                 # 47. APPENDIX
-                story.append(Paragraph("<b>Appendix - Simulation Data Summary</b>", section_style))
+                story.append(Paragraph("<b>Appendix - Data Summary</b>", section_style))
                 app_rows = [
                     ["Metric Parameter", "Value Mapping"],
-                    ["Total Cost Baseline", f"${float(data.get('direct_costs', 0)):,.2f}"],
-                    ["Target Gross Profit Margin", f"${float(data.get('profit_amount', 0)):,.2f}"],
-                    ["Contract Budget Ceiling", f"${float(data.get('grand_total', 0)):,.2f}"],
-                    ["Weekly Plan Outlay Pages", "4 Pages (Weeks 1 to 36)"],
-                    ["Daily Workday Actions Pages", "15 Pages (Days 1 to 180)"],
+                    ["Total Cost Baseline", f"${direct_costs_f:,.2f}"],
+                    ["Target Gross Profit Margin", f"${profit_amount_f:,.2f}"],
+                    ["Contract Budget Ceiling", f"${grand_total_f:,.2f}"],
+                    ["Weekly Plan Outlay Pages", f"{num_weekly_pages} Pages (Weeks 1 to {duration_weeks})"],
+                    ["Daily Workday Actions Pages", f"{num_daily_pages} Pages (Days 1 to {total_days})"],
                 ]
                 story.append(build_table(app_rows, [200, 300], font_size=8))
 

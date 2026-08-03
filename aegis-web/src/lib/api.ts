@@ -2351,12 +2351,42 @@ export async function getAnalyticsWorkforce(): Promise<ApiResponse<any[]>> {
 
 // --- QUOTATIONS --- //
 
-export async function getQuotations(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/quotations/', { cache: 'no-store', allowFallback: false });
+export async function importBoqFile(file: File): Promise<ApiResponse<{ items: any[]; warnings: string[]; summary: Record<string, unknown> }>> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const url = resolveApiUrl("/api/v1/quotations/boq/import");
+  const headers = await getApiHeaders();
+  headers.delete("Content-Type"); // let the browser set the multipart boundary
+  const response = await fetch(url, { method: "POST", headers, body: formData });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(response.status, body?.detail || body?.message || "BOQ import failed.");
+  return body;
+}
+
+export async function getQuotations(params?: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  sort_by?: 'created_at' | 'client_name' | 'status' | 'quote_amount';
+  sort_dir?: 'asc' | 'desc';
+}): Promise<ApiResponse<any[]>> {
+  const query = params
+    ? '?' + new URLSearchParams(
+        Object.entries(params).reduce((acc, [k, v]) => {
+          if (v !== undefined && v !== null && v !== '') acc[k] = String(v);
+          return acc;
+        }, {} as Record<string, string>)
+      ).toString()
+    : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/${query}`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function getQuotation(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getQuotationHistory(id: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/${id}/history`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function createQuotation(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
@@ -2373,6 +2403,106 @@ export async function updateQuotation(id: string, payload: Record<string, unknow
     body: JSON.stringify(payload),
     allowFallback: false,
   });
+}
+
+export async function decideQuotation(id: string, status: 'won' | 'lost', notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ status, notes }),
+    allowFallback: false,
+  });
+}
+
+export async function deleteQuotation(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+// --- DRAWING TAKEOFF & CHANGE-CONTROL --- //
+
+export async function createDrawingRevision(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/drawings/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function listDrawingRevisions(params?: { project_id?: string; quotation_id?: string; drawing_name?: string }): Promise<ApiResponse<any[]>> {
+  const query = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/drawings/${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getDrawingRevision(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/drawings/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function replaceDrawingMeasurements(id: string, measurements: Array<Record<string, unknown>>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/drawings/${id}/measurements`, {
+    method: 'PUT',
+    body: JSON.stringify({ measurements }),
+    allowFallback: false,
+  });
+}
+
+export async function setDrawingChecklistItem(revisionId: string, itemId: string, checked: boolean): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/drawings/${revisionId}/checklist/${itemId}/check`, {
+    method: 'POST',
+    body: JSON.stringify({ checked }),
+    allowFallback: false,
+  });
+}
+
+export async function commitDrawingRevision(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/drawings/${id}/commit`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getDrawingRevisionAsBoq(id: string): Promise<ApiResponse<{ items: any[] }>> {
+  return fetchApi<ApiResponse<{ items: any[] }>>(`/api/v1/drawings/${id}/as-boq`, { cache: 'no-store', allowFallback: false });
+}
+
+// --- SOP CHECKLIST ENFORCEMENT --- //
+
+export async function listSopTemplates(appliesTo?: 'quotation' | 'project'): Promise<ApiResponse<any[]>> {
+  const query = appliesTo ? `?applies_to=${appliesTo}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/sop-compliance/templates${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getQuotationSopReadiness(quotationId: string): Promise<ApiResponse<{ instances: any[]; missing_required_templates: string[]; ready_to_win: boolean }>> {
+  return fetchApi<ApiResponse<{ instances: any[]; missing_required_templates: string[]; ready_to_win: boolean }>>(
+    `/api/v1/sop-compliance/quotations/${quotationId}/readiness`,
+    { cache: 'no-store', allowFallback: false }
+  );
+}
+
+export async function startSopInstance(templateId: string, subjectType: 'quotation' | 'project', subjectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/sop-compliance/instances', {
+    method: 'POST',
+    body: JSON.stringify({ template_id: templateId, subject_type: subjectType, subject_id: subjectId }),
+    allowFallback: false,
+  });
+}
+
+export async function completeSopItem(
+  instanceId: string,
+  itemId: string,
+  checked: boolean,
+  evidence?: { evidence_url?: string; evidence_note?: string }
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/sop-compliance/instances/${instanceId}/items/${itemId}/complete`, {
+    method: 'POST',
+    body: JSON.stringify({ checked, ...evidence }),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDrawingRevision(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/drawings/${id}`, { method: 'DELETE', allowFallback: false });
 }
 
 // --- QUOTATION INTELLIGENCE ENGINE --- //

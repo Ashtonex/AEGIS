@@ -9,7 +9,7 @@ import {
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
   Sparkles
 } from "lucide-react";
-import { getProjects, getQuotation, createQuotation, updateQuotation } from "@/lib/api";
+import { getInternalProjects, getQuotation, createQuotation, updateQuotation, getDrawingRevisionAsBoq, importBoqFile } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
 
@@ -19,7 +19,7 @@ interface LineItem {
   unit: string;
   rate: number;
   buildup?: Array<{
-    type: "material" | "labour" | "equipment" | "subcontractor" | "other";
+    type: "material" | "labour" | "equipment" | "subcontractor" | "transport" | "waste_allowance";
     name: string;
     qty: number;
     unit: string;
@@ -32,6 +32,7 @@ export default function QuotationBuilder() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const editId = searchParams ? searchParams.get("edit") : null;
+  const fromDrawingId = searchParams ? searchParams.get("from_drawing") : null;
 
   // Project selector list
   const [projectsList, setProjectsList] = useState<any[]>([]);
@@ -53,6 +54,13 @@ export default function QuotationBuilder() {
   const [contingencyPct, setContingencyPct] = useState(5);
   const [profitPct, setProfitPct] = useState(12);
   const [applyVat, setApplyVat] = useState(true);
+  const [discount, setDiscount] = useState(0);
+  const [provisionalSums, setProvisionalSums] = useState(0);
+  const [builtAreaSqm, setBuiltAreaSqm] = useState(0);
+  const [isInflationAdjusted, setIsInflationAdjusted] = useState(false);
+  const [revisionNumber, setRevisionNumber] = useState(1);
+  const [assumptionsText, setAssumptionsText] = useState("");
+  const [exclusionsText, setExclusionsText] = useState("");
 
   // Cost items table
   const [lineItems, setLineItems] = useState<LineItem[]>([
@@ -68,12 +76,15 @@ export default function QuotationBuilder() {
   const [csvText, setCsvText] = useState("");
   const [showImporter, setShowImporter] = useState(false);
 
+  // Excel/CSV file importer state (backend BOQImporter service)
+  const [importingBoqFile, setImportingBoqFile] = useState(false);
+  const boqFileInputRef = React.useRef<HTMLInputElement | null>(null);
+
   // Status & notifications
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
-  const [warnings, setWarnings] = useState<string[]>([]);
 
   // PDF & Excel generator Preview modal state
   const [printQuoteData, setPrintQuoteData] = useState<any | null>(null);
@@ -85,7 +96,7 @@ export default function QuotationBuilder() {
       setLoading(true);
       setErrorMsg("");
       try {
-        const projRes = await getProjects();
+        const projRes = await getInternalProjects();
         if (projRes.success && Array.isArray(projRes.data)) {
           setProjectsList(projRes.data);
         }
@@ -111,6 +122,13 @@ export default function QuotationBuilder() {
             setContingencyPct(Number(meta.contingency_pct) || 5);
             setProfitPct(Number(meta.profit_pct) || 12);
             setApplyVat(meta.apply_vat !== false);
+            setDiscount(Number(meta.discount) || 0);
+            setProvisionalSums(Number(meta.provisional_sums) || 0);
+            setBuiltAreaSqm(Number(meta.built_area_sqm) || 0);
+            setIsInflationAdjusted(Boolean(meta.is_inflation_adjusted));
+            setRevisionNumber(Number(meta.revision_number) || 1);
+            setAssumptionsText(Array.isArray(meta.assumptions) ? meta.assumptions.join("\n") : "");
+            setExclusionsText(Array.isArray(meta.exclusions) ? meta.exclusions.join("\n") : "");
             if (Array.isArray(meta.items)) {
               setLineItems(meta.items);
             }
@@ -132,16 +150,69 @@ export default function QuotationBuilder() {
     }
   }, [session, editId]);
 
-  // Mathematics buildup
+  // Hand-off from the Drawing Takeoff page: append that revision's measured
+  // quantities as new BOQ lines (rate 0 - a drawing gives quantities, not
+  // prices, so the estimator still has to price each row).
+  useEffect(() => {
+    async function loadFromDrawing() {
+      if (!fromDrawingId) return;
+      try {
+        const res = await getDrawingRevisionAsBoq(fromDrawingId);
+        if (res.success && Array.isArray(res.data?.items) && res.data.items.length > 0) {
+          setLineItems((prev) => {
+            const existingIsBlank = prev.length === 1 && !prev[0].description && prev[0].rate === 0;
+            const base = existingIsBlank ? [] : prev;
+            return [...base, ...res.data!.items.map((it: any) => ({ ...it, buildup: [] }))];
+          });
+          setSuccessMsg(`Loaded ${res.data.items.length} measurement(s) from the drawing takeoff. Add rates before saving.`);
+        }
+      } catch (err: any) {
+        setErrorMsg(err?.message || "Failed to load measurements from the drawing takeoff.");
+      }
+    }
+    if (session) void loadFromDrawing();
+  }, [session, fromDrawingId]);
+
+  // Mathematics buildup - MUST mirror QuotationCalculator.calculate() in
+  // imperium-api/app/services/quotations/calculator.py exactly, or this live
+  // preview disagrees with the number that actually gets saved/exported.
+  // Backend: overhead/contingency/profit are each a % of (direct_costs +
+  // preliminaries) independently - profit is NOT compounded on top of
+  // overhead/contingency.
   const directCosts = lineItems.reduce((acc, item) => acc + item.qty * item.rate, 0);
   const totalDirectAndPrelims = directCosts + preliminaries;
   const overheadAmount = totalDirectAndPrelims * (overheadPct / 100);
   const contingencyAmount = totalDirectAndPrelims * (contingencyPct / 100);
+  const profitAmount = totalDirectAndPrelims * (profitPct / 100);
   const subtotalBeforeProfit = totalDirectAndPrelims + overheadAmount + contingencyAmount;
-  const profitAmount = subtotalBeforeProfit * (profitPct / 100);
-  const subtotal = subtotalBeforeProfit + profitAmount;
-  const vat = applyVat ? subtotal * 0.15 : 0;
-  const grandTotal = subtotal + vat;
+  // Backend: subtotal includes provisional sums, THEN discount is applied
+  // before tax (taxable_amount = max(0, subtotal - discount)).
+  const subtotal = subtotalBeforeProfit + profitAmount + provisionalSums;
+  const taxableAmount = Math.max(0, subtotal - discount);
+  const vat = applyVat ? taxableAmount * 0.15 : 0;
+  const grandTotal = taxableAmount + vat;
+
+  // Margin-policy and benchmark alerts - MUST mirror the checks in
+  // QuotationCalculator.calculate() (calculator.py) so what the estimator
+  // sees here matches what the backend actually flags on save/export.
+  const warnings: string[] = [];
+  if (profitPct / 100 > 0.40) {
+    warnings.push("Profit rate exceeds maximum corporate threshold of 40%.");
+  }
+  if (overheadPct / 100 > 0.25) {
+    warnings.push("Overhead rate exceeds maximum corporate threshold of 25%.");
+  }
+  if (builtAreaSqm > 0) {
+    const finishedPricePerSqm = grandTotal / builtAreaSqm;
+    if (finishedPricePerSqm < 450) {
+      warnings.push(`Finished price of $${finishedPricePerSqm.toFixed(2)}/m² is below the standard corporate benchmark range ($450 - $800/m²). Ensure cost recovery is sufficient.`);
+    } else if (finishedPricePerSqm > 800) {
+      warnings.push(`Finished price of $${finishedPricePerSqm.toFixed(2)}/m² exceeds the standard corporate benchmark range ($450 - $800/m²). Review premium finish specification or markup.`);
+    }
+  }
+  if (!isInflationAdjusted) {
+    warnings.push("Pricing represents historical rates and has not been inflation-adjusted for current material price fluctuations. Recommend review against cost catalog.");
+  }
 
   // Add line items
   const addLineItem = () => {
@@ -196,6 +267,45 @@ export default function QuotationBuilder() {
     }
   };
 
+  // Excel/CSV file importer - uses the backend BOQImporter service (handles
+  // real spreadsheet column-header mapping, unlike the manual paste importer
+  // above which only understands a fixed comma/tab column order).
+  const handleBoqFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    setImportingBoqFile(true);
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await importBoqFile(file);
+      const items = res.data?.items || [];
+      if (items.length > 0) {
+        setLineItems(
+          items.map((it: any) => ({
+            description: it.description,
+            qty: Number(it.quantity) || 0,
+            unit: it.unit || "unit",
+            rate: Number(it.rate) || 0,
+            buildup: [],
+          }))
+        );
+        const warnings = res.data?.warnings || [];
+        setSuccessMsg(
+          `Imported ${items.length} BOQ item(s) from ${file.name}.` +
+          (warnings.length > 0 ? ` ${warnings.length} row warning(s) - review before saving.` : "")
+        );
+      } else {
+        setErrorMsg((res.data?.warnings || []).join(" ") || `No usable rows found in ${file.name}.`);
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to import BOQ file.");
+    } finally {
+      setImportingBoqFile(false);
+    }
+  };
+
   // Cost rate buildup sub-modal
   const openRateBuilder = (index: number) => {
     setSelectedRowIndex(index);
@@ -238,6 +348,10 @@ export default function QuotationBuilder() {
     setErrorMsg("");
     setSuccessMsg("");
 
+    // An edit to an already-saved quotation is a new revision; a first save
+    // is revision 1.
+    const nextRevisionNumber = editId ? revisionNumber + 1 : 1;
+
     const payload: any = {
       client_name: clientName,
       quote_amount: Number(grandTotal.toFixed(2)),
@@ -255,10 +369,22 @@ export default function QuotationBuilder() {
         overhead_pct: overheadPct,
         contingency_pct: contingencyPct,
         profit_pct: profitPct,
+        overhead_amount: overheadAmount,
+        contingency_amount: contingencyAmount,
+        profit_amount: profitAmount,
+        discount,
+        provisional_sums: provisionalSums,
+        built_area_sqm: builtAreaSqm,
+        is_inflation_adjusted: isInflationAdjusted,
+        revision_number: nextRevisionNumber,
         subtotal,
+        taxable_amount: taxableAmount,
         vat,
+        grand_total: grandTotal,
         apply_vat: applyVat,
         terms,
+        assumptions: assumptionsText.split("\n").map((s) => s.trim()).filter(Boolean),
+        exclusions: exclusionsText.split("\n").map((s) => s.trim()).filter(Boolean),
         items: lineItems
       }
     };
@@ -278,7 +404,8 @@ export default function QuotationBuilder() {
       if (res.success) {
         setSuccessMsg(`Quotation saved successfully! Reference: ${quoteRef}`);
         setPrintQuoteData({ ...payload, id: res.data?.id || editId });
-        
+        setRevisionNumber(nextRevisionNumber);
+
         // If it's a new quote, redirect to the overview after a delay, or keep showing preview
         if (!editId) {
           router.push(`/dashboard/quotations/builder?edit=${res.data?.id}`);
@@ -303,26 +430,45 @@ export default function QuotationBuilder() {
     if (!printQuoteData) return;
     setErrorMsg("");
     
-    // Construct calculation dictionary for the backend
+    // Construct calculation dictionary for the backend. Cost-component
+    // sub-rates come from each item's real buildup (from the rate builder /
+    // Ruthless Calculator) when present - never a fabricated split, since a
+    // fake 50/30/20 material/labour/equipment breakdown would misrepresent
+    // the actual cost composition on the exported document.
+    const sumBuildupByType = (item: any, type: string): number =>
+      (item.buildup || [])
+        .filter((b: any) => b.type === type)
+        .reduce((acc: number, b: any) => acc + (Number(b.qty) || 0) * (Number(b.rate) || 0), 0);
+
     const apiPayload = {
       quotation_id: printQuoteData.metadata?.reference_number || "SNC-QT-UNSPECIFIED",
-      revision_number: 1,
+      revision_number: Number(printQuoteData.metadata?.revision_number) || 1,
       currency_rounding_decimals: 2,
+      project_title: printQuoteData.metadata?.project_title || "",
+      client_name: printQuoteData.client_name || "",
       preliminaries: Number(printQuoteData.metadata?.preliminaries) || 0,
       overhead_rate: (Number(printQuoteData.metadata?.overhead_pct) || 0) / 100,
       contingency_rate: (Number(printQuoteData.metadata?.contingency_pct) || 0) / 100,
       profit_rate: (Number(printQuoteData.metadata?.profit_pct) || 0) / 100,
-      discount: 0,
+      discount: Number(printQuoteData.metadata?.discount) || 0,
       tax_rate: printQuoteData.metadata?.apply_vat ? 0.15 : 0,
-      provisional_sums: 0,
+      provisional_sums: Number(printQuoteData.metadata?.provisional_sums) || 0,
+      built_area_sqm: Number(printQuoteData.metadata?.built_area_sqm) || 0,
+      price_validity_days: Number(printQuoteData.metadata?.valid_until_days) || 30,
+      is_inflation_adjusted: Boolean(printQuoteData.metadata?.is_inflation_adjusted),
+      assumptions: printQuoteData.metadata?.assumptions || [],
+      exclusions: printQuoteData.metadata?.exclusions || [],
       items: printQuoteData.metadata?.items?.map((item: any) => ({
         description: item.description,
         quantity: item.qty,
         rate: item.rate,
         unit: item.unit,
-        material_rate: item.rate * 0.5, // approximate breakdown for mock exports
-        labour_rate: item.rate * 0.3,
-        equipment_rate: item.rate * 0.2
+        material_rate: sumBuildupByType(item, "material"),
+        labour_rate: sumBuildupByType(item, "labour"),
+        equipment_rate: sumBuildupByType(item, "equipment"),
+        subcontractor_rate: sumBuildupByType(item, "subcontractor"),
+        transport_rate: sumBuildupByType(item, "transport"),
+        waste_allowance_rate: sumBuildupByType(item, "waste_allowance"),
       })) || []
     };
 
@@ -406,6 +552,22 @@ export default function QuotationBuilder() {
           >
             <Upload className="w-3.5 h-3.5 text-signal" />
             <span>Paste BOQ CSV</span>
+          </button>
+          <input
+            ref={boqFileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            className="hidden"
+            onChange={handleBoqFileImport}
+          />
+          <button
+            type="button"
+            onClick={() => boqFileInputRef.current?.click()}
+            disabled={importingBoqFile}
+            className="flex items-center space-x-1.5 bg-ink border border-ink-mid text-slate hover:text-white px-3 py-1.5 text-xs font-semibold rounded-sm transition-all disabled:opacity-50"
+          >
+            {importingBoqFile ? <Loader2 className="w-3.5 h-3.5 text-signal animate-spin" /> : <Upload className="w-3.5 h-3.5 text-signal" />}
+            <span>Upload BOQ File (Excel/CSV)</span>
           </button>
         </div>
       </div>
@@ -572,14 +734,45 @@ export default function QuotationBuilder() {
 
                 <label className="block">
                   <span className="font-mono text-[9px] uppercase text-slate">Validity (Days)</span>
-                  <input 
-                    type="number" 
-                    value={validDays} 
-                    onChange={(e) => setValidDays(Number(e.target.value))} 
+                  <input
+                    type="number"
+                    value={validDays}
+                    onChange={(e) => setValidDays(Number(e.target.value))}
                     className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal"
                   />
                 </label>
               </div>
+
+              <label className="block">
+                <span className="font-mono text-[9px] uppercase text-slate flex items-center gap-1">
+                  Built Area (sqm)
+                  <span title="Drives the $/m2 benchmark check on the calculation and the CCB's cost-per-sqm scoring. Leave at 0 if not applicable (e.g. a purely civil/infrastructure scope).">
+                    <HelpCircle className="w-3 h-3 text-slate-light" />
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  value={builtAreaSqm}
+                  onChange={(e) => setBuiltAreaSqm(Number(e.target.value) || 0)}
+                  className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper font-mono outline-none focus:border-signal"
+                />
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isInflationAdjusted}
+                  onChange={(e) => setIsInflationAdjusted(e.target.checked)}
+                  className="accent-signal w-3.5 h-3.5"
+                />
+                <span className="font-mono text-[9px] uppercase text-slate flex items-center gap-1">
+                  Rates are inflation-adjusted for current material pricing
+                  <span title="Confirms these rates have been checked against current material/labour costs, not stale historical figures. Leave unchecked to flag the document for a pricing review.">
+                    <HelpCircle className="w-3 h-3 text-slate-light" />
+                  </span>
+                </span>
+              </label>
             </div>
 
             {/* Calculations Markups */}
@@ -650,16 +843,68 @@ export default function QuotationBuilder() {
                   />
                 </div>
 
+                <div className="grid grid-cols-2 gap-3 border-t border-ink-mid/30 pt-3">
+                  <label className="block">
+                    <span className="font-mono text-[9px] uppercase text-slate">Provisional Sums ($)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={100}
+                      value={provisionalSums}
+                      onChange={(e) => setProvisionalSums(Number(e.target.value) || 0)}
+                      className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper font-mono outline-none focus:border-signal"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="font-mono text-[9px] uppercase text-slate">Discount ($)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={50}
+                      value={discount}
+                      onChange={(e) => setDiscount(Number(e.target.value) || 0)}
+                      className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper font-mono outline-none focus:border-signal"
+                    />
+                  </label>
+                </div>
+
                 <div className="flex items-center justify-between border-t border-ink-mid/30 pt-3">
                   <span className="text-xs text-slate-light font-mono uppercase">Apply 15% VAT</span>
-                  <input 
-                    type="checkbox" 
-                    checked={applyVat} 
-                    onChange={(e) => setApplyVat(e.target.checked)} 
+                  <input
+                    type="checkbox"
+                    checked={applyVat}
+                    onChange={(e) => setApplyVat(e.target.checked)}
                     className="w-4 h-4 accent-signal bg-ink border border-ink-mid cursor-pointer"
                   />
                 </div>
               </div>
+            </div>
+
+            {/* Assumptions & Exclusions */}
+            <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+              <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
+                <Info className="w-4 h-4 text-signal" /> Assumptions &amp; Exclusions
+              </h2>
+              <label className="block">
+                <span className="font-mono text-[9px] uppercase text-slate">Assumptions (one per line)</span>
+                <textarea
+                  value={assumptionsText}
+                  onChange={(e) => setAssumptionsText(e.target.value)}
+                  rows={3}
+                  placeholder={"Rates assume normal working hours and unobstructed site access.\nClient will provide approved drawings before mobilisation."}
+                  className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal resize-y"
+                />
+              </label>
+              <label className="block">
+                <span className="font-mono text-[9px] uppercase text-slate">Exclusions (one per line)</span>
+                <textarea
+                  value={exclusionsText}
+                  onChange={(e) => setExclusionsText(e.target.value)}
+                  rows={3}
+                  placeholder={"Rock blasting and contaminated soil remediation.\nClient-side professional fees and third-party inspections."}
+                  className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal resize-y"
+                />
+              </label>
             </div>
 
           </div>
@@ -805,10 +1050,28 @@ export default function QuotationBuilder() {
                       <span>Profit Margin Mark-up ({profitPct}%):</span>
                       <span className="text-white">${profitAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </div>
+                    {provisionalSums > 0 && (
+                      <div className="flex justify-between">
+                        <span>Provisional Sums:</span>
+                        <span className="text-white">${provisionalSums.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between border-t border-ink-mid/30 pt-1 font-semibold text-white">
                       <span>Subtotal (VAT Exclusive):</span>
                       <span>${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </div>
+                    {discount > 0 && (
+                      <>
+                        <div className="flex justify-between text-slate-light">
+                          <span>Discount:</span>
+                          <span className="text-red-400">-${discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        </div>
+                        <div className="flex justify-between text-slate-light">
+                          <span>Taxable Amount:</span>
+                          <span className="text-white">${taxableAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        </div>
+                      </>
+                    )}
                     <div className="flex justify-between text-slate-light">
                       <span>VAT (15%):</span>
                       <span className="text-white">${vat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
@@ -819,6 +1082,17 @@ export default function QuotationBuilder() {
                     <span className="font-display font-bold uppercase tracking-wider text-xs">Grand Total Proposal:</span>
                     <span className="font-mono font-bold text-lg text-signal">${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
+
+                  {warnings.length > 0 && (
+                    <div className="space-y-1.5 pt-1">
+                      {warnings.map((w, idx) => (
+                        <div key={idx} className="flex items-start gap-2 p-2 border border-amber-500/20 bg-amber-950/20 rounded-sm text-[10px] text-amber-400 leading-snug">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                          <span>{w}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -914,7 +1188,8 @@ export default function QuotationBuilder() {
                             <option value="labour">Labour</option>
                             <option value="equipment">Equipment</option>
                             <option value="subcontractor">Subcontractor</option>
-                            <option value="other">Other</option>
+                            <option value="transport">Transport</option>
+                            <option value="waste_allowance">Waste Allowance</option>
                           </select>
                           <input 
                             type="text" 
@@ -1182,20 +1457,38 @@ export default function QuotationBuilder() {
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Overheads ({printQuoteData.metadata?.overhead_pct}%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${( (Number(printQuoteData.metadata?.direct_costs || 0) + Number(printQuoteData.metadata?.preliminaries || 0)) * (Number(printQuoteData.metadata?.overhead_pct || 5)/100) ).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.overhead_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Contingency ({printQuoteData.metadata?.contingency_pct}%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${( (Number(printQuoteData.metadata?.direct_costs || 0) + Number(printQuoteData.metadata?.preliminaries || 0)) * (Number(printQuoteData.metadata?.contingency_pct || 5)/100) ).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.contingency_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Markup Profit ({printQuoteData.metadata?.profit_pct}%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.profit_amount?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || "Calculated"}</td>
+                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.profit_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         </tr>
+                        {(printQuoteData.metadata?.provisional_sums || 0) > 0 && (
+                          <tr className="border-b border-ink-mid/30">
+                            <td className="py-2 text-slate">Provisional Sums</td>
+                            <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata.provisional_sums.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          </tr>
+                        )}
                         <tr className="border-b border-ink-mid/30 font-semibold text-white print:text-black">
                           <td className="py-2">Subtotal (VAT Excl.)</td>
                           <td className="py-2 text-right">${printQuoteData.metadata?.subtotal?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                         </tr>
+                        {(printQuoteData.metadata?.discount || 0) > 0 && (
+                          <>
+                            <tr className="border-b border-ink-mid/30">
+                              <td className="py-2 text-slate">Discount</td>
+                              <td className="py-2 text-right text-red-400">-${printQuoteData.metadata.discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                            </tr>
+                            <tr className="border-b border-ink-mid/30">
+                              <td className="py-2 text-slate">Taxable Amount</td>
+                              <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.taxable_amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                            </tr>
+                          </>
+                        )}
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">VAT (15%)</td>
                           <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.vat?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
@@ -1245,17 +1538,21 @@ export default function QuotationBuilder() {
                 </div>
               )}
 
-              {/* TIMELINE DELIVERY SCHEDULE VIEW */}
+              {/* DELIVERY SEQUENCE VIEW - line order only, NOT a real schedule.
+                  We have no per-item duration/productivity data at this point
+                  in the Builder, so this must not present fabricated week
+                  numbers as a committed programme (that was found and flagged
+                  as a serious issue elsewhere in this module's PDF output). */}
               {printType === "schedule" && (
                 <div className="space-y-4">
-                  <span className="font-mono text-[9px] text-slate uppercase block print:text-slate-700">Estimated Project Milestones &amp; Weekly Deliveries</span>
+                  <span className="font-mono text-[9px] text-slate uppercase block print:text-slate-700">Indicative Delivery Sequence (BOQ Line Order - Not a Committed Programme)</span>
+                  <p className="text-[9px] text-slate print:text-slate-600 italic">Sequence numbers reflect BOQ line order only. A committed weekly programme requires a separate schedule derived from real productivity rates and dependencies.</p>
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
                       <tr className="border-b border-ink-mid text-slate font-mono uppercase tracking-wider text-[9px] print:border-slate-300 print:text-slate-700">
-                        <th className="pb-2 font-normal w-24 text-center">MILESTONE</th>
+                        <th className="pb-2 font-normal w-24 text-center">SEQUENCE</th>
                         <th className="pb-2 font-normal">DELIVERY DESCRIPTION</th>
                         <th className="pb-2 font-normal w-28 text-center">UNIT SCOPE</th>
-                        <th className="pb-2 font-normal w-28 text-right">TARGET WEEK</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1264,7 +1561,6 @@ export default function QuotationBuilder() {
                           <td className="py-2.5 text-center font-mono text-slate print:text-black">M-{idx + 1}</td>
                           <td className="py-2.5 text-slate-light print:text-black">{item.description}</td>
                           <td className="py-2.5 text-center font-mono text-slate-light print:text-black">{item.qty} {item.unit}</td>
-                          <td className="py-2.5 text-right font-mono text-white print:text-black">Week {idx + 1} - {idx + 2}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1273,6 +1569,32 @@ export default function QuotationBuilder() {
               )}
 
             </div>
+
+            {/* Assumptions & Exclusions */}
+            {((printQuoteData.metadata?.assumptions || []).length > 0 || (printQuoteData.metadata?.exclusions || []).length > 0) && (
+              <div className="border-t border-ink-mid pt-4 mt-6 print:border-slate-300 text-[10px] leading-relaxed text-slate-light print:text-slate-700 font-mono grid grid-cols-2 gap-6">
+                {(printQuoteData.metadata?.assumptions || []).length > 0 && (
+                  <div>
+                    <span className="font-mono text-[9px] text-slate uppercase block mb-1">Assumptions</span>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {printQuoteData.metadata.assumptions.map((a: string, i: number) => (
+                        <li key={i}>{a}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {(printQuoteData.metadata?.exclusions || []).length > 0 && (
+                  <div>
+                    <span className="font-mono text-[9px] text-slate uppercase block mb-1">Exclusions</span>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {printQuoteData.metadata.exclusions.map((x: string, i: number) => (
+                        <li key={i}>{x}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Terms and Scope Details Footer */}
             <div className="border-t border-ink-mid pt-6 mt-8 print:border-slate-300 text-[10px] leading-relaxed text-slate-light print:text-slate-700 font-mono">

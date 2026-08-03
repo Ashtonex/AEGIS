@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">AEGIS system flow</title>
+  <desc id="desc">High-level visual diagram showing users, Next.js frontend, FastAPI backend, Supabase, business modules, security controls, background jobs, and deployment flow.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#08111f"/>
+      <stop offset="58%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f8d77a"/>
+      <stop offset="100%" stop-color="#b9872d"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6ee7b7"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+    <marker id="arrowGold" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L12,7 L2,12 Z" fill="#d6a646"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L12,7 L2,12 Z" fill="#38bdf8"/>
+    </marker>
+    <style>
+      .title { font: 800 46px Inter, Segoe UI, Arial, sans-serif; fill: #f8fafc; letter-spacing: -1px; }
+      .subtitle { font: 400 20px Inter, Segoe UI, Arial, sans-serif; fill: #cbd5e1; }
+      .label { font: 800 22px Inter, Segoe UI, Arial, sans-serif; fill: #f8fafc; }
+      .small { font: 500 16px Inter, Segoe UI, Arial, sans-serif; fill: #dbeafe; }
+      .muted { font: 500 14px Inter, Segoe UI, Arial, sans-serif; fill: #94a3b8; }
+      .chip { font: 700 14px Inter, Segoe UI, Arial, sans-serif; fill: #0f172a; }
+      .box { fill: #111c31; stroke: #334155; stroke-width: 1.5; rx: 24; filter: url(#shadow); }
+      .box2 { fill: #0b2133; stroke: #1d4ed8; stroke-width: 1.5; rx: 24; filter: url(#shadow); }
+      .box3 { fill: #10241f; stroke: #059669; stroke-width: 1.5; rx: 24; filter: url(#shadow); }
+      .box4 { fill: #281d0e; stroke: #d6a646; stroke-width: 1.5; rx: 24; filter: url(#shadow); }
+      .lane { fill: rgba(15, 23, 42, 0.64); stroke: #273449; stroke-width: 1; rx: 30; }
+      .arrowGold { stroke: #d6a646; stroke-width: 4; fill: none; marker-end: url(#arrowGold); stroke-linecap: round; }
+      .arrowBlue { stroke: #38bdf8; stroke-width: 4; fill: none; marker-end: url(#arrowBlue); stroke-linecap: round; }
+      .thin { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 8 8; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <circle cx="1420" cy="80" r="250" fill="#1d4ed8" opacity="0.10"/>
+  <circle cx="150" cy="920" r="260" fill="#d6a646" opacity="0.08"/>
+
+  <text x="80" y="82" class="title">AEGIS / Project Imperium — how the platform works</text>
+  <text x="82" y="118" class="subtitle">A modular construction ERP: public website + protected command centre + FastAPI business core + Supabase security and data layer.</text>
+
+  <rect x="70" y="175" width="1460" height="170" class="lane"/>
+  <text x="95" y="210" class="muted">1. People and entry points</text>
+
+  <rect x="110" y="235" width="250" height="72" class="box4"/>
+  <text x="138" y="265" class="label">Public visitors</text>
+  <text x="138" y="290" class="small">enquiries, tenders, supplier forms</text>
+
+  <rect x="420" y="235" width="250" height="72" class="box4"/>
+  <text x="448" y="265" class="label">Staff / managers</text>
+  <text x="448" y="290" class="small">dashboard operations</text>
+
+  <rect x="730" y="235" width="250" height="72" class="box4"/>
+  <text x="758" y="265" class="label">Executives</text>
+  <text x="758" y="290" class="small">command centre and reporting</text>
+
+  <rect x="1040" y="235" width="250" height="72" class="box4"/>
+  <text x="1068" y="265" class="label">Portal users</text>
+  <text x="1068" y="290" class="small">clients, suppliers, foremen</text>
+
+  <rect x="70" y="390" width="1460" height="185" class="lane"/>
+  <text x="95" y="425" class="muted">2. Web application and API boundary</text>
+
+  <rect x="150" y="455" width="390" height="88" class="box2"/>
+  <text x="182" y="488" class="label">Next.js frontend</text>
+  <text x="182" y="515" class="small">public site, dashboards, portals, PWA</text>
+
+  <rect x="675" y="455" width="250" height="88" class="box4"/>
+  <text x="711" y="488" class="label">API gateway</text>
+  <text x="711" y="515" class="small">REST / JSON over HTTPS</text>
+
+  <rect x="1060" y="455" width="360" height="88" class="box2"/>
+  <text x="1092" y="488" class="label">FastAPI backend</text>
+  <text x="1092" y="515" class="small">routers, validation, business logic</text>
+
+  <path d="M235 307 C260 360, 305 398, 345 455" class="arrowGold"/>
+  <path d="M545 307 C560 360, 490 405, 440 455" class="arrowGold"/>
+  <path d="M855 307 C850 360, 690 405, 520 455" class="arrowGold"/>
+  <path d="M1165 307 C1120 360, 925 405, 870 455" class="arrowGold"/>
+  <path d="M540 499 L675 499" class="arrowBlue"/>
+  <path d="M925 499 L1060 499" class="arrowBlue"/>
+
+  <rect x="70" y="620" width="1460" height="235" class="lane"/>
+  <text x="95" y="655" class="muted">3. Imperium core, modules, and data security</text>
+
+  <rect x="105" y="695" width="310" height="115" class="box"/>
+  <text x="135" y="728" class="label">Imperium base layer</text>
+  <text x="135" y="756" class="small">identity, RBAC, audit logs</text>
+  <text x="135" y="781" class="small">tenant resolution, notifications</text>
+
+  <rect x="475" y="682" width="440" height="155" class="box"/>
+  <text x="505" y="716" class="label">Business modules</text>
+  <text x="505" y="746" class="small">Projects • Site Operations • Workforce • Fleet</text>
+  <text x="505" y="773" class="small">Procurement • Inventory • Finance • Quotations</text>
+  <text x="505" y="800" class="small">CRM • HR • Compliance • Documents • BI</text>
+
+  <rect x="975" y="682" width="240" height="155" class="box3"/>
+  <text x="1005" y="716" class="label">Supabase Auth</text>
+  <text x="1005" y="746" class="small">JWT sessions</text>
+  <text x="1005" y="773" class="small">backend RBAC checks</text>
+  <text x="1005" y="800" class="small">role permissions</text>
+
+  <rect x="1265" y="682" width="220" height="155" class="box3"/>
+  <text x="1295" y="716" class="label">PostgreSQL</text>
+  <text x="1295" y="746" class="small">RLS tenant isolation</text>
+  <text x="1295" y="773" class="small">organization_id</text>
+  <text x="1295" y="800" class="small">storage + realtime</text>
+
+  <path d="M1240 543 C1240 615, 1130 635, 1095 682" class="arrowBlue"/>
+  <path d="M1190 543 C1140 620, 860 632, 735 682" class="arrowBlue"/>
+  <path d="M415 752 L475 752" class="arrowBlue"/>
+  <path d="M915 760 L975 760" class="arrowBlue"/>
+  <path d="M1215 760 L1265 760" class="arrowBlue"/>
+
+  <rect x="123" y="875" width="1354" height="70" rx="22" fill="#07111f" stroke="#334155" stroke-width="1.5"/>
+  <text x="155" y="907" class="label">Deployment</text>
+  <text x="300" y="907" class="small">Docker Compose for local development</text>
+  <rect x="585" y="888" width="102" height="28" rx="14" fill="url(#gold)"/>
+  <text x="607" y="908" class="chip">Render</text>
+  <text x="720" y="907" class="small">two web services: aegis-frontend + aegis-backend-api</text>
+  <rect x="1142" y="888" width="135" height="28" rx="14" fill="url(#blue)"/>
+  <text x="1162" y="908" class="chip">Supabase</text>
+  <text x="1300" y="907" class="small">hosted database</text>
+
+  <path d="M1375 837 C1375 860, 1345 872, 1300 887" class="thin"/>
+  <path d="M260 810 C260 850, 290 868, 340 887" class="thin"/>
+
+  <text x="80" y="970" class="muted">Read left-to-right: users enter through the web app, requests pass through the API, Imperium applies identity/permissions/audit rules, modules run business workflows, and Supabase enforces data isolation.</text>
+</svg>

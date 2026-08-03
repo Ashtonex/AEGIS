@@ -118,7 +118,7 @@ async def list_support_tickets(
         LEFT JOIN projects.projects p ON p.id = t.project_id AND p.organization_id = t.organization_id
         WHERE t.organization_id = :org_id
           AND t.is_deleted = false
-          AND (:status_filter IS NULL OR t.status = :status_filter)
+          AND (CAST(:status_filter AS varchar) IS NULL OR t.status = CAST(:status_filter AS varchar))
         ORDER BY
           CASE t.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
           t.created_at DESC

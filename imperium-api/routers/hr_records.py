@@ -122,7 +122,7 @@ async def decide_leave_request(
         text("""
         UPDATE hr.leave_requests
         SET status = :decision,
-            approved_by = CASE WHEN :decision = 'approved' THEN :user_id ELSE approved_by END,
+            approved_by = CASE WHEN :decision = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
             approved_at = CASE WHEN :decision = 'approved' THEN NOW() ELSE approved_at END,
             rejection_reason = CASE WHEN :decision = 'rejected' THEN :reason ELSE NULL END,
             updated_at = NOW()

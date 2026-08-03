@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
+import httpx
 import jwt
 import pytest
 from fastapi import HTTPException
@@ -107,3 +108,29 @@ def test_decode_locally_never_returns_unverified_payload_for_garbage_token():
     """A syntactically-invalid or unsigned token must never be treated as a
     verified payload by the local fast path."""
     assert security._decode_locally("not-a-jwt-at-all") is None
+
+
+def test_verify_token_circuit_breaker_opens_after_repeated_supabase_failures(monkeypatch):
+    """Once the Supabase Auth API fallback has failed enough times in a row,
+    verify_token must fail fast (503, no further network calls) instead of
+    letting every request block through the full retry+timeout duration."""
+    breaker = security._supabase_auth_breaker
+    breaker.record_success()  # ensure a clean starting state regardless of test order
+    try:
+        monkeypatch.setattr(
+            security, "_call_supabase_auth_api", lambda token: (_ for _ in ()).throw(httpx.ConnectError("down"))
+        )
+        # verify_token wraps the breaker call in a broad except Exception ->
+        # 401, so drive the breaker directly to its open threshold first
+        # rather than relying on that mapping.
+        for _ in range(breaker.failure_threshold):
+            with pytest.raises(httpx.ConnectError):
+                breaker.call_sync(lambda: security._call_supabase_auth_api("any-token"))
+        assert breaker.is_open
+
+        forged = _forged_superadmin_token()
+        with pytest.raises(HTTPException) as exc_info:
+            security.verify_token(_Creds(forged))
+        assert exc_info.value.status_code == 503
+    finally:
+        breaker.record_success()  # don't leak an open circuit into other tests

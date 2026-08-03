@@ -620,7 +620,7 @@ async def request_site_material(
                 :user_id, :required_by_date, :priority, :justification, :total_estimated,
                 CAST(:status AS varchar),
                 CASE WHEN CAST(:status AS varchar)='submitted' THEN NOW() ELSE NULL END,
-                CASE WHEN CAST(:status AS varchar)='submitted' THEN :user_id ELSE NULL END,
+                CASE WHEN CAST(:status AS varchar)='submitted' THEN CAST(:user_id AS uuid) ELSE NULL END,
                 true, :budget_available, :user_id
             ) RETURNING id
         """),

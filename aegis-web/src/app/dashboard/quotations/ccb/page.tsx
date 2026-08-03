@@ -43,7 +43,7 @@ import {
   getConstructionAssemblies,
   getDocumentChangeHistory,
   getGuardAuditHistory,
-  getProjects,
+  getInternalProjects,
   getQuotations,
   getRecommendedSubcontractors,
   listRateBenchmarks,
@@ -180,6 +180,22 @@ type BrainResult = {
       equipment_spend: number;
       subcontractor_spend: number;
       earned_value_target: number;
+    }>;
+    monthly_cashflow: Array<{
+      month: string;
+      projected_spend: number;
+      expected_billing: number;
+    }>;
+    labour_histogram: Array<{
+      week: number;
+      artisans_count: number;
+      labourers_count: number;
+    }>;
+    margin_at_risk_curve: Array<{
+      week: number;
+      protected_margin_usd: number;
+      contingency_buffer_usd: number;
+      max_allowed_variance: number;
     }>;
   };
   mandatory_approvals: string[];
@@ -348,6 +364,8 @@ export default function CommercialControlBrainPage() {
 
   // 3. Recommended Subcontractors
   const [recommendedVendors, setRecommendedVendors] = useState<any[]>([]);
+  const [vendorCategory, setVendorCategory] = useState("Concrete & Structure");
+  const VENDOR_CATEGORIES = ["Concrete & Structure", "Masonry", "Roofing", "Structure"];
 
   // 4. Semantic Classifier Test
   const [classifyQuery, setClassifyQuery] = useState("150mm reinforced concrete slab in C30/37");
@@ -408,13 +426,12 @@ export default function CommercialControlBrainPage() {
     setLoading(true);
     setErrorMsg("");
     try {
-      const [quotesRes, projectsRes, assembliesRes, guardLogRes, docLogRes, subbyRes, rateBenchmarksRes] = await Promise.all([
+      const [quotesRes, projectsRes, assembliesRes, guardLogRes, docLogRes, rateBenchmarksRes] = await Promise.all([
         getQuotations(),
-        getProjects(),
+        getInternalProjects(),
         getConstructionAssemblies(),
         getGuardAuditHistory(),
         getDocumentChangeHistory(),
-        getRecommendedSubcontractors("Concrete & Structure"),
         listRateBenchmarks(),
       ]);
 
@@ -429,7 +446,6 @@ export default function CommercialControlBrainPage() {
 
       if (guardLogRes.success && Array.isArray(guardLogRes.data)) setGuardAuditsLog(guardLogRes.data);
       if (docLogRes.success && Array.isArray(docLogRes.data)) setDocChangesLog(docLogRes.data);
-      if (subbyRes.success && Array.isArray(subbyRes.data)) setRecommendedVendors(subbyRes.data);
       if (rateBenchmarksRes.success && Array.isArray(rateBenchmarksRes.data)) setCustomRateBenchmarks(rateBenchmarksRes.data);
     } catch (error: any) {
       setErrorMsg(error?.message || "CCB could not load system intelligence.");
@@ -441,6 +457,17 @@ export default function CommercialControlBrainPage() {
   useEffect(() => {
     if (session) void loadData();
   }, [session, loadData]);
+
+  // Re-queried whenever the estimator picks a different trade category -
+  // recommending a roofing specialist for a concrete quote would be worse
+  // than showing nothing.
+  useEffect(() => {
+    async function loadVendors() {
+      const res = await getRecommendedSubcontractors(vendorCategory);
+      setRecommendedVendors(res.success && Array.isArray(res.data) ? res.data : []);
+    }
+    if (session) void loadVendors();
+  }, [session, vendorCategory]);
 
   const selectedQuote = useMemo(
     () => quotations.find((quote) => quote.id === selectedQuoteId) || quotations[0] || null,
@@ -1337,6 +1364,69 @@ export default function CommercialControlBrainPage() {
                     </div>
                   </Panel>
 
+                  {/* MONTHLY CASHFLOW */}
+                  <Panel title="Monthly Cashflow: Spend vs. Billing" icon={TrendingUp}>
+                    {brain.spend_forecast.monthly_cashflow.length === 0 ? (
+                      <p className="text-sm text-slate">No cashflow projection available.</p>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {brain.spend_forecast.monthly_cashflow.map((m) => (
+                          <div key={m.month} className="border border-ink-mid bg-ink p-3">
+                            <p className="font-mono text-xs uppercase text-white">{m.month}</p>
+                            <div className="mt-2 flex justify-between font-mono text-[10px] uppercase text-slate">
+                              <span>Projected Spend</span>
+                              <span className="text-amber-300">{money(m.projected_spend, currency)}</span>
+                            </div>
+                            <div className="flex justify-between font-mono text-[10px] uppercase text-slate">
+                              <span>Expected Billing</span>
+                              <span className="text-emerald-400">{money(m.expected_billing, currency)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Panel>
+
+                  {/* LABOUR HEADCOUNT & MARGIN-AT-RISK */}
+                  <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+                    <Panel title="Weekly Labour Headcount Plan" icon={HardHat}>
+                      {brain.spend_forecast.labour_histogram.length === 0 ? (
+                        <p className="text-sm text-slate">No labour histogram available.</p>
+                      ) : (
+                        <div className="space-y-2 max-h-96 overflow-y-auto">
+                          {brain.spend_forecast.labour_histogram.slice(0, 12).map((w) => (
+                            <div key={w.week} className="flex items-center justify-between border border-ink-mid bg-ink p-2 text-xs font-mono">
+                              <span className="uppercase text-slate">Week {w.week}</span>
+                              <span className="text-white">{w.artisans_count} artisans</span>
+                              <span className="text-slate-light">{w.labourers_count} labourers</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Panel>
+
+                    <Panel title="Margin-at-Risk Curve" icon={Scale}>
+                      {brain.spend_forecast.margin_at_risk_curve.length === 0 ? (
+                        <p className="text-sm text-slate">No margin-at-risk curve available.</p>
+                      ) : (
+                        <div className="space-y-2 max-h-96 overflow-y-auto">
+                          {brain.spend_forecast.margin_at_risk_curve.slice(0, 12).map((w) => (
+                            <div key={w.week} className="border border-ink-mid bg-ink p-2 text-xs font-mono">
+                              <div className="flex justify-between uppercase text-slate">
+                                <span>Week {w.week}</span>
+                                <span className="text-emerald-400">Protected {money(w.protected_margin_usd, currency)}</span>
+                              </div>
+                              <div className="mt-1 flex justify-between text-[10px] uppercase text-slate-light">
+                                <span>Contingency buffer {money(w.contingency_buffer_usd, currency)}</span>
+                                <span>Max variance {money(w.max_allowed_variance, currency)}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Panel>
+                  </section>
+
                   {/* FLAGS & INTERACTIVE ENFORCEMENT QUEUE */}
                   <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                     <Panel title="Commercial Exceptions (BS Flags)" icon={AlertTriangle}>
@@ -1658,6 +1748,21 @@ export default function CommercialControlBrainPage() {
                 <p className="text-sm text-slate">
                   Pre-vetted subcontractor vendors matching CCB benchmark target rates and historical performance.
                 </p>
+                <label className="block max-w-xs">
+                  <span className="font-mono text-[9px] uppercase text-slate">Trade Category</span>
+                  <select
+                    value={vendorCategory}
+                    onChange={(e) => setVendorCategory(e.target.value)}
+                    className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal cursor-pointer"
+                  >
+                    {VENDOR_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                </label>
+                {recommendedVendors.length === 0 && (
+                  <p className="text-xs text-slate-light italic">No pre-vetted vendors on file for &quot;{vendorCategory}&quot;.</p>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {recommendedVendors.map((vendor) => (
                     <div key={vendor.vendor_id} className="border border-ink-mid bg-ink p-4 text-xs space-y-2">

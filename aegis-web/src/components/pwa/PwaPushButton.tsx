@@ -23,6 +23,15 @@ export function PwaPushButton() {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    // No service worker is registered outside production (see
+    // PwaRegistration.tsx) - serviceWorker.ready would hang forever waiting
+    // for a registration that will never arrive, so treat push as
+    // unsupported here rather than let the button spin indefinitely.
+    if (process.env.NODE_ENV !== "production") {
+      setPermission("unsupported");
+      return;
+    }
+
     if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
       setPermission("unsupported");
       return;
@@ -38,7 +47,11 @@ export function PwaPushButton() {
   const enablePush = async () => {
     setNotice(null);
     if (permission === "unsupported") {
-      setNotice("This browser does not support push notifications.");
+      setNotice(
+        process.env.NODE_ENV !== "production"
+          ? "Push notifications are only available in production builds."
+          : "This browser does not support push notifications."
+      );
       return;
     }
 

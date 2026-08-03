@@ -127,6 +127,7 @@ class QuotationCalculator:
         raw_items = input_data.get("items", [])
         boq_items: List[BOQItem] = []
         direct_costs = Decimal("0")
+        item_alerts: List[str] = []
 
         # Summary of cost components
         total_materials = Decimal("0")
@@ -148,13 +149,23 @@ class QuotationCalculator:
             trans = cls.sanitize_decimal(item.get("transport_rate"))
             waste = cls.sanitize_decimal(item.get("waste_allowance_rate"))
 
-            # Zero out negative quantities
+            desc = str(item.get("description", "Unspecified item"))
+            unit = str(item.get("unit", "m"))
+
+            # Zero out negative quantities/rates - but flag it, since silently
+            # dropping a negative value (e.g. a credit/deduction line) would
+            # otherwise inflate grand_total with no indication to the user.
             if qty < 0:
+                item_alerts.append(f"Item '{desc}': negative quantity ({qty}) was treated as 0.")
                 qty = Decimal("0")
             if flat_rate < 0:
+                item_alerts.append(f"Item '{desc}': negative rate ({flat_rate}) was treated as 0.")
                 flat_rate = Decimal("0")
 
             # Map breakdowns to zero if negative
+            for label, val in (("material_rate", mat), ("labour_rate", lab), ("equipment_rate", eqp), ("subcontractor_rate", sub), ("transport_rate", trans), ("waste_allowance_rate", waste)):
+                if val < 0:
+                    item_alerts.append(f"Item '{desc}': negative {label} ({val}) was treated as 0.")
             mat = max(Decimal("0"), mat)
             lab = max(Decimal("0"), lab)
             eqp = max(Decimal("0"), eqp)
@@ -168,9 +179,12 @@ class QuotationCalculator:
                 rate = computed_breakdown_sum
             else:
                 rate = flat_rate
-
-            desc = str(item.get("description", "Unspecified item"))
-            unit = str(item.get("unit", "m"))
+                if computed_breakdown_sum > Decimal("0") and rate != computed_breakdown_sum:
+                    item_alerts.append(
+                        f"Item '{desc}': flat rate (${rate}) does not match the sum of its cost "
+                        f"breakdown components (${computed_breakdown_sum}). The flat rate was used "
+                        "for direct costs; the breakdown totals below reflect the components, not the billed rate."
+                    )
 
             boq_items.append(
                 BOQItem(
@@ -210,6 +224,7 @@ class QuotationCalculator:
         prelims = cls.sanitize_decimal(input_data.get("preliminaries"))
         if prelims < 0:
             prelims = Decimal("0")
+        prelims = prelims.quantize(rounding_prec, rounding=ROUND_HALF_UP)
 
         # Base for percentage calculations
         base_for_markups = direct_costs + prelims
@@ -226,9 +241,9 @@ class QuotationCalculator:
         overhead_rate = max(Decimal("0"), overhead_rate)
         contingency_rate = max(Decimal("0"), contingency_rate)
         profit_rate = max(Decimal("0"), profit_rate)
-        discount = max(Decimal("0"), discount)
+        discount = max(Decimal("0"), discount).quantize(rounding_prec, rounding=ROUND_HALF_UP)
         tax_rate = max(Decimal("0"), tax_rate)
-        prov_sums = max(Decimal("0"), prov_sums)
+        prov_sums = max(Decimal("0"), prov_sums).quantize(rounding_prec, rounding=ROUND_HALF_UP)
 
         # Amounts
         overhead_amount = (base_for_markups * overhead_rate).quantize(
@@ -260,7 +275,7 @@ class QuotationCalculator:
 
         # Margin Threshold Checks (Flag overrides or alerts)
         unauthorised_margins = False
-        alerts = []
+        alerts = list(item_alerts)
         if profit_rate > Decimal("0.40"):
             unauthorised_margins = True
             alerts.append("Profit rate exceeds maximum corporate threshold of 40%.")
@@ -311,17 +326,29 @@ class QuotationCalculator:
             }
         }
 
-        # Secure Checksum/Audit Hash (prevent pricing database tampering)
+        # Secure Checksum/Audit Hash (prevent pricing database tampering).
+        # Every input that feeds the final grand_total must be represented here -
+        # otherwise that field could be tampered with post-calculation without
+        # invalidating the hash, as long as grand_total itself is left consistent.
         checksum_payload = {
             "quotation_id": quotation_id,
             "revision_number": revision_number,
             "grand_total": str(grand_total),
             "direct_costs": str(direct_costs),
+            "preliminaries": str(prelims),
             "overhead_rate": str(overhead_rate),
+            "contingency_rate": str(contingency_rate),
             "profit_rate": str(profit_rate),
+            "tax_rate": str(tax_rate),
+            "discount": str(discount),
+            "provisional_sums": str(prov_sums),
             "margin_policy_violated": unauthorised_margins,
             "built_area_sqm": str(built_area_sqm),
             "is_inflation_adjusted": is_inflation_adjusted,
+            "items": [
+                {"description": bi.description, "quantity": str(bi.quantity), "rate": str(bi.rate)}
+                for bi in boq_items
+            ],
         }
         checksum_str = json.dumps(checksum_payload, sort_keys=True)
         audit_trail_hash = hashlib.sha256(checksum_str.encode("utf-8")).hexdigest()

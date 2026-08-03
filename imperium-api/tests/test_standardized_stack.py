@@ -14,7 +14,7 @@ class StandardizedStackCalculationsTests(unittest.TestCase):
     def test_settings_validation(self):
         """Verifies Pydantic settings parsing and properties."""
         self.assertEqual(settings.ENVIRONMENT, "development")
-        self.assertIn("http://localhost:3000", settings.cors_origins)
+        self.assertIn("http://localhost:3010", settings.cors_origins)
 
     def test_quotation_baseline_calculation(self):
         """Tests standard cost buildup: Direct + Prelims + Overheads + Contingency + Profit + VAT."""

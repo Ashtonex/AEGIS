@@ -400,7 +400,7 @@ async def list_allocations(
         text("""SELECT a.*, e.employee_name, p.name AS project_name FROM hr.project_allocations a
         JOIN hr.employees e ON e.id=a.employee_id AND e.organization_id=a.organization_id
         JOIN projects.projects p ON p.id=a.project_id AND p.organization_id=a.organization_id
-        WHERE a.organization_id=:org_id AND a.is_deleted=false AND (:project_id IS NULL OR a.project_id=:project_id)
+        WHERE a.organization_id=:org_id AND a.is_deleted=false AND (CAST(:project_id AS uuid) IS NULL OR a.project_id=CAST(:project_id AS uuid))
         ORDER BY a.starts_on DESC LIMIT 500"""),
         {"org_id": user["org_id"], "project_id": project_id},
     )

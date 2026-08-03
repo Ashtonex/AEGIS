@@ -58,7 +58,8 @@ class QuotationStackContractTests(unittest.TestCase):
 
     def test_high_risk_events_notify_md_and_commercial_manager_roles(self):
         self.assertIn("emit_role_notification", QUOTATION_ROUTER)
-        self.assertIn('role_names=["MD", "COMMERCIAL_MANAGER", "EXECUTIVE", SUPERADMIN_ROLE]', QUOTATION_ROUTER)
+        self.assertIn('COMMERCIAL_ALERT_ROLES = ["Executive (Admin)", "Finance Manager", SUPERADMIN_ROLE]', QUOTATION_ROUTER)
+        self.assertIn("role_names=COMMERCIAL_ALERT_ROLES", QUOTATION_ROUTER)
 
     def test_assemblies_and_rate_benchmarks_have_org_scoped_admin_crud(self):
         self.assertIn('@router.post("/assemblies")', QUOTATION_ROUTER)

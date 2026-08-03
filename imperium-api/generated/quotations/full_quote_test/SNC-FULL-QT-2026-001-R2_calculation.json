@@ -48,7 +48,7 @@
     "Client-side professional fees and third-party inspections.",
     "Foreign exchange variation after quote validity period."
   ],
-  "audit_trail_hash": "83fb7048306a0de2f889ae89a9f52b8f397fa6f81ce751f0a088fb4b75a7e235",
+  "audit_trail_hash": "e75b99239ebf5317b23882c64f8ed16865772bd304b04960f707a6279bb66b7f",
   "built_area_sqm": "0",
   "price_validity_days": 30,
   "is_inflation_adjusted": false

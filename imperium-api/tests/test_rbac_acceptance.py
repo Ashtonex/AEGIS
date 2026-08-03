@@ -124,6 +124,7 @@ async def test_get_current_user_resolves_superadmin_from_database_role():
     db = FakeDb(
         FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)),
         FakeResult(rows=[SimpleNamespace(name=SUPERADMIN_ROLE)]),
+        FakeResult(),  # SELECT set_config(...) - makes the actor visible to core.audit_log's trigger
     )
 
     resolved = await get_current_user(

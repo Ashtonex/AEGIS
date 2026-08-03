@@ -4,12 +4,49 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 import jwt
 import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from core.database import get_db
 from core.config import settings
+from core.resilience import CircuitBreaker, CircuitBreakerOpen
 
 security = HTTPBearer()
+
+# Tracks the Supabase Auth API specifically (the network fallback path in
+# verify_token below) so a struggling/unreachable Supabase fails fast for a
+# cooldown period instead of every single request blocking for the full
+# retry+timeout duration during an outage.
+_supabase_auth_breaker = CircuitBreaker(
+    "supabase_auth", failure_threshold=5, reset_timeout_seconds=30.0
+)
+
+
+@retry(
+    retry=retry_if_exception_type((httpx.TimeoutException, httpx.TransportError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+    reraise=True,
+)
+def _call_supabase_auth_api(token: str) -> httpx.Response:
+    """Retried on transient network failure only. A 4xx response (bad/
+    expired token) is a legitimate outcome, not a service failure - it must
+    not be retried and must not count against the circuit breaker, or a
+    burst of ordinary expired-session requests would trip the breaker and
+    lock out everyone with a valid session too."""
+    auth_url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/user"
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(
+            auth_url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "apikey": settings.SUPABASE_ANON_KEY,
+                "Accept": "application/json",
+            },
+        )
+    if response.status_code >= 500:
+        response.raise_for_status()
+    return response
 SUPERADMIN_ROLE = "SUPERADMIN"
 
 # Centralized Argon2 Password Hasher
@@ -164,18 +201,23 @@ def verify_token(
     # 2. Fallback to Supabase Auth verification endpoint. This call has the
     # Supabase service validate the token's signature server-side, so it
     # remains secure even when local verification above can't confirm it.
+    # Transient failures are retried (tenacity, up to 3 attempts) and a
+    # circuit breaker fails fast for a cooldown period if Supabase itself is
+    # struggling, rather than every request blocking for the full
+    # retry+timeout duration during an outage.
     try:
-        auth_url = f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1/user"
-        with httpx.Client(timeout=10.0) as client:
-            response = client.get(
-                auth_url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Accept": "application/json",
-                },
+        try:
+            response = _supabase_auth_breaker.call_sync(lambda: _call_supabase_auth_api(token))
+        except CircuitBreakerOpen as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication service temporarily unavailable. Please retry.",
+            ) from exc
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired authentication credentials.",
             )
-        response.raise_for_status()
         authenticated_user = response.json()
         if not isinstance(authenticated_user, dict) or not authenticated_user.get("id"):
             raise ValueError("Supabase did not return a user for this token.")
@@ -189,15 +231,17 @@ def verify_token(
     except HTTPException:
         raise
     except httpx.HTTPStatusError as exc:
+        # Every retry attempt hit a 5xx from Supabase itself - a genuine
+        # service failure, not a rejected token.
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired authentication credentials.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable. Please retry.",
         ) from exc
     except (httpx.TimeoutException, httpx.TransportError) as exc:
         # The token itself was never rejected here - Supabase's auth API
-        # couldn't be reached in time. Reporting this as 401 would make a
-        # transient network blip look like an invalid session, prompting a
-        # needless sign-out. 503 lets callers retry instead.
+        # couldn't be reached in time even after retrying. Reporting this as
+        # 401 would make a transient network blip look like an invalid
+        # session, prompting a needless sign-out. 503 lets callers retry.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service temporarily unavailable. Please retry.",
@@ -336,6 +380,15 @@ async def get_current_user(
     else:
         resolved_role = role
 
+    # Makes the acting user visible to core.process_audit_log() (the DB
+    # trigger backing core.audit_log) for the rest of this request's
+    # transaction. Every write across the app already goes through this same
+    # `db` session (FastAPI caches Depends(get_db) per-request), so setting
+    # this once here - rather than once per router - covers every module.
+    # Without it, every audit_log row's created_by is silently NULL: the
+    # trigger reads this session variable and nothing ever set it.
+    await db.execute(text("SELECT set_config('request.jwt.claim.sub', :uid, true)"), {"uid": str(user_id)})
+
     return {
         "user_id": user_id,
         "sub": user_id,  # For backwards compatibility with auto-generated routes
@@ -343,6 +396,45 @@ async def get_current_user(
         "email": payload.get("email"),
         "role": resolved_role,
     }
+
+
+def is_self_certification(actor_user_id, subject_creator_id) -> bool:
+    """True when the person performing a sign-off action is the same person
+    who created the thing being signed off on. Shared by every
+    segregation-of-duties check (quotation win decisions, drawing revision
+    checklists, SOP reviewer items) so the comparison logic - and its test
+    coverage - lives in exactly one place. None on either side means "no
+    creator recorded" and is never treated as a match (fail open on missing
+    data here, not fail closed - an unattributed record shouldn't block a
+    legitimate sign-off)."""
+    if actor_user_id is None or subject_creator_id is None:
+        return False
+    return str(actor_user_id) == str(subject_creator_id)
+
+
+async def user_has_permission(db: AsyncSession, user: dict, permission_key: str) -> bool:
+    """Ad-hoc permission check for business logic that can't be expressed as
+    a static route dependency (e.g. a permission requirement that only
+    applies to certain rows, not the whole endpoint). Shares the same
+    query as require_permission's dependency so the two never drift apart."""
+    if user.get("role") == SUPERADMIN_ROLE:
+        return True
+    if not user.get("org_id"):
+        return False
+    result = await db.execute(
+        text("""
+            SELECT 1
+            FROM core.permissions p
+            JOIN core.role_permissions rp ON p.id = rp.permission_id
+            JOIN core.user_roles ur ON rp.role_id = ur.role_id
+            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
+            WHERE ur.user_id = :user_id
+              AND ur.organization_id = :org_id
+              AND p.key = :permission_key
+        """),
+        {"user_id": user.get("user_id"), "org_id": user.get("org_id"), "permission_key": permission_key},
+    )
+    return bool(result.scalar())
 
 
 def require_permission(permission_key: str):

@@ -552,7 +552,7 @@ async def decide_requisition(
         UPDATE procurement.purchase_requisitions
         SET status=CAST(:decision AS varchar),
             approved_at=CASE WHEN CAST(:decision AS varchar)='approved' THEN NOW() ELSE approved_at END,
-            approved_by=CASE WHEN CAST(:decision AS varchar)='approved' THEN :user_id ELSE approved_by END,
+            approved_by=CASE WHEN CAST(:decision AS varchar)='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
             rejection_reason=CASE WHEN CAST(:decision AS varchar)='rejected' THEN :reason ELSE NULL END,
             updated_at=NOW()
         WHERE id=:id
@@ -695,7 +695,7 @@ async def create_rfq(
         ) VALUES (
             :org_id, :rfq_number, :requisition_id, :project_id, :title, :description,
             CAST(:closing_date AS timestamptz), CAST(:status AS varchar),
-            CASE WHEN CAST(:status AS varchar)='issued' THEN :user_id ELSE NULL END,
+            CASE WHEN CAST(:status AS varchar)='issued' THEN CAST(:user_id AS uuid) ELSE NULL END,
             CASE WHEN CAST(:status AS varchar)='issued' THEN NOW() ELSE NULL END,
             :user_id
         ) RETURNING id
@@ -1785,7 +1785,7 @@ async def payment_decision(
         text("""
         UPDATE procurement.supplier_invoices
         SET status=CAST(:status AS varchar),
-            payment_approved_by=CASE WHEN CAST(:status AS varchar)='approved' THEN :user_id ELSE payment_approved_by END,
+            payment_approved_by=CASE WHEN CAST(:status AS varchar)='approved' THEN CAST(:user_id AS uuid) ELSE payment_approved_by END,
             payment_approved_at=CASE WHEN CAST(:status AS varchar)='approved' THEN NOW() ELSE payment_approved_at END,
             rejection_reason=CASE WHEN CAST(:status AS varchar)='rejected' THEN :reason ELSE rejection_reason END,
             updated_at=NOW()

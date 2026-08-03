@@ -2,13 +2,16 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { 
-  FileText, Plus, Trash2, CheckCircle, 
+import {
+  FileText, Plus, Trash2, CheckCircle,
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
-  TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain
+  TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
+  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History
 } from "lucide-react";
-import { getQuotations, getProjects } from "@/lib/api";
+import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import SopChecklistModal from "./SopChecklistModal";
+import QuotationHistoryModal from "./QuotationHistoryModal";
 
 export default function QuotationsDashboard() {
   const { session } = useAuth();
@@ -16,21 +19,64 @@ export default function QuotationsDashboard() {
   const [projectsList, setProjectsList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sortKey, setSortKey] = useState<"created_at" | "client_name" | "quote_amount" | "status">("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+  const [archivingId, setArchivingId] = useState<string | null>(null);
+  const [sopModalQuote, setSopModalQuote] = useState<{ id: string; label: string } | null>(null);
+  const [historyModalQuote, setHistoryModalQuote] = useState<{ id: string; label: string } | null>(null);
+  const PAGE_SIZE = 15;
+  const LOAD_LIMIT = 200;
+
+  const handleDecision = async (id: string, status: "won" | "lost") => {
+    if (status === "won" && !confirm(
+      "Mark this quotation as WON? If it's linked to a project, this will seed/replace that project's execution budget from this quotation's numbers."
+    )) {
+      return;
+    }
+    setDecidingId(id);
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await decideQuotation(id, status);
+      if (res.success) {
+        let msg = res.message || `Quotation marked as ${status}.`;
+        if (res.data?.margin_alert_raised) {
+          msg += " A margin-threat alert was raised for this project's budget.";
+        }
+        setSuccessMsg(msg);
+        await loadData();
+      } else {
+        setErrorMsg(res.message || "Failed to record decision.");
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to record decision.");
+    } finally {
+      setDecidingId(null);
+    }
+  };
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setErrorMsg("");
     try {
       const [quotesRes, projectsRes] = await Promise.all([
-        getQuotations(),
-        getProjects()
+        getQuotations({ limit: LOAD_LIMIT, sort_by: "created_at", sort_dir: "desc" }),
+        getInternalProjects()
       ]);
 
       if (quotesRes.success && Array.isArray(quotesRes.data)) {
         setQuotes(quotesRes.data);
+        setTotalCount(Number((quotesRes.meta as any)?.total ?? quotesRes.data.length));
       } else {
         setQuotes([]);
+        setTotalCount(0);
       }
 
       if (projectsRes.success && Array.isArray(projectsRes.data)) {
@@ -45,20 +91,119 @@ export default function QuotationsDashboard() {
     }
   }, []);
 
+  const handleDuplicate = async (q: any) => {
+    setDuplicatingId(q.id);
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const newRef = `SNC-QT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const clonedMetadata = {
+        ...(q.metadata || {}),
+        reference_number: newRef,
+        status: "draft",
+        quote_date: new Date().toISOString().split("T")[0],
+      };
+      const payload: any = {
+        client_name: q.client_name,
+        quote_amount: q.quote_amount,
+        status: "draft",
+        metadata: clonedMetadata,
+      };
+      if (q.project_id) payload.project_id = q.project_id;
+
+      const res = await createQuotation(payload);
+      if (res.success) {
+        setSuccessMsg(`Duplicated as a new draft: ${newRef}`);
+        await loadData();
+      } else {
+        setErrorMsg(res.message || "Failed to duplicate quotation.");
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to duplicate quotation.");
+    } finally {
+      setDuplicatingId(null);
+    }
+  };
+
+  const handleArchive = async (q: any) => {
+    const refNum = q.metadata?.reference_number || q.id.slice(0, 8).toUpperCase();
+    if (!confirm(`Archive quotation ${refNum} (${q.client_name})? This removes it from the active ledger.`)) {
+      return;
+    }
+    setArchivingId(q.id);
+    setErrorMsg("");
+    setSuccessMsg("");
+    try {
+      const res = await deleteQuotation(q.id);
+      if (res.success) {
+        setSuccessMsg(`${refNum} archived.`);
+        await loadData();
+      } else {
+        setErrorMsg(res.message || "Failed to archive quotation.");
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to archive quotation.");
+    } finally {
+      setArchivingId(null);
+    }
+  };
+
+  const toggleSort = (key: "created_at" | "client_name" | "quote_amount" | "status") => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+    setPage(0);
+  };
+
   useEffect(() => {
     if (session) {
       void loadData();
     }
   }, [session, loadData]);
 
-  // Filter quotes based on search
+  useEffect(() => {
+    setPage(0);
+  }, [searchTerm, statusFilter]);
+
+  // Filter quotes based on search + status
   const filteredQuotes = quotes.filter(q => {
     const term = searchTerm.toLowerCase();
     const client = (q.client_name || "").toLowerCase();
     const title = (q.metadata?.project_title || "").toLowerCase();
     const ref = (q.metadata?.reference_number || q.id || "").toLowerCase();
-    return client.includes(term) || title.includes(term) || ref.includes(term);
+    const matchesSearch = client.includes(term) || title.includes(term) || ref.includes(term);
+    const status = q.metadata?.status || q.status || "draft";
+    const matchesStatus = statusFilter === "all" || status === statusFilter;
+    return matchesSearch && matchesStatus;
   });
+
+  const sortedQuotes = [...filteredQuotes].sort((a, b) => {
+    let av: any;
+    let bv: any;
+    if (sortKey === "client_name") {
+      av = (a.client_name || "").toLowerCase();
+      bv = (b.client_name || "").toLowerCase();
+    } else if (sortKey === "quote_amount") {
+      av = Number(a.quote_amount || 0);
+      bv = Number(b.quote_amount || 0);
+    } else if (sortKey === "status") {
+      av = a.metadata?.status || a.status || "draft";
+      bv = b.metadata?.status || b.status || "draft";
+    } else {
+      av = a.created_at || "";
+      bv = b.created_at || "";
+    }
+    if (av < bv) return sortDir === "asc" ? -1 : 1;
+    if (av > bv) return sortDir === "asc" ? 1 : -1;
+    return 0;
+  });
+
+  const pageCount = Math.max(1, Math.ceil(sortedQuotes.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pagedQuotes = sortedQuotes.slice(currentPage * PAGE_SIZE, currentPage * PAGE_SIZE + PAGE_SIZE);
 
   // Calculate high-level KPIs
   const pipelineTotal = quotes.reduce((acc, q) => acc + Number(q.quote_amount || 0), 0);
@@ -98,6 +243,13 @@ export default function QuotationsDashboard() {
             <span>Manual Calculator / Builder</span>
           </Link>
           <Link
+            href="/dashboard/quotations/drawings"
+            className="flex items-center space-x-2 border border-emerald-500/40 text-emerald-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-emerald-500/10 transition-all"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Drawing Takeoff</span>
+          </Link>
+          <Link
             href="/dashboard/quotations/ccb"
             className="flex items-center space-x-2 border border-amber-500/40 text-amber-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-amber-500/10 transition-all"
           >
@@ -118,6 +270,13 @@ export default function QuotationsDashboard() {
         <div className="p-4 border border-red-500/20 bg-red-950/20 rounded-sm flex items-center space-x-3 text-red-400 text-sm">
           <AlertCircle className="w-5 h-5 shrink-0" />
           <span>{errorMsg}</span>
+        </div>
+      )}
+
+      {successMsg && (
+        <div className="p-4 border border-emerald-500/20 bg-emerald-950/20 rounded-sm flex items-center space-x-3 text-emerald-400 text-sm">
+          <CheckCircle className="w-5 h-5 shrink-0" />
+          <span>{successMsg}</span>
         </div>
       )}
 
@@ -167,17 +326,35 @@ export default function QuotationsDashboard() {
                 <h2 className="font-display font-semibold text-lg text-white">Cost Proposals Ledger</h2>
                 <p className="text-xs text-slate">Audit trail and status tracking of client cost structures.</p>
               </div>
-              <div className="relative w-full sm:w-64">
-                <Search className="w-4 h-4 text-slate absolute left-3 top-1/2 -translate-y-1/2" />
-                <input 
-                  type="text" 
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search by client or project..." 
-                  className="w-full bg-ink border border-ink-mid rounded-sm pl-9 pr-4 py-1.5 text-xs text-paper placeholder-slate focus:outline-none focus:border-signal/50 focus:ring-1 focus:ring-signal/50 transition-all"
-                />
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-4 h-4 text-slate absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Search by client or project..."
+                    className="w-full bg-ink border border-ink-mid rounded-sm pl-9 pr-4 py-1.5 text-xs text-paper placeholder-slate focus:outline-none focus:border-signal/50 focus:ring-1 focus:ring-signal/50 transition-all"
+                  />
+                </div>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="bg-ink border border-ink-mid rounded-sm px-2 py-1.5 text-xs text-paper focus:outline-none focus:border-signal/50 cursor-pointer"
+                  title="Filter by status"
+                >
+                  <option value="all">All statuses</option>
+                  <option value="draft">Draft</option>
+                  <option value="won">Won</option>
+                  <option value="lost">Lost</option>
+                </select>
               </div>
             </div>
+            {totalCount > quotes.length && (
+              <p className="text-[10px] font-mono text-amber-400/80">
+                Showing the most recent {quotes.length} of {totalCount} total quotations - refine your search to find older records.
+              </p>
+            )}
 
             {loading ? (
               <div className="py-20 flex flex-col items-center justify-center space-y-3">
@@ -204,16 +381,22 @@ export default function QuotationsDashboard() {
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="border-b border-ink-mid text-slate font-mono uppercase tracking-wider">
-                      <th className="pb-3 font-normal">Reference &amp; Client</th>
+                      <th className="pb-3 font-normal cursor-pointer select-none hover:text-white transition-colors" onClick={() => toggleSort("client_name")}>
+                        <span className="inline-flex items-center gap-1">Reference &amp; Client <ArrowUpDown className="w-3 h-3" /></span>
+                      </th>
                       <th className="pb-3 font-normal">Project Title</th>
-                      <th className="pb-3 font-normal text-right">Estimate Total</th>
+                      <th className="pb-3 font-normal text-right cursor-pointer select-none hover:text-white transition-colors" onClick={() => toggleSort("quote_amount")}>
+                        <span className="inline-flex items-center gap-1 justify-end w-full">Estimate Total <ArrowUpDown className="w-3 h-3" /></span>
+                      </th>
                       <th className="pb-3 font-normal text-center">Margin</th>
-                      <th className="pb-3 font-normal text-center">Status</th>
+                      <th className="pb-3 font-normal text-center cursor-pointer select-none hover:text-white transition-colors" onClick={() => toggleSort("status")}>
+                        <span className="inline-flex items-center gap-1 justify-center w-full">Status <ArrowUpDown className="w-3 h-3" /></span>
+                      </th>
                       <th className="pb-3 font-normal text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredQuotes.map((q) => {
+                    {pagedQuotes.map((q) => {
                       const refNum = q.metadata?.reference_number || q.id.slice(0, 8).toUpperCase();
                       const status = q.metadata?.status || "draft";
                       const statusColor = 
@@ -243,13 +426,69 @@ export default function QuotationsDashboard() {
                           </td>
                           <td className="py-4 text-right">
                             <div className="flex items-center justify-end space-x-2">
-                              <Link 
+                              {status !== "won" && status !== "lost" && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSopModalQuote({ id: q.id, label: `${refNum} - ${q.client_name}` })}
+                                    className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-signal transition-colors"
+                                    title="View/complete required SOP checklists"
+                                  >
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDecision(q.id, "won")}
+                                    disabled={decidingId === q.id}
+                                    className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-emerald-500/50 text-slate hover:text-emerald-400 transition-colors disabled:opacity-40"
+                                    title="Mark as won - seeds the linked project's execution budget from this quotation"
+                                  >
+                                    {decidingId === q.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ThumbsUp className="w-3.5 h-3.5" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDecision(q.id, "lost")}
+                                    disabled={decidingId === q.id}
+                                    className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-rose-500/50 text-slate hover:text-rose-400 transition-colors disabled:opacity-40"
+                                    title="Mark as lost"
+                                  >
+                                    <ThumbsDown className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              <Link
                                 href={`/dashboard/quotations/builder?edit=${q.id}`}
                                 className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-white transition-colors"
                                 title="Edit estimate"
                               >
                                 <FileText className="w-3.5 h-3.5" />
                               </Link>
+                              <button
+                                type="button"
+                                onClick={() => handleDuplicate(q)}
+                                disabled={duplicatingId === q.id}
+                                className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-white transition-colors disabled:opacity-40"
+                                title="Duplicate as a new draft"
+                              >
+                                {duplicatingId === q.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setHistoryModalQuote({ id: q.id, label: `${refNum} - ${q.client_name}` })}
+                                className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-white transition-colors"
+                                title="View revision history"
+                              >
+                                <History className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleArchive(q)}
+                                disabled={archivingId === q.id}
+                                className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-rose-500/50 text-slate hover:text-rose-400 transition-colors disabled:opacity-40"
+                                title="Archive estimate"
+                              >
+                                {archivingId === q.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -257,6 +496,31 @@ export default function QuotationsDashboard() {
                     })}
                   </tbody>
                 </table>
+                <div className="flex items-center justify-between pt-4 mt-2 border-t border-ink-mid/50">
+                  <p className="text-[10px] font-mono text-slate uppercase tracking-wider">
+                    Page {currentPage + 1} of {pageCount} &middot; {sortedQuotes.length} matching
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPage((p) => Math.max(0, p - 1))}
+                      disabled={currentPage === 0}
+                      className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="Previous page"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                      disabled={currentPage >= pageCount - 1}
+                      className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                      title="Next page"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -325,8 +589,15 @@ export default function QuotationsDashboard() {
           <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
             <h3 className="font-display font-semibold text-white">Delivery Integration</h3>
             <p className="text-xs text-slate">
-              Winning a CRM opportunity or public tender automatically sets up a new Active Project. You can then attach cost estimates to manage project budgets seamlessly.
+              Marking a quotation linked to a project as <span className="text-emerald-400 font-semibold">Won</span> seeds that project&apos;s execution budget from this quotation&apos;s own cost breakdown, and takes an initial forecast snapshot. From then on, actual site costs are tracked against this same baseline - referenceable anytime on the Finance dashboard - and a margin-threat alert fires automatically if costs run over without a matching approved variation.
             </p>
+            <Link
+              href="/dashboard/finance"
+              className="flex items-center space-x-2 bg-ink border border-ink-mid hover:border-emerald-500/50 hover:bg-ink-light px-4 py-2 rounded-sm text-xs font-semibold transition-all w-full justify-center text-emerald-400"
+            >
+              <span>View Budget vs. Actual (Finance)</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
             <div className="border-t border-ink-mid/50 pt-4 space-y-3">
               <div className="flex justify-between text-[10px] font-mono text-slate uppercase tracking-wider">
                 <span>Active Projects Count</span>
@@ -346,6 +617,22 @@ export default function QuotationsDashboard() {
         </div>
 
       </div>
+
+      {sopModalQuote && (
+        <SopChecklistModal
+          quotationId={sopModalQuote.id}
+          quotationLabel={sopModalQuote.label}
+          onClose={() => setSopModalQuote(null)}
+        />
+      )}
+
+      {historyModalQuote && (
+        <QuotationHistoryModal
+          quotationId={historyModalQuote.id}
+          quotationLabel={historyModalQuote.label}
+          onClose={() => setHistoryModalQuote(null)}
+        />
+      )}
 
     </div>
   );
