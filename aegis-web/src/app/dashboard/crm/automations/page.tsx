@@ -86,7 +86,7 @@ export default function CRMAutomationsPage() {
   const [simulationLogs, setSimulationLogs] = useState<string[]>([]);
   const [activeSimulationNode, setActiveSimulationNode] = useState<string | null>(null);
 
-  const [telemetryLogs, setTelemetryLogs] = useState<Array<{ id: string; rule: string; status: string; trigger: string; action: string; timestamp: string }>>([]);
+  const [telemetryLogs, setTelemetryLogs] = useState<Array<{ id: string; rule: string; status: string; trigger: string; action: string; timestamp: string; executedAt: string | null }>>([]);
   const [isLoadingTelemetry, setIsLoadingTelemetry] = useState(false);
   const [telemetryError, setTelemetryError] = useState<string | null>(null);
 
@@ -189,6 +189,7 @@ export default function CRMAutomationsPage() {
               }
             })(),
             timestamp: run.created_at ? new Date(run.created_at).toLocaleString() : "",
+            executedAt: run.created_at || null,
           }))
         );
       } else {
@@ -201,11 +202,21 @@ export default function CRMAutomationsPage() {
     }
   }, [rules, normalizeLoadError]);
 
+  // Loaded unconditionally (not gated to the telemetry tab) so the Telemetry
+  // Execs / Failed stat cards above the tabs reflect real data as soon as the
+  // page opens, not only after a user happens to click into that tab.
   useEffect(() => {
-    if (activeTab === 'telemetry') {
-      void fetchTelemetryLogs();
-    }
-  }, [activeTab, fetchTelemetryLogs]);
+    void fetchTelemetryLogs();
+  }, [fetchTelemetryLogs]);
+
+  const execs24hCount = telemetryLogs.filter((log) => {
+    if (!log.executedAt) return false;
+    return Date.now() - new Date(log.executedAt).getTime() < 24 * 60 * 60 * 1000;
+  }).length;
+  const failed24hCount = telemetryLogs.filter((log) => {
+    if (!log.executedAt || log.status?.toLowerCase() !== 'failed') return false;
+    return Date.now() - new Date(log.executedAt).getTime() < 24 * 60 * 60 * 1000;
+  }).length;
 
   // Sync editor fields when selectedRule changes
   const selectedRule = rules.find(r => r.id === selectedRuleId);
@@ -470,12 +481,16 @@ export default function CRMAutomationsPage() {
         <div className="bg-ink-light border border-ink-mid p-3 rounded-none relative overflow-hidden">
           <div className="absolute top-0 left-0 w-1 h-full bg-[#3B82F6]"></div>
           <p className="text-[9px] font-mono tracking-widest text-slate-light uppercase">Telemetry Execs (24H)</p>
-          <p className="text-lg font-mono font-bold text-[#3B82F6] mt-0.5">1,240</p>
+          <p className="text-lg font-mono font-bold text-[#3B82F6] mt-0.5">
+            {isLoadingTelemetry ? '...' : execs24hCount}
+          </p>
         </div>
         <div className="bg-ink-light border border-ink-mid p-3 rounded-none relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-1 h-full bg-signal"></div>
-          <p className="text-[9px] font-mono tracking-widest text-slate-light uppercase">Avg Execution Latency</p>
-          <p className="text-lg font-mono font-bold text-paper mt-0.5">14ms</p>
+          <div className="absolute top-0 left-0 w-1 h-full bg-red-500"></div>
+          <p className="text-[9px] font-mono tracking-widest text-slate-light uppercase">Failed (24H)</p>
+          <p className={`text-lg font-mono font-bold mt-0.5 ${failed24hCount > 0 ? 'text-red-400' : 'text-paper'}`}>
+            {isLoadingTelemetry ? '...' : failed24hCount}
+          </p>
         </div>
       </section>
 
