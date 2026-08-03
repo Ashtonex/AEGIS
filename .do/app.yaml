@@ -1,0 +1,63 @@
+name: aegis-backend
+region: fra
+services:
+  - name: aegis-backend-api
+    github:
+      repo: Ashtonex/AEGIS
+      branch: main
+      deploy_on_push: true
+    source_dir: imperium-api
+    dockerfile_path: Dockerfile
+    http_port: 8000
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 20
+    envs:
+      - key: ENVIRONMENT
+        value: production
+        scope: RUN_TIME
+      - key: DEBUG
+        value: "false"
+        scope: RUN_TIME
+      - key: ALLOWED_ORIGINS
+        value: "https://REPLACE-WITH-YOUR-FRONTEND-DOMAIN"
+        scope: RUN_TIME
+      - key: ALLOWED_HOSTS
+        value: "REPLACE-WITH-YOUR-BACKEND-DOMAIN.ondigitalocean.app"
+        scope: RUN_TIME
+      - key: BACKGROUND_JOBS_ENABLED
+        value: "false"
+        scope: RUN_TIME
+      # Secrets below: set the real values in the DO dashboard (App > Settings
+      # > App-Level Environment Variables) or via `doctl` — never commit them
+      # here. type: SECRET keeps them encrypted at rest and hidden in the UI.
+      - key: DATABASE_URL
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
+      - key: SECRET_KEY
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
+      - key: JWT_SECRET_KEY
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
+      - key: SUPABASE_URL
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
+      - key: SUPABASE_ANON_KEY
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
+      - key: SUPABASE_SERVICE_KEY
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
+      - key: REDIS_URL
+        value: "REPLACE_IN_DASHBOARD"
+        type: SECRET
+        scope: RUN_TIME
