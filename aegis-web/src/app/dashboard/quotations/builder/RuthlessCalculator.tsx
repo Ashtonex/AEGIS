@@ -1393,7 +1393,7 @@ export default function RuthlessCalculator({
             </div>
             <div className="flex justify-between">
               <span className="text-slate">Total Labor Contract Cap:</span>
-              <span className="text-white font-bold">${calcs.stances[activeStance].total.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+              <span className="text-white font-bold">${calcs.stances[activeStance].total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate">Labor Risk Index:</span>

@@ -108,7 +108,7 @@ export default function QuotationHistory() {
                       <td className="py-4 text-slate-light">{q.client_name}</td>
                       <td className="py-4 text-slate">{title}</td>
                       <td className="py-4 text-right font-mono text-white">
-                        ${Number(q.quote_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        ${Number(q.quote_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="py-4 text-center font-mono text-slate text-[10px] max-w-[120px] truncate" title={hash}>
                         {hash}

@@ -62,9 +62,11 @@ export default function QuotationBuilder() {
   const [assumptionsText, setAssumptionsText] = useState("");
   const [exclusionsText, setExclusionsText] = useState("");
 
-  // Cost items table
+  // Cost items table - starts with one blank editable row (matches addLineItem's
+  // shape) rather than a fabricated example, since a user who doesn't notice and
+  // clear a pre-filled row could save it as a real line item on the quotation.
   const [lineItems, setLineItems] = useState<LineItem[]>([
-    { description: "Concrete Foundation Slab Pour", qty: 45, unit: "m3", rate: 135 }
+    { description: "", qty: 1, unit: "unit", rate: 0, buildup: [] }
   ]);
 
   // Rate Buildup Modal State
@@ -1020,23 +1022,23 @@ export default function QuotationBuilder() {
                 <div className="space-y-2 text-slate-light border-r border-ink-mid/30 pr-4">
                   <div className="flex justify-between">
                     <span>Direct Construction Cost (BOQ):</span>
-                    <span className="text-white">${directCosts.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-white">${directCosts.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Preliminaries &amp; General:</span>
-                    <span className="text-white">${preliminaries.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-white">${preliminaries.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between border-t border-ink-mid/30 pt-1">
                     <span>Subtotal Base (Direct + Prelims):</span>
-                    <span className="text-white">${totalDirectAndPrelims.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-white">${totalDirectAndPrelims.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Overhead Allocation ({overheadPct}%):</span>
-                    <span className="text-white">${overheadAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-white">${overheadAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Contingency ({contingencyPct}%):</span>
-                    <span className="text-white">${contingencyAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-white">${contingencyAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
                 </div>
 
@@ -1044,43 +1046,43 @@ export default function QuotationBuilder() {
                   <div className="space-y-2">
                     <div className="flex justify-between">
                       <span>Subtotal before Profit:</span>
-                      <span className="text-white">${subtotalBeforeProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <span className="text-white">${subtotalBeforeProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Profit Margin Mark-up ({profitPct}%):</span>
-                      <span className="text-white">${profitAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <span className="text-white">${profitAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                     {provisionalSums > 0 && (
                       <div className="flex justify-between">
                         <span>Provisional Sums:</span>
-                        <span className="text-white">${provisionalSums.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                        <span className="text-white">${provisionalSums.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       </div>
                     )}
                     <div className="flex justify-between border-t border-ink-mid/30 pt-1 font-semibold text-white">
                       <span>Subtotal (VAT Exclusive):</span>
-                      <span>${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <span>${subtotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                     {discount > 0 && (
                       <>
                         <div className="flex justify-between text-slate-light">
                           <span>Discount:</span>
-                          <span className="text-red-400">-${discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                          <span className="text-red-400">-${discount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
                         <div className="flex justify-between text-slate-light">
                           <span>Taxable Amount:</span>
-                          <span className="text-white">${taxableAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                          <span className="text-white">${taxableAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
                       </>
                     )}
                     <div className="flex justify-between text-slate-light">
                       <span>VAT (15%):</span>
-                      <span className="text-white">${vat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      <span className="text-white">${vat.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                   </div>
 
                   <div className="border-t border-signal/30 pt-3 flex justify-between items-center text-white bg-signal/5 p-3 border border-signal/15">
                     <span className="font-display font-bold uppercase tracking-wider text-xs">Grand Total Proposal:</span>
-                    <span className="font-mono font-bold text-lg text-signal">${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="font-mono font-bold text-lg text-signal">${grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
 
                   {warnings.length > 0 && (
@@ -1449,53 +1451,53 @@ export default function QuotationBuilder() {
                       <tbody>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Direct Construction (BOQ)</td>
-                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.direct_costs?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.direct_costs?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Preliminaries &amp; General</td>
-                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.preliminaries?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.preliminaries?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Overheads ({printQuoteData.metadata?.overhead_pct}%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.overhead_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.overhead_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Contingency ({printQuoteData.metadata?.contingency_pct}%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.contingency_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.contingency_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">Markup Profit ({printQuoteData.metadata?.profit_pct}%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.profit_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${(printQuoteData.metadata?.profit_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         {(printQuoteData.metadata?.provisional_sums || 0) > 0 && (
                           <tr className="border-b border-ink-mid/30">
                             <td className="py-2 text-slate">Provisional Sums</td>
-                            <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata.provisional_sums.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                            <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata.provisional_sums.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                           </tr>
                         )}
                         <tr className="border-b border-ink-mid/30 font-semibold text-white print:text-black">
                           <td className="py-2">Subtotal (VAT Excl.)</td>
-                          <td className="py-2 text-right">${printQuoteData.metadata?.subtotal?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right">${printQuoteData.metadata?.subtotal?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         {(printQuoteData.metadata?.discount || 0) > 0 && (
                           <>
                             <tr className="border-b border-ink-mid/30">
                               <td className="py-2 text-slate">Discount</td>
-                              <td className="py-2 text-right text-red-400">-${printQuoteData.metadata.discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                              <td className="py-2 text-right text-red-400">-${printQuoteData.metadata.discount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             </tr>
                             <tr className="border-b border-ink-mid/30">
                               <td className="py-2 text-slate">Taxable Amount</td>
-                              <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.taxable_amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                              <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.taxable_amount?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             </tr>
                           </>
                         )}
                         <tr className="border-b border-ink-mid/30">
                           <td className="py-2 text-slate">VAT (15%)</td>
-                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.vat?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.vat?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="text-white print:text-black font-bold text-xs bg-white/5 print:bg-slate-100 border-t border-signal print:border-black">
                           <td className="py-2.5 pl-2">GRAND TOTAL</td>
-                          <td className="py-2.5 pr-2 text-right text-signal print:text-black">${printQuoteData.quote_amount?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                          <td className="py-2.5 pr-2 text-right text-signal print:text-black">${printQuoteData.quote_amount?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                       </tbody>
                     </table>
