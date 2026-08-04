@@ -191,6 +191,7 @@ async def test_require_permission_denies_missing_role_permission():
         "crm.customer360.read",
         "crm.opportunities.quote",
         "crm.opportunities.close",
+        "crm.opportunities.close_won",
     ],
 )
 async def test_require_permission_gates_consolidated_crm_permissions(permission: str):

@@ -1644,7 +1644,11 @@ async def create_opportunity_quotation(
 async def mark_opportunity_won(
     opportunity_id: UUID,
     payload: MarkWonPayload,
-    user: dict = Depends(require_permission("crm.opportunities.close")),
+    # Deliberately a stricter permission than mark-lost: this path can create
+    # a real projects.projects row with a real contract_value, so it needs
+    # sign-off beyond ordinary pipeline hygiene - see crm.opportunities.close
+    # on mark-lost below, which has no such side effect.
+    user: dict = Depends(require_permission("crm.opportunities.close_won")),
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org_id(user)
