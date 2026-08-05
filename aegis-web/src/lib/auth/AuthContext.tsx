@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase, setCachedAccessToken } from '../supabase';
 import { useRouter, usePathname } from 'next/navigation';
@@ -26,6 +26,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
+  const resolvedUserIdRef = useRef<string | null>(null);
 
   const resolveRole = useCallback(async (accessToken?: string) => {
     if (!accessToken) {
@@ -43,8 +44,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     let mounted = true;
-    // eslint-disable-next-line no-console
-    console.warn("[AEGIS_DIAG] AuthProvider effect (re)running on", pathname, "at", Math.floor(performance.now()));
 
     async function getInitialSession() {
       try {
@@ -55,6 +54,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setSession(session);
           setUser(session?.user ?? null);
           setCachedAccessToken(session?.access_token ?? null);
+          resolvedUserIdRef.current = session?.user?.id ?? null;
           await resolveRole(session?.access_token);
         }
       } catch (error) {
@@ -71,8 +71,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (!mounted) return;
-        // eslint-disable-next-line no-console
-        console.warn("[AEGIS_DIAG] onAuthStateChange event:", event, "on", pathname, "at", Math.floor(performance.now()));
         setSession(session);
         setUser(session?.user ?? null);
         setCachedAccessToken(session?.access_token ?? null);
@@ -80,11 +78,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         // TOKEN_REFRESHED (and USER_UPDATED) fire on every silent token
         // refresh - the user's role can't have changed just because the
         // token was renewed. Re-running the loading gate + /auth/me round
-        // trip for those events did nothing useful. Only a real
-        // sign-in/sign-out/initial load needs to re-resolve the role.
+        // trip for those events did nothing useful.
         if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
           return;
         }
+
+        // SIGNED_IN can fire redundantly for the same already-authenticated
+        // user (observed repeating every ~2s on some pages, cause not fully
+        // isolated - possibly the GoTrue client re-announcing under some
+        // concurrent-access condition). Re-running the full loading gate for
+        // a no-op re-announcement blanked the whole dashboard shell
+        // (DashboardShell unmounts everything while isLoading is true)
+        // repeatedly, which looked like the page reloading on its own. Only
+        // treat it as a real transition - and pay the resolveRole round
+        // trip - when the signed-in user actually changed.
+        const nextUserId = session?.user?.id ?? null;
+        if (event === "SIGNED_IN" && nextUserId && nextUserId === resolvedUserIdRef.current) {
+          return;
+        }
+        resolvedUserIdRef.current = nextUserId;
 
         setIsLoading(true);
         void resolveRole(session?.access_token).finally(() => {
