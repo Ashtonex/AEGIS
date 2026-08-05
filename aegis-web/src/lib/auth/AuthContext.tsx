@@ -66,10 +66,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     getInitialSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      (event, session) => {
         if (!mounted) return;
         setSession(session);
         setUser(session?.user ?? null);
+
+        // TOKEN_REFRESHED (and USER_UPDATED) fire on every silent token
+        // refresh - the user's role can't have changed just because the
+        // token was renewed. Re-running the loading gate + /auth/me round
+        // trip for those events did nothing useful and, since every
+        // dashboard data fetch independently calls getSession() and each
+        // one can itself trigger a refresh, turned into a near-continuous
+        // loop that blanked the whole dashboard shell (isLoading) every
+        // couple of seconds. Only a real sign-in/sign-out/initial load
+        // needs to re-resolve the role.
+        if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+          return;
+        }
+
         setIsLoading(true);
         void resolveRole(session?.access_token).finally(() => {
           if (mounted) setIsLoading(false);
