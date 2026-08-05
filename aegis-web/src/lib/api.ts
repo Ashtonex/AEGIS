@@ -208,51 +208,72 @@ function readCachedSupabaseAccessToken(): string | null {
   return null;
 }
 
+// Coalesces concurrent fallback lookups into a single in-flight call. Pages
+// with many initial fetches (Settings: overview, notifications, profile,
+// auth/me, ...) all land here at once during the brief cold-load window
+// before AuthContext has populated the cache above. Each one independently
+// calling getSupabase().auth.getSession() was exactly the concurrent-call
+// pattern that made the GoTrue client redundantly re-announce SIGNED_IN -
+// which reset AuthContext's isLoading, remounted the whole dashboard shell,
+// and caused every one of those fetches to fire again, sustaining the loop
+// indefinitely instead of settling after one cycle. Sharing one promise
+// across all callers means only one getSession() call ever goes out for a
+// given cold-load burst.
+let inFlightAccessTokenLookup: Promise<string | null> | null = null;
+
 async function getSupabaseAccessToken(timeoutMs = 2500): Promise<string | null> {
   // AuthContext is the single subscriber to onAuthStateChange and keeps a
   // cached copy of the current token in sync with every session change.
-  // Firing a dozen-plus independent getSession() calls per dashboard page
-  // load (one per API call, all racing each other) caused the GoTrue client
-  // to redundantly re-announce SIGNED_IN roughly every 2 seconds, which
-  // re-triggered role resolution and blanked the whole dashboard shell in a
-  // near-continuous loop. Prefer the cache; only fall back to asking
-  // Supabase directly (e.g. before AuthProvider has mounted) when it's empty.
+  // Prefer it; only fall back to asking Supabase directly (e.g. before
+  // AuthProvider has mounted) when it's empty.
   const cachedToken = getCachedAccessToken();
   if (cachedToken) {
     return cachedToken;
   }
 
-  // getSession() is the authoritative fallback path: it auto-refreshes an
-  // expired token instead of returning it as-is. The raw localStorage read
-  // below is a further fallback for when it's slow/unavailable.
-  const timeout = new Promise<"timeout">((resolve) => {
-    setTimeout(() => resolve("timeout"), timeoutMs);
-  });
-
-  try {
-    const result = await Promise.race([
-      getSupabase().auth.getSession(),
-      timeout,
-    ]);
-
-    // A resolved-but-empty session is ambiguous on a cold page load: the SDK
-    // may not have finished rehydrating the persisted session from storage
-    // yet and is reporting "no session" prematurely rather than genuinely
-    // being logged out. Fall through to the cache in that case too, instead
-    // of only when getSession() times out or throws - otherwise every fresh
-    // page load races this and can bounce an actually-logged-in user to a
-    // 401.
-    if (result !== "timeout") {
-      const liveToken = result.data.session?.access_token;
-      if (liveToken) {
-        return liveToken;
-      }
-    }
-  } catch {
-    // fall through to the cached-token fallback below
+  if (inFlightAccessTokenLookup) {
+    return inFlightAccessTokenLookup;
   }
 
-  return readCachedSupabaseAccessToken();
+  inFlightAccessTokenLookup = (async () => {
+    try {
+      // getSession() is the authoritative fallback path: it auto-refreshes an
+      // expired token instead of returning it as-is. The raw localStorage read
+      // below is a further fallback for when it's slow/unavailable.
+      const timeout = new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), timeoutMs);
+      });
+
+      try {
+        const result = await Promise.race([
+          getSupabase().auth.getSession(),
+          timeout,
+        ]);
+
+        // A resolved-but-empty session is ambiguous on a cold page load: the
+        // SDK may not have finished rehydrating the persisted session from
+        // storage yet and is reporting "no session" prematurely rather than
+        // genuinely being logged out. Fall through to the cache in that case
+        // too, instead of only when getSession() times out or throws -
+        // otherwise every fresh page load races this and can bounce an
+        // actually-logged-in user to a 401.
+        if (result !== "timeout") {
+          const liveToken = result.data.session?.access_token;
+          if (liveToken) {
+            return liveToken;
+          }
+        }
+      } catch {
+        // fall through to the cached-token fallback below
+      }
+
+      return readCachedSupabaseAccessToken();
+    } finally {
+      inFlightAccessTokenLookup = null;
+    }
+  })();
+
+  return inFlightAccessTokenLookup;
 }
 
 async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
