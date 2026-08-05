@@ -32,6 +32,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { useApiQueries } from "@/hooks/useApiQueries";
 import {
   approveProcurementRequisition,
   createProcurementRfq,
@@ -180,23 +181,13 @@ const TAB_ROUTES: Record<Tab, string> = {
 function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Tab }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>(initialTab);
-  const [projects, setProjects] = useState<Rec[]>([]);
-  const [suppliers, setSuppliers] = useState<Rec[]>([]);
-  const [stores, setStores] = useState<Rec[]>([]);
-  const [requisitions, setRequisitions] = useState<Rec[]>([]);
-  const [rfqs, setRfqs] = useState<Rec[]>([]);
-  const [orders, setOrders] = useState<Rec[]>([]);
-  const [invoices, setInvoices] = useState<Rec[]>([]);
   const [prStatus, setPrStatus] = useState("all");
   const [rfqStatus, setRfqStatus] = useState("all");
   const [poStatus, setPoStatus] = useState("all");
   const [invMatchStatus, setInvMatchStatus] = useState("all");
   const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [selectedPO, setSelectedPO] = useState<Rec | null>(null);
   const [approvingPR, setApprovingPR] = useState<Rec | null>(null);
@@ -211,46 +202,45 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     setTab(initialTab);
   }, [initialTab]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [prRes, rfqRes, poRes, supRes, invRes, projRes, storeRes] = await Promise.allSettled([
-        getProcurementRequisitions({ status: prStatus }),
-        getProcurementRfqs({ status: rfqStatus }),
-        getProcurementOrders({ status: poStatus }),
-        getProcurementSuppliers(),
-        getProcurementInvoices({ match_status: invMatchStatus }),
-        getInternalProjects(),
-        getInventoryStores(),
-      ]);
-      const warnings: string[] = [];
-      if (prRes.status === "fulfilled") setRequisitions(Array.isArray(prRes.value.data) ? prRes.value.data : []);
-      else warnings.push("Requisitions could not be loaded.");
-      if (rfqRes.status === "fulfilled") setRfqs(Array.isArray(rfqRes.value.data) ? rfqRes.value.data : []);
-      else warnings.push("RFQs could not be loaded.");
-      if (poRes.status === "fulfilled") setOrders(Array.isArray(poRes.value.data) ? poRes.value.data : []);
-      else warnings.push("Purchase orders could not be loaded.");
-      if (supRes.status === "fulfilled") setSuppliers(Array.isArray(supRes.value.data) ? supRes.value.data : []);
-      else warnings.push("Suppliers could not be loaded.");
-      if (invRes.status === "fulfilled") setInvoices(Array.isArray(invRes.value.data) ? invRes.value.data : []);
-      else warnings.push("Invoices could not be loaded.");
-      if (projRes.status === "fulfilled") setProjects(Array.isArray(projRes.value.data) ? projRes.value.data : []);
-      else warnings.push("Project register could not be loaded.");
-      if (storeRes.status === "fulfilled") setStores(Array.isArray(storeRes.value.data) ? storeRes.value.data : []);
-      else warnings.push("Store register could not be loaded.");
-      setSourceWarnings(warnings);
-      if (prRes.status === "rejected") {
-        throw new Error(loadFailureMessage(prRes.reason));
-      }
-    } catch (e) {
-      setError(loadFailureMessage(e));
-    } finally {
-      setLoading(false);
+  const {
+    data: procurementData,
+    warnings: sourceWarnings,
+    error: loadError,
+    isLoading: loading,
+    refetch: load,
+  } = useApiQueries(
+    {
+      requisitions: () => getProcurementRequisitions({ status: prStatus }),
+      rfqs: () => getProcurementRfqs({ status: rfqStatus }),
+      orders: () => getProcurementOrders({ status: poStatus }),
+      suppliers: () => getProcurementSuppliers(),
+      invoices: () => getProcurementInvoices({ match_status: invMatchStatus }),
+      projects: () => getInternalProjects(),
+      stores: () => getInventoryStores(),
+    },
+    [prStatus, rfqStatus, poStatus, invMatchStatus],
+    {
+      criticalKeys: ["requisitions"],
+      labels: {
+        requisitions: "Requisitions",
+        rfqs: "RFQs",
+        orders: "Purchase orders",
+        suppliers: "Suppliers",
+        invoices: "Invoices",
+        projects: "Project register",
+        stores: "Store register",
+      },
     }
-  }, [prStatus, rfqStatus, poStatus, invMatchStatus]);
+  );
 
-  useEffect(() => { void load(); }, [load]);
+  const requisitions = useMemo(() => (Array.isArray(procurementData.requisitions?.data) ? procurementData.requisitions.data : []), [procurementData.requisitions]);
+  const rfqs = useMemo(() => (Array.isArray(procurementData.rfqs?.data) ? procurementData.rfqs.data : []), [procurementData.rfqs]);
+  const orders = useMemo(() => (Array.isArray(procurementData.orders?.data) ? procurementData.orders.data : []), [procurementData.orders]);
+  const suppliers = useMemo(() => (Array.isArray(procurementData.suppliers?.data) ? procurementData.suppliers.data : []), [procurementData.suppliers]);
+  const invoices = useMemo(() => (Array.isArray(procurementData.invoices?.data) ? procurementData.invoices.data : []), [procurementData.invoices]);
+  const projects = useMemo(() => (Array.isArray(procurementData.projects?.data) ? procurementData.projects.data : []), [procurementData.projects]);
+  const stores = useMemo(() => (Array.isArray(procurementData.stores?.data) ? procurementData.stores.data : []), [procurementData.stores]);
+  const error = loadError ? loadFailureMessage(loadError) : null;
 
   const kpis = useMemo(() => {
     const openPRs = requisitions.filter((r) => ["draft", "submitted"].includes(tx(r.status).toLowerCase())).length;

@@ -35,199 +35,29 @@
  *
  * Mobile: single column stack, all tiles equal height 280px
  *
- * [PLACEHOLDER] All project data must be wired to Imperium API.
- * Integration point: GET /api/v1/projects?featured=true&limit=5
+ * Wired to the real project register (GET /api/v1/projects) - the same
+ * endpoint and data shape used by /projects. No fabricated project data.
  * [PLACEHOLDER] All images require real SNC site/drone photography.
  */
 
-import { useState, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, useInView, AnimatePresence, useReducedMotion } from "framer-motion";
 import Link from "next/link";
 import { sequenceRevealVariants, hoverElevation, transitions } from "@/lib/motion";
 
-// ── Project data — [PLACEHOLDER] wire to Imperium API ────────────────────────
-const FEATURED_PROJECTS = [
-  {
-    id: "SNC-015",
-    title: "6400sqm Warehouse",
-    client: "Mega Market",
-    sector: "Industrial Infrastructure",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "14 months",
-    scope: "Steel portal frame, structural envelope, and civils",
-    image: "/snc_industrial_warehouse.png",
-    grid: "lg:col-span-7 lg:row-span-2",
-  },
-  {
-    id: "SNC-014",
-    title: "Container Stacking Pad",
-    client: "Africa University",
-    sector: "Civil Infrastructure",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "8 months",
-    scope: "Heavy duty concrete paving and groundworks",
-    image: "/snc_civil_yard.png",
-    grid: "lg:col-span-5 lg:row-span-1",
-  },
-  {
-    id: "SNC-013",
-    title: "Office Block Extension",
-    client: "Mega Market",
-    sector: "Commercial Construction",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "12 months",
-    scope: "Multi-story concrete frame and finishing",
-    image: "/snc_commercial_office.png",
-    grid: "lg:col-span-5 lg:row-span-1",
-  },
-  {
-    id: "SNC-012",
-    title: "Wheat Mill Civils",
-    client: "Mega Market",
-    sector: "Industrial Engineering",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "10 months",
-    scope: "Complex civil works for milling plant",
-    image: "/proj-earthworks.jpg",
-    grid: "lg:col-span-4 lg:row-span-1",
-  },
-  {
-    id: "SNC-011",
-    title: "Transport Yard",
-    client: "Mega Market",
-    sector: "Civil Paving",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "6 months",
-    scope: "Heavy haulage surface preparation",
-    image: "/proj-highway.jpg",
-    grid: "lg:col-span-4 lg:row-span-1",
-  },
-  {
-    id: "SNC-010",
-    title: "Hotel Renovations",
-    client: "Troutbeck Resort",
-    sector: "Hospitality Renovation",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "18 months",
-    scope: "Structural upgrades and luxury finishing",
-    image: "/proj-commercial.jpg",
-    grid: "lg:col-span-4 lg:row-span-1",
-  },
-  {
-    id: "SNC-009",
-    title: "Maize Milling Project",
-    client: "Mega Market",
-    sector: "Industrial Plant",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "11 months",
-    scope: "Plant construction and silo foundations",
-    image: "/proj-mining.jpg",
-    grid: "lg:col-span-6 lg:row-span-1",
-  },
-  {
-    id: "SNC-008",
-    title: "4500sqm Warehouse",
-    client: "Mega Market",
-    sector: "Industrial Infrastructure",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "9 months",
-    scope: "Warehouse structure and polished concrete flooring",
-    image: "/snc_industrial_warehouse.png",
-    grid: "lg:col-span-6 lg:row-span-1",
-  },
-  {
-    id: "SNC-007",
-    title: "Boys Hostel Block",
-    client: "Hillcrest Schools",
-    sector: "Institutional Buildings",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "14 months",
-    scope: "Multi-level residential block construction",
-    image: "/proj-commercial.jpg",
-    grid: "lg:col-span-3 lg:row-span-1",
-  },
-  {
-    id: "SNC-006",
-    title: "Lower Transport Yard",
-    client: "Mega Market",
-    sector: "Civil Infrastructure",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "5 months",
-    scope: "Logistics yard paving",
-    image: "/proj-highway.jpg",
-    grid: "lg:col-span-5 lg:row-span-1",
-  },
-  {
-    id: "SNC-005",
-    title: "Dining Hall Renovations",
-    client: "St Charles Lwanga",
-    sector: "Institutional Renovation",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "4 months",
-    scope: "Refurbishment and structural repair",
-    image: "/snc_commercial_office.png",
-    grid: "lg:col-span-4 lg:row-span-1",
-  },
-  {
-    id: "SNC-004",
-    title: "Concrete Paving Dry Port",
-    client: "GMS Dry Port",
-    sector: "Civil Infrastructure",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "10 months",
-    scope: "Extensive concrete paving for dry port operations",
-    image: "/snc_civil_yard.png",
-    grid: "lg:col-span-8 lg:row-span-1",
-  },
-  {
-    id: "SNC-003",
-    title: "Residents Units",
-    client: "Eastern Highlands Trust",
-    sector: "Residential Development",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "16 months",
-    scope: "Turnkey residential construction",
-    image: "/proj-commercial.jpg",
-    grid: "lg:col-span-4 lg:row-span-1",
-  },
-  {
-    id: "SNC-002",
-    title: "Pie Shop Renovation",
-    client: "Surrey Mutare Depot",
-    sector: "Commercial Renovation",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "3 months",
-    scope: "Retail space fit-out and refurbishment",
-    image: "/snc_commercial_office.png",
-    grid: "lg:col-span-5 lg:row-span-1",
-  },
-  {
-    id: "SNC-001",
-    title: "Pallet Shade",
-    client: "Mega Market",
-    sector: "Industrial Infrastructure",
-    status: "Completed",
-    budget: "Confidential",
-    duration: "2 months",
-    scope: "Steel shade structure",
-    image: "/proj-bridge.jpg",
-    grid: "lg:col-span-7 lg:row-span-1",
-  }
-] as const;
+interface FeaturedProject {
+  id: string;
+  slug: string;
+  title: string;
+  client: string;
+  sector: string;
+  status: string;
+  budget: string;
+  duration: string;
+  scope: string;
+  image: string;
+  grid: string;
+}
 
 const STATUS_COLORS: Record<string, string> = {
   Completed: "text-[#2ECC71] border-[#2ECC71]/40 bg-[#2ECC71]/10",
@@ -241,6 +71,46 @@ export function InfrastructureSequence() {
   const shouldReduceMotion = useReducedMotion();
   const sectionRef = useRef<HTMLElement>(null);
   const isInView = useInView(sectionRef, { once: true, margin: "-5% 0px" });
+  const [featuredProjects, setFeaturedProjects] = useState<FeaturedProject[]>([]);
+  const [metrics, setMetrics] = useState<{ projectsDelivered: number; contractValueM: number } | null>(null);
+
+  useEffect(() => {
+    const fetchProjects = async () => {
+      try {
+        const res = await fetch("/api/v1/projects?limit=5");
+        if (res.ok) {
+          const json = await res.json();
+          setFeaturedProjects(Array.isArray(json.data) ? json.data.slice(0, 5) : []);
+        }
+      } catch {
+        setFeaturedProjects([]);
+      }
+    };
+    const fetchMetrics = async () => {
+      try {
+        const res = await fetch("/api/v1/metrics");
+        if (res.ok) {
+          const body = await res.json();
+          if (body.success && body.data) {
+            setMetrics({
+              projectsDelivered: body.data.projects_delivered ?? 0,
+              contractValueM: Math.round((body.data.contract_value_usd ?? 0) / 100_000) / 10,
+            });
+          }
+        }
+      } catch {
+        // Silent
+      }
+    };
+    fetchProjects();
+    fetchMetrics();
+  }, []);
+
+  // Nothing to show yet - an empty grid reads worse on a marketing homepage
+  // than simply not rendering the section until real projects exist.
+  if (featuredProjects.length === 0) {
+    return null;
+  }
 
   return (
     <section
@@ -291,7 +161,7 @@ export function InfrastructureSequence() {
       <div className="px-0 lg:px-0">
         {/* Desktop: asymmetric CSS Grid */}
         <div className="hidden lg:grid grid-cols-12 auto-rows-[320px] gap-px bg-ink-mid">
-          {FEATURED_PROJECTS.map((project, index) => (
+          {featuredProjects.map((project, index) => (
             <motion.div
               key={project.id}
               className={project.grid}
@@ -311,7 +181,7 @@ export function InfrastructureSequence() {
 
         {/* Mobile: single column stack */}
         <div className="lg:hidden flex flex-col gap-px bg-ink-mid">
-          {FEATURED_PROJECTS.map((project, index) => (
+          {featuredProjects.map((project, index) => (
             <motion.div
               key={project.id}
               className="h-[300px]"
@@ -339,8 +209,7 @@ export function InfrastructureSequence() {
         variants={sequenceRevealVariants}
       >
         <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/50">
-          {/* [PLACEHOLDER] Wire to Imperium: totalProjects, totalContractValue */}
-          184 projects completed · USD 340M+ contract value executed
+          {metrics ? `${metrics.projectsDelivered} projects completed · USD ${metrics.contractValueM}M contract value executed` : "Project register loading"}
         </p>
         <Link
           href="/projects"
@@ -358,7 +227,7 @@ export function InfrastructureSequence() {
 
 // ── ProjectTile — the interactive unit ────────────────────────────────────────
 interface ProjectTileProps {
-  project: (typeof FEATURED_PROJECTS)[number];
+  project: FeaturedProject;
   shouldReduceMotion: boolean;
   priority?: boolean;
 }
@@ -499,7 +368,7 @@ function ProjectTile({ project, shouldReduceMotion, priority }: ProjectTileProps
                 transition={{ ...transitions.reveal, delay: 0.22 }}
               >
                 <Link
-                  href={`/projects/${project.id.toLowerCase()}`}
+                  href={`/projects/${project.slug}`}
                   className="inline-flex items-center gap-2 font-mono text-[11px] tracking-[0.1em] uppercase text-paper border-b border-paper/20 pb-0.5 transition-colors duration-micro hover:text-signal hover:border-signal"
                   tabIndex={isHovered ? 0 : -1}
                 >

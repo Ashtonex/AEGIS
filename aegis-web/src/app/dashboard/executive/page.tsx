@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -88,7 +88,7 @@ function ExecutiveCommandCentreWorkspace() {
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
   const userRole = role || "User";
 
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
     setRefreshing(true);
     const accessToken = session?.access_token;
     const [kpiResult, statsResult, moduleResult] = await Promise.allSettled([
@@ -124,9 +124,9 @@ function ExecutiveCommandCentreWorkspace() {
     ]);
     setLoading(false);
     setRefreshing(false);
-  };
+  }, [session]);
 
-  useEffect(() => { if (session) void loadDashboard(); }, [session]);
+  useEffect(() => { if (session) void loadDashboard(); }, [session, loadDashboard]);
   useEffect(() => {
     const interval = window.setInterval(() => setCurrentTime(new Date()), 60_000);
     return () => window.clearInterval(interval);

@@ -1370,7 +1370,7 @@ export default function QuotationBuilder() {
                 </div>
                 <p className="text-[10px] text-slate mt-2 print:text-slate-500 leading-relaxed font-mono">
                   102 Samora Machel Avenue, Harare, Zimbabwe<br />
-                  Phone: +263 242 770110 | Email: bids@sixnine.co.zw
+                  Phone: +263 242 770110 | Email: bids@sixnineconstruction.com
                 </p>
               </div>
               <div className="text-right">

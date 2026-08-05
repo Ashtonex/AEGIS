@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { BriefcaseBusiness, Building2, ChevronDown, Search, ShieldCheck, Truck, Menu, X } from "lucide-react";
@@ -17,12 +18,24 @@ const NAV_ITEMS = [
   { label: "Governance", href: "/about", contentPanel: false },
 ];
 
+// Destinations only otherwise reachable via the footer - included in the
+// mobile drawer since a mobile visitor can't scroll-discover the footer as
+// naturally as a desktop one, and previously had no way to reach these at all.
+const MOBILE_ONLY_LINKS = [
+  { label: "Knowledge Centre", href: "/knowledge" },
+  { label: "Newsroom", href: "/news" },
+  { label: "Tenders", href: "/tenders" },
+  { label: "Suppliers", href: "/suppliers" },
+  { label: "Careers", href: "/careers" },
+  { label: "Contact", href: "/contact" },
+];
+
 export function ExecutiveNav() {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<string | null>(null);
   const [portalMenuOpen, setPortalMenuOpen] = useState(false);
-  const [metrics, setMetrics] = useState<{ activeSites: number; contractValue: number } | null>(null);
+  const [metrics, setMetrics] = useState<{ projectsDelivered: number; contractValueM: number } | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pathname = usePathname();
   const currentPathname = pathname ?? "/";
@@ -33,11 +46,13 @@ export function ExecutiveNav() {
       try {
         const res = await fetch("/api/v1/metrics");
         if (res.ok) {
-          const data = await res.json();
-          setMetrics({
-            activeSites: data.data.activeSites,
-            contractValue: data.data.contractValue,
-          });
+          const body = await res.json();
+          if (body.success && body.data) {
+            setMetrics({
+              projectsDelivered: body.data.projects_delivered ?? 0,
+              contractValueM: Math.round((body.data.contract_value_usd ?? 0) / 100_000) / 10,
+            });
+          }
         }
       } catch (e) {
         // Silent
@@ -105,9 +120,11 @@ export function ExecutiveNav() {
           
           {/* LOGO */}
           <Link href="/" className="group flex flex-col items-center justify-center" aria-label="Six Nine Construction — home">
-            <img 
-              src="/logo.png" 
-              alt="SNC Logo" 
+            <Image
+              src="/logo.png"
+              alt="SNC Logo"
+              width={72}
+              height={48}
               className="h-[48px] w-auto object-contain transition-transform duration-300 group-hover:scale-105"
             />
           </Link>
@@ -226,18 +243,18 @@ export function ExecutiveNav() {
                     {/* Left: Project Data Metrics */}
                     <div className="col-span-5 grid grid-cols-2 gap-8 border-t border-ink-mid pt-4">
                       <div>
-                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-slate/60 mb-2">Live Status</div>
+                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-slate/60 mb-2">Delivery Record</div>
                         <div className="font-bold text-[32px] leading-none text-paper tracking-[-0.02em] mb-1">
-                          {metrics ? metrics.activeSites : '--'}
+                          {metrics ? metrics.projectsDelivered : '--'}
                         </div>
-                        <div className="font-mono text-[10px] tracking-[0.05em] text-slate uppercase">Active Sites</div>
+                        <div className="font-mono text-[10px] tracking-[0.05em] text-slate uppercase">Projects Delivered</div>
                       </div>
                       <div>
                         <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-slate/60 mb-2">Capital Deployed</div>
                         <div className="font-bold text-[32px] leading-none text-signal tracking-[-0.02em] mb-1">
-                          {metrics ? `$${metrics.contractValue}M` : '--'}
+                          {metrics ? `$${metrics.contractValueM}M` : '--'}
                         </div>
-                        <div className="font-mono text-[10px] tracking-[0.05em] text-slate uppercase">Current Fiscal</div>
+                        <div className="font-mono text-[10px] tracking-[0.05em] text-slate uppercase">Contract Value Executed</div>
                       </div>
                       <div className="col-span-2 mt-6">
                         <Link href="/projects" className="inline-flex items-center gap-3 bg-paper text-ink font-bold text-[11px] tracking-[0.1em] uppercase px-6 py-3 transition-colors duration-fast hover:bg-signal">
@@ -249,12 +266,12 @@ export function ExecutiveNav() {
                     {/* Right: Featured Case Study */}
                     <Link href="/projects" className="col-span-7 group border-t border-ink-mid pt-4 flex gap-6 cursor-pointer">
                       <div className="flex-1">
-                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-signal mb-2">Featured Delivery</div>
+                        <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-signal mb-2">Project Register</div>
                         <h4 className="font-semibold text-[18px] text-paper mb-2 group-hover:text-signal transition-colors duration-fast">
-                          Harare–Beitbridge Highway
+                          Delivery evidence across the portfolio
                         </h4>
                         <p className="text-[13px] text-slate leading-relaxed mb-4">
-                          14.2km dual carriageway execution including primary structural drainage and asphalt overlay. Delivered 4 months ahead of schedule.
+                          Browse civil, structural, and mining infrastructure work executed across Zimbabwe, with scope and delivery detail per project.
                         </p>
                         <span className="font-mono text-[10px] tracking-[0.1em] text-paper/50 uppercase group-hover:text-paper transition-colors duration-fast inline-flex items-center gap-2">
                           View Project 
@@ -279,6 +296,42 @@ export function ExecutiveNav() {
           )}
         </AnimatePresence>
       </motion.header>
+
+      {/* MOBILE NAV DRAWER — plain conditional render + CSS transition, not
+          AnimatePresence: framer-motion's exit animation left a stale DOM
+          node behind in dev mode when this same pattern was tried elsewhere
+          in this app, so this sidesteps that class of bug entirely. */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-40 bg-ink pt-24 px-6 pb-8 overflow-y-auto">
+          <nav className="flex flex-col gap-1" aria-label="Mobile navigation">
+            {NAV_ITEMS.map((item) => (
+              <Link
+                key={item.label}
+                href={item.href}
+                className="flex items-center justify-between border-b border-ink-mid py-4 font-sans font-semibold text-[20px] text-paper hover:text-signal transition-colors"
+              >
+                {item.label}
+              </Link>
+            ))}
+            {MOBILE_ONLY_LINKS.map((item) => (
+              <Link
+                key={item.label}
+                href={item.href}
+                className="flex items-center justify-between border-b border-ink-mid py-4 font-sans text-[15px] text-slate-light hover:text-paper transition-colors"
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+          <Link
+            href="/login"
+            className="mt-8 inline-flex w-full items-center justify-center gap-2 bg-signal text-ink font-bold text-[13px] tracking-[0.08em] uppercase px-5 py-3.5 transition-colors duration-fast hover:bg-[#E8B422]"
+            aria-label="Access secure portal"
+          >
+            Secure Access
+          </Link>
+        </div>
+      )}
     </>
   );
 }

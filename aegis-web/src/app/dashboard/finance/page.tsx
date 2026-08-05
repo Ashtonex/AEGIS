@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
+import { useApiQueries } from "@/hooks/useApiQueries";
 import {
   getFinanceProjectSummaries,
   getFinanceProjectDetail,
@@ -99,20 +100,11 @@ export default function FinanceDashboard() {
 function FinanceWorkspace() {
   const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<FinanceTab>(() => normalizeTab(searchParams?.get("tab")));
-  const [projects, setProjects] = useState<RecordData[]>([]);
-  const [costCodes, setCostCodes] = useState<RecordData[]>([]);
-  const [variations, setVariations] = useState<RecordData[]>([]);
-  const [claims, setClaims] = useState<RecordData[]>([]);
-  const [budgets, setBudgets] = useState<RecordData[]>([]);
-  const [projectSummaries, setProjectSummaries] = useState<RecordData[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
 
-  const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
 
   // Modal States
   const [showCostCodeModal, setShowCostCodeModal] = useState(false);
@@ -124,46 +116,42 @@ function FinanceWorkspace() {
   const [newVariation, setNewVariation] = useState({ variation_number: "", project_id: "", title: "", description: "", cost_impact: "0", time_impact_days: "0", initiated_by: "client" });
   const [newClaim, setNewClaim] = useState({ claim_number: "", project_id: "", claim_period_start: "", claim_period_end: "", this_claim_amount: "0", retention_pct: "10" });
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [projList, summariesRes, costCodesRes, variationsRes, claimsRes, budgetsRes] = await Promise.allSettled([
-        getInternalProjects(),
-        getFinanceProjectSummaries(),
-        getFinanceCostCodes(),
-        getFinanceVariations(),
-        getFinanceProgressClaims(),
-        getFinanceBudgets()
-      ]);
-
-      const warnings: string[] = [];
-      if (projList.status === "fulfilled") setProjects(projList.value.data || []);
-      else warnings.push("Project register could not be loaded.");
-      if (summariesRes.status === "fulfilled") setProjectSummaries(summariesRes.value.data || []);
-      else warnings.push("Project financial summaries could not be loaded.");
-      if (costCodesRes.status === "fulfilled") setCostCodes(costCodesRes.value.data || []);
-      else warnings.push("Cost codes could not be loaded.");
-      if (variationsRes.status === "fulfilled") setVariations(variationsRes.value.data || []);
-      else warnings.push("Variation register could not be loaded.");
-      if (claimsRes.status === "fulfilled") setClaims(claimsRes.value.data || []);
-      else warnings.push("Progress claims could not be loaded.");
-      if (budgetsRes.status === "fulfilled") setBudgets(budgetsRes.value.data || []);
-      else warnings.push("Budgets could not be loaded.");
-      setSourceWarnings(warnings);
-      if (summariesRes.status === "rejected") {
-        throw new Error(loadFailureMessage(summariesRes.reason));
-      }
-    } catch (err) {
-      setError(loadFailureMessage(err));
-    } finally {
-      setLoading(false);
+  const {
+    data: financeData,
+    warnings: sourceWarnings,
+    error: loadError,
+    isLoading: loading,
+    refetch: loadData,
+  } = useApiQueries(
+    {
+      projects: () => getInternalProjects(),
+      summaries: () => getFinanceProjectSummaries(),
+      costCodes: () => getFinanceCostCodes(),
+      variations: () => getFinanceVariations(),
+      claims: () => getFinanceProgressClaims(),
+      budgets: () => getFinanceBudgets(),
+    },
+    [],
+    {
+      criticalKeys: ["summaries"],
+      labels: {
+        projects: "Project register",
+        summaries: "Project financial summaries",
+        costCodes: "Cost codes",
+        variations: "Variation register",
+        claims: "Progress claims",
+        budgets: "Budgets",
+      },
     }
-  }, []);
+  );
 
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
+  const projects = useMemo(() => financeData.projects?.data || [], [financeData.projects]);
+  const projectSummaries = useMemo(() => financeData.summaries?.data || [], [financeData.summaries]);
+  const costCodes = useMemo(() => financeData.costCodes?.data || [], [financeData.costCodes]);
+  const variations = useMemo(() => financeData.variations?.data || [], [financeData.variations]);
+  const claims = useMemo(() => financeData.claims?.data || [], [financeData.claims]);
+  const budgets = useMemo(() => financeData.budgets?.data || [], [financeData.budgets]);
+  const error = loadError ? loadFailureMessage(loadError) : null;
 
   useEffect(() => {
     setActiveTab(normalizeTab(searchParams?.get("tab")));

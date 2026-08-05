@@ -30,6 +30,7 @@ export default function ProjectsRegisterPage() {
   const shouldReduceMotion = useReducedMotion();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [metrics, setMetrics] = useState<{ projectsDelivered: number; contractValueM: number } | null>(null);
 
   // Live Harare Clock for the header
   const [time, setTime] = useState<string>("");
@@ -63,7 +64,24 @@ export default function ProjectsRegisterPage() {
         setLoading(false);
       }
     };
+    const fetchMetrics = async () => {
+      try {
+        const res = await fetch("/api/v1/metrics");
+        if (res.ok) {
+          const body = await res.json();
+          if (body.success && body.data) {
+            setMetrics({
+              projectsDelivered: body.data.projects_delivered ?? 0,
+              contractValueM: Math.round((body.data.contract_value_usd ?? 0) / 100_000) / 10,
+            });
+          }
+        }
+      } catch {
+        // Silent
+      }
+    };
     fetchProjects();
+    fetchMetrics();
   }, []);
 
   return (
@@ -144,7 +162,7 @@ export default function ProjectsRegisterPage() {
       {/* Footer rail */}
       <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 py-16 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 border-t border-ink-mid mt-px">
         <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/50">
-          6 major corporate programs · USD 340M+ contract value executed
+          {metrics ? `${metrics.projectsDelivered} projects completed · USD ${metrics.contractValueM}M contract value executed` : "Project register loading"}
         </p>
       </div>
     </main>

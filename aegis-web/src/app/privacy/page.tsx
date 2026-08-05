@@ -84,8 +84,8 @@ export default function PrivacyPolicyPage() {
 
                 <div className="mt-8 pt-6 border-t border-[#1c1c1c] text-xs text-slate-light leading-relaxed">
                   For inquiries concerning data protection, sovereign cryptography, or audit trail verification, contact our Data Security Officer at{" "}
-                  <a href="mailto:dso@sixnine.co.zw" className="text-white hover:text-[#D4AF37] underline transition-colors">
-                    dso@sixnine.co.zw
+                  <a href="mailto:dso@sixnineconstruction.com" className="text-white hover:text-[#D4AF37] underline transition-colors">
+                    dso@sixnineconstruction.com
                   </a>.
                 </div>
               </div>

@@ -14,6 +14,10 @@ def create_app() -> FastAPI:
     # Initialize structured log streams
     setup_logging(settings.ENVIRONMENT, settings.LOG_LEVEL)
 
+    if settings.ENVIRONMENT == "development":
+        from core.network_compat import force_ipv4_dns
+        force_ipv4_dns()
+
     app = FastAPI(
         title="Project Imperium API",
         description="The foundational API layer for PROJECT AEGIS.",

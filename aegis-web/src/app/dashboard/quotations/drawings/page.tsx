@@ -307,13 +307,13 @@ export default function DrawingTakeoffPage() {
               >
                 <option value="ai_vision">AI Vision (image/PDF drawings)</option>
                 <option value="cad_dxf">CAD Parsing (DXF files only)</option>
-                <option value="manual_reference">Manual Reference (I'll enter measurements myself)</option>
+                <option value="manual_reference">Manual Reference (I&apos;ll enter measurements myself)</option>
               </select>
               {sourceMode === "ai_vision" && (
-                <p className="text-[10px] text-slate mt-1">Requires an AI vision key to be configured on the server. If it isn't, this falls back to an empty draft you fill in manually.</p>
+                <p className="text-[10px] text-slate mt-1">Requires an AI vision key to be configured on the server. If it isn&apos;t, this falls back to an empty draft you fill in manually.</p>
               )}
               {sourceMode === "cad_dxf" && (
-                <p className="text-[10px] text-slate mt-1">Native DWG files aren't parsed - export to DXF first, or use Manual Reference for DWG.</p>
+                <p className="text-[10px] text-slate mt-1">Native DWG files aren&apos;t parsed - export to DXF first, or use Manual Reference for DWG.</p>
               )}
             </label>
 

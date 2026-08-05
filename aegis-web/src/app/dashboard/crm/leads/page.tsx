@@ -19,6 +19,10 @@ import {
   findDuplicateCrmLeads,
   mergeCrmLeads
 } from '@/lib/api';
+import { useApiQuery } from '@/hooks/useApiQuery';
+import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
+import { SkeletonTableRows } from '@/components/ui/Skeleton';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 interface Lead {
   id: string;
@@ -51,8 +55,6 @@ export default function CRMLeadsApp() {
   const [activeTab, setActiveTab] = useState<'inbox' | 'web_forms' | 'signal_bot' | 'prospector' | 'tender_scraping' | 'linkedin'>('inbox');
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('kanban');
 
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [qualifyingId, setQualifyingId] = useState<string | null>(null);
   const [dismissedLeadIds, setDismissedLeadIds] = useState<string[]>([]);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -89,28 +91,27 @@ export default function CRMLeadsApp() {
     setTimeout(() => setNotification(null), 4000);
   }, []);
 
-  const loadLeads = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const res = await getCrmLeads();
-      if (res.success && Array.isArray(res.data)) {
-        setLeads(res.data);
-      } else {
-        setLeads([]);
-        showToast("CRM leads could not be loaded from the CRM service.", "error");
-      }
-    } catch (err) {
-      console.warn("Failed to load CRM leads", err);
-      setLeads([]);
-      showToast("CRM leads could not be loaded from the CRM service.", "error");
-    } finally {
-      setIsLoading(false);
+  const {
+    data: leadsData,
+    isLoading,
+    error: leadsError,
+    refetch: loadLeads,
+  } = useApiQuery<Lead[]>(async () => {
+    const res = await getCrmLeads();
+    if (res.success && Array.isArray(res.data)) {
+      return res.data;
     }
-  }, [showToast]);
+    throw new Error("CRM leads could not be loaded from the CRM service.");
+  }, []);
+
+  const leads = leadsData ?? [];
 
   useEffect(() => {
-    void loadLeads();
-  }, [loadLeads]);
+    if (leadsError) {
+      console.warn("Failed to load CRM leads", leadsError);
+      showToast("CRM leads could not be loaded from the CRM service.", "error");
+    }
+  }, [leadsError, showToast]);
 
   useEffect(() => {
     void getCrmTenderSignals({ limit: 50, includeInternalPublicFeed: false })
@@ -128,7 +129,6 @@ export default function CRMLeadsApp() {
     e.preventDefault();
     if (!manualForm.company_name.trim()) return;
 
-    setIsLoading(true);
     try {
       const res = await createCrmLead({
         ...manualForm,
@@ -153,8 +153,6 @@ export default function CRMLeadsApp() {
       }
     } catch (err) {
       showToast("Could not save manual lead.", "error");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -337,59 +335,68 @@ export default function CRMLeadsApp() {
       {/* Content Panels */}
       {activeTab === 'inbox' && (
         <div>
-          {viewMode === 'list' ? (
-            /* Table Feed View */
-            <div className="bg-[#111827]/40 border border-[#1E293B]/60 p-6 rounded-xl overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[#1E293B] text-[10px] font-mono uppercase text-slate-400">
-                    <th className="pb-3">Company</th>
-                    <th className="pb-3">Contact</th>
-                    <th className="pb-3">Sector</th>
-                    <th className="pb-3">Est. Budget</th>
-                    <th className="pb-3">Propensity</th>
-                    <th className="pb-3">Status</th>
-                    <th className="pb-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1E293B]/40 text-xs">
-                  {activeLeads.map((lead) => (
-                    <tr key={lead.id} className="hover:bg-[#111827]/40 transition">
-                      <td className="py-3 font-semibold text-white">{lead.company_name}</td>
-                      <td className="py-3 text-slate-300">{lead.contact_name}</td>
-                      <td className="py-3 text-slate-400">{lead.sector}</td>
-                      <td className="py-3 font-semibold text-emerald-400">${lead.estimated_budget.toLocaleString()}</td>
-                      <td className="py-3">
-                        <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}</span>
-                      </td>
-                      <td className="py-3">
-                        <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">{lead.status || 'Inquiry'}</span>
-                      </td>
-                      <td className="py-3 text-right space-x-2">
-                        <button
-                          onClick={() => handleCheckDuplicates(lead)}
-                          className="px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
-                        >
-                          Duplicates
-                        </button>
-                        <button
-                          onClick={() => handleQualifyLead(lead)}
-                          className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold"
-                        >
-                          Qualify
-                        </button>
-                        <button
-                          onClick={() => handleDisqualifyClick(lead)}
-                          className="px-2.5 py-1 text-[10px] bg-rose-950 text-rose-400 border border-rose-900/40 rounded hover:bg-rose-900/30"
-                        >
-                          Disqualify
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {isLoading ? (
+            <div className="bg-[#111827]/40 border border-[#1E293B]/60 rounded-xl overflow-hidden">
+              <SkeletonTableRows rows={6} columns={7} />
             </div>
+          ) : activeLeads.length === 0 ? (
+            <EmptyState
+              icon={Target}
+              title="No leads yet"
+              description="Log a manual lead or connect a signal source to start populating the pipeline."
+              action={{ label: "Log Manual Lead", onClick: () => setIsManualModalOpen(true) }}
+            />
+          ) : viewMode === 'list' ? (
+            /* Table Feed View */
+            <OperationalTable>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Company</TableHead>
+                  <TableHead>Contact</TableHead>
+                  <TableHead>Sector</TableHead>
+                  <TableHead>Est. Budget</TableHead>
+                  <TableHead>Propensity</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <tbody>
+                {activeLeads.map((lead) => (
+                  <TableRow key={lead.id}>
+                    <TableCell className="font-semibold text-snc-text-primary">{lead.company_name}</TableCell>
+                    <TableCell>{lead.contact_name}</TableCell>
+                    <TableCell>{lead.sector}</TableCell>
+                    <TableCell className="font-semibold text-emerald-400">${lead.estimated_budget.toLocaleString()}</TableCell>
+                    <TableCell>
+                      <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}</span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">{lead.status || 'Inquiry'}</span>
+                    </TableCell>
+                    <TableCell className="text-right space-x-2">
+                      <button
+                        onClick={() => handleCheckDuplicates(lead)}
+                        className="px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
+                      >
+                        Duplicates
+                      </button>
+                      <button
+                        onClick={() => handleQualifyLead(lead)}
+                        className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold"
+                      >
+                        Qualify
+                      </button>
+                      <button
+                        onClick={() => handleDisqualifyClick(lead)}
+                        className="px-2.5 py-1 text-[10px] bg-rose-950 text-rose-400 border border-rose-900/40 rounded hover:bg-rose-900/30"
+                      >
+                        Disqualify
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </tbody>
+            </OperationalTable>
           ) : (
             /* Kanban Board View */
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">

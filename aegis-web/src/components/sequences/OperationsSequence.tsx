@@ -24,84 +24,69 @@
  *   - Keyboard navigable: arrow keys move between years
  *   - Mobile: same timeline, touch-scrollable, tap to expand
  *
- * [PLACEHOLDER] Milestone data must be replaced with real SNC corporate history.
- * Integration: this data could be served from a CMS or Imperium content API.
+ * Milestone data below is intentionally non-specific pending real SNC
+ * corporate history and dates from the client - see the disciplines/years
+ * placeholders rather than fabricated figures, named clients, or contract
+ * values. Replace with real milestones once confirmed.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { motion, useInView, AnimatePresence, useReducedMotion } from "framer-motion";
 import { sequenceRevealVariants, sequenceFadeVariants, transitions } from "@/lib/motion";
 
-// ── Company history data — [PLACEHOLDER] replace with real SNC milestones ────
+// ── Company history data — placeholder structure, awaiting real milestones ───
 const TIMELINE = [
   {
-    year: "2019",
+    year: "Founding",
     headline: "Establishment",
-    summary: "Six Nine Construction incorporated. First civil contract awarded.",
+    summary: "Six Nine Construction incorporated to deliver civil, structural, and mining infrastructure.",
     milestones: [
-      { ref: "M-001", label: "Incorporation", desc: "SNC registered as private company, Harare." },
-      { ref: "M-002", label: "First Contract", desc: "USD 2.1M civil works contract awarded by Harare Municipality." },
-      { ref: "M-003", label: "Fleet Launch", desc: "Initial fleet of 8 owned plant assets commissioned." },
+      { ref: "M-001", label: "Incorporation", desc: "SNC registered and began operations in Zimbabwe." },
+      { ref: "M-002", label: "First Contract", desc: "Initial civil works contract delivered." },
+      { ref: "M-003", label: "Fleet Launch", desc: "Initial owned plant fleet commissioned." },
     ],
   },
   {
-    year: "2020",
+    year: "Mining Entry",
     headline: "Mining Entry",
-    summary: "First mining sector engagement. Fleet doubled. Revenue +140%.",
+    summary: "First mining sector engagement, expanding beyond civil works.",
     milestones: [
-      { ref: "M-011", label: "Zimplats Engagement", desc: "Pre-qualification approved for Zimplats contractor register." },
-      { ref: "M-012", label: "Fleet Expansion", desc: "17 additional assets procured. Total fleet: 25 units." },
-      { ref: "M-013", label: "Revenue Milestone", desc: "USD 8.4M contract value executed in FY2020." },
+      { ref: "M-011", label: "Sector Expansion", desc: "First mining-sector contractor engagement secured." },
+      { ref: "M-012", label: "Fleet Expansion", desc: "Owned fleet expanded to support mining-sector demand." },
     ],
   },
   {
-    year: "2021",
+    year: "Infrastructure Scale",
     headline: "Infrastructure Scale",
-    summary: "First government infrastructure contract. Road sector entry.",
+    summary: "First government infrastructure contract, entering the road sector.",
     milestones: [
-      { ref: "M-021", label: "ZINARA Award", desc: "USD 14M road rehabilitation contract, Mashonaland East." },
-      { ref: "M-022", label: "Bridge Portfolio", desc: "First bridge contract: 60m RC span, Mazowe." },
-      { ref: "M-023", label: "ISO 9001", desc: "ISO 9001:2015 Quality Management System certified." },
+      { ref: "M-021", label: "Road Sector Entry", desc: "First road rehabilitation contract delivered." },
+      { ref: "M-022", label: "ISO 9001", desc: "ISO 9001:2015 Quality Management System certified." },
     ],
   },
   {
-    year: "2022",
+    year: "Dreamcast Division",
     headline: "Dreamcast Division",
-    summary: "Plant & Logistics arm formalised. 50+ fleet assets operational.",
+    summary: "Plant & Logistics arm formalised as a dedicated division.",
     milestones: [
       { ref: "M-031", label: "Dreamcast Launch", desc: "Dedicated plant hire and logistics division formally established." },
-      { ref: "M-032", label: "Fleet Milestone", desc: "50 owned assets in active deployment across 8 concurrent sites." },
-      { ref: "M-033", label: "Mining Growth", desc: "Zimplats Phase IV civil infrastructure: USD 47M programme." },
     ],
   },
   {
-    year: "2023",
+    year: "Digital Systems",
     headline: "Digital Systems",
-    summary: "Project AEGIS platform development initiated. PRAZ Category A.",
+    summary: "Project AEGIS platform development initiated. PRAZ Category A awarded.",
     milestones: [
       { ref: "M-041", label: "AEGIS Initiated", desc: "Proprietary ERP and project intelligence platform development begun." },
       { ref: "M-042", label: "PRAZ Category A", desc: "Highest contractor classification awarded by PRAZ." },
-      { ref: "M-043", label: "Revenue Milestone", desc: "Cumulative contract value crosses USD 200M mark." },
     ],
   },
   {
-    year: "2024",
-    headline: "National Scale",
-    summary: "Government highway programme. 78+ fleet assets. USD 320M cumulative.",
-    milestones: [
-      { ref: "M-051", label: "Highway Award", desc: "Harare–Beitbridge rehabilitation: USD 82M, 14.2km dual carriageway." },
-      { ref: "M-052", label: "Fleet Peak", desc: "78+ owned and operated assets across all divisions." },
-      { ref: "M-053", label: "Safety Record", desc: "Zero lost-time injuries maintained across all active programmes." },
-    ],
-  },
-  {
-    year: "2025",
+    year: "Current Operations",
     headline: "Current Operations",
-    summary: "184 projects delivered. USD 340M+ executed. 12 concurrent sites.",
+    summary: "Project AEGIS live across all operational divisions.",
     milestones: [
-      { ref: "M-061", label: "AEGIS Live", desc: "Project AEGIS platform deployed across all operational divisions." },
-      { ref: "M-062", label: "Active Sites", desc: "12 concurrent construction programmes in active delivery." },
-      { ref: "M-063", label: "Expansion", desc: "Regional expansion: pre-qualification in Zambia and Mozambique." },
+      { ref: "M-051", label: "AEGIS Live", desc: "Project AEGIS platform deployed across all operational divisions." },
     ],
   },
 ] as const;
@@ -113,7 +98,25 @@ export function OperationsSequence() {
   const sectionRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isInView = useInView(sectionRef, { once: true, margin: "-5% 0px" });
-  const [activeYear, setActiveYear] = useState<string>("2025"); // Default: most recent
+  const [activeYear, setActiveYear] = useState<string>("Current Operations"); // Default: most recent
+  const [fleetAssets, setFleetAssets] = useState<number | null>(null);
+
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const res = await fetch("/api/v1/metrics");
+        if (res.ok) {
+          const body = await res.json();
+          if (body.success && body.data) {
+            setFleetAssets(body.data.fleet_assets_deployed ?? 0);
+          }
+        }
+      } catch {
+        // Silent
+      }
+    };
+    fetchMetrics();
+  }, []);
 
   // Keyboard navigation between years
   const handleKeyDown = useCallback(
@@ -162,8 +165,7 @@ export function OperationsSequence() {
             05 / 07
           </span>
           <p className="font-mono text-[11px] tracking-[0.08em] uppercase text-slate/50 mt-2 max-w-[240px] text-right leading-relaxed">
-            {/* [PLACEHOLDER] Live active site count from Imperium */}
-            12 active sites · 78+ assets deployed
+            {fleetAssets !== null ? `${fleetAssets} fleet assets deployed` : "Fleet data loading"}
           </p>
         </div>
       </motion.div>

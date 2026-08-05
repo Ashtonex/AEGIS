@@ -61,15 +61,15 @@ export default async function ContactPage(props: {
                 <ul className="space-y-4 text-sm text-[var(--snc-mist)]">
                   <li className="flex justify-between border-b border-[var(--snc-navy-border)] pb-2">
                     <span className="font-semibold text-[var(--snc-white)]">Commercial</span>
-                    <a href="mailto:commercial@sixnine.co.zw" className="hover:text-[var(--snc-gold)]">commercial@sixnine.co.zw</a>
+                    <a href="mailto:commercial@sixnineconstruction.com" className="hover:text-[var(--snc-gold)]">commercial@sixnineconstruction.com</a>
                   </li>
                   <li className="flex justify-between border-b border-[var(--snc-navy-border)] pb-2">
                     <span className="font-semibold text-[var(--snc-white)]">Procurement</span>
-                    <a href="mailto:procurement@sixnine.co.zw" className="hover:text-[var(--snc-gold)]">procurement@sixnine.co.zw</a>
+                    <a href="mailto:procurement@sixnineconstruction.com" className="hover:text-[var(--snc-gold)]">procurement@sixnineconstruction.com</a>
                   </li>
                   <li className="flex justify-between border-b border-[var(--snc-navy-border)] pb-2">
                     <span className="font-semibold text-[var(--snc-white)]">Careers</span>
-                    <a href="mailto:hr@sixnine.co.zw" className="hover:text-[var(--snc-gold)]">hr@sixnine.co.zw</a>
+                    <a href="mailto:hr@sixnineconstruction.com" className="hover:text-[var(--snc-gold)]">hr@sixnineconstruction.com</a>
                   </li>
                 </ul>
               </div>

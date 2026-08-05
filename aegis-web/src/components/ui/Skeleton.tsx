@@ -29,6 +29,20 @@ export function SkeletonCard({ className }: SkeletonProps) {
   );
 }
 
+export function SkeletonTableRows({ rows = 6, columns = 5, className }: SkeletonProps & { rows?: number; columns?: number }) {
+  return (
+    <div className={cn("divide-y divide-snc-border/50", className)}>
+      {Array.from({ length: rows }).map((_, rowIndex) => (
+        <div key={rowIndex} className="flex items-center gap-6 p-4">
+          {Array.from({ length: columns }).map((__, colIndex) => (
+            <Skeleton key={colIndex} className="h-4 flex-1" />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SkeletonTenderRow({ className }: SkeletonProps) {
   return (
     <div className={cn("flex items-center justify-between p-4 border-b border-snc-border", className)}>

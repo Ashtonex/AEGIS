@@ -1,6 +1,7 @@
 # Environments
 .env
 .env.local
+.aegis_do_ed25519*
 .env.development.local
 .env.test.local
 .env.production.local

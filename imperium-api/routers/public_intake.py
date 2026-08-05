@@ -144,6 +144,10 @@ class TenderInterestPayload(IntakePayload):
     prazNumber: Optional[str] = Field(default=None, max_length=100)
 
 
+class NewsletterPayload(IntakePayload):
+    email: EmailStr
+
+
 async def _public_org_id(db: AsyncSession) -> str:
     rows = (
         (
@@ -516,6 +520,100 @@ async def submit_tender_interest(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to process tender interest. Please retry.",
+        )
+
+
+@router.get("/metrics/summary")
+async def get_public_metrics_summary(db: AsyncSession = Depends(get_db)):
+    """Aggregate counts for public marketing-site display. Every figure is a live
+    query against real records - never a placeholder. Returns 0 honestly when
+    there's nothing to count yet, rather than a fabricated number."""
+    try:
+        org_id = await _public_org_id(db)
+        row = (
+            await db.execute(
+                text("""
+            SELECT
+                (SELECT count(*) FROM projects.projects
+                    WHERE organization_id = :org_id AND is_deleted = false
+                      AND actual_completion_date IS NOT NULL) AS projects_delivered,
+                (SELECT COALESCE(sum(contract_value), 0) FROM projects.projects
+                    WHERE organization_id = :org_id AND is_deleted = false
+                      AND actual_completion_date IS NOT NULL) AS contract_value_usd,
+                (SELECT count(*) FROM fleet.fleet
+                    WHERE organization_id = :org_id AND is_deleted = false
+                      AND operational_status != 'retired') AS fleet_assets_deployed,
+                (SELECT count(*) FROM projects.hse_incidents
+                    WHERE organization_id = :org_id AND is_deleted = false) AS safety_incidents_logged
+        """),
+                {"org_id": org_id},
+            )
+        ).one()
+        return {
+            "success": True,
+            "data": {
+                "projects_delivered": row.projects_delivered,
+                "contract_value_usd": float(row.contract_value_usd),
+                "fleet_assets_deployed": row.fleet_assets_deployed,
+                "safety_incidents_logged": row.safety_incidents_logged,
+            },
+            "message": "Public metrics summary fetched.",
+            "meta": {},
+        }
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to fetch public metrics summary.",
+        )
+
+
+@router.post("/newsletter")
+@limiter.limit("10/minute")
+async def submit_newsletter_signup(
+    request: Request,
+    payload: NewsletterPayload,
+    idempotency_key: Optional[str] = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    key = _idempotency_key(idempotency_key)
+    try:
+        org_id = await _public_org_id(db)
+        intake_id, reference, created = await _reserve_intake(
+            db, org_id, "newsletter", payload, key
+        )
+        if not created:
+            await db.commit()
+            return _receipt(reference, "Subscribed to newsletter.")
+
+        existing_lead_id = (
+            await db.execute(
+                text(
+                    "SELECT id FROM crm.leads WHERE organization_id = :org_id AND lower(contact_email) = lower(:email) AND lead_source = 'Newsletter Signup' AND is_deleted = false LIMIT 1"
+                ),
+                {"org_id": org_id, "email": str(payload.email)},
+            )
+        ).scalar()
+        if existing_lead_id:
+            lead_id = str(existing_lead_id)
+        else:
+            lead_id = str(
+                (
+                    await db.execute(
+                        text(
+                            "INSERT INTO crm.leads (organization_id, lead_source, status, contact_email) VALUES (:org_id, 'Newsletter Signup', 'new', :email) RETURNING id"
+                        ),
+                        {"org_id": org_id, "email": str(payload.email)},
+                    )
+                ).scalar()
+            )
+        await _complete_intake(db, intake_id, lead_id=lead_id)
+        await db.commit()
+        return _receipt(reference, "Subscribed to newsletter.")
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to process subscription. Please retry.",
         )
 
 

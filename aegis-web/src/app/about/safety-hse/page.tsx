@@ -38,7 +38,7 @@ export default async function SafetyHsePage() {
             <SectionLabel>OUR SAFETY PERFORMANCE</SectionLabel>
             <h2 className="text-headline-lg text-white mt-2 font-display">Safety by the Numbers</h2>
             <p className="text-body text-snc-text-secondary mt-4 max-w-2xl mx-auto">
-              Our safety metrics speak for themselves. We maintain rigorous standards across all heavy industrial, mining, and civil infrastructure projects.
+              We maintain rigorous safety standards across all heavy industrial, mining, and civil infrastructure projects, backed by systems that track and enforce them on every site.
             </p>
           </div>
 
@@ -46,29 +46,29 @@ export default async function SafetyHsePage() {
             <StaggerItem>
               <Card padding="standard" className="text-center border-t-2 border-t-snc-gold-primary">
                 <Activity className="w-10 h-10 text-snc-gold-primary mx-auto mb-4" strokeWidth={1.5} />
-                <h3 className="text-4xl font-bold font-display text-white">1.2M+</h3>
-                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">MAN-HOURS LTI FREE</p>
+                <h3 className="text-2xl font-bold font-display text-white">Tracked</h3>
+                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">LOST-TIME INJURIES MONITORED SITE-WIDE</p>
               </Card>
             </StaggerItem>
             <StaggerItem>
               <Card padding="standard" className="text-center border-t-2 border-t-snc-gold-primary">
                 <ShieldCheck className="w-10 h-10 text-snc-gold-primary mx-auto mb-4" strokeWidth={1.5} />
-                <h3 className="text-4xl font-bold font-display text-white">0.00</h3>
-                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">TOTAL RECORDABLE INJURY FREQUENCY</p>
+                <h3 className="text-2xl font-bold font-display text-white">Logged</h3>
+                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">RECORDABLE INCIDENTS TRACKED PER PROGRAMME</p>
               </Card>
             </StaggerItem>
             <StaggerItem>
               <Card padding="standard" className="text-center border-t-2 border-t-snc-gold-primary">
                 <Award className="w-10 h-10 text-snc-gold-primary mx-auto mb-4" strokeWidth={1.5} />
-                <h3 className="text-4xl font-bold font-display text-white">100%</h3>
-                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">PPE COMPLIANCE AUDITED</p>
+                <h3 className="text-2xl font-bold font-display text-white">Audited</h3>
+                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">PPE COMPLIANCE VERIFIED ON SITE</p>
               </Card>
             </StaggerItem>
             <StaggerItem>
               <Card padding="standard" className="text-center border-t-2 border-t-snc-gold-primary">
                 <ShieldAlert className="w-10 h-10 text-snc-gold-primary mx-auto mb-4" strokeWidth={1.5} />
-                <h3 className="text-4xl font-bold font-display text-white">Zero</h3>
-                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">ENVIRONMENTAL BREACHES</p>
+                <h3 className="text-2xl font-bold font-display text-white">Monitored</h3>
+                <p className="text-xs font-mono tracking-wider text-snc-text-secondary mt-2">ENVIRONMENTAL COMPLIANCE ON EVERY SITE</p>
               </Card>
             </StaggerItem>
           </StaggerContainer>

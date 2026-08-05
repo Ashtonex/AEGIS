@@ -30,57 +30,65 @@ import Link from "next/link";
 import { motion, useInView, useReducedMotion } from "framer-motion";
 import { sequenceRevealVariants, sequenceFadeVariants, transitions } from "@/lib/motion";
 
-// ── Evidence data — [PLACEHOLDER] wire to Imperium API when available ─────────
-// Integration point: GET /api/v1/metrics/public-summary
-// Returns: { projectsCompleted, fleetAssets, contractValue, ltiFrequency, yearsActive, regionsActive }
-const EVIDENCE_STATS = [
-  {
-    id: "projects",
-    value: 184,
-    suffix: "",
-    prefix: "",
-    label: "Projects Delivered",
-    descriptor: "Civil engineering, structural construction, and earthmoving contracts completed across Zimbabwe since incorporation.",
-    // [PLACEHOLDER] Replace with Imperium API: projectsCompleted
-  },
-  {
-    id: "fleet",
-    value: 78,
-    suffix: "+",
-    prefix: "",
-    label: "Fleet Assets Deployed",
-    descriptor: "Owned and operated machinery including excavators, graders, articulated trucks, and specialist plant — all in active deployment.",
-    // [PLACEHOLDER] Replace with Imperium API: fleetAssets
-  },
-  {
-    id: "value",
-    value: 340,
-    suffix: "M",
-    prefix: "USD ",
-    label: "Contract Value Executed",
-    descriptor: "Cumulative value of executed contracts across mining infrastructure, road rehabilitation, and commercial construction sectors.",
-    // [PLACEHOLDER] Replace with Imperium API: contractValue
-  },
-  {
-    id: "safety",
-    value: 0,
-    suffix: "",
-    prefix: "",
-    label: "Lost Time Injuries",
-    descriptor: "Zero lost-time injuries recorded across all active project sites. Safety is a system, not a slogan.",
-    // [PLACEHOLDER] Replace with Imperium API: ltiFrequency
-  },
-] as const;
+export interface EvidenceStats {
+  projectsDelivered: number;
+  fleetAssetsDeployed: number;
+  contractValueUsd: number;
+  safetyIncidentsLogged: number;
+}
+
+// Every figure here is a live count from the operational database
+// (GET /api/v1/metrics, backed by imperium-api's public metrics summary) -
+// never a placeholder. A zero is shown honestly rather than a fabricated
+// number when there's nothing to count yet.
+function buildEvidenceStats(stats: EvidenceStats) {
+  const contractValueMillions = Math.round((stats.contractValueUsd / 1_000_000) * 10) / 10;
+  return [
+    {
+      id: "projects",
+      value: stats.projectsDelivered,
+      suffix: "",
+      prefix: "",
+      label: "Projects Delivered",
+      descriptor: "Civil engineering, structural construction, and earthmoving contracts completed across Zimbabwe since incorporation.",
+    },
+    {
+      id: "fleet",
+      value: stats.fleetAssetsDeployed,
+      suffix: "",
+      prefix: "",
+      label: "Fleet Assets Deployed",
+      descriptor: "Owned and operated machinery including excavators, graders, articulated trucks, and specialist plant — all in active deployment.",
+    },
+    {
+      id: "value",
+      value: contractValueMillions,
+      suffix: "M",
+      prefix: "USD ",
+      label: "Contract Value Executed",
+      descriptor: "Cumulative value of executed contracts across mining infrastructure, road rehabilitation, and commercial construction sectors.",
+    },
+    {
+      id: "safety",
+      value: stats.safetyIncidentsLogged,
+      suffix: "",
+      prefix: "",
+      label: "Safety Incidents Logged",
+      descriptor: "Incidents recorded and investigated across all active project sites through our HSE management system.",
+    },
+  ] as const;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function EvidenceSequence() {
+export function EvidenceSequence({ stats }: { stats: EvidenceStats }) {
   const shouldReduceMotion = useReducedMotion();
   const sectionRef = useRef<HTMLElement>(null);
   const isInView = useInView(sectionRef, {
     once: true,      // Count up exactly once — Volume II mandate
     margin: "-10% 0px",
   });
+  const evidenceStats = buildEvidenceStats(stats);
 
   return (
     <section
@@ -124,14 +132,14 @@ export function EvidenceSequence() {
 
       {/* ── Stats — each on its own row, separated by hairline rules ─────── */}
       <div className="max-w-[1440px] mx-auto">
-        {EVIDENCE_STATS.map((stat, index) => (
+        {evidenceStats.map((stat, index) => (
           <StatRow
             key={stat.id}
             stat={stat}
             index={index}
             isInView={isInView}
             shouldReduceMotion={shouldReduceMotion ?? false}
-            isLast={index === EVIDENCE_STATS.length - 1}
+            isLast={index === evidenceStats.length - 1}
           />
         ))}
       </div>
@@ -145,8 +153,7 @@ export function EvidenceSequence() {
         variants={sequenceRevealVariants}
       >
         <p className="font-mono text-[11px] tracking-[0.1em] uppercase text-slate/60 max-w-md">
-          {/* [PLACEHOLDER] Wire to Imperium API: latestMilestone */}
-          Latest milestone: Zimplats Phase IV access road, 14.2km, completed ahead of schedule — Q2 2026
+          Delivery evidence across mining infrastructure, roads, and commercial construction
         </p>
         <Link
           href="/projects"
@@ -165,7 +172,7 @@ export function EvidenceSequence() {
 
 // ── StatRow — the atomic unit of this sequence ────────────────────────────────
 interface StatRowProps {
-  stat: (typeof EVIDENCE_STATS)[number];
+  stat: ReturnType<typeof buildEvidenceStats>[number];
   index: number;
   isInView: boolean;
   shouldReduceMotion: boolean;

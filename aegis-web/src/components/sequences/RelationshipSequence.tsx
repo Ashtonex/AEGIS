@@ -89,10 +89,10 @@ export function RelationshipSequence() {
             <div>
               <span className="dxl-eyebrow mb-4 block">Procurement & Tenders</span>
               <a 
-                href="mailto:tenders@sixnine.co.zw" 
+                href="mailto:tenders@sixnineconstruction.com" 
                 className="group inline-flex items-center gap-3 font-mono text-[14px] md:text-[16px] text-ink transition-colors hover:text-signal"
               >
-                tenders@sixnine.co.zw
+                tenders@sixnineconstruction.com
                 <ArrowUpRight className="w-4 h-4 transition-transform duration-300 group-hover:translate-x-1 group-hover:-translate-y-1" />
               </a>
             </div>
@@ -101,10 +101,10 @@ export function RelationshipSequence() {
             <div>
               <span className="dxl-eyebrow mb-4 block">Corporate Operations</span>
               <a 
-                href="mailto:operations@sixnine.co.zw" 
+                href="mailto:operations@sixnineconstruction.com" 
                 className="group inline-flex items-center gap-3 font-mono text-[14px] md:text-[16px] text-ink transition-colors hover:text-signal"
               >
-                operations@sixnine.co.zw
+                operations@sixnineconstruction.com
                 <ArrowUpRight className="w-4 h-4 transition-transform duration-300 group-hover:translate-x-1 group-hover:-translate-y-1" />
               </a>
               <div className="mt-3 font-mono text-[12px] text-slate/70">

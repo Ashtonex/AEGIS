@@ -7,9 +7,11 @@ const FOOTER_SECTIONS = [
     title: "Company",
     items: [
       { label: "About Us", href: "/about" },
+      { label: "Our Story", href: "/about/story" },
       { label: "Leadership", href: "/about/leadership" },
-      { label: "Certifications", href: "/about#certifications" },
-      { label: "ESG & Sustainability", href: "/about#esg" },
+      { label: "Safety & HSE", href: "/about/safety-hse" },
+      { label: "Sustainability", href: "/about/sustainability" },
+      { label: "Media Kit", href: "/media-kit" },
     ],
   },
   {
@@ -19,13 +21,16 @@ const FOOTER_SECTIONS = [
       { label: "Industries", href: "/industries" },
       { label: "Projects", href: "/projects" },
       { label: "Knowledge", href: "/knowledge" },
+      { label: "Newsroom", href: "/news" },
     ],
   },
   {
     title: "Connect",
     items: [
       { label: "Tenders", href: "/tenders" },
+      { label: "Tenders FAQ", href: "/tenders/faq" },
       { label: "Suppliers", href: "/suppliers" },
+      { label: "Supplier Guidelines", href: "/suppliers/guidelines" },
       { label: "Careers", href: "/careers" },
       { label: "Contact", href: "/contact" },
     ],

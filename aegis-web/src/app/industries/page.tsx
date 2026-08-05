@@ -12,68 +12,40 @@ export const metadata = constructMetadata({
   description: "Explore the primary industry sectors SNC operates in, including Mining, Government, Commercial, and heavy Infrastructure.",
 });
 
-// Sector Details containing descriptions, fallback metrics, and images
-const SECTOR_DETAILS: Record<string, {
-  description: string;
-  fallbackActive: number;
-  fallbackCompleted: number;
-  financialVolume: string;
-  bgImage: string;
-}> = {
+// Sector descriptions — editorial copy, not fabricated per-sector metrics.
+// Active/completed counts below are always the real, live-filtered project
+// counts (0 shown honestly when there's nothing yet) - no fallback numbers.
+const SECTOR_DETAILS: Record<string, { description: string; bgImage: string }> = {
   Mining: {
     description: "Heavy earthworks, processing plants, haul road construction, and specialized concrete infrastructure built to withstand severe operations.",
-    fallbackActive: 4,
-    fallbackCompleted: 24,
-    financialVolume: "$142.5M",
     bgImage: "/proj-mining.jpg"
   },
   Government: {
     description: "Public infrastructure, municipal assets, and utility networks delivered under strict regulatory compliance and budget controls.",
-    fallbackActive: 3,
-    fallbackCompleted: 18,
-    financialVolume: "$89.2M",
     bgImage: "/proj-bridge.jpg"
   },
   Commercial: {
     description: "Corporate offices, mixed-use developments, logistics warehousing, and retail hubs constructed with high aesthetic and structural standards.",
-    fallbackActive: 5,
-    fallbackCompleted: 32,
-    financialVolume: "$115.8M",
     bgImage: "/proj-commercial.jpg"
   },
   Industrial: {
     description: "Heavy-duty manufacturing facilities, assembly lines, logistics parks, and processing centers engineered for maximum throughput.",
-    fallbackActive: 2,
-    fallbackCompleted: 15,
-    financialVolume: "$76.4M",
     bgImage: "/snc_industrial_warehouse.png"
   },
   Energy: {
     description: "Substation foundations, solar farm civil grading, transmission grid anchor works, and thermal power plant civil works.",
-    fallbackActive: 3,
-    fallbackCompleted: 11,
-    financialVolume: "$95.0M",
     bgImage: "/hero_cinematic.png"
   },
   Transport: {
     description: "High-capacity highway networks, concrete highway bridges, arterial corridor expansions, and public transit nodes.",
-    fallbackActive: 6,
-    fallbackCompleted: 41,
-    financialVolume: "$210.3M",
     bgImage: "/proj-highway.jpg"
   },
   Agriculture: {
     description: "Macro reservoirs, extensive canal networks, modern crop storage silos, and secondary processing facilities.",
-    fallbackActive: 2,
-    fallbackCompleted: 14,
-    financialVolume: "$34.1M",
     bgImage: "/proj-earthworks.jpg"
   },
   Infrastructure: {
     description: "Water purification networks, heavy retention systems, civic utility complexes, and large-scale urban infrastructure works.",
-    fallbackActive: 7,
-    fallbackCompleted: 29,
-    financialVolume: "$180.6M",
     bgImage: "/snc_civil_yard.png"
   }
 };
@@ -103,19 +75,12 @@ export default async function IndustriesIndexPage() {
     const activeCount = sectorProjects.filter(p => p.status === "Active").length;
     const completedCount = sectorProjects.filter(p => p.status === "Completed").length;
 
-    const details = SECTOR_DETAILS[sectorName] || {
-      description: "",
-      fallbackActive: 0,
-      fallbackCompleted: 0,
-      financialVolume: "$0.0M",
-      bgImage: ""
-    };
+    const details = SECTOR_DETAILS[sectorName] || { description: "", bgImage: "" };
 
     return {
       description: details.description,
-      active: activeCount || details.fallbackActive,
-      completed: completedCount || details.fallbackCompleted,
-      volume: details.financialVolume,
+      active: activeCount,
+      completed: completedCount,
       bgImage: details.bgImage
     };
   };
@@ -167,7 +132,7 @@ export default async function IndustriesIndexPage() {
                     </p>
 
                     {/* Live Telemetry Metrics */}
-                    <div className="mt-auto pt-6 border-t border-[#1c1c1c] grid grid-cols-3 gap-2">
+                    <div className="mt-auto pt-6 border-t border-[#1c1c1c] grid grid-cols-2 gap-2">
                       <div>
                         <span className="block text-[8px] font-mono tracking-widest text-slate uppercase mb-1">Active</span>
                         <span className="text-base font-mono font-bold tabular-nums text-[#3B82F6]">{metrics.active}</span>
@@ -175,10 +140,6 @@ export default async function IndustriesIndexPage() {
                       <div>
                         <span className="block text-[8px] font-mono tracking-widest text-slate uppercase mb-1">Completed</span>
                         <span className="text-base font-mono font-bold tabular-nums text-white">{metrics.completed}</span>
-                      </div>
-                      <div>
-                        <span className="block text-[8px] font-mono tracking-widest text-slate uppercase mb-1">Volume</span>
-                        <span className="text-base font-mono font-bold tabular-nums text-white">{metrics.volume}</span>
                       </div>
                     </div>
 

@@ -4,7 +4,7 @@ import { PageHero } from "@/components/ui/PageHero";
 import { ArticleCard } from "@/components/sections/ArticleCard";
 import { getKnowledge } from "@/lib/api";
 import { SectionLabel } from "@/components/ui/SectionLabel";
-import { Button } from "@/components/ui/Button";
+import { NewsletterForm } from "@/components/forms/NewsletterForm";
 
 export const metadata = constructMetadata({
   title: "Knowledge Centre | Six Nine Construction",
@@ -45,14 +45,7 @@ export default async function KnowledgePage() {
             <SectionLabel className="items-center mx-auto mb-6">Technical Briefing</SectionLabel>
             <h2 className="text-3xl font-display text-[var(--snc-white)] mb-4">Subscribe to SNC Insights</h2>
             <p className="text-[var(--snc-mist)] mb-8">Receive our quarterly technical briefings covering engineering innovations and infrastructure trends in Southern Africa.</p>
-            <div className="flex flex-col sm:flex-row gap-4 justify-center max-w-lg mx-auto">
-               <input 
-                 type="email" 
-                 placeholder="Corporate Email Address" 
-                 className="flex-1 px-4 py-3 bg-[var(--snc-navy)] border border-[var(--snc-navy-border)] rounded-sm text-[var(--snc-white)] focus:outline-none focus:border-[var(--snc-gold)]"
-               />
-               <Button variant="default">Subscribe</Button>
-            </div>
+            <NewsletterForm />
           </div>
         </div>
       </section>

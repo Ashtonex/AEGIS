@@ -11,8 +11,9 @@
  */
 
 import { constructMetadata } from "@/lib/metadata";
+import { getPublicMetricsSummary } from "@/lib/api";
 import { ArrivalSequence } from "@/components/sequences/ArrivalSequence";
-import { EvidenceSequence } from "@/components/sequences/EvidenceSequence";
+import { EvidenceSequence, type EvidenceStats } from "@/components/sequences/EvidenceSequence";
 import { CapabilitySequence } from "@/components/sequences/CapabilitySequence";
 import { InfrastructureSequence } from "@/components/sequences/InfrastructureSequence";
 import { OperationsSequence } from "@/components/sequences/OperationsSequence";
@@ -30,7 +31,31 @@ export const metadata = constructMetadata({
   image: "/arrival-01.jpg",
 });
 
-export default function GatewayPage() {
+async function getEvidenceStats(): Promise<EvidenceStats> {
+  // Public homepage numbers must always be real. If the metrics service is
+  // unreachable, show honest zeros rather than fall back to placeholder data.
+  try {
+    const response = await getPublicMetricsSummary();
+    const data = response.data;
+    return {
+      projectsDelivered: data?.projects_delivered ?? 0,
+      fleetAssetsDeployed: data?.fleet_assets_deployed ?? 0,
+      contractValueUsd: data?.contract_value_usd ?? 0,
+      safetyIncidentsLogged: data?.safety_incidents_logged ?? 0,
+    };
+  } catch {
+    return {
+      projectsDelivered: 0,
+      fleetAssetsDeployed: 0,
+      contractValueUsd: 0,
+      safetyIncidentsLogged: 0,
+    };
+  }
+}
+
+export default async function GatewayPage() {
+  const evidenceStats = await getEvidenceStats();
+
   return (
     <main id="main-content">
       {/* ── Sequence 01: Arrival ───────────────────────────────────────────── */}
@@ -39,7 +64,7 @@ export default function GatewayPage() {
 
       {/* ── Sequence 02: Evidence ─────────────────────────────────────────── */}
       {/* Objective: prove the confidence was earned — massive numbers, no cards */}
-      <EvidenceSequence />
+      <EvidenceSequence stats={evidenceStats} />
 
       {/* ── Sequences 03–07: Built sequentially, pausing for directorial review */}
       {/* ── Sequence 03: Capability ───────────────────────────────────────── */}

@@ -3,9 +3,9 @@ export const SITE_CONFIG = {
   shortName: "SNC",
   tagline: "Built to Last. Engineered to Perform.",
   description: "Civil engineering, commercial construction, and mining infrastructure delivered with precision across Zimbabwe and Southern Africa.",
-  url: "https://sixnine.co.zw", // Assuming generic URL
+  url: "https://sixnineconstruction.com",
   contact: {
-    email: "commercial@sixnine.co.zw",
+    email: "commercial@sixnineconstruction.com",
     phone: "+263 242 000 000",
     address: "Harare, Zimbabwe", // Generic address
     emergency: "+263 772 000 000"

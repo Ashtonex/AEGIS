@@ -5,12 +5,13 @@ import { formatDate } from "@/lib/utils";
 import { Linkedin, Twitter, Link as LinkIcon, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
-import { getMockArticleBySlug } from "@/lib/mockArticles";
+import { getKnowledgeBySlug } from "@/lib/api";
 import { notFound } from "next/navigation";
 
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
-  const article = getMockArticleBySlug(params.slug);
+  const response = await getKnowledgeBySlug(params.slug).catch(() => null);
+  const article = response?.success ? response.data : null;
   return constructMetadata({
     title: `${article ? article.title : 'Technical Guide'} | Six Nine Construction`,
     description: article?.excerpt,
@@ -19,7 +20,8 @@ export async function generateMetadata(props: { params: Promise<{ slug: string }
 
 export default async function KnowledgeDetailPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
-  const article = getMockArticleBySlug(params.slug);
+  const response = await getKnowledgeBySlug(params.slug).catch(() => null);
+  const article = response?.success ? response.data : null;
 
   if (!article) {
     notFound();

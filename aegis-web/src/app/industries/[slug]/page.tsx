@@ -7,6 +7,7 @@ import { SectionLabel } from "@/components/ui/SectionLabel";
 import { Button } from "@/components/ui/Button";
 import Link from "next/link";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
+import { getIndustryContent } from "@/lib/industriesContent";
 
 export async function generateStaticParams() {
   return INDUSTRIES.map((ind) => ({
@@ -33,6 +34,8 @@ export default async function IndustryDetailPage(props: { params: Promise<{ slug
     notFound();
   }
 
+  const content = getIndustryContent(params.slug);
+
   return (
     <PageWrapper>
       <PageHero
@@ -52,17 +55,12 @@ export default async function IndustryDetailPage(props: { params: Promise<{ slug
             <div className="lg:col-span-8 prose prose-invert prose-lg max-w-none">
               <h2 className="text-3xl font-display text-[var(--snc-white)] mb-6">Expertise in {indName}</h2>
               <p className="text-[var(--snc-mist)] leading-relaxed mb-8">
-                The {indName} sector demands a unique intersection of heavy engineering capability, stringent safety protocols, and the ability to operate in challenging environments without disrupting ongoing operations. Six Nine Construction has developed specialized methodologies to meet these exact requirements.
+                {content.expertise}
               </p>
 
               <h3 className="text-2xl font-bold text-[var(--snc-white)] mt-12 mb-6">Key Challenges We Solve</h3>
               <div className="grid sm:grid-cols-2 gap-6 mb-12">
-                {[
-                  "Maintaining Zero Harm in high-risk operational environments.",
-                  "Executing brownfield expansions without disrupting current yield.",
-                  "Managing complex, remote supply chains via Project AEGIS.",
-                  "Navigating stringent regulatory and environmental compliance."
-                ].map((item, index) => (
+                {content.challenges.map((item, index) => (
                   <div key={index} className="flex items-start gap-4 p-6 border border-[var(--snc-navy-border)] bg-[var(--snc-navy-mid)] rounded-sm">
                     <CheckCircle2 className="w-6 h-6 text-[var(--snc-gold)] shrink-0" />
                     <span className="text-[var(--snc-white)] text-base">{item}</span>
@@ -72,7 +70,7 @@ export default async function IndustryDetailPage(props: { params: Promise<{ slug
 
               <h3 className="text-2xl font-bold text-[var(--snc-white)] mt-12 mb-6">Regulatory Context</h3>
               <p className="text-[var(--snc-mist)] leading-relaxed mb-8">
-                Operating in Zimbabwe and the broader SADC region requires intimate knowledge of local compliance frameworks. Our internal systems are fully aligned with PRAZ, EMA, and relevant ministerial requirements specific to the {indName} sector, ensuring that every project is de-risked from an administrative standpoint from day one.
+                {content.regulatory}
               </p>
             </div>
 
@@ -80,7 +78,7 @@ export default async function IndustryDetailPage(props: { params: Promise<{ slug
               <div className="p-8 border border-[var(--snc-navy-border)] bg-[var(--snc-navy-raised)] rounded-sm cad-line-accent">
                 <SectionLabel>Relevant Capabilities</SectionLabel>
                 <ul className="space-y-4 mt-6">
-                  {["Civil Infrastructure", "Structural Engineering", "Earthworks & Grading", "Heavy Plant Operations"].map(cap => (
+                  {content.relatedCapabilities.map(cap => (
                     <li key={cap}>
                       <Link href={`/capabilities/${cap.toLowerCase().replace(/ & /g, '-').replace(/\s+/g, '-')}`} className="flex items-center justify-between text-[var(--snc-mist)] hover:text-[var(--snc-gold)] transition-colors group">
                         <span className="font-semibold">{cap}</span>

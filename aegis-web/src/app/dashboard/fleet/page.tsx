@@ -1,8 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { ApiError, getComplianceDeploymentGateChecks, getFleet } from "@/lib/api";
+import { useApiQueries } from "@/hooks/useApiQueries";
+import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from "@/components/ui/OperationalTable";
+import { EmptyState as SharedEmptyState } from "@/components/ui/EmptyState";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -130,60 +133,47 @@ function StatusPill({ record }: { record: FleetRecord }) {
   return <span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${style}`}>{displayStatus(record)}</span>;
 }
 
-function EmptyState() {
-  return (
-    <div className="border border-dashed border-ink-mid bg-ink p-10 text-center">
-      <Truck className="mx-auto mb-3 text-slate" size={30} />
-      <h2 className="text-sm font-semibold text-paper">No fleet assets have been recorded</h2>
-      <p className="mx-auto mt-2 max-w-lg text-sm text-slate-light">The fleet register is empty for your organisation. Add assets through the controlled fleet register before using operational reporting.</p>
-    </div>
-  );
-}
-
 export default function FleetTrackerPage() {
   return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor"]}><FleetTrackerDashboard /></RBACGuard>;
 }
 
 function FleetTrackerDashboard() {
-  const [assets, setAssets] = useState<FleetRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [gateWarning, setGateWarning] = useState<string | null>(null);
-  const [deploymentGateChecks, setDeploymentGateChecks] = useState<FleetRecord[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const loadFleet = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setGateWarning(null);
-    try {
-      const [fleetResult, gateResult] = await Promise.allSettled([
-        getFleet(),
-        getComplianceDeploymentGateChecks({ limit: 50 }),
-      ]);
-      if (fleetResult.status === "rejected") {
-        throw fleetResult.reason;
-      }
-      const nextAssets = Array.isArray(fleetResult.value.data) ? fleetResult.value.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : [];
-      setAssets(nextAssets);
-      setDeploymentGateChecks(gateResult.status === "fulfilled" && Array.isArray(gateResult.value.data) ? gateResult.value.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []);
-      if (gateResult.status === "rejected") setGateWarning("Deployment gate checks could not be loaded; equipment assignment prevention remains enforced by the API.");
-      setSelectedId(current => nextAssets.some(asset => asset.id === current) ? current : (nextAssets[0]?.id ?? null));
-      setLastUpdated(new Date());
-    } catch (cause) {
-      setAssets([]);
-      setDeploymentGateChecks([]);
-      setSelectedId(null);
-      setError(cause instanceof ApiError && cause.status === 403 ? "You do not have permission to read the fleet register." : normalizeLoadError(cause, "Fleet records could not be loaded. Verify the API connection and try again."));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const { data, warnings, error, isLoading: loading, refetch: loadFleet } = useApiQueries(
+    {
+      fleet: () => getFleet(),
+      gates: () => getComplianceDeploymentGateChecks({ limit: 50 }),
+    },
+    [],
+    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks" } }
+  );
 
-  useEffect(() => { void loadFleet(); }, [loadFleet]);
+  const assets = useMemo(
+    () => (Array.isArray(data.fleet?.data) ? data.fleet.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.fleet]
+  );
+  const deploymentGateChecks = useMemo(
+    () => (Array.isArray(data.gates?.data) ? data.gates.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.gates]
+  );
+  const errorMessage = error
+    ? error instanceof ApiError && error.status === 403
+      ? "You do not have permission to read the fleet register."
+      : normalizeLoadError(error, "Fleet records could not be loaded. Verify the API connection and try again.")
+    : null;
+  const gateWarning = warnings[0] ?? null;
+
+  useEffect(() => {
+    setSelectedId(current => assets.some(asset => asset.id === current) ? current : (assets[0]?.id ?? null));
+  }, [assets]);
+
+  useEffect(() => {
+    if (!loading && !error) setLastUpdated(new Date());
+  }, [loading, error]);
 
   const statuses = useMemo(() => Array.from(new Set(assets.map(normalizedStatus).filter(Boolean))).sort(), [assets]);
   const filteredAssets = useMemo(() => assets.filter(asset => {
@@ -231,10 +221,16 @@ function FleetTrackerDashboard() {
           </div>
         </header>
 
-        {error && <div className="mb-5 flex items-start gap-3 border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-100"><ShieldAlert size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Fleet register unavailable</p><p className="mt-1 text-red-100/80">{error}</p></div></div>}
+        {errorMessage && <div className="mb-5 flex items-start gap-3 border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-100"><ShieldAlert size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Fleet register unavailable</p><p className="mt-1 text-red-100/80">{errorMessage}</p></div></div>}
         {gateWarning && <div className="mb-5 flex items-start gap-3 border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Deployment gate history unavailable</p><p className="mt-1 text-amber-100/80">{gateWarning}</p></div></div>}
 
-        {loading ? <div className="flex min-h-80 items-center justify-center border border-ink-mid bg-ink"><Loader2 className="animate-spin text-slate-light" size={26} /></div> : !error && assets.length === 0 ? <EmptyState /> : !error && <>
+        {loading ? <div className="flex min-h-80 items-center justify-center border border-ink-mid bg-ink"><Loader2 className="animate-spin text-slate-light" size={26} /></div> : !errorMessage && assets.length === 0 ? (
+          <SharedEmptyState
+            icon={Truck}
+            title="No fleet assets have been recorded"
+            description="The fleet register is empty for your organisation. Add assets through the controlled fleet register before using operational reporting."
+          />
+        ) : !errorMessage && <>
           <section className="mb-6 grid gap-px overflow-hidden border border-ink-mid bg-ink-mid sm:grid-cols-2 lg:grid-cols-6">
             <Metric icon={<Truck size={17} />} label="Registered assets" value={assets.length} />
             <Metric icon={<CheckCircle2 size={17} />} label="Operational" value={metrics.active} tone="text-green-300" />
@@ -253,7 +249,32 @@ function FleetTrackerDashboard() {
                   <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2"><Filter size={14} className="text-slate" /><select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="bg-transparent text-xs text-paper outline-none"><option value="all">All states</option>{statuses.map(status => <option key={status} value={status}>{status}</option>)}</select></label>
                 </div>
               </div>
-              {filteredAssets.length === 0 ? <div className="p-10 text-center text-sm text-slate-light">No registered assets match this filter.</div> : <div className="overflow-x-auto"><table className="min-w-full text-left"><thead className="border-b border-ink-mid bg-ink-light font-mono text-[10px] uppercase tracking-wider text-slate"><tr><th className="px-4 py-3 font-normal">Asset</th><th className="px-4 py-3 font-normal">Class</th><th className="px-4 py-3 font-normal">Status</th><th className="px-4 py-3 font-normal">Location / allocation</th><th className="px-4 py-3 font-normal">Hours</th><th className="px-4 py-3" /></tr></thead><tbody>{filteredAssets.map(asset => <tr key={asset.id} onClick={() => setSelectedId(asset.id)} className={`cursor-pointer border-b border-ink-mid/70 text-sm hover:bg-ink-light ${asset.id === selectedId ? "bg-ink-light" : ""}`}><td className="px-4 py-3"><p className="font-medium text-paper">{assetName(asset)}</p><p className="mt-1 font-mono text-[10px] text-slate">{assetReference(asset)}</p></td><td className="px-4 py-3 text-xs text-slate-light">{text(asset, "type", "asset_type", "category") || "Not recorded"}</td><td className="px-4 py-3"><StatusPill record={asset} /></td><td className="px-4 py-3 text-xs text-slate-light">{text(asset, "location", "site", "assigned_project", "project_name") || "Not allocated"}</td><td className="px-4 py-3 font-mono text-xs text-paper">{number(asset, "operating_hours", "hours", "hour_meter")?.toLocaleString() ?? "-"}</td><td className="px-4 py-3 text-slate"><ChevronRight size={16} /></td></tr>)}</tbody></table></div>}
+              {filteredAssets.length === 0 ? <div className="p-10 text-center text-sm text-slate-light">No registered assets match this filter.</div> : (
+                <OperationalTable>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Asset</TableHead>
+                      <TableHead>Class</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Location / allocation</TableHead>
+                      <TableHead>Hours</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <tbody>
+                    {filteredAssets.map(asset => (
+                      <TableRow key={asset.id} onClick={() => setSelectedId(asset.id)} className={`cursor-pointer ${asset.id === selectedId ? "bg-snc-navy" : ""}`}>
+                        <TableCell><p className="font-medium text-snc-text-primary">{assetName(asset)}</p><p className="mt-1 font-mono text-[10px] text-snc-text-tertiary">{assetReference(asset)}</p></TableCell>
+                        <TableCell>{text(asset, "type", "asset_type", "category") || "Not recorded"}</TableCell>
+                        <TableCell><StatusPill record={asset} /></TableCell>
+                        <TableCell>{text(asset, "location", "site", "assigned_project", "project_name") || "Not allocated"}</TableCell>
+                        <TableCell>{number(asset, "operating_hours", "hours", "hour_meter")?.toLocaleString() ?? "-"}</TableCell>
+                        <TableCell><ChevronRight size={16} /></TableCell>
+                      </TableRow>
+                    ))}
+                  </tbody>
+                </OperationalTable>
+              )}
             </section>
 
             <aside className="space-y-6">
@@ -271,12 +292,34 @@ function FleetTrackerDashboard() {
               <ShieldCheck size={18} className="text-slate-light" />
             </div>
             {deploymentGateChecks.length === 0 ? <div className="p-5 text-sm text-slate-light">No equipment assignment gate checks have been recorded yet.</div> : (
-              <div className="overflow-x-auto">
-                <table className="min-w-[900px] w-full text-left">
-                  <thead className="border-b border-ink-mid bg-ink-light font-mono text-[10px] uppercase tracking-wider text-slate"><tr><th className="px-4 py-3 font-normal">Time</th><th className="px-4 py-3 font-normal">Asset</th><th className="px-4 py-3 font-normal">Operator</th><th className="px-4 py-3 font-normal">Project</th><th className="px-4 py-3 font-normal">Result</th><th className="px-4 py-3 font-normal">Missing credential evidence</th></tr></thead>
-                  <tbody>{deploymentGateChecks.slice(0, 8).map((gate) => { const missing = Array.isArray(gate.missing_requirements) ? gate.missing_requirements : []; const gateStatus = text(gate, "status") || "pending"; return <tr key={gate.id} className="border-b border-ink-mid/70 text-sm"><td className="px-4 py-3 text-xs text-slate-light">{dateFrom(gate, "checked_at") || "Not recorded"}</td><td className="px-4 py-3 text-paper">{text(gate, "asset_code", "vehicle_registration", "fleet_id") || "General asset"}</td><td className="px-4 py-3 text-slate-light">{text(gate, "employee_name", "employee_number") || "Unknown operator"}</td><td className="px-4 py-3 text-slate-light">{text(gate, "project_name") || "No project"}</td><td className="px-4 py-3"><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${gateStatus.toLowerCase() === "blocked" ? "border-red-500/30 bg-red-950/20 text-red-300" : "border-green-500/30 bg-green-950/20 text-green-300"}`}>{gateStatus}</span></td><td className="px-4 py-3 text-xs text-slate-light">{missing.length ? missing.map((item: FleetRecord) => text(item, "certification_name", "reason") || "Missing requirement").join(", ") : "Requirements satisfied"}</td></tr>; })}</tbody>
-                </table>
-              </div>
+              <OperationalTable className="min-w-[900px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Time</TableHead>
+                    <TableHead>Asset</TableHead>
+                    <TableHead>Operator</TableHead>
+                    <TableHead>Project</TableHead>
+                    <TableHead>Result</TableHead>
+                    <TableHead>Missing credential evidence</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <tbody>
+                  {deploymentGateChecks.slice(0, 8).map((gate) => {
+                    const missing = Array.isArray(gate.missing_requirements) ? gate.missing_requirements : [];
+                    const gateStatus = text(gate, "status") || "pending";
+                    return (
+                      <TableRow key={gate.id}>
+                        <TableCell>{dateFrom(gate, "checked_at") || "Not recorded"}</TableCell>
+                        <TableCell className="text-snc-text-primary">{text(gate, "asset_code", "vehicle_registration", "fleet_id") || "General asset"}</TableCell>
+                        <TableCell>{text(gate, "employee_name", "employee_number") || "Unknown operator"}</TableCell>
+                        <TableCell>{text(gate, "project_name") || "No project"}</TableCell>
+                        <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${gateStatus.toLowerCase() === "blocked" ? "border-red-500/30 bg-red-950/20 text-red-300" : "border-green-500/30 bg-green-950/20 text-green-300"}`}>{gateStatus}</span></TableCell>
+                        <TableCell>{missing.length ? missing.map((item: FleetRecord) => text(item, "certification_name", "reason") || "Missing requirement").join(", ") : "Requirements satisfied"}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </tbody>
+              </OperationalTable>
             )}
           </section>
 

@@ -84,8 +84,8 @@ export default function TermsOfServicePage() {
 
                 <div className="mt-8 pt-6 border-t border-[#1c1c1c] text-xs text-slate-light leading-relaxed">
                   For formal legal notifications, contractual disputes, or representation matters, contact our Corporate Legal Team at{" "}
-                  <a href="mailto:legal@sixnine.co.zw" className="text-white hover:text-[#D4AF37] underline transition-colors">
-                    legal@sixnine.co.zw
+                  <a href="mailto:legal@sixnineconstruction.com" className="text-white hover:text-[#D4AF37] underline transition-colors">
+                    legal@sixnineconstruction.com
                   </a>.
                 </div>
               </div>

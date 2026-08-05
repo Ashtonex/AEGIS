@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { 
   ArrowLeft, Users, Mail, Phone, ExternalLink, Plus, Search, 
@@ -8,15 +8,16 @@ import {
   Calendar, FileText, CheckSquare, Bell, Clock, Building2,
   Save, PhoneCall, Trash2, Edit2, AlertCircle, UploadCloud
 } from 'lucide-react';
-import { 
-  getCrmContacts, 
-  createCrmContact, 
+import {
+  getCrmContacts,
+  createCrmContact,
   updateCrmContact,
-  getCrmOrganizations, 
-  getCrmActivities, 
-  createCrmActivity 
+  getCrmOrganizations,
+  getCrmActivities,
+  createCrmActivity
 } from '@/lib/api';
-import { useAuth } from '@/lib/auth/AuthContext';
+import { useApiQueries } from '@/hooks/useApiQueries';
+import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
 
 interface Contact {
   id: string;
@@ -47,16 +48,6 @@ interface Activity {
 }
 
 export default function ContactsRegistry() {
-  const { session } = useAuth();
-  
-  // Data states
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [activities, setActivities] = useState<Activity[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
-
   // Search & Selected Contacts
   const [search, setSearch] = useState('');
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
@@ -97,75 +88,51 @@ export default function ContactsRegistry() {
   });
   const [activityFormErrors, setActivityFormErrors] = useState<Record<string, string>>({});
 
-  function normalizeLoadError(reason: unknown) {
-    const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
-    const normalizedMessage = rawMessage.toLowerCase();
-    if (
-      normalizedMessage.includes("signal is aborted") ||
-      normalizedMessage.includes("operation was aborted") ||
-      normalizedMessage.includes("aborterror") ||
-      normalizedMessage.includes("timeouterror")
-    ) {
-      return "The CRM contacts feed is still synchronizing. Please retry once the connection is ready.";
+  const {
+    data: contactsData,
+    warnings: sourceWarnings,
+    error: loadError,
+    isLoading,
+    refetch: reloadContacts,
+  } = useApiQueries(
+    {
+      contacts: () => getCrmContacts(),
+      organizations: () => getCrmOrganizations(),
+      activities: () => getCrmActivities(),
+    },
+    [],
+    {
+      criticalKeys: ["contacts"],
+      labels: {
+        contacts: "Contacts could not be loaded from the CRM service",
+        organizations: "Client organizations",
+        activities: "CRM activities",
+      },
     }
-    return "Contacts could not be loaded from the CRM service.";
-  }
+  );
+
+  const organizations: Organization[] = useMemo(
+    () => (contactsData.organizations?.success && Array.isArray(contactsData.organizations.data) ? contactsData.organizations.data : []),
+    [contactsData.organizations]
+  );
+  const contacts: Contact[] = useMemo(() => {
+    if (!(contactsData.contacts?.success && Array.isArray(contactsData.contacts.data))) return [];
+    return contactsData.contacts.data.map(c => ({
+      ...c,
+      company_name: c.company_name || organizations.find(o => o.id === c.client_org_id)?.name || 'Independent'
+    }));
+  }, [contactsData.contacts, organizations]);
+  const activities: Activity[] = useMemo(
+    () => (contactsData.activities?.success && Array.isArray(contactsData.activities.data) ? contactsData.activities.data : []),
+    [contactsData.activities]
+  );
+  const error = loadError ? "Contacts could not be loaded from the CRM service." : null;
 
   useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
-      setError(null);
-    try {
-      const [contactsRes, orgsRes, activitiesRes] = await Promise.allSettled([
-        getCrmContacts(),
-        getCrmOrganizations(),
-        getCrmActivities()
-      ]);
-
-      const warnings: string[] = [];
-      let loadedOrgs: Organization[] = [];
-      if (orgsRes.status === 'fulfilled' && orgsRes.value.success && Array.isArray(orgsRes.value.data)) {
-        loadedOrgs = orgsRes.value.data;
-        setOrganizations(loadedOrgs);
-      } else {
-        warnings.push("Client organizations could not be loaded.");
-      }
-
-      let loadedContacts: Contact[] = [];
-      if (contactsRes.status === 'fulfilled' && contactsRes.value.success && Array.isArray(contactsRes.value.data)) {
-        loadedContacts = contactsRes.value.data.map(c => ({
-          ...c,
-          company_name: c.company_name || loadedOrgs.find(o => o.id === c.client_org_id)?.name || 'Independent'
-        }));
-      } else {
-        warnings.push("Contacts could not be loaded from the CRM service.");
-      }
-      setContacts(loadedContacts);
-
-        if (loadedContacts.length > 0) {
-          setSelectedContactId(loadedContacts[0].id);
-        }
-
-      if (activitiesRes.status === 'fulfilled' && activitiesRes.value.success && Array.isArray(activitiesRes.value.data)) {
-        setActivities(activitiesRes.value.data);
-      } else {
-        setActivities([]);
-        warnings.push("CRM activities could not be loaded.");
-      }
-      setSourceWarnings(warnings);
-    } catch (err) {
-      console.warn("Error loading contacts page data:", err);
-      setError(normalizeLoadError(err));
-      setContacts([]);
-      setActivities([]);
-      setSelectedContactId(null);
-      } finally {
-        setIsLoading(false);
-      }
+    if (contacts.length > 0 && !selectedContactId) {
+      setSelectedContactId(contacts[0].id);
     }
-
-    void loadData();
-  }, [session]);
+  }, [contacts, selectedContactId]);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setNotification({ message, type });
@@ -206,14 +173,8 @@ export default function ContactsRegistry() {
         whatsapp_preference: profileForm.whatsapp_preference
       });
 
-      const matchedOrg = organizations.find(o => o.id === profileForm.client_org_id);
-
       if (response && response.success) {
-        setContacts(prev => prev.map(c => c.id === selectedContactId ? {
-          ...c,
-          ...profileForm,
-          company_name: matchedOrg?.name || 'Independent'
-        } : c));
+        await reloadContacts();
         showToast("Contact details saved to database registry.");
       } else {
         throw new Error("Update failed");
@@ -246,18 +207,7 @@ export default function ContactsRegistry() {
       });
       if (!response?.data?.id) throw new Error("CRM activity response did not include an id.");
 
-      const newAct: Activity = {
-        id: response.data.id,
-        contact_id: selectedContactId,
-        contact_name: selectedContact?.contact_name || 'Selected Contact',
-        type: activityForm.type,
-        subject: activityForm.subject,
-        description: activityForm.description,
-        activity_date: new Date().toISOString(),
-        status: activityForm.status
-      };
-
-      setActivities(prev => [newAct, ...prev]);
+      await reloadContacts();
       showToast("Activity logged on timeline.");
       setActivityForm(prev => ({
         ...prev,
@@ -294,15 +244,8 @@ export default function ContactsRegistry() {
       });
       if (!response?.data?.id) throw new Error("CRM contact response did not include an id.");
 
-      const matchedOrg = organizations.find(o => o.id === contactForm.client_org_id);
-      const newContact: Contact = {
-        id: response.data.id,
-        ...contactForm,
-        company_name: matchedOrg?.name || 'Independent'
-      };
-
-      setContacts(prev => [newContact, ...prev]);
-      setSelectedContactId(newContact.id);
+      await reloadContacts();
+      setSelectedContactId(response.data.id);
       setIsContactModalOpen(false);
       showToast("Contact added to registry.");
       setContactForm({
@@ -390,6 +333,13 @@ export default function ContactsRegistry() {
           </div>
         )}
 
+        {error && (
+          <div className="mb-4 flex items-start gap-2 rounded border border-red-500/30 bg-red-950/20 px-4 py-3 text-sm text-red-200">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />
+            <p>{error}</p>
+          </div>
+        )}
+
         {sourceWarnings.length > 0 && (
           <div className="mb-4 space-y-2 rounded border border-amber-500/20 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">
             {sourceWarnings.map((warning) => (
@@ -443,35 +393,35 @@ export default function ContactsRegistry() {
             
             {/* LEFT COLUMN: HIGH DENSITY LIST DIRECTORY (58%) */}
             <div className="w-[58%] bg-ink-light border border-ink-mid overflow-y-auto custom-scrollbar">
-              <table className="w-full text-left border-collapse font-sans text-xs">
-                <thead>
-                  <tr className="border-b border-ink-mid bg-ink/70 font-mono text-[10px] text-slate-light uppercase">
-                    <th className="p-3 font-normal tracking-wider">Contact Profile</th>
-                    <th className="p-3 font-normal tracking-wider">Company / Role</th>
-                    <th className="p-3 font-normal tracking-wider text-center">Channels</th>
-                  </tr>
-                </thead>
+              <OperationalTable className="font-sans text-xs">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Contact Profile</TableHead>
+                    <TableHead>Company / Role</TableHead>
+                    <TableHead className="text-center">Channels</TableHead>
+                  </TableRow>
+                </TableHeader>
                 <tbody>
                   {filteredContacts.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="p-8 text-center text-slate font-mono uppercase">
+                    <TableRow>
+                      <TableCell colSpan={3} className="p-8 text-center text-slate font-mono uppercase">
                         NO KEY DECISION MAKERS REGISTERED
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   ) : (
                     filteredContacts.map(contact => {
                       const isSelected = contact.id === selectedContactId;
                       return (
-                        <tr 
-                          key={contact.id} 
+                        <TableRow
+                          key={contact.id}
                           onClick={() => setSelectedContactId(contact.id)}
-                          className={`border-b border-ink-mid/30 cursor-pointer transition-all ${
-                            isSelected 
-                              ? 'bg-ink border-l-2 border-l-signal' 
-                              : 'hover:bg-ink/40'
+                          className={`cursor-pointer transition-all ${
+                            isSelected
+                              ? 'bg-ink border-l-2 border-l-signal'
+                              : ''
                           }`}
                         >
-                          <td className="p-3">
+                          <TableCell>
                             <div>
                               <div className={`font-bold text-sm leading-tight ${isSelected ? 'text-signal' : 'text-paper'}`}>
                                 {contact.contact_name}
@@ -491,24 +441,24 @@ export default function ContactsRegistry() {
                                 )}
                               </div>
                             </div>
-                          </td>
-                          <td className="p-3">
+                          </TableCell>
+                          <TableCell>
                             <div className="font-bold text-paper/85">{contact.company_name}</div>
                             <div className="font-mono text-[9px] text-slate-light mt-0.5 uppercase tracking-wider">
                               {contact.job_title || 'N/A'}
                             </div>
-                          </td>
-                          <td className="p-3 text-center">
+                          </TableCell>
+                          <TableCell className="text-center">
                             <div className="flex items-center justify-center space-x-1.5">
                               <span className={`px-1.5 py-0.5 font-mono text-[8px] border font-bold uppercase ${
-                                contact.whatsapp_preference 
-                                  ? 'bg-green-500/10 border-green-500/25 text-green-500' 
+                                contact.whatsapp_preference
+                                  ? 'bg-green-500/10 border-green-500/25 text-green-500'
                                   : 'bg-ink border-ink-mid/45 text-slate'
                               }`}>
                                 WA {contact.whatsapp_preference ? 'Active' : 'No'}
                               </span>
                               {contact.linkedin && (
-                                <a 
+                                <a
                                   href={contact.linkedin} 
                                   target="_blank" 
                                   rel="noopener noreferrer"
@@ -519,13 +469,13 @@ export default function ContactsRegistry() {
                                 </a>
                               )}
                             </div>
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       );
                     })
                   )}
                 </tbody>
-              </table>
+              </OperationalTable>
             </div>
 
             {/* RIGHT COLUMN: DETAILED SUMMARY & TIMELINE (42%) */}

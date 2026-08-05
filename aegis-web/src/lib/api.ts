@@ -3,7 +3,7 @@ import { Project, Tender, Article, JobPosition, LeadershipProfile } from "@/type
 import { API_BASE_URL } from "./constants";
 import { resolveBackendOrigin } from "./backend-url";
 import { getSupabase } from "./supabase";
-import { MOCK_TENDERS, MOCK_NEWS_ARTICLES, MOCK_KNOWLEDGE_ARTICLES } from "./mockArticles";
+import { MOCK_TENDERS, MOCK_NEWS_ARTICLES, MOCK_KNOWLEDGE_ARTICLES, getMockArticleBySlug } from "./mockArticles";
 import { MOCK_PROJECTS, getMockProjectBySlug } from "./mockProjects";
 
 export class ApiError extends Error {
@@ -114,6 +114,10 @@ function buildFallbackResponse<T>(endpoint: string): T {
       const slug = endpoint.split("/projects/").pop()?.split("?")[0] || "";
       const proj = getMockProjectBySlug(slug);
       fallbackData = proj || null;
+    } else if (endpoint.includes("/articles/") || endpoint.includes("/knowledge/")) {
+      const separator = endpoint.includes("/articles/") ? "/articles/" : "/knowledge/";
+      const slug = endpoint.split(separator).pop()?.split("?")[0] || "";
+      fallbackData = getMockArticleBySlug(decodeURIComponent(slug)) || null;
     }
     return {
       success: true,
@@ -455,6 +459,22 @@ export async function getKnowledge(params?: { limit?: number }): Promise<Paginat
   });
 }
 
+// Same live-attempt-then-mock-fallback pattern as the list functions above -
+// today there's no CMS backend so this always resolves via the mock data
+// fallback, but the moment one exists these start returning real content
+// without needing the detail pages touched again.
+export async function getArticleBySlug(slug: string): Promise<ApiResponse<Article | null>> {
+  return fetchApi<ApiResponse<Article | null>>(`/api/cms/articles/${encodeURIComponent(slug)}`, {
+    next: { revalidate: 1800 }
+  });
+}
+
+export async function getKnowledgeBySlug(slug: string): Promise<ApiResponse<Article | null>> {
+  return fetchApi<ApiResponse<Article | null>>(`/api/cms/knowledge/${encodeURIComponent(slug)}`, {
+    next: { revalidate: 1800 }
+  });
+}
+
 // --- CAREERS ---
 export async function getJobPositions(): Promise<PaginatedResponse<JobPosition>> {
   return fetchApi<PaginatedResponse<JobPosition>>(`/api/careers/positions`, {
@@ -492,6 +512,34 @@ export async function submitEnquiry(payload: EnquiryPayload): Promise<ApiRespons
 export async function getLeadership(): Promise<PaginatedResponse<LeadershipProfile>> {
   return fetchApi<PaginatedResponse<LeadershipProfile>>(`/api/cms/leadership`, {
     next: { revalidate: 3600 }
+  });
+}
+
+// --- PUBLIC METRICS ---
+export interface PublicMetricsSummary {
+  projects_delivered: number;
+  contract_value_usd: number;
+  fleet_assets_deployed: number;
+  safety_incidents_logged: number;
+}
+
+export async function getPublicMetricsSummary(): Promise<ApiResponse<PublicMetricsSummary>> {
+  return fetchApi<ApiResponse<PublicMetricsSummary>>(`/api/v1/metrics`, {
+    next: { revalidate: 300 },
+    // These numbers are shown publicly as fact - never let a network hiccup
+    // silently fall back to fabricated placeholder data.
+    allowFallback: false
+  });
+}
+
+// --- NEWSLETTER ---
+export async function subscribeNewsletter(email: string): Promise<ApiResponse<void>> {
+  return fetchApi<ApiResponse<void>>(`/api/cms/newsletter`, {
+    method: "POST",
+    headers: { "Idempotency-Key": createIdempotencyKey() },
+    body: JSON.stringify({ email }),
+    // A POST must never silently report success via mock fallback data.
+    allowFallback: false
   });
 }
 

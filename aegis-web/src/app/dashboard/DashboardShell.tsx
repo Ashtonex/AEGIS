@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
@@ -9,19 +10,25 @@ import { NotificationBell } from "@/components/layout/dashboard/NotificationBell
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
 import { getMyProfile, updateMyProfile } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
+import { matchesRole } from "@/lib/rbacMatch";
 import {
   Search, Bell, CircleHelp, User, LayoutDashboard, Briefcase,
   HardHat, Activity, Users, Truck, Wrench, ShoppingCart,
   Package, DollarSign, UserCheck, ShieldCheck, FileText,
   BarChart, PieChart, Settings, LogOut, ChevronDown, ChevronRight,
   Target, Handshake, Building2, BookOpen, Inbox, Zap, MapPin,
-  LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit
+  LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit,
+  Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Menu, X
 } from "lucide-react";
 
 type ModuleNavItem = {
   name: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
+  // Roles allowed to see this item, mirroring the allowedRoles already
+  // passed to <RBACGuard> on the page it links to. Omit to leave the item
+  // visible to everyone (matches pages with no RBACGuard today).
+  allowedRoles?: string[];
 };
 
 type ModuleGroup = {
@@ -29,6 +36,10 @@ type ModuleGroup = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   subItems: ModuleNavItem[];
+  // Roles allowed to see the whole group. Harvested from the RBACGuard on
+  // the group's root page - sub-items don't carry their own RBACGuard today
+  // so this is the closest real signal for "who should see this module".
+  allowedRoles?: string[];
 };
 
 const MODULE_GROUPS: ModuleGroup[] = [
@@ -36,6 +47,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Executive",
     href: "/dashboard/executive",
     icon: LayoutDashboard,
+    allowedRoles: ["Executive (Admin)"],
     subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard }],
   },
   {
@@ -66,6 +78,19 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Documents", href: "/dashboard/crm/documents", icon: BookOpen },
       { name: "Sales Inbox", href: "/dashboard/crm/inbox", icon: Inbox },
       { name: "Automations", href: "/dashboard/crm/automations", icon: Zap },
+      { name: "Marketing", href: "/dashboard/crm/marketing", icon: Megaphone },
+      { name: "Campaigns", href: "/dashboard/crm/campaigns", icon: TrendingUp },
+      { name: "Segments", href: "/dashboard/crm/segments", icon: PieChart },
+      { name: "Templates", href: "/dashboard/crm/templates", icon: FileText },
+      { name: "Import & Export", href: "/dashboard/crm/import", icon: Upload },
+      { name: "Support", href: "/dashboard/crm/support", icon: LifeBuoy },
+      { name: "Tickets", href: "/dashboard/crm/tickets", icon: Ticket },
+      {
+        name: "Reports",
+        href: "/dashboard/crm/reports",
+        icon: BarChart,
+        allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer"],
+      },
     ],
   },
   {
@@ -76,6 +101,8 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard },
       { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText },
       { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit },
+      { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain },
+      { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers },
       { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen },
     ],
   },
@@ -83,7 +110,9 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Projects",
     href: "/dashboard/projects",
     icon: HardHat,
+    allowedRoles: ["Executive (Admin)", "Project Manager"],
     subItems: [
+      { name: "Projects Command", href: "/dashboard/projects", icon: LayoutDashboard },
       { name: "Overview", href: "/dashboard/projects/overview", icon: LayoutDashboard },
       { name: "Schedule", href: "/dashboard/projects/schedule", icon: Activity },
       { name: "Financials", href: "/dashboard/projects/financials", icon: DollarSign },
@@ -94,31 +123,37 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Site Operations",
     href: "/dashboard/site-operations",
     icon: Activity,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Storekeeper"],
     subItems: [{ name: "Daily Reports", href: "/dashboard/site-operations", icon: Activity }],
   },
   {
     name: "Workforce",
     href: "/dashboard/workforce",
     icon: Users,
+    allowedRoles: ["Executive (Admin)", "HR Manager", "Project Manager"],
     subItems: [{ name: "Overview", href: "/dashboard/workforce", icon: Users }],
   },
   {
     name: "Fleet",
     href: "/dashboard/fleet",
     icon: Truck,
+    allowedRoles: ["Executive (Admin)", "Fleet Supervisor"],
     subItems: [{ name: "Overview", href: "/dashboard/fleet", icon: Truck }],
   },
   {
     name: "Equipment",
     href: "/dashboard/equipment",
     icon: Wrench,
+    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager"],
     subItems: [{ name: "Overview", href: "/dashboard/equipment", icon: Wrench }],
   },
   {
     name: "Procurement",
     href: "/dashboard/procurement",
     icon: ShoppingCart,
+    allowedRoles: ["Executive (Admin)", "Procurement Manager", "Project Manager", "Finance Manager", "Site Agent"],
     subItems: [
+      { name: "Procurement Pipeline", href: "/dashboard/procurement", icon: LayoutDashboard },
       { name: "Requisitions", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
       { name: "RFQs", href: "/dashboard/procurement/rfqs", icon: Search },
       { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart },
@@ -130,7 +165,9 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Inventory",
     href: "/dashboard/inventory",
     icon: Package,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper"],
     subItems: [
+      { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },
       { name: "Stock Levels", href: "/dashboard/inventory/stock", icon: Package },
       { name: "Item Catalogue", href: "/dashboard/inventory/catalogue", icon: FileText },
       { name: "Stores", href: "/dashboard/inventory/stores", icon: Building2 },
@@ -141,7 +178,9 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Finance",
     href: "/dashboard/finance",
     icon: DollarSign,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager"],
     subItems: [
+      { name: "Finance & Cost Control", href: "/dashboard/finance", icon: LayoutDashboard },
       { name: "Project Financials", href: "/dashboard/finance/project-financials", icon: DollarSign },
       { name: "Cost Codes", href: "/dashboard/finance/cost-codes", icon: FileText },
       { name: "Variations", href: "/dashboard/finance/variations", icon: BarChart },
@@ -157,7 +196,9 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "HR",
     href: "/dashboard/hr",
     icon: UserCheck,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"],
     subItems: [
+      { name: "HR & Workforce", href: "/dashboard/hr", icon: LayoutDashboard },
       { name: "Employee Register", href: "/dashboard/hr/employees", icon: Users },
       { name: "Attendance Log", href: "/dashboard/hr/attendance", icon: Calendar },
       { name: "Leave Management", href: "/dashboard/hr/leave", icon: UserCheck },
@@ -168,7 +209,9 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Compliance",
     href: "/dashboard/compliance",
     icon: ShieldCheck,
+    allowedRoles: ["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager"],
     subItems: [
+      { name: "Compliance Overview", href: "/dashboard/compliance", icon: LayoutDashboard },
       { name: "Obligation Register", href: "/dashboard/compliance/obligations", icon: ShieldCheck },
       { name: "Employee Credentials", href: "/dashboard/compliance/employees", icon: Users },
       { name: "Equipment Licenses", href: "/dashboard/compliance/equipment", icon: Wrench },
@@ -187,19 +230,23 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Documents",
     href: "/dashboard/documents",
     icon: FileText,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Compliance Officer", "Finance Manager"],
     subItems: [{ name: "Overview", href: "/dashboard/documents", icon: FileText }],
   },
   {
     name: "Reports",
     href: "/dashboard/reports",
     icon: BarChart,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer"],
     subItems: [{ name: "Overview", href: "/dashboard/reports", icon: BarChart }],
   },
   {
     name: "Analytics",
     href: "/dashboard/analytics",
     icon: PieChart,
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager"],
     subItems: [
+      { name: "Analytics Overview", href: "/dashboard/analytics", icon: LayoutDashboard },
       { name: "Project Margin Trends", href: "/dashboard/analytics/projects", icon: BarChart },
       { name: "Fleet Productivity", href: "/dashboard/analytics/equipment", icon: Truck },
       { name: "Spend & Supplier SLA", href: "/dashboard/analytics/procurement", icon: ShoppingCart },
@@ -211,6 +258,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/settings",
     icon: Settings,
     subItems: [
+      { name: "Settings Overview", href: "/dashboard/settings", icon: LayoutDashboard },
       { name: "Configuration", href: "/dashboard/settings/configuration", icon: Settings },
       { name: "Access Control", href: "/dashboard/settings/access", icon: LockKeyhole },
       { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2 },
@@ -229,6 +277,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const [tourOpen, setTourOpen] = useState(false);
   const [tourReady, setTourReady] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   
   // Extract user info from session
@@ -257,9 +306,20 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     return () => clearInterval(interval);
   }, []);
 
+  const visibleGroups = useMemo(
+    () =>
+      MODULE_GROUPS.filter((group) => !group.allowedRoles || matchesRole(userRole, group.allowedRoles))
+        .map((group) => ({
+          ...group,
+          subItems: group.subItems.filter((sub) => !sub.allowedRoles || matchesRole(userRole, sub.allowedRoles)),
+        }))
+        .filter((group) => group.subItems.length > 0),
+    [userRole]
+  );
+
   const activeGroup = useMemo(
-    () => MODULE_GROUPS.find((group) => pathname === group.href || pathname?.startsWith(`${group.href}/`)) ?? null,
-    [pathname]
+    () => visibleGroups.find((group) => pathname === group.href || pathname?.startsWith(`${group.href}/`)) ?? null,
+    [pathname, visibleGroups]
   );
 
   const tourStorageKey = session?.user?.id ? `aegis:onboarding:tour:${session.user.id}` : null;
@@ -292,6 +352,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     if (!activeGroup) return;
     setOpenGroups((current) => ({ ...current, [activeGroup.name]: true }));
   }, [activeGroup]);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     if (!session || !pathname?.startsWith("/dashboard")) {
@@ -328,6 +392,54 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     };
   }, [pathname, session, tourStorageKey]);
 
+  const renderNavGroups = () => (
+    <>
+      {visibleGroups.map((group) => {
+        const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
+        const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
+
+        return (
+          <div key={group.name} className="mb-1">
+            <button
+              onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
+                isCurrent ? "text-signal bg-signal/5" : "text-slate-light hover:text-paper hover:bg-ink-light"
+              }`}
+            >
+              <div className="flex items-center space-x-3">
+                <group.icon className={`w-4 h-4 ${isCurrent ? "text-signal" : "text-slate"}`} />
+                <span>{group.name}</span>
+              </div>
+              {isOpen ? <ChevronDown className="w-4 h-4 text-slate" /> : <ChevronRight className="w-4 h-4 text-slate" />}
+            </button>
+
+            {isOpen && (
+              <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
+                {group.subItems.map((sub) => {
+                  const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
+                  return (
+                    <Link
+                      key={sub.name}
+                      href={sub.href}
+                      className={`flex items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
+                        isSubCurrent
+                          ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
+                          : "text-slate hover:text-paper hover:bg-ink-light/50"
+                      }`}
+                    >
+                      <sub.icon className={`w-3.5 h-3.5 ${isSubCurrent ? "text-signal" : "text-slate-light"}`} />
+                      <span>{sub.name}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+
   // Don't render dashboard chrome/content until the session check has
   // resolved. Rendering nothing here (instead of the full shell with
   // placeholder "System User" data) closes the window where protected
@@ -344,51 +456,64 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     <div className="min-h-screen bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink">
 
       {/* GLOBAL TOP NAVIGATION BAR */}
-      <header className="h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-30 shrink-0">
-        <div className="flex items-center space-x-8">
+      <header className="relative h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-50 shrink-0">
+        <div className="flex items-center space-x-4 md:space-x-8">
+          <button
+            type="button"
+            className="md:hidden text-slate hover:text-paper transition-colors p-1 -ml-1"
+            onClick={() => setMobileMenuOpen((prev) => !prev)}
+            aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileMenuOpen}
+          >
+            {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
           <Link href="/dashboard/executive" className="flex items-center space-x-3" aria-label="SNC Imperium dashboard">
-            <img
+            <Image
               src="/logo.png"
               alt="SNC Logo"
+              width={54}
+              height={36}
               className="h-9 w-auto object-contain"
             />
             <span className="font-display text-lg tracking-tight text-paper">IMPERIUM</span>
           </Link>
           
-          <div className="relative group" data-tour="dashboard-search">
+          <div className="relative group hidden md:block" data-tour="dashboard-search">
             <Search className="w-4 h-4 text-slate absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-signal transition-colors" />
-            <input 
-              type="text" 
-              placeholder="Search Imperium..." 
+            <input
+              type="text"
+              placeholder="Search Imperium..."
               className="bg-ink-light border border-ink-mid rounded-sm pl-10 pr-4 py-1.5 text-sm text-paper placeholder-slate focus:outline-none focus:border-signal/50 focus:ring-1 focus:ring-signal/50 transition-all w-64"
             />
           </div>
         </div>
 
-        <div className="flex items-center space-x-6">
-          <div className="flex items-center space-x-2 border-r border-ink-mid pr-6">
+        <div className="flex items-center space-x-3 md:space-x-6">
+          <div className="hidden lg:flex items-center space-x-2 border-r border-ink-mid pr-6">
             <span className="w-2 h-2 rounded-full bg-signal animate-pulse-signal"></span>
             <span className="text-data-sm font-mono text-slate-light tracking-widest uppercase">Six Nine Construction</span>
           </div>
-          
+
           <CalendarDropdown />
           <NotificationBell />
-          <PwaPushButton />
+          <div className="hidden md:block">
+            <PwaPushButton />
+          </div>
 
           <button
             type="button"
             onClick={openTour}
-            className="text-slate hover:text-paper transition-colors"
+            className="hidden md:inline-flex text-slate hover:text-paper transition-colors"
             title="Replay onboarding tour"
             aria-label="Replay onboarding tour"
           >
             <CircleHelp className="w-5 h-5" />
           </button>
-          
-          <div className="font-mono text-data-sm text-slate-light tracking-widest">
+
+          <div className="hidden lg:block font-mono text-data-sm text-slate-light tracking-widest">
             {time}
           </div>
-          
+
           <div className="relative" ref={userMenuRef} data-tour="dashboard-profile">
             <button
               type="button"
@@ -470,52 +595,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       {/* BODY CONFIGURATION */}
       <div className="flex flex-1 overflow-hidden">
         
-        {/* FIXED LEFT SIDEBAR */}
-        <aside className="w-56 flex-shrink-0 border-r border-ink-mid bg-ink flex flex-col z-20">
+        {/* FIXED LEFT SIDEBAR (desktop) */}
+        <aside className="hidden md:flex md:flex-col w-56 flex-shrink-0 border-r border-ink-mid bg-ink z-20">
           <nav className="flex-1 py-4 overflow-y-auto no-scrollbar flex flex-col px-3" data-tour="dashboard-nav">
-            {MODULE_GROUPS.map((group) => {
-              const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
-              const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
-
-              return (
-                <div key={group.name} className="mb-1">
-                  <button
-                    onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
-                    className={`w-full flex items-center justify-between px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
-                      isCurrent ? "text-signal bg-signal/5" : "text-slate-light hover:text-paper hover:bg-ink-light"
-                    }`}
-                  >
-                    <div className="flex items-center space-x-3">
-                      <group.icon className={`w-4 h-4 ${isCurrent ? "text-signal" : "text-slate"}`} />
-                      <span>{group.name}</span>
-                    </div>
-                    {isOpen ? <ChevronDown className="w-4 h-4 text-slate" /> : <ChevronRight className="w-4 h-4 text-slate" />}
-                  </button>
-
-                  {isOpen && (
-                    <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
-                      {group.subItems.map((sub) => {
-                        const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
-                        return (
-                          <Link
-                            key={sub.name}
-                            href={sub.href}
-                            className={`flex items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
-                              isSubCurrent
-                                ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
-                                : "text-slate hover:text-paper hover:bg-ink-light/50"
-                            }`}
-                          >
-                            <sub.icon className={`w-3.5 h-3.5 ${isSubCurrent ? "text-signal" : "text-slate-light"}`} />
-                            <span>{sub.name}</span>
-                          </Link>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {renderNavGroups()}
           </nav>
         </aside>
 
@@ -528,6 +611,22 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           {children}
         </main>
       </div>
+
+      {/* MOBILE NAV DRAWER */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setMobileMenuOpen(false)}
+          />
+          <aside className="absolute inset-y-0 left-0 w-72 max-w-[85vw] border-r border-ink-mid bg-ink flex flex-col">
+            <nav className="flex-1 py-4 overflow-y-auto no-scrollbar flex flex-col px-3 pt-16">
+              {renderNavGroups()}
+            </nav>
+          </aside>
+        </div>
+      )}
+
       <DashboardTour
         open={tourOpen && tourReady}
         onClose={closeTour}

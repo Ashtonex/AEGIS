@@ -22,7 +22,7 @@ export const MOCK_TENDERS: Tender[] = [
       { title: "RFP-SNC-2026-CIV-008.pdf", url: "#" },
       { title: "Technical Specification Sheet.pdf", url: "#" }
     ],
-    contactEmail: "procurement@sixnine.co.zw"
+    contactEmail: "procurement@sixnineconstruction.com"
   },
   {
     id: "tender-2",
@@ -44,7 +44,7 @@ export const MOCK_TENDERS: Tender[] = [
     documents: [
       { title: "RFP-SNC-2026-PLT-012.pdf", url: "#" }
     ],
-    contactEmail: "plantprocurement@sixnine.co.zw"
+    contactEmail: "plantprocurement@sixnineconstruction.com"
   },
   {
     id: "tender-3",
@@ -67,7 +67,7 @@ export const MOCK_TENDERS: Tender[] = [
       { title: "RFP-SNC-2026-SUB-045.pdf", url: "#" },
       { title: "Geotechnical Site Survey.pdf", url: "#" }
     ],
-    contactEmail: "contracts@sixnine.co.zw"
+    contactEmail: "contracts@sixnineconstruction.com"
   },
   {
     id: "tender-4",
@@ -88,7 +88,7 @@ export const MOCK_TENDERS: Tender[] = [
     documents: [
       { title: "RFP-SNC-2026-CIV-009.pdf", url: "#" }
     ],
-    contactEmail: "procurement@sixnine.co.zw"
+    contactEmail: "procurement@sixnineconstruction.com"
   }
 ];
 

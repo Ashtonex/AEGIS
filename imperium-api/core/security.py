@@ -141,6 +141,14 @@ def _decode_locally(token: str) -> dict | None:
     None (never a payload) if the signature cannot be verified with any known
     key/issuer combination, so the caller is forced to fall back to the
     authoritative Supabase Auth API instead of trusting unverified claims.
+
+    NOTE: JWT_SECRET_KEY currently holds a Supabase API secret key
+    (sb_secret_...), not the project's legacy JWT signing secret, so this
+    will never actually verify a Supabase-issued token and every request
+    falls through to the network path below. To restore local-only
+    verification, set JWT_SECRET_KEY to the value from the Supabase
+    dashboard under Settings -> API -> JWT Settings ("Legacy JWT Secret") -
+    that value isn't obtainable via the service-role key or any API call.
     """
     keys_to_try = [k for k in (settings.JWT_SECRET_KEY, settings.SECRET_KEY) if k]
     issuers_to_try = _local_issuers()

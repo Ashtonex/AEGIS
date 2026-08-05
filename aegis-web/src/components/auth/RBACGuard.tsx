@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { usePathname, useRouter } from "next/navigation";
 import { ShieldAlert, ArrowLeft, Loader2 } from "lucide-react";
+import { matchesRole } from "@/lib/rbacMatch";
 
 // Helper to write to local storage session logs
 export function addSessionLog(
@@ -46,19 +47,10 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
   // sync once an admin assigns a functional role via Settings.
   const userRole = role || "EMPLOYEE";
 
-  const isAuthorized = React.useMemo(() => {
-    const normUser = userRole.toLowerCase().trim();
-
-    // SUPERADMIN is the one role granted system-wide access. This mirrors the
-    // backend's authoritative role resolution (core.user_roles) - the role
-    // claim here is only ever set by the server, never derived from email or
-    // client-controlled state.
-    if (normUser === "superadmin") {
-      return true;
-    }
-
-    return allowedRoles.some((role) => role.toLowerCase().trim() === normUser);
-  }, [allowedRoles, userRole]);
+  const isAuthorized = React.useMemo(
+    () => matchesRole(userRole, allowedRoles),
+    [allowedRoles, userRole]
+  );
 
   // Log access denials
   useEffect(() => {

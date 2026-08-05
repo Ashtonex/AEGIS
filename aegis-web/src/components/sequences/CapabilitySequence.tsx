@@ -52,7 +52,7 @@ const CAPABILITIES = [
     subtitle: "Foundation-first infrastructure delivery.",
     description:
       "Heavy earthworks, road rehabilitation, drainage systems, and primary civil infrastructure executed with total programme discipline. From bulk excavation to final surfacing, SNC manages the complete civil scope under one contract, eliminating interface risk.",
-    detail: "Active on 12 concurrent civil infrastructure programmes across Zimbabwe.",
+    detail: "Civil infrastructure delivered from bulk earthworks through to final surfacing.",
     image: "/cap-civil.jpg",
     imageAlt: "Rebar grid before concrete pour — SNC civil engineering programme",
     href: "/capabilities/civil-infrastructure",
@@ -63,8 +63,8 @@ const CAPABILITIES = [
     title: "Plant & Logistics",
     subtitle: "Fleet ownership, not rental dependency.",
     description:
-      "78+ owned and operated assets — excavators, articulated dump trucks, graders, compactors, and specialist plant — deployed through our Dreamcast division. Ownership means availability. No third-party dependency on critical path equipment.",
-    detail: "Current fleet utilisation rate: 94.2% across all active deployments.",
+      "Owned and operated assets — excavators, articulated dump trucks, graders, compactors, and specialist plant — deployed through our Dreamcast division. Ownership means availability. No third-party dependency on critical path equipment.",
+    detail: "Fleet availability maintained through in-house preventive maintenance, not third-party hire schedules.",
     image: "/cap-plant.jpg",
     imageAlt: "Earthmoving excavator at dusk — Dreamcast fleet operations",
     href: "/capabilities/heavy-plant-operations",
@@ -88,7 +88,7 @@ const CAPABILITIES = [
     subtitle: "Engineering intelligence before ground breaks.",
     description:
       "Feasibility studies, cost-engineering, risk modelling, and procurement advisory. SNC's technical team provides the analytical layer that protects clients from scope creep, procurement failure, and programme overrun — applied before the first excavation.",
-    detail: "Engaged on pre-construction advisory for USD 180M+ in planned infrastructure.",
+    detail: "Applied at the feasibility and planning stage, before ground-breaking on new infrastructure.",
     image: "/cap-advisory.jpg",
     imageAlt: "Engineer reviewing blueprint drawings — SNC technical advisory",
     href: "/capabilities",
@@ -345,7 +345,6 @@ function CapabilityEntry({
             custom={(index + 1) * 1.6}
             variants={sequenceFadeVariants}
           >
-            {/* [PLACEHOLDER] Wire to Imperium API: activeProjects, fleetUtilisation */}
             {capability.detail}
           </motion.p>
 

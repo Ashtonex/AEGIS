@@ -7,6 +7,7 @@ import { notFound } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 import { SectionLabel } from "@/components/ui/SectionLabel";
 import { getProjectsByCapability } from "@/lib/mockProjects";
+import { getCapabilityContent } from "@/lib/capabilitiesContent";
 import { ProjectCard } from "@/components/sections/ProjectCard";
 import { Project } from "@/types/website";
 
@@ -35,19 +36,7 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
     notFound();
   }
 
-  // Mock data for the capability
-  const capabilityData = {
-    statement: `Our approach to ${capName} is defined by absolute precision and rigorous risk management. We do not just execute; we engineer solutions to complex environmental and structural challenges.`,
-    challenge: `The primary challenge in ${capName} within the Southern African context is managing supply chain volatility while maintaining strict quality controls and schedule adherence under challenging operational conditions.`,
-    approach: `SNC leverages Project AEGIS to provide real-time visibility into material consumption, labor productivity, and schedule variance. This allows our project managers to preemptively address bottlenecks before they impact the critical path.`,
-    breakdown: [
-      "Comprehensive site investigation and geotechnical analysis.",
-      "Integration of 3D modeling with our proprietary ERP systems.",
-      "Deployment of specialized, company-owned plant and equipment.",
-      "Rigorous quality assurance and materials testing protocols.",
-      "Real-time progress tracking via digital site reporting."
-    ]
-  };
+  const capabilityData = getCapabilityContent(params.slug);
 
   const relatedProjects: Project[] = getProjectsByCapability(capName).map(p => ({
     id: p.id,
