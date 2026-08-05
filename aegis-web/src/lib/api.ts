@@ -238,7 +238,7 @@ async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
     headers.set("Content-Type", "application/json");
   }
 
-  if (process.env.NEXT_PUBLIC_BUILD_PHASE === "true") {
+  if (process.env.AEGIS_BUILD_PHASE === "true") {
     return headers;
   }
 
@@ -343,12 +343,12 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
   delete (requestOptions as ApiRequestOptions).allowFallback;
   delete (requestOptions as ApiRequestOptions).timeoutMs;
   const allowFallback = shouldUseFallback(endpoint, options);
-  const timeoutMs = process.env.NEXT_PUBLIC_BUILD_PHASE === "true"
+  const timeoutMs = process.env.AEGIS_BUILD_PHASE === "true"
     ? Math.min(options.timeoutMs ?? BUILD_API_TIMEOUT_MS, BUILD_API_TIMEOUT_MS)
     : options.timeoutMs ?? API_TIMEOUT_MS;
 
   // IMMEDIATELY RETURN MOCK DURING BUILD TO PREVENT TCP HANGS
-  if (process.env.NEXT_PUBLIC_BUILD_PHASE === "true" && allowFallback) {
+  if (process.env.AEGIS_BUILD_PHASE === "true" && allowFallback) {
     return buildFallbackResponse<T>(endpoint);
   }
 

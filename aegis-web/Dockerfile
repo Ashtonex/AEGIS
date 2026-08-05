@@ -22,7 +22,7 @@ COPY . .
 # Environment variables must be present at build time
 # https://nextjs.org/docs/api-reference/next.config.js/environment-variables
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NEXT_PUBLIC_BUILD_PHASE=true
+ENV AEGIS_BUILD_PHASE=true
 
 ARG NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}

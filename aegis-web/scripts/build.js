@@ -11,7 +11,7 @@ const { dirname, join } = require("node:path");
 const { spawnSync } = require("node:child_process");
 const packageJson = require("../package.json");
 
-process.env.NEXT_PUBLIC_BUILD_PHASE = process.env.NEXT_PUBLIC_BUILD_PHASE || "true";
+process.env.AEGIS_BUILD_PHASE = process.env.AEGIS_BUILD_PHASE || "true";
 process.env.NEXT_TELEMETRY_DISABLED = process.env.NEXT_TELEMETRY_DISABLED || "1";
 
 const nextBin = require.resolve("next/dist/bin/next");
