@@ -68,6 +68,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (!mounted) return;
+        // eslint-disable-next-line no-console
+        console.warn("[AEGIS_DIAG] onAuthStateChange event:", event, "expires_at:", session?.expires_at, "now:", Math.floor(Date.now() / 1000));
         setSession(session);
         setUser(session?.user ?? null);
 
