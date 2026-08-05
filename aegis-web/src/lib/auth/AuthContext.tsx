@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
-import { supabase } from '../supabase';
+import { supabase, setCachedAccessToken } from '../supabase';
 import { useRouter, usePathname } from 'next/navigation';
 import { getAuthMe } from '../api';
 
@@ -52,6 +52,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (mounted) {
           setSession(session);
           setUser(session?.user ?? null);
+          setCachedAccessToken(session?.access_token ?? null);
           await resolveRole(session?.access_token);
         }
       } catch (error) {
@@ -68,20 +69,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (!mounted) return;
-        // eslint-disable-next-line no-console
-        console.warn("[AEGIS_DIAG] onAuthStateChange event:", event, "expires_at:", session?.expires_at, "now:", Math.floor(Date.now() / 1000));
         setSession(session);
         setUser(session?.user ?? null);
+        setCachedAccessToken(session?.access_token ?? null);
 
         // TOKEN_REFRESHED (and USER_UPDATED) fire on every silent token
         // refresh - the user's role can't have changed just because the
         // token was renewed. Re-running the loading gate + /auth/me round
-        // trip for those events did nothing useful and, since every
-        // dashboard data fetch independently calls getSession() and each
-        // one can itself trigger a refresh, turned into a near-continuous
-        // loop that blanked the whole dashboard shell (isLoading) every
-        // couple of seconds. Only a real sign-in/sign-out/initial load
-        // needs to re-resolve the role.
+        // trip for those events did nothing useful. Only a real
+        // sign-in/sign-out/initial load needs to re-resolve the role.
         if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
           return;
         }

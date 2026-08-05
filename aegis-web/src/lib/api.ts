@@ -2,7 +2,7 @@ import { ApiResponse, PaginatedResponse, EnquiryPayload, TenderInterestPayload, 
 import { Project, Tender, Article, JobPosition, LeadershipProfile } from "@/types/website";
 import { API_BASE_URL } from "./constants";
 import { resolveBackendOrigin } from "./backend-url";
-import { getSupabase } from "./supabase";
+import { getSupabase, getCachedAccessToken } from "./supabase";
 import { MOCK_TENDERS, MOCK_NEWS_ARTICLES, MOCK_KNOWLEDGE_ARTICLES, getMockArticleBySlug } from "./mockArticles";
 import { MOCK_PROJECTS, getMockProjectBySlug } from "./mockProjects";
 
@@ -209,9 +209,22 @@ function readCachedSupabaseAccessToken(): string | null {
 }
 
 async function getSupabaseAccessToken(timeoutMs = 2500): Promise<string | null> {
-  // getSession() is the authoritative path: it auto-refreshes an expired
-  // token instead of returning it as-is. It's the primary source; the raw
-  // localStorage read is only a fallback for when it's slow/unavailable.
+  // AuthContext is the single subscriber to onAuthStateChange and keeps a
+  // cached copy of the current token in sync with every session change.
+  // Firing a dozen-plus independent getSession() calls per dashboard page
+  // load (one per API call, all racing each other) caused the GoTrue client
+  // to redundantly re-announce SIGNED_IN roughly every 2 seconds, which
+  // re-triggered role resolution and blanked the whole dashboard shell in a
+  // near-continuous loop. Prefer the cache; only fall back to asking
+  // Supabase directly (e.g. before AuthProvider has mounted) when it's empty.
+  const cachedToken = getCachedAccessToken();
+  if (cachedToken) {
+    return cachedToken;
+  }
+
+  // getSession() is the authoritative fallback path: it auto-refreshes an
+  // expired token instead of returning it as-is. The raw localStorage read
+  // below is a further fallback for when it's slow/unavailable.
   const timeout = new Promise<"timeout">((resolve) => {
     setTimeout(() => resolve("timeout"), timeoutMs);
   });

@@ -31,3 +31,21 @@ export const supabase = new Proxy({} as SupabaseClient, {
     return typeof value === 'function' ? value.bind(getSupabase()) : value;
   },
 });
+
+// AuthContext is the single subscriber to onAuthStateChange and keeps this in
+// sync with the current session. Every API call used to independently call
+// supabase.auth.getSession() to get a token, but firing a dozen-plus
+// concurrent getSession() calls per dashboard page load caused the GoTrue
+// client to redundantly re-announce SIGNED_IN roughly every 2 seconds
+// (same session, unchanged expiry) - which re-triggered role resolution and
+// the dashboard's loading gate in a near-continuous loop. Reading the token
+// from here instead means only AuthContext ever calls getSession() directly.
+let cachedAccessToken: string | null = null;
+
+export function setCachedAccessToken(token: string | null) {
+  cachedAccessToken = token;
+}
+
+export function getCachedAccessToken(): string | null {
+  return cachedAccessToken;
+}
