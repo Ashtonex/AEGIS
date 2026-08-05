@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
                 "status": "operational",
                 "environment": settings.ENVIRONMENT,
                 "database": database_health["status"],
+                "deploy_marker": "modules-diag-2026-08-05a",
             },
             "message": "Project Imperium is online.",
             "meta": {},
