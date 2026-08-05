@@ -43,6 +43,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     let mounted = true;
+    // eslint-disable-next-line no-console
+    console.warn("[AEGIS_DIAG] AuthProvider effect (re)running on", pathname, "at", Math.floor(performance.now()));
 
     async function getInitialSession() {
       try {
@@ -69,6 +71,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (!mounted) return;
+        // eslint-disable-next-line no-console
+        console.warn("[AEGIS_DIAG] onAuthStateChange event:", event, "on", pathname, "at", Math.floor(performance.now()));
         setSession(session);
         setUser(session?.user ?? null);
         setCachedAccessToken(session?.access_token ?? null);

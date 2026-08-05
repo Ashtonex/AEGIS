@@ -282,6 +282,8 @@ function StatusBadge({ status }: { status?: string | null }) {
 }
 
 export default function SettingsPage() {
+  // eslint-disable-next-line no-console
+  console.warn("[AEGIS_DIAG] SettingsPage render at", Math.floor(performance.now()));
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<SettingsTab>(() => normalizeTab(searchParams?.get("tab")));
   const [overview, setOverview] = useState<SettingsOverview>(EMPTY_OVERVIEW);
