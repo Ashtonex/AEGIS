@@ -222,8 +222,18 @@ async function getSupabaseAccessToken(timeoutMs = 2500): Promise<string | null> 
       timeout,
     ]);
 
+    // A resolved-but-empty session is ambiguous on a cold page load: the SDK
+    // may not have finished rehydrating the persisted session from storage
+    // yet and is reporting "no session" prematurely rather than genuinely
+    // being logged out. Fall through to the cache in that case too, instead
+    // of only when getSession() times out or throws - otherwise every fresh
+    // page load races this and can bounce an actually-logged-in user to a
+    // 401.
     if (result !== "timeout") {
-      return result.data.session?.access_token ?? null;
+      const liveToken = result.data.session?.access_token;
+      if (liveToken) {
+        return liveToken;
+      }
     }
   } catch {
     // fall through to the cached-token fallback below
@@ -1610,8 +1620,12 @@ export interface AuthenticatedUser {
 // assigns a role via Settings). Callers that need to know "what can this
 // user actually do" - RBACGuard in particular - must use this, not
 // session.user.app_metadata.role.
-export async function getAuthMe(): Promise<ApiResponse<AuthenticatedUser>> {
-  return fetchApi<ApiResponse<AuthenticatedUser>>('/api/v1/auth/me', { cache: 'no-store', allowFallback: false });
+export async function getAuthMe(accessToken?: string): Promise<ApiResponse<AuthenticatedUser>> {
+  return fetchApi<ApiResponse<AuthenticatedUser>>('/api/v1/auth/me', {
+    cache: 'no-store',
+    allowFallback: false,
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+  });
 }
 
 export async function updateMyProfile(payload: Record<string, unknown>): Promise<ApiResponse<any>> {

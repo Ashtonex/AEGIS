@@ -27,13 +27,13 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const router = useRouter();
   const pathname = usePathname();
 
-  const resolveRole = useCallback(async (hasSession: boolean) => {
-    if (!hasSession) {
+  const resolveRole = useCallback(async (accessToken?: string) => {
+    if (!accessToken) {
       setRole(null);
       return;
     }
     try {
-      const response = await getAuthMe();
+      const response = await getAuthMe(accessToken);
       setRole(response.data?.role ?? null);
     } catch (error) {
       console.error("Error fetching resolved role:", error);
@@ -52,7 +52,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (mounted) {
           setSession(session);
           setUser(session?.user ?? null);
-          await resolveRole(!!session);
+          await resolveRole(session?.access_token);
         }
       } catch (error) {
         console.error("Error fetching session:", error);
@@ -71,7 +71,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         setSession(session);
         setUser(session?.user ?? null);
         setIsLoading(true);
-        void resolveRole(!!session).finally(() => {
+        void resolveRole(session?.access_token).finally(() => {
           if (mounted) setIsLoading(false);
         });
       }
