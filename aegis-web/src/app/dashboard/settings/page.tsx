@@ -299,9 +299,16 @@ export default function SettingsPage() {
   const [auditError, setAuditError] = useState<string | null>(null);
 
   const load = useCallback(async (background = false) => {
+    // eslint-disable-next-line no-console
+    console.warn("[AEGIS_DIAG] load() called, background=", background, "at", Math.floor(performance.now()));
     background ? setRefreshing(true) : setLoading(true);
     setError(null);
-    try { setOverview(normalizeOverview(await getSettingsOverview())); }
+    try {
+      const normalized = normalizeOverview(await getSettingsOverview());
+      // eslint-disable-next-line no-console
+      console.warn("[AEGIS_DIAG] load() settings ids=", JSON.stringify(normalized.settings.map((s) => s.id)));
+      setOverview(normalized);
+    }
     catch (cause) { setError(settingsLoadError(cause)); setOverview(EMPTY_OVERVIEW); }
     finally { setLoading(false); setRefreshing(false); }
   }, []);
