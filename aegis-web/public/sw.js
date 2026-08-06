@@ -158,9 +158,14 @@ async function replayQueuedRequests() {
 }
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)).then(() => self.skipWaiting())
-  );
+  // Do not self.skipWaiting() here. A newly installed worker should sit in
+  // "waiting" state and let the currently open tabs keep running on the old
+  // worker until the user opts in via the update banner (PwaRuntime.tsx),
+  // which posts SKIP_WAITING below. Auto-skipping here activated new
+  // workers - and forced the resulting controllerchange page reload - the
+  // instant any deploy shipped, with no warning, on a 5-minute poll and on
+  // every window focus.
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS)));
 });
 
 self.addEventListener("activate", (event) => {
