@@ -11,7 +11,6 @@ from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
 
 from core.database import get_db
-from core.ml_engine import risk_engine
 from core.security import require_permission
 from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
 from app.services.crm.automation_engine import fire_trigger
@@ -2089,10 +2088,147 @@ async def get_risk_matrices(
     user: dict = Depends(require_permission("crm.view_accountability")),
     db: AsyncSession = Depends(get_db),
 ):
-    # In a real app we'd pass DB queries to the risk engine
-    client_concentration = risk_engine.calculate_client_concentration()
-    subcontractor_risk = risk_engine.calculate_subcontractor_risk()
-    win_loss_diagnostic = risk_engine.calculate_win_loss_diagnostic()
+    org_id = user["org_id"]
+
+    # Client concentration: real pipeline value grouped by client sector.
+    sector_rows = (
+        await db.execute(
+            text("""
+                SELECT COALESCE(o.sector, 'Unclassified') AS sector, SUM(opp.budget) AS value
+                FROM crm.opportunities opp
+                LEFT JOIN crm.organizations o ON o.id = opp.client_org_id
+                WHERE opp.organization_id = :org_id AND opp.is_deleted = false AND opp.budget IS NOT NULL
+                GROUP BY COALESCE(o.sector, 'Unclassified')
+                ORDER BY value DESC
+            """),
+            {"org_id": org_id},
+        )
+    ).all()
+    total_pipeline_value = sum(float(row.value) for row in sector_rows)
+    if total_pipeline_value > 0:
+        breakdown = [
+            {
+                "sector": row.sector,
+                "percentage": round(float(row.value) / total_pipeline_value * 100),
+                "value": float(row.value),
+            }
+            for row in sector_rows
+        ]
+        top = breakdown[0]
+        level = "HIGH" if top["percentage"] >= 50 else "MEDIUM" if top["percentage"] >= 30 else "LOW"
+        client_concentration = {
+            "risk_score": top["percentage"],
+            "level": level,
+            "primary_dependency": f"{top['sector']} ({top['percentage']}%)",
+            "directive": (
+                f"{top['sector']} represents {top['percentage']}% of pipeline value. "
+                "Diversify into other sectors to reduce concentration risk."
+                if level != "LOW"
+                else "Pipeline is reasonably diversified across client sectors."
+            ),
+            "breakdown": breakdown,
+        }
+    else:
+        client_concentration = {
+            "risk_score": None,
+            "level": "NOT_RECORDED",
+            "primary_dependency": None,
+            "directive": "Not enough pipeline data to assess client concentration.",
+            "breakdown": [],
+        }
+
+    # Subcontractor risk: real compliance-status mix, not a fabricated dependency %
+    # we have no data source for (no subcontractor-to-contract-value linkage exists yet).
+    subcontractor_rows = (
+        await db.execute(
+            text("""
+                SELECT name, compliance_status, reliability_score
+                FROM crm.subcontractors
+                WHERE organization_id = :org_id AND is_deleted = false
+                ORDER BY reliability_score ASC NULLS LAST
+            """),
+            {"org_id": org_id},
+        )
+    ).all()
+    if subcontractor_rows:
+        non_compliant = [
+            row for row in subcontractor_rows if (row.compliance_status or "").lower() != "compliant"
+        ]
+        risk_score = round(len(non_compliant) / len(subcontractor_rows) * 100)
+        level = "CRITICAL" if risk_score >= 50 else "HIGH" if risk_score >= 25 else "LOW"
+        directive = (
+            f"{len(non_compliant)} of {len(subcontractor_rows)} subcontractors are not marked compliant. "
+            "Review before awarding new work."
+            if non_compliant
+            else "All recorded subcontractors are marked compliant."
+        )
+        subcontractor_risk = {
+            "risk_score": risk_score,
+            "level": level,
+            "primary_dependency": (non_compliant[0].name if non_compliant else subcontractor_rows[0].name),
+            "directive": directive,
+            "breakdown": [
+                {
+                    "name": row.name,
+                    "status": "Warning" if (row.compliance_status or "").lower() != "compliant" else "Stable",
+                    "compliance_status": row.compliance_status or "Unknown",
+                }
+                for row in subcontractor_rows[:10]
+            ],
+        }
+    else:
+        subcontractor_risk = {
+            "risk_score": None,
+            "level": "NOT_RECORDED",
+            "primary_dependency": None,
+            "directive": "No subcontractors recorded. Add subcontractor compliance data to enable risk tracking.",
+            "breakdown": [],
+        }
+
+    # Win/loss diagnostic: real win rate from closed opportunities, plus the current
+    # (not historical - no stage-transition log exists yet) distribution of open
+    # opportunities across stages.
+    stage_rows = (
+        await db.execute(
+            text("""
+                SELECT stage, COUNT(*) AS cnt
+                FROM crm.opportunities
+                WHERE organization_id = :org_id AND is_deleted = false
+                GROUP BY stage
+            """),
+            {"org_id": org_id},
+        )
+    ).all()
+    stage_counts = {row.stage: row.cnt for row in stage_rows}
+    won = stage_counts.get("Contract", 0)
+    lost = stage_counts.get("Lost", 0)
+    total_closed = won + lost
+    open_stage_order = ["Inquiry", "Qualification", "Site Visit", "Quotation", "Negotiation"]
+    total_open = sum(stage_counts.get(stage, 0) for stage in open_stage_order)
+    if total_closed > 0 or total_open > 0:
+        win_loss_diagnostic = {
+            "overall_win_rate": round(won / total_closed * 100) if total_closed > 0 else None,
+            "directive": (
+                f"{won} won, {lost} lost out of {total_closed} closed opportunities."
+                if total_closed > 0
+                else "No opportunities have closed (won or lost) yet."
+            ),
+            "stages": [
+                {
+                    "stage": stage,
+                    "share_of_open_pipeline": (
+                        round(stage_counts.get(stage, 0) / total_open * 100) if total_open > 0 else 0
+                    ),
+                }
+                for stage in open_stage_order
+            ],
+        }
+    else:
+        win_loss_diagnostic = {
+            "overall_win_rate": None,
+            "directive": "Not enough opportunity data to compute a win/loss diagnostic.",
+            "stages": [],
+        }
 
     return {
         "success": True,

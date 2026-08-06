@@ -406,8 +406,8 @@ export default function CRMCommercialEngine() {
              <Target className="w-2.5 h-2.5 mr-1.5 text-red-500" /> Client Concentration
            </h3>
            <div className="mb-1 shrink-0">
-             <span className="text-xl font-mono text-paper leading-none">{client_concentration.risk_score}</span>
-             <span className="font-mono text-[8px] text-red-400 ml-1.5 bg-red-500/10 px-1.5 py-0.5 rounded-full border border-red-500/20">{client_concentration.level} RISK</span>
+             <span className="text-xl font-mono text-paper leading-none">{client_concentration.risk_score ?? "N/A"}</span>
+             <span className="font-mono text-[8px] text-red-400 ml-1.5 bg-red-500/10 px-1.5 py-0.5 rounded-full border border-red-500/20">{client_concentration.level === "NOT_RECORDED" ? "NO DATA" : `${client_concentration.level} RISK`}</span>
            </div>
            <p className="text-[10px] text-slate mb-1 line-clamp-2 shrink-0">{client_concentration.directive}</p>
            <div className="space-y-1 flex-1 overflow-y-auto custom-scrollbar">
@@ -432,8 +432,8 @@ export default function CRMCommercialEngine() {
              <Users className="w-2.5 h-2.5 mr-1.5 text-signal" /> Subcontractor Dependency
            </h3>
            <div className="mb-1 shrink-0">
-             <span className="text-xl font-mono text-paper leading-none">{subcontractor_risk.risk_score}</span>
-             <span className="font-mono text-[8px] text-signal ml-1.5 bg-signal/10 px-1.5 py-0.5 rounded-full border border-signal/20">{subcontractor_risk.level} RISK</span>
+             <span className="text-xl font-mono text-paper leading-none">{subcontractor_risk.risk_score ?? "N/A"}</span>
+             <span className="font-mono text-[8px] text-signal ml-1.5 bg-signal/10 px-1.5 py-0.5 rounded-full border border-signal/20">{subcontractor_risk.level === "NOT_RECORDED" ? "NO DATA" : `${subcontractor_risk.level} RISK`}</span>
            </div>
            <p className="text-[10px] text-slate mb-1 line-clamp-2 shrink-0">{subcontractor_risk.directive}</p>
            <div className="space-y-1 flex-1 overflow-y-auto custom-scrollbar">
@@ -441,7 +441,7 @@ export default function CRMCommercialEngine() {
                <div key={i} className="flex justify-between items-center border-b border-white/5 pb-1 last:border-0 last:pb-0">
                  <span className="text-[10px] text-paper truncate pr-2">{b.name}</span>
                  <span className={`text-[8px] font-mono px-1 py-0.5 rounded-sm shrink-0 ${b.status === 'Warning' ? 'bg-signal/20 text-signal border border-signal/30' : 'text-slate-light'}`}>
-                   {b.dependency}% DEP
+                   {b.compliance_status}
                  </span>
                </div>
              ))}
@@ -455,7 +455,7 @@ export default function CRMCommercialEngine() {
              <Activity className="w-2.5 h-2.5 mr-1.5 text-blue-500" /> Win/Loss Diagnostic
            </h3>
            <div className="mb-1 shrink-0">
-             <span className="text-xl font-mono text-paper leading-none">{win_loss_diagnostic.overall_win_rate}%</span>
+             <span className="text-xl font-mono text-paper leading-none">{win_loss_diagnostic.overall_win_rate ?? "N/A"}{win_loss_diagnostic.overall_win_rate !== null ? "%" : ""}</span>
              <span className="font-mono text-[8px] text-blue-400 ml-1.5 bg-blue-500/10 px-1.5 py-0.5 rounded-full border border-blue-500/20">WIN RATE</span>
            </div>
            <p className="text-[10px] text-slate mb-1 line-clamp-2 shrink-0">{win_loss_diagnostic.directive}</p>
@@ -464,10 +464,10 @@ export default function CRMCommercialEngine() {
                <div key={i}>
                  <div className="flex justify-between text-[8px] font-mono text-slate-light mb-0">
                    <span>{b.stage}</span>
-                   <span>{b.conversion}% Conv</span>
+                   <span>{b.share_of_open_pipeline}% of open pipeline</span>
                  </div>
                  <div className="w-full bg-black/50 h-1 rounded-full overflow-hidden">
-                   <div className="h-full bg-blue-500/70 rounded-full" style={{ width: `${b.conversion}%` }}></div>
+                   <div className="h-full bg-blue-500/70 rounded-full" style={{ width: `${b.share_of_open_pipeline}%` }}></div>
                  </div>
                </div>
              ))}
