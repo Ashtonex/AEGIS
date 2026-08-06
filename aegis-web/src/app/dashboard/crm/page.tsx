@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, AlertTriangle, ChevronRight, Terminal } from 'lucide-react';
+import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal } from 'lucide-react';
 import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, getRiskMatrices } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 
@@ -238,8 +238,7 @@ export default function CRMCommercialEngine() {
           <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Expected Margin</h3>
         </div>
         <div className="flex items-end space-x-2">
-          <span className="font-display text-lg text-paper tracking-tight">18.5%</span>
-          <span className="text-red-500 font-mono text-[8px] mb-0">vs 22% TGT</span>
+          <span className="font-display text-lg text-slate-light tracking-tight">Not recorded</span>
         </div>
       </div>
 
@@ -350,19 +349,9 @@ export default function CRMCommercialEngine() {
             <Terminal className="w-3.5 h-3.5 text-signal animate-pulse-slow" />
             <h2 className="font-mono text-[10px] text-paper tracking-widest uppercase">Morning Briefing Matrix</h2>
           </div>
-          <div className="flex-1 space-y-1.5 overflow-y-auto custom-scrollbar font-mono text-[9px]">
-            <div className="flex items-start space-x-2 text-red-400">
-              <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
-              <p>🚨 2 PRAZ Tenders closing this week. Bid Bond missing on Ministry of Transport submission.</p>
-            </div>
-            <div className="flex items-start space-x-2 text-signal">
-              <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
-              <p>⚠️ Relationship Decay: You haven&apos;t spoken to Procurement Director at RioZim in 45 days. They have $4M in active upcoming projects.</p>
-            </div>
-            <div className="flex items-start space-x-2 text-blue-400">
-              <Activity className="w-3 h-3 shrink-0 mt-0.5" />
-              <p>ℹ️ $450k sitting in &apos;Negotiation&apos; stage for &gt;30 days. Recommend Director-level intervention.</p>
-            </div>
+          <div className="flex-1 flex flex-col items-center justify-center text-center gap-1 font-mono text-[9px] text-slate-light">
+            <p>No briefing alerts configured.</p>
+            <p className="text-slate-dark">Tender deadlines, relationship decay, and stalled deals will appear here once tracked.</p>
           </div>
         </div>
 
@@ -383,42 +372,12 @@ export default function CRMCommercialEngine() {
             <h3 className="font-mono text-[10px] text-paper tracking-widest uppercase flex items-center">
               <MapPin className="w-3.5 h-3.5 mr-1.5 text-signal" /> Geographic Intelligence
             </h3>
-            <span className="font-mono text-[8px] text-signal animate-pulse">LIVE RADAR ACTIVE</span>
           </div>
 
-          <div className="relative flex-1 z-10 flex items-center justify-center min-h-0">
-             {/* Map abstraction using circles and dots for heat clusters */}
-             <div className="relative w-full h-full border border-white/5 rounded-sm bg-ink/40 overflow-hidden backdrop-blur-sm">
-                {/* Harare Cluster */}
-                <div className="absolute top-[30%] right-[30%] group">
-                  <div className="w-10 h-10 bg-signal/10 rounded-full animate-pulse-slow absolute -translate-x-1/2 -translate-y-1/2"></div>
-                  <div className="w-2.5 h-2.5 bg-signal rounded-full shadow-[0_0_15px_rgba(var(--color-signal),1)] absolute -translate-x-1/2 -translate-y-1/2"></div>
-                  <div className="absolute top-4 left-4 bg-ink-light border border-white/10 p-2 rounded-sm opacity-0 group-hover:opacity-100 transition-opacity w-32 pointer-events-none">
-                    <p className="font-sans text-[10px] text-paper font-bold">Harare Metro</p>
-                    <p className="font-mono text-[9px] text-slate-light mt-1">12 Bids / 4 Active Assets</p>
-                  </div>
-                </div>
-
-                {/* Mutare/Beira Cluster */}
-                <div className="absolute top-[50%] right-[15%] group">
-                  <div className="w-8 h-8 bg-blue-500/10 rounded-full animate-pulse absolute -translate-x-1/2 -translate-y-1/2"></div>
-                  <div className="w-2 h-2 bg-blue-400 rounded-full shadow-[0_0_10px_rgba(59,130,246,1)] absolute -translate-x-1/2 -translate-y-1/2"></div>
-                  <div className="absolute top-4 right-4 bg-ink-light border border-white/10 p-2 rounded-sm opacity-0 group-hover:opacity-100 transition-opacity w-32 pointer-events-none z-20">
-                    <p className="font-sans text-[10px] text-paper font-bold">Mutare Corridor</p>
-                    <p className="font-mono text-[9px] text-slate-light mt-1">3 Gov Tenders / High Sub Risk</p>
-                  </div>
-                </div>
-
-                {/* Bulawayo Cluster */}
-                <div className="absolute bottom-[40%] left-[30%] group">
-                  <div className="w-6 h-6 bg-slate-500/10 rounded-full absolute -translate-x-1/2 -translate-y-1/2"></div>
-                  <div className="w-1.5 h-1.5 bg-slate-400 rounded-full absolute -translate-x-1/2 -translate-y-1/2"></div>
-                  <div className="absolute top-4 left-4 bg-ink-light border border-white/10 p-2 rounded-sm opacity-0 group-hover:opacity-100 transition-opacity w-32 pointer-events-none">
-                    <p className="font-sans text-[10px] text-paper font-bold">Bulawayo</p>
-                    <p className="font-mono text-[9px] text-slate-light mt-1">2 Leads / Idle</p>
-                  </div>
-                </div>
-             </div>
+          <div className="relative flex-1 z-10 flex flex-col items-center justify-center min-h-0 text-center gap-1">
+            <MapPin className="w-6 h-6 text-slate animate-pulse" />
+            <p className="text-paper font-mono text-[10px]">No regional deal data recorded.</p>
+            <p className="text-slate-light font-mono text-[9px]">Assign a region to each opportunity or tender to populate this map.</p>
           </div>
         </div>
       </div>
