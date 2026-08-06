@@ -695,6 +695,32 @@ export async function updateCrmOpportunity(id: string, data: Record<string, any>
   });
 }
 
+export async function deleteCrmOpportunity(id: string): Promise<ApiResponse<void>> {
+  return await fetchApi<ApiResponse<void>>(`/api/v1/crm/opportunities/${id}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function findDuplicateCrmOpportunities(params: { name?: string; client_org_id?: string; client_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params.name) search.set("name", params.name);
+  if (params.client_org_id) search.set("client_org_id", params.client_org_id);
+  if (params.client_id) search.set("client_id", params.client_id);
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm/opportunities/duplicates?${search.toString()}`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function mergeCrmOpportunities(opportunityId: string, sourceOpportunityIds: string[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${opportunityId}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ source_opportunity_ids: sourceOpportunityIds }),
+    allowFallback: false,
+  });
+}
+
 export async function updateCrmTender(id: string, data: Record<string, any>) {
   return await fetchApi<ApiResponse<void>>(`/api/v1/tender-bids/${id}`, {
     method: 'PUT',
@@ -744,6 +770,13 @@ export async function mergeCrmLeads(leadId: string, sourceLeadIds: string[]): Pr
   return fetchApi<ApiResponse<any>>(`/api/v1/crm-leads/${leadId}/merge`, {
     method: "POST",
     body: JSON.stringify({ source_lead_ids: sourceLeadIds }),
+    allowFallback: false,
+  });
+}
+
+export async function deleteCrmLead(leadId: string): Promise<ApiResponse<void>> {
+  return fetchApi<ApiResponse<void>>(`/api/v1/crm-leads/${leadId}`, {
+    method: "DELETE",
     allowFallback: false,
   });
 }

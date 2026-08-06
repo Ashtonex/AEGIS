@@ -7,12 +7,16 @@ import {
   Briefcase, Plus, X, ChevronLeft, ChevronRight,
   DollarSign, Activity, AlertTriangle, ShieldCheck,
   MessageSquare, User, Mail, Calendar, Loader2, Save,
-  ArrowRight, Landmark, Clock, ArrowLeft, Filter, Search
+  ArrowRight, Landmark, Clock, ArrowLeft, Filter, Search,
+  Trash2, Copy, Lock
 } from 'lucide-react';
 import {
   getCrmOpportunities,
   createCrmOpportunity,
   updateCrmOpportunity,
+  deleteCrmOpportunity,
+  findDuplicateCrmOpportunities,
+  mergeCrmOpportunities,
   getCrmContacts,
   createCrmContact,
   getCrmActivities,
@@ -23,6 +27,14 @@ import {
   getCrmWinLossReasons,
   createCrmWinLossReason,
 } from '@/lib/api';
+import { useAuth } from '@/lib/auth/AuthContext';
+import { matchesRole } from '@/lib/rbacMatch';
+
+// A deal that's already won (Contract) or lost is a decided deal - only
+// these roles can reopen/re-stage it (matches the backend's
+// crm.opportunities.override_stage permission grants).
+const PRIVILEGED_STAGE_OVERRIDE_ROLES = ['Executive (Admin)', 'Managing Director'];
+const LOCKED_BACKEND_STAGES = ['Contract', 'Lost'];
 
 // Stages definition requested by user
 const STAGES = [
@@ -98,6 +110,10 @@ interface ActivityLog {
 }
 
 export default function OpportunitiesKanban() {
+  const { role } = useAuth();
+  const canOverrideStage = role ? matchesRole(role, PRIVILEGED_STAGE_OVERRIDE_ROLES) : false;
+  const isOpportunityLocked = (opp: Opportunity) => LOCKED_BACKEND_STAGES.includes(opp.stage);
+
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
@@ -118,6 +134,11 @@ export default function OpportunitiesKanban() {
   const [winNotes, setWinNotes] = useState('');
   const [winReasonOptions, setWinReasonOptions] = useState<any[]>([]);
   const [selectedWinReasonId, setSelectedWinReasonId] = useState('');
+
+  // Duplicate Check States
+  const [isDuplicateChecking, setIsDuplicateChecking] = useState(false);
+  const [duplicateOpps, setDuplicateOpps] = useState<Opportunity[]>([]);
+  const [isDupModalOpen, setIsDupModalOpen] = useState(false);
 
 
   // Filter States
@@ -257,6 +278,11 @@ export default function OpportunitiesKanban() {
     const currentFrontendStage = BACKEND_TO_FRONTEND_STAGE[opp.stage] || 'Qualification';
     if (currentFrontendStage === targetStage) return;
 
+    if (isOpportunityLocked(opp) && !canOverrideStage) {
+      alert("This deal is already won or lost - only Admin, Executive, or Managing Director can change its stage further.");
+      return;
+    }
+
     const backendStage = FRONTEND_TO_BACKEND_STAGE[targetStage] || targetStage;
 
     // Optimistically update local state
@@ -287,6 +313,12 @@ export default function OpportunitiesKanban() {
 
   // Quick fallback step mover
   const handleStageMove = async (oppId: string, currentFrontendStage: string, direction: 'prev' | 'next') => {
+    const opp = opportunities.find(o => o.id === oppId);
+    if (opp && isOpportunityLocked(opp) && !canOverrideStage) {
+      alert("This deal is already won or lost - only Admin, Executive, or Managing Director can change its stage further.");
+      return;
+    }
+
     const currentIndex = STAGES.indexOf(currentFrontendStage);
     if (currentIndex === -1) return;
 
@@ -553,6 +585,63 @@ export default function OpportunitiesKanban() {
     }
   };
 
+
+  const handleCheckDuplicateOpportunities = async (opp: Opportunity) => {
+    setIsDuplicateChecking(true);
+    try {
+      const res = await findDuplicateCrmOpportunities({ name: opp.name, client_id: opp.client_id });
+      if (res.success && Array.isArray(res.data)) {
+        setDuplicateOpps(res.data.filter((o: Opportunity) => o.id !== opp.id));
+      } else {
+        setDuplicateOpps([]);
+      }
+      setIsDupModalOpen(true);
+    } catch (err) {
+      console.error('Duplicate check failed:', err);
+      alert("Duplicate check failed. Check the CRM service connection and retry.");
+    } finally {
+      setIsDuplicateChecking(false);
+    }
+  };
+
+  const handleMergeIntoExisting = async (existingOppId: string) => {
+    if (!selectedOpportunityId) return;
+    setIsSubmitting(true);
+    try {
+      const res = await mergeCrmOpportunities(existingOppId, [selectedOpportunityId]);
+      if (res.success) {
+        setIsDupModalOpen(false);
+        setSelectedOpportunityId(null);
+        await loadData();
+      } else {
+        alert("Deals were not merged. Check the CRM service connection and retry.");
+      }
+    } catch (err) {
+      console.error('Merge failed:', err);
+      alert("Deals were not merged. Check the CRM service connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteOpportunity = async (opp: Opportunity) => {
+    if (!window.confirm(`Delete "${opp.name}"? This can't be undone from this screen.`)) return;
+    setIsSubmitting(true);
+    try {
+      const res = await deleteCrmOpportunity(opp.id);
+      if (res.success) {
+        setSelectedOpportunityId(null);
+        await loadData();
+      } else {
+        alert("Deal was not deleted. Check the CRM service connection and retry.");
+      }
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert("Deal was not deleted. Check the CRM service connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   // Filter application
   const filteredOpportunities = opportunities.filter(opp => {
@@ -853,14 +942,16 @@ export default function OpportunitiesKanban() {
               <div className="flex-1 overflow-y-auto space-y-2.5 custom-scrollbar pr-1 min-h-0">
                 {stageOpps.map(opp => {
                   const oppContact = opp.client_id ? contacts.find(c => c.id === opp.client_id) : null;
+                  const locked = isOpportunityLocked(opp);
+                  const canMoveStage = !locked || canOverrideStage;
 
                   return (
                     <div
                       key={opp.id}
-                      draggable
+                      draggable={canMoveStage}
                       onDragStart={(e) => handleDragStart(e, opp.id)}
                       onClick={() => setSelectedOpportunityId(opp.id)}
-                      className="group bg-[#111111] border border-white/5 hover:border-[#D4AF37]/30 p-3 rounded-sm transition-all cursor-grab active:cursor-grabbing hover:shadow-[0_4px_20px_rgba(0,0,0,0.5)] transform hover:-translate-y-0.5 duration-150 relative overflow-hidden"
+                      className={`group bg-[#111111] border border-white/5 hover:border-[#D4AF37]/30 p-3 rounded-sm transition-all hover:shadow-[0_4px_20px_rgba(0,0,0,0.5)] transform hover:-translate-y-0.5 duration-150 relative overflow-hidden ${canMoveStage ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
                     >
                       {/* Top border colored by risk */}
                       <div className={`absolute top-0 left-0 w-full h-[2px] ${
@@ -869,7 +960,10 @@ export default function OpportunitiesKanban() {
                       }`} />
 
                       <div className="flex justify-between items-start mb-1 pt-1">
-                        <h4 className="text-xs font-semibold text-paper truncate pr-2 group-hover:text-[#D4AF37] transition-colors">{opp.name}</h4>
+                        <h4 className="text-xs font-semibold text-paper truncate pr-2 group-hover:text-[#D4AF37] transition-colors flex items-center gap-1">
+                          {locked && <Lock className="w-2.5 h-2.5 text-slate shrink-0" />}
+                          <span className="truncate">{opp.name}</span>
+                        </h4>
                         <span className="font-mono text-[9px] text-slate-light bg-white/5 px-1 py-0.5 rounded-sm shrink-0">{opp.probability}%</span>
                       </div>
 
@@ -885,14 +979,14 @@ export default function OpportunitiesKanban() {
                         {/* Quick stage move control buttons */}
                         <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
                           <button
-                            disabled={STAGES.indexOf(stage) === 0}
+                            disabled={STAGES.indexOf(stage) === 0 || !canMoveStage}
                             onClick={() => handleStageMove(opp.id, stage, 'prev')}
                             className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 disabled:opacity-30 disabled:pointer-events-none rounded-sm flex items-center justify-center transition-all text-slate-light"
                           >
                             <ChevronLeft className="w-3 h-3" />
                           </button>
                           <button
-                            disabled={STAGES.indexOf(stage) === STAGES.length - 1}
+                            disabled={STAGES.indexOf(stage) === STAGES.length - 1 || !canMoveStage}
                             onClick={() => handleStageMove(opp.id, stage, 'next')}
                             className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 disabled:opacity-30 disabled:pointer-events-none rounded-sm flex items-center justify-center transition-all text-slate-light"
                           >
@@ -1117,9 +1211,16 @@ export default function OpportunitiesKanban() {
               <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Quote & Project Handoff</span>
-                  {selectedOpp.is_stale && (
-                    <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 px-1.5 py-0.5">Stale deal</span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {selectedOpp.is_stale && (
+                      <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 px-1.5 py-0.5">Stale deal</span>
+                    )}
+                    {isOpportunityLocked(selectedOpp) && (
+                      <span className="font-mono text-[8px] uppercase text-slate-light border border-white/10 px-1.5 py-0.5 flex items-center gap-1">
+                        <Lock className="w-2.5 h-2.5" /> {selectedOpp.stage === 'Contract' ? 'Won' : 'Lost'} - locked
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-light">
                   <div className="bg-black/40 border border-white/5 p-2">
@@ -1148,21 +1249,43 @@ export default function OpportunitiesKanban() {
                   >
                     Create quote
                   </button>
+                  {(!isOpportunityLocked(selectedOpp) || canOverrideStage) && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleMarkWon}
+                        disabled={isSubmitting}
+                        className="px-2 py-2 bg-[#D4AF37] hover:bg-[#D4AF37]/90 font-mono text-[9px] font-bold uppercase text-black disabled:opacity-40"
+                      >
+                        Mark won
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleMarkLost}
+                        disabled={isSubmitting}
+                        className="px-2 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 font-mono text-[9px] uppercase text-red-200 disabled:opacity-40"
+                      >
+                        Mark lost
+                      </button>
+                    </>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
                   <button
                     type="button"
-                    onClick={handleMarkWon}
-                    disabled={isSubmitting}
-                    className="px-2 py-2 bg-[#D4AF37] hover:bg-[#D4AF37]/90 font-mono text-[9px] font-bold uppercase text-black disabled:opacity-40"
+                    onClick={() => handleCheckDuplicateOpportunities(selectedOpp)}
+                    disabled={isDuplicateChecking}
+                    className="px-2 py-2 bg-white/5 hover:bg-white/10 border border-white/10 font-mono text-[9px] uppercase text-paper disabled:opacity-40 flex items-center justify-center gap-1.5"
                   >
-                    Mark won
+                    <Copy className="w-3 h-3" /> Find duplicates
                   </button>
                   <button
                     type="button"
-                    onClick={handleMarkLost}
+                    onClick={() => handleDeleteOpportunity(selectedOpp)}
                     disabled={isSubmitting}
-                    className="px-2 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 font-mono text-[9px] uppercase text-red-200 disabled:opacity-40"
+                    className="px-2 py-2 bg-red-950/40 hover:bg-red-900/40 border border-red-900/40 font-mono text-[9px] uppercase text-rose-400 disabled:opacity-40 flex items-center justify-center gap-1.5"
                   >
-                    Mark lost
+                    <Trash2 className="w-3 h-3" /> Delete deal
                   </button>
                 </div>
               </section>
@@ -1198,7 +1321,8 @@ export default function OpportunitiesKanban() {
                       <select
                         value={editForm.stage}
                         onChange={e => setEditForm({ ...editForm, stage: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                        disabled={isOpportunityLocked(selectedOpp) && !canOverrideStage}
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
@@ -1375,6 +1499,48 @@ export default function OpportunitiesKanban() {
           </div>
         )}
       </div>
+
+      {/* DUPLICATE RESOLUTION MODAL */}
+      {isDupModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsDupModalOpen(false)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-lg rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-[#3B82F6] uppercase font-bold tracking-wider mb-2">Duplicate Resolution Engine</h3>
+            <p className="text-xs text-slate-light mb-4">
+              Potential matches for <span className="text-paper font-bold">{selectedOpp?.name}</span>.
+            </p>
+            <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
+              {duplicateOpps.length === 0 ? (
+                <p className="text-[11px] text-slate italic">No duplicate matches found. This deal looks clean.</p>
+              ) : (
+                duplicateOpps.map((dup) => (
+                  <div key={dup.id} className="bg-black/40 border border-white/5 p-3 rounded-sm flex items-center justify-between text-xs">
+                    <div>
+                      <h4 className="font-bold text-paper">{dup.name}</h4>
+                      <p className="text-slate-light font-mono text-[10px]">{dup.stage} | ${(Number(dup.budget) || 0).toLocaleString()}</p>
+                    </div>
+                    <button
+                      onClick={() => handleMergeIntoExisting(dup.id)}
+                      disabled={isSubmitting}
+                      className="px-3 py-1 bg-[#3B82F6]/10 text-[#3B82F6] hover:bg-[#3B82F6]/20 rounded-sm font-mono text-[9px] font-semibold uppercase disabled:opacity-40"
+                    >
+                      Merge into existing
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => setIsDupModalOpen(false)}
+                className="px-4 py-2 border border-white/5 rounded-sm text-slate-light text-[10px] font-mono uppercase hover:bg-white/5"
+              >
+                Close view
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CLOSE WIN MODAL */}
       {isCloseWinModalOpen && (

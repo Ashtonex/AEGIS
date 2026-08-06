@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import require_permission, user_has_permission
 from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
 from app.services.crm.automation_engine import fire_trigger
 from app.shared.sql import update_tenant_row_sql
@@ -384,6 +384,29 @@ def _weighted_value(value: Optional[Decimal], probability: Optional[int]) -> Opt
     if value is None:
         return None
     return value * Decimal(probability or 0) / Decimal(100)
+
+
+# Once an opportunity has been won or lost it's a decided deal, not an open
+# one - moving its stage again (reopening/re-staging) needs sign-off beyond
+# ordinary pipeline hygiene, same rationale as the close_won/close split above.
+LOCKED_OPPORTUNITY_STAGES = {OpportunityStage.CONTRACT.value, OpportunityStage.LOST.value}
+OPPORTUNITY_STAGE_OVERRIDE_PERMISSION = "crm.opportunities.override_stage"
+
+
+async def _ensure_opportunity_stage_unlocked(
+    db: AsyncSession, user: dict, current_stage: Optional[str]
+) -> None:
+    if current_stage not in LOCKED_OPPORTUNITY_STAGES:
+        return
+    if await user_has_permission(db, user, OPPORTUNITY_STAGE_OVERRIDE_PERMISSION):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"Opportunity is already {current_stage} - only Admin, Executive, "
+            "or Managing Director can change its stage further."
+        ),
+    )
 
 
 @router.get("/customer-360/{client_org_id}")
@@ -1478,6 +1501,18 @@ async def update_opportunity(
     params = {k: values[k] for k in safe_keys}
     if "stage" in params and params["stage"] is not None:
         params["stage"] = params["stage"].value
+        current_stage_row = await _single_row(
+            db,
+            """
+            SELECT stage FROM crm.opportunities
+            WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+            """,
+            {"opportunity_id": opportunity_id, "org_id": org_id},
+        )
+        if not current_stage_row:
+            raise HTTPException(status_code=404, detail="Opportunity not found")
+        if params["stage"] != current_stage_row.get("stage"):
+            await _ensure_opportunity_stage_unlocked(db, user, current_stage_row.get("stage"))
     if "deal_value" in params or "probability" in params:
         current = await _single_row(
             db,
@@ -1523,6 +1558,93 @@ async def update_opportunity(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+class MergeOpportunityPayload(CrmPayload):
+    source_opportunity_ids: list[str]
+
+
+@router.get("/opportunities/duplicates")
+async def find_duplicate_opportunities(
+    name: Optional[str] = Query(default=None),
+    client_org_id: Optional[str] = Query(default=None),
+    client_id: Optional[str] = Query(default=None),
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    if not (name or client_org_id or client_id):
+        raise HTTPException(status_code=422, detail="name, client_org_id, or client_id is required.")
+    org_id = _require_org_id(user)
+    items = await _rows(
+        db,
+        """
+        SELECT id, name, stage, budget, deal_value, client_org_id, client_id, created_at
+        FROM crm.opportunities
+        WHERE organization_id=:org_id AND is_deleted=false AND (
+            (:name IS NOT NULL AND lower(name)=lower(:name))
+            OR (:client_org_id IS NOT NULL AND client_org_id::text=:client_org_id)
+            OR (:client_id IS NOT NULL AND client_id::text=:client_id)
+        )
+        ORDER BY created_at DESC
+        LIMIT 25
+        """,
+        {"org_id": org_id, "name": name, "client_org_id": client_org_id, "client_id": client_id},
+    )
+    return {"success": True, "data": items, "message": "Duplicate opportunity candidates fetched.", "meta": {"total": len(items)}}
+
+
+@router.delete("/opportunities/{opportunity_id}")
+async def delete_opportunity(
+    opportunity_id: str,
+    user: dict = Depends(require_permission("crm.opportunities.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    result = await db.execute(
+        text("""
+        UPDATE crm.opportunities
+        SET is_deleted = true, updated_at = NOW()
+        WHERE id = :opportunity_id AND organization_id = :org_id AND is_deleted = false
+        RETURNING id
+        """),
+        {"opportunity_id": opportunity_id, "org_id": org_id},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    await db.commit()
+    return {"success": True, "data": None, "message": "Opportunity deleted (soft delete).", "meta": {}}
+
+
+@router.post("/opportunities/{opportunity_id}/merge")
+async def merge_opportunities(
+    opportunity_id: str,
+    payload: MergeOpportunityPayload,
+    user: dict = Depends(require_permission("crm.opportunities.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    if not payload.source_opportunity_ids:
+        raise HTTPException(status_code=422, detail="At least one source opportunity is required.")
+    org_id = _require_org_id(user)
+    result = await db.execute(
+        text("""
+        UPDATE crm.opportunities
+        SET is_deleted=true, updated_at=NOW()
+        WHERE id::text = ANY(:source_ids)
+          AND id::text <> :opportunity_id
+          AND organization_id=:org_id
+          AND is_deleted=false
+        RETURNING id
+        """),
+        {"opportunity_id": opportunity_id, "source_ids": payload.source_opportunity_ids, "org_id": org_id},
+    )
+    merged_ids = [str(row.id) for row in result]
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": opportunity_id, "merged_ids": merged_ids},
+        "message": "Duplicate opportunities merged.",
+        "meta": {"merged": len(merged_ids)},
+    }
 
 
 @router.post("/opportunities/{opportunity_id}/create-quotation", status_code=status.HTTP_201_CREATED)
@@ -1672,6 +1794,7 @@ async def mark_opportunity_won(
     )
     if not opportunity:
         raise HTTPException(status_code=404, detail="Opportunity not found.")
+    await _ensure_opportunity_stage_unlocked(db, user, opportunity.get("stage"))
 
     project_id = payload.project_id or opportunity.get("project_id")
     try:
@@ -1764,6 +1887,18 @@ async def mark_opportunity_lost(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org_id(user)
+    current_stage_row = await _single_row(
+        db,
+        """
+        SELECT stage FROM crm.opportunities
+        WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+        """,
+        {"opportunity_id": opportunity_id, "org_id": org_id},
+    )
+    if not current_stage_row:
+        raise HTTPException(status_code=404, detail="Opportunity not found.")
+    await _ensure_opportunity_stage_unlocked(db, user, current_stage_row.get("stage"))
+
     result = await db.execute(
         text("""
         UPDATE crm.opportunities

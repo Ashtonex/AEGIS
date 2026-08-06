@@ -437,6 +437,48 @@ async def get_executive_stats(
     except Exception:
         incidents_count = 0
 
+    # 7. CRM open pipeline (deal count + value, excluding won/lost) and open leads count
+    try:
+        pipeline_query = text(
+            """
+            SELECT
+                COUNT(*) AS open_deal_count,
+                COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS open_pipeline_value
+            FROM crm.opportunities
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND stage NOT IN ('Contract', 'Lost')
+            """
+        )
+        pipeline_res = (await db.execute(pipeline_query, {"org_id": org_id})).one()
+        open_deal_count = pipeline_res.open_deal_count or 0
+        open_pipeline_value = float(pipeline_res.open_pipeline_value or 0)
+    except Exception:
+        open_deal_count = 0
+        open_pipeline_value = 0.0
+
+    try:
+        leads_query = text(
+            "SELECT COUNT(*) FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')"
+        )
+        leads_res = await db.execute(leads_query, {"org_id": org_id})
+        open_leads_count = leads_res.scalar() or 0
+    except Exception:
+        open_leads_count = 0
+
+    # 8. CRM activity in the last 7 days (calls, meetings, notes, stage moves, etc.)
+    try:
+        recent_activity_query = text(
+            """
+            SELECT COUNT(*) FROM crm.activities
+            WHERE organization_id = :org_id
+              AND activity_date >= NOW() - INTERVAL '7 days'
+            """
+        )
+        recent_activity_res = await db.execute(recent_activity_query, {"org_id": org_id})
+        recent_activity_last_7_days = recent_activity_res.scalar() or 0
+    except Exception:
+        recent_activity_last_7_days = 0
+
     return {
         "success": True,
         "data": {
@@ -446,6 +488,10 @@ async def get_executive_stats(
             "open_purchase_orders": orders_count,
             "materials_in_stock": f"${inventory_value:,.2f}",
             "safety_incidents": incidents_count,
+            "open_deals": open_deal_count,
+            "open_pipeline_value": f"${open_pipeline_value:,.2f}",
+            "open_leads": open_leads_count,
+            "recent_activity_last_7_days": recent_activity_last_7_days,
         },
         "message": "Executive stats fetched.",
         "meta": {},
@@ -462,6 +508,8 @@ async def _source_health(
         "procurement.procurement_orders",
         "hr.employees",
         "crm.leads",
+        "crm.opportunities",
+        "crm.activities",
     }
     try:
         result = await db.execute(
@@ -506,7 +554,9 @@ async def get_executive_data_health(
         _source_health(db, org_id, "HSE", "projects.hse_incidents"),
         _source_health(db, org_id, "Procurement", "procurement.procurement_orders"),
         _source_health(db, org_id, "Workforce", "hr.employees"),
-        _source_health(db, org_id, "CRM", "crm.leads"),
+        _source_health(db, org_id, "CRM Leads", "crm.leads"),
+        _source_health(db, org_id, "CRM Deals", "crm.opportunities"),
+        _source_health(db, org_id, "CRM Activity", "crm.activities"),
     ]
     sources = [await source for source in sources]
     return {

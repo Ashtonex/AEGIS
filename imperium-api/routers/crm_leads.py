@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import require_permission, user_has_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 from app.services.crm.automation_engine import fire_trigger
 
@@ -18,6 +18,28 @@ LEAD_CREATE_PERMISSION = "crm_leads.create"
 LEAD_UPDATE_PERMISSION = "crm_leads.update"
 LEAD_DELETE_PERMISSION = "crm_leads.delete"
 LEAD_QUALIFY_PERMISSION = "crm_leads.qualify"
+
+# Once a lead has been decided - qualified (converted to an Opportunity) or
+# disqualified - it's no longer an open lead a rep should be able to flip
+# back and forth. Same rationale as crm.py's opportunity stage lock.
+LOCKED_LEAD_STATUSES = {"converted", "disqualified"}
+LEAD_STATUS_OVERRIDE_PERMISSION = "crm_leads.override_status"
+
+
+async def _ensure_lead_status_unlocked(
+    db: AsyncSession, user: dict, current_status: Optional[str]
+) -> None:
+    if (current_status or "").lower() not in LOCKED_LEAD_STATUSES:
+        return
+    if await user_has_permission(db, user, LEAD_STATUS_OVERRIDE_PERMISSION):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"Lead is already {current_status} - only Admin, Executive, "
+            "or Managing Director can change its status further."
+        ),
+    )
 RESERVED_COLUMNS = {
     "id",
     "created_at",
@@ -269,6 +291,17 @@ async def update_item(
     params["item_id"] = item_id
     params["org_id"] = _require_org_id(user)
 
+    if "status" in params:
+        current = await db.execute(
+            text("SELECT status FROM crm.leads WHERE id=:item_id AND organization_id=:org_id AND is_deleted=false"),
+            {"item_id": item_id, "org_id": params["org_id"]},
+        )
+        current_row = current.first()
+        if not current_row:
+            raise HTTPException(status_code=404, detail="Item not found")
+        if params["status"] != current_row.status:
+            await _ensure_lead_status_unlocked(db, user, current_row.status)
+
     query = update_returning_id_sql("crm.leads", safe_keys, MUTABLE_COLUMNS)
 
     try:
@@ -375,6 +408,16 @@ async def disqualify_lead(
     user: dict = Depends(require_permission(LEAD_UPDATE_PERMISSION)),
     db: AsyncSession = Depends(get_db),
 ):
+    org_id = _require_org_id(user)
+    current = await db.execute(
+        text("SELECT status FROM crm.leads WHERE id=:lead_id AND organization_id=:org_id AND is_deleted=false"),
+        {"lead_id": lead_id, "org_id": org_id},
+    )
+    current_row = current.first()
+    if not current_row:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    await _ensure_lead_status_unlocked(db, user, current_row.status)
+
     result = await db.execute(
         text("""
         UPDATE crm.leads
@@ -384,7 +427,7 @@ async def disqualify_lead(
         WHERE id=:lead_id AND organization_id=:org_id AND is_deleted=false
         RETURNING id
         """),
-        {"lead_id": lead_id, "org_id": _require_org_id(user), "reason": payload.reason},
+        {"lead_id": lead_id, "org_id": org_id, "reason": payload.reason},
     )
     if not result.first():
         raise HTTPException(status_code=404, detail="Lead not found")
@@ -448,7 +491,7 @@ async def qualify_lead(
     try:
         # 0. Fetch and verify Lead exists and belongs to the user's organization
         lead_query = text("""
-            SELECT id, campaign_id FROM crm.leads
+            SELECT id, campaign_id, status FROM crm.leads
             WHERE id = :lead_id AND organization_id = :org_id AND is_deleted = false
         """)
         lead_res = await db.execute(
@@ -457,6 +500,7 @@ async def qualify_lead(
         lead_row = lead_res.first()
         if not lead_row:
             raise HTTPException(status_code=404, detail="Lead not found")
+        await _ensure_lead_status_unlocked(db, user, lead_row.status)
 
         # 1. Check if client organization exists in crm.organizations (by name)
         org_data = payload.organization

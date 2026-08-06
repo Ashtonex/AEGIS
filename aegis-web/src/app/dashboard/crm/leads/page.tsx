@@ -16,6 +16,7 @@ import {
   qualifyCrmLead,
   createCrmLead,
   disqualifyCrmLead,
+  deleteCrmLead,
   findDuplicateCrmLeads,
   mergeCrmLeads,
   updateCrmLeadStatus
@@ -24,6 +25,13 @@ import { useApiQuery } from '@/hooks/useApiQuery';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
 import { SkeletonTableRows } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { useAuth } from '@/lib/auth/AuthContext';
+import { matchesRole } from '@/lib/rbacMatch';
+
+// Roles allowed to change the status of a lead that's already been decided
+// (converted/qualified or disqualified) - matches the backend's
+// crm_leads.override_status permission grants.
+const PRIVILEGED_LEAD_STATUS_ROLES = ['Executive (Admin)', 'Managing Director'];
 
 interface Lead {
   id: string;
@@ -53,6 +61,8 @@ interface ExternalLinkedInProfile {
 }
 
 export default function CRMLeadsApp() {
+  const { role } = useAuth();
+  const canOverrideLeadStatus = role ? matchesRole(role, PRIVILEGED_LEAD_STATUS_ROLES) : false;
   const [activeTab, setActiveTab] = useState<'inbox' | 'web_forms' | 'signal_bot' | 'prospector' | 'tender_scraping' | 'linkedin'>('inbox');
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('kanban');
 
@@ -253,6 +263,12 @@ export default function CRMLeadsApp() {
 
     if (normalizedStatus(lead.status) === colName.toLowerCase()) return;
 
+    const isDecided = ['converted', 'disqualified'].includes(normalizedStatus(lead.status));
+    if (isDecided && !canOverrideLeadStatus) {
+      showToast("This lead is already qualified or disqualified - only Admin, Executive, or Managing Director can change its status further.", "error");
+      return;
+    }
+
     if (colName === 'Qualified') {
       void handleQualifyLead(lead);
       return;
@@ -312,6 +328,21 @@ export default function CRMLeadsApp() {
       void loadLeads();
     } catch {
       showToast("Lead merge was not saved. Check the CRM service connection and retry.", "error");
+    }
+  };
+
+  const handleDeleteLead = async (lead: Lead) => {
+    if (!window.confirm(`Delete "${lead.company_name}"? This can't be undone from this screen.`)) return;
+    try {
+      const res = await deleteCrmLead(lead.id);
+      if (res.success) {
+        showToast("Lead deleted.");
+        void loadLeads();
+      } else {
+        showToast("Lead was not deleted. Check the CRM service connection and retry.", "error");
+      }
+    } catch {
+      showToast("Lead was not deleted. Check the CRM service connection and retry.", "error");
     }
   };
 
@@ -432,7 +463,10 @@ export default function CRMLeadsApp() {
                 </TableRow>
               </TableHeader>
               <tbody>
-                {activeLeads.map((lead) => (
+                {activeLeads.map((lead) => {
+                  const isDecided = ['converted', 'disqualified'].includes(normalizedStatus(lead.status));
+                  const canChangeStatus = !isDecided || canOverrideLeadStatus;
+                  return (
                   <TableRow key={lead.id}>
                     <TableCell className="font-semibold text-snc-text-primary">{lead.company_name}</TableCell>
                     <TableCell>{lead.contact_name}</TableCell>
@@ -451,21 +485,32 @@ export default function CRMLeadsApp() {
                       >
                         Duplicates
                       </button>
+                      {canChangeStatus && (
+                        <>
+                          <button
+                            onClick={() => handleQualifyLead(lead)}
+                            className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold"
+                          >
+                            Qualify
+                          </button>
+                          <button
+                            onClick={() => handleDisqualifyClick(lead)}
+                            className="px-2.5 py-1 text-[10px] bg-rose-950 text-rose-400 border border-rose-900/40 rounded hover:bg-rose-900/30"
+                          >
+                            Disqualify
+                          </button>
+                        </>
+                      )}
                       <button
-                        onClick={() => handleQualifyLead(lead)}
-                        className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold"
+                        onClick={() => handleDeleteLead(lead)}
+                        className="px-2.5 py-1 text-[10px] bg-[#111827] border border-rose-900/40 rounded text-rose-400 hover:bg-rose-900/20"
                       >
-                        Qualify
-                      </button>
-                      <button
-                        onClick={() => handleDisqualifyClick(lead)}
-                        className="px-2.5 py-1 text-[10px] bg-rose-950 text-rose-400 border border-rose-900/40 rounded hover:bg-rose-900/30"
-                      >
-                        Disqualify
+                        Delete
                       </button>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </tbody>
             </OperationalTable>
           ) : (
@@ -488,7 +533,10 @@ export default function CRMLeadsApp() {
                     <span className="text-[10px] font-mono bg-[#1E293B] text-slate-400 px-2 py-0.5 rounded-full">{colLeads.length}</span>
                   </div>
                   <div className="flex-1 space-y-3 overflow-y-auto max-h-[600px] no-scrollbar">
-                    {colLeads.map((lead) => (
+                    {colLeads.map((lead) => {
+                      const isDecided = ['converted', 'disqualified'].includes(normalizedStatus(lead.status));
+                      const canChangeStatus = !isDecided || canOverrideLeadStatus;
+                      return (
                       <div
                         key={lead.id}
                         draggable
@@ -506,7 +554,7 @@ export default function CRMLeadsApp() {
                           <span className="font-semibold text-emerald-400">${lead.estimated_budget.toLocaleString()}</span>
                           <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}%</span>
                         </div>
-                        <div draggable={false} className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between">
+                        <div draggable={false} className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between items-center">
                           <button
                             draggable={false}
                             onClick={() => handleCheckDuplicates(lead)}
@@ -514,25 +562,37 @@ export default function CRMLeadsApp() {
                           >
                             Merge Check
                           </button>
-                          <div draggable={false} className="flex gap-1.5">
+                          <div draggable={false} className="flex gap-1.5 items-center">
+                            {canChangeStatus && (
+                              <>
+                                <button
+                                  draggable={false}
+                                  onClick={() => handleQualifyLead(lead)}
+                                  className="text-[10px] text-emerald-400 hover:underline"
+                                >
+                                  Qualify
+                                </button>
+                                <button
+                                  draggable={false}
+                                  onClick={() => handleDisqualifyClick(lead)}
+                                  className="text-[10px] text-rose-400 hover:underline"
+                                >
+                                  Disqualify
+                                </button>
+                              </>
+                            )}
                             <button
                               draggable={false}
-                              onClick={() => handleQualifyLead(lead)}
-                              className="text-[10px] text-emerald-400 hover:underline"
+                              onClick={() => handleDeleteLead(lead)}
+                              className="text-[10px] text-slate-500 hover:text-rose-400 hover:underline"
                             >
-                              Qualify
-                            </button>
-                            <button
-                              draggable={false}
-                              onClick={() => handleDisqualifyClick(lead)}
-                              className="text-[10px] text-rose-400 hover:underline"
-                            >
-                              Disqualify
+                              Delete
                             </button>
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ))}
