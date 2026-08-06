@@ -27,6 +27,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const router = useRouter();
   const pathname = usePathname();
   const resolvedUserIdRef = useRef<string | null>(null);
+  const lastAppliedTokenRef = useRef<string | null>(null);
 
   const resolveRole = useCallback(async (accessToken?: string) => {
     if (!accessToken) {
@@ -51,6 +52,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (error) throw error;
 
         if (mounted) {
+          lastAppliedTokenRef.current = session?.access_token ?? null;
           setSession(session);
           setUser(session?.user ?? null);
           setCachedAccessToken(session?.access_token ?? null);
@@ -71,9 +73,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         if (!mounted) return;
+
+        // GoTrue re-announces the same session (e.g. redundant SIGNED_IN
+        // events, observed repeating every ~2s on some pages) without the
+        // access token changing. Skip the update entirely - including
+        // setSession - when the token is unchanged, so `session` keeps a
+        // stable object reference. Otherwise every page effect keyed on
+        // `session` (loadData, etc.) refires on every no-op re-announcement,
+        // producing endless duplicate API calls.
+        const nextToken = session?.access_token ?? null;
+        if (nextToken === lastAppliedTokenRef.current) {
+          return;
+        }
+        lastAppliedTokenRef.current = nextToken;
+
         setSession(session);
         setUser(session?.user ?? null);
-        setCachedAccessToken(session?.access_token ?? null);
+        setCachedAccessToken(nextToken);
 
         // TOKEN_REFRESHED (and USER_UPDATED) fire on every silent token
         // refresh - the user's role can't have changed just because the
