@@ -1,4 +1,3 @@
-import asyncio
 import time
 import os
 import json
@@ -9,6 +8,7 @@ from arq.cron import cron
 from sqlalchemy import text
 from core.config import settings
 from core.database import AsyncSessionLocal
+from core.email import send_email
 from core.logging import logger, correlation_id_ctx, worker_job_id_ctx
 from app.services.quotations.calculator import QuotationCalculator
 from app.services.documents.renderers import (
@@ -107,12 +107,19 @@ async def send_notification_job(
     logger.info(
         f"Worker sending notification email to {recipient_email} (Subject: {subject})"
     )
-    await asyncio.sleep(1)  # Simulate network latency of SMTP relay
-    logger.info(f"Notification email dispatched successfully to {recipient_email}.")
+    sent = await send_email(
+        to=recipient_email,
+        subject=subject,
+        html=message_body,
+    )
+    if sent:
+        logger.info(f"Notification email dispatched successfully to {recipient_email}.")
+    else:
+        logger.warning(f"Notification email failed to dispatch to {recipient_email}.")
 
     correlation_id_ctx.set("")
     worker_job_id_ctx.set("")
-    return True
+    return sent
 
 
 async def compliance_check_reminder_job(

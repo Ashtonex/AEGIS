@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.email import send_email
 from core.logging import logger
 from app.shared.events import emit_notification, emit_role_notification
 
@@ -160,6 +161,53 @@ async def execute_action(
         else:
             action_result["recorded_only"] = True
             action_result["reason"] = "no user_id or role_names configured"
+    elif action_type == "send_email":
+        # `to` is a static address; `to_field` reads the recipient out of the
+        # event payload instead (e.g. "contact_email") for per-record rules
+        # like "email the lead's contact when a lead is created".
+        recipient = action_config.get("to") or event.get(action_config.get("to_field", ""))
+        subject = action_config.get("subject") or rule.get("name") or "AEGIS notification"
+        body = action_config.get("body") or ""
+        for key, value in event.items():
+            body = body.replace(f"{{{{{key}}}}}", str(value))
+            subject = subject.replace(f"{{{{{key}}}}}", str(value))
+
+        comm = await db.execute(
+            text("""
+                INSERT INTO crm.communication_events (
+                    organization_id, created_by, actor_user_id, contact_id, lead_id, opportunity_id,
+                    channel, direction, subject, body, status
+                )
+                VALUES (
+                    :org_id, :user_id, :user_id, :contact_id, :lead_id, :opportunity_id,
+                    'email', 'outbound', :subject, :body, :status
+                )
+                RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "user_id": user_id,
+                "contact_id": event.get("contact_id"),
+                "lead_id": event.get("lead_id"),
+                "opportunity_id": event.get("opportunity_id"),
+                "subject": subject,
+                "body": body,
+                "status": "pending" if not recipient else "queued",
+            },
+        )
+        action_result["communication_id"] = str(comm.scalar())
+
+        if not recipient:
+            action_result["recorded_only"] = True
+            action_result["reason"] = "no recipient resolved (set 'to' or 'to_field')"
+        else:
+            sent = await send_email(to=recipient, subject=subject, html=body)
+            action_result["email_sent"] = sent
+            action_result["recipient"] = recipient
+            await db.execute(
+                text("UPDATE crm.communication_events SET status = :status WHERE id = :id"),
+                {"status": "sent" if sent else "failed", "id": action_result["communication_id"]},
+            )
     elif action_type == "send_template_message":
         template = None
         if action_config.get("template_id"):

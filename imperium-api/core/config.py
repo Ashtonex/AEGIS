@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_KEY: str
 
+    # Real transactional email via Resend (https://resend.com). Unset by
+    # default: email.py fails closed (logs + returns False) rather than
+    # pretending to send, so missing config is loud, not a silent no-op.
+    RESEND_API_KEY: Optional[str] = None
+    EMAIL_FROM_ADDRESS: Optional[str] = None
+
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
