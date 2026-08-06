@@ -17,7 +17,8 @@ import {
   createCrmLead,
   disqualifyCrmLead,
   findDuplicateCrmLeads,
-  mergeCrmLeads
+  mergeCrmLeads,
+  updateCrmLeadStatus
 } from '@/lib/api';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
@@ -58,6 +59,9 @@ export default function CRMLeadsApp() {
   const [qualifyingId, setQualifyingId] = useState<string | null>(null);
   const [dismissedLeadIds, setDismissedLeadIds] = useState<string[]>([]);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+  const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+  const [movingLeadId, setMovingLeadId] = useState<string | null>(null);
 
   // Modal / Sidebar States
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
@@ -206,6 +210,73 @@ export default function CRMLeadsApp() {
       void loadLeads();
     } catch {
       showToast("Lead disqualification was not saved. Check the CRM service connection and retry.", "error");
+    }
+  };
+
+  // Backend status values are lowercase (DB column default is 'new', which
+  // the Inquiry column also matches - see normalizedStatus/columns below).
+  // Qualified/Disqualified aren't plain status writes: qualifying creates
+  // linked organization/contact/opportunity records via a dedicated
+  // endpoint, and disqualifying needs a reason, so drops onto those two
+  // columns re-use the existing button flows instead of a raw status PUT.
+  const DROPPABLE_STATUS: Record<string, string> = {
+    Inquiry: 'inquiry',
+    Identified: 'identified',
+    Contacted: 'contacted',
+  };
+
+  const handleLeadDragStart = (lead: Lead) => (e: React.DragEvent<HTMLDivElement>) => {
+    setDraggedLeadId(lead.id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleLeadDragEnd = () => {
+    setDraggedLeadId(null);
+    setDragOverColumn(null);
+  };
+
+  const handleColumnDragOver = (colName: string) => (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverColumn(colName);
+  };
+
+  const handleColumnDrop = (colName: string) => async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOverColumn(null);
+    const leadId = draggedLeadId;
+    setDraggedLeadId(null);
+    if (!leadId) return;
+
+    const lead = leads.find(l => l.id === leadId);
+    if (!lead) return;
+
+    if (normalizedStatus(lead.status) === colName.toLowerCase()) return;
+
+    if (colName === 'Qualified') {
+      void handleQualifyLead(lead);
+      return;
+    }
+    if (colName === 'Disqualified') {
+      handleDisqualifyClick(lead);
+      return;
+    }
+
+    const nextStatus = DROPPABLE_STATUS[colName];
+    if (!nextStatus) return;
+
+    setMovingLeadId(leadId);
+    try {
+      const res = await updateCrmLeadStatus(leadId, nextStatus);
+      if (res.success) {
+        void loadLeads();
+      } else {
+        showToast("Lead stage change was not saved. Check the CRM service connection and retry.", "error");
+      }
+    } catch {
+      showToast("Lead stage change was not saved. Check the CRM service connection and retry.", "error");
+    } finally {
+      setMovingLeadId(null);
     }
   };
 
@@ -399,16 +470,34 @@ export default function CRMLeadsApp() {
             </OperationalTable>
           ) : (
             /* Kanban Board View */
+            <>
+            <p className="text-[10px] text-slate-500 mb-3">Drag a card into another column to move it through the pipeline.</p>
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
               {Object.entries(columns).map(([colName, colLeads]) => (
-                <div key={colName} className="bg-[#111827]/30 border border-[#1E293B]/60 p-4 rounded-xl flex flex-col min-h-[500px]">
+                <div
+                  key={colName}
+                  onDragOver={handleColumnDragOver(colName)}
+                  onDragLeave={() => setDragOverColumn((current) => (current === colName ? null : current))}
+                  onDrop={handleColumnDrop(colName)}
+                  className={`bg-[#111827]/30 border p-4 rounded-xl flex flex-col min-h-[500px] transition-colors ${
+                    dragOverColumn === colName ? 'border-[#3B82F6] bg-[#3B82F6]/5' : 'border-[#1E293B]/60'
+                  }`}
+                >
                   <div className="flex justify-between items-center mb-4 border-b border-[#1E293B] pb-2">
                     <h3 className="text-xs font-bold text-white font-mono uppercase tracking-wider">{colName}</h3>
                     <span className="text-[10px] font-mono bg-[#1E293B] text-slate-400 px-2 py-0.5 rounded-full">{colLeads.length}</span>
                   </div>
                   <div className="flex-1 space-y-3 overflow-y-auto max-h-[600px] no-scrollbar">
                     {colLeads.map((lead) => (
-                      <div key={lead.id} className="bg-[#111827]/80 border border-[#1E293B] p-4 rounded-lg space-y-3 hover:border-slate-500/40 transition">
+                      <div
+                        key={lead.id}
+                        draggable
+                        onDragStart={handleLeadDragStart(lead)}
+                        onDragEnd={handleLeadDragEnd}
+                        className={`bg-[#111827]/80 border border-[#1E293B] p-4 rounded-lg space-y-3 hover:border-slate-500/40 transition cursor-grab active:cursor-grabbing ${
+                          draggedLeadId === lead.id ? 'opacity-40' : ''
+                        } ${movingLeadId === lead.id ? 'opacity-60 pointer-events-none' : ''}`}
+                      >
                         <div>
                           <h4 className="text-sm font-bold text-white line-clamp-1">{lead.company_name}</h4>
                           <span className="text-[9px] font-mono text-slate-400">{lead.sector} | {lead.lead_source}</span>
@@ -445,6 +534,7 @@ export default function CRMLeadsApp() {
                 </div>
               ))}
             </div>
+            </>
           )}
         </div>
       )}

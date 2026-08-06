@@ -446,187 +446,187 @@ async def qualify_lead(
     user_id = user.get("sub")
 
     try:
-        async with db.begin():
-            # 0. Fetch and verify Lead exists and belongs to the user's organization
-            lead_query = text("""
-                SELECT id, campaign_id FROM crm.leads
-                WHERE id = :lead_id AND organization_id = :org_id AND is_deleted = false
-            """)
-            lead_res = await db.execute(
-                lead_query, {"lead_id": lead_id, "org_id": org_id}
-            )
-            lead_row = lead_res.first()
-            if not lead_row:
-                raise HTTPException(status_code=404, detail="Lead not found")
+        # 0. Fetch and verify Lead exists and belongs to the user's organization
+        lead_query = text("""
+            SELECT id, campaign_id FROM crm.leads
+            WHERE id = :lead_id AND organization_id = :org_id AND is_deleted = false
+        """)
+        lead_res = await db.execute(
+            lead_query, {"lead_id": lead_id, "org_id": org_id}
+        )
+        lead_row = lead_res.first()
+        if not lead_row:
+            raise HTTPException(status_code=404, detail="Lead not found")
 
-            # 1. Check if client organization exists in crm.organizations (by name)
-            org_data = payload.organization
-            fetch_org_query = text("""
-                SELECT id FROM crm.organizations
-                WHERE LOWER(name) = LOWER(:name) AND organization_id = :org_id AND is_deleted = false
-                LIMIT 1
-            """)
-            org_res = await db.execute(
-                fetch_org_query, {"name": org_data.name, "org_id": org_id}
-            )
-            org_row = org_res.first()
+        # 1. Check if client organization exists in crm.organizations (by name)
+        org_data = payload.organization
+        fetch_org_query = text("""
+            SELECT id FROM crm.organizations
+            WHERE LOWER(name) = LOWER(:name) AND organization_id = :org_id AND is_deleted = false
+            LIMIT 1
+        """)
+        org_res = await db.execute(
+            fetch_org_query, {"name": org_data.name, "org_id": org_id}
+        )
+        org_row = org_res.first()
 
-            if org_row:
-                client_org_id = org_row[0]
-            else:
-                insert_org_query = text("""
-                    INSERT INTO crm.organizations (
-                        organization_id, name, sector, industry, website, registration_number, tax_id, address, created_by
-                    ) VALUES (
-                        :org_id, :name, :sector, :sector, :website, :registration_number, :tax_id, :address, :user_id
-                    ) RETURNING id
-                """)
-                insert_org_res = await db.execute(
-                    insert_org_query,
-                    {
-                        "org_id": org_id,
-                        "name": org_data.name,
-                        "sector": org_data.sector,
-                        "website": org_data.website,
-                        "registration_number": org_data.registration_number,
-                        "tax_id": org_data.tax_id,
-                        "address": org_data.address,
-                        "user_id": user_id,
-                    },
-                )
-                client_org_id = insert_org_res.scalar()
-
-            # 2. Check if contact exists in crm.contacts (by email), if not, create it linked to the organization
-            contact_data = payload.contact
-            contact_id = None
-            if contact_data.email:
-                fetch_contact_query = text("""
-                    SELECT id FROM crm.contacts
-                    WHERE LOWER(email) = LOWER(:email) AND organization_id = :org_id AND is_deleted = false
-                    LIMIT 1
-                """)
-                contact_res = await db.execute(
-                    fetch_contact_query, {"email": contact_data.email, "org_id": org_id}
-                )
-                contact_row = contact_res.first()
-                if contact_row:
-                    contact_id = contact_row[0]
-
-            if not contact_id:
-                insert_contact_query = text("""
-                    INSERT INTO crm.contacts (
-                        organization_id, client_org_id, contact_name, email, phone, job_title, whatsapp_preference, created_by
-                    ) VALUES (
-                        :org_id, :client_org_id, :contact_name, :email, :phone, :job_title, :whatsapp_preference, :user_id
-                    ) RETURNING id
-                """)
-                insert_contact_res = await db.execute(
-                    insert_contact_query,
-                    {
-                        "org_id": org_id,
-                        "client_org_id": client_org_id,
-                        "contact_name": contact_data.contact_name,
-                        "email": contact_data.email,
-                        "phone": contact_data.phone,
-                        "job_title": contact_data.job_title,
-                        "whatsapp_preference": contact_data.whatsapp_preference,
-                        "user_id": user_id,
-                    },
-                )
-                contact_id = insert_contact_res.scalar()
-
-            # 3. Create the opportunity in crm.opportunities linked to the organization and contact
-            opp_data = payload.opportunity
-            insert_opp_query = text("""
-                INSERT INTO crm.opportunities (
-                    organization_id, client_id, name, stage, budget, probability, created_by, lead_id
+        if org_row:
+            client_org_id = org_row[0]
+        else:
+            insert_org_query = text("""
+                INSERT INTO crm.organizations (
+                    organization_id, name, sector, industry, website, registration_number, tax_id, address, created_by
                 ) VALUES (
-                    :org_id, :client_id, :name, :stage, :budget, :probability, :user_id, :lead_id
+                    :org_id, :name, :sector, :sector, :website, :registration_number, :tax_id, :address, :user_id
                 ) RETURNING id
             """)
-            insert_opp_res = await db.execute(
-                insert_opp_query,
+            insert_org_res = await db.execute(
+                insert_org_query,
                 {
                     "org_id": org_id,
-                    "client_id": contact_id,
-                    "name": opp_data.name,
-                    "stage": opp_data.stage,
-                    "budget": opp_data.budget,
-                    "probability": opp_data.probability,
+                    "name": org_data.name,
+                    "sector": org_data.sector,
+                    "website": org_data.website,
+                    "registration_number": org_data.registration_number,
+                    "tax_id": org_data.tax_id,
+                    "address": org_data.address,
                     "user_id": user_id,
-                    "lead_id": lead_id,
                 },
             )
-            opportunity_id = insert_opp_res.scalar()
+            client_org_id = insert_org_res.scalar()
 
-            # 4. If activity is provided, create it in crm.activities linked to the contact and opportunity
-            if payload.activity:
-                act_data = payload.activity
-                insert_activity_query = text("""
-                    INSERT INTO crm.activities (
-                        organization_id, contact_id, lead_id, opportunity_id, type, subject, description, activity_date, status, created_by
-                    ) VALUES (
-                        :org_id, :contact_id, :lead_id, :opportunity_id, :type, :subject, :description, :activity_date, 'Pending', :user_id
-                    )
-                """)
-                await db.execute(
-                    insert_activity_query,
-                    {
-                        "org_id": org_id,
-                        "contact_id": contact_id,
-                        "lead_id": lead_id,
-                        "opportunity_id": opportunity_id,
-                        "type": act_data.type,
-                        "subject": f"Qualify Lead Activity: {act_data.type}",
-                        "description": act_data.notes,
-                        "activity_date": act_data.due_date,
-                        "user_id": user_id,
-                    },
-                )
-
-            # 5. Mark the lead converted and persist relationship links for traceability.
-            update_lead_query = text("""
-                UPDATE crm.leads
-                SET status = 'converted',
-                    client_org_id = :client_org_id,
-                    contact_id = :contact_id,
-                    opportunity_id = :opportunity_id,
-                    converted_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :lead_id AND organization_id = :org_id
+        # 2. Check if contact exists in crm.contacts (by email), if not, create it linked to the organization
+        contact_data = payload.contact
+        contact_id = None
+        if contact_data.email:
+            fetch_contact_query = text("""
+                SELECT id FROM crm.contacts
+                WHERE LOWER(email) = LOWER(:email) AND organization_id = :org_id AND is_deleted = false
+                LIMIT 1
             """)
-            await db.execute(
-                update_lead_query,
+            contact_res = await db.execute(
+                fetch_contact_query, {"email": contact_data.email, "org_id": org_id}
+            )
+            contact_row = contact_res.first()
+            if contact_row:
+                contact_id = contact_row[0]
+
+        if not contact_id:
+            insert_contact_query = text("""
+                INSERT INTO crm.contacts (
+                    organization_id, client_org_id, contact_name, email, phone, job_title, whatsapp_preference, created_by
+                ) VALUES (
+                    :org_id, :client_org_id, :contact_name, :email, :phone, :job_title, :whatsapp_preference, :user_id
+                ) RETURNING id
+            """)
+            insert_contact_res = await db.execute(
+                insert_contact_query,
                 {
-                    "lead_id": lead_id,
                     "org_id": org_id,
                     "client_org_id": client_org_id,
-                    "contact_id": contact_id,
-                    "opportunity_id": opportunity_id,
+                    "contact_name": contact_data.contact_name,
+                    "email": contact_data.email,
+                    "phone": contact_data.phone,
+                    "job_title": contact_data.job_title,
+                    "whatsapp_preference": contact_data.whatsapp_preference,
+                    "user_id": user_id,
                 },
             )
-            if lead_row.campaign_id:
-                await db.execute(
-                    text("""
-                    INSERT INTO crm.campaign_members (
-                        organization_id, campaign_id, lead_id, contact_id, opportunity_id,
-                        member_status, source, created_by
-                    )
-                    VALUES (
-                        :org_id, :campaign_id, :lead_id, :contact_id, :opportunity_id,
-                        'converted', 'lead_qualification', :user_id
-                    )
-                    """),
-                    {
-                        "org_id": org_id,
-                        "campaign_id": lead_row.campaign_id,
-                        "lead_id": lead_id,
-                        "contact_id": contact_id,
-                        "opportunity_id": opportunity_id,
-                        "user_id": user_id,
-                    },
-                )
+            contact_id = insert_contact_res.scalar()
 
+        # 3. Create the opportunity in crm.opportunities linked to the organization and contact
+        opp_data = payload.opportunity
+        insert_opp_query = text("""
+            INSERT INTO crm.opportunities (
+                organization_id, client_id, name, stage, budget, probability, created_by, lead_id
+            ) VALUES (
+                :org_id, :client_id, :name, :stage, :budget, :probability, :user_id, :lead_id
+            ) RETURNING id
+        """)
+        insert_opp_res = await db.execute(
+            insert_opp_query,
+            {
+                "org_id": org_id,
+                "client_id": contact_id,
+                "name": opp_data.name,
+                "stage": opp_data.stage,
+                "budget": opp_data.budget,
+                "probability": opp_data.probability,
+                "user_id": user_id,
+                "lead_id": lead_id,
+            },
+        )
+        opportunity_id = insert_opp_res.scalar()
+
+        # 4. If activity is provided, create it in crm.activities linked to the contact and opportunity
+        if payload.activity:
+            act_data = payload.activity
+            insert_activity_query = text("""
+                INSERT INTO crm.activities (
+                    organization_id, contact_id, lead_id, opportunity_id, type, subject, description, activity_date, status, created_by
+                ) VALUES (
+                    :org_id, :contact_id, :lead_id, :opportunity_id, :type, :subject, :description, :activity_date, 'Pending', :user_id
+                )
+            """)
+            await db.execute(
+                insert_activity_query,
+                {
+                    "org_id": org_id,
+                    "contact_id": contact_id,
+                    "lead_id": lead_id,
+                    "opportunity_id": opportunity_id,
+                    "type": act_data.type,
+                    "subject": f"Qualify Lead Activity: {act_data.type}",
+                    "description": act_data.notes,
+                    "activity_date": act_data.due_date,
+                    "user_id": user_id,
+                },
+            )
+
+        # 5. Mark the lead converted and persist relationship links for traceability.
+        update_lead_query = text("""
+            UPDATE crm.leads
+            SET status = 'converted',
+                client_org_id = :client_org_id,
+                contact_id = :contact_id,
+                opportunity_id = :opportunity_id,
+                converted_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :lead_id AND organization_id = :org_id
+        """)
+        await db.execute(
+            update_lead_query,
+            {
+                "lead_id": lead_id,
+                "org_id": org_id,
+                "client_org_id": client_org_id,
+                "contact_id": contact_id,
+                "opportunity_id": opportunity_id,
+            },
+        )
+        if lead_row.campaign_id:
+            await db.execute(
+                text("""
+                INSERT INTO crm.campaign_members (
+                    organization_id, campaign_id, lead_id, contact_id, opportunity_id,
+                    member_status, source, created_by
+                )
+                VALUES (
+                    :org_id, :campaign_id, :lead_id, :contact_id, :opportunity_id,
+                    'converted', 'lead_qualification', :user_id
+                )
+                """),
+                {
+                    "org_id": org_id,
+                    "campaign_id": lead_row.campaign_id,
+                    "lead_id": lead_id,
+                    "contact_id": contact_id,
+                    "opportunity_id": opportunity_id,
+                    "user_id": user_id,
+                },
+            )
+
+        await db.commit()
         return {
             "success": True,
             "data": {
@@ -638,8 +638,10 @@ async def qualify_lead(
             "meta": {},
         }
     except HTTPException:
+        await db.rollback()
         raise
     except Exception as e:
+        await db.rollback()
         raise HTTPException(
             status_code=500,
             detail=f"Database error during lead qualification: {str(e)}",

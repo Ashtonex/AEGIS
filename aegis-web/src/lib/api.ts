@@ -706,6 +706,14 @@ export async function getCrmLeads(): Promise<ApiResponse<any[]>> {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/crm-leads/', { cache: 'no-store' });
 }
 
+export async function updateCrmLeadStatus(leadId: string, status: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-leads/${leadId}`, {
+    method: "PUT",
+    body: JSON.stringify({ status }),
+    allowFallback: false,
+  });
+}
+
 export async function qualifyCrmLead(leadId: string, payload?: any): Promise<ApiResponse<void>> {
   return await fetchApi<ApiResponse<void>>(`/api/v1/crm-leads/${leadId}/qualify`, {
     method: 'POST',
