@@ -506,21 +506,24 @@ export default function CRMLeadsApp() {
                           <span className="font-semibold text-emerald-400">${lead.estimated_budget.toLocaleString()}</span>
                           <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}%</span>
                         </div>
-                        <div className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between">
+                        <div draggable={false} className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between">
                           <button
+                            draggable={false}
                             onClick={() => handleCheckDuplicates(lead)}
                             className="text-[10px] text-[#3B82F6] hover:underline"
                           >
                             Merge Check
                           </button>
-                          <div className="flex gap-1.5">
+                          <div draggable={false} className="flex gap-1.5">
                             <button
+                              draggable={false}
                               onClick={() => handleQualifyLead(lead)}
                               className="text-[10px] text-emerald-400 hover:underline"
                             >
                               Qualify
                             </button>
                             <button
+                              draggable={false}
                               onClick={() => handleDisqualifyClick(lead)}
                               className="text-[10px] text-rose-400 hover:underline"
                             >
