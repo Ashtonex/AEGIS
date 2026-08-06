@@ -872,8 +872,7 @@ export async function getCrmActivities(): Promise<ApiResponse<any[]>> {
 
 export async function createCrmActivity(data: {
   type: string;
-  subject?: string;
-  notes?: string;
+  subject: string;
   description?: string | null;
   activity_date?: string;
   status?: string;

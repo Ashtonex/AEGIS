@@ -29,7 +29,8 @@ const STAGES = [
   'Qualification',
   'Proposal',
   'Negotiation',
-  'Won'
+  'Won',
+  'Lost'
 ];
 
 // Bidirectional mappings to bridge the requested frontend stages to strict backend database schemas
@@ -37,7 +38,8 @@ const FRONTEND_TO_BACKEND_STAGE: Record<string, string> = {
   'Qualification': 'Qualification',
   'Proposal': 'Quotation',
   'Negotiation': 'Negotiation',
-  'Won': 'Contract'
+  'Won': 'Contract',
+  'Lost': 'Lost'
 };
 
 const BACKEND_TO_FRONTEND_STAGE: Record<string, string> = {
@@ -46,7 +48,8 @@ const BACKEND_TO_FRONTEND_STAGE: Record<string, string> = {
   'Qualification': 'Qualification',
   'Quotation': 'Proposal',
   'Negotiation': 'Negotiation',
-  'Contract': 'Won'
+  'Contract': 'Won',
+  'Lost': 'Lost'
 };
 
 const formatCurrency = (value: number | string) => {
@@ -57,6 +60,13 @@ const formatCurrency = (value: number | string) => {
     maximumFractionDigits: 0,
   });
 };
+
+// crm.activities requires a non-empty `subject` (<=255 chars) and has no `notes`
+// column - the free-text body belongs in `description`.
+const activityLogFields = (message: string) => ({
+  subject: message.length > 100 ? `${message.slice(0, 97)}...` : message,
+  description: message,
+});
 
 interface Opportunity {
   id: string;
@@ -91,7 +101,8 @@ interface Contact {
 interface ActivityLog {
   id: string;
   type: string;
-  notes: string;
+  subject?: string;
+  description?: string;
   opportunity_id?: string;
   activity_date?: string;
   contact_name?: string;
@@ -268,14 +279,19 @@ export default function OpportunitiesKanban() {
         // Rollback on failure
         loadData();
       } else {
-        await createCrmActivity({
-          type: 'System Log',
-          notes: `Stage moved from ${currentFrontendStage} to ${targetStage} (via drag & drop)`,
-          opportunity_id: oppId
-        });
-        const actRes = await getCrmActivities();
-        if (actRes.success && Array.isArray(actRes.data)) {
-          setActivities(actRes.data);
+        try {
+          await createCrmActivity({
+            type: 'System Log',
+            ...activityLogFields(`Stage moved from ${currentFrontendStage} to ${targetStage} (via drag & drop)`),
+            opportunity_id: oppId
+          });
+          const actRes = await getCrmActivities();
+          if (actRes.success && Array.isArray(actRes.data)) {
+            setActivities(actRes.data);
+          }
+        } catch (logErr) {
+          // The stage move already succeeded - a logging hiccup shouldn't roll it back or surface as an error.
+          console.warn('Failed to log stage-move activity:', logErr);
         }
       }
     } catch (err) {
@@ -306,14 +322,18 @@ export default function OpportunitiesKanban() {
       if (!res.success) {
         loadData();
       } else {
-        await createCrmActivity({
-          type: 'System Log',
-          notes: `Stage moved from ${currentFrontendStage} to ${nextFrontendStage}`,
-          opportunity_id: oppId
-        });
-        const actRes = await getCrmActivities();
-        if (actRes.success && Array.isArray(actRes.data)) {
-          setActivities(actRes.data);
+        try {
+          await createCrmActivity({
+            type: 'System Log',
+            ...activityLogFields(`Stage moved from ${currentFrontendStage} to ${nextFrontendStage}`),
+            opportunity_id: oppId
+          });
+          const actRes = await getCrmActivities();
+          if (actRes.success && Array.isArray(actRes.data)) {
+            setActivities(actRes.data);
+          }
+        } catch (logErr) {
+          console.warn('Failed to log stage-move activity:', logErr);
         }
       }
     } catch (err) {
@@ -439,7 +459,7 @@ export default function OpportunitiesKanban() {
     try {
       const res = await createCrmActivity({
         type: newNote.type,
-        notes: newNote.notes.trim(),
+        ...activityLogFields(newNote.notes.trim()),
         opportunity_id: selectedOpportunityId
       });
       if (res.success) {
@@ -501,12 +521,17 @@ export default function OpportunitiesKanban() {
         win_loss_reason: winNotes.trim() || undefined,
         win_loss_reason_id: reasonId,
       });
-      await createCrmActivity({
-        type: 'System Log',
-        notes: `Deal Closed Won! Notes: ${winNotes}`,
-        opportunity_id: selectedOpportunityId
-      });
       setIsCloseWinModalOpen(false);
+      try {
+        await createCrmActivity({
+          type: 'System Log',
+          ...activityLogFields(`Deal Closed Won! Notes: ${winNotes}`),
+          opportunity_id: selectedOpportunityId
+        });
+      } catch (logErr) {
+        // The win handoff already succeeded - a logging hiccup shouldn't mask that.
+        console.warn('Failed to log won-deal activity:', logErr);
+      }
       await loadData();
     } catch (error) {
       console.warn("Project handoff failed", error);
@@ -538,12 +563,17 @@ export default function OpportunitiesKanban() {
         if (created.success) reasonId = created.data?.id;
       }
       await markCrmOpportunityLost(selectedOpportunityId, { win_loss_reason: lossReason.trim(), win_loss_reason_id: reasonId });
-      await createCrmActivity({
-        type: 'System Log',
-        notes: `Deal Closed Lost. Reason: ${lossReason}`,
-        opportunity_id: selectedOpportunityId
-      });
       setIsCloseLossModalOpen(false);
+      try {
+        await createCrmActivity({
+          type: 'System Log',
+          ...activityLogFields(`Deal Closed Lost. Reason: ${lossReason}`),
+          opportunity_id: selectedOpportunityId
+        });
+      } catch (logErr) {
+        // The loss was already recorded - a logging hiccup shouldn't mask that.
+        console.warn('Failed to log lost-deal activity:', logErr);
+      }
       await loadData();
     } catch (error) {
       console.warn("Lost opportunity update failed", error);
@@ -1355,7 +1385,7 @@ export default function OpportunitiesKanban() {
                               </span>
                             )}
                           </div>
-                          <p className="text-[11px] text-slate-light leading-relaxed whitespace-pre-wrap">{act.notes}</p>
+                          <p className="text-[11px] text-slate-light leading-relaxed whitespace-pre-wrap">{act.description}</p>
                         </div>
                       </div>
                     ))
