@@ -695,6 +695,12 @@ export async function updateCrmOpportunity(id: string, data: Record<string, any>
   });
 }
 
+export async function deleteCrmOpportunity(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${id}`, {
+    method: 'DELETE'
+  });
+}
+
 export async function updateCrmTender(id: string, data: Record<string, any>) {
   return await fetchApi<ApiResponse<void>>(`/api/v1/tender-bids/${id}`, {
     method: 'PUT',

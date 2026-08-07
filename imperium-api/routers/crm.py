@@ -1525,6 +1525,34 @@ async def update_opportunity(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
+@router.delete("/opportunities/{opportunity_id}")
+async def delete_opportunity(
+    opportunity_id: str,
+    user: dict = Depends(require_permission("crm.delete_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    result = await db.execute(
+        text("""
+        UPDATE crm.opportunities
+        SET is_deleted = true, updated_at = NOW()
+        WHERE id = :opportunity_id AND organization_id = :org_id AND is_deleted = false
+        RETURNING id
+        """),
+        {"opportunity_id": opportunity_id, "org_id": org_id},
+    )
+    if not result.first():
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    await db.commit()
+    return {
+        "success": True,
+        "data": None,
+        "message": "Opportunity deleted (soft delete).",
+        "meta": {},
+    }
+
+
 @router.post("/opportunities/{opportunity_id}/create-quotation", status_code=status.HTTP_201_CREATED)
 async def create_opportunity_quotation(
     opportunity_id: UUID,

@@ -6,13 +6,14 @@ import Link from 'next/link';
 import {
   Briefcase, Plus, X, ChevronLeft, ChevronRight,
   DollarSign, Activity, AlertTriangle, ShieldCheck,
-  MessageSquare, User, Mail, Calendar, Loader2, Save,
+  MessageSquare, User, Mail, Calendar, Loader2, Save, Trash2,
   ArrowRight, Landmark, Clock, ArrowLeft, Filter, Search
 } from 'lucide-react';
 import {
   getCrmOpportunities,
   createCrmOpportunity,
   updateCrmOpportunity,
+  deleteCrmOpportunity,
   getCrmContacts,
   createCrmContact,
   getCrmActivities,
@@ -129,6 +130,7 @@ export default function OpportunitiesKanban() {
   const [winNotes, setWinNotes] = useState('');
   const [winReasonOptions, setWinReasonOptions] = useState<any[]>([]);
   const [selectedWinReasonId, setSelectedWinReasonId] = useState('');
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
 
 
   // Filter States
@@ -578,6 +580,23 @@ export default function OpportunitiesKanban() {
     } catch (error) {
       console.warn("Lost opportunity update failed", error);
       alert("Opportunity was not marked lost. Check the CRM service connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!selectedOpportunityId) return;
+    setIsSubmitting(true);
+    try {
+      const res = await deleteCrmOpportunity(selectedOpportunityId);
+      if (!res.success) throw new Error(res.message || "Delete failed");
+      setIsDeleteModalOpen(false);
+      setSelectedOpportunityId(null);
+      await loadData();
+    } catch (error) {
+      console.warn("Opportunity delete failed", error);
+      alert("Deal was not deleted. Check the CRM service connection and retry.");
     } finally {
       setIsSubmitting(false);
     }
@@ -1134,12 +1153,21 @@ export default function OpportunitiesKanban() {
                   <h2 className="font-sans font-bold text-sm text-paper uppercase truncate max-w-[280px]">{selectedOpp.name}</h2>
                 </div>
               </div>
-              <button
-                onClick={() => setSelectedOpportunityId(null)}
-                className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center space-x-2 shrink-0">
+                <button
+                  onClick={() => setIsDeleteModalOpen(true)}
+                  title="Delete deal"
+                  className="w-7 h-7 bg-white/5 hover:bg-red-500/20 hover:text-red-300 rounded-full flex items-center justify-center text-slate-light transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setSelectedOpportunityId(null)}
+                  className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Drawer Body - Split into edit form and activity log */}
@@ -1481,6 +1509,25 @@ export default function OpportunitiesKanban() {
                 <button onClick={() => setIsCloseLossModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
                 <button onClick={handleConfirmMarkLost} className="px-3 py-1.5 bg-rose-600 text-white font-mono text-[10px] uppercase font-bold">Confirm Loss</button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE DEAL MODAL */}
+      {isDeleteModalOpen && selectedOpp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsDeleteModalOpen(false)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-rose-400 uppercase font-bold tracking-wider mb-2">Delete Deal</h3>
+            <p className="text-xs text-slate-light mb-4">
+              This permanently removes <span className="text-paper font-semibold">{selectedOpp.name}</span> from the pipeline. This cannot be undone from this screen.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setIsDeleteModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+              <button onClick={handleConfirmDelete} disabled={isSubmitting} className="px-3 py-1.5 bg-rose-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
+                {isSubmitting ? 'Deleting...' : 'Delete Deal'}
+              </button>
             </div>
           </div>
         </div>
