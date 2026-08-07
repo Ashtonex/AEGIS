@@ -437,7 +437,7 @@ export default function OpportunitiesKanban() {
         await loadData();
         await createCrmActivity({
           type: 'Update',
-          notes: `Updated deal parameters: Stage: ${editForm.stage}, Win Prob ${probVal}%, Est Margin ${marginVal}%, Risk: ${editForm.risk_level}`,
+          ...activityLogFields(`Updated deal parameters: Stage: ${editForm.stage}, Win Prob ${probVal}%, Est Margin ${marginVal}%, Risk: ${editForm.risk_level}`),
           opportunity_id: selectedOpportunityId
         });
         const actRes = await getCrmActivities();
