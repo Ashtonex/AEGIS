@@ -267,7 +267,9 @@ export default function CRMLeadsApp() {
     const lead = leads.find(l => l.id === leadId);
     if (!lead) return;
 
-    if (normalizedStatus(lead.status) === colName.toLowerCase()) return;
+    const leadStatus = normalizedStatus(lead.status);
+    if (leadStatus === colName.toLowerCase()) return;
+    if (colName === 'Qualified' && leadStatus === 'converted') return;
 
     if (colName === 'Qualified') {
       void handleQualifyLead(lead);
@@ -352,7 +354,12 @@ export default function CRMLeadsApp() {
     }),
     'Identified': activeLeads.filter(l => normalizedStatus(l.status) === 'identified'),
     'Contacted': activeLeads.filter(l => normalizedStatus(l.status) === 'contacted'),
-    'Qualified': activeLeads.filter(l => normalizedStatus(l.status) === 'qualified'),
+    // qualify_lead sets status='converted', not 'qualified' - the backend's
+    // own reporting queries already treat the two as synonymous (see
+    // crm.py's `lower(status) IN ('qualified', 'converted')` filters), but
+    // this board didn't, so a converted lead matched no column and just
+    // vanished off the Kanban entirely once qualified.
+    'Qualified': activeLeads.filter(l => ['qualified', 'converted'].includes(normalizedStatus(l.status))),
     'Disqualified': activeLeads.filter(l => normalizedStatus(l.status) === 'disqualified')
   };
 
