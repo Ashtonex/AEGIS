@@ -171,6 +171,12 @@ export default function CRMLeadsApp() {
   };
 
   const handleQualifyLead = async (lead: Lead) => {
+    // Prevents a double-click (or a re-drop onto Qualified by a privileged
+    // user overriding an already-decided lead) from firing this twice before
+    // the first request resolves - qualify_lead's side effect is creating a
+    // brand new Organization/Contact/Opportunity, so a second overlapping
+    // call means a second duplicate deal, not just a redundant status write.
+    if (qualifyingId) return;
     setQualifyingId(lead.id);
     try {
       const res = await qualifyCrmLead(lead.id, {
@@ -367,7 +373,11 @@ export default function CRMLeadsApp() {
     }),
     'Identified': activeLeads.filter(l => normalizedStatus(l.status) === 'identified'),
     'Contacted': activeLeads.filter(l => normalizedStatus(l.status) === 'contacted'),
-    'Qualified': activeLeads.filter(l => normalizedStatus(l.status) === 'qualified'),
+    // qualify_lead sets status='converted', not 'qualified' - the backend's
+    // own reporting queries already treat the two as synonymous, but this
+    // board didn't, so a converted lead matched no column and just vanished
+    // off the Kanban entirely once qualified.
+    'Qualified': activeLeads.filter(l => ['qualified', 'converted'].includes(normalizedStatus(l.status))),
     'Disqualified': activeLeads.filter(l => normalizedStatus(l.status) === 'disqualified')
   };
 
@@ -489,9 +499,10 @@ export default function CRMLeadsApp() {
                         <>
                           <button
                             onClick={() => handleQualifyLead(lead)}
-                            className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold"
+                            disabled={!!qualifyingId}
+                            className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold disabled:opacity-40 disabled:pointer-events-none"
                           >
-                            Qualify
+                            {qualifyingId === lead.id ? 'Qualifying...' : 'Qualify'}
                           </button>
                           <button
                             onClick={() => handleDisqualifyClick(lead)}
@@ -568,9 +579,10 @@ export default function CRMLeadsApp() {
                                 <button
                                   draggable={false}
                                   onClick={() => handleQualifyLead(lead)}
-                                  className="text-[10px] text-emerald-400 hover:underline"
+                                  disabled={!!qualifyingId}
+                                  className="text-[10px] text-emerald-400 hover:underline disabled:opacity-40 disabled:pointer-events-none"
                                 >
-                                  Qualify
+                                  {qualifyingId === lead.id ? 'Qualifying...' : 'Qualify'}
                                 </button>
                                 <button
                                   draggable={false}
