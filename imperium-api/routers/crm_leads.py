@@ -446,10 +446,16 @@ async def qualify_lead(
     user_id = user.get("sub")
 
     try:
-        # 0. Fetch and verify Lead exists and belongs to the user's organization
+        # 0. Fetch and verify Lead exists and belongs to the user's organization.
+        # FOR UPDATE locks the row for the rest of this transaction so a second
+        # qualify call on the same lead (double-click, retry after a slow
+        # response) blocks here instead of racing this one - without the lock,
+        # both requests could read status='new' before either commits and each
+        # would create its own duplicate Organization/Contact/Opportunity.
         lead_query = text("""
-            SELECT id, campaign_id FROM crm.leads
+            SELECT id, campaign_id, status, opportunity_id FROM crm.leads
             WHERE id = :lead_id AND organization_id = :org_id AND is_deleted = false
+            FOR UPDATE
         """)
         lead_res = await db.execute(
             lead_query, {"lead_id": lead_id, "org_id": org_id}
@@ -457,6 +463,11 @@ async def qualify_lead(
         lead_row = lead_res.first()
         if not lead_row:
             raise HTTPException(status_code=404, detail="Lead not found")
+        if lead_row.status == "converted":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Lead is already qualified into opportunity {lead_row.opportunity_id}.",
+            )
 
         # 1. Check if client organization exists in crm.organizations (by name)
         org_data = payload.organization

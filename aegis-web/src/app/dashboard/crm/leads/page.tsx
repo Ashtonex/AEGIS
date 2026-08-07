@@ -18,7 +18,8 @@ import {
   disqualifyCrmLead,
   findDuplicateCrmLeads,
   mergeCrmLeads,
-  updateCrmLeadStatus
+  updateCrmLeadStatus,
+  ApiError
 } from '@/lib/api';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
@@ -161,6 +162,16 @@ export default function CRMLeadsApp() {
   };
 
   const handleQualifyLead = async (lead: Lead) => {
+    // Guards against duplicate Organization/Contact/Opportunity records: a
+    // second click while the first request is still in flight, or a stale
+    // card that already got converted (e.g. a drag re-drop onto the same
+    // Qualified column) but hasn't been refetched into `leads` yet.
+    if (qualifyingId) return;
+    if (lead.status === 'converted') {
+      showToast("This lead was already qualified.", "error");
+      void loadLeads();
+      return;
+    }
     setQualifyingId(lead.id);
     try {
       const res = await qualifyCrmLead(lead.id, {
@@ -188,8 +199,13 @@ export default function CRMLeadsApp() {
         showToast("Lead successfully converted to Organization + Opportunity!");
         void loadLeads();
       }
-    } catch {
-      showToast("Lead qualification was not saved. Check the CRM service connection and retry.", "error");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        showToast("This lead was already qualified into an opportunity.", "error");
+        void loadLeads();
+      } else {
+        showToast("Lead qualification was not saved. Check the CRM service connection and retry.", "error");
+      }
     } finally {
       setQualifyingId(null);
     }
@@ -453,9 +469,10 @@ export default function CRMLeadsApp() {
                       </button>
                       <button
                         onClick={() => handleQualifyLead(lead)}
-                        className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold"
+                        disabled={!!qualifyingId || lead.status === 'converted'}
+                        className="px-2.5 py-1 text-[10px] bg-emerald-600 hover:bg-emerald-700 rounded text-white font-semibold disabled:opacity-40 disabled:pointer-events-none"
                       >
-                        Qualify
+                        {qualifyingId === lead.id ? 'Qualifying...' : lead.status === 'converted' ? 'Qualified' : 'Qualify'}
                       </button>
                       <button
                         onClick={() => handleDisqualifyClick(lead)}
@@ -518,9 +535,10 @@ export default function CRMLeadsApp() {
                             <button
                               draggable={false}
                               onClick={() => handleQualifyLead(lead)}
-                              className="text-[10px] text-emerald-400 hover:underline"
+                              disabled={!!qualifyingId || lead.status === 'converted'}
+                              className="text-[10px] text-emerald-400 hover:underline disabled:opacity-40 disabled:pointer-events-none"
                             >
-                              Qualify
+                              {qualifyingId === lead.id ? 'Qualifying...' : lead.status === 'converted' ? 'Qualified' : 'Qualify'}
                             </button>
                             <button
                               draggable={false}
