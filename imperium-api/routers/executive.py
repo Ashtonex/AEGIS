@@ -385,6 +385,7 @@ async def get_executive_stats(
         proj_res = await db.execute(proj_query, {"org_id": org_id})
         projects_count = proj_res.scalar() or 0
     except Exception:
+        await db.rollback()
         projects_count = 0
 
     # 2. Fleet machinery count
@@ -395,6 +396,7 @@ async def get_executive_stats(
         fleet_res = await db.execute(fleet_query, {"org_id": org_id})
         machinery_count = fleet_res.scalar() or 0
     except Exception:
+        await db.rollback()
         machinery_count = 0
 
     # 3. HR Workforce count
@@ -405,6 +407,7 @@ async def get_executive_stats(
         workforce_res = await db.execute(workforce_query, {"org_id": org_id})
         workforce_count = workforce_res.scalar() or 0
     except Exception:
+        await db.rollback()
         workforce_count = 0
 
     # 4. Procurement orders count
@@ -415,16 +418,18 @@ async def get_executive_stats(
         orders_res = await db.execute(orders_query, {"org_id": org_id})
         orders_count = orders_res.scalar() or 0
     except Exception:
+        await db.rollback()
         orders_count = 0
 
     # 5. Inventory value
     try:
         inv_query = text(
-            "SELECT COALESCE(SUM(quantity * unit_price), 0) FROM procurement.inventory_items WHERE organization_id = :org_id AND is_deleted = false"
+            "SELECT COALESCE(SUM(stock_quantity * standard_cost), 0) FROM procurement.inventory_items WHERE organization_id = :org_id AND is_deleted = false"
         )
         inv_res = await db.execute(inv_query, {"org_id": org_id})
         inventory_value = inv_res.scalar() or 0.0
     except Exception:
+        await db.rollback()
         inventory_value = 0.0
 
     # 6. HSE incidents count
@@ -435,6 +440,7 @@ async def get_executive_stats(
         incidents_res = await db.execute(incidents_query, {"org_id": org_id})
         incidents_count = incidents_res.scalar() or 0
     except Exception:
+        await db.rollback()
         incidents_count = 0
 
     # 7. CRM open pipeline (deal count + value, excluding won/lost) and open leads count
@@ -453,6 +459,7 @@ async def get_executive_stats(
         open_deal_count = pipeline_res.open_deal_count or 0
         open_pipeline_value = float(pipeline_res.open_pipeline_value or 0)
     except Exception:
+        await db.rollback()
         open_deal_count = 0
         open_pipeline_value = 0.0
 
@@ -463,6 +470,7 @@ async def get_executive_stats(
         leads_res = await db.execute(leads_query, {"org_id": org_id})
         open_leads_count = leads_res.scalar() or 0
     except Exception:
+        await db.rollback()
         open_leads_count = 0
 
     # 8. CRM activity in the last 7 days (calls, meetings, notes, stage moves, etc.)
@@ -477,6 +485,7 @@ async def get_executive_stats(
         recent_activity_res = await db.execute(recent_activity_query, {"org_id": org_id})
         recent_activity_last_7_days = recent_activity_res.scalar() or 0
     except Exception:
+        await db.rollback()
         recent_activity_last_7_days = 0
 
     return {

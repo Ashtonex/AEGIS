@@ -99,7 +99,7 @@ export default function SetupPasswordPage() {
           <p className="font-mono text-[10px] tracking-widest text-signal uppercase">First login required</p>
           <h1 className="font-display text-3xl mt-2">Set a new password</h1>
           <p className="text-sm text-slate-light mt-2">
-            Use the temporary credential from your access card, choose a new password, and then continue into your assigned module.
+            Choose a password for your account, then continue into your assigned module.
           </p>
           <p className="mt-3 text-xs text-slate-light">
             Signed in as <span className="text-paper">{session?.user.email ?? "your account"}</span>

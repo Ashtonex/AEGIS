@@ -1,18 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { AlertTriangle, Building2, CheckCircle2, Database, Globe2, History, Image as ImageIcon, KeyRound, Loader2, LockKeyhole, Plus, RefreshCw, Save, Settings2, ShieldCheck, Trash2, Upload, UserPlus, Users } from "lucide-react";
+import { AlertTriangle, Building2, CheckCircle2, Database, Globe2, History, Image as ImageIcon, KeyRound, Loader2, LockKeyhole, Mail, Plus, PowerOff, RefreshCw, Save, Settings2, ShieldCheck, Trash2, Upload, UserCheck, UserPlus, Users, X } from "lucide-react";
 import * as QRCode from "qrcode";
 import {
   ApiError,
   assignSettingsUserRole,
   createSettingsManagedAccount,
+  deleteSettingsUser,
   getSettingsAuditEvents,
   getSettingsOverview,
+  inviteSettingsUser,
   removeSettingsUserRole,
   setSettingsRolePermission,
+  setSettingsUserStatus,
   updateSystemSetting,
   updateWebsiteContent,
   getSettingsBroadcastFeeds,
@@ -252,9 +255,13 @@ function normalizeLoadError(reason: unknown, fallback: string) {
 }
 
 function normalizeActionError(reason: unknown, fallback: string) {
-  const message = reason instanceof Error ? reason.message : String(reason ?? "");
-  if (/aborted|cancelled|timed out|network error|fetch failed|not found/i.test(message)) {
-    return fallback;
+  // Actions can fail for a specific, actionable reason (permission denied,
+  // duplicate email, a protected account) - surface that instead of always
+  // collapsing to the generic fallback, which previously hid it entirely.
+  if (reason instanceof ApiError) {
+    if (reason.status === 403) return "Your current role does not have permission to do this.";
+    if (reason.status === 400 || reason.status === 404 || reason.status === 409) return reason.message || fallback;
+    if (reason.status >= 500) return `Action failed (${reason.status}): ${reason.message}`;
   }
   return fallback;
 }
@@ -329,8 +336,81 @@ export default function SettingsPage() {
     finally { setSaving(null); }
   };
 
-  const assignRole = async (userId: string, roleId: string) => { if (!roleId) return; setSaving(`assign-${userId}`); try { await assignSettingsUserRole(userId, roleId); setNotice("Role assigned."); await load(true); } catch (err) { setNotice(normalizeActionError(err, "Unable to assign role.")); } finally { setSaving(null); } };
-  const removeRole = async (userId: string, roleId: string) => { setSaving(`remove-${userId}-${roleId}`); try { await removeSettingsUserRole(userId, roleId); setNotice("Role removed."); await load(true); } catch { setNotice("Unable to remove role."); } finally { setSaving(null); } };
+  const assignRole = async (userId: string, roleId: string) => {
+    if (!roleId) return;
+    setSaving(`assign-${userId}`);
+    try {
+      await assignSettingsUserRole(userId, roleId);
+      setNotice("Role assigned.");
+      // Apply the change to local state immediately so the chip list never
+      // waits on a full-overview refetch to reflect it, then reconcile with
+      // the server in the background.
+      setOverview((prev) => {
+        const role = prev.roles.find((item) => item.id === roleId);
+        if (!role) return prev;
+        return { ...prev, users: prev.users.map((user) => user.id === userId && !user.roles.some((r) => r.id === roleId) ? { ...user, roles: [...user.roles, { id: role.id, name: role.name }] } : user) };
+      });
+      await load(true);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to assign role."));
+    } finally {
+      setSaving(null);
+    }
+  };
+  const removeRole = async (userId: string, roleId: string) => {
+    setSaving(`remove-${userId}-${roleId}`);
+    try {
+      await removeSettingsUserRole(userId, roleId);
+      setNotice("Role removed.");
+      setOverview((prev) => ({ ...prev, users: prev.users.map((user) => user.id === userId ? { ...user, roles: user.roles.filter((role) => role.id !== roleId) } : user) }));
+      await load(true);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to remove role."));
+    } finally {
+      setSaving(null);
+    }
+  };
+  const toggleUserStatus = async (userId: string, nextActive: boolean) => {
+    setSaving(`status-${userId}`);
+    try {
+      await setSettingsUserStatus(userId, nextActive);
+      setNotice(nextActive ? "User reactivated." : "User deactivated.");
+      setOverview((prev) => ({ ...prev, users: prev.users.map((user) => user.id === userId ? { ...user, status: nextActive ? "active" : "inactive" } : user) }));
+      await load(true);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to update this user's status."));
+    } finally {
+      setSaving(null);
+    }
+  };
+  const deleteUser = async (userId: string) => {
+    setSaving(`delete-${userId}`);
+    try {
+      await deleteSettingsUser(userId);
+      setNotice("User removed.");
+      setOverview((prev) => ({ ...prev, users: prev.users.filter((user) => user.id !== userId) }));
+      await load(true);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to remove this user."));
+    } finally {
+      setSaving(null);
+    }
+  };
+  const inviteUser = async (payload: { full_name: string; email: string; role_ids: string[] }) => {
+    setSaving("invite-user");
+    setNotice(null);
+    try {
+      const response = await inviteSettingsUser(payload);
+      setNotice(`Invite sent to ${payload.email}. They must set a password before they can sign in.`);
+      await load(true);
+      return response.data ?? null;
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to send the invite."));
+      throw err;
+    } finally {
+      setSaving(null);
+    }
+  };
   const togglePermission = async (roleId: string, permission: string, enabled: boolean) => { setSaving(`${roleId}-${permission}`); try { await setSettingsRolePermission(roleId, permission, enabled); setNotice("Page access updated."); await load(true); } catch { setNotice("Unable to update page access."); } finally { setSaving(null); } };
   const createManagedAccount = async (payload: Record<string, unknown>) => {
     setSaving("managed-account");
@@ -383,7 +463,7 @@ export default function SettingsPage() {
     <nav className="flex overflow-x-auto border-b border-ink-mid font-mono text-xs">{([ ["configuration", Database, "Configuration"], ["access", Users, "Access control"], ["accounts", Building2, "Account setup"], ["website", Globe2, "Website content"], ["audit", History, "Audit log"] ] as const).map(([value, Icon, label]) => <Link key={value} href={TAB_ROUTES[value]} className={`flex shrink-0 items-center gap-2 border-b-2 px-5 py-3 font-bold uppercase tracking-wider ${tab === value ? "border-signal bg-signal/5 text-signal" : "border-transparent text-slate hover:text-paper"}`}><Icon className="h-4 w-4" /> {label}</Link>)}</nav>
 
     {tab === "configuration" && <ConfigurationTab overview={overview} saving={saving} saveSetting={saveSetting} />}
-    {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} />}
+    {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} inviteUser={inviteUser} />}
     {tab === "accounts" && <ManagedAccountsTab overview={overview} saving={saving === "managed-account"} createManagedAccount={createManagedAccount} />}
     {tab === "website" && <WebsiteTab items={overview.website_content} saving={saving} saveContent={saveContent} />}
     {tab === "audit" && <AuditTab events={filteredEvents} loading={auditLoading} error={auditError} auditSearch={auditSearch} setAuditSearch={setAuditSearch} auditStatus={auditStatus} setAuditStatus={setAuditStatus} onRefresh={() => void loadAudit(true)} />}
@@ -401,15 +481,84 @@ function SettingRow({ setting, saving, onSave }: { setting: SystemSetting; savin
   return <div className="grid gap-3 py-4 md:grid-cols-[1fr_minmax(220px,0.8fr)]"><div><p className="font-semibold text-paper">{setting.label}</p><p className="mt-1 text-xs text-slate-light">{setting.description}</p><p className="mt-1 font-mono text-[10px] uppercase text-slate">{setting.category} | Updated {dateTime(setting.updated_at)}</p></div><div className="flex items-center gap-2">{type === "boolean" ? <select disabled={saving} value={String(draft)} onChange={(event) => setDraft(event.target.value === "true")} className="min-w-0 flex-1 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper disabled:opacity-50"><option value="true">Enabled</option><option value="false">Disabled</option></select> : <input disabled={saving} type={type === "number" ? "number" : "text"} value={String(draft)} onChange={(event) => setDraft(type === "number" ? Number(event.target.value) : event.target.value)} className="min-w-0 flex-1 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper disabled:opacity-50" />}<button disabled={saving} onClick={() => void onSave(setting, draft as string | number | boolean)} className="inline-flex h-8 w-8 items-center justify-center border border-signal/50 text-signal hover:bg-signal/10 disabled:opacity-50" title={`Save ${setting.label}`}><Save className="h-3.5 w-3.5" /></button></div></div>;
 }
 
-function AccessTab({ overview, saving, assignRole, removeRole, togglePermission }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void> }) {
+function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose: () => void; onInvite: (payload: { full_name: string; email: string; role_ids: string[] }) => Promise<any> }) {
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [roleIds, setRoleIds] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const visibleRoles = roles.filter((role) => role.name.toUpperCase() !== "SUPERADMIN");
+
+  const toggleRole = (roleId: string) => setRoleIds((current) => current.includes(roleId) ? current.filter((id) => id !== roleId) : [...current, roleId]);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setFormError(null);
+    if (!fullName.trim() || !email.trim()) {
+      setFormError("Full name and email are required.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onInvite({ full_name: fullName.trim(), email: email.trim(), role_ids: roleIds });
+      onClose();
+    } catch (err) {
+      setFormError(err instanceof ApiError ? err.message : "The invite could not be sent.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+    <div className="w-full max-w-md border border-ink-mid bg-ink-light p-6">
+      <div className="mb-5 flex items-start justify-between gap-3 border-b border-ink-mid pb-4">
+        <div>
+          <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Mail className="h-4 w-4 text-signal" /> Invite internal user</h2>
+          <p className="mt-2 text-xs leading-relaxed text-slate-light">Supabase emails them a sign-in link and requires them to set their own password before the account is usable. No credentials are shared manually.</p>
+        </div>
+        <button type="button" onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+      </div>
+      <form onSubmit={submit} className="space-y-4">
+        {formError && <div className="border border-red-500/40 bg-red-500/10 p-2 text-xs text-red-200">{formError}</div>}
+        <label className="block">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Full name</span>
+          <input required value={fullName} onChange={(event) => setFullName(event.target.value)} className="mt-1 w-full border border-ink-mid bg-ink p-2 text-sm text-paper focus:border-signal focus:outline-none" />
+        </label>
+        <label className="block">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Email</span>
+          <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1 w-full border border-ink-mid bg-ink p-2 text-sm text-paper focus:border-signal focus:outline-none" />
+        </label>
+        <div>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Roles (optional)</span>
+          <div className="mt-2 grid max-h-40 gap-2 overflow-y-auto">
+            {visibleRoles.length === 0 ? <p className="text-xs text-slate-light">No roles available.</p> : visibleRoles.map((role) => <label key={role.id} className="flex items-center justify-between gap-3 border border-ink-mid/60 px-3 py-2 text-xs text-slate-light">
+              <span className="truncate text-paper">{role.name}</span>
+              <input type="checkbox" checked={roleIds.includes(role.id)} onChange={() => toggleRole(role.id)} />
+            </label>)}
+          </div>
+        </div>
+        <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 bg-signal py-3 font-mono text-xs uppercase tracking-widest text-ink disabled:opacity-50">
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <><UserPlus className="h-4 w-4" /> Send invite</>}
+        </button>
+      </form>
+    </div>
+  </div>;
+}
+
+function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, inviteUser }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[] }) => Promise<any> }) {
+  const [inviteOpen, setInviteOpen] = useState(false);
   return <div className="space-y-6">
+    {inviteOpen && <InviteUserModal roles={overview.roles} onClose={() => setInviteOpen(false)} onInvite={inviteUser} />}
     <section className="border border-ink-mid bg-ink p-5">
-      <h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Users className="h-4 w-4 text-signal" /> User role assignments</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Users className="h-4 w-4 text-signal" /> User role assignments</h2>
+        <button onClick={() => setInviteOpen(true)} className="inline-flex items-center gap-2 border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-signal hover:bg-signal/10"><UserPlus className="h-3.5 w-3.5" /> Invite user</button>
+      </div>
       <div className="hidden overflow-x-auto lg:block">
-        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} />)}</tbody></table>
+        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />)}</tbody></table>
       </div>
       <div className="grid gap-3 lg:hidden">
-        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} />)}
+        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />)}
       </div>
     </section>
     <section className="border border-ink-mid bg-ink p-5">
@@ -439,19 +588,48 @@ function AccessTab({ overview, saving, assignRole, removeRole, togglePermission 
   </div>;
 }
 
-function UserAccessRow({ user, roles, saving, assignRole, removeRole }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void> }) {
-  const [roleId, setRoleId] = useState("");
-  const assignedIds = new Set(user.roles.map((role) => role.id));
-  return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><p className="text-[11px] text-slate-light">{user.email}</p></td><td className="p-3"><StatusBadge status={user.status} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
+function UserActionsControl({ user, saving, toggleUserStatus, deleteUser }: { user: AccessUser; saving: string | null; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void> }) {
+  const isActive = user.status !== "inactive";
+  const busyStatus = saving === `status-${user.id}`;
+  const busyDelete = saving === `delete-${user.id}`;
+  const [confirmMode, setConfirmMode] = useState<null | "deactivate" | "delete">(null);
+
+  if (confirmMode) {
+    const isDelete = confirmMode === "delete";
+    const busy = isDelete ? busyDelete : busyStatus;
+    return <div className="flex items-center gap-2">
+      <span className="text-[10px] text-slate-light">{isDelete ? "Remove user?" : "Deactivate?"}</span>
+      <button disabled={busy} onClick={() => { setConfirmMode(null); void (isDelete ? deleteUser(user.id) : toggleUserStatus(user.id, false)); }} title={isDelete ? "Confirm removal" : "Confirm deactivation"} className="inline-flex h-6 w-6 items-center justify-center border border-red-500/50 text-red-300 hover:bg-red-500/10 disabled:opacity-50">
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+      </button>
+      <button disabled={busy} onClick={() => setConfirmMode(null)} title="Cancel" className="inline-flex h-6 w-6 items-center justify-center border border-ink-mid text-slate-light hover:text-paper disabled:opacity-50"><X className="h-3 w-3" /></button>
+    </div>;
+  }
+
+  return <div className="flex items-center gap-2">
+    <StatusBadge status={user.status} />
+    <button disabled={busyStatus} onClick={() => isActive ? setConfirmMode("deactivate") : void toggleUserStatus(user.id, true)} title={isActive ? "Deactivate user" : "Reactivate user"} className={`inline-flex h-6 w-6 items-center justify-center border disabled:opacity-50 ${isActive ? "border-red-500/40 text-red-300 hover:bg-red-500/10" : "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"}`}>
+      {busyStatus ? <Loader2 className="h-3 w-3 animate-spin" /> : isActive ? <PowerOff className="h-3 w-3" /> : <UserCheck className="h-3 w-3" />}
+    </button>
+    <button disabled={busyDelete} onClick={() => setConfirmMode("delete")} title="Remove user" className="inline-flex h-6 w-6 items-center justify-center border border-ink-mid text-slate-light hover:border-red-400 hover:text-red-300 disabled:opacity-50">
+      {busyDelete ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+    </button>
+  </div>;
 }
 
-function UserAccessCard({ user, roles, saving, assignRole, removeRole }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void> }) {
+function UserAccessRow({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void> }) {
+  const [roleId, setRoleId] = useState("");
+  const assignedIds = new Set(user.roles.map((role) => role.id));
+  return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><p className="text-[11px] text-slate-light">{user.email}</p></td><td className="p-3"><UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
+}
+
+function UserAccessCard({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void> }) {
   const [roleId, setRoleId] = useState("");
   const assignedIds = new Set(user.roles.map((role) => role.id));
   return <article className="border border-ink-mid/70 p-3">
     <div className="mb-3 flex items-start justify-between gap-3">
       <div className="min-w-0"><p className="truncate font-semibold text-paper">{user.name}</p><p className="break-all text-[11px] text-slate-light">{user.email}</p></div>
-      <StatusBadge status={user.status} />
+      <UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />
     </div>
     <div className="mb-3 flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-xs text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div>
     <div className="grid gap-2 sm:grid-cols-[1fr_auto]"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="min-w-0 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div>

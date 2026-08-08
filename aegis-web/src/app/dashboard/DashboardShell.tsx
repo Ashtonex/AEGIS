@@ -487,7 +487,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   }
 
   return (
-    <div className="min-h-screen bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink">
+    <div className="h-dvh bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink overflow-hidden">
 
       {/* Thin always-present strip at the very top of the viewport so hovering
           there can bring the top bar back even while it's hidden - the bar

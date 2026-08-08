@@ -222,6 +222,20 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.ENVIRONMENT == "production"
 
+    @property
+    def frontend_base_url(self) -> str:
+        """Best-known public origin of the frontend, for links sent in emails
+        (e.g. Supabase invite redirects). Falls back through the same
+        signals used for CORS since no dedicated frontend URL is configured."""
+        if self.FRONTEND_HOSTNAME:
+            return f"https://{self.FRONTEND_HOSTNAME.strip().rstrip('/')}"
+        if self.RENDER_EXTERNAL_URL:
+            return self.RENDER_EXTERNAL_URL.rstrip("/")
+        for origin in self._configured_cors_origins:
+            if origin != "*":
+                return origin.rstrip("/")
+        return "http://localhost:3010"
+
 
 @lru_cache
 def get_settings() -> Settings:

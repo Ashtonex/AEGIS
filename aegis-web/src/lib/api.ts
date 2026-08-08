@@ -51,6 +51,31 @@ const OPERATIONAL_DASHBOARD_PREFIXES = [
   "/api/v1/notifications/",
 ];
 
+// Settings, CRM, and tender-bids calls have been observed taking 8-45s
+// against this deployment's Supabase pooler even for simple single-table
+// reads/writes, and multi-step actions (e.g. inviting a user) can exceed
+// that. The default API_TIMEOUT_MS then fires on a request that actually
+// succeeded server-side, surfacing a false "timed out" error. Give every
+// call into these domains a generous budget by default instead of relying
+// on each call site to opt in individually.
+const SLOW_DOMAIN_TIMEOUT_MS = 120000;
+const SLOW_DOMAIN_PREFIXES = [
+  "/api/v1/settings/",
+  "/api/v1/crm/",
+  "/api/v1/crm-leads/",
+  "/api/v1/crm-contacts/",
+  "/api/v1/crm-organizations/",
+  "/api/v1/crm-activities/",
+  "/api/v1/crm-communications/",
+  "/api/v1/crm-automations/",
+  "/api/v1/crm-lifecycle/",
+  "/api/v1/tender-bids/",
+];
+
+function defaultTimeoutFor(endpoint: string): number {
+  return SLOW_DOMAIN_PREFIXES.some((prefix) => endpoint.startsWith(prefix)) ? SLOW_DOMAIN_TIMEOUT_MS : API_TIMEOUT_MS;
+}
+
 const SERVER_ROUTE_ALIASES: Record<string, string> = {
   "/api/tenders": "/api/v1/public/intake/tenders",
   "/api/cms/website-content": "/api/v1/public/intake/website-content",
@@ -400,7 +425,7 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
   const allowFallback = shouldUseFallback(endpoint, options);
   const timeoutMs = process.env.AEGIS_BUILD_PHASE === "true"
     ? Math.min(options.timeoutMs ?? BUILD_API_TIMEOUT_MS, BUILD_API_TIMEOUT_MS)
-    : options.timeoutMs ?? API_TIMEOUT_MS;
+    : options.timeoutMs ?? defaultTimeoutFor(endpoint);
 
   // IMMEDIATELY RETURN MOCK DURING BUILD TO PREVENT TCP HANGS
   if (process.env.AEGIS_BUILD_PHASE === "true" && allowFallback) {
@@ -1874,6 +1899,29 @@ export async function assignSettingsUserRole(userId: string, roleId: string): Pr
 
 export async function removeSettingsUserRole(userId: string, roleId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/${userId}/roles/${roleId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function inviteSettingsUser(payload: { full_name: string; email: string; role_ids: string[] }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/invite`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function setSettingsUserStatus(userId: string, isActive: boolean): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/${userId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_active: isActive }),
+    allowFallback: false,
+  });
+}
+
+export async function deleteSettingsUser(userId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/${userId}`, {
     method: 'DELETE',
     allowFallback: false,
   });

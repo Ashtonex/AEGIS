@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db, supabase as supabase_admin
 from core.config import settings
+from core.email import send_email
 from core.security import require_permission
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql
 
@@ -76,6 +77,16 @@ class IntegrationMetadataPayload(Payload):
 
 class UserRolePayload(Payload):
     role_id: UUID
+
+
+class InviteUserPayload(Payload):
+    full_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
+    role_ids: list[UUID] = Field(default_factory=list, max_length=8)
+
+
+class UserStatusPayload(Payload):
+    is_active: bool
 
 
 class RolePermissionPayload(Payload):
@@ -548,6 +559,139 @@ async def _create_invited_auth_user(
 
 def _generate_temporary_password() -> str:
     return f"SNC-{secrets.token_urlsafe(10)}!{secrets.randbelow(90) + 10}"
+
+
+def _resend_configured() -> bool:
+    return bool(settings.RESEND_API_KEY and settings.EMAIL_FROM_ADDRESS)
+
+
+async def _generate_invite_link(email: str, full_name: str, org_id: str) -> tuple[UUID, str]:
+    """Create a Supabase Auth user without sending Supabase's own invite email
+    - generate_link() only mints the link, so it can be delivered through our
+    own branded Resend email instead of arriving as "Supabase Auth"."""
+    redirect_to = f"{settings.frontend_base_url}/setup-password"
+    try:
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: supabase_admin.auth.admin.generate_link({
+                    "type": "invite",
+                    "email": email,
+                    "options": {
+                        "data": {"full_name": full_name, "organization_id": org_id},
+                        "redirect_to": redirect_to,
+                    },
+                })
+            ),
+            timeout=15,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
+    except Exception as exc:
+        logger.error("settings.generate_invite_link_failed", email=email, error=str(exc))
+        message = str(exc).lower()
+        if "already" in message and ("registered" in message or "exists" in message):
+            raise HTTPException(
+                status_code=409,
+                detail=f"An account with email {email} already exists.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth could not generate the invite link.",
+        ) from exc
+    user_id = getattr(response.user, "id", None)
+    action_link = getattr(response.properties, "action_link", None)
+    if not user_id or not action_link:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth did not return a usable invite link.",
+        )
+    return UUID(str(user_id)), action_link
+
+
+def _invite_email_html(full_name: str, action_link: str) -> str:
+    return f"""
+    <div style="font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #1a1a1a;">
+      <p style="font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: #b8860b; font-weight: 700; margin-bottom: 4px;">AEGIS</p>
+      <h1 style="font-size: 20px; margin: 0 0 16px;">You've been invited</h1>
+      <p style="font-size: 14px; line-height: 1.6;">Hi {full_name},</p>
+      <p style="font-size: 14px; line-height: 1.6;">An account has been created for you on AEGIS. Click below to set your password and get started - this link is single-use and expires soon.</p>
+      <p style="margin: 28px 0;">
+        <a href="{action_link}" style="background: #b8860b; color: #111; text-decoration: none; padding: 12px 24px; font-size: 13px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; border-radius: 2px; display: inline-block;">Accept invitation</a>
+      </p>
+      <p style="font-size: 12px; line-height: 1.6; color: #666;">If the button doesn't work, copy and paste this link into your browser:<br><a href="{action_link}" style="color: #666; word-break: break-all;">{action_link}</a></p>
+      <p style="font-size: 12px; line-height: 1.6; color: #666; margin-top: 24px;">If you weren't expecting this invite, you can ignore this email.</p>
+    </div>
+    """
+
+
+async def _send_branded_invite_email(email: str, full_name: str, action_link: str) -> bool:
+    return await send_email(
+        to=email,
+        subject="You've been invited to AEGIS",
+        html=_invite_email_html(full_name, action_link),
+        text=(
+            f"Hi {full_name},\n\n"
+            "An account has been created for you on AEGIS. Use the link below to set "
+            "your password and get started - it's single-use and expires soon.\n\n"
+            f"{action_link}\n\n"
+            "If you weren't expecting this invite, you can ignore this email."
+        ),
+    )
+
+
+async def _invite_auth_user(email: str, full_name: str, org_id: str) -> UUID:
+    """Create a Supabase Auth user via the native invite flow and email them a
+    set-password link. Unlike _create_invited_auth_user, no password is ever
+    generated or returned - the invitee sets their own via Supabase's link.
+    Fallback path used only when Resend isn't configured (see _resend_configured) -
+    the email arrives branded as "Supabase Auth" since Supabase sends it directly."""
+    redirect_to = f"{settings.frontend_base_url}/setup-password"
+    try:
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: supabase_admin.auth.admin.invite_user_by_email(
+                    email,
+                    {
+                        "data": {"full_name": full_name, "organization_id": org_id},
+                        "redirect_to": redirect_to,
+                    },
+                )
+            ),
+            timeout=15,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
+    except Exception as exc:
+        logger.error("settings.invite_user_failed", email=email, error=str(exc))
+        message = str(exc).lower()
+        if "already" in message and ("registered" in message or "exists" in message):
+            raise HTTPException(
+                status_code=409,
+                detail=f"An account with email {email} already exists.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth could not send the invite email.",
+        ) from exc
+    auth_user = getattr(response, "user", None)
+    if not auth_user:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth rejected the invite request.",
+        )
+    user_id = getattr(auth_user, "id", None)
+    if not user_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth did not return an invited user id.",
+        )
+    return UUID(str(user_id))
 
 
 async def _ensure_core_user(
@@ -1281,6 +1425,210 @@ async def remove_user_role(
     )
     await db.commit()
     return _response(None, "Role removed.")
+
+
+@router.post("/users/invite")
+async def invite_user(
+    payload: InviteUserPayload,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    existing = (
+        await db.execute(
+            text(
+                "SELECT id FROM core.users WHERE lower(email)=lower(:email) AND is_deleted=false"
+            ),
+            {"email": str(payload.email)},
+        )
+    ).scalar()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An account with email {payload.email} already exists.",
+        )
+
+    role_names: dict[UUID, str] = {}
+    for role_id in payload.role_ids:
+        role_row = (
+            await db.execute(
+                text(
+                    "SELECT name FROM core.roles WHERE id=:role_id AND organization_id=:org_id AND is_deleted=false"
+                ),
+                {"role_id": role_id, "org_id": org_id},
+            )
+        ).mappings().first()
+        if not role_row:
+            raise HTTPException(status_code=404, detail="Selected role was not found.")
+        _enforce_sole_superadmin({"role_name": role_row["name"], "user_email": payload.email})
+        role_names[role_id] = role_row["name"]
+
+    resend_configured = _resend_configured()
+    action_link: Optional[str] = None
+    if resend_configured:
+        invited_user_id, action_link = await _generate_invite_link(str(payload.email), payload.full_name, org_id)
+    else:
+        invited_user_id = await _invite_auth_user(str(payload.email), payload.full_name, org_id)
+    try:
+        await db.execute(
+            text("""
+        INSERT INTO core.users (id, organization_id, email, full_name, is_active, must_change_password)
+        VALUES (:user_id, :org_id, :email, :full_name, true, true)
+        ON CONFLICT (id) DO UPDATE SET
+            organization_id=EXCLUDED.organization_id,
+            email=EXCLUDED.email,
+            full_name=EXCLUDED.full_name,
+            is_active=true,
+            must_change_password=true,
+            updated_at=NOW(),
+            is_deleted=false
+    """),
+            {
+                "user_id": invited_user_id,
+                "org_id": org_id,
+                "email": str(payload.email),
+                "full_name": payload.full_name,
+            },
+        )
+        if payload.role_ids:
+            await _assign_roles(db, org_id, invited_user_id, payload.role_ids)
+        await _write_audit(
+            db,
+            user,
+            "settings.access.user_invited",
+            "user",
+            invited_user_id,
+            {
+                "email": str(payload.email),
+                "full_name": payload.full_name,
+                "role_ids": [str(role_id) for role_id in payload.role_ids],
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A user with this email already exists in another organization.",
+        ) from exc
+
+    # send_email() fails closed and never raises, so this can't affect the
+    # response - the invite itself already committed above. If Resend isn't
+    # configured, Supabase already sent its own (unbranded) email above and
+    # there's nothing left to send here.
+    if resend_configured and action_link:
+        notified = await _send_branded_invite_email(str(payload.email), payload.full_name, action_link)
+        if not notified:
+            logger.warning(
+                "settings.invite_branded_email_failed",
+                email=str(payload.email),
+                detail="Resend is configured but the branded invite email failed to send - the invitee has no delivered link.",
+            )
+
+    return _response(
+        {"user_id": str(invited_user_id), "email": str(payload.email)},
+        f"Invite sent to {payload.email}. They must set a password before they can sign in.",
+    )
+
+
+async def _lookup_user_with_superadmin_flag(db: AsyncSession, org_id: str, target_user_id: UUID):
+    return (
+        await db.execute(
+            text("""
+        SELECT u.email AS user_email, EXISTS(
+            SELECT 1 FROM core.user_roles ur
+            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = ur.organization_id AND r.is_deleted = false
+            WHERE ur.user_id = u.id AND ur.organization_id = :org_id AND r.name = 'SUPERADMIN'
+        ) AS is_superadmin
+        FROM core.users u
+        WHERE u.id = :target_user_id AND u.organization_id = :org_id AND u.is_deleted = false
+    """),
+            {"target_user_id": target_user_id, "org_id": org_id},
+        )
+    ).mappings().first()
+
+
+@router.patch("/users/{target_user_id}/status")
+async def set_user_status(
+    target_user_id: UUID,
+    payload: UserStatusPayload,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    if not payload.is_active and str(target_user_id) == str(user["user_id"]):
+        raise HTTPException(status_code=400, detail="You cannot deactivate your own account.")
+
+    target = await _lookup_user_with_superadmin_flag(db, org_id, target_user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User was not found.")
+    if not payload.is_active and target["is_superadmin"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"SUPERADMIN access is restricted to {SOLE_SUPERADMIN_EMAIL} and cannot be deactivated.",
+        )
+
+    await db.execute(
+        text(
+            "UPDATE core.users SET is_active=:is_active, updated_at=NOW() WHERE id=:target_user_id AND organization_id=:org_id"
+        ),
+        {"is_active": payload.is_active, "target_user_id": target_user_id, "org_id": org_id},
+    )
+    await _write_audit(
+        db,
+        user,
+        "settings.access.user_activated" if payload.is_active else "settings.access.user_deactivated",
+        "user",
+        target_user_id,
+        {"is_active": payload.is_active},
+    )
+    await db.commit()
+    return _response(None, "User activated." if payload.is_active else "User deactivated.")
+
+
+@router.delete("/users/{target_user_id}")
+async def delete_user(
+    target_user_id: UUID,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    if str(target_user_id) == str(user["user_id"]):
+        raise HTTPException(status_code=400, detail="You cannot remove your own account.")
+
+    target = await _lookup_user_with_superadmin_flag(db, org_id, target_user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User was not found.")
+    if target["is_superadmin"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"SUPERADMIN access is restricted to {SOLE_SUPERADMIN_EMAIL} and cannot be removed.",
+        )
+
+    # Soft delete only, matching every other entity in the app (Contacts,
+    # Organizations, Tenders, etc.) - the Supabase Auth identity itself is
+    # left alone since core.users.is_deleted is already sufficient to lock
+    # the account out (get_current_user() rejects it outright), and deleting
+    # the external auth identity is not reversible from here.
+    await db.execute(
+        text(
+            "UPDATE core.users SET is_deleted=true, is_active=false, updated_at=NOW() WHERE id=:target_user_id AND organization_id=:org_id"
+        ),
+        {"target_user_id": target_user_id, "org_id": org_id},
+    )
+    await _write_audit(
+        db,
+        user,
+        "settings.access.user_deleted",
+        "user",
+        target_user_id,
+        {"email": target["user_email"]},
+    )
+    await db.commit()
+    return _response(None, "User removed.")
 
 
 @router.patch("/roles/{role_id}/permissions")
