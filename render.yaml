@@ -36,6 +36,15 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
+      # Branded transactional email (invite emails, notifications) via
+      # Resend. Set EMAIL_FROM_ADDRESS as "Display Name <verified@domain>"
+      # so recipients see a real sender name instead of Supabase's default.
+      # Optional: if left unset, invites still work but fall back to
+      # Supabase's own (unbranded) invite email.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM_ADDRESS
+        sync: false
 
   - type: web
     name: aegis-frontend
