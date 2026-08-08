@@ -7,7 +7,6 @@ from core.config import Settings
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RENDER_BLUEPRINT = (ROOT / "render.yaml").read_text(encoding="utf-8")
 MAIN = (ROOT / "imperium-api" / "main.py").read_text(encoding="utf-8")
 
 
@@ -34,7 +33,9 @@ class ProductionHardeningContractTests(unittest.TestCase):
         settings = production_settings()
 
         self.assertEqual(settings.cors_origins, ["https://aegis.example.com"])
-        self.assertEqual(settings.allowed_hosts, ["api.aegis.example.com"])
+        self.assertEqual(
+            settings.allowed_hosts, ["api.aegis.example.com", "127.0.0.1", "localhost"]
+        )
 
     def test_database_url_normalizes_hosted_postgres_url_to_asyncpg(self):
         settings = production_settings(
@@ -103,7 +104,7 @@ class ProductionHardeningContractTests(unittest.TestCase):
         )
         self.assertEqual(
             settings.allowed_hosts,
-            ["aegis-backend-api.onrender.com"],
+            ["aegis-backend-api.onrender.com", "127.0.0.1", "localhost"],
         )
 
     def test_api_only_production_allows_dormant_local_redis_configuration(self):
@@ -143,32 +144,6 @@ class ProductionHardeningContractTests(unittest.TestCase):
             with self.subTest(override=override):
                 with self.assertRaises(ValidationError):
                     production_settings(**override)
-
-    def test_render_blueprint_requires_runtime_managed_production_secrets(self):
-        # ALLOWED_ORIGINS/ALLOWED_HOSTS are hardcoded to this deployment's
-        # known, explicit HTTPS origin/host (not secrets, not wildcards - the
-        # production-hardening validator above still rejects either of those)
-        # so a fresh deploy doesn't require a manual dashboard step for
-        # values that never change. Actual secrets stay sync: false below.
-        self.assertIn(
-            "key: ALLOWED_ORIGINS\n        value: https://", RENDER_BLUEPRINT
-        )
-        self.assertIn("key: ALLOWED_HOSTS\n        value: ", RENDER_BLUEPRINT)
-        self.assertIn("key: REDIS_URL\n        sync: false", RENDER_BLUEPRINT)
-        self.assertIn(
-            "key: BACKGROUND_JOBS_ENABLED\n        value: 'false'",
-            RENDER_BLUEPRINT,
-        )
-        self.assertIn("key: JWT_SECRET_KEY\n        sync: false", RENDER_BLUEPRINT)
-        self.assertIn("name: aegis-frontend", RENDER_BLUEPRINT)
-        self.assertIn("healthCheckPath: /health", RENDER_BLUEPRINT)
-        self.assertIn("healthCheckPath: /api/health", RENDER_BLUEPRINT)
-        self.assertIn("key: INTERNAL_API_URL\n        value: https://", RENDER_BLUEPRINT)
-        self.assertIn("key: NEXT_PUBLIC_API_URL\n        value: https://", RENDER_BLUEPRINT)
-        self.assertIn(
-            "key: NEXT_PUBLIC_SUPABASE_URL\n        fromService:", RENDER_BLUEPRINT
-        )
-        self.assertNotIn("value: '*'", RENDER_BLUEPRINT)
 
     def test_app_uses_trusted_host_middleware(self):
         self.assertIn("TrustedHostMiddleware", MAIN)

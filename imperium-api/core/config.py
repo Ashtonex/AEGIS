@@ -208,6 +208,17 @@ class Settings(BaseSettings):
             render_host = self.RENDER_EXTERNAL_HOSTNAME.strip()
             if render_host and render_host not in hosts:
                 hosts.append(render_host)
+        # Container healthchecks (Docker, k8s probes) hit the app over
+        # loopback with a Host header that never matches the public domain
+        # (e.g. "127.0.0.1:8000"), which TrustedHostMiddleware otherwise
+        # rejects with a 400 - making the container report unhealthy despite
+        # serving real traffic correctly. Safe to always trust loopback: the
+        # app's own port is never published outside the container network,
+        # only the reverse proxy in front of it is, and that always forwards
+        # the real client Host header.
+        for loopback_host in ("127.0.0.1", "localhost"):
+            if loopback_host not in hosts:
+                hosts.append(loopback_host)
         return hosts
 
     @property
