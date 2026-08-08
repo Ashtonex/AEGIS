@@ -279,7 +279,41 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
-  
+
+  // Top bar auto-hide: visible on load, on scroll (either direction), or
+  // while hovering the bar itself or a thin trigger strip at the very top
+  // of the viewport; hides again after a short idle period. The bar is
+  // fixed/overlaid rather than in normal flow specifically so showing or
+  // hiding it never shifts or resizes the page content underneath.
+  const [topBarVisible, setTopBarVisible] = useState(true);
+  const topBarHoveredRef = useRef(false);
+  const topBarHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mainScrollRef = useRef<HTMLElement>(null);
+
+  const scheduleTopBarHide = useCallback(() => {
+    if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
+    topBarHideTimerRef.current = setTimeout(() => {
+      if (!topBarHoveredRef.current) setTopBarVisible(false);
+    }, 2000);
+  }, []);
+
+  const revealTopBar = useCallback(() => {
+    setTopBarVisible(true);
+    scheduleTopBarHide();
+  }, [scheduleTopBarHide]);
+
+  useEffect(() => {
+    scheduleTopBarHide();
+    const mainEl = mainScrollRef.current;
+    if (!mainEl) return;
+    const onScroll = () => revealTopBar();
+    mainEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      mainEl.removeEventListener("scroll", onScroll);
+      if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
+    };
+  }, [revealTopBar, scheduleTopBarHide]);
+
   // Extract user info from session
   const userEmail = session?.user?.email || "System User";
   // Create a display name from email (e.g., admin@example.com -> Admin)
@@ -455,8 +489,23 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   return (
     <div className="min-h-screen bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink">
 
-      {/* GLOBAL TOP NAVIGATION BAR */}
-      <header className="relative h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-50 shrink-0">
+      {/* Thin always-present strip at the very top of the viewport so hovering
+          there can bring the top bar back even while it's hidden - the bar
+          itself isn't there to hover over once translated out of view. */}
+      <div
+        className="fixed top-0 inset-x-0 h-2 z-40"
+        onMouseEnter={revealTopBar}
+      />
+
+      {/* GLOBAL TOP NAVIGATION BAR - fixed/overlaid, not in normal flow, so
+          hiding or showing it never shifts the page content beneath it. */}
+      <header
+        onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
+        onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}
+        className={`fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-50 shrink-0 transition-transform duration-300 ease-out ${
+          topBarVisible ? "translate-y-0" : "-translate-y-full"
+        }`}
+      >
         <div className="flex items-center space-x-4 md:space-x-8">
           <button
             type="button"
@@ -603,7 +652,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </aside>
 
         {/* MAIN CONTENT AREA */}
-        <main className="flex-1 overflow-auto bg-ink relative">
+        <main ref={mainScrollRef} className="flex-1 overflow-auto bg-ink relative">
           <div 
             className="absolute inset-0 pointer-events-none opacity-[0.03] mix-blend-screen"
             style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)', backgroundSize: '40px 40px' }}
