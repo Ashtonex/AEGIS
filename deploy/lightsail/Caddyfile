@@ -1,5 +1,0 @@
-{$API_HOSTNAME} {
-  encode zstd gzip
-
-  reverse_proxy imperium-api:8000
-}
