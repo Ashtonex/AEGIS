@@ -4,7 +4,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { User, Session } from '@supabase/supabase-js';
 import { supabase, setCachedAccessToken } from '../supabase';
 import { useRouter, usePathname } from 'next/navigation';
-import { getAuthMe } from '../api';
+import { getAuthMe, resolvePortalAccess } from '../api';
 
 interface AuthContextType {
   user: User | null;
@@ -138,6 +138,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
     router.push('/login');
+  }, [isLoading, session, pathname, router]);
+
+  // Supabase's invite/recovery emails should redirect straight to
+  // /setup-password, but its redirect_to allow-list matching has been
+  // observed silently truncating any requested path down to the bare site
+  // origin - the link lands wherever, with a valid session already
+  // established via the URL hash, and nothing routes them onward. /login and
+  // /setup-password already resolve this themselves (PortalLogin and the
+  // page's own gate), so this only needs to catch every other page.
+  const passwordCheckedTokenRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isLoading || !session?.access_token) return;
+    if (pathname === '/login' || pathname === '/setup-password') return;
+    if (passwordCheckedTokenRef.current === session.access_token) return;
+    passwordCheckedTokenRef.current = session.access_token;
+
+    resolvePortalAccess(session.access_token)
+      .then((access) => {
+        if (access.data?.destination === '/setup-password') {
+          router.replace('/setup-password');
+        }
+      })
+      .catch(() => {
+        // Fail open - a background check shouldn't block normal navigation.
+      });
   }, [isLoading, session, pathname, router]);
 
   const signOut = useCallback(async () => {
