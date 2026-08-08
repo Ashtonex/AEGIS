@@ -22,10 +22,13 @@ services:
         value: "false"
         scope: RUN_TIME
       - key: ALLOWED_ORIGINS
-        value: "https://REPLACE-WITH-YOUR-FRONTEND-DOMAIN"
+        value: "https://sixnineconstruction.com"
         scope: RUN_TIME
       - key: ALLOWED_HOSTS
         value: "REPLACE-WITH-YOUR-BACKEND-DOMAIN.ondigitalocean.app"
+        scope: RUN_TIME
+      - key: FRONTEND_HOSTNAME
+        value: "sixnineconstruction.com"
         scope: RUN_TIME
       - key: BACKGROUND_JOBS_ENABLED
         value: "false"
