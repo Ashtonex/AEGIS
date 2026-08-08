@@ -565,42 +565,54 @@ def _resend_configured() -> bool:
     return bool(settings.RESEND_API_KEY and settings.EMAIL_FROM_ADDRESS)
 
 
+async def _generate_link(email: str, link_type: str, data: Optional[dict] = None) -> Any:
+    redirect_to = f"{settings.frontend_base_url}/setup-password"
+    payload: dict = {"type": link_type, "email": email, "options": {"redirect_to": redirect_to}}
+    if data:
+        payload["options"]["data"] = data
+    return await asyncio.wait_for(
+        asyncio.to_thread(lambda: supabase_admin.auth.admin.generate_link(payload)),
+        timeout=15,
+    )
+
+
 async def _generate_invite_link(email: str, full_name: str, org_id: str) -> tuple[UUID, str]:
     """Create a Supabase Auth user without sending Supabase's own invite email
     - generate_link() only mints the link, so it can be delivered through our
     own branded Resend email instead of arriving as "Supabase Auth"."""
-    redirect_to = f"{settings.frontend_base_url}/setup-password"
+    metadata = {"full_name": full_name, "organization_id": org_id}
     try:
-        response = await asyncio.wait_for(
-            asyncio.to_thread(
-                lambda: supabase_admin.auth.admin.generate_link({
-                    "type": "invite",
-                    "email": email,
-                    "options": {
-                        "data": {"full_name": full_name, "organization_id": org_id},
-                        "redirect_to": redirect_to,
-                    },
-                })
-            ),
-            timeout=15,
-        )
+        response = await _generate_link(email, "invite", metadata)
     except asyncio.TimeoutError as exc:
         raise HTTPException(
             status_code=503,
             detail="Authentication service temporarily unavailable. Please retry.",
         ) from exc
     except Exception as exc:
-        logger.error("settings.generate_invite_link_failed", email=email, error=str(exc))
         message = str(exc).lower()
         if "already" in message and ("registered" in message or "exists" in message):
+            # The auth identity already exists - most commonly because a
+            # prior invite to this email was later removed via our own
+            # delete endpoint, which only soft-deletes core.users and
+            # deliberately never touches the Supabase Auth identity (see
+            # delete_user's comment). "invite" refuses to reissue for an
+            # existing identity even when it was never confirmed; "recovery"
+            # works on any existing user and produces the same set-password
+            # link, so use that as the resend path instead of hard-failing.
+            try:
+                response = await _generate_link(email, "recovery", metadata)
+            except Exception as exc2:
+                logger.error("settings.generate_invite_link_failed", email=email, error=str(exc2))
+                raise HTTPException(
+                    status_code=502,
+                    detail="Supabase Auth could not generate the invite link.",
+                ) from exc2
+        else:
+            logger.error("settings.generate_invite_link_failed", email=email, error=str(exc))
             raise HTTPException(
-                status_code=409,
-                detail=f"An account with email {email} already exists.",
+                status_code=502,
+                detail="Supabase Auth could not generate the invite link.",
             ) from exc
-        raise HTTPException(
-            status_code=502,
-            detail="Supabase Auth could not generate the invite link.",
-        ) from exc
     user_id = getattr(response.user, "id", None)
     action_link = getattr(response.properties, "action_link", None)
     if not user_id or not action_link:
@@ -642,7 +654,7 @@ async def _send_branded_invite_email(email: str, full_name: str, action_link: st
     )
 
 
-async def _invite_auth_user(email: str, full_name: str, org_id: str) -> UUID:
+async def _invite_auth_user(db: AsyncSession, email: str, full_name: str, org_id: str) -> UUID:
     """Create a Supabase Auth user via the native invite flow and email them a
     set-password link. Unlike _create_invited_auth_user, no password is ever
     generated or returned - the invitee sets their own via Supabase's link.
@@ -668,13 +680,43 @@ async def _invite_auth_user(email: str, full_name: str, org_id: str) -> UUID:
             detail="Authentication service temporarily unavailable. Please retry.",
         ) from exc
     except Exception as exc:
-        logger.error("settings.invite_user_failed", email=email, error=str(exc))
         message = str(exc).lower()
         if "already" in message and ("registered" in message or "exists" in message):
-            raise HTTPException(
-                status_code=409,
-                detail=f"An account with email {email} already exists.",
-            ) from exc
+            # Same situation as _generate_invite_link: the auth identity
+            # already exists (most often a prior invite whose core.users row
+            # was later soft-deleted, which never touches Supabase Auth).
+            # invite_user_by_email refuses to reissue for an existing
+            # identity; reset_password_for_email works on any existing user
+            # and - unlike generate_link - still sends Supabase's own email
+            # automatically, matching this function's contract.
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: supabase_admin.auth.reset_password_for_email(
+                            email, {"redirect_to": redirect_to}
+                        )
+                    ),
+                    timeout=15,
+                )
+            except Exception as exc2:
+                logger.error("settings.invite_user_failed", email=email, error=str(exc2))
+                raise HTTPException(
+                    status_code=502,
+                    detail="Supabase Auth could not send the invite email.",
+                ) from exc2
+            existing_id = (
+                await db.execute(
+                    text("SELECT id FROM auth.users WHERE lower(email)=lower(:email)"),
+                    {"email": email},
+                )
+            ).scalar()
+            if not existing_id:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Supabase Auth did not return the existing user id.",
+                )
+            return UUID(str(existing_id))
+        logger.error("settings.invite_user_failed", email=email, error=str(exc))
         raise HTTPException(
             status_code=502,
             detail="Supabase Auth could not send the invite email.",
@@ -1468,7 +1510,7 @@ async def invite_user(
     if resend_configured:
         invited_user_id, action_link = await _generate_invite_link(str(payload.email), payload.full_name, org_id)
     else:
-        invited_user_id = await _invite_auth_user(str(payload.email), payload.full_name, org_id)
+        invited_user_id = await _invite_auth_user(db, str(payload.email), payload.full_name, org_id)
     try:
         await db.execute(
             text("""
