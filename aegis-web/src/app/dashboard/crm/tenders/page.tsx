@@ -61,6 +61,7 @@ export default function TendersCommand() {
   const [selectedTenderId, setSelectedTenderId] = useState<string | null>(null);
   const [isDeleteTenderModalOpen, setIsDeleteTenderModalOpen] = useState(false);
   const [isDeletingTender, setIsDeletingTender] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -98,6 +99,7 @@ export default function TendersCommand() {
 
   const loadData = async () => {
     setIsLoading(true);
+    setLoadError(null);
     try {
       const res = await getCrmTenders();
       if (res.success && Array.isArray(res.data)) {
@@ -105,6 +107,11 @@ export default function TendersCommand() {
       }
     } catch (error) {
       console.error('Error loading CRM tenders data:', error);
+      setLoadError(describeActionError(
+        error,
+        "You don't have permission to view Tenders & Bids.",
+        "Tenders could not be loaded. Check the CRM service connection and retry."
+      ));
     } finally {
       setIsLoading(false);
     }
@@ -156,6 +163,11 @@ export default function TendersCommand() {
       }
     } catch (err) {
       console.error('Failed to update stage via drag-drop:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to move this tender - it's been put back where it was.",
+        "The stage move didn't save. Check the CRM service connection and retry."
+      ));
       loadData();
     }
   };
@@ -212,6 +224,11 @@ export default function TendersCommand() {
       }
     } catch (err) {
       console.error('Failed to update stage:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to move this tender - it's been put back where it was.",
+        "The stage move didn't save. Check the CRM service connection and retry."
+      ));
       loadData();
     }
   };
@@ -278,6 +295,11 @@ export default function TendersCommand() {
       }
     } catch (err) {
       console.error('Failed to create tender:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to log tenders.",
+        "Tender was not logged. Check the CRM service connection and retry."
+      ));
     } finally {
       setIsSubmitting(false);
     }
@@ -320,6 +342,11 @@ export default function TendersCommand() {
       }
     } catch (err) {
       console.error('Failed to update tender details:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to edit this tender.",
+        "Tender details were not saved. Check the CRM service connection and retry."
+      ));
     } finally {
       setIsSubmitting(false);
     }
@@ -575,6 +602,13 @@ export default function TendersCommand() {
           )}
         </div>
       </div>
+
+      {loadError && (
+        <div className="mb-4 px-4 py-3 bg-rose-500/10 border border-rose-500/30 rounded-sm flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+          <span className="font-mono text-xs text-rose-200">{loadError}</span>
+        </div>
+      )}
 
       {/* Bid Board Kanban Board */}
       <div className="flex-1 overflow-x-auto flex gap-4 pb-4 items-start min-h-0 select-none">
