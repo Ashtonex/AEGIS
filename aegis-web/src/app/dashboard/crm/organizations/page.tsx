@@ -2,19 +2,21 @@
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { 
-  ArrowLeft, Building2, ExternalLink, Phone, Mail, Plus, 
-  Search, Filter, ShieldAlert, DollarSign, GitBranch, 
+import {
+  ArrowLeft, Building2, ExternalLink, Phone, Mail, Plus,
+  Search, Filter, ShieldAlert, DollarSign, GitBranch,
   ChevronDown, ChevronRight, Loader2, CheckCircle2, Globe, MapPin,
-  MessageSquare, Clock, PlusSquare, FileText, UserPlus, AlertCircle, Save, UploadCloud
+  MessageSquare, Clock, PlusSquare, FileText, UserPlus, AlertCircle, Save, UploadCloud, Trash2
 } from 'lucide-react';
-import { 
-  getCrmOrganizations, 
-  createCrmOrganization, 
+import {
+  getCrmOrganizations,
+  createCrmOrganization,
   updateCrmOrganization,
+  deleteCrmOrganization,
   getCrmContacts,
   getCrmActivities,
-  createCrmActivity
+  createCrmActivity,
+  describeActionError
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 
@@ -78,6 +80,8 @@ export default function ClientOrganizationsRegistry() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [isDeleteOrgModalOpen, setIsDeleteOrgModalOpen] = useState(false);
+  const [isDeletingOrg, setIsDeletingOrg] = useState(false);
 
   // Form states - Create Account
   const [form, setForm] = useState({
@@ -219,6 +223,27 @@ export default function ClientOrganizationsRegistry() {
       showToast("Credit limits were not saved. Check the CRM service connection and retry.", "error");
     } finally {
       setIsSavingLimits(false);
+    }
+  };
+
+  const handleDeleteOrg = async () => {
+    if (!selectedOrgId) return;
+    setIsDeletingOrg(true);
+    try {
+      const response = await deleteCrmOrganization(selectedOrgId);
+      if (!response.success) throw new Error(response.message || "Delete failed");
+      setOrgs(prev => prev.filter(o => o.id !== selectedOrgId));
+      setSelectedOrgId(null);
+      setIsDeleteOrgModalOpen(false);
+      showToast("Organization deleted.");
+    } catch (err) {
+      showToast(describeActionError(
+        err,
+        "You don't have permission to delete organizations.",
+        "Organization was not deleted. Check the CRM service connection and retry."
+      ), "error");
+    } finally {
+      setIsDeletingOrg(false);
     }
   };
 
@@ -650,15 +675,24 @@ export default function ClientOrganizationsRegistry() {
                         <Building2 className="w-5 h-5 text-signal" />
                         <h2 className="font-sans font-black text-base text-paper leading-tight">{selectedOrg.name}</h2>
                       </div>
-                      <Link
-                        href={`/dashboard/crm/organizations/${selectedOrg.id}`}
-                        className="font-mono text-[9px] px-2 py-1 border border-signal/40 bg-signal/10 text-signal hover:bg-signal hover:text-ink transition-colors uppercase"
-                      >
-                        Customer 360
-                      </Link>
-                      <span className="font-mono text-[9px] px-1.5 py-0.5 bg-ink border border-ink-mid text-slate-light uppercase">
-                        {selectedOrg.industry || 'Infrastructure'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <Link
+                          href={`/dashboard/crm/organizations/${selectedOrg.id}`}
+                          className="font-mono text-[9px] px-2 py-1 border border-signal/40 bg-signal/10 text-signal hover:bg-signal hover:text-ink transition-colors uppercase"
+                        >
+                          Customer 360
+                        </Link>
+                        <span className="font-mono text-[9px] px-1.5 py-0.5 bg-ink border border-ink-mid text-slate-light uppercase">
+                          {selectedOrg.industry || 'Infrastructure'}
+                        </span>
+                        <button
+                          onClick={() => setIsDeleteOrgModalOpen(true)}
+                          title="Delete organization"
+                          className="w-6 h-6 flex items-center justify-center bg-ink border border-ink-mid text-slate-light hover:text-red-400 hover:border-red-500/40 transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 mt-3 font-mono text-[10px] text-slate-light">
@@ -1102,6 +1136,33 @@ export default function ClientOrganizationsRegistry() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE ORGANIZATION CONFIRMATION */}
+      {isDeleteOrgModalOpen && selectedOrg && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-5">
+            <h3 className="font-mono text-sm text-red-400 uppercase font-bold tracking-wider mb-2">Delete Organization</h3>
+            <p className="text-xs text-slate-light mb-4">
+              This permanently removes <span className="text-paper font-semibold">{selectedOrg.name}</span> from the organizations registry. This cannot be undone from this screen.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setIsDeleteOrgModalOpen(false)}
+                className="px-3 py-1.5 border border-ink-mid font-mono text-xs text-slate hover:text-paper"
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={handleDeleteOrg}
+                disabled={isDeletingOrg}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-600/90 text-white font-mono text-xs font-bold disabled:opacity-50"
+              >
+                {isDeletingOrg ? 'DELETING...' : 'DELETE ORGANIZATION'}
+              </button>
+            </div>
           </div>
         </div>
       )}

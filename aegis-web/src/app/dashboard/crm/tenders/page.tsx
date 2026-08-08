@@ -2,16 +2,18 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { 
-  FileText, Plus, X, ChevronLeft, ChevronRight, 
-  DollarSign, Clock, ShieldCheck, CheckSquare, 
+import {
+  FileText, Plus, X, ChevronLeft, ChevronRight,
+  DollarSign, Clock, ShieldCheck, CheckSquare,
   Briefcase, UserCheck, AlertTriangle, Loader2, Save,
-  Calendar, Users, Info, ToggleLeft, ToggleRight, Search, Landmark, ShieldAlert
+  Calendar, Users, Info, ToggleLeft, ToggleRight, Search, Landmark, ShieldAlert, Trash2
 } from 'lucide-react';
-import { 
-  getCrmTenders, 
-  createCrmTender, 
-  updateCrmTender 
+import {
+  getCrmTenders,
+  createCrmTender,
+  updateCrmTender,
+  deleteCrmTender,
+  describeActionError
 } from '@/lib/api';
 
 // Stages definition
@@ -57,6 +59,8 @@ export default function TendersCommand() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedTenderId, setSelectedTenderId] = useState<string | null>(null);
+  const [isDeleteTenderModalOpen, setIsDeleteTenderModalOpen] = useState(false);
+  const [isDeletingTender, setIsDeletingTender] = useState(false);
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -318,6 +322,27 @@ export default function TendersCommand() {
       console.error('Failed to update tender details:', err);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteTender = async () => {
+    if (!selectedTenderId) return;
+    setIsDeletingTender(true);
+    try {
+      const res = await deleteCrmTender(selectedTenderId);
+      if (!res.success) throw new Error(res.message || "Delete failed");
+      setTenders(prev => prev.filter(t => t.id !== selectedTenderId));
+      setSelectedTenderId(null);
+      setIsDeleteTenderModalOpen(false);
+    } catch (err) {
+      console.error('Failed to delete tender:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to delete tenders.",
+        "Tender was not deleted. Check the CRM service connection and retry."
+      ));
+    } finally {
+      setIsDeletingTender(false);
     }
   };
 
@@ -896,12 +921,21 @@ export default function TendersCommand() {
                   <h2 className="font-sans font-bold text-sm text-paper uppercase truncate max-w-[280px]">{selectedTender.tender_name}</h2>
                 </div>
               </div>
-              <button 
-                onClick={() => setSelectedTenderId(null)}
-                className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center space-x-2 shrink-0">
+                <button
+                  onClick={() => setIsDeleteTenderModalOpen(true)}
+                  title="Delete tender"
+                  className="w-7 h-7 bg-white/5 hover:bg-red-500/20 hover:text-red-300 rounded-full flex items-center justify-center text-slate-light transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setSelectedTenderId(null)}
+                  className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Drawer Body */}
@@ -1096,6 +1130,25 @@ export default function TendersCommand() {
           </div>
         )}
       </div>
+
+      {/* DELETE TENDER MODAL */}
+      {isDeleteTenderModalOpen && selectedTender && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsDeleteTenderModalOpen(false)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-rose-400 uppercase font-bold tracking-wider mb-2">Delete Tender</h3>
+            <p className="text-xs text-slate-light mb-4">
+              This permanently removes <span className="text-paper font-semibold">{selectedTender.tender_name}</span> from the tender pipeline. This cannot be undone from this screen.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button onClick={() => setIsDeleteTenderModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+              <button onClick={handleDeleteTender} disabled={isDeletingTender} className="px-3 py-1.5 bg-rose-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
+                {isDeletingTender ? 'Deleting...' : 'Delete Tender'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

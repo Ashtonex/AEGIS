@@ -12,9 +12,11 @@ import {
   getCrmContacts,
   createCrmContact,
   updateCrmContact,
+  deleteCrmContact,
   getCrmOrganizations,
   getCrmActivities,
-  createCrmActivity
+  createCrmActivity,
+  describeActionError
 } from '@/lib/api';
 import { useApiQueries } from '@/hooks/useApiQueries';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
@@ -51,6 +53,8 @@ export default function ContactsRegistry() {
   // Search & Selected Contacts
   const [search, setSearch] = useState('');
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+  const [isDeleteContactModalOpen, setIsDeleteContactModalOpen] = useState(false);
+  const [isDeletingContact, setIsDeletingContact] = useState(false);
   
   // Modals & Submits
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
@@ -183,6 +187,27 @@ export default function ContactsRegistry() {
       showToast("Contact details were not saved. Check the CRM service connection and retry.", "error");
     } finally {
       setIsSavingProfile(false);
+    }
+  };
+
+  const handleDeleteContact = async () => {
+    if (!selectedContactId) return;
+    setIsDeletingContact(true);
+    try {
+      const response = await deleteCrmContact(selectedContactId);
+      if (!response.success) throw new Error(response.message || "Delete failed");
+      setIsDeleteContactModalOpen(false);
+      setSelectedContactId(null);
+      await reloadContacts();
+      showToast("Contact deleted.");
+    } catch (err) {
+      showToast(describeActionError(
+        err,
+        "You don't have permission to delete contacts.",
+        "Contact was not deleted. Check the CRM service connection and retry."
+      ), "error");
+    } finally {
+      setIsDeletingContact(false);
     }
   };
 
@@ -497,9 +522,18 @@ export default function ContactsRegistry() {
                           </p>
                         </div>
                       </div>
-                      <span className="font-mono text-[8px] bg-ink border border-ink-mid text-slate-light px-1.5 py-0.5">
-                        ID: {selectedContact.id.substring(0, 8)}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[8px] bg-ink border border-ink-mid text-slate-light px-1.5 py-0.5">
+                          ID: {selectedContact.id.substring(0, 8)}
+                        </span>
+                        <button
+                          onClick={() => setIsDeleteContactModalOpen(true)}
+                          title="Delete contact"
+                          className="w-6 h-6 flex items-center justify-center bg-ink border border-ink-mid text-slate-light hover:text-red-400 hover:border-red-500/40 transition-colors"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2 mt-3 font-mono text-[10px] text-slate-light">
@@ -871,6 +905,33 @@ export default function ContactsRegistry() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE CONTACT CONFIRMATION */}
+      {isDeleteContactModalOpen && selectedContact && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-5">
+            <h3 className="font-mono text-sm text-red-400 uppercase font-bold tracking-wider mb-2">Delete Contact</h3>
+            <p className="text-xs text-slate-light mb-4">
+              This permanently removes <span className="text-paper font-semibold">{selectedContact.contact_name}</span> from the contacts registry. This cannot be undone from this screen.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setIsDeleteContactModalOpen(false)}
+                className="px-3 py-1.5 border border-ink-mid font-mono text-xs text-slate hover:text-paper"
+              >
+                CANCEL
+              </button>
+              <button
+                onClick={handleDeleteContact}
+                disabled={isDeletingContact}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-600/90 text-white font-mono text-xs font-bold disabled:opacity-50"
+              >
+                {isDeletingContact ? 'DELETING...' : 'DELETE CONTACT'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -26,6 +26,7 @@ import {
   markCrmOpportunityLost,
   getCrmWinLossReasons,
   createCrmWinLossReason,
+  describeActionError,
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
@@ -572,7 +573,11 @@ export default function OpportunitiesKanban() {
       await loadData();
     } catch (error) {
       console.warn("Project handoff failed", error);
-      alert("Opportunity was not marked won. Check the CRM service connection and retry.");
+      alert(describeActionError(
+        error,
+        "You don't have permission to close this deal as Won - closing a deal creates a real project commitment, so it needs sign-off from a manager or exec. Ask them to close it, or hand it off.",
+        "Opportunity was not marked won. Check the CRM service connection and retry."
+      ));
     } finally {
       setIsSubmitting(false);
     }
@@ -614,7 +619,11 @@ export default function OpportunitiesKanban() {
       await loadData();
     } catch (error) {
       console.warn("Lost opportunity update failed", error);
-      alert("Opportunity was not marked lost. Check the CRM service connection and retry.");
+      alert(describeActionError(
+        error,
+        "You don't have permission to close this deal as Lost.",
+        "Opportunity was not marked lost. Check the CRM service connection and retry."
+      ));
     } finally {
       setIsSubmitting(false);
     }

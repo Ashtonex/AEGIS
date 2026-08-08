@@ -13,6 +13,17 @@ export class ApiError extends Error {
   }
 }
 
+export function isPermissionDenied(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
+// A 403 means the action was refused, not that anything is broken - showing
+// a generic "check your connection and retry" message on a permission
+// failure sends people chasing a network problem that doesn't exist.
+export function describeActionError(error: unknown, deniedMessage: string, fallbackMessage: string): string {
+  return isPermissionDenied(error) ? deniedMessage : fallbackMessage;
+}
+
 type ApiRequestOptions = RequestInit & {
   allowFallback?: boolean;
   timeoutMs?: number;
@@ -725,6 +736,12 @@ export async function updateCrmTender(id: string, data: Record<string, any>) {
   return await fetchApi<ApiResponse<void>>(`/api/v1/tender-bids/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data)
+  });
+}
+
+export async function deleteCrmTender(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${id}`, {
+    method: 'DELETE'
   });
 }
 
