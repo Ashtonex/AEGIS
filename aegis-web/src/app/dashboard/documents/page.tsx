@@ -8,10 +8,12 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
+import { supabase } from "@/lib/supabase";
 import {
   getDocuments,
   getDocument,
   createDocument,
+  getDocumentSignedUrl,
   updateDocumentStatus,
   getDocumentVersions,
   getDocumentLinks,
@@ -122,7 +124,10 @@ function DocumentsWorkspace() {
   const [showUploadModal, setShowUploadModal] = useState(false);
 
   // Form Fields
-  const [uploadForm, setUploadForm] = useState({ title: "", category: "drawings", classification: "internal", project_id: "", description: "", file_name: "", size_bytes: "" });
+  const [uploadForm, setUploadForm] = useState({ title: "", category: "drawings" });
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -191,14 +196,58 @@ function DocumentsWorkspace() {
   const handleUploadDocument = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadForm.title) return;
+    setUploading(true);
     try {
-      await createDocument({ ...uploadForm, project_id: uploadForm.project_id || null, file_name: uploadForm.file_name || null, size_bytes: Number(uploadForm.size_bytes || 0) });
+      let storagePath: string | undefined;
+      let fileName: string | undefined;
+      let mimeType: string | undefined;
+      let fileSizeBytes = 0;
+
+      if (uploadFile) {
+        const fileExt = uploadFile.name.split(".").pop();
+        const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ""}`;
+        const filePath = `documents/${storedName}`;
+        const { error: uploadError } = await supabase.storage
+          .from("documents")
+          .upload(filePath, uploadFile, { cacheControl: "3600", upsert: false });
+        if (uploadError) throw uploadError;
+        storagePath = filePath;
+        fileName = uploadFile.name;
+        mimeType = uploadFile.type || undefined;
+        fileSizeBytes = uploadFile.size;
+      }
+
+      await createDocument({
+        title: uploadForm.title,
+        category: uploadForm.category,
+        file_name: fileName,
+        file_size_bytes: fileSizeBytes,
+        storage_path: storagePath,
+        mime_type: mimeType,
+      });
       setNotice("Document registered in controlled repository.");
       setShowUploadModal(false);
-      setUploadForm({ title: "", category: "drawings", classification: "internal", project_id: "", description: "", file_name: "", size_bytes: "" });
+      setUploadForm({ title: "", category: "drawings" });
+      setUploadFile(null);
       await loadData();
     } catch (err) {
       setNotice(normalizeActionError(err, "Failed to upload document."));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDownload = async (id: string) => {
+    setDownloadingId(id);
+    try {
+      const res = await getDocumentSignedUrl(id);
+      const url = res.data?.url;
+      if (!url) throw new Error("No download link was returned.");
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to generate a download link for this document."));
+    } finally {
+      setDownloadingId(null);
     }
   };
 
@@ -487,11 +536,26 @@ function DocumentsWorkspace() {
 
                 {/* Actions */}
                 <div className="grid grid-cols-2 gap-2 border-b border-ink-mid pb-4">
-                  <button className="flex items-center justify-center space-x-2 bg-ink border border-ink-mid hover:bg-ink-mid/30 text-paper px-3 py-2 rounded text-xs transition-colors">
-                    <Download className="h-3.5 w-3.5 text-signal" />
-                    <span>Download</span>
+                  <button
+                    type="button"
+                    disabled={!docDetail.file_attachment_id || downloadingId === docDetail.id}
+                    onClick={() => void handleDownload(docDetail.id)}
+                    title={!docDetail.file_attachment_id ? "This document was registered without an uploaded file." : "Open a signed, time-limited download link."}
+                    className="flex items-center justify-center space-x-2 bg-ink border border-ink-mid hover:bg-ink-mid/30 text-paper px-3 py-2 rounded text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-ink"
+                  >
+                    {downloadingId === docDetail.id ? (
+                      <Loader2 className="h-3.5 w-3.5 text-signal animate-spin" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5 text-signal" />
+                    )}
+                    <span>{docDetail.file_attachment_id ? "Download" : "No file uploaded"}</span>
                   </button>
-                  <button className="flex items-center justify-center space-x-2 bg-ink border border-ink-mid hover:bg-ink-mid/30 text-paper px-3 py-2 rounded text-xs transition-colors">
+                  <button
+                    type="button"
+                    disabled
+                    title="Not yet implemented."
+                    className="flex items-center justify-center space-x-2 bg-ink border border-ink-mid text-paper/50 px-3 py-2 rounded text-xs cursor-not-allowed"
+                  >
                     <Share2 className="h-3.5 w-3.5 text-slate-light" />
                     <span>Share Link</span>
                   </button>
@@ -566,79 +630,31 @@ function DocumentsWorkspace() {
                   className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">Category</label>
-                  <select
-                    value={uploadForm.category}
-                    onChange={(e) => setUploadForm({ ...uploadForm, category: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  >
-                    <option value="drawings">Drawing</option>
-                    <option value="specifications">Specification</option>
-                    <option value="contracts">Contract / Agreement</option>
-                    <option value="compliance">Compliance / Permit</option>
-                    <option value="reports">Report</option>
-                    <option value="other">Other Supporting</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">Classification</label>
-                  <select
-                    value={uploadForm.classification}
-                    onChange={(e) => setUploadForm({ ...uploadForm, classification: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  >
-                    <option value="public">Public</option>
-                    <option value="internal">Internal Only</option>
-                    <option value="confidential">Confidential</option>
-                    <option value="restricted">Restricted</option>
-                  </select>
-                </div>
-              </div>
               <div>
-                <label className="block text-xs font-mono uppercase text-slate mb-1">Project Linkage</label>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Category</label>
                 <select
-                  value={uploadForm.project_id}
-                  onChange={(e) => setUploadForm({ ...uploadForm, project_id: e.target.value })}
+                  value={uploadForm.category}
+                  onChange={(e) => setUploadForm({ ...uploadForm, category: e.target.value })}
                   className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
                 >
-                  <option value="">No Project Linkage</option>
-                  {projects.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
+                  <option value="drawings">Drawing</option>
+                  <option value="specifications">Specification</option>
+                  <option value="contracts">Contract / Agreement</option>
+                  <option value="compliance">Compliance / Permit</option>
+                  <option value="reports">Report</option>
+                  <option value="other">Other Supporting</option>
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-mono uppercase text-slate mb-1">Description</label>
-                <textarea
-                  placeholder="Supporting scope details..."
-                  value={uploadForm.description}
-                  onChange={(e) => setUploadForm({ ...uploadForm, description: e.target.value })}
-                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50 h-20"
+                <label className="block text-xs font-mono uppercase text-slate mb-1">File</label>
+                <input
+                  type="file"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper file:mr-3 file:border-0 file:bg-ink-mid file:text-paper file:px-3 file:py-1 file:rounded file:text-xs focus:outline-none focus:border-signal/50"
                 />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">File name</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. mix-design-rev-a.pdf"
-                    value={uploadForm.file_name}
-                    onChange={(e) => setUploadForm({ ...uploadForm, file_name: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">File size bytes</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={uploadForm.size_bytes}
-                    onChange={(e) => setUploadForm({ ...uploadForm, size_bytes: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  />
-                </div>
+                {uploadFile && (
+                  <p className="text-[10px] text-slate mt-1 font-mono">{uploadFile.name} · {(uploadFile.size / 1024).toFixed(1)} KB</p>
+                )}
               </div>
               <div className="flex justify-end space-x-3 pt-3 border-t border-ink-mid">
                 <button
@@ -650,9 +666,11 @@ function DocumentsWorkspace() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
+                  disabled={uploading}
+                  className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95 disabled:opacity-50 inline-flex items-center gap-2"
                 >
-                  Upload & Register
+                  {uploading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {uploading ? "Uploading…" : "Upload & Register"}
                 </button>
               </div>
             </form>

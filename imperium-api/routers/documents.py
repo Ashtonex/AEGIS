@@ -5,11 +5,15 @@ from typing import Optional
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.database import get_db
+from core.database import get_db, supabase
+from core.logging import logger
 from core.security import require_permission
 from app.shared.pagination import ok
 
 router = APIRouter()
+
+DOCUMENTS_BUCKET = "documents"
+SIGNED_URL_TTL_SECONDS = 300
 
 
 class DocumentCreate(BaseModel):
@@ -24,6 +28,14 @@ class DocumentCreate(BaseModel):
     tender_id: Optional[UUID] = None
     file_name: Optional[str] = None
     file_size_bytes: Optional[int] = 0
+    # Path of an object the client already uploaded to the private
+    # 'documents' Storage bucket (see migrations/076) - links this
+    # document to a real file via core.file_attachments. Documents
+    # registered without one (or from before this existed) have no file
+    # to serve; the signed-url endpoint reports that explicitly rather
+    # than erroring unhelpfully.
+    storage_path: Optional[str] = None
+    mime_type: Optional[str] = None
 
 
 class StatusUpdate(BaseModel):
@@ -123,15 +135,37 @@ async def create_document(
             raise HTTPException(status_code=404, detail="Tender not found.")
 
     try:
+        file_attachment_id = None
+        if payload.storage_path:
+            file_attachment_id = (
+                await db.execute(
+                    text("""
+                INSERT INTO core.file_attachments (
+                    organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes
+                ) VALUES (
+                    :org_id, :user_id, :file_name, :storage_path, :mime_type, :size_bytes
+                ) RETURNING id
+            """),
+                    {
+                        "org_id": user["org_id"],
+                        "user_id": user["user_id"],
+                        "file_name": payload.file_name,
+                        "storage_path": payload.storage_path,
+                        "mime_type": payload.mime_type,
+                        "size_bytes": payload.file_size_bytes or 0,
+                    },
+                )
+            ).scalar()
+
         doc_id = (
             await db.execute(
                 text("""
             INSERT INTO core.documents (
                 organization_id, title, category, opportunity_id, tender_id,
-                file_name, file_size_bytes, created_by
+                file_name, file_size_bytes, file_attachment_id, created_by
             ) VALUES (
                 :org_id, :title, :category, :opportunity_id, :tender_id,
-                :file_name, :file_size_bytes, :user_id
+                :file_name, :file_size_bytes, :file_attachment_id, :user_id
             ) RETURNING id
         """),
                 {
@@ -142,6 +176,7 @@ async def create_document(
                     "tender_id": payload.tender_id,
                     "file_name": payload.file_name,
                     "file_size_bytes": payload.file_size_bytes,
+                    "file_attachment_id": file_attachment_id,
                     "user_id": user["user_id"],
                 },
             )
@@ -156,6 +191,64 @@ async def create_document(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{document_id}/signed-url")
+async def get_signed_url(
+    document_id: UUID,
+    user: dict = Depends(require_permission("documents.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mints a short-lived signed URL for this document's stored file.
+    Deliberately server-side: the 'documents' bucket has no SELECT policy
+    for authenticated clients, so this permission check (and the org
+    match below) is the only gate on who can actually read the bytes -
+    a client can't fetch the object directly even knowing its path."""
+    row = (
+        await db.execute(
+            text("""
+        SELECT fa.storage_path, fa.mime_type, fa.file_name
+        FROM core.documents d
+        JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
+        WHERE d.id = :id AND d.organization_id = :org_id AND d.is_deleted = false
+    """),
+            {"id": document_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+
+    if not row:
+        doc_exists = await db.execute(
+            text("SELECT 1 FROM core.documents WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": document_id, "org_id": user["org_id"]},
+        )
+        if not doc_exists.first():
+            raise HTTPException(status_code=404, detail="Document not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="This document was registered without an uploaded file, so there is nothing to download.",
+        )
+
+    try:
+        signed = supabase.storage.from_(DOCUMENTS_BUCKET).create_signed_url(
+            row["storage_path"], SIGNED_URL_TTL_SECONDS
+        )
+    except Exception:
+        logger.exception("Failed to create signed URL for document", document_id=str(document_id))
+        raise HTTPException(status_code=502, detail="Could not generate a download link for this file. Try again.")
+
+    signed_url = signed.get("signedURL")
+    if not signed_url:
+        raise HTTPException(status_code=502, detail="Could not generate a download link for this file. Try again.")
+
+    return ok(
+        {
+            "url": signed_url,
+            "file_name": row["file_name"],
+            "mime_type": row["mime_type"],
+            "expires_in": SIGNED_URL_TTL_SECONDS,
+        },
+        "Signed download URL generated.",
+    )
 
 
 @router.patch("/{document_id}/status")

@@ -2480,6 +2480,13 @@ export async function createDocument(payload: Record<string, unknown>): Promise<
   });
 }
 
+export async function getDocumentSignedUrl(id: string): Promise<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>> {
+  return fetchApi<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>>(`/api/v1/documents/${id}/signed-url`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 export async function updateDocumentStatus(id: string, status: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/documents/${id}/status`, {
     method: 'PATCH',
