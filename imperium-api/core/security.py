@@ -178,7 +178,13 @@ def verify_token(
     """Validate bearer token via local signature verification first, falling
     back to the Supabase Auth API. The token's signature is always verified
     by one of these two paths before any claim in it is trusted."""
-    token = credentials.credentials
+    return verify_token_str(credentials.credentials)
+
+
+def verify_token_str(token: str) -> dict:
+    """Same validation as verify_token, taking a raw token string directly -
+    for callers that can't supply it via the Authorization header, e.g. a
+    WebSocket handshake, where the token arrives as a query parameter."""
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -377,7 +377,7 @@ export default function QuotationsDashboard() {
               </p>
             )}
 
-            {loading ? (
+            {loading && quotes.length === 0 ? (
               <div className="py-20 flex flex-col items-center justify-center space-y-3">
                 <Loader2 className="w-8 h-8 text-signal animate-spin" />
                 <span className="text-xs text-slate tracking-wider font-mono uppercase">Syncing records...</span>

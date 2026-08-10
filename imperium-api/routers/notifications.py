@@ -3,14 +3,16 @@
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_notification, emit_role_notification
-from core.database import get_db
-from core.security import SUPERADMIN_ROLE, get_current_user
+from core.database import AsyncSessionLocal, get_db
+from core.logging import logger
+from core.realtime import manager as realtime_manager
+from core.security import SUPERADMIN_ROLE, get_current_user, verify_token_str
 
 router = APIRouter()
 
@@ -187,6 +189,41 @@ async def mark_all_notifications_read(
     rows = result.fetchall()
     await db.commit()
     return _response({"count": len(rows)}, "Notifications marked as read.")
+
+
+@router.websocket("/ws")
+async def notifications_ws(websocket: WebSocket, token: str = Query(...)):
+    """Live-push channel for this user's own notifications. A native browser
+    WebSocket can't set an Authorization header, so the token travels as a
+    query parameter instead - it's validated with the exact same signature
+    check every REST endpoint uses before the connection is accepted."""
+    try:
+        payload = verify_token_str(token)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user = await get_current_user(payload=payload, db=db)
+        except HTTPException:
+            await websocket.close(code=4401)
+            return
+
+    user_id = user["user_id"]
+    await websocket.accept()
+    await realtime_manager.register(user_id, websocket)
+    try:
+        while True:
+            # This channel is push-only from the server; the receive loop
+            # exists solely to detect the client disconnecting/closing.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("Notifications WebSocket closed unexpectedly", exc_info=True)
+    finally:
+        await realtime_manager.unregister(user_id, websocket)
 
 
 @router.delete("/{notification_id}")

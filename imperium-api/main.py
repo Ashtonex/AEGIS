@@ -48,6 +48,16 @@ def create_app() -> FastAPI:
     async def root():
         return RedirectResponse(url="/docs")
 
+    @app.on_event("startup")
+    async def _start_realtime_listener() -> None:
+        from core.realtime import start_listener
+        await start_listener()
+
+    @app.on_event("shutdown")
+    async def _stop_realtime_listener() -> None:
+        from core.realtime import stop_listener
+        await stop_listener()
+
     @app.get("/health", tags=["System"])
     async def health_check():
         try:

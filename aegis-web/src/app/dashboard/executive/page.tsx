@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -500,7 +501,7 @@ function CCBCommercialGovernanceWidget() {
           <h2 className="font-mono text-xs tracking-widest text-paper uppercase">CCB Commercial Governance & MD Control</h2>
           <p className="text-xs text-slate-light mt-1">Live Commercial Control Brain Exception Log & Rate Outlier Interceptions</p>
         </div>
-        <a href="/dashboard/quotations/ccb" className="font-mono text-xs text-signal hover:underline">Open CCB Portal →</a>
+        <Link href="/dashboard/quotations/ccb" className="font-mono text-xs text-signal hover:underline">Open CCB Portal →</Link>
       </div>
       <div className="mt-4 space-y-2">
         {loading ? (
