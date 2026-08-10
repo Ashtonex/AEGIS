@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   ApiError,
   getEquipmentAssets,
@@ -1409,6 +1410,8 @@ function EquipmentDashboard() {
     void loadAssets();
   }, [loadAssets]);
 
+  useLiveTable("fleet.equipment_assets", () => void loadAssets());
+
   // Derived filter options
   const statuses = useMemo(
     () =>
@@ -1610,7 +1613,7 @@ function EquipmentDashboard() {
         )}
 
         {/* Loading */}
-        {loading ? (
+        {loading && assets.length === 0 ? (
           <div className="border border-ink-mid bg-ink">
             <div className="border-b border-ink-mid px-4 py-3">
               <Skeleton className="h-4 w-40" />

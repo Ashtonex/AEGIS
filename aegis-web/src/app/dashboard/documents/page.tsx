@@ -7,6 +7,7 @@ import {
   FileCheck, Shield, ChevronRight, CheckCircle2
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   getDocuments,
   getDocument,
@@ -156,6 +157,8 @@ function DocumentsWorkspace() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useLiveTable("core.documents", () => void loadData());
 
   const loadDocDetail = async (id: string) => {
     setSelectedDocId(id);

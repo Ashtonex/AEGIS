@@ -9,6 +9,7 @@ import {
   CalendarDays, Flame, Building, Users, Truck
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   getComplianceObligations,
   createComplianceObligation,
@@ -110,6 +111,7 @@ function ComplianceWorkspace() {
   const [score, setScore] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
@@ -177,12 +179,16 @@ function ComplianceWorkspace() {
       setError(loadFailureMessage(err));
     } finally {
       setLoading(false);
+      setHasLoadedOnce(true);
     }
   }, []);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useLiveTable("core.compliance_items", () => void loadData());
+  useLiveTable("projects.hse_incidents", () => void loadData());
 
   useEffect(() => {
     setActiveTab(normalizeTab(searchParams?.get("tab")));
@@ -277,7 +283,7 @@ function ComplianceWorkspace() {
     };
   }, [empCredentials, eqCredentials, correctiveActions, deploymentGateChecks]);
 
-  if (loading) {
+  if (loading && !hasLoadedOnce) {
     return (
       <div className="flex h-96 items-center justify-center bg-ink">
         <Loader2 className="h-8 w-8 animate-spin text-signal" />

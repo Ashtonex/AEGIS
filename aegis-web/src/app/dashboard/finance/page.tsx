@@ -11,6 +11,7 @@ import {
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   getFinanceProjectSummaries,
   getFinanceProjectDetail,
@@ -151,6 +152,8 @@ function FinanceWorkspace() {
   const variations = useMemo(() => financeData.variations?.data || [], [financeData.variations]);
   const claims = useMemo(() => financeData.claims?.data || [], [financeData.claims]);
   const budgets = useMemo(() => financeData.budgets?.data || [], [financeData.budgets]);
+
+  useLiveTable("finance.budgets", () => void loadData());
   const error = loadError ? loadFailureMessage(loadError) : null;
 
   useEffect(() => {

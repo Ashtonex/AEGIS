@@ -19,6 +19,7 @@ import {
   describeActionError
 } from '@/lib/api';
 import { useApiQueries } from '@/hooks/useApiQueries';
+import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
 
 interface Contact {
@@ -131,6 +132,10 @@ export default function ContactsRegistry() {
     [contactsData.activities]
   );
   const error = loadError ? "Contacts could not be loaded from the CRM service." : null;
+
+  useLiveTable("crm.contacts", () => void reloadContacts());
+  useLiveTable("crm.organizations", () => void reloadContacts());
+  useLiveTable("crm.activities", () => void reloadContacts());
 
   useEffect(() => {
     if (contacts.length > 0 && !selectedContactId) {
@@ -409,7 +414,7 @@ export default function ContactsRegistry() {
         </section>
 
         {/* Main Grid Workspace: High-Density Split View */}
-        {isLoading ? (
+        {isLoading && !contactsData.contacts ? (
           <div className="flex-grow flex justify-center items-center">
             <Loader2 className="w-8 h-8 text-signal animate-spin" />
           </div>

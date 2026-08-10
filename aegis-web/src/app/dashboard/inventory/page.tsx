@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -163,6 +164,7 @@ function InventoryWorkspace() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+  useLiveTable("procurement.inventory_items", () => void load());
   useEffect(() => { setTab(normalizeTab(searchParams?.get("tab"))); }, [searchParams]);
 
   const metrics = useMemo(() => {
@@ -326,7 +328,7 @@ function InventoryWorkspace() {
               Below Reorder Only
             </label>
           </div>
-          {loading ? (
+          {loading && stockLevels.length === 0 ? (
             <Loading label="Loading stock levels" />
           ) : filteredStock.length === 0 ? (
             <Empty label="No stock records match this view." sub="Receive stock or adjust filters to see balances." />
@@ -395,7 +397,7 @@ function InventoryWorkspace() {
               </button>
             </div>
           </div>
-          {loading ? (
+          {loading && catalogue.length === 0 ? (
             <Loading label="Loading item catalogue" />
           ) : filteredCatalogue.length === 0 ? (
             <Empty label="No items in catalogue." sub="Add items to start tracking stock across stores." />
@@ -451,7 +453,7 @@ function InventoryWorkspace() {
               <Plus className="h-4 w-4" /> Add Store
             </button>
           </div>
-          {loading ? (
+          {loading && stores.length === 0 ? (
             <Loading label="Loading stores" />
           ) : stores.length === 0 ? (
             <Empty label="No stores registered." sub="Add a warehouse, site store, or yard to begin tracking stock." />
@@ -525,7 +527,7 @@ function InventoryWorkspace() {
               </button>
             )}
           </div>
-          {loading ? (
+          {loading && movements.length === 0 ? (
             <Loading label="Loading stock movements" />
           ) : filteredMovements.length === 0 ? (
             <Empty label="No movements match this filter." sub="Try changing the date range or type filter." />

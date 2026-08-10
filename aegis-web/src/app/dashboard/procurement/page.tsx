@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useApiQueries } from "@/hooks/useApiQueries";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   approveProcurementRequisition,
   createProcurementRfq,
@@ -232,6 +233,9 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       },
     }
   );
+
+  useLiveTable("procurement.procurement_orders", () => void load());
+  useLiveTable("procurement.suppliers", () => void load());
 
   const requisitions = useMemo(() => (Array.isArray(procurementData.requisitions?.data) ? procurementData.requisitions.data : []), [procurementData.requisitions]);
   const rfqs = useMemo(() => (Array.isArray(procurementData.rfqs?.data) ? procurementData.rfqs.data : []), [procurementData.rfqs]);
@@ -554,7 +558,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
       {/* Tab content */}
       <section className="border border-t-0 border-ink-mid bg-ink">
-        {loading ? <LoadingState label={`Loading ${tab}…`} /> :
+        {loading && !procurementData.requisitions ? <LoadingState label={`Loading ${tab}…`} /> :
           tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} /> :
           tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :

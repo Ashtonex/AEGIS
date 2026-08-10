@@ -33,6 +33,7 @@ import {
   sendCrmWhatsAppMessage,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1139,6 +1140,10 @@ export default function CRMActivitiesPage() {
     void loadPageData();
   }, [session, loadPageData]);
 
+  useLiveTable("crm.activities", () => void loadPageData());
+  useLiveTable("crm.contacts", () => void loadPageData());
+  useLiveTable("crm.opportunities", () => void loadPageData());
+
   const toggleStatus = useCallback(
     async (activity: ActivityRecord) => {
       const nextStatus = activity.status === "Completed" ? "Pending" : "Completed";
@@ -1234,7 +1239,7 @@ export default function CRMActivitiesPage() {
           </div>
         )}
 
-        {isLoading ? (
+        {isLoading && activities.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="flex flex-col items-center gap-3">
               <Loader2 className="w-8 h-8 text-signal animate-spin" />

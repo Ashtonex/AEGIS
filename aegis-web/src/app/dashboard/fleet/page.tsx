@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { ApiError, getComplianceDeploymentGateChecks, getFleet } from "@/lib/api";
 import { useApiQueries } from "@/hooks/useApiQueries";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from "@/components/ui/OperationalTable";
 import { EmptyState as SharedEmptyState } from "@/components/ui/EmptyState";
 import {
@@ -167,6 +168,8 @@ function FleetTrackerDashboard() {
     : null;
   const gateWarning = warnings[0] ?? null;
 
+  useLiveTable("fleet.fleet", () => void loadFleet());
+
   useEffect(() => {
     setSelectedId(current => assets.some(asset => asset.id === current) ? current : (assets[0]?.id ?? null));
   }, [assets]);
@@ -224,7 +227,7 @@ function FleetTrackerDashboard() {
         {errorMessage && <div className="mb-5 flex items-start gap-3 border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-100"><ShieldAlert size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Fleet register unavailable</p><p className="mt-1 text-red-100/80">{errorMessage}</p></div></div>}
         {gateWarning && <div className="mb-5 flex items-start gap-3 border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Deployment gate history unavailable</p><p className="mt-1 text-amber-100/80">{gateWarning}</p></div></div>}
 
-        {loading ? <div className="flex min-h-80 items-center justify-center border border-ink-mid bg-ink"><Loader2 className="animate-spin text-slate-light" size={26} /></div> : !errorMessage && assets.length === 0 ? (
+        {loading && !data.fleet ? <div className="flex min-h-80 items-center justify-center border border-ink-mid bg-ink"><Loader2 className="animate-spin text-slate-light" size={26} /></div> : !errorMessage && assets.length === 0 ? (
           <SharedEmptyState
             icon={Truck}
             title="No fleet assets have been recorded"

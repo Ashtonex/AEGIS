@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   addDailyReportEquipment,
   addDailyReportLabour,
@@ -167,6 +168,7 @@ function SiteOperationsWorkspace() {
   }, [status]);
 
   useEffect(() => { void load(); }, [load]);
+  useLiveTable("projects.daily_site_reports", () => void load());
 
   const open = async (report: ApiRecord) => {
     setSelected(report);
@@ -390,7 +392,7 @@ function SiteOperationsWorkspace() {
             <select value={status} onChange={(event) => setStatus(event.target.value)} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper"><option value="all">All statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
           </div>
         </div>
-        {loading ? <Loading label="Loading daily reports" /> : filtered.length === 0 ? <Empty /> : <div className="divide-y divide-ink-mid">{filtered.map((report) => <button key={report.id} onClick={() => void open(report)} className="grid w-full gap-3 p-4 text-left hover:bg-ink-light/50 md:grid-cols-[minmax(0,1.5fr)_1fr_1fr_auto] md:items-center"><div><p className="font-medium text-paper">{reportTitle(report)}</p><p className="mt-1 text-xs text-slate-light">{text(report.actual_work, "No actual work summary captured")}</p></div><p className="text-sm text-slate-light">{text(report.site_name, "No site selected")}</p><p className="text-sm text-slate-light">{money(report.cost_exposure)}</p><span className={`w-fit border px-2 py-1 font-mono text-[10px] uppercase ${statusClass(report.status)}`}>{text(report.status, "draft")}</span></button>)}</div>}
+        {loading && reports.length === 0 ? <Loading label="Loading daily reports" /> : filtered.length === 0 ? <Empty /> : <div className="divide-y divide-ink-mid">{filtered.map((report) => <button key={report.id} onClick={() => void open(report)} className="grid w-full gap-3 p-4 text-left hover:bg-ink-light/50 md:grid-cols-[minmax(0,1.5fr)_1fr_1fr_auto] md:items-center"><div><p className="font-medium text-paper">{reportTitle(report)}</p><p className="mt-1 text-xs text-slate-light">{text(report.actual_work, "No actual work summary captured")}</p></div><p className="text-sm text-slate-light">{text(report.site_name, "No site selected")}</p><p className="text-sm text-slate-light">{money(report.cost_exposure)}</p><span className={`w-fit border px-2 py-1 font-mono text-[10px] uppercase ${statusClass(report.status)}`}>{text(report.status, "draft")}</span></button>)}</div>}
       </section>
 
       {selected ? <ReportDrawer report={selected} detail={detail} loading={detailLoading} employees={employees} fleet={fleet} inventoryItems={inventoryItems} stores={stores} labour={labour} setLabour={setLabour} equipment={equipment} setEquipment={setEquipment} material={material} setMaterial={setMaterial} saving={saving} addLine={addLine} transition={transition} onClose={() => { setSelected(null); setDetail(null); }} /> : null}

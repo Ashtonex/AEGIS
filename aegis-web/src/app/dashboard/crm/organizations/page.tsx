@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import Link from 'next/link';
 import {
   ArrowLeft, Building2, ExternalLink, Phone, Mail, Plus,
@@ -118,59 +119,61 @@ export default function ClientOrganizationsRegistry() {
   });
   const [activityFormErrors, setActivityFormErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
-      setError(null);
-      try {
-        const [orgsRes, contactsRes, activitiesRes] = await Promise.allSettled([
-          getCrmOrganizations(),
-          getCrmContacts(),
-          getCrmActivities()
-        ]);
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const [orgsRes, contactsRes, activitiesRes] = await Promise.allSettled([
+        getCrmOrganizations(),
+        getCrmContacts(),
+        getCrmActivities()
+      ]);
 
-        let loadedOrgs: Organization[] = [];
-        const warnings: string[] = [];
-        if (orgsRes.status === 'fulfilled' && orgsRes.value.success && Array.isArray(orgsRes.value.data)) {
-          loadedOrgs = orgsRes.value.data;
-        } else {
-          warnings.push("Client organizations could not be loaded from the CRM service.");
-        }
-        setOrgs(loadedOrgs);
-
-        if (loadedOrgs.length > 0) {
-          setSelectedOrgId(loadedOrgs[0].id);
-        }
-
-        if (contactsRes.status === 'fulfilled' && contactsRes.value.success && Array.isArray(contactsRes.value.data)) {
-          setContacts(contactsRes.value.data);
-        } else {
-          setContacts([]);
-          warnings.push("CRM contacts could not be loaded.");
-        }
-
-        if (activitiesRes.status === 'fulfilled' && activitiesRes.value.success && Array.isArray(activitiesRes.value.data)) {
-          setActivities(activitiesRes.value.data);
-        } else {
-          setActivities([]);
-          warnings.push("CRM activities could not be loaded.");
-        }
-        setSourceWarnings(warnings);
-      } catch (err) {
-        console.warn("Client organization data failed to load:", err);
-        setError("Client organizations could not be loaded from the CRM service.");
-        setOrgs([]);
-        setContacts([]);
-        setActivities([]);
-        setSelectedOrgId(null);
-        setSourceWarnings([]);
-      } finally {
-        setIsLoading(false);
+      let loadedOrgs: Organization[] = [];
+      const warnings: string[] = [];
+      if (orgsRes.status === 'fulfilled' && orgsRes.value.success && Array.isArray(orgsRes.value.data)) {
+        loadedOrgs = orgsRes.value.data;
+      } else {
+        warnings.push("Client organizations could not be loaded from the CRM service.");
       }
+      setOrgs(loadedOrgs);
+
+      setSelectedOrgId((current) => (current && loadedOrgs.some((o) => o.id === current)) ? current : (loadedOrgs[0]?.id ?? null));
+
+      if (contactsRes.status === 'fulfilled' && contactsRes.value.success && Array.isArray(contactsRes.value.data)) {
+        setContacts(contactsRes.value.data);
+      } else {
+        setContacts([]);
+        warnings.push("CRM contacts could not be loaded.");
+      }
+
+      if (activitiesRes.status === 'fulfilled' && activitiesRes.value.success && Array.isArray(activitiesRes.value.data)) {
+        setActivities(activitiesRes.value.data);
+      } else {
+        setActivities([]);
+        warnings.push("CRM activities could not be loaded.");
+      }
+      setSourceWarnings(warnings);
+    } catch (err) {
+      console.warn("Client organization data failed to load:", err);
+      setError("Client organizations could not be loaded from the CRM service.");
+      setOrgs([]);
+      setContacts([]);
+      setActivities([]);
+      setSelectedOrgId(null);
+      setSourceWarnings([]);
+    } finally {
+      setIsLoading(false);
     }
-    
-    void loadData();
-  }, [session]);
+  }, []);
+
+  useEffect(() => {
+    if (session) void loadData();
+  }, [session, loadData]);
+
+  useLiveTable("crm.organizations", () => void loadData());
+  useLiveTable("crm.contacts", () => void loadData());
+  useLiveTable("crm.activities", () => void loadData());
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setNotification({ message, type });
@@ -528,7 +531,7 @@ export default function ClientOrganizationsRegistry() {
         </section>
 
         {/* Main Workspace Layout (High-Density Split View) */}
-        {isLoading ? (
+        {isLoading && orgs.length === 0 ? (
           <div className="flex-1 flex justify-center items-center">
             <Loader2 className="w-8 h-8 text-signal animate-spin" />
           </div>
