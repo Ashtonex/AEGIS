@@ -74,6 +74,8 @@ def create_app() -> FastAPI:
                 },
             )
 
+        from core.realtime import get_listener_status
+
         return {
             "success": True,
             "data": {
@@ -81,6 +83,7 @@ def create_app() -> FastAPI:
                 "environment": settings.ENVIRONMENT,
                 "database": database_health["status"],
                 "deploy_marker": "modules-diag-2026-08-05a",
+                "realtime_listener": get_listener_status(),
             },
             "message": "Project Imperium is online.",
             "meta": {},

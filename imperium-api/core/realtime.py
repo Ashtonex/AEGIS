@@ -128,12 +128,42 @@ manager = ConnectionManager()
 
 _listener_connection: asyncpg.Connection | None = None
 _listener_lock = asyncio.Lock()
+_keepalive_task: asyncio.Task | None = None
+
+# A connection that's alive but has silently gone stale (killed by an idle
+# timeout somewhere between here and Postgres - a pooler, a NAT gateway, a
+# cloud LB - none of which necessarily send a clean close) looks identical
+# to a healthy one until something tries to use it. Nothing here ever
+# writes to this connection under normal operation, so without an active
+# probe a dead listener could sit "connected" indefinitely while quietly
+# delivering nothing. These fields make that state observable via /health
+# instead of only discoverable by noticing live-push has gone silent.
+KEEPALIVE_INTERVAL_SECONDS = 20
+_last_keepalive_ok_at: float | None = None
+_reconnect_count = 0
+_last_error: str | None = None
 
 
 def _raw_dsn() -> str:
     """asyncpg.connect() wants a plain postgresql:// DSN, not the
     +asyncpg driver-qualified URL SQLAlchemy uses."""
     return settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+def get_listener_status() -> dict[str, Any]:
+    """Surfaced on /health - lets the listener's real state be checked from
+    outside the process (e.g. in production, where nothing else exposes it)
+    instead of only being visible in server logs."""
+    connected = _listener_connection is not None and not _listener_connection.is_closed()
+    return {
+        "connected": connected,
+        "last_keepalive_ok_at": _last_keepalive_ok_at,
+        "seconds_since_keepalive": (
+            None if _last_keepalive_ok_at is None else round(asyncio.get_event_loop().time() - _last_keepalive_ok_at, 1)
+        ),
+        "reconnect_count": _reconnect_count,
+        "last_error": _last_error,
+    }
 
 
 def _on_notification(connection, pid, channel, payload: str) -> None:
@@ -164,32 +194,91 @@ def _on_notification(connection, pid, channel, payload: str) -> None:
         )
 
 
+async def _connect() -> asyncpg.Connection:
+    connection = await asyncpg.connect(_raw_dsn())
+    await connection.add_listener(NOTIFICATIONS_CHANNEL, _on_notification)
+    await connection.add_listener(LIVE_CHANGES_CHANNEL, _on_notification)
+    return connection
+
+
+async def _reconnect(reason: str) -> None:
+    """Tears down whatever's left of the old connection (best-effort - it's
+    already unusable, so a failure here is expected and ignored) and
+    establishes a fresh one. Bumps the observable reconnect count so a
+    listener that's cycling repeatedly is visible on /health rather than
+    looking identical to one that connected once and has been fine since."""
+    global _listener_connection, _reconnect_count, _last_error
+    _last_error = reason
+    _reconnect_count += 1
+    if _listener_connection is not None:
+        try:
+            await _listener_connection.close()
+        except Exception:
+            pass
+    try:
+        _listener_connection = await _connect()
+        logger.warning("Live-push listener reconnected", reason=reason, reconnect_count=_reconnect_count)
+    except Exception as exc:
+        _listener_connection = None
+        _last_error = f"{reason} -> reconnect failed: {exc}"
+        logger.exception("Live-push listener reconnect failed", reason=reason)
+
+
+async def _keepalive_loop() -> None:
+    """Periodically proves the listener connection is actually still able
+    to reach Postgres, and reconnects the instant it isn't. Without this,
+    a connection silently killed by an idle timeout somewhere in the
+    network path (a pooler, a cloud load balancer, a NAT gateway) would
+    stay "connected" from this process's point of view - nothing else here
+    ever writes to it - while quietly never delivering another event."""
+    global _last_keepalive_ok_at
+    while True:
+        await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
+        try:
+            if _listener_connection is None or _listener_connection.is_closed():
+                await _reconnect("connection was closed")
+                continue
+            await asyncio.wait_for(_listener_connection.fetchval("SELECT 1"), timeout=10)
+            _last_keepalive_ok_at = asyncio.get_event_loop().time()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await _reconnect(f"keepalive failed: {exc}")
+
+
 async def start_listener() -> None:
     """Opens one dedicated, non-pooled connection for the lifetime of the
     process and registers both NOTIFY listeners on it. Must not go through
     the SQLAlchemy engine's pool - LISTEN state is per-connection and would
     be silently lost the moment a pooled connection is returned and reused
-    for an unrelated request."""
-    global _listener_connection
+    for an unrelated request. Also starts the keepalive loop that detects
+    and repairs a silently-dropped connection."""
+    global _listener_connection, _keepalive_task, _last_keepalive_ok_at, _last_error
     async with _listener_lock:
         if _listener_connection is not None:
             return
         try:
-            _listener_connection = await asyncpg.connect(_raw_dsn())
-            await _listener_connection.add_listener(NOTIFICATIONS_CHANNEL, _on_notification)
-            await _listener_connection.add_listener(LIVE_CHANGES_CHANNEL, _on_notification)
+            _listener_connection = await _connect()
+            _last_keepalive_ok_at = asyncio.get_event_loop().time()
             logger.info(
                 "Live-push listener connected",
                 channels=f"{NOTIFICATIONS_CHANNEL},{LIVE_CHANGES_CHANNEL}",
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("Live-push listener failed to start - nothing will be pushed live")
             _listener_connection = None
+            _last_error = f"initial connect failed: {exc}"
+
+        if _keepalive_task is None:
+            _keepalive_task = asyncio.ensure_future(_keepalive_loop())
 
 
 async def stop_listener() -> None:
-    global _listener_connection
+    global _listener_connection, _keepalive_task
     async with _listener_lock:
+        if _keepalive_task is not None:
+            _keepalive_task.cancel()
+            _keepalive_task = None
         if _listener_connection is None:
             return
         try:
