@@ -285,17 +285,35 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // of the viewport; hides again after a short idle period. The bar is
   // fixed/overlaid rather than in normal flow specifically so showing or
   // hiding it never shifts or resizes the page content underneath.
+  //
+  // Desktop-only: the reveal mechanism is entirely hover-based (the bar
+  // itself, plus a thin trigger strip at the top of the viewport), and
+  // touch devices have no hover at all. On mobile the hamburger button
+  // that opens the side nav drawer lives inside this same bar, so once it
+  // auto-hid there - with no scrollable content to trigger the scroll
+  // fallback, which is exactly the case on short pages - there was no way
+  // to bring it back and both the top nav and side nav became unreachable.
   const [topBarVisible, setTopBarVisible] = useState(true);
+  const [isDesktop, setIsDesktop] = useState(true);
   const topBarHoveredRef = useRef(false);
   const topBarHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mainScrollRef = useRef<HTMLElement>(null);
 
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 768px)");
+    const update = () => setIsDesktop(mql.matches);
+    update();
+    mql.addEventListener("change", update);
+    return () => mql.removeEventListener("change", update);
+  }, []);
+
   const scheduleTopBarHide = useCallback(() => {
     if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
+    if (!isDesktop) return;
     topBarHideTimerRef.current = setTimeout(() => {
       if (!topBarHoveredRef.current) setTopBarVisible(false);
     }, 2000);
-  }, []);
+  }, [isDesktop]);
 
   const revealTopBar = useCallback(() => {
     setTopBarVisible(true);
