@@ -25,6 +25,7 @@ import asyncio
 import json
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 from fastapi import WebSocket
@@ -146,8 +147,27 @@ _last_error: str | None = None
 
 def _raw_dsn() -> str:
     """asyncpg.connect() wants a plain postgresql:// DSN, not the
-    +asyncpg driver-qualified URL SQLAlchemy uses."""
-    return settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+    +asyncpg driver-qualified URL SQLAlchemy uses. Also forces Supavisor's
+    session-mode port (5432) regardless of what DATABASE_URL configures
+    for ordinary request-scoped queries.
+
+    Proven directly (not assumed): connecting to the same Supabase project
+    on port 6543 (transaction mode) vs 5432 (session mode) and registering
+    an identical LISTEN on both, a NOTIFY reached the 5432 connection and
+    never reached the 6543 one - transaction-mode pooling hands the
+    underlying physical connection to a different client between logical
+    requests, so LISTEN state registered on it doesn't reliably stick
+    around to receive anything. A keepalive SELECT 1 succeeds on 6543
+    regardless (an ordinary query round-trips fine through either pooling
+    mode), which is exactly why this failure mode is invisible from
+    /health and needs forcing here rather than just documenting it as a
+    deployment requirement."""
+    dsn = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+    parsed = urlsplit(dsn)
+    if parsed.port == 6543:
+        new_netloc = parsed.netloc.replace(":6543", ":5432", 1)
+        dsn = urlunsplit(parsed._replace(netloc=new_netloc))
+    return dsn
 
 
 def get_listener_status() -> dict[str, Any]:
