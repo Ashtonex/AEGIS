@@ -20,6 +20,7 @@ class CostCodeCreate(BaseModel):
     code: str = Field(min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=255)
     category: str = Field(default="materials", max_length=40)
+    department_id: Optional[UUID] = None
 
 
 class VariationCreate(BaseModel):
@@ -56,6 +57,7 @@ class CashbookTransactionCreate(BaseModel):
     amount: float = Field(gt=0)
     description: str
     project_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     counterparty_type: Optional[str] = Field(default=None, max_length=40)
     counterparty_name: Optional[str] = Field(default=None, max_length=255)
     payment_method: str = Field(default="bank_transfer", max_length=40)
@@ -74,6 +76,7 @@ class SupplierPaymentItem(BaseModel):
     supplier_invoice_id: UUID
     supplier_id: UUID
     project_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     amount: float = Field(gt=0)
     payment_reference: Optional[str] = Field(default=None, max_length=160)
 
@@ -106,6 +109,7 @@ class EmployeePayProfileUpsert(BaseModel):
 class PayrollItemPayload(BaseModel):
     employee_id: UUID
     project_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     regular_hours: float = 0.0
     overtime_hours: float = 0.0
     gross_pay: float = 0.0
@@ -132,21 +136,30 @@ class PayrollDecisionPayload(BaseModel):
 
 @router.get("/projects")
 async def list_project_financial_summaries(
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.cost.read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
     List running financial metrics for all active projects by dynamically
     aggregating budgets, actual costs, commitments, and progress claims.
+
+    Optionally scoped to a department. Projects with no department assigned
+    yet are always included alongside a matching department so nothing
+    silently disappears from view - they just won't count toward a specific
+    department's rollup (that decision is made client-side/at the summary
+    layer, not by hiding rows here).
     """
     query = text("""
-        SELECT 
+        SELECT
             p.id AS project_id,
             p.project_code,
             p.name AS project_name,
             p.status AS project_status,
             COALESCE(p.contract_value, 0) AS contract_value,
-            
+            p.department_id,
+            d.name AS department_name,
+
             -- Variations
             COALESCE((
                 SELECT SUM(v.cost_impact) 
@@ -194,13 +207,22 @@ async def list_project_financial_summaries(
                   AND pb.status = 'approved' AND pb.is_deleted = false 
                 LIMIT 1
             ), 0) AS approved_budget
-            
+
         FROM projects.projects p
+        LEFT JOIN finance.departments d ON d.id = p.department_id
         WHERE p.organization_id = :org_id AND p.is_deleted = false
+          AND (:department_filter_active = false OR p.department_id = :department_id OR p.department_id IS NULL)
         ORDER BY p.name
     """)
 
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(
+        query,
+        {
+            "org_id": user["org_id"],
+            "department_id": department_id,
+            "department_filter_active": department_id is not None,
+        },
+    )
     summaries = [dict(row._mapping) for row in result]
     return ok(summaries, "Project financial summaries listed.")
 
@@ -290,20 +312,26 @@ async def get_project_financial_detail(
 
 @router.get("/cost-codes")
 async def list_cost_codes(
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.budget.read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List all cost codes in the organisation structure.
+    List all cost codes in the organisation structure, optionally scoped to
+    a department. Cost codes with no department assigned always show
+    alongside a matching department.
     """
-    result = await db.execute(
-        text("""
+    query_str = """
         SELECT * FROM finance.cost_codes
         WHERE organization_id = :org_id AND is_deleted = false
-        ORDER BY code
-    """),
-        {"org_id": user["org_id"]},
-    )
+    """
+    params = {"org_id": user["org_id"]}
+    if department_id:
+        query_str += " AND (department_id = :department_id OR department_id IS NULL)"
+        params["department_id"] = department_id
+    query_str += " ORDER BY code"
+
+    result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
     return ok(items, "Cost codes listed.")
 
@@ -321,8 +349,8 @@ async def create_cost_code(
         cost_code_id = (
             await db.execute(
                 text("""
-            INSERT INTO finance.cost_codes (organization_id, code, name, category)
-            VALUES (:org_id, :code, :name, :category)
+            INSERT INTO finance.cost_codes (organization_id, code, name, category, department_id)
+            VALUES (:org_id, :code, :name, :category, :department_id)
             RETURNING id
         """),
                 {
@@ -330,6 +358,7 @@ async def create_cost_code(
                     "code": payload.code,
                     "name": payload.name,
                     "category": payload.category,
+                    "department_id": payload.department_id,
                 },
             )
         ).scalar()
@@ -344,14 +373,17 @@ async def create_cost_code(
 async def list_variations(
     project_id: Optional[UUID] = None,
     status_filter: Optional[str] = Query(default=None, alias="status"),
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.variation.read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List variations, optionally filtered by project or status.
+    List variations, optionally filtered by project, status, or department
+    (derived from the variation's project - a variation with no department
+    assigned via its project always shows alongside a matching department).
     """
     query_str = """
-        SELECT v.*, p.name AS project_name
+        SELECT v.*, p.name AS project_name, p.department_id
         FROM finance.variations v
         JOIN projects.projects p ON p.id = v.project_id AND p.organization_id = v.organization_id
         WHERE v.organization_id = :org_id AND v.is_deleted = false
@@ -363,6 +395,9 @@ async def list_variations(
     if status_filter:
         query_str += " AND v.status = :status"
         params["status"] = status_filter
+    if department_id:
+        query_str += " AND (p.department_id = :department_id OR p.department_id IS NULL)"
+        params["department_id"] = department_id
 
     query_str += " ORDER BY v.created_at DESC"
 
@@ -424,14 +459,16 @@ async def create_variation(
 @router.get("/progress-claims")
 async def list_progress_claims(
     project_id: Optional[UUID] = None,
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.claim.read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List progress claims, optionally filtered by project.
+    List progress claims, optionally filtered by project or department
+    (derived from the claim's project).
     """
     query_str = """
-        SELECT pc.*, p.name AS project_name
+        SELECT pc.*, p.name AS project_name, p.department_id
         FROM finance.progress_claims pc
         JOIN projects.projects p ON p.id = pc.project_id AND p.organization_id = pc.organization_id
         WHERE pc.organization_id = :org_id AND pc.is_deleted = false
@@ -440,6 +477,9 @@ async def list_progress_claims(
     if project_id:
         query_str += " AND pc.project_id = :project_id"
         params["project_id"] = project_id
+    if department_id:
+        query_str += " AND (p.department_id = :department_id OR p.department_id IS NULL)"
+        params["department_id"] = department_id
 
     query_str += " ORDER BY pc.created_at DESC"
 
@@ -506,6 +546,7 @@ async def create_cash_account(
 async def get_cashbook(
     cash_account_id: Optional[UUID] = None,
     project_id: Optional[UUID] = None,
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.cash.read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -517,6 +558,9 @@ async def get_cashbook(
     if project_id:
         query += " AND project_id = :project_id"
         params["project_id"] = project_id
+    if department_id:
+        query += " AND (department_id = :department_id OR department_id IS NULL)"
+        params["department_id"] = department_id
     query += " ORDER BY transaction_date DESC, created_at DESC"
     
     result = await db.execute(text(query), params)
@@ -545,12 +589,12 @@ async def post_cashbook_transaction(
                     INSERT INTO finance.cashbook_transactions (
                         organization_id, cash_account_id, transaction_number, transaction_date,
                         transaction_type, direction, amount, currency, description,
-                        project_id, counterparty_type, counterparty_name, payment_method,
+                        project_id, department_id, counterparty_type, counterparty_name, payment_method,
                         reference, posted_by
                     ) VALUES (
                         :org_id, :cash_account_id, :transaction_number, :transaction_date,
                         :transaction_type, :direction, :amount, :currency, :description,
-                        :project_id, :counterparty_type, :counterparty_name, :payment_method,
+                        :project_id, :department_id, :counterparty_type, :counterparty_name, :payment_method,
                         :reference, :user_id
                     ) RETURNING id
                 """),
@@ -565,6 +609,7 @@ async def post_cashbook_transaction(
                     "currency": "USD",
                     "description": payload.description,
                     "project_id": payload.project_id,
+                    "department_id": payload.department_id,
                     "counterparty_type": payload.counterparty_type,
                     "counterparty_name": payload.counterparty_name,
                     "payment_method": payload.payment_method,
@@ -625,13 +670,22 @@ async def allocate_receipt(
 
 @router.get("/supplier-payments")
 async def get_supplier_payments(
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.cash.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        text("SELECT * FROM finance.supplier_payment_batches WHERE organization_id = :org_id AND is_deleted = false ORDER BY created_at DESC"),
-        {"org_id": user["org_id"]},
-    )
+    query_str = "SELECT * FROM finance.supplier_payment_batches b WHERE b.organization_id = :org_id AND b.is_deleted = false"
+    params = {"org_id": user["org_id"]}
+    if department_id:
+        query_str += """ AND EXISTS (
+            SELECT 1 FROM finance.supplier_payment_items i
+            WHERE i.batch_id = b.id
+              AND (i.department_id = :department_id OR i.department_id IS NULL)
+        )"""
+        params["department_id"] = department_id
+    query_str += " ORDER BY b.created_at DESC"
+
+    result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
     return ok(items, "Supplier payment batches retrieved.")
 
@@ -677,12 +731,12 @@ async def post_supplier_payment_batch(
                         INSERT INTO finance.cashbook_transactions (
                             organization_id, cash_account_id, transaction_number, transaction_date,
                             transaction_type, direction, amount, currency, description,
-                            project_id, counterparty_type, counterparty_name, payment_method,
+                            project_id, department_id, counterparty_type, counterparty_name, payment_method,
                             reference, posted_by
                         ) VALUES (
                             :org_id, :cash_account_id, :tx_number, :payment_date,
                             'payment', 'outflow', :amount, 'USD', :desc,
-                            :project_id, 'supplier', '', :payment_method,
+                            :project_id, :department_id, 'supplier', '', :payment_method,
                             :reference, :user_id
                         ) RETURNING id
                     """),
@@ -694,6 +748,7 @@ async def post_supplier_payment_batch(
                         "amount": item.amount,
                         "desc": f"Supplier payment batch item. Invoice {item.supplier_invoice_id}",
                         "project_id": item.project_id,
+                        "department_id": item.department_id,
                         "payment_method": payload.payment_method,
                         "reference": item.payment_reference or payload.reference,
                         "user_id": user["sub"],
@@ -705,10 +760,10 @@ async def post_supplier_payment_batch(
                 text("""
                     INSERT INTO finance.supplier_payment_items (
                         organization_id, batch_id, supplier_invoice_id, supplier_id,
-                        project_id, amount, payment_reference, cashbook_transaction_id
+                        project_id, department_id, amount, payment_reference, cashbook_transaction_id
                     ) VALUES (
                         :org_id, :batch_id, :supplier_invoice_id, :supplier_id,
-                        :project_id, :amount, :payment_ref, :tx_id
+                        :project_id, :department_id, :amount, :payment_ref, :tx_id
                     )
                 """),
                 {
@@ -717,6 +772,7 @@ async def post_supplier_payment_batch(
                     "supplier_invoice_id": item.supplier_invoice_id,
                     "supplier_id": item.supplier_id,
                     "project_id": item.project_id,
+                    "department_id": item.department_id,
                     "amount": item.amount,
                     "payment_ref": item.payment_reference,
                     "tx_id": tx_id,
@@ -826,13 +882,28 @@ async def upsert_payroll_profile(
 
 @router.get("/payroll/runs")
 async def get_payroll_runs(
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.payroll.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        text("SELECT * FROM finance.payroll_runs WHERE organization_id = :org_id AND is_deleted = false ORDER BY created_at DESC"),
-        {"org_id": user["org_id"]},
-    )
+    """
+    List payroll runs, optionally scoped to a department. A run is included
+    if any of its items belong to that department or have no department
+    assigned yet - department lives on payroll_items, not the run itself,
+    since a single run can span multiple departments.
+    """
+    query_str = "SELECT * FROM finance.payroll_runs r WHERE r.organization_id = :org_id AND r.is_deleted = false"
+    params = {"org_id": user["org_id"]}
+    if department_id:
+        query_str += """ AND EXISTS (
+            SELECT 1 FROM finance.payroll_items i
+            WHERE i.payroll_run_id = r.id
+              AND (i.department_id = :department_id OR i.department_id IS NULL)
+        )"""
+        params["department_id"] = department_id
+    query_str += " ORDER BY r.created_at DESC"
+
+    result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
     return ok(items, "Payroll runs retrieved.")
 
@@ -877,11 +948,11 @@ async def create_payroll_run(
             await db.execute(
                 text("""
                     INSERT INTO finance.payroll_items (
-                        organization_id, payroll_run_id, employee_id, project_id,
+                        organization_id, payroll_run_id, employee_id, project_id, department_id,
                         regular_hours, overtime_hours, gross_pay, tax_deduction,
                         statutory_deduction, other_deduction, net_pay
                     ) VALUES (
-                        :org_id, :run_id, :employee_id, :project_id,
+                        :org_id, :run_id, :employee_id, :project_id, :department_id,
                         :regular_hours, :overtime_hours, :gross_pay, :tax_deduction,
                         :statutory_deduction, :other_deduction, :net_pay
                     )
@@ -891,6 +962,7 @@ async def create_payroll_run(
                     "run_id": run_id,
                     "employee_id": item.employee_id,
                     "project_id": item.project_id,
+                    "department_id": item.department_id,
                     "regular_hours": item.regular_hours,
                     "overtime_hours": item.overtime_hours,
                     "gross_pay": item.gross_pay,

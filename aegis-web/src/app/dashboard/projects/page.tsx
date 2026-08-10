@@ -31,15 +31,15 @@ import {
   Calendar
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
-import { ApiError, getExecutiveProjectDetail, getInternalProjects, getProject } from "@/lib/api";
+import { ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
-type Project = Record<string, unknown> & { 
-  id: string; 
-  name?: string; 
-  project_name?: string; 
-  status?: string; 
-  updated_at?: string; 
+type Project = Record<string, unknown> & {
+  id: string;
+  name?: string;
+  project_name?: string;
+  status?: string;
+  updated_at?: string;
   created_at?: string;
   location?: string;
   contract_value?: number;
@@ -52,7 +52,10 @@ type Project = Record<string, unknown> & {
   project_code?: string;
   client_name?: string;
   client?: string;
+  department_id?: string;
 };
+
+type Department = { id: string; code: string; name: string };
 
 type Detail = Record<string, unknown> & { 
   project?: Project; 
@@ -129,6 +132,13 @@ function ProjectsWorkspace() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [departments, setDepartments] = useState<Department[]>([]);
+
+  useEffect(() => {
+    getFinanceDepartments()
+      .then((res) => setDepartments(res.data || []))
+      .catch(() => setDepartments([]));
+  }, []);
 
   const normalizeError = useCallback((value: unknown, fallback: string) => {
     if (value instanceof ApiError) {
@@ -331,8 +341,13 @@ function ProjectsWorkspace() {
       </section>
 
       {selected ? (
-        <ProjectDetail 
-          project={selected} 
+        <ProjectDetail
+          project={selected}
+          departments={departments}
+          onDepartmentChange={(deptId) => {
+            setSelected((prev) => (prev ? { ...prev, department_id: deptId } : prev));
+            setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, department_id: deptId } : p)));
+          }}
           detail={detail} 
           loading={detailLoading} 
           error={detailError} 
@@ -399,20 +414,41 @@ interface GanttMilestone {
   actualDuration: number;
 }
 
-function ProjectDetail({ 
-  project, 
-  detail, 
-  loading, 
-  error, 
-  onClose 
-}: { 
-  project: Project; 
-  detail: Detail | null; 
-  loading: boolean; 
-  error: string | null; 
-  onClose: () => void 
-}) { 
-  const source = detail?.project ?? project; 
+function ProjectDetail({
+  project,
+  detail,
+  loading,
+  error,
+  onClose,
+  departments,
+  onDepartmentChange,
+}: {
+  project: Project;
+  detail: Detail | null;
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+  departments: Department[];
+  onDepartmentChange: (departmentId: string) => void;
+}) {
+  const source = detail?.project ?? project;
+
+  const [departmentSaving, setDepartmentSaving] = useState(false);
+  const [departmentError, setDepartmentError] = useState<string | null>(null);
+
+  const handleDepartmentSelect = useCallback(async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const deptId = event.target.value;
+    setDepartmentSaving(true);
+    setDepartmentError(null);
+    try {
+      await updateInternalProject(project.id, { department_id: deptId || null });
+      onDepartmentChange(deptId);
+    } catch (err) {
+      setDepartmentError("Failed to update department.");
+    } finally {
+      setDepartmentSaving(false);
+    }
+  }, [project.id, onDepartmentChange]);
   const viability = detail?.viability?.[0]; 
 
   const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials">("overview");
@@ -628,9 +664,25 @@ function ProjectDetail({
             <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-light">
               <MapPin className="h-3.5 w-3.5 text-signal" />{text(source.location)}
             </p>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Department</span>
+              <select
+                value={(source.department_id as string | undefined) ?? ""}
+                onChange={handleDepartmentSelect}
+                disabled={departmentSaving}
+                className="h-7 border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
+              >
+                <option value="">Unassigned</option>
+                {departments.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+              {departmentSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+              {departmentError && <span className="text-[10px] text-red-300">{departmentError}</span>}
+            </div>
           </div>
-          <button 
-            onClick={onClose} 
+          <button
+            onClick={onClose}
             className="border border-ink-mid bg-ink-light p-2 text-slate-light hover:border-signal hover:text-paper" 
             aria-label="Close project detail"
           >

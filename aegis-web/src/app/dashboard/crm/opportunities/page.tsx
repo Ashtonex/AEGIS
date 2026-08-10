@@ -26,6 +26,7 @@ import {
   markCrmOpportunityLost,
   getCrmWinLossReasons,
   createCrmWinLossReason,
+  getFinanceDepartments,
   describeActionError,
 } from '@/lib/api';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
@@ -147,6 +148,8 @@ export default function OpportunitiesKanban() {
   const [winNotes, setWinNotes] = useState('');
   const [winReasonOptions, setWinReasonOptions] = useState<any[]>([]);
   const [selectedWinReasonId, setSelectedWinReasonId] = useState('');
+  const [winDepartmentOptions, setWinDepartmentOptions] = useState<any[]>([]);
+  const [selectedWinDepartmentId, setSelectedWinDepartmentId] = useState('');
 
   // Duplicate Check States
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false);
@@ -546,12 +549,19 @@ export default function OpportunitiesKanban() {
   const handleMarkWon = async () => {
     setWinNotes('');
     setSelectedWinReasonId('');
+    setSelectedWinDepartmentId('');
     setIsCloseWinModalOpen(true);
     try {
       const res = await getCrmWinLossReasons('won');
       if (res.success && Array.isArray(res.data)) setWinReasonOptions(res.data);
     } catch {
       setWinReasonOptions([]);
+    }
+    try {
+      const res = await getFinanceDepartments();
+      if (res.success && Array.isArray(res.data)) setWinDepartmentOptions(res.data);
+    } catch {
+      setWinDepartmentOptions([]);
     }
   };
 
@@ -568,6 +578,7 @@ export default function OpportunitiesKanban() {
         create_project: true,
         win_loss_reason: winNotes.trim() || undefined,
         win_loss_reason_id: reasonId,
+        department_id: selectedWinDepartmentId || undefined,
       });
       setIsCloseWinModalOpen(false);
       try {
@@ -1614,6 +1625,19 @@ export default function OpportunitiesKanban() {
                   >
                     <option value="">Custom (use notes below)</option>
                     {winReasonOptions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </select>
+                </div>
+              )}
+              {winDepartmentOptions.length > 0 && (
+                <div>
+                  <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Department</label>
+                  <select
+                    value={selectedWinDepartmentId}
+                    onChange={(e) => setSelectedWinDepartmentId(e.target.value)}
+                    className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                  >
+                    <option value="">Unassigned</option>
+                    {winDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                   </select>
                 </div>
               )}

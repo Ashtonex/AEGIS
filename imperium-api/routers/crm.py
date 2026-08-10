@@ -276,6 +276,7 @@ class MarkWonPayload(CrmPayload):
     project_type: Optional[str] = Field(default=None, max_length=100)
     start_date: Optional[date] = None
     planned_completion_date: Optional[date] = None
+    department_id: Optional[UUID] = None
 
 
 class MarkLostPayload(CrmPayload):
@@ -1804,12 +1805,12 @@ async def mark_opportunity_won(
                     INSERT INTO projects.projects (
                         organization_id, created_by, name, status, project_code, project_type,
                         client_name, contract_value, start_date, planned_completion_date,
-                        client_org_id, opportunity_id, quotation_id
+                        client_org_id, opportunity_id, quotation_id, department_id
                     )
                     VALUES (
                         :org_id, :user_id, :name, 'planning', :project_code, :project_type,
                         :client_name, :contract_value, :start_date, :planned_completion_date,
-                        :client_org_id, :opportunity_id, :quotation_id
+                        :client_org_id, :opportunity_id, :quotation_id, :department_id
                     )
                     RETURNING id
                 """),
@@ -1826,6 +1827,7 @@ async def mark_opportunity_won(
                     "client_org_id": opportunity.get("client_org_id"),
                     "opportunity_id": opportunity_id,
                     "quotation_id": opportunity.get("latest_quote_id") or opportunity.get("quote_id"),
+                    "department_id": payload.department_id,
                 },
             )
             project_id = project_row.scalar()

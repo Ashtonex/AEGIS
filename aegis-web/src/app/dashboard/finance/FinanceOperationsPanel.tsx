@@ -37,7 +37,7 @@ function today() {
 const inputClass = "w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50";
 const buttonClass = "inline-flex items-center gap-2 bg-signal text-ink font-semibold px-3 py-2 rounded-sm text-sm hover:bg-signal/95 disabled:opacity-50";
 
-export function FinanceOperationsPanel({ tab, projects }: { tab: OpsTab; projects: RecordData[] }) {
+export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { tab: OpsTab; projects: RecordData[]; departmentId?: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -61,13 +61,13 @@ export function FinanceOperationsPanel({ tab, projects }: { tab: OpsTab; project
     setLoading(true);
     const [accountRes, cashbookRes, paymentsRes, invoicesRes, employeeRes, profileRes, runRes, claimsRes] = await Promise.allSettled([
       getFinanceCashAccounts(),
-      getFinanceCashbook(),
-      getFinanceSupplierPayments(),
+      getFinanceCashbook({ department_id: departmentId || undefined }),
+      getFinanceSupplierPayments({ department_id: departmentId || undefined }),
       getProcurementInvoices({ status: "approved", match_status: "all" }),
       getHREmployees({ status: "active" }),
       getFinancePayrollProfiles(),
-      getFinancePayrollRuns(),
-      getFinanceProgressClaims(),
+      getFinancePayrollRuns({ department_id: departmentId || undefined }),
+      getFinanceProgressClaims({ department_id: departmentId || undefined }),
     ]);
     if (accountRes.status === "fulfilled") setAccounts(accountRes.value.data || []);
     if (cashbookRes.status === "fulfilled") setCashbook(cashbookRes.value.data || []);
@@ -78,7 +78,7 @@ export function FinanceOperationsPanel({ tab, projects }: { tab: OpsTab; project
     if (runRes.status === "fulfilled") setPayrollRuns(runRes.value.data || []);
     if (claimsRes.status === "fulfilled") setClaims((claimsRes.value.data || []).filter((c: RecordData) => ["certified", "submitted"].includes(String(c.status || "").toLowerCase())));
     setLoading(false);
-  }, []);
+  }, [departmentId]);
 
   useEffect(() => {
     void loadData();

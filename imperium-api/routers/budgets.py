@@ -14,14 +14,16 @@ router = APIRouter()
 @router.get("/")
 async def list_budgets(
     project_id: Optional[UUID] = None,
+    department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.budget.read")),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List approved and active budgets for projects, optionally filtered by project.
+    List approved and active budgets for projects, optionally filtered by
+    project or department (derived from the budget's project).
     """
     query_str = """
-        SELECT pb.*, p.name AS project_name
+        SELECT pb.*, p.name AS project_name, p.department_id
         FROM finance.project_budgets pb
         JOIN projects.projects p ON p.id = pb.project_id AND p.organization_id = pb.organization_id
         WHERE pb.organization_id = :org_id AND pb.is_deleted = false
@@ -30,6 +32,9 @@ async def list_budgets(
     if project_id:
         query_str += " AND pb.project_id = :project_id"
         params["project_id"] = project_id
+    if department_id:
+        query_str += " AND (p.department_id = :department_id OR p.department_id IS NULL)"
+        params["department_id"] = department_id
 
     query_str += " ORDER BY pb.effective_date DESC"
 

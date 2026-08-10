@@ -1588,6 +1588,15 @@ export async function getInternalProjects(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/projects/`, { cache: 'no-store', allowFallback: false });
 }
 
+/** Update fields on an internal project (e.g. department assignment). */
+export async function updateInternalProject(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getExecutiveDataHealth(accessToken?: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
@@ -2058,9 +2067,20 @@ export async function pingEndpoint(route: string): Promise<boolean> {
 
 // --- FINANCE & COST CONTROL ---
 
-/** Organisation-wide financial summary across all active projects. */
-export async function getFinanceProjectSummaries(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/financial-performance/projects', {
+/** The organisation's finance departments (Construction, Plant & Equipment, Commercial). */
+export async function getFinanceDepartments(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/departments/', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Organisation-wide financial summary across all active projects, optionally scoped to a department. */
+export async function getFinanceProjectSummaries(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set('department_id', params.department_id);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/projects${query}`, {
     cache: 'no-store',
     allowFallback: false,
   });
@@ -2074,9 +2094,12 @@ export async function getFinanceProjectDetail(projectId: string): Promise<ApiRes
   });
 }
 
-/** Cost code register. */
-export async function getFinanceCostCodes(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/financial-performance/cost-codes', {
+/** Cost code register, optionally scoped to a department. */
+export async function getFinanceCostCodes(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set('department_id', params.department_id);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/cost-codes${query}`, {
     cache: 'no-store',
     allowFallback: false,
   });
@@ -2091,11 +2114,12 @@ export async function createFinanceCostCode(payload: Record<string, unknown>): P
   });
 }
 
-/** Variation register, optionally filtered by project or status. */
-export async function getFinanceVariations(params?: { project_id?: string; status?: string }): Promise<ApiResponse<any[]>> {
+/** Variation register, optionally filtered by project, status, or department. */
+export async function getFinanceVariations(params?: { project_id?: string; status?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.project_id) search.set('project_id', params.project_id);
   if (params?.status && params.status !== 'all') search.set('status', params.status);
+  if (params?.department_id) search.set('department_id', params.department_id);
   const query = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/variations${query}`, {
     cache: 'no-store',
@@ -2112,10 +2136,11 @@ export async function createFinanceVariation(payload: Record<string, unknown>): 
   });
 }
 
-/** Progress claims register, optionally filtered by project. */
-export async function getFinanceProgressClaims(params?: { project_id?: string }): Promise<ApiResponse<any[]>> {
+/** Progress claims register, optionally filtered by project or department. */
+export async function getFinanceProgressClaims(params?: { project_id?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.department_id) search.set('department_id', params.department_id);
   const query = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/progress-claims${query}`, {
     cache: 'no-store',
@@ -2123,10 +2148,11 @@ export async function getFinanceProgressClaims(params?: { project_id?: string })
   });
 }
 
-/** Budget register with budget lines, optionally filtered by project. */
-export async function getFinanceBudgets(params?: { project_id?: string }): Promise<ApiResponse<any[]>> {
+/** Budget register with budget lines, optionally filtered by project or department. */
+export async function getFinanceBudgets(params?: { project_id?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.department_id) search.set('department_id', params.department_id);
   const query = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/budgets/${query}`, {
     cache: 'no-store',
@@ -2214,10 +2240,11 @@ export async function createFinanceCashAccount(payload: Record<string, unknown>)
   });
 }
 
-export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string }): Promise<ApiResponse<any[]>> {
+export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.cash_account_id) search.set("cash_account_id", params.cash_account_id);
   if (params?.project_id) search.set("project_id", params.project_id);
+  if (params?.department_id) search.set("department_id", params.department_id);
   const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/cashbook${query}`, { cache: "no-store", allowFallback: false });
 }
@@ -2238,8 +2265,11 @@ export async function allocateFinanceReceipt(payload: Record<string, unknown>): 
   });
 }
 
-export async function getFinanceSupplierPayments(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>("/api/v1/financial-performance/supplier-payments", { cache: "no-store", allowFallback: false });
+export async function getFinanceSupplierPayments(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set("department_id", params.department_id);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/supplier-payments${query}`, { cache: "no-store", allowFallback: false });
 }
 
 export async function postFinanceSupplierPaymentBatch(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
@@ -2262,8 +2292,11 @@ export async function upsertFinancePayrollProfile(payload: Record<string, unknow
   });
 }
 
-export async function getFinancePayrollRuns(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>("/api/v1/financial-performance/payroll/runs", { cache: "no-store", allowFallback: false });
+export async function getFinancePayrollRuns(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set("department_id", params.department_id);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/payroll/runs${query}`, { cache: "no-store", allowFallback: false });
 }
 
 export async function getFinancePayrollRunItems(runId: string): Promise<ApiResponse<any[]>> {

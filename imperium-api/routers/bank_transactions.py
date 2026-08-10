@@ -40,6 +40,7 @@ class CashbookTransactionCreate(BaseModel):
     currency: str = Field(default="USD", min_length=3, max_length=3)
     counterparty_name: Optional[str] = Field(default=None, max_length=255)
     project_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     payment_method: str = Field(default="bank_transfer", pattern=PAYMENT_METHODS)
     reference: Optional[str] = Field(default=None, max_length=160)
     description: Optional[str] = Field(default=None, max_length=1000)
@@ -76,6 +77,7 @@ async def list_transactions(
     cash_account_id: Optional[UUID] = Query(default=None),
     transaction_type: Optional[str] = Query(default=None),
     project_id: Optional[UUID] = Query(default=None),
+    department_id: Optional[UUID] = Query(default=None),
     date_from: Optional[date] = Query(default=None),
     date_to: Optional[date] = Query(default=None),
     is_posted: Optional[bool] = Query(default=None),
@@ -100,6 +102,9 @@ async def list_transactions(
     if project_id:
         filters.append("ct.project_id = :project_id")
         params["project_id"] = str(project_id)
+    if department_id:
+        filters.append("(ct.department_id = :department_id OR ct.department_id IS NULL)")
+        params["department_id"] = str(department_id)
     if date_from:
         filters.append("ct.transaction_date >= :date_from")
         params["date_from"] = date_from
@@ -169,13 +174,13 @@ async def create_transaction(
                 INSERT INTO finance.cashbook_transactions (
                     organization_id, cash_account_id, transaction_date,
                     transaction_type, amount, currency, counterparty_name,
-                    project_id, payment_method, reference, description,
+                    project_id, department_id, payment_method, reference, description,
                     supplier_invoice_id, progress_claim_id, created_by,
                     is_posted, posted_at, posted_by
                 ) VALUES (
                     :org_id, :cash_account_id, :transaction_date,
                     :transaction_type, :amount, :currency, :counterparty_name,
-                    :project_id, :payment_method, :reference, :description,
+                    :project_id, :department_id, :payment_method, :reference, :description,
                     :supplier_invoice_id, :progress_claim_id, :user_id,
                     true, NOW(), :user_id
                 )
@@ -190,6 +195,7 @@ async def create_transaction(
                 "currency": payload.currency.upper(),
                 "counterparty_name": payload.counterparty_name,
                 "project_id": str(payload.project_id) if payload.project_id else None,
+                "department_id": str(payload.department_id) if payload.department_id else None,
                 "payment_method": payload.payment_method,
                 "reference": payload.reference,
                 "description": payload.description,

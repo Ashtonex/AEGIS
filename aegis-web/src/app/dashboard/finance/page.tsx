@@ -13,6 +13,7 @@ import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
+  getFinanceDepartments,
   getFinanceProjectSummaries,
   getFinanceProjectDetail,
   getFinanceCostCodes,
@@ -103,6 +104,7 @@ function FinanceWorkspace() {
   const [activeTab, setActiveTab] = useState<FinanceTab>(() => normalizeTab(searchParams?.get("tab")));
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
+  const [departmentId, setDepartmentId] = useState<string>("");
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -126,17 +128,19 @@ function FinanceWorkspace() {
   } = useApiQueries(
     {
       projects: () => getInternalProjects(),
-      summaries: () => getFinanceProjectSummaries(),
-      costCodes: () => getFinanceCostCodes(),
-      variations: () => getFinanceVariations(),
-      claims: () => getFinanceProgressClaims(),
-      budgets: () => getFinanceBudgets(),
+      departments: () => getFinanceDepartments(),
+      summaries: () => getFinanceProjectSummaries({ department_id: departmentId || undefined }),
+      costCodes: () => getFinanceCostCodes({ department_id: departmentId || undefined }),
+      variations: () => getFinanceVariations({ department_id: departmentId || undefined }),
+      claims: () => getFinanceProgressClaims({ department_id: departmentId || undefined }),
+      budgets: () => getFinanceBudgets({ department_id: departmentId || undefined }),
     },
-    [],
+    [departmentId],
     {
       criticalKeys: ["summaries"],
       labels: {
         projects: "Project register",
+        departments: "Departments",
         summaries: "Project financial summaries",
         costCodes: "Cost codes",
         variations: "Variation register",
@@ -147,6 +151,7 @@ function FinanceWorkspace() {
   );
 
   const projects = useMemo(() => financeData.projects?.data || [], [financeData.projects]);
+  const departments = useMemo(() => financeData.departments?.data || [], [financeData.departments]);
   const projectSummaries = useMemo(() => financeData.summaries?.data || [], [financeData.summaries]);
   const costCodes = useMemo(() => financeData.costCodes?.data || [], [financeData.costCodes]);
   const variations = useMemo(() => financeData.variations?.data || [], [financeData.variations]);
@@ -288,7 +293,24 @@ function FinanceWorkspace() {
           <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Finance & Cost Control</h1>
           <p className="text-sm text-slate-light font-sans mt-0.5">SNC authoritative financial ledger and budget controls.</p>
         </div>
-        <div className="flex space-x-2">
+        <div className="flex items-center space-x-2">
+          <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider">
+            <button
+              onClick={() => setDepartmentId("")}
+              className={`px-3 py-2 transition-colors ${departmentId === "" ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
+            >
+              Consolidated
+            </button>
+            {departments.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => setDepartmentId(d.id)}
+                className={`px-3 py-2 border-l border-ink-mid transition-colors ${departmentId === d.id ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
           {activeTab === "cost-codes" && (
             <button
               onClick={() => setShowCostCodeModal(true)}
@@ -419,7 +441,7 @@ function FinanceWorkspace() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           {operationalTabs.includes(activeTab) && (
-            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll"} projects={projects} />
+            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll"} projects={projects} departmentId={departmentId} />
           )}
 
           {activeTab === "project-financials" && (
@@ -459,7 +481,14 @@ function FinanceWorkspace() {
                             onClick={() => void loadProjectDetail(p.project_id)}
                             className={`cursor-pointer hover:bg-ink-mid/30 transition-colors ${isSelected ? 'bg-ink-mid/20 border-l-2 border-l-signal' : ''}`}
                           >
-                            <td className="p-4 font-medium text-paper">{p.project_name || p.project_code}</td>
+                            <td className="p-4 font-medium text-paper">
+                              {p.project_name || p.project_code}
+                              {!p.department_id && (
+                                <span className="ml-2 px-1.5 py-0.5 rounded-sm text-[9px] uppercase tracking-wider font-mono border border-amber-500/30 bg-amber-950/20 text-amber-300 align-middle">
+                                  Unassigned
+                                </span>
+                              )}
+                            </td>
                             <td className="p-4 text-right text-paper">{money(totalRev)}</td>
                             <td className="p-4 text-right text-paper">{money(p.actual_cost_to_date)}</td>
                             <td className="p-4 text-right text-slate-light">{money(p.committed_cost)}</td>

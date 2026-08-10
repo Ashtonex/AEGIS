@@ -26,6 +26,7 @@ class ProjectCreate(BaseModel):
     contract_value: Optional[Decimal] = None
     start_date: Optional[date] = None
     planned_completion_date: Optional[date] = None
+    department_id: Optional[UUID] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -38,6 +39,7 @@ class ProjectUpdate(BaseModel):
     start_date: Optional[date] = None
     planned_completion_date: Optional[date] = None
     actual_completion_date: Optional[date] = None
+    department_id: Optional[UUID] = None
 
 
 class MilestonePayload(BaseModel):
@@ -160,8 +162,8 @@ async def create_project(
         row = (
             await db.execute(
                 text("""
-            INSERT INTO projects.projects (name, status, project_code, project_type, client_name, contract_value, start_date, planned_completion_date, organization_id, created_by)
-            VALUES (:name, :status, :project_code, :project_type, :client_name, :contract_value, :start_date, :planned_completion_date, :org_id, :user_id)
+            INSERT INTO projects.projects (name, status, project_code, project_type, client_name, contract_value, start_date, planned_completion_date, department_id, organization_id, created_by)
+            VALUES (:name, :status, :project_code, :project_type, :client_name, :contract_value, :start_date, :planned_completion_date, :department_id, :org_id, :user_id)
             RETURNING id
         """),
                 {

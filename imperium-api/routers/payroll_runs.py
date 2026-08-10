@@ -33,6 +33,7 @@ class PayrollItemInput(BaseModel):
 
     employee_id: UUID
     project_id: Optional[UUID] = None
+    department_id: Optional[UUID] = None
     regular_hours: float = Field(default=0.0, ge=0)
     overtime_hours: float = Field(default=0.0, ge=0)
     other_deduction: float = Field(default=0.0, ge=0)
@@ -108,6 +109,7 @@ async def list_payroll_runs(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     date_from: Optional[date] = Query(default=None),
     date_to: Optional[date] = Query(default=None),
+    department_id: Optional[UUID] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     user: dict = Depends(get_current_user),
@@ -129,6 +131,13 @@ async def list_payroll_runs(
     if date_to:
         filters.append("pr.period_end <= :date_to")
         params["date_to"] = date_to
+    if department_id:
+        filters.append("""EXISTS (
+            SELECT 1 FROM finance.payroll_items i
+            WHERE i.payroll_run_id = pr.id
+              AND (i.department_id = :department_id OR i.department_id IS NULL)
+        )""")
+        params["department_id"] = department_id
 
     where = " AND ".join(filters)
     count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
@@ -248,11 +257,11 @@ async def create_payroll_run(
             await db.execute(
                 text("""
                     INSERT INTO finance.payroll_items (
-                        organization_id, payroll_run_id, employee_id, project_id,
+                        organization_id, payroll_run_id, employee_id, project_id, department_id,
                         regular_hours, overtime_hours, gross_pay,
                         tax_deduction, statutory_deduction, other_deduction, net_pay
                     ) VALUES (
-                        :org_id, :run_id, :employee_id, :project_id,
+                        :org_id, :run_id, :employee_id, :project_id, :department_id,
                         :regular_hours, :overtime_hours, :gross_pay,
                         :tax_deduction, :statutory_deduction, :other_deduction, :net_pay
                     )
@@ -262,6 +271,7 @@ async def create_payroll_run(
                     "run_id": run_id,
                     "employee_id": str(item.employee_id),
                     "project_id": str(item.project_id) if item.project_id else None,
+                    "department_id": str(item.department_id) if item.department_id else None,
                     "regular_hours": item.regular_hours,
                     "overtime_hours": item.overtime_hours,
                     "gross_pay": gross,
