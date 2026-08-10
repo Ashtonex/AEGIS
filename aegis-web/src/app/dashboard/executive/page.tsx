@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   getActiveExecutiveProjects,
   getExecutiveKPIs,
@@ -128,6 +129,15 @@ function ExecutiveCommandCentreWorkspace() {
   }, [session]);
 
   useEffect(() => { if (session) void loadDashboard(); }, [session, loadDashboard]);
+
+  // loadDashboard() only shows the full-page spinner on the very first
+  // mount (loading starts true and is never set back to true afterward) -
+  // every subsequent call, including these, just spins the small refresh
+  // icon via `refreshing` while the existing numbers stay on screen.
+  useLiveTable("finance.quotations", () => { if (session) void loadDashboard(); });
+  useLiveTable("crm.opportunities", () => { if (session) void loadDashboard(); });
+  useLiveTable("projects.projects", () => { if (session) void loadDashboard(); });
+  useLiveTable("projects.hse_incidents", () => { if (session) void loadDashboard(); });
   useEffect(() => {
     const interval = window.setInterval(() => setCurrentTime(new Date()), 60_000);
     return () => window.clearInterval(interval);

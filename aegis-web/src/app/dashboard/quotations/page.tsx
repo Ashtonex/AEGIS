@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import SopChecklistModal from "./SopChecklistModal";
 import QuotationHistoryModal from "./QuotationHistoryModal";
 
@@ -184,6 +185,15 @@ export default function QuotationsDashboard() {
       void loadData();
     }
   }, [session, loadData]);
+
+  // Any create/update/delete on a quotation anywhere in the org - by this
+  // user, a teammate, or the CRM handoff flow - refetches this ledger in
+  // the background. Safe to call plainly: loadData() only blanks the table
+  // on a genuine first load (quotes.length === 0), not on this kind of
+  // background refresh.
+  useLiveTable("finance.quotations", () => {
+    if (session) void loadData();
+  });
 
   useEffect(() => {
     setPage(0);

@@ -12,7 +12,7 @@ from app.shared.events import emit_notification, emit_role_notification
 from core.database import AsyncSessionLocal, get_db
 from core.logging import logger
 from core.realtime import manager as realtime_manager
-from core.security import SUPERADMIN_ROLE, get_current_user, verify_token_str
+from core.security import SUPERADMIN_ROLE, get_current_user, get_user_permission_keys, verify_token_str
 
 router = APIRouter()
 
@@ -193,10 +193,13 @@ async def mark_all_notifications_read(
 
 @router.websocket("/ws")
 async def notifications_ws(websocket: WebSocket, token: str = Query(...)):
-    """Live-push channel for this user's own notifications. A native browser
-    WebSocket can't set an Authorization header, so the token travels as a
-    query parameter instead - it's validated with the exact same signature
-    check every REST endpoint uses before the connection is accepted."""
+    """The app's one general-purpose live-push channel per browser tab -
+    despite living under /notifications for historical reasons (this was
+    Phase 1), it now also carries system-wide table-change signals (Phase
+    2, see core/realtime.py). A native browser WebSocket can't set an
+    Authorization header, so the token travels as a query parameter
+    instead - it's validated with the exact same signature check every
+    REST endpoint uses before the connection is accepted."""
     try:
         payload = verify_token_str(token)
     except HTTPException:
@@ -206,13 +209,14 @@ async def notifications_ws(websocket: WebSocket, token: str = Query(...)):
     async with AsyncSessionLocal() as db:
         try:
             user = await get_current_user(payload=payload, db=db)
+            permission_keys = await get_user_permission_keys(db, user)
         except HTTPException:
             await websocket.close(code=4401)
             return
 
     user_id = user["user_id"]
     await websocket.accept()
-    await realtime_manager.register(user_id, websocket)
+    await realtime_manager.register(websocket, user_id, user["org_id"], permission_keys)
     try:
         while True:
             # This channel is push-only from the server; the receive loop
@@ -221,9 +225,9 @@ async def notifications_ws(websocket: WebSocket, token: str = Query(...)):
     except WebSocketDisconnect:
         pass
     except Exception:
-        logger.debug("Notifications WebSocket closed unexpectedly", exc_info=True)
+        logger.debug("Live WebSocket closed unexpectedly", exc_info=True)
     finally:
-        await realtime_manager.unregister(user_id, websocket)
+        await realtime_manager.unregister(websocket)
 
 
 @router.delete("/{notification_id}")

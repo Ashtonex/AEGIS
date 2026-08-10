@@ -27,6 +27,7 @@ import { SkeletonTableRows } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
+import { useLiveTable } from '@/lib/live/LiveDataProvider';
 
 // Roles allowed to change the status of a lead that's already been decided
 // (converted/qualified or disqualified) - matches the backend's
@@ -119,6 +120,8 @@ export default function CRMLeadsApp() {
   }, []);
 
   const leads = leadsData ?? [];
+
+  useLiveTable("crm.leads", () => void loadLeads());
 
   useEffect(() => {
     if (leadsError) {
@@ -447,7 +450,7 @@ export default function CRMLeadsApp() {
       {/* Content Panels */}
       {activeTab === 'inbox' && (
         <div>
-          {isLoading ? (
+          {isLoading && !leadsData ? (
             <div className="bg-[#111827]/40 border border-[#1E293B]/60 rounded-xl overflow-hidden">
               <SkeletonTableRows rows={6} columns={7} />
             </div>

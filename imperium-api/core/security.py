@@ -451,6 +451,31 @@ async def user_has_permission(db: AsyncSession, user: dict, permission_key: str)
     return bool(result.scalar())
 
 
+async def get_user_permission_keys(db: AsyncSession, user: dict) -> set[str]:
+    """All permission keys granted to this user, in one query - used to
+    authorize a live WebSocket connection once at connect time rather than
+    re-querying per event. SUPERADMIN gets every permission key in the
+    catalog, matching how the rest of the app treats that role."""
+    if user.get("role") == SUPERADMIN_ROLE:
+        result = await db.execute(text("SELECT key FROM core.permissions"))
+        return {row[0] for row in result.fetchall()}
+    if not user.get("org_id"):
+        return set()
+    result = await db.execute(
+        text("""
+            SELECT DISTINCT p.key
+            FROM core.permissions p
+            JOIN core.role_permissions rp ON p.id = rp.permission_id
+            JOIN core.user_roles ur ON rp.role_id = ur.role_id
+            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
+            WHERE ur.user_id = :user_id
+              AND ur.organization_id = :org_id
+        """),
+        {"user_id": user.get("user_id"), "org_id": user.get("org_id")},
+    )
+    return {row[0] for row in result.fetchall()}
+
+
 def require_permission(permission_key: str):
     """
     Dependency factory to enforce granular RBAC permissions (e.g., 'projects.create').

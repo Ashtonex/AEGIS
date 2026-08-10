@@ -28,6 +28,7 @@ import {
   createCrmWinLossReason,
   describeActionError,
 } from '@/lib/api';
+import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
 
@@ -257,6 +258,15 @@ export default function OpportunitiesKanban() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // loadData() already fetches opportunities/contacts/activities together,
+  // so a change to any of the three just triggers the same refetch - safe
+  // to call plainly since this page only blanks to a spinner on a genuine
+  // first load (isLoading && opportunities.length === 0), not on this kind
+  // of background refresh.
+  useLiveTable("crm.opportunities", () => void loadData());
+  useLiveTable("crm.contacts", () => void loadData());
+  useLiveTable("crm.activities", () => void loadData());
 
   // Drag and Drop Event Handlers
   const handleDragStart = (e: React.DragEvent, oppId: string) => {
