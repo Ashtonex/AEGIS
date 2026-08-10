@@ -9,7 +9,7 @@ import {
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
   Sparkles
 } from "lucide-react";
-import { getInternalProjects, getQuotation, createQuotation, updateQuotation, getDrawingRevisionAsBoq, importBoqFile } from "@/lib/api";
+import { getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation, getDrawingRevisionAsBoq, importBoqFile } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
 
@@ -353,6 +353,54 @@ export default function QuotationBuilder() {
     // An edit to an already-saved quotation is a new revision; a first save
     // is revision 1.
     const nextRevisionNumber = editId ? revisionNumber + 1 : 1;
+    const assumptionsList = assumptionsText.split("\n").map((s) => s.trim()).filter(Boolean);
+    const exclusionsList = exclusionsText.split("\n").map((s) => s.trim()).filter(Boolean);
+
+    // Compute the real tamper-evidence hash server-side (QuotationCalculator
+    // is the source of truth for it) so it's persisted on every save, not
+    // just when the Builder's PDF/Excel export happens to be used.
+    let auditTrailHash: string | undefined;
+    try {
+      const sumBuildupByType = (item: LineItem, type: string): number =>
+        (item.buildup || [])
+          .filter((b) => b.type === type)
+          .reduce((acc, b) => acc + (Number(b.qty) || 0) * (Number(b.rate) || 0), 0);
+
+      const calcRes = await calculateQuotation({
+        quotation_id: quoteRef,
+        revision_number: nextRevisionNumber,
+        currency_rounding_decimals: 2,
+        preliminaries,
+        overhead_rate: overheadPct / 100,
+        contingency_rate: contingencyPct / 100,
+        profit_rate: profitPct / 100,
+        discount,
+        tax_rate: applyVat ? 0.15 : 0,
+        provisional_sums: provisionalSums,
+        built_area_sqm: builtAreaSqm,
+        price_validity_days: validDays,
+        is_inflation_adjusted: isInflationAdjusted,
+        assumptions: assumptionsList,
+        exclusions: exclusionsList,
+        items: lineItems.map((item) => ({
+          description: item.description,
+          quantity: item.qty,
+          rate: item.rate,
+          unit: item.unit,
+          material_rate: sumBuildupByType(item, "material"),
+          labour_rate: sumBuildupByType(item, "labour"),
+          equipment_rate: sumBuildupByType(item, "equipment"),
+          subcontractor_rate: sumBuildupByType(item, "subcontractor"),
+          transport_rate: sumBuildupByType(item, "transport"),
+          waste_allowance_rate: sumBuildupByType(item, "waste_allowance"),
+        })),
+      });
+      auditTrailHash = calcRes.data?.audit_trail_hash;
+    } catch {
+      // Non-blocking: if the calculation service is unreachable, the
+      // quotation still saves - it just keeps the "no hash" placeholder
+      // until the next successful save.
+    }
 
     const payload: any = {
       client_name: clientName,
@@ -385,9 +433,10 @@ export default function QuotationBuilder() {
         grand_total: grandTotal,
         apply_vat: applyVat,
         terms,
-        assumptions: assumptionsText.split("\n").map((s) => s.trim()).filter(Boolean),
-        exclusions: exclusionsText.split("\n").map((s) => s.trim()).filter(Boolean),
-        items: lineItems
+        assumptions: assumptionsList,
+        exclusions: exclusionsList,
+        items: lineItems,
+        audit_trail_hash: auditTrailHash,
       }
     };
 
@@ -1045,11 +1094,13 @@ export default function QuotationBuilder() {
                 <div className="space-y-2 text-slate-light flex flex-col justify-between">
                   <div className="space-y-2">
                     <div className="flex justify-between">
-                      <span>Subtotal before Profit:</span>
+                      <span>Running Subtotal (Direct+Prelims+OH+Contingency):</span>
                       <span className="text-white">${subtotalBeforeProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span>Profit Margin Mark-up ({profitPct}%):</span>
+                      <span title="Profit is a % of Direct Costs + Preliminaries only - it is not compounded on Overhead or Contingency.">
+                        Profit Margin Mark-up ({profitPct}% of Direct+Prelims: ${totalDirectAndPrelims.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}):
+                      </span>
                       <span className="text-white">${profitAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                     {provisionalSums > 0 && (

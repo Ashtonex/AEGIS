@@ -23,8 +23,25 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     }
     
     const response = await fetch(backendUrl, init);
+    const contentType = response.headers.get("content-type") || "";
+
+    if (!contentType.includes("application/json") && !contentType.includes("text/")) {
+      // Binary/file response (PDF, xlsx, images, etc.) - relay bytes as-is,
+      // do not attempt to JSON-parse them.
+      const passthroughHeaders = new Headers(response.headers);
+      // fetch() already decompresses the body, so the upstream content-length/
+      // content-encoding no longer describe what we're about to send.
+      passthroughHeaders.delete("content-encoding");
+      passthroughHeaders.delete("content-length");
+
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: passthroughHeaders,
+      });
+    }
+
     const data = await response.json().catch(() => ({}));
-    
+
     return NextResponse.json(data, {
       status: response.status,
       headers: {

@@ -8,7 +8,7 @@ import {
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
   ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History
 } from "lucide-react";
-import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation } from "@/lib/api";
+import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import SopChecklistModal from "./SopChecklistModal";
 import QuotationHistoryModal from "./QuotationHistoryModal";
@@ -65,30 +65,51 @@ export default function QuotationsDashboard() {
   const loadData = useCallback(async () => {
     setLoading(true);
     setErrorMsg("");
-    try {
-      const [quotesRes, projectsRes] = await Promise.all([
-        getQuotations({ limit: LOAD_LIMIT, sort_by: "created_at", sort_dir: "desc" }),
-        getInternalProjects()
-      ]);
+    // Quotations and internal projects are fetched independently on purpose -
+    // a failure on the (secondary) projects call must never blank the
+    // (primary) quotations ledger. They used to be yoked in one Promise.all,
+    // which meant a single missing permission on projects.read made every
+    // real quotation disappear from this page.
+    const [quotesResult, projectsResult] = await Promise.allSettled([
+      getQuotations({ limit: LOAD_LIMIT, sort_by: "created_at", sort_dir: "desc" }),
+      getInternalProjects(),
+    ]);
 
-      if (quotesRes.success && Array.isArray(quotesRes.data)) {
-        setQuotes(quotesRes.data);
-        setTotalCount(Number((quotesRes.meta as any)?.total ?? quotesRes.data.length));
-      } else {
-        setQuotes([]);
-        setTotalCount(0);
-      }
-
-      if (projectsRes.success && Array.isArray(projectsRes.data)) {
-        setProjectsList(projectsRes.data);
-      } else {
-        setProjectsList([]);
-      }
-    } catch (err: any) {
-      setErrorMsg(err?.message || "Failed to load estimates and project data.");
-    } finally {
-      setLoading(false);
+    if (quotesResult.status === "fulfilled" && quotesResult.value.success && Array.isArray(quotesResult.value.data)) {
+      setQuotes(quotesResult.value.data);
+      setTotalCount(Number((quotesResult.value.meta as any)?.total ?? quotesResult.value.data.length));
+    } else {
+      setQuotes([]);
+      setTotalCount(0);
+      const err = quotesResult.status === "rejected" ? quotesResult.reason : undefined;
+      setErrorMsg(
+        describeActionError(
+          err,
+          "You don't have permission to view quotations.",
+          err?.message || "Failed to load estimates."
+        )
+      );
     }
+
+    if (projectsResult.status === "fulfilled" && projectsResult.value.success && Array.isArray(projectsResult.value.data)) {
+      setProjectsList(projectsResult.value.data);
+    } else {
+      setProjectsList([]);
+      // Non-blocking: the projects list only feeds a secondary widget, so
+      // surface it only if the primary quotations load already succeeded
+      // (otherwise it would just overwrite a more important error above).
+      if (quotesResult.status === "fulfilled" && quotesResult.value.success) {
+        setErrorMsg(
+          describeActionError(
+            projectsResult.status === "rejected" ? projectsResult.reason : undefined,
+            "You don't have permission to view linked project data - some figures on this page may be incomplete.",
+            "Failed to load linked project data - some figures on this page may be incomplete."
+          )
+        );
+      }
+    }
+
+    setLoading(false);
   }, []);
 
   const handleDuplicate = async (q: any) => {

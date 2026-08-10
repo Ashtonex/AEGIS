@@ -2590,6 +2590,14 @@ export async function getQuotationHistory(id: string): Promise<ApiResponse<any[]
   return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/${id}/history`, { cache: 'no-store', allowFallback: false });
 }
 
+export async function calculateQuotation(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/calculate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function createQuotation(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/quotations/', {
     method: 'POST',

@@ -311,12 +311,11 @@ async def export_quotation_pdf(
         "pdf",
     )
     QuotationPDFRenderer().render_pdf(data, str(output_path))
-    return {
-        "success": True,
-        "data": {"path": str(output_path), "filename": output_path.name},
-        "message": "Quotation PDF generated.",
-        "meta": {"user_id": user["user_id"]},
-    }
+    return FileResponse(
+        path=str(output_path),
+        media_type="application/pdf",
+        filename=output_path.name,
+    )
 
 
 @router.post("/exports/excel")
@@ -331,12 +330,11 @@ async def export_quotation_excel(
         "xlsx",
     )
     QuotationExcelExporter().export_to_excel(data, str(output_path))
-    return {
-        "success": True,
-        "data": {"path": str(output_path), "filename": output_path.name},
-        "message": "Quotation Excel workbook generated.",
-        "meta": {"user_id": user["user_id"]},
-    }
+    return FileResponse(
+        path=str(output_path),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=output_path.name,
+    )
 
 
 # -----------------------------------------------------------------------------

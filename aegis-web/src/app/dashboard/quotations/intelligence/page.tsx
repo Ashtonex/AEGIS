@@ -1189,12 +1189,21 @@ export default function QuotationIntelligencePage() {
                 </p>
 
                 <div className="flex items-center space-x-3 pt-2">
-                  <button className="bg-red-500/20 text-red-400 border border-red-500/40 px-3 py-1.5 rounded font-bold hover:bg-red-500/30 transition-all">
+                  <button
+                    disabled
+                    title="Not yet implemented - no backend action is wired to this button."
+                    className="bg-red-500/10 text-red-400/50 border border-red-500/20 px-3 py-1.5 rounded font-bold cursor-not-allowed"
+                  >
                     Freeze Material Ordering Permissions
                   </button>
-                  <button className="bg-signal text-ink px-3 py-1.5 rounded font-bold hover:bg-signal-hover transition-all">
+                  <button
+                    disabled
+                    title="Not yet implemented - no backend action is wired to this button."
+                    className="bg-signal/30 text-ink/50 px-3 py-1.5 rounded font-bold cursor-not-allowed"
+                  >
                     Export MD Evidence Pack (PDF)
                   </button>
+                  <span className="text-[10px] text-slate uppercase tracking-wide">Coming soon</span>
                 </div>
               </div>
             </div>
