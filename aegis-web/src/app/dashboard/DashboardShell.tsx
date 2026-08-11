@@ -192,6 +192,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Payroll", href: "/dashboard/finance/payroll", icon: Users },
       { name: "Internal Transfers", href: "/dashboard/finance/transfers", icon: Receipt },
       { name: "Department P&L", href: "/dashboard/finance/department-pnl", icon: PieChart },
+      { name: "Statutory", href: "/dashboard/finance/statutory", icon: ShieldCheck },
     ],
   },
   {

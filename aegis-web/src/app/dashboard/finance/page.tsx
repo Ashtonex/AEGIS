@@ -11,6 +11,7 @@ import {
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
 import { DepartmentTransfersPanel } from "./DepartmentTransfersPanel";
+import { StatutoryPanel } from "./StatutoryPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -22,13 +23,15 @@ import {
   getFinanceVariations,
   createFinanceVariation,
   getFinanceProgressClaims,
+  createFinanceProgressClaim,
+  certifyFinanceProgressClaim,
   getFinanceBudgets,
   getFinanceDepartmentPnl,
   getInternalProjects
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -43,6 +46,7 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   payroll: "/dashboard/finance/payroll",
   transfers: "/dashboard/finance/transfers",
   "department-pnl": "/dashboard/finance/department-pnl",
+  statutory: "/dashboard/finance/statutory",
 };
 
 function normalizeTab(value: string | null | undefined): FinanceTab {
@@ -121,7 +125,7 @@ function FinanceWorkspace() {
   // Form Fields
   const [newCostCode, setNewCostCode] = useState({ code: "", name: "", category: "materials" });
   const [newVariation, setNewVariation] = useState({ variation_number: "", project_id: "", title: "", description: "", cost_impact: "0", time_impact_days: "0", initiated_by: "client" });
-  const [newClaim, setNewClaim] = useState({ claim_number: "", project_id: "", claim_period_start: "", claim_period_end: "", this_claim_amount: "0", retention_pct: "10" });
+  const [newClaim, setNewClaim] = useState({ claim_number: "", project_id: "", claim_period_start: "", claim_period_end: "", contract_value: "0", this_claim_amount: "0", retention_pct: "10" });
 
   const {
     data: financeData,
@@ -218,6 +222,36 @@ function FinanceWorkspace() {
       await loadData();
     } catch (err) {
       setNotice(normalizeActionError(err, "Failed to submit variation."));
+    }
+  };
+
+  const handleCreateClaim = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newClaim.project_id || !newClaim.claim_number) return;
+    try {
+      await createFinanceProgressClaim({
+        ...newClaim,
+        contract_value: Number(newClaim.contract_value),
+        this_claim_amount: Number(newClaim.this_claim_amount),
+        retention_pct: Number(newClaim.retention_pct),
+      });
+      setNotice("Progress claim submitted successfully.");
+      setShowClaimModal(false);
+      setNewClaim({ claim_number: "", project_id: "", claim_period_start: "", claim_period_end: "", contract_value: "0", this_claim_amount: "0", retention_pct: "10" });
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to submit progress claim."));
+    }
+  };
+
+  const handleCertifyClaim = async (claimId: string) => {
+    try {
+      const res = await certifyFinanceProgressClaim(claimId);
+      const vat = res.data?.vat_amount;
+      setNotice(vat ? `Claim certified. VAT accrued: ${money(vat)}.` : "Claim certified.");
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to certify claim."));
     }
   };
 
@@ -334,6 +368,15 @@ function FinanceWorkspace() {
             >
               <Plus className="h-4 w-4" />
               <span>Record Variation</span>
+            </button>
+          )}
+          {activeTab === "progress-claims" && (
+            <button
+              onClick={() => setShowClaimModal(true)}
+              className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              <span>New Claim</span>
             </button>
           )}
         </div>
@@ -454,6 +497,12 @@ function FinanceWorkspace() {
         >
           Department P&amp;L
         </Link>
+        <Link
+          href={TAB_ROUTES.statutory}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "statutory" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Statutory
+        </Link>
       </div>
 
       {/* Tab Panels */}
@@ -470,6 +519,8 @@ function FinanceWorkspace() {
           {activeTab === "department-pnl" && (
             <DepartmentTransfersPanel mode="pnl" departments={departments} projects={projects} departmentPnl={departmentPnl} />
           )}
+
+          {activeTab === "statutory" && <StatutoryPanel />}
 
           {activeTab === "project-financials" && (
             <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
@@ -636,12 +687,13 @@ function FinanceWorkspace() {
                       <th className="p-4 text-right">Net Claim</th>
                       <th className="p-4 text-right">Certified</th>
                       <th className="p-4">Status</th>
+                      <th className="p-4"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-mid">
                     {claims.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="p-4 text-center text-slate">No progress claims recorded.</td>
+                        <td colSpan={8} className="p-4 text-center text-slate">No progress claims recorded.</td>
                       </tr>
                     ) : (
                       claims.map((c) => (
@@ -656,6 +708,13 @@ function FinanceWorkspace() {
                             <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(c.status)}`}>
                               {c.status}
                             </span>
+                          </td>
+                          <td className="p-4 text-right">
+                            {c.status === "submitted" && (
+                              <button onClick={() => void handleCertifyClaim(c.id)} className="text-xs text-signal hover:underline">
+                                Certify
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))
@@ -981,6 +1040,115 @@ function FinanceWorkspace() {
                   className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
                 >
                   Submit VO
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Progress Claim Modal */}
+      {showClaimModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-lg p-6 rounded-sm space-y-4">
+            <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+              <span className="text-base font-semibold text-paper">Submit Progress Claim</span>
+              <button onClick={() => setShowClaimModal(false)} className="text-slate hover:text-paper">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateClaim} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Claim Number</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. PC-001"
+                    value={newClaim.claim_number}
+                    onChange={(e) => setNewClaim({ ...newClaim, claim_number: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Project</label>
+                  <select
+                    required
+                    value={newClaim.project_id}
+                    onChange={(e) => setNewClaim({ ...newClaim, project_id: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  >
+                    <option value="">Select Project</option>
+                    {projects.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Period Start</label>
+                  <input
+                    type="date"
+                    required
+                    value={newClaim.claim_period_start}
+                    onChange={(e) => setNewClaim({ ...newClaim, claim_period_start: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Period End</label>
+                  <input
+                    type="date"
+                    required
+                    value={newClaim.claim_period_end}
+                    onChange={(e) => setNewClaim({ ...newClaim, claim_period_end: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Contract Value</label>
+                  <input
+                    type="number" min="0" step="0.01"
+                    value={newClaim.contract_value}
+                    onChange={(e) => setNewClaim({ ...newClaim, contract_value: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Claim Amount</label>
+                  <input
+                    type="number" min="0.01" step="0.01" required
+                    value={newClaim.this_claim_amount}
+                    onChange={(e) => setNewClaim({ ...newClaim, this_claim_amount: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Retention %</label>
+                  <input
+                    type="number" min="0" max="100" step="0.1"
+                    value={newClaim.retention_pct}
+                    onChange={(e) => setNewClaim({ ...newClaim, retention_pct: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end space-x-3 pt-3 border-t border-ink-mid">
+                <button
+                  type="button"
+                  onClick={() => setShowClaimModal(false)}
+                  className="px-4 py-2 border border-ink-mid text-paper rounded text-sm hover:bg-ink-mid/30"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
+                >
+                  Submit Claim
                 </button>
               </div>
             </form>

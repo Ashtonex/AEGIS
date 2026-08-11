@@ -126,23 +126,26 @@ async def list_obligations(
     )
     rows = [dict(row._mapping) for row in result]
 
-    # Map raw compliance_items to obligations shape for frontend
+    # Map raw compliance_items to obligations shape for frontend. authority/
+    # category/responsible_person/status/notes are real columns now
+    # (migration 080) - COALESCE to the same literal defaults this always
+    # used so pre-existing rows (created before those columns existed)
+    # render exactly as before, while new rows carry what was actually
+    # entered instead of a fabricated constant.
     data = []
     for r in rows:
         data.append(
             {
                 "id": r["id"],
-                "title": r.get("certificate_name")
-                or r.get("title")
-                or "Regulatory Filing",
-                "authority": r.get("issuing_authority")
-                or r.get("authority")
-                or "ZIMRA",
+                "title": r.get("certificate_name") or "Regulatory Filing",
+                "authority": r.get("authority") or "ZIMRA",
                 "category": r.get("category") or "statutory",
-                "responsible_person": r.get("responsible_person")
-                or "Compliance Officer",
-                "due_date": r.get("expiry_date") or r.get("due_date"),
+                "responsible_person": r.get("responsible_person") or "Compliance Officer",
+                "due_date": r.get("expiry_date"),
                 "status": r.get("status") or "compliant",
+                "notes": r.get("notes"),
+                "issue_date": r.get("issue_date"),
+                "reference": r.get("reference"),
             }
         )
 
@@ -158,20 +161,33 @@ async def create_obligation(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Add a new obligation item to core.compliance_items.
+    Add a new obligation item to core.compliance_items. Persists every
+    field the payload actually accepts - category/responsible_person/notes
+    used to be silently dropped here even though the request model always
+    took them.
     """
     try:
         item_id = (
             await db.execute(
                 text("""
-            INSERT INTO core.compliance_items (organization_id, certificate_name, expiry_date, is_deleted)
-            VALUES (:org_id, :title, CAST(:due_date AS date), false)
+            INSERT INTO core.compliance_items (
+                organization_id, certificate_name, expiry_date, authority, category,
+                responsible_person, notes, status, is_deleted
+            )
+            VALUES (
+                :org_id, :title, CAST(:due_date AS date), :authority, :category,
+                :responsible_person, :notes, 'compliant', false
+            )
             RETURNING id
         """),
                 {
                     "org_id": user["org_id"],
-                    "title": f"{payload.authority} - {payload.title}",
+                    "title": payload.title,
                     "due_date": payload.due_date,
+                    "authority": payload.authority,
+                    "category": payload.category,
+                    "responsible_person": payload.responsible_person,
+                    "notes": payload.notes,
                 },
             )
         ).scalar()

@@ -116,7 +116,10 @@ class FullQuoteDocumentationGenerationTests(unittest.TestCase):
         
         controls = calculation.breakdown_log["estimation_controls"]
         self.assertEqual(controls["sqm_benchmark_status"], "within_range")
-        self.assertEqual(Decimal(controls["finished_price_per_sqm"]), Decimal("600"))
+        # No tax_rate was supplied, so the calculator applies its documented
+        # 0.15 ZIMRA VAT default (see calculator.py) rather than silently
+        # pricing at 0% tax - $600/m2 net becomes $690/m2 finished.
+        self.assertEqual(Decimal(controls["finished_price_per_sqm"]), Decimal("690.00"))
 
         # Scenario 2: finished price below range ($300/m²)
         payload_below = {

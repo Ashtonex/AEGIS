@@ -53,8 +53,12 @@ class FinanceTreasuryPayrollContractTests(unittest.TestCase):
             '@router.post("/payroll/profiles"',
             '@router.get("/payroll/runs")',
             '@router.post("/payroll/runs"',
-            '@router.post("/payroll/runs/{run_id}/decision")',
-            '@router.post("/payroll/runs/{run_id}/post")',
+            # These two are marked deprecated=True as part of the Phase 3
+            # payroll router consolidation - financial_performance.py now
+            # delegates to payroll_runs.py's validated tax computation
+            # instead of trusting client-supplied figures.
+            '@router.post("/payroll/runs/{run_id}/decision", deprecated=True)',
+            '@router.post("/payroll/runs/{run_id}/post", deprecated=True)',
         ]:
             self.assertIn(route, ROUTER)
         for permission in [

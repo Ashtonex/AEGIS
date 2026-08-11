@@ -9,7 +9,7 @@ import {
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
   Sparkles
 } from "lucide-react";
-import { getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation, getDrawingRevisionAsBoq, importBoqFile } from "@/lib/api";
+import { getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation, getDrawingRevisionAsBoq, importBoqFile, getFinanceActiveRateTable } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
 
@@ -54,6 +54,9 @@ export default function QuotationBuilder() {
   const [contingencyPct, setContingencyPct] = useState(5);
   const [profitPct, setProfitPct] = useState(12);
   const [applyVat, setApplyVat] = useState(true);
+  const DEFAULT_VAT_RATE = 0.15;
+  const [vatRate, setVatRate] = useState(DEFAULT_VAT_RATE);
+  const [vatRateIsConfigured, setVatRateIsConfigured] = useState(false);
   const [discount, setDiscount] = useState(0);
   const [provisionalSums, setProvisionalSums] = useState(0);
   const [builtAreaSqm, setBuiltAreaSqm] = useState(0);
@@ -152,6 +155,37 @@ export default function QuotationBuilder() {
     }
   }, [session, editId]);
 
+  // Real ZIMRA VAT rate, when configured via Finance > Statutory > Rate Tables.
+  // Falls back to the historical 15% default so existing quoting behaviour
+  // doesn't silently change until the org enters a real rate table.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadVatRate() {
+      try {
+        const res = await getFinanceActiveRateTable("vat_output", currency || "USD");
+        const band = res.data?.bands?.[0];
+        if (!cancelled && band && band.rate_pct != null) {
+          setVatRate(Number(band.rate_pct) / 100);
+          setVatRateIsConfigured(true);
+        } else if (!cancelled) {
+          setVatRate(DEFAULT_VAT_RATE);
+          setVatRateIsConfigured(false);
+        }
+      } catch {
+        if (!cancelled) {
+          setVatRate(DEFAULT_VAT_RATE);
+          setVatRateIsConfigured(false);
+        }
+      }
+    }
+    if (session) {
+      void loadVatRate();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [session, currency]);
+
   // Hand-off from the Drawing Takeoff page: append that revision's measured
   // quantities as new BOQ lines (rate 0 - a drawing gives quantities, not
   // prices, so the estimator still has to price each row).
@@ -191,7 +225,7 @@ export default function QuotationBuilder() {
   // before tax (taxable_amount = max(0, subtotal - discount)).
   const subtotal = subtotalBeforeProfit + profitAmount + provisionalSums;
   const taxableAmount = Math.max(0, subtotal - discount);
-  const vat = applyVat ? taxableAmount * 0.15 : 0;
+  const vat = applyVat ? taxableAmount * vatRate : 0;
   const grandTotal = taxableAmount + vat;
 
   // Margin-policy and benchmark alerts - MUST mirror the checks in
@@ -375,7 +409,7 @@ export default function QuotationBuilder() {
         contingency_rate: contingencyPct / 100,
         profit_rate: profitPct / 100,
         discount,
-        tax_rate: applyVat ? 0.15 : 0,
+        tax_rate: applyVat ? vatRate : 0,
         provisional_sums: provisionalSums,
         built_area_sqm: builtAreaSqm,
         price_validity_days: validDays,
@@ -502,7 +536,7 @@ export default function QuotationBuilder() {
       contingency_rate: (Number(printQuoteData.metadata?.contingency_pct) || 0) / 100,
       profit_rate: (Number(printQuoteData.metadata?.profit_pct) || 0) / 100,
       discount: Number(printQuoteData.metadata?.discount) || 0,
-      tax_rate: printQuoteData.metadata?.apply_vat ? 0.15 : 0,
+      tax_rate: printQuoteData.metadata?.apply_vat ? vatRate : 0,
       provisional_sums: Number(printQuoteData.metadata?.provisional_sums) || 0,
       built_area_sqm: Number(printQuoteData.metadata?.built_area_sqm) || 0,
       price_validity_days: Number(printQuoteData.metadata?.valid_until_days) || 30,
@@ -920,7 +954,9 @@ export default function QuotationBuilder() {
                 </div>
 
                 <div className="flex items-center justify-between border-t border-ink-mid/30 pt-3">
-                  <span className="text-xs text-slate-light font-mono uppercase">Apply 15% VAT</span>
+                  <span className="text-xs text-slate-light font-mono uppercase">
+                    Apply {(vatRate * 100).toFixed(vatRate * 100 % 1 === 0 ? 0 : 2)}% VAT
+                  </span>
                   <input
                     type="checkbox"
                     checked={applyVat}
@@ -928,6 +964,11 @@ export default function QuotationBuilder() {
                     className="w-4 h-4 accent-signal bg-ink border border-ink-mid cursor-pointer"
                   />
                 </div>
+                {!vatRateIsConfigured && (
+                  <p className="text-[10px] text-amber-400/80 font-mono">
+                    No VAT rate table configured for {currency} in Finance &gt; Statutory &gt; Rate Tables - using the default 15% until one is entered.
+                  </p>
+                )}
               </div>
             </div>
 

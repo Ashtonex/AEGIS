@@ -1,17 +1,35 @@
-FROM python:3.13-slim
+# Multi-stage build: gcc/libpq-dev and pip's build artifacts (needed only to
+# compile a handful of C-extension wheels) never reach the final image - they
+# added real disk weight on every deploy for zero runtime benefit, since
+# asyncpg/cryptography/argon2-cffi don't dynamically link against them once
+# built. requirements.txt itself is also the production-only dependency set
+# (see requirements-dev.txt for test/lint tooling that has no reason to ship
+# on a running server).
 
-# Prevent python from writing pyc files and keep stdout unbuffered
+FROM python:3.13-slim AS builder
+
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
 WORKDIR /app
 
-# Install system dependencies if required by asyncpg or cryptography
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy backend source code
 COPY . .

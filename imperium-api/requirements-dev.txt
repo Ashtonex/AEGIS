@@ -1,0 +1,29 @@
+# ==============================================================================
+# PROJECT AEGIS - LOCAL DEVELOPMENT / CI DEPENDENCIES
+# Python: 3.13.x project virtualenv
+#
+# Installs everything requirements.txt does (the production set), plus the
+# test runner, static-analysis, and migration-authoring tools needed for
+# local dev and CI. None of this ships in the production Docker image - the
+# server never runs pytest, ruff, mypy, bandit, or alembic, so building them
+# into the image only costs disk with no runtime benefit.
+#
+#   pip install -r requirements-dev.txt
+# ==============================================================================
+
+-r requirements.txt
+
+# --- TESTING & STATIC QUALITY ---
+pytest==9.1.1                # Test runner
+pytest-asyncio==1.4.0        # Async test support
+pytest-cov==7.1.0            # Coverage reporting
+hypothesis==6.136.9          # Property-based boundary testing
+ruff==0.15.22                # Linting/formatting
+mypy==2.3.0                  # Static type checking
+bandit==1.8.6                # Static security analysis
+pip-audit==2.9.0             # Dependency vulnerability scanning
+detect-secrets==1.5.0        # Secret scanning
+
+# --- SCHEMA TOOLING ---
+alembic==1.18.5              # Alembic migration tooling (authoring/inspection only -
+                              # production migrations are applied by hand via ad-hoc scripts)

@@ -16,3 +16,9 @@ scratch
 test_*.pdf
 test_*.xlsx
 test_output.log
+# Never imported by the running app - migrations are applied by hand against
+# the shared database from a dev machine, tests/lint tooling never runs
+# inside the container (see requirements-dev.txt), and alembic is unused at
+# runtime (see requirements-dev.txt).
+tests
+alembic

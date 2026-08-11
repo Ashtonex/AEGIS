@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -10,6 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok
+from app.services.finance.payroll_tax import compute_statutory
+from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
+from app.services.finance.statutory_accrual import accrue_liability_line
+from routers.payroll_runs import _compute_gross
 
 router = APIRouter()
 
@@ -107,16 +112,21 @@ class EmployeePayProfileUpsert(BaseModel):
 
 
 class PayrollItemPayload(BaseModel):
+    # gross_pay/tax_deduction/statutory_deduction/net_pay are deliberately
+    # NOT accepted here - they used to be trusted verbatim from the client
+    # with zero server-side validation, which became a real hole once real
+    # PAYE/NSSA computation existed elsewhere: a client could submit
+    # fabricated tax figures through this router while payroll_runs.py
+    # validated correctly. Both routers now compute pay identically (see
+    # create_payroll_run below), so neither accepts a client-supplied
+    # figure for any of it.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     employee_id: UUID
     project_id: Optional[UUID] = None
     department_id: Optional[UUID] = None
     regular_hours: float = 0.0
     overtime_hours: float = 0.0
-    gross_pay: float = 0.0
-    tax_deduction: float = 0.0
-    statutory_deduction: float = 0.0
     other_deduction: float = 0.0
-    net_pay: float = 0.0
 
 
 class PayrollRunCreate(BaseModel):
@@ -661,6 +671,142 @@ async def list_progress_claims(
     return ok(items, "Progress claims listed.")
 
 
+class ProgressClaimCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    claim_number: str = Field(min_length=1, max_length=40)
+    project_id: UUID
+    claim_period_start: date
+    claim_period_end: date
+    contract_value: float = Field(ge=0)
+    previous_certified: float = Field(default=0, ge=0)
+    this_claim_amount: float = Field(gt=0)
+    retention_pct: float = Field(default=10, ge=0, le=100)
+    notes: Optional[str] = None
+
+
+@router.post("/progress-claims", status_code=status.HTTP_201_CREATED)
+async def create_progress_claim(
+    payload: ProgressClaimCreate,
+    user: dict = Depends(require_permission("finance.claim.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Drafts a progress claim. There was previously no write path for this
+    table at all - claims could only be read, never created via the API -
+    which is also what made a real VAT-accrual trigger point (certification,
+    below) impossible to wire up.
+    """
+    proj = await db.execute(
+        text("SELECT 1 FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": payload.project_id, "org_id": user["org_id"]},
+    )
+    if not proj.first():
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    retention_amount = round(payload.this_claim_amount * payload.retention_pct / 100, 2)
+    net_claim_amount = round(payload.this_claim_amount - retention_amount, 2)
+
+    try:
+        claim_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO finance.progress_claims (
+                        organization_id, claim_number, project_id, claim_period_start, claim_period_end,
+                        contract_value, previous_certified, this_claim_amount, retention_pct,
+                        retention_amount, net_claim_amount, status, submitted_by, submitted_at, notes, created_by
+                    ) VALUES (
+                        :org_id, :claim_number, :project_id, :claim_period_start, :claim_period_end,
+                        :contract_value, :previous_certified, :this_claim_amount, :retention_pct,
+                        :retention_amount, :net_claim_amount, 'submitted', :user_id, NOW(), :notes, :user_id
+                    ) RETURNING id
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "claim_number": payload.claim_number,
+                    "project_id": payload.project_id,
+                    "claim_period_start": payload.claim_period_start,
+                    "claim_period_end": payload.claim_period_end,
+                    "contract_value": payload.contract_value,
+                    "previous_certified": payload.previous_certified,
+                    "this_claim_amount": payload.this_claim_amount,
+                    "retention_pct": payload.retention_pct,
+                    "retention_amount": retention_amount,
+                    "net_claim_amount": net_claim_amount,
+                    "notes": payload.notes,
+                    "user_id": user["sub"],
+                },
+            )
+        ).scalar()
+        await db.commit()
+        return ok({"id": str(claim_id)}, "Progress claim submitted.")
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Claim number already exists.")
+
+
+@router.post("/progress-claims/{claim_id}/certify")
+async def certify_progress_claim(
+    claim_id: UUID,
+    certified_amount: Optional[float] = None,
+    user: dict = Depends(require_permission("finance.claim.certify")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Certifies a submitted claim and accrues output VAT for it - this is
+    the real trigger point for VAT (owed on the billed supply, not on
+    contract signature at quotation-win time), using whatever vat_output
+    rate table is active as of the certification date. No VAT rate table
+    configured -> the claim still certifies (unlike payroll, a missing VAT
+    table doesn't block billing the client) but vat_amount stays 0 and
+    nothing accrues, since there's nothing to accrue accurately.
+    """
+    claim = await db.execute(
+        text("""
+            SELECT pc.*, p.department_id FROM finance.progress_claims pc
+            JOIN projects.projects p ON p.id = pc.project_id
+            WHERE pc.id = :id AND pc.organization_id = :org_id AND pc.is_deleted = false AND pc.status = 'submitted'
+        """),
+        {"id": claim_id, "org_id": user["org_id"]},
+    )
+    claim_row = claim.mappings().first()
+    if not claim_row:
+        raise HTTPException(status_code=404, detail="Submitted progress claim not found.")
+
+    amount = certified_amount if certified_amount is not None else float(claim_row["this_claim_amount"])
+    certified_at = date.today()
+
+    vat_amount = 0.0
+    rate_table_id = None
+    try:
+        vat_table = await resolve_rate_table(db, org_id=user["org_id"], tax_type="vat_output", currency="USD", as_at=certified_at)
+        vat_amount = float((Decimal(str(amount)) * vat_table.bands[0].rate_pct / Decimal("100")).quantize(Decimal("0.01")))
+        rate_table_id = vat_table.id
+    except NoRateTableError:
+        pass
+
+    await db.execute(
+        text("""
+            UPDATE finance.progress_claims
+            SET status = 'certified', certified_amount = :amount, certified_by = :user_id, certified_at = NOW(),
+                vat_amount = :vat_amount, vat_rate_table_id = :rate_table_id, updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"amount": amount, "user_id": user["sub"], "vat_amount": vat_amount, "rate_table_id": rate_table_id, "id": claim_id},
+    )
+
+    if vat_amount > 0:
+        await accrue_liability_line(
+            db, org_id=user["org_id"], authority="zimra", liability_type="vat", currency="USD",
+            as_at=certified_at, direction="output", source_type="progress_claim", source_id=claim_id,
+            project_id=claim_row["project_id"], department_id=claim_row["department_id"],
+            taxable_base=amount, rate_table_id=rate_table_id, computed_amount=vat_amount,
+            basis={"claim_number": claim_row["claim_number"]},
+        )
+
+    await db.commit()
+    return ok({"id": str(claim_id), "certified_amount": amount, "vat_amount": vat_amount}, "Progress claim certified.")
+
+
 @router.get("/cash-accounts")
 async def get_cash_accounts(
     user: dict = Depends(require_permission("finance.cash.read")),
@@ -1081,16 +1227,60 @@ async def get_payroll_runs(
     return ok(items, "Payroll runs retrieved.")
 
 
-@router.post("/payroll/runs", status_code=status.HTTP_201_CREATED)
+@router.post("/payroll/runs", status_code=status.HTTP_201_CREATED, deprecated=True)
 async def create_payroll_run(
     payload: PayrollRunCreate,
     user: dict = Depends(require_permission("finance.payroll.manage")),
     db: AsyncSession = Depends(get_db),
 ):
+    """
+    Computes pay identically to POST /api/v1/payroll-runs (same gross-pay
+    formula, same real PAYE/NSSA rate-table lookup) rather than trusting
+    client-supplied figures - see the note on PayrollItemPayload.
+    """
+    org_id = user["org_id"]
+    employee_ids = [str(item.employee_id) for item in payload.items]
+    profiles_rows = await db.execute(
+        text("""
+            SELECT pp.employee_id, pp.pay_type, pp.base_rate, pp.overtime_rate, pp.currency
+            FROM finance.employee_pay_profiles pp
+            WHERE pp.employee_id = ANY(:ids) AND pp.organization_id = :org_id
+              AND pp.is_active = true AND pp.is_deleted = false
+        """),
+        {"ids": employee_ids, "org_id": org_id},
+    )
+    profiles = {str(r.employee_id): dict(r._mapping) for r in profiles_rows}
+    missing = [eid for eid in employee_ids if eid not in profiles]
+    if missing:
+        raise HTTPException(status_code=422, detail=f"No active pay profile found for employees: {missing}")
+
     try:
-        gross = sum(item.gross_pay for item in payload.items)
-        deductions = sum(item.tax_deduction + item.statutory_deduction + item.other_deduction for item in payload.items)
-        net = sum(item.net_pay for item in payload.items)
+        gross_total = deductions_total = net_total = 0.0
+        computed_items = []
+
+        for item in payload.items:
+            profile = profiles[str(item.employee_id)]
+            gross = _compute_gross(
+                base_rate=float(profile["base_rate"]),
+                pay_type=profile["pay_type"],
+                regular_hours=item.regular_hours,
+                overtime_hours=item.overtime_hours,
+                overtime_rate=float(profile.get("overtime_rate") or 0),
+            )
+            try:
+                statutory = await compute_statutory(
+                    db, org_id=org_id, currency=profile.get("currency") or "USD",
+                    as_at=payload.payment_date, gross_pay=Decimal(str(gross)),
+                )
+            except NoRateTableError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            net = max(0.0, float(statutory.net_pay) - item.other_deduction)
+            deductions = float(statutory.paye) + float(statutory.nssa_employee) + item.other_deduction
+            gross_total += gross
+            deductions_total += deductions
+            net_total += net
+            computed_items.append((item, gross, net, statutory))
 
         run_id = (
             await db.execute(
@@ -1104,56 +1294,69 @@ async def create_payroll_run(
                     ) RETURNING id
                 """),
                 {
-                    "org_id": user["org_id"],
+                    "org_id": org_id,
                     "run_number": payload.run_number,
                     "period_start": payload.period_start,
                     "period_end": payload.period_end,
                     "payment_date": payload.payment_date,
-                    "gross": gross,
-                    "deductions": deductions,
-                    "net": net,
+                    "gross": round(gross_total, 2),
+                    "deductions": round(deductions_total, 2),
+                    "net": round(net_total, 2),
                     "user_id": user["sub"],
                 }
             )
         ).scalar()
 
-        for item in payload.items:
+        for item, gross, net, statutory in computed_items:
             await db.execute(
                 text("""
                     INSERT INTO finance.payroll_items (
                         organization_id, payroll_run_id, employee_id, project_id, department_id,
                         regular_hours, overtime_hours, gross_pay, tax_deduction,
-                        statutory_deduction, other_deduction, net_pay
+                        statutory_deduction, other_deduction, net_pay,
+                        paye_amount, nssa_employee_amount, nssa_employer_amount, aids_levy_amount,
+                        taxable_gross, rate_table_id
                     ) VALUES (
                         :org_id, :run_id, :employee_id, :project_id, :department_id,
                         :regular_hours, :overtime_hours, :gross_pay, :tax_deduction,
-                        :statutory_deduction, :other_deduction, :net_pay
+                        :statutory_deduction, :other_deduction, :net_pay,
+                        :paye_amount, :nssa_employee_amount, :nssa_employer_amount, :aids_levy_amount,
+                        :taxable_gross, :rate_table_id
                     )
                 """),
                 {
-                    "org_id": user["org_id"],
+                    "org_id": org_id,
                     "run_id": run_id,
                     "employee_id": item.employee_id,
                     "project_id": item.project_id,
                     "department_id": item.department_id,
                     "regular_hours": item.regular_hours,
                     "overtime_hours": item.overtime_hours,
-                    "gross_pay": item.gross_pay,
-                    "tax_deduction": item.tax_deduction,
-                    "statutory_deduction": item.statutory_deduction,
+                    "gross_pay": gross,
+                    "tax_deduction": float(statutory.paye) + float(statutory.aids_levy),
+                    "statutory_deduction": float(statutory.nssa_employee),
                     "other_deduction": item.other_deduction,
-                    "net_pay": item.net_pay,
+                    "net_pay": net,
+                    "paye_amount": float(statutory.paye),
+                    "nssa_employee_amount": float(statutory.nssa_employee),
+                    "nssa_employer_amount": float(statutory.nssa_employer),
+                    "aids_levy_amount": float(statutory.aids_levy),
+                    "taxable_gross": gross,
+                    "rate_table_id": statutory.paye_rate_table_id,
                 }
             )
 
         await db.commit()
         return ok({"id": str(run_id)}, "Payroll run generated in draft.")
+    except HTTPException:
+        await db.rollback()
+        raise
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Payroll run number already exists.")
 
 
-@router.post("/payroll/runs/{run_id}/decision")
+@router.post("/payroll/runs/{run_id}/decision", deprecated=True)
 async def decide_payroll_run(
     run_id: UUID,
     payload: PayrollDecisionPayload,
@@ -1181,7 +1384,7 @@ async def decide_payroll_run(
     return ok({"id": str(run_id)}, f"Payroll run status updated to {payload.status}.")
 
 
-@router.post("/payroll/runs/{run_id}/post")
+@router.post("/payroll/runs/{run_id}/post", deprecated=True)
 async def post_payroll_run(
     run_id: UUID,
     user: dict = Depends(require_permission("finance.payroll.post")),
@@ -1259,6 +1462,32 @@ async def post_payroll_run(
         text("UPDATE finance.cash_accounts SET current_balance = current_balance - :amount WHERE id = :id"),
         {"amount": run_data["net_pay"], "id": cash_account_id},
     )
+
+    # Accrue PAYE/NSSA into the statutory liability ledger - same as the
+    # payroll_runs.py posting path, so it doesn't matter which of the two
+    # parallel routers actually posted this run.
+    items_rows = await db.execute(
+        text("""
+            SELECT id, employee_id, department_id, paye_amount, nssa_employee_amount,
+                   nssa_employer_amount, taxable_gross, rate_table_id
+            FROM finance.payroll_items WHERE payroll_run_id = :run_id
+        """),
+        {"run_id": run_id},
+    )
+    for item in items_rows.mappings():
+        common = {
+            "db": db, "org_id": user["org_id"], "currency": "USD", "as_at": run_data["payment_date"],
+            "source_type": "payroll_item", "source_id": item["id"], "direction": "output",
+            "department_id": item["department_id"], "employee_id": item["employee_id"],
+            "taxable_base": float(item["taxable_gross"]) if item["taxable_gross"] is not None else None,
+            "rate_table_id": item["rate_table_id"],
+        }
+        if item["paye_amount"] and float(item["paye_amount"]) > 0:
+            await accrue_liability_line(authority="zimra", liability_type="paye", computed_amount=float(item["paye_amount"]), **common)
+        if item["nssa_employee_amount"] and float(item["nssa_employee_amount"]) > 0:
+            await accrue_liability_line(authority="nssa", liability_type="nssa_employee", computed_amount=float(item["nssa_employee_amount"]), **common)
+        if item["nssa_employer_amount"] and float(item["nssa_employer_amount"]) > 0:
+            await accrue_liability_line(authority="nssa", liability_type="nssa_employer", computed_amount=float(item["nssa_employer_amount"]), **common)
 
     await db.commit()
     return ok({"id": str(run_id)}, "Payroll run posted and cashbook outflow recorded.")

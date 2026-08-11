@@ -7,6 +7,7 @@ and individual payslip records for each employee in the run.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
 
@@ -16,6 +17,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.pagination import ok, page_offset, paginated
+from app.services.finance.payroll_tax import compute_statutory
+from app.services.finance.tax_rates import NoRateTableError
+from app.services.finance.statutory_accrual import accrue_liability_line
 from core.database import get_db
 from core.security import get_current_user, require_permission
 
@@ -77,8 +81,12 @@ def _require_org(user: dict) -> str:
     return str(org_id)
 
 
-def _compute_pay(base_rate: float, pay_type: str, regular_hours: float, overtime_hours: float, overtime_rate: float) -> tuple[float, float, float]:
-    """Returns (gross_pay, tax_deduction, net_pay)."""
+def _compute_gross(base_rate: float, pay_type: str, regular_hours: float, overtime_hours: float, overtime_rate: float) -> float:
+    """Gross pay only - the one part of the old _compute_pay that was
+    genuinely correct. Statutory deductions (PAYE/NSSA/AIDS levy) are
+    computed separately via app.services.finance.payroll_tax.compute_statutory
+    against real rate tables, not the flat-rate placeholder this used to
+    include."""
     if pay_type == "monthly_salary":
         gross = float(base_rate)
         ot_gross = overtime_hours * float(overtime_rate) if overtime_rate else 0.0
@@ -91,13 +99,7 @@ def _compute_pay(base_rate: float, pay_type: str, regular_hours: float, overtime
         gross = days * float(base_rate) + overtime_hours * float(overtime_rate or base_rate / 8 * 1.5)
     else:
         gross = float(base_rate)
-
-    # Simple flat-rate tax (25% above threshold) — to be replaced with proper tax tables
-    tax = max(0.0, gross * 0.25) if gross > 500 else 0.0
-    # NSSA statutory (3% of gross, capped at $5.40/month)
-    nssa = min(gross * 0.03, 5.40)
-    net = gross - tax - nssa
-    return round(gross, 2), round(tax + nssa, 2), round(max(0.0, net), 2)
+    return round(gross, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +192,7 @@ async def create_payroll_run(
     profiles_rows = await db.execute(
         text("""
             SELECT ep.id AS employee_id, ep.first_name, ep.last_name,
-                   pp.pay_type, pp.base_rate, pp.overtime_rate
+                   pp.pay_type, pp.base_rate, pp.overtime_rate, pp.currency
             FROM finance.employee_pay_profiles pp
             JOIN hr.employees ep ON ep.id = pp.employee_id
             WHERE pp.employee_id = ANY(:ids)
@@ -239,31 +241,49 @@ async def create_payroll_run(
 
         for item in payload.items:
             profile = profiles[str(item.employee_id)]
-            gross, deductions, net = _compute_pay(
+            gross = _compute_gross(
                 base_rate=float(profile["base_rate"]),
                 pay_type=profile["pay_type"],
                 regular_hours=item.regular_hours,
                 overtime_hours=item.overtime_hours,
                 overtime_rate=float(profile.get("overtime_rate") or 0),
             )
-            # Apply any additional deductions
-            net = max(0.0, net - item.other_deduction)
-            deductions += item.other_deduction
+
+            try:
+                statutory = await compute_statutory(
+                    db,
+                    org_id=org_id,
+                    currency=profile.get("currency") or "USD",
+                    as_at=payload.payment_date,
+                    gross_pay=Decimal(str(gross)),
+                )
+            except NoRateTableError as exc:
+                # A silently-wrong PAYE/NSSA deduction is a compliance
+                # failure, not a degraded feature - block the whole run
+                # rather than guess.
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            net = float(statutory.net_pay) - item.other_deduction
+            deductions = float(statutory.paye) + float(statutory.nssa_employee) + item.other_deduction
 
             total_gross += gross
             total_deductions += deductions
-            total_net += net
+            total_net += max(0.0, net)
 
             await db.execute(
                 text("""
                     INSERT INTO finance.payroll_items (
                         organization_id, payroll_run_id, employee_id, project_id, department_id,
                         regular_hours, overtime_hours, gross_pay,
-                        tax_deduction, statutory_deduction, other_deduction, net_pay
+                        tax_deduction, statutory_deduction, other_deduction, net_pay,
+                        paye_amount, nssa_employee_amount, nssa_employer_amount, aids_levy_amount,
+                        taxable_gross, rate_table_id
                     ) VALUES (
                         :org_id, :run_id, :employee_id, :project_id, :department_id,
                         :regular_hours, :overtime_hours, :gross_pay,
-                        :tax_deduction, :statutory_deduction, :other_deduction, :net_pay
+                        :tax_deduction, :statutory_deduction, :other_deduction, :net_pay,
+                        :paye_amount, :nssa_employee_amount, :nssa_employer_amount, :aids_levy_amount,
+                        :taxable_gross, :rate_table_id
                     )
                 """),
                 {
@@ -275,13 +295,24 @@ async def create_payroll_run(
                     "regular_hours": item.regular_hours,
                     "overtime_hours": item.overtime_hours,
                     "gross_pay": gross,
-                    "tax_deduction": deductions * 0.9,   # approx PAYE portion
-                    "statutory_deduction": deductions * 0.1,  # NSSA portion
+                    # Legacy columns stay populated (tax_deduction = PAYE +
+                    # AIDS levy, statutory_deduction = employee NSSA) so
+                    # every existing reader (payslip YTD view, run-total
+                    # rollups) keeps working unchanged - real, separate
+                    # figures now instead of an arbitrary 90/10 split.
+                    "tax_deduction": float(statutory.paye) + float(statutory.aids_levy),
+                    "statutory_deduction": float(statutory.nssa_employee),
                     "other_deduction": item.other_deduction,
-                    "net_pay": net,
+                    "net_pay": max(0.0, net),
+                    "paye_amount": float(statutory.paye),
+                    "nssa_employee_amount": float(statutory.nssa_employee),
+                    "nssa_employer_amount": float(statutory.nssa_employer),
+                    "aids_levy_amount": float(statutory.aids_levy),
+                    "taxable_gross": gross,
+                    "rate_table_id": statutory.paye_rate_table_id,
                 },
             )
-            item_results.append({"employee_id": str(item.employee_id), "gross": gross, "net": net})
+            item_results.append({"employee_id": str(item.employee_id), "gross": gross, "net": max(0.0, net)})
 
         # Update run totals
         await db.execute(
@@ -413,6 +444,33 @@ async def decide_payroll_run(
             )
             extra_sets = ", posted_by = :posted_by, posted_at = NOW()"
             extra_params = {"posted_by": user_id}
+
+            # Accrue PAYE/NSSA into the statutory liability ledger, one
+            # line per payroll item so each carries its own department -
+            # this is what makes statutory cost show up correctly in the
+            # Phase 2 department P&L.
+            items_rows = await db.execute(
+                text("""
+                    SELECT id, employee_id, department_id, paye_amount, nssa_employee_amount,
+                           nssa_employer_amount, taxable_gross, rate_table_id
+                    FROM finance.payroll_items WHERE payroll_run_id = :run_id
+                """),
+                {"run_id": str(run_id)},
+            )
+            for item in items_rows.mappings():
+                common = {
+                    "db": db, "org_id": org_id, "currency": "USD", "as_at": run_row.payment_date,
+                    "source_type": "payroll_item", "source_id": item["id"], "direction": "output",
+                    "department_id": item["department_id"], "employee_id": item["employee_id"],
+                    "taxable_base": float(item["taxable_gross"]) if item["taxable_gross"] is not None else None,
+                    "rate_table_id": item["rate_table_id"],
+                }
+                if item["paye_amount"] and float(item["paye_amount"]) > 0:
+                    await accrue_liability_line(authority="zimra", liability_type="paye", computed_amount=float(item["paye_amount"]), **common)
+                if item["nssa_employee_amount"] and float(item["nssa_employee_amount"]) > 0:
+                    await accrue_liability_line(authority="nssa", liability_type="nssa_employee", computed_amount=float(item["nssa_employee_amount"]), **common)
+                if item["nssa_employer_amount"] and float(item["nssa_employer_amount"]) > 0:
+                    await accrue_liability_line(authority="nssa", liability_type="nssa_employer", computed_amount=float(item["nssa_employer_amount"]), **common)
 
         target_status = "approved" if action == "approve" else ("posted" if action == "post" else "cancelled")
         await db.execute(

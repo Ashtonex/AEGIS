@@ -55,6 +55,8 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   const [supplierBatch, setSupplierBatch] = useState({ cash_account_id: "", payment_date: today(), supplier_invoice_ids: [] as string[], payment_method: "bank_transfer", reference: "", notes: "" });
   const [payProfile, setPayProfile] = useState({ employee_id: "", pay_type: "monthly_salary", base_rate: "0", overtime_rate: "0", currency: "USD", bank_name: "", bank_account_number: "", tax_number: "", nssa_number: "" });
   const [payrollRun, setPayrollRun] = useState({ period_start: today(), period_end: today(), payment_date: today(), cash_account_id: "", project_id: "" });
+  const [selectedProfileIds, setSelectedProfileIds] = useState<Record<string, boolean>>({});
+  const [profileHours, setProfileHours] = useState<Record<string, { regular_hours: string; overtime_hours: string }>>({});
   const [claims, setClaims] = useState<RecordData[]>([]);
 
   const loadData = useCallback(async () => {
@@ -127,9 +129,38 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
     void runAction(() => upsertFinancePayrollProfile({ ...payProfile, base_rate: Number(payProfile.base_rate), overtime_rate: Number(payProfile.overtime_rate) }), "Payroll profile saved.");
   };
 
+  const toggleProfileSelected = (profileId: string) => {
+    setSelectedProfileIds(prev => ({ ...prev, [profileId]: !prev[profileId] }));
+    setProfileHours(prev => prev[profileId] ? prev : { ...prev, [profileId]: { regular_hours: "160", overtime_hours: "0" } });
+  };
+
   const createRun = (event: React.FormEvent) => {
     event.preventDefault();
-    void runAction(() => createFinancePayrollRun({ ...payrollRun, cash_account_id: payrollRun.cash_account_id || null, project_id: payrollRun.project_id || null }), "Payroll run created.");
+    const selected = payProfiles.filter(p => selectedProfileIds[p.id]);
+    if (selected.length === 0) {
+      setNotice("Select at least one employee to include in this run.");
+      return;
+    }
+    const items = selected.map(p => {
+      const hours = profileHours[p.id] || { regular_hours: "0", overtime_hours: "0" };
+      return {
+        employee_id: p.employee_id,
+        project_id: payrollRun.project_id || null,
+        regular_hours: Number(hours.regular_hours) || 0,
+        overtime_hours: Number(hours.overtime_hours) || 0,
+        other_deduction: 0,
+      };
+    });
+    const runNumber = `PAY-${payrollRun.period_start.replace(/-/g, "").slice(0, 6)}-${String(Math.floor(Math.random() * 900) + 100)}`;
+    void runAction(() => createFinancePayrollRun({
+      run_number: runNumber,
+      period_start: payrollRun.period_start,
+      period_end: payrollRun.period_end,
+      payment_date: payrollRun.payment_date,
+      cash_account_id: payrollRun.cash_account_id || null,
+      items,
+    }), "Payroll run created.");
+    setSelectedProfileIds({});
   };
 
   if (loading) {
@@ -211,12 +242,42 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
             <SimpleTable rows={payProfiles} columns={["employee_number", "full_name", "pay_type", "base_rate", "bank_name"]} />
           </Panel>
           <Panel title="Payroll Runs">
-            <form onSubmit={createRun} className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              <input className={inputClass} type="date" value={payrollRun.period_start} onChange={e => setPayrollRun({ ...payrollRun, period_start: e.target.value })} />
-              <input className={inputClass} type="date" value={payrollRun.period_end} onChange={e => setPayrollRun({ ...payrollRun, period_end: e.target.value })} />
-              <input className={inputClass} type="date" value={payrollRun.payment_date} onChange={e => setPayrollRun({ ...payrollRun, payment_date: e.target.value })} />
-              <SelectAccount accounts={accounts} value={payrollRun.cash_account_id} onChange={v => setPayrollRun({ ...payrollRun, cash_account_id: v })} />
-              <select className={inputClass} value={payrollRun.project_id} onChange={e => setPayrollRun({ ...payrollRun, project_id: e.target.value })}><option value="">All projects</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+            <form onSubmit={createRun} className="space-y-3 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <input className={inputClass} type="date" value={payrollRun.period_start} onChange={e => setPayrollRun({ ...payrollRun, period_start: e.target.value })} />
+                <input className={inputClass} type="date" value={payrollRun.period_end} onChange={e => setPayrollRun({ ...payrollRun, period_end: e.target.value })} />
+                <input className={inputClass} type="date" value={payrollRun.payment_date} onChange={e => setPayrollRun({ ...payrollRun, payment_date: e.target.value })} />
+                <SelectAccount accounts={accounts} value={payrollRun.cash_account_id} onChange={v => setPayrollRun({ ...payrollRun, cash_account_id: v })} />
+                <select className={inputClass} value={payrollRun.project_id} onChange={e => setPayrollRun({ ...payrollRun, project_id: e.target.value })}><option value="">No linked project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+              </div>
+              <div className="border border-ink-mid rounded max-h-48 overflow-y-auto divide-y divide-ink-mid">
+                {payProfiles.length === 0 ? (
+                  <p className="text-xs text-slate p-3">No active payroll profiles - add one above first.</p>
+                ) : (
+                  payProfiles.map(p => (
+                    <div key={p.id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+                      <input type="checkbox" checked={!!selectedProfileIds[p.id]} onChange={() => toggleProfileSelected(p.id)} />
+                      <span className="flex-1 text-paper">{p.full_name || p.employee_number || p.employee_id}</span>
+                      {selectedProfileIds[p.id] && (
+                        <div className="flex gap-1">
+                          <input
+                            className={`${inputClass} w-20 py-1`}
+                            placeholder="Reg hrs"
+                            value={profileHours[p.id]?.regular_hours ?? "160"}
+                            onChange={e => setProfileHours(prev => ({ ...prev, [p.id]: { regular_hours: e.target.value, overtime_hours: prev[p.id]?.overtime_hours ?? "0" } }))}
+                          />
+                          <input
+                            className={`${inputClass} w-20 py-1`}
+                            placeholder="OT hrs"
+                            value={profileHours[p.id]?.overtime_hours ?? "0"}
+                            onChange={e => setProfileHours(prev => ({ ...prev, [p.id]: { regular_hours: prev[p.id]?.regular_hours ?? "160", overtime_hours: e.target.value } }))}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
               <button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Create Run</button>
             </form>
             <div className="space-y-2">

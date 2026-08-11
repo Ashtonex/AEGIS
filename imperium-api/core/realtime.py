@@ -60,7 +60,8 @@ TABLE_PERMISSION_MAP: dict[str, str] = {
     "procurement.inventory_items": "inventory_items",
     "procurement.suppliers": "supplier_records",
     "finance.budgets": "budgets",
-    "finance.department_transfers": "financial_performance",
+    "finance.department_transfers": "finance.transfer",
+    "finance.statutory_liabilities": "finance.statutory",
 }
 
 

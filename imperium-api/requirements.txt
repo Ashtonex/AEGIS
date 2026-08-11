@@ -1,6 +1,10 @@
 # ==============================================================================
-# PROJECT AEGIS - PINNED PYTHON RUNTIME AND DEVELOPMENT DEPENDENCIES
+# PROJECT AEGIS - PINNED PYTHON RUNTIME DEPENDENCIES (PRODUCTION)
 # Python: 3.13.x project virtualenv
+#
+# This is what actually ships in the production Docker image. Test/lint/
+# static-analysis tooling lives in requirements-dev.txt instead, since it has
+# no reason to be installed on a running server - see requirements-dev.txt.
 # ==============================================================================
 
 # --- CORE API LAYER ---
@@ -13,7 +17,6 @@ email-validator==2.3.0      # Email validation for CRM/auth/public intake
 
 # --- DATABASE LAYER ---
 SQLAlchemy==2.0.51          # Async SQLAlchemy database layer
-alembic==1.18.5             # Alembic migration tooling where schema tracking is needed
 asyncpg==0.31.0             # PostgreSQL async driver
 supabase==2.31.0            # Supabase client for auth/storage/API integration
 pywebpush==2.3.0            # Web Push delivery for browser subscriptions
@@ -25,7 +28,7 @@ arq==0.28.0                 # Async Redis-backed background jobs
 # --- DATA ANALYSIS, QUOTATIONS & REPORTING ---
 numpy==2.5.1                # Numeric calculations
 pandas==3.0.3               # BOQ/Excel/CSV dataframes
-scipy==1.18.0               # Statistical analytics
+scipy==1.18.0                # Statistical analytics
 statsmodels==0.14.6         # Forecasting/statistical modelling
 scikit-learn==1.9.0         # Future ML/risk analytics support
 openpyxl==3.1.5             # Excel import/read support
@@ -34,38 +37,27 @@ XlsxWriter==3.2.9           # Excel export/report generation
 # --- DOCUMENT & PDF SERVICES ---
 reportlab==5.0.0            # PDF generation
 pymupdf==1.28.0             # PDF text extraction and merge operations
-pypdf==6.14.2               # PDF splitting, merging and metadata operations
+pypdf==6.14.2                # PDF splitting, merging and metadata operations
 pdfplumber==0.11.10         # PDF table/text extraction for controlled imports
 python-docx==1.2.0          # Word document generation and inspection
 pillow==12.3.0              # Image support for document rendering
 defusedxml==0.7.1           # Safe XML parsing for office/document payloads
-bleach==6.4.0               # Controlled rich-text sanitisation where accepted
+bleach==6.4.0                # Controlled rich-text sanitisation where accepted
 puremagic==1.30             # Windows-compatible file signature detection
-ezdxf==1.4.2                # DXF (CAD) drawing parsing for drawing takeoff
+ezdxf==1.4.2                 # DXF (CAD) drawing parsing for drawing takeoff
 
 # --- SECURITY & AUTHENTICATION ---
 cryptography==49.0.0        # Cryptographic primitives
-PyJWT==2.13.0               # JWT decoding and validation
-argon2-cffi==25.1.0         # Argon2id password hashing
-slowapi==0.1.9              # Rate limiting for FastAPI (brute-force protection)
+PyJWT==2.13.0                # JWT decoding and validation
+argon2-cffi==25.1.0          # Argon2id password hashing
+slowapi==0.1.9               # Rate limiting for FastAPI (brute-force protection)
 
 # --- SYSTEM LOGGING ---
-loguru==0.7.3               # Structured application logging
-structlog==25.5.0           # Approved structured logging library for new security work
-
-# --- TESTING & STATIC QUALITY ---
-pytest==9.1.1               # Test runner
-pytest-asyncio==1.4.0       # Async test support
-pytest-cov==7.1.0           # Coverage reporting
-hypothesis==6.136.9         # Property-based boundary testing
-ruff==0.15.22               # Linting/formatting
-mypy==2.3.0                 # Static type checking
-bandit==1.8.6               # Static security analysis
-pip-audit==2.9.0            # Dependency vulnerability scanning
-detect-secrets==1.5.0       # Secret scanning
+loguru==0.7.3                # Structured application logging
+structlog==25.5.0            # Approved structured logging library for new security work
 
 # --- SCRAPING & LLM ---
-beautifulsoup4==4.12.3
-tenacity==8.3.0
-playwright>=1.48.0
-openai==1.30.1
+beautifulsoup4==4.12.3       # HTML parsing for the tender scraper
+tenacity==8.3.0               # Retry policies for tender scraper / drawing extraction
+playwright>=1.48.0            # Headless browser driver for the tender scraper
+openai==1.30.1                # LLM calls for drawing extraction and tender scraping

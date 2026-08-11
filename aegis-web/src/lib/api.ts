@@ -2115,6 +2115,70 @@ export async function getFinanceDepartmentPnl(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/departments/pnl', { cache: 'no-store', allowFallback: false });
 }
 
+// --- STATUTORY (ZIMRA/VAT/PAYE/NSSA) ---
+
+export async function getFinanceRateTables(params?: { tax_type?: string; currency?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.tax_type) search.set('tax_type', params.tax_type);
+  if (params?.currency) search.set('currency', params.currency);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/statutory/rate-tables${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getFinanceActiveRateTable(taxType: string, currency = 'USD'): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/rate-tables/active?tax_type=${encodeURIComponent(taxType)}&currency=${encodeURIComponent(currency)}`, {
+    cache: 'no-store', allowFallback: false,
+  });
+}
+
+export async function createFinanceRateTable(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/rate-tables', {
+    method: 'POST', body: JSON.stringify(payload), allowFallback: false,
+  });
+}
+
+export async function deactivateFinanceRateTable(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/rate-tables/${id}/deactivate`, {
+    method: 'POST', allowFallback: false,
+  });
+}
+
+export async function getFinanceStatutoryLiabilities(params?: { authority?: string; liability_type?: string; status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.authority) search.set('authority', params.authority);
+  if (params?.liability_type) search.set('liability_type', params.liability_type);
+  if (params?.status) search.set('status', params.status);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/statutory/liabilities${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getFinanceStatutoryLiability(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/liabilities/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function fileFinanceStatutoryLiability(id: string, filingReference?: string): Promise<ApiResponse<any>> {
+  const search = new URLSearchParams();
+  if (filingReference) search.set('filing_reference', filingReference);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/liabilities/${id}/file${query}`, { method: 'POST', allowFallback: false });
+}
+
+export async function settleFinanceStatutoryLiability(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/liabilities/${id}/settle`, {
+    method: 'POST', body: JSON.stringify(payload), allowFallback: false,
+  });
+}
+
+export async function getFinanceStatutorySummary(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/statutory/summary', { cache: 'no-store', allowFallback: false });
+}
+
+export async function recomputeFinanceStatutory(payload: { period_start: string; period_end: string; currency?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/recompute', {
+    method: 'POST', body: JSON.stringify(payload), allowFallback: false,
+  });
+}
+
 /** Organisation-wide financial summary across all active projects, optionally scoped to a department. */
 export async function getFinanceProjectSummaries(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
@@ -2184,6 +2248,26 @@ export async function getFinanceProgressClaims(params?: { project_id?: string; d
   const query = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/progress-claims${query}`, {
     cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Submit a new progress claim (draft/submitted). */
+export async function createFinanceProgressClaim(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/progress-claims', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Certify a submitted progress claim - accrues output VAT if a rate is configured. */
+export async function certifyFinanceProgressClaim(claimId: string, certifiedAmount?: number): Promise<ApiResponse<any>> {
+  const search = new URLSearchParams();
+  if (certifiedAmount !== undefined) search.set('certified_amount', String(certifiedAmount));
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/progress-claims/${claimId}/certify${query}`, {
+    method: 'POST',
     allowFallback: false,
   });
 }
@@ -2351,10 +2435,10 @@ export async function createFinancePayrollRun(payload: Record<string, unknown>):
   });
 }
 
-export async function decideFinancePayrollRun(runId: string, decision: "approved" | "cancelled"): Promise<ApiResponse<any>> {
+export async function decideFinancePayrollRun(runId: string, status: "approved" | "cancelled"): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/payroll/runs/${runId}/decision`, {
     method: "POST",
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ status }),
     allowFallback: false,
   });
 }

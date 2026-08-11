@@ -234,7 +234,14 @@ class QuotationCalculator:
         contingency_rate = cls.sanitize_decimal(input_data.get("contingency_rate"))
         profit_rate = cls.sanitize_decimal(input_data.get("profit_rate"))
         discount = cls.sanitize_decimal(input_data.get("discount"))
-        tax_rate = cls.sanitize_decimal(input_data.get("tax_rate"))
+        # An omitted tax_rate (key absent, e.g. an older caller that predates
+        # this field) falls back to the documented 0.15 ZIMRA VAT default
+        # rather than silently pricing the quote at 0% tax. An explicitly
+        # supplied 0 (VAT-exempt quote) is honoured as-is.
+        if "tax_rate" in input_data and input_data.get("tax_rate") is not None:
+            tax_rate = cls.sanitize_decimal(input_data.get("tax_rate"))
+        else:
+            tax_rate = Decimal("0.15")
         prov_sums = cls.sanitize_decimal(input_data.get("provisional_sums"))
 
         # Zero out negative rates/sums
