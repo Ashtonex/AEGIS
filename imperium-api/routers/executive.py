@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
-from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime, timedelta
@@ -104,28 +103,36 @@ async def get_modules_status(
 
     registry = {str(module["name"]): module for module in modules}
     discovered: Dict[str, Dict[str, Any]] = {}
-    for route in request.app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/v1/"):
+    # request.app.routes only lists routes defined directly on the app - every
+    # router mounted via include_router() is wrapped in a private, lazily-
+    # resolved object that doesn't flatten into it (confirmed live: this walk
+    # silently found zero routes, degrading the whole Module Gateway to empty
+    # with no error surfaced anywhere). app.openapi() is FastAPI's public,
+    # stable contract for the fully-resolved route table - it's what powers
+    # /docs, so paths and merged tags are guaranteed correct here.
+    for path, operations in request.app.openapi().get("paths", {}).items():
+        if not path.startswith("/api/v1/"):
             continue
-        for tag in route.tags:
-            if tag in {"Authentication", "Users"}:
-                continue
-            name = str(tag)
-            configured = registry.get(name)
-            configured_status = (
-                str(configured.get("status", "")).lower() if configured else ""
-            )
-            discovered[name] = {
-                "id": str(configured.get("id", name.lower().replace(" ", "-")))
-                if configured
-                else name.lower().replace(" ", "-"),
-                "name": name,
-                "status": "Not Built"
-                if configured_status in {"not built", "not_built"}
-                else "Online",
-                "available": configured_status not in {"not built", "not_built"},
-                "route": route.path,
-            }
+        for operation in operations.values():
+            for tag in operation.get("tags", []):
+                if tag in {"Authentication", "Users"}:
+                    continue
+                name = str(tag)
+                configured = registry.get(name)
+                configured_status = (
+                    str(configured.get("status", "")).lower() if configured else ""
+                )
+                discovered[name] = {
+                    "id": str(configured.get("id", name.lower().replace(" ", "-")))
+                    if configured
+                    else name.lower().replace(" ", "-"),
+                    "name": name,
+                    "status": "Not Built"
+                    if configured_status in {"not built", "not_built"}
+                    else "Online",
+                    "available": configured_status not in {"not built", "not_built"},
+                    "route": path,
+                }
 
     # Retain a deliberately configured not-built module even when no route exists yet.
     for name, configured in registry.items():
