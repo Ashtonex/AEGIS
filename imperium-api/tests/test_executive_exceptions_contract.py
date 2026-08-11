@@ -19,7 +19,7 @@ class ExecutiveExceptionsContractTests(unittest.TestCase):
             "fleet.fleet",
             "fleet.utilization_logs",
             "projects.hse_incidents",
-            "projects.compliance_items",
+            "core.compliance_items",
             "projects.project_profiles",
             "projects.daily_site_reports",
             "projects.daily_report_labour",

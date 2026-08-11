@@ -168,7 +168,7 @@ async def get_regional_footprint(
                         'Unassigned') AS region
         FROM projects.projects p
         LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
-        WHERE organization_id = :org_id AND is_deleted = false
+        WHERE p.organization_id = :org_id AND p.is_deleted = false
     """,
         {"org_id": org_id},
         source="regional_projects",
@@ -603,7 +603,7 @@ async def get_executive_exceptions(
         """
         SELECT id, certificate_name AS title, expiry_date, 'Compliance expiry' AS category,
                'Renew or resolve certificate' AS action
-        FROM projects.compliance_items
+        FROM core.compliance_items
         WHERE organization_id = :org_id AND is_deleted = false
           AND expiry_date <= CURRENT_DATE + INTERVAL '30 days'
         ORDER BY expiry_date ASC LIMIT 20
@@ -966,13 +966,13 @@ async def get_pending_approvals(
     compliance_res = await _rows(
         db,
         """
-            SELECT id, certificate_name, expiry_date, created_at 
-            FROM projects.compliance_items 
+            SELECT id, certificate_name, expiry_date, created_at
+            FROM core.compliance_items
             WHERE organization_id = :org_id AND is_deleted = false AND expiry_date < CURRENT_DATE
             ORDER BY created_at DESC
         """,
         {"org_id": org_id},
-        source="projects.compliance_items",
+        source="core.compliance_items",
         source_errors=source_errors
     )
     pending_overrides = [
