@@ -23,5 +23,6 @@ jobs:
             cd /opt/aegis
             git fetch origin main
             git reset --hard origin/main
+            docker system prune -af --volumes || true
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --build
             docker image prune -f
