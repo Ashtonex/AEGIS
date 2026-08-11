@@ -150,6 +150,7 @@ export default function OpportunitiesKanban() {
   const [selectedWinReasonId, setSelectedWinReasonId] = useState('');
   const [winDepartmentOptions, setWinDepartmentOptions] = useState<any[]>([]);
   const [selectedWinDepartmentId, setSelectedWinDepartmentId] = useState('');
+  const [selectedWinOriginatingDepartmentId, setSelectedWinOriginatingDepartmentId] = useState('');
 
   // Duplicate Check States
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false);
@@ -550,6 +551,7 @@ export default function OpportunitiesKanban() {
     setWinNotes('');
     setSelectedWinReasonId('');
     setSelectedWinDepartmentId('');
+    setSelectedWinOriginatingDepartmentId('');
     setIsCloseWinModalOpen(true);
     try {
       const res = await getCrmWinLossReasons('won');
@@ -579,6 +581,7 @@ export default function OpportunitiesKanban() {
         win_loss_reason: winNotes.trim() || undefined,
         win_loss_reason_id: reasonId,
         department_id: selectedWinDepartmentId || undefined,
+        originating_department_id: selectedWinOriginatingDepartmentId || undefined,
       });
       setIsCloseWinModalOpen(false);
       try {
@@ -1629,16 +1632,29 @@ export default function OpportunitiesKanban() {
                 </div>
               )}
               {winDepartmentOptions.length > 0 && (
-                <div>
-                  <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Department</label>
-                  <select
-                    value={selectedWinDepartmentId}
-                    onChange={(e) => setSelectedWinDepartmentId(e.target.value)}
-                    className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
-                  >
-                    <option value="">Unassigned</option>
-                    {winDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                  </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Delivered by</label>
+                    <select
+                      value={selectedWinDepartmentId}
+                      onChange={(e) => setSelectedWinDepartmentId(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                    >
+                      <option value="">Unassigned</option>
+                      {winDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Sourced by</label>
+                    <select
+                      value={selectedWinOriginatingDepartmentId}
+                      onChange={(e) => setSelectedWinOriginatingDepartmentId(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                    >
+                      <option value="">Unassigned</option>
+                      {winDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
                 </div>
               )}
               <div>

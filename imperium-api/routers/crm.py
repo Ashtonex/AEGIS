@@ -14,6 +14,7 @@ from core.database import get_db
 from core.security import require_permission, user_has_permission
 from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
 from app.services.crm.automation_engine import fire_trigger
+from app.services.finance.department_transfers import post_department_transfer
 from app.shared.sql import update_tenant_row_sql
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -138,6 +139,7 @@ class OpportunityCreate(CrmPayload):
         default=None, ge=Decimal("0"), le=Decimal("100"), max_digits=5, decimal_places=2
     )
     risk_level: Optional[str] = Field(default=None, max_length=50)
+    originating_department_id: Optional[UUID] = None
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -176,6 +178,7 @@ class OpportunityUpdate(CrmPayload):
     )
     next_activity_due_at: Optional[str] = None
     competitor: Optional[str] = Field(default=None, max_length=255)
+    originating_department_id: Optional[UUID] = None
     margin_approval_required: Optional[bool] = None
     risk_approval_required: Optional[bool] = None
     approval_status: Optional[str] = Field(default=None, max_length=40)
@@ -205,6 +208,7 @@ OPPORTUNITY_UPDATE_COLUMNS = (
     "margin_approval_required",
     "risk_approval_required",
     "approval_status",
+    "originating_department_id",
 )
 
 
@@ -277,6 +281,7 @@ class MarkWonPayload(CrmPayload):
     start_date: Optional[date] = None
     planned_completion_date: Optional[date] = None
     department_id: Optional[UUID] = None
+    originating_department_id: Optional[UUID] = None
 
 
 class MarkLostPayload(CrmPayload):
@@ -1435,12 +1440,12 @@ async def create_opportunity(
         INSERT INTO crm.opportunities (
             name, stage, budget, probability, client_id, contact_id, client_org_id,
             sales_owner_id, owner_user_id, expected_close_date, deal_value, weighted_value,
-            expected_margin, risk_level, organization_id, created_by
+            expected_margin, risk_level, originating_department_id, organization_id, created_by
         )
         VALUES (
             :name, :stage, :budget, :probability, :client_id, :client_id, :client_org_id,
             :sales_owner_id, :sales_owner_id, :expected_close_date, :deal_value, :weighted_value,
-            :expected_margin, :risk_level, :org_id, :user_id
+            :expected_margin, :risk_level, :originating_department_id, :org_id, :user_id
         )
         RETURNING id
     """)
@@ -1460,6 +1465,7 @@ async def create_opportunity(
                 "weighted_value": weighted_value,
                 "expected_margin": payload.expected_margin,
                 "risk_level": payload.risk_level,
+                "originating_department_id": payload.originating_department_id,
                 "org_id": org_id,
                 "user_id": user_id,
             },
@@ -1805,12 +1811,12 @@ async def mark_opportunity_won(
                     INSERT INTO projects.projects (
                         organization_id, created_by, name, status, project_code, project_type,
                         client_name, contract_value, start_date, planned_completion_date,
-                        client_org_id, opportunity_id, quotation_id, department_id
+                        client_org_id, opportunity_id, quotation_id, department_id, originating_department_id
                     )
                     VALUES (
                         :org_id, :user_id, :name, 'planning', :project_code, :project_type,
                         :client_name, :contract_value, :start_date, :planned_completion_date,
-                        :client_org_id, :opportunity_id, :quotation_id, :department_id
+                        :client_org_id, :opportunity_id, :quotation_id, :department_id, :originating_department_id
                     )
                     RETURNING id
                 """),
@@ -1828,6 +1834,7 @@ async def mark_opportunity_won(
                     "opportunity_id": opportunity_id,
                     "quotation_id": opportunity.get("latest_quote_id") or opportunity.get("quote_id"),
                     "department_id": payload.department_id,
+                    "originating_department_id": payload.originating_department_id or opportunity.get("originating_department_id"),
                 },
             )
             project_id = project_row.scalar()
@@ -1866,6 +1873,78 @@ async def mark_opportunity_won(
                 """),
                 {"quote_id": opportunity.get("latest_quote_id"), "project_id": project_id, "org_id": org_id},
             )
+
+        # Commercial-sourced referral credit: fires only if a matching
+        # finance.department_transfer_rules row is configured - no rule
+        # means no-op, so this ships with zero behaviour change to the
+        # won-flow until the user configures one via the finance transfer
+        # rules UI. Wrapped in a SAVEPOINT so a misconfigured rule (or any
+        # unexpected error computing it) can never fail the actual won
+        # handoff, which is the part that matters.
+        originating_department_id = payload.originating_department_id or opportunity.get("originating_department_id")
+        if project_id and originating_department_id:
+            try:
+                async with db.begin_nested():
+                    delivering_row = await db.execute(
+                        text("SELECT department_id FROM projects.projects WHERE id = :id AND organization_id = :org_id"),
+                        {"id": project_id, "org_id": org_id},
+                    )
+                    delivering_row = delivering_row.first()
+                    delivering_department_id = delivering_row.department_id if delivering_row else None
+
+                    if delivering_department_id and delivering_department_id != originating_department_id:
+                        rule_row = await db.execute(
+                            text("""
+                                SELECT * FROM finance.department_transfer_rules
+                                WHERE organization_id = :org_id AND transfer_type = 'internal_referral'
+                                  AND trigger_event = 'opportunity_won' AND is_active = true AND is_deleted = false
+                                  AND (from_department_id = :delivering OR from_department_id IS NULL)
+                                  AND (to_department_id = :originating OR to_department_id IS NULL)
+                                  AND effective_from <= CURRENT_DATE
+                                  AND (effective_to IS NULL OR effective_to >= CURRENT_DATE)
+                                ORDER BY (from_department_id IS NOT NULL) DESC, (to_department_id IS NOT NULL) DESC
+                                LIMIT 1
+                            """),
+                            {"org_id": org_id, "delivering": delivering_department_id, "originating": originating_department_id},
+                        )
+                        rule = rule_row.mappings().first()
+                        if rule:
+                            contract_value = Decimal(str(
+                                opportunity.get("quote_amount") or opportunity.get("deal_value") or opportunity.get("budget") or 0
+                            ))
+                            if rule["basis"] == "fixed_amount" and rule["fixed_amount"]:
+                                referral_amount = Decimal(str(rule["fixed_amount"]))
+                            elif rule["basis"] == "percent_of_contract_value" and rule["rate"]:
+                                referral_amount = contract_value * Decimal(str(rule["rate"])) / Decimal("100")
+                            else:
+                                # percent_of_margin/manual need data this flow doesn't have (margin,
+                                # or a human-entered amount) - not computed automatically here.
+                                referral_amount = Decimal("0")
+                            if referral_amount > 0:
+                                await post_department_transfer(
+                                    db,
+                                    org_id=org_id,
+                                    user_id=user_id,
+                                    transfer_type="internal_referral",
+                                    transfer_date=date.today(),
+                                    from_department_id=delivering_department_id,
+                                    to_department_id=originating_department_id,
+                                    amount=referral_amount,
+                                    description=f"Referral credit for opportunity: {opportunity.get('name')}",
+                                    source_type="crm_opportunity",
+                                    source_id=opportunity_id,
+                                    project_id=project_id,
+                                    cost_category="overhead",
+                                    basis={
+                                        "rule_code": rule["rule_code"],
+                                        "basis": rule["basis"],
+                                        "rate": str(rule["rate"]) if rule["rate"] else None,
+                                        "contract_value": str(contract_value),
+                                    },
+                                )
+            except Exception:
+                pass
+
         await db.commit()
     except (DataError, IntegrityError) as exc:
         await db.rollback()

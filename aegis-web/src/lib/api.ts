@@ -2075,6 +2075,46 @@ export async function getFinanceDepartments(): Promise<ApiResponse<any[]>> {
   });
 }
 
+/** Internal department-transfer register, optionally filtered. */
+export async function getFinanceTransfers(params?: { department_id?: string; transfer_type?: string; project_id?: string; status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set('department_id', params.department_id);
+  if (params?.transfer_type) search.set('transfer_type', params.transfer_type);
+  if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.status) search.set('status', params.status);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/transfers/${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getFinanceTransfer(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/transfers/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createFinanceTransfer(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/transfers/', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function reverseFinanceTransfer(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/transfers/${id}/reverse`, { method: 'POST', allowFallback: false });
+}
+
+export async function getFinanceTransferSummary(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/transfers/summary', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getFinanceTransferRules(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/transfers/rules', { cache: 'no-store', allowFallback: false });
+}
+
+export async function saveFinanceTransferRule(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/transfers/rules', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+/** Revenue and cost per department, plus a consolidated whole-business total. */
+export async function getFinanceDepartmentPnl(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/departments/pnl', { cache: 'no-store', allowFallback: false });
+}
+
 /** Organisation-wide financial summary across all active projects, optionally scoped to a department. */
 export async function getFinanceProjectSummaries(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();

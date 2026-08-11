@@ -168,13 +168,43 @@ async def list_project_financial_summaries(
                   AND v.status = 'approved' AND v.is_deleted = false
             ), 0) AS approved_variations,
             
-            -- Actual Cost (posted transactions)
+            -- Actual Cost = ordinary posted cost_transactions (excluding any
+            -- row superseded by a posted internal-transfer charge, e.g. an
+            -- internal plant hire's internal operating-cost row, so the
+            -- same usage isn't counted twice) PLUS internal-transfer
+            -- charges against this project (e.g. the hire rate it was
+            -- actually billed) - so a project using hired equipment shows
+            -- its real cost, not the internal operating cost.
             COALESCE((
-                SELECT SUM(ct.amount) 
-                FROM finance.cost_transactions ct 
+                SELECT SUM(ct.amount)
+                FROM finance.cost_transactions ct
                 WHERE ct.project_id = p.id AND ct.organization_id = :org_id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM finance.department_transfers dt
+                      WHERE dt.organization_id = ct.organization_id
+                        AND dt.source_type = ct.source_type AND dt.source_id = ct.source_id
+                        AND dt.status = 'posted'
+                  )
+            ), 0)
+            + COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+                WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'charge'
             ), 0) AS actual_cost_to_date,
-            
+
+            -- Internal transfer legs charged/credited to this project, broken
+            -- out for transparency (already folded into actual_cost_to_date above)
+            COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+                WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'charge'
+            ), 0) AS internal_transfer_charges,
+            COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+                WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'credit'
+            ), 0) AS internal_transfer_credits,
+
             -- Committed Cost (outstanding PO obligations)
             COALESCE((
                 SELECT SUM(c.outstanding_amount) 
@@ -252,15 +282,37 @@ async def get_project_financial_detail(
             ), 0) AS approved_variations,
             
             COALESCE((
-                SELECT SUM(ct.amount) 
-                FROM finance.cost_transactions ct 
+                SELECT SUM(ct.amount)
+                FROM finance.cost_transactions ct
                 WHERE ct.project_id = p.id AND ct.organization_id = :org_id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM finance.department_transfers dt
+                      WHERE dt.organization_id = ct.organization_id
+                        AND dt.source_type = ct.source_type AND dt.source_id = ct.source_id
+                        AND dt.status = 'posted'
+                  )
+            ), 0)
+            + COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+                WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'charge'
             ), 0) AS actual_cost_to_date,
-            
+
             COALESCE((
-                SELECT SUM(c.outstanding_amount) 
-                FROM finance.commitments c 
-                WHERE c.project_id = p.id AND c.organization_id = :org_id 
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+                WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'charge'
+            ), 0) AS internal_transfer_charges,
+            COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+                WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'credit'
+            ), 0) AS internal_transfer_credits,
+
+            COALESCE((
+                SELECT SUM(c.outstanding_amount)
+                FROM finance.commitments c
+                WHERE c.project_id = p.id AND c.organization_id = :org_id
                   AND c.status = 'active' AND c.is_deleted = false
             ), 0) AS committed_cost,
             
@@ -308,6 +360,127 @@ async def get_project_financial_detail(
     )
 
     return ok(detail, "Project financial detail retrieved.")
+
+
+@router.get("/departments/pnl")
+async def get_department_pnl(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    user: dict = Depends(require_permission("finance.cost.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Revenue and cost per department, plus an "Unassigned" row for anything
+    without a department yet and an org-wide total - this is what actually
+    answers "revenue per department and revenue for the entire business."
+
+    Combines: external client revenue (progress claims, via the project's
+    department), internal transfer revenue/cost (department_transfer_legs,
+    directly tagged), project-committed cost (cost_transactions, via the
+    project's department, excluding rows superseded by a posted transfer),
+    and non-project direct cost (cashbook/payroll/supplier-payment rows
+    that already carry their own department_id from Phase 1 but were never
+    rolled up anywhere until now).
+    """
+    date_filters = ""
+    params: dict = {"org_id": user["org_id"]}
+    if date_from:
+        date_filters += " AND t.transfer_date >= :date_from"
+        params["date_from"] = date_from
+    if date_to:
+        date_filters += " AND t.transfer_date <= :date_to"
+        params["date_to"] = date_to
+
+    query = text(f"""
+        WITH depts AS (
+            SELECT id, name FROM finance.departments
+            WHERE organization_id = :org_id AND is_deleted = false
+            UNION ALL
+            SELECT NULL::uuid, 'Unassigned'
+        )
+        SELECT
+            d.id AS department_id,
+            d.name AS department_name,
+
+            COALESCE((
+                SELECT SUM(pc.certified_amount)
+                FROM finance.progress_claims pc
+                JOIN projects.projects p ON p.id = pc.project_id
+                WHERE p.organization_id = :org_id AND p.department_id IS NOT DISTINCT FROM d.id
+                  AND pc.status IN ('certified', 'paid') AND pc.is_deleted = false
+            ), 0) AS external_revenue,
+
+            COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers t ON t.id = l.transfer_id AND t.status = 'posted'
+                WHERE l.organization_id = :org_id AND l.department_id IS NOT DISTINCT FROM d.id AND l.leg_type = 'credit'
+                {date_filters}
+            ), 0) AS internal_revenue,
+
+            COALESCE((
+                SELECT SUM(ct.amount)
+                FROM finance.cost_transactions ct
+                JOIN projects.projects p ON p.id = ct.project_id
+                WHERE ct.organization_id = :org_id AND p.department_id IS NOT DISTINCT FROM d.id
+                  AND NOT EXISTS (
+                      SELECT 1 FROM finance.department_transfers dt2
+                      WHERE dt2.organization_id = ct.organization_id
+                        AND dt2.source_type = ct.source_type AND dt2.source_id = ct.source_id
+                        AND dt2.status = 'posted'
+                  )
+            ), 0) AS project_cost,
+
+            COALESCE((
+                SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+                JOIN finance.department_transfers t ON t.id = l.transfer_id AND t.status = 'posted'
+                WHERE l.organization_id = :org_id AND l.department_id IS NOT DISTINCT FROM d.id AND l.leg_type = 'charge'
+                {date_filters}
+            ), 0) AS internal_cost,
+
+            COALESCE((
+                SELECT SUM(cb.amount) FROM finance.cashbook_transactions cb
+                WHERE cb.organization_id = :org_id AND cb.department_id IS NOT DISTINCT FROM d.id
+                  AND cb.project_id IS NULL AND cb.direction = 'outflow' AND cb.is_deleted = false
+            ), 0)
+            + COALESCE((
+                SELECT SUM(pi.net_pay) FROM finance.payroll_items pi
+                JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id AND pr.status = 'posted'
+                WHERE pi.organization_id = :org_id AND pi.department_id IS NOT DISTINCT FROM d.id AND pi.project_id IS NULL
+            ), 0)
+            + COALESCE((
+                SELECT SUM(spi.amount) FROM finance.supplier_payment_items spi
+                WHERE spi.organization_id = :org_id AND spi.department_id IS NOT DISTINCT FROM d.id AND spi.project_id IS NULL
+            ), 0) AS direct_cost_non_project
+
+        FROM depts d
+        ORDER BY d.name
+    """)
+
+    result = await db.execute(query, params)
+    rows = [dict(r._mapping) for r in result]
+
+    org_totals = {"external_revenue": 0, "internal_revenue": 0, "project_cost": 0, "internal_cost": 0, "direct_cost_non_project": 0}
+    for row in rows:
+        revenue = float(row["external_revenue"]) + float(row["internal_revenue"])
+        cost = float(row["project_cost"]) + float(row["internal_cost"]) + float(row["direct_cost_non_project"])
+        row["total_revenue"] = revenue
+        row["total_cost"] = cost
+        row["net"] = revenue - cost
+        for key in org_totals:
+            org_totals[key] += float(row[key])
+
+    org_revenue = org_totals["external_revenue"] + org_totals["internal_revenue"]
+    org_cost = org_totals["project_cost"] + org_totals["internal_cost"] + org_totals["direct_cost_non_project"]
+    org_row = {
+        "department_id": None,
+        "department_name": "Consolidated (whole business)",
+        **org_totals,
+        "total_revenue": org_revenue,
+        "total_cost": org_cost,
+        "net": org_revenue - org_cost,
+    }
+
+    return ok({"departments": rows, "consolidated": org_row}, "Department P&L retrieved.")
 
 
 @router.get("/cost-codes")

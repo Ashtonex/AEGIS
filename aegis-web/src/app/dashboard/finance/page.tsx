@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
+import { DepartmentTransfersPanel } from "./DepartmentTransfersPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -22,11 +23,12 @@ import {
   createFinanceVariation,
   getFinanceProgressClaims,
   getFinanceBudgets,
+  getFinanceDepartmentPnl,
   getInternalProjects
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -39,6 +41,8 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   cashbook: "/dashboard/finance/cashbook",
   "supplier-payments": "/dashboard/finance/supplier-payments",
   payroll: "/dashboard/finance/payroll",
+  transfers: "/dashboard/finance/transfers",
+  "department-pnl": "/dashboard/finance/department-pnl",
 };
 
 function normalizeTab(value: string | null | undefined): FinanceTab {
@@ -134,6 +138,7 @@ function FinanceWorkspace() {
       variations: () => getFinanceVariations({ department_id: departmentId || undefined }),
       claims: () => getFinanceProgressClaims({ department_id: departmentId || undefined }),
       budgets: () => getFinanceBudgets({ department_id: departmentId || undefined }),
+      departmentPnl: () => getFinanceDepartmentPnl(),
     },
     [departmentId],
     {
@@ -146,6 +151,7 @@ function FinanceWorkspace() {
         variations: "Variation register",
         claims: "Progress claims",
         budgets: "Budgets",
+        departmentPnl: "Department P&L",
       },
     }
   );
@@ -157,6 +163,7 @@ function FinanceWorkspace() {
   const variations = useMemo(() => financeData.variations?.data || [], [financeData.variations]);
   const claims = useMemo(() => financeData.claims?.data || [], [financeData.claims]);
   const budgets = useMemo(() => financeData.budgets?.data || [], [financeData.budgets]);
+  const departmentPnl = useMemo(() => financeData.departmentPnl?.data || null, [financeData.departmentPnl]);
 
   useLiveTable("finance.budgets", () => void loadData());
   const error = loadError ? loadFailureMessage(loadError) : null;
@@ -435,6 +442,18 @@ function FinanceWorkspace() {
         >
           Payroll
         </Link>
+        <Link
+          href={TAB_ROUTES.transfers}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "transfers" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Internal Transfers
+        </Link>
+        <Link
+          href={TAB_ROUTES["department-pnl"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "department-pnl" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Department P&amp;L
+        </Link>
       </div>
 
       {/* Tab Panels */}
@@ -442,6 +461,14 @@ function FinanceWorkspace() {
         <div className="lg:col-span-2 space-y-6">
           {operationalTabs.includes(activeTab) && (
             <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll"} projects={projects} departmentId={departmentId} />
+          )}
+
+          {activeTab === "transfers" && (
+            <DepartmentTransfersPanel mode="transfers" departments={departments} projects={projects} />
+          )}
+
+          {activeTab === "department-pnl" && (
+            <DepartmentTransfersPanel mode="pnl" departments={departments} projects={projects} departmentPnl={departmentPnl} />
           )}
 
           {activeTab === "project-financials" && (

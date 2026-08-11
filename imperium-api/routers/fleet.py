@@ -22,6 +22,7 @@ from app.shared.sql import (
     tenant_reference_sql,
     update_tenant_row_sql,
 )
+from app.services.finance.department_transfers import post_department_transfer
 
 router = APIRouter()
 
@@ -53,6 +54,7 @@ class AssetPayload(Payload):
     acquired_on: Optional[date] = None
     retired_on: Optional[date] = None
     notes: Optional[str] = None
+    owning_department_id: Optional[UUID] = None
 
     @model_validator(mode="after")
     def valid_dates(self):
@@ -520,8 +522,8 @@ async def create_asset(
     try:
         new_id = (
             await db.execute(
-                text("""INSERT INTO fleet.fleet (organization_id,created_by,vehicle_registration,vehicle_type,asset_code,ownership_type,operational_status,make,model,model_year,vin,odometer_km,engine_hours,capacity_description,home_location,acquired_on,retired_on,notes)
-           VALUES (:org_id,:user_id,:vehicle_registration,:vehicle_type,:asset_code,:ownership_type,:operational_status,:make,:model,:model_year,:vin,:odometer_km,:engine_hours,:capacity_description,:home_location,:acquired_on,:retired_on,:notes) RETURNING id"""),
+                text("""INSERT INTO fleet.fleet (organization_id,created_by,vehicle_registration,vehicle_type,asset_code,ownership_type,operational_status,make,model,model_year,vin,odometer_km,engine_hours,capacity_description,home_location,acquired_on,retired_on,notes,owning_department_id)
+           VALUES (:org_id,:user_id,:vehicle_registration,:vehicle_type,:asset_code,:ownership_type,:operational_status,:make,:model,:model_year,:vin,:odometer_km,:engine_hours,:capacity_description,:home_location,:acquired_on,:retired_on,:notes,:owning_department_id) RETURNING id"""),
                 {
                     **payload.model_dump(),
                     "org_id": user["org_id"],
@@ -1082,11 +1084,49 @@ async def record_utilization(
         amount=cost_amount,
         transaction_date=payload.occurred_on,
     )
+    # Internal plant-hire transfer: credit whichever department owns this
+    # asset the hire revenue, charged against the hiring project's
+    # delivering department. Never defaults to Plant & Equipment in code -
+    # reads the asset's own owning_department_id, and no-ops (stays
+    # unattributed) if that isn't set, or if the asset has no configured
+    # hourly_charge_rate (revenue_amount == 0) - existing behaviour for
+    # untagged/unrated equipment is unchanged.
+    from_department_id = None
+    if project_id is not None:
+        proj_row = await db.execute(
+            text("SELECT department_id FROM projects.projects WHERE id = :id AND organization_id = :org_id"),
+            {"id": project_id, "org_id": user["org_id"]},
+        )
+        proj = proj_row.first()
+        from_department_id = proj.department_id if proj else None
+    to_department_id = asset.get("owning_department_id")
+
+    transfer_id = await post_department_transfer(
+        db,
+        org_id=user["org_id"],
+        user_id=user["sub"],
+        transfer_type="internal_plant_hire",
+        transfer_date=payload.occurred_on,
+        from_department_id=from_department_id,
+        to_department_id=to_department_id,
+        amount=revenue_amount,
+        description=f"Internal plant hire: {payload.operating_hours} operating hours",
+        source_type="fleet_utilization_log",
+        source_id=utilization_id,
+        project_id=project_id,
+        cost_category="equipment",
+        basis={
+            "operating_hours": str(payload.operating_hours),
+            "hourly_charge_rate": str(hourly_rate),
+            "cost_amount": str(cost_amount),
+        },
+    )
+
     await db.execute(
         text(
-            "UPDATE fleet.utilization_logs SET cost_transaction_id=:cost_id WHERE id=:id AND organization_id=:org_id"
+            "UPDATE fleet.utilization_logs SET cost_transaction_id=:cost_id, department_transfer_id=:transfer_id WHERE id=:id AND organization_id=:org_id"
         ),
-        {"cost_id": cost_id, "id": utilization_id, "org_id": user["org_id"]},
+        {"cost_id": cost_id, "transfer_id": transfer_id, "id": utilization_id, "org_id": user["org_id"]},
     )
     await emit_event(
         db,
@@ -1100,6 +1140,7 @@ async def record_utilization(
             "cost_amount": str(cost_amount),
             "revenue_amount": str(revenue_amount),
             "cost_transaction_id": str(cost_id) if cost_id else None,
+            "department_transfer_id": str(transfer_id) if transfer_id else None,
         },
     )
     if cost_id:
@@ -1120,6 +1161,7 @@ async def record_utilization(
         {
             "id": str(utilization_id),
             "cost_transaction_id": str(cost_id) if cost_id else None,
+            "department_transfer_id": str(transfer_id) if transfer_id else None,
         },
         "Utilization recorded.",
     )
