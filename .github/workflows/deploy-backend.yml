@@ -20,9 +20,21 @@ jobs:
           key: ${{ secrets.DROPLET_SSH_KEY }}
           script: |
             set -euo pipefail
+            echo "--- disk usage before cleanup ---"
+            df -h /
+            docker system df -v || true
+            echo "--- cleaning OS-level cruft (apt cache, old kernels, journal logs) ---"
+            apt-get clean || true
+            apt-get autoremove -y || true
+            journalctl --vacuum-size=100M || true
+            echo "--- pruning ALL docker state (safe: docker compose up --build recreates everything) ---"
+            docker system prune -af --volumes || true
+            echo "--- disk usage after cleanup, before build ---"
+            df -h /
             cd /opt/aegis
             git fetch origin main
             git reset --hard origin/main
-            docker system prune -af --volumes || true
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --build
             docker image prune -f
+            echo "--- disk usage after build ---"
+            df -h /
