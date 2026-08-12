@@ -6,16 +6,50 @@ import {
   FileText, Plus, Trash2, CheckCircle,
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
-  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History
+  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp
 } from "lucide-react";
 import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
+import { useModuleTour } from "@/hooks/useModuleTour";
+import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import SopChecklistModal from "./SopChecklistModal";
 import QuotationHistoryModal from "./QuotationHistoryModal";
 
+const QUOTATIONS_TOUR_STEPS: ModuleTourStep[] = [
+  {
+    title: "From a rate buildup to a signed contract",
+    body: "This module takes a quote from first cost estimate through commercial review to a won deal - and a won quote doesn't just change status, it seeds the real project budget it feeds into Finance. This tour covers the four tools and how a quote's real numbers move downstream.",
+    placement: "center",
+  },
+  {
+    title: "Pipeline Value and the KPI strip",
+    body: "These totals are computed live from every quotation currently in your ledger below - not a separate manual tracker. Win a quote and Finance's own numbers move with it.",
+    target: "quotations-kpis",
+    placement: "bottom",
+  },
+  {
+    title: "Builder, Drawing Takeoff, CCB, Intelligence Engine",
+    body: "Manual Calculator / Builder is the real rate-buildup tool with live VAT and margin calculations. Drawing Takeoff measures real quantities off an uploaded drawing. Commercial Control Brain checks a site material request against justified earned progress before it gets flagged as excess. Intelligence Engine is the same commercial-guard logic plus rate benchmarking, in one place.",
+    target: "quotations-tools",
+    placement: "bottom",
+  },
+  {
+    title: "Marking a quote Won is a real trigger, not a label",
+    body: "Confirming Won seeds (or replaces) that project's approved execution budget directly from the quote's own cost breakdown - materials, labour, equipment, prelims, overhead, contingency - with protected profit deliberately excluded. If costs are already running ahead of what's justified, a margin-threat alert fires for Executive/Finance Manager automatically.",
+    target: "quotations-ledger",
+    placement: "right",
+  },
+  {
+    title: "VAT follows the real rate table",
+    body: "The VAT applied in the Builder isn't a hardcoded 15% anymore - it's fetched from Finance > Statutory > Rate Tables. Until a real rate is entered there, the Builder falls back to 15% with a visible notice, so pricing behaviour never changes silently.",
+    placement: "center",
+  },
+];
+
 export default function QuotationsDashboard() {
   const { session } = useAuth();
+  const quotationsTour = useModuleTour("quotations");
   const [quotes, setQuotes] = useState<any[]>([]);
   const [projectsList, setProjectsList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -249,17 +283,27 @@ export default function QuotationsDashboard() {
       
       {/* Page Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-            <Layers className="w-7 h-7 text-signal" />
-            Estimating &amp; Quotations Command
-          </h1>
-          <p className="text-sm text-slate mt-1">
-            Build robust cost structures, manage margins, and run commercial controls across all construction projects.
-          </p>
+        <div className="flex items-center gap-2" data-tour="quotations-title">
+          <div>
+            <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-3">
+              <Layers className="w-7 h-7 text-signal" />
+              Estimating &amp; Quotations Command
+            </h1>
+            <p className="text-sm text-slate mt-1">
+              Build robust cost structures, manage margins, and run commercial controls across all construction projects.
+            </p>
+          </div>
+          <button
+            onClick={quotationsTour.openTour}
+            className="text-slate hover:text-paper transition-colors"
+            title="Replay Quotations tour"
+            aria-label="Replay Quotations tour"
+          >
+            <CircleHelp className="w-5 h-5" />
+          </button>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button 
+        <div className="flex flex-wrap items-center gap-3" data-tour="quotations-tools">
+          <button
             onClick={loadData}
             className="p-2 border border-ink-mid rounded-sm bg-ink hover:border-signal/50 text-slate hover:text-white transition-all"
             title="Refresh database records"
@@ -312,7 +356,7 @@ export default function QuotationsDashboard() {
       )}
 
       {/* KPI Cards Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6" data-tour="quotations-kpis">
         <div className="p-5 bg-ink-light border border-ink-mid rounded-sm space-y-2 relative group hover:border-signal/20 transition-colors">
           <DollarSign className="w-8 h-8 text-signal absolute right-5 top-5 opacity-40 group-hover:scale-110 transition-transform" />
           <p className="text-xs font-mono tracking-widest text-slate uppercase">Pipeline Value</p>
@@ -350,7 +394,7 @@ export default function QuotationsDashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
         {/* Ledger - Left Col */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-6" data-tour="quotations-ledger">
           <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
@@ -665,6 +709,12 @@ export default function QuotationsDashboard() {
         />
       )}
 
+      <ModuleTour
+        steps={QUOTATIONS_TOUR_STEPS}
+        open={quotationsTour.open}
+        onClose={quotationsTour.closeTour}
+        onComplete={quotationsTour.completeTour}
+      />
     </div>
   );
 }

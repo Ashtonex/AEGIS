@@ -1757,6 +1757,10 @@ export async function updateMyProfile(payload: Record<string, unknown>): Promise
   return fetchApi<ApiResponse<any>>('/api/v1/profile/me', { method: 'PATCH', body: JSON.stringify(payload) });
 }
 
+export async function completeModuleTour(moduleKey: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/profile/me/module-tours/${encodeURIComponent(moduleKey)}`, { method: 'POST' });
+}
+
 export async function getWorkforce(): Promise<ApiResponse<any[]>> {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/workforce/', { cache: 'no-store' });
 }

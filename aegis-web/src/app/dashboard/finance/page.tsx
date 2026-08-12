@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, TrendingUp, TrendingDown, Users, X, BarChart3, Receipt,
-  FileText, ClipboardList, CheckCircle2, AlertCircle
+  FileText, ClipboardList, CheckCircle2, AlertCircle, CircleHelp
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
@@ -14,6 +14,8 @@ import { DepartmentTransfersPanel } from "./DepartmentTransfersPanel";
 import { StatutoryPanel } from "./StatutoryPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
+import { useModuleTour } from "@/hooks/useModuleTour";
+import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import {
   getFinanceDepartments,
   getFinanceProjectSummaries,
@@ -52,6 +54,38 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
 function normalizeTab(value: string | null | undefined): FinanceTab {
   return value && value in TAB_ROUTES ? (value as FinanceTab) : "project-financials";
 }
+
+const FINANCE_TOUR_STEPS: ModuleTourStep[] = [
+  {
+    title: "Most of this ledger writes itself",
+    body: "Almost nothing here is manual data entry. Costs, internal transfers, and statutory tax all post themselves as a side effect of things that happen elsewhere in the app - a won quote, a logged equipment hour, a certified claim, a payroll run. This tour points out where each number actually comes from.",
+    placement: "center",
+  },
+  {
+    title: "Consolidated vs one department",
+    body: "Switch between the whole business and a single department's own view. A won quotation auto-seeds that project's budget from its own cost breakdown - protected profit excluded - so what was quoted and what's actually being spent are the same comparison.",
+    target: "finance-departments",
+    placement: "bottom",
+  },
+  {
+    title: "These numbers are live, not entered",
+    body: "Actual Cost, Committed Cost, and Forecast Margin are all SUM()s over real transactions - fleet usage, procurement, payroll - updated the instant something posts. If a project's forecast cost blows past its approved budget with no matching approved variation, Finance proactively notifies Executive/Finance Manager rather than waiting for someone to notice.",
+    target: "finance-kpis",
+    placement: "bottom",
+  },
+  {
+    title: "Progress Claims and Internal Transfers",
+    body: "Progress Claims is where certifying a client claim happens - and that certification is also what triggers VAT to accrue automatically. Internal Transfers records money moving between departments (e.g. Plant & Equipment hiring gear to Construction) - these post themselves when the triggering event happens, nobody journals them by hand.",
+    target: "finance-tabs",
+    placement: "bottom",
+  },
+  {
+    title: "Statutory: the one place that needs your input first",
+    body: "PAYE, NSSA, and VAT compute off real ZIMRA rate tables and accrue automatically once a claim is certified or payroll is posted. But those rate tables ship empty on purpose - until real rates are entered here, payroll hard-blocks (no silent $0 tax) and VAT falls back to a visible 15% default. This is the one manual step everything else depends on.",
+    target: "finance-statutory-tab",
+    placement: "bottom",
+  },
+];
 
 function money(value: unknown) {
   const num = typeof value === "number" ? value : Number(value);
@@ -109,6 +143,7 @@ export default function FinanceDashboard() {
 
 function FinanceWorkspace() {
   const searchParams = useSearchParams();
+  const financeTour = useModuleTour("finance");
   const [activeTab, setActiveTab] = useState<FinanceTab>(() => normalizeTab(searchParams?.get("tab")));
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
@@ -329,13 +364,23 @@ function FinanceWorkspace() {
       )}
 
       {/* Title & Subtitle */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Finance & Cost Control</h1>
-          <p className="text-sm text-slate-light font-sans mt-0.5">SNC authoritative financial ledger and budget controls.</p>
+      <div className="flex justify-between items-center" data-tour="finance-title">
+        <div className="flex items-center gap-2">
+          <div>
+            <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Finance & Cost Control</h1>
+            <p className="text-sm text-slate-light font-sans mt-0.5">SNC authoritative financial ledger and budget controls.</p>
+          </div>
+          <button
+            onClick={financeTour.openTour}
+            className="text-slate hover:text-paper transition-colors"
+            title="Replay Finance tour"
+            aria-label="Replay Finance tour"
+          >
+            <CircleHelp className="w-5 h-5" />
+          </button>
         </div>
         <div className="flex items-center space-x-2">
-          <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider">
+          <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider" data-tour="finance-departments">
             <button
               onClick={() => setDepartmentId("")}
               className={`px-3 py-2 transition-colors ${departmentId === "" ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
@@ -383,7 +428,7 @@ function FinanceWorkspace() {
       </div>
 
       {/* KPI Cards Strip */}
-      <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4" data-tour="finance-kpis">
         <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Total Contract Value</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1">{money(kpis.contractTotal)}</p>
@@ -424,7 +469,7 @@ function FinanceWorkspace() {
       </div>
 
       {/* Tabs */}
-      <div className="flex flex-wrap border-b border-ink-mid">
+      <div className="flex flex-wrap border-b border-ink-mid" data-tour="finance-tabs">
         <Link
           href={TAB_ROUTES["project-financials"]}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "project-financials" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
@@ -499,6 +544,7 @@ function FinanceWorkspace() {
         </Link>
         <Link
           href={TAB_ROUTES.statutory}
+          data-tour="finance-statutory-tab"
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "statutory" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
           Statutory
@@ -1155,6 +1201,13 @@ function FinanceWorkspace() {
           </div>
         </div>
       )}
+
+      <ModuleTour
+        steps={FINANCE_TOUR_STEPS}
+        open={financeTour.open}
+        onClose={financeTour.closeTour}
+        onComplete={financeTour.completeTour}
+      />
     </div>
   );
 }

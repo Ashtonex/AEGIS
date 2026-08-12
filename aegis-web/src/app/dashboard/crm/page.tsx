@@ -2,9 +2,48 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal } from 'lucide-react';
+import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp } from 'lucide-react';
 import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, getRiskMatrices } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
+import { useModuleTour } from '@/hooks/useModuleTour';
+import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
+
+const CRM_TOUR_STEPS: ModuleTourStep[] = [
+  {
+    title: "This is where a deal is born and tracked",
+    body: "Commercial Command is CRM's home screen: two pipelines (organic deals and competitive tenders), a real-time risk read on the business, and quick links to everything that feeds them. This tour points out where each piece comes from.",
+    placement: "center",
+  },
+  {
+    title: "Total Pipeline, Weighted Forecast, Lead Velocity",
+    body: "These aren't entered anywhere - they're computed live from every open opportunity and tender's own value and probability. Weighted Forecast is budget x win-probability, summed. Move a deal or change its probability and these update immediately.",
+    target: "crm-kpis",
+    placement: "bottom",
+  },
+  {
+    title: "Two pipelines, four stages each",
+    body: "Organic deals move Inquiry -> Qualification -> Quotation -> Negotiation. Competitive tenders move separately through their own bid-prep stages. A lead becomes an opportunity the moment it's Qualified in Leads Inbox - that's the handoff point from raw signal to a real tracked deal.",
+    target: "crm-pipeline",
+    placement: "right",
+  },
+  {
+    title: "Mark Won does more than change a status",
+    body: "Confirming a win on an opportunity creates the real project record automatically, and - if a referral rule is configured for that department pair - can post a real internal-transfer credit to whichever department originated the deal. Nothing here is a rename; each stage change triggers real downstream records.",
+    placement: "center",
+  },
+  {
+    title: "Risk matrices are read from your actual pipeline",
+    body: "Client Concentration, Subcontractor Dependency, and Win/Loss Diagnostic aren't manual scores - they're computed from the real spread of deals, subcontractor compliance records, and historical win/loss outcomes on file. \"NO DATA\" here means genuinely no data yet, not a broken widget.",
+    target: "crm-risk",
+    placement: "left",
+  },
+  {
+    title: "Leads Inbox, Marketing, Registry, Support, Reports",
+    body: "These feed Commercial Command rather than living separately from it: Leads Inbox is where raw signals get qualified into opportunities, Registry tracks subcontractor compliance that Risk reads from, and Reports rolls the whole pipeline up for review.",
+    target: "crm-nav-links",
+    placement: "bottom",
+  },
+];
 
 const getErrorMessage = (error: unknown, fallback: string) => {
   return fallback;
@@ -14,7 +53,8 @@ const getApiError = (_response: any, fallback: string) => fallback;
 
 export default function CRMCommercialEngine() {
   const { session } = useAuth();
-  
+  const crmTour = useModuleTour("crm");
+
   const [isLoading, setIsLoading] = useState(true);
   
   const [accountabilityTargets, setAccountabilityTargets] = useState<any[]>([]);
@@ -215,7 +255,7 @@ export default function CRMCommercialEngine() {
   };
   // UI Row 1: KPI Cards
   const renderKpiCards = () => (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 shrink-0 mb-2">
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 shrink-0 mb-2" data-tour="crm-kpis">
       <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
         <div className="flex items-center space-x-2 mb-0.5">
           <Target className="w-3.5 h-3.5 text-slate-light" />
@@ -258,7 +298,7 @@ export default function CRMCommercialEngine() {
     const tenderStages = ['Tender Identified', 'Bid Prep', 'Submitted', 'Adjudication'];
     
     return (
-      <div className="w-[40%] flex flex-col gap-2 min-h-0 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-100 ease-out fill-mode-both">
+      <div className="w-[40%] flex flex-col gap-2 min-h-0 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-100 ease-out fill-mode-both" data-tour="crm-pipeline">
         {/* Left Funnel: Organic Opportunities */}
         <div className="bg-ink/40 backdrop-blur-md border border-white/5 rounded-sm p-2.5 flex flex-col shadow-xl flex-1 min-h-0 animate-in fade-in duration-300">
           <div className="flex justify-between items-center mb-1.5 shrink-0">
@@ -398,7 +438,7 @@ export default function CRMCommercialEngine() {
     const { client_concentration, subcontractor_risk, win_loss_diagnostic } = riskMatrices;
 
     return (
-      <div className="w-[30%] flex flex-col gap-2 min-h-0">
+      <div className="w-[30%] flex flex-col gap-2 min-h-0" data-tour="crm-risk">
         {/* Client Concentration */}
         <div className="bg-ink/40 backdrop-blur-xl border border-white/5 rounded-sm p-2.5 shadow-xl relative overflow-hidden group flex-1 min-h-0 flex flex-col justify-between animate-in fade-in duration-300">
            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500 to-transparent"></div>
@@ -507,7 +547,7 @@ export default function CRMCommercialEngine() {
         
         {/* Header Section */}
         <header className="flex justify-between items-end pb-2 shrink-0">
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-4" data-tour="crm-title">
             <div className="w-10 h-10 rounded-sm bg-gradient-to-br from-ink-light to-ink border border-white/10 flex items-center justify-center shadow-lg">
               <Activity className="w-5 h-5 text-signal" />
             </div>
@@ -518,10 +558,18 @@ export default function CRMCommercialEngine() {
                 Strategic Engine & Intelligence Matrix
               </p>
             </div>
+            <button
+              onClick={crmTour.openTour}
+              className="text-slate-light hover:text-paper transition-colors"
+              title="Replay CRM tour"
+              aria-label="Replay CRM tour"
+            >
+              <CircleHelp className="w-5 h-5" />
+            </button>
           </div>
           
-          <div className="flex space-x-3">
-            <Link 
+          <div className="flex space-x-3" data-tour="crm-nav-links">
+            <Link
               href="/dashboard/crm/marketing"
               className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
             >
@@ -704,6 +752,13 @@ export default function CRMCommercialEngine() {
           </div>
         </div>
       )}
+
+      <ModuleTour
+        steps={CRM_TOUR_STEPS}
+        open={crmTour.open}
+        onClose={crmTour.closeTour}
+        onComplete={crmTour.completeTour}
+      />
     </div>
   );
 }

@@ -12,6 +12,12 @@ from app.shared.sql import safe_payload_columns, tenant_upsert_sql
 
 router = APIRouter()
 
+# Modules that ship a first-visit onboarding tour. Deliberately an allowlist
+# (not free text) - module_tours_completed is a JSONB map keyed by these
+# values, and an unbounded key set would let a client write junk keys into
+# it forever.
+MODULE_TOUR_KEYS = {"finance", "crm", "quotations"}
+
 
 class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -47,7 +53,8 @@ async def get_my_profile(
                p.work_phone, p.job_title, p.department, p.location, p.timezone, p.bio,
                p.linkedin_url, p.portfolio_url, p.website_url, p.avatar_path, p.skills, p.languages,
                p.theme_preference,
-               p.profile_completed_at, p.onboarding_completed_at
+               p.profile_completed_at, p.onboarding_completed_at,
+               COALESCE(p.module_tours_completed, '{}'::jsonb) AS module_tours_completed
         FROM core.users u
         LEFT JOIN hr.employee_profiles p ON p.user_id = u.id AND p.organization_id = u.organization_id
         WHERE u.id = :user_id AND u.organization_id = :org_id AND u.is_deleted = false
@@ -126,5 +133,50 @@ async def update_my_profile(
         "success": True,
         "data": dict(result.fetchone()._mapping),
         "message": "Profile updated.",
+        "meta": {},
+    }
+
+
+@router.post("/me/module-tours/{module_key}")
+async def complete_module_tour(
+    module_key: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Marks one module's first-visit tour as seen. A JSONB merge (not a
+    full-profile overwrite) so completing one module's tour can never race
+    with, or clobber, another module's completion written moments earlier -
+    the exact failure mode a naive read-modify-write PATCH from the client
+    would have."""
+    if module_key not in MODULE_TOUR_KEYS:
+        raise HTTPException(status_code=404, detail=f"Unknown module '{module_key}'.")
+
+    # jsonb_build_object is variadic/polymorphic ("any"), so asyncpg can't
+    # infer a bind parameter's type from context alone when it's passed
+    # straight in - IndeterminateDatatypeError on $3. Explicit CAST(...)
+    # (function syntax, not the :param::type form - that gets misparsed as
+    # an escaped colon by SQLAlchemy's bind-param parser) resolves it.
+    result = await db.execute(
+        text("""
+            INSERT INTO hr.employee_profiles (user_id, organization_id, module_tours_completed)
+            VALUES (:user_id, :organization_id, jsonb_build_object(CAST(:module_key AS text), CAST(:completed_at AS text)))
+            ON CONFLICT (user_id) DO UPDATE SET
+                module_tours_completed = COALESCE(hr.employee_profiles.module_tours_completed, '{}'::jsonb)
+                    || jsonb_build_object(CAST(:module_key AS text), CAST(:completed_at AS text)),
+                updated_at = NOW()
+            RETURNING module_tours_completed
+        """),
+        {
+            "user_id": user["user_id"],
+            "organization_id": user["org_id"],
+            "module_key": module_key,
+            "completed_at": datetime.utcnow().isoformat(),
+        },
+    )
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"module_tours_completed": result.fetchone()._mapping["module_tours_completed"]},
+        "message": f"{module_key} tour marked complete.",
         "meta": {},
     }
