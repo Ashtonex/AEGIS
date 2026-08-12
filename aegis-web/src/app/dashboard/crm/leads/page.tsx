@@ -77,6 +77,7 @@ export default function CRMLeadsApp() {
   // Modal / Sidebar States
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [isDisqualifyModalOpen, setIsDisqualifyModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [disqualifyReason, setDisqualifyReason] = useState('');
 
@@ -145,6 +146,10 @@ export default function CRMLeadsApp() {
   const handleCreateManualLead = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualForm.company_name.trim()) return;
+    if (manualForm.estimated_budget < 0) {
+      showToast("Estimated value / budget can't be negative.", "error");
+      return;
+    }
 
     try {
       const res = await createCrmLead({
@@ -340,12 +345,18 @@ export default function CRMLeadsApp() {
     }
   };
 
-  const handleDeleteLead = async (lead: Lead) => {
-    if (!window.confirm(`Delete "${lead.company_name}"? This can't be undone from this screen.`)) return;
+  const handleDeleteLead = (lead: Lead) => {
+    setSelectedLead(lead);
+    setIsDeleteModalOpen(true);
+  };
+
+  const handleConfirmDeleteLead = async () => {
+    if (!selectedLead) return;
     try {
-      const res = await deleteCrmLead(lead.id);
+      const res = await deleteCrmLead(selectedLead.id);
       if (res.success) {
         showToast("Lead deleted.");
+        setIsDeleteModalOpen(false);
         void loadLeads();
       } else {
         showToast("Lead was not deleted. Check the CRM service connection and retry.", "error");
@@ -685,8 +696,9 @@ export default function CRMLeadsApp() {
                 <label className="block text-slate-400 mb-1 font-semibold">Estimated Value / Budget ($)</label>
                 <input
                   type="number"
+                  min="0"
                   value={manualForm.estimated_budget}
-                  onChange={(e) => setManualForm(prev => ({ ...prev, estimated_budget: Number(e.target.value) }))}
+                  onChange={(e) => setManualForm(prev => ({ ...prev, estimated_budget: Math.max(0, Number(e.target.value) || 0) }))}
                   className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
                 />
               </div>
@@ -720,6 +732,35 @@ export default function CRMLeadsApp() {
                 className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold transition"
               >
                 Mark Disqualified
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Delete Lead */}
+      {isDeleteModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm bg-[#111827] border border-[#1E293B] rounded-xl p-6 relative">
+            <button onClick={() => setIsDeleteModalOpen(false)} className="absolute top-4 right-4 text-slate-400 hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
+            <h2 className="text-lg font-bold text-white mb-2 text-rose-400">Delete Lead</h2>
+            <p className="text-xs text-slate-400 mb-4">
+              Delete <span className="text-white font-bold">{selectedLead?.company_name}</span>? This can&apos;t be undone from this screen.
+            </p>
+            <div className="flex gap-3 text-xs">
+              <button
+                onClick={() => setIsDeleteModalOpen(false)}
+                className="flex-1 py-2 bg-[#1E293B] hover:bg-[#273449] text-white rounded font-bold transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDeleteLead}
+                className="flex-1 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold transition"
+              >
+                Delete
               </button>
             </div>
           </div>

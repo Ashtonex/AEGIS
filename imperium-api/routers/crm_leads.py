@@ -90,6 +90,19 @@ def _validated_payload_keys(payload: Dict[str, Any]) -> list[str]:
             detail=f"Unsupported lead field(s): {', '.join(sorted(rejected))}",
         )
 
+    # estimated_budget feeds directly into the opportunity created on
+    # qualification (see handleQualifyLead's budget: lead.estimated_budget)
+    # and is displayed unstyled-as-valid on the kanban card - a negative
+    # value isn't a real-world budget and previously passed straight
+    # through with no check on either create or update.
+    if "estimated_budget" in payload and payload["estimated_budget"] is not None:
+        try:
+            budget_value = float(payload["estimated_budget"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="estimated_budget must be a number.")
+        if budget_value < 0:
+            raise HTTPException(status_code=400, detail="estimated_budget cannot be negative.")
+
     return [key for key in payload if key in MUTABLE_COLUMNS]
 
 
