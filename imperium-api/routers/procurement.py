@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import require_permission
+from app.services import inventory_service
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 
 router = APIRouter()
@@ -332,26 +333,6 @@ async def has_document_link(
     return bool(row.scalar())
 
 
-async def budget_available(
-    db: AsyncSession, org_id: str, project_id: Optional[UUID]
-) -> Decimal:
-    if project_id is None:
-        return Decimal("0")
-    row = (
-        await db.execute(
-            text("""
-        SELECT
-          COALESCE((SELECT total_amount FROM finance.project_budgets WHERE organization_id=:org_id AND project_id=:project_id AND status='approved' AND is_deleted=false LIMIT 1), 0)
-          - COALESCE((SELECT SUM(committed_amount) FROM finance.commitments WHERE organization_id=:org_id AND project_id=:project_id AND status <> 'cancelled' AND is_deleted=false), 0)
-          - COALESCE((SELECT SUM(amount) FROM finance.cost_transactions WHERE organization_id=:org_id AND project_id=:project_id), 0)
-          AS available
-    """),
-            {"org_id": org_id, "project_id": project_id},
-        )
-    ).first()
-    return Decimal(str(row.available or 0))
-
-
 @router.get("/requisitions")
 async def list_requisitions(
     status_filter: Optional[str] = Query(default=None, alias="status"),
@@ -389,7 +370,9 @@ async def create_requisition(
     total = sum(
         (line.qty * line.unit_cost for line in payload.line_items), Decimal("0")
     )
-    available = await budget_available(db, user["org_id"], payload.project_id)
+    available = await inventory_service.budget_available(
+        db, org_id=user["org_id"], project_id=payload.project_id
+    )
     req_no = await next_number(db, user["org_id"], "purchase_requisition", "PR")
     req_id = (
         await db.execute(
@@ -1502,27 +1485,22 @@ async def receive_goods(
             {"received": remaining, "id": line["id"]},
         )
         if line["item_id"]:
-            await db.execute(
-                text("""
-                INSERT INTO procurement.stock_ledger (
-                    organization_id, item_id, store_id, project_id, movement_type, quantity,
-                    unit_cost, total_cost, source_type, source_id, reference, recorded_by
-                ) VALUES (
-                    :org_id, :item_id, :store_id, :project_id, 'receipt', :quantity,
-                    :unit_cost, ROUND(CAST(:quantity AS numeric) * CAST(:unit_cost AS numeric), 2), 'goods_received_note', :source_id, :reference, :user_id
-                ) ON CONFLICT (organization_id, source_type, source_id, item_id, movement_type) DO NOTHING
-            """),
-                {
-                    "org_id": user["org_id"],
-                    "item_id": line["item_id"],
-                    "store_id": payload.store_id,
-                    "project_id": po["project_id"],
-                    "quantity": remaining,
-                    "unit_cost": line["unit_price"],
-                    "source_id": grn_line_id,
-                    "reference": grn_no,
-                    "user_id": user["user_id"],
-                },
+            # Goods received into stock is an asset arriving, not a project
+            # cost - inventory_service.receive_stock() never posts to
+            # finance.cost_transactions. The cost is recognised later,
+            # whenever this stock is actually issued to a project (via
+            # inventory_service.issue_stock(), see routers/inventory.py).
+            await inventory_service.receive_stock(
+                db,
+                user,
+                item_id=line["item_id"],
+                store_id=payload.store_id,
+                project_id=po["project_id"],
+                quantity=remaining,
+                unit_cost=line["unit_price"],
+                source_type="goods_received_note",
+                source_id=grn_line_id,
+                reference=grn_no,
             )
     await db.execute(
         text("""

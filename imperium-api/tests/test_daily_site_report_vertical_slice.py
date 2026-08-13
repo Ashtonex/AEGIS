@@ -4,6 +4,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 ROUTER = (ROOT / "routers" / "site_reports.py").read_text(encoding="utf-8")
+INV_SERVICE = (ROOT / "app" / "services" / "inventory_service.py").read_text(
+    encoding="utf-8"
+)
+SHARED_EVENTS = (ROOT / "app" / "shared" / "events.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 MIGRATION = (
     ROOT / "migrations" / "021_daily_site_report_vertical_slice.sql"
@@ -114,10 +118,19 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
             "project.progress_updated.v1",
         ]:
             self.assertIn(event_type, ROUTER)
-        self.assertIn("INSERT INTO core.domain_events", ROUTER)
+        # Event emission now goes through the shared app.shared.events.emit_event
+        # (the canonical domain-event writer) instead of a duplicated local
+        # copy that used to live in this router.
+        self.assertIn("from app.shared.events import", ROUTER)
+        self.assertIn("emit_event", ROUTER)
+        self.assertIn("INSERT INTO core.domain_events", SHARED_EVENTS)
         self.assertIn("INSERT INTO core.document_links", ROUTER)
         self.assertIn("INSERT INTO finance.cost_transactions", ROUTER)
-        self.assertIn("INSERT INTO procurement.stock_ledger", ROUTER)
+        # Per-line stock consumption now goes through the shared
+        # inventory_service.record_stock_movement() rather than a duplicated
+        # INSERT here.
+        self.assertIn("inventory_service.record_stock_movement", ROUTER)
+        self.assertIn("INSERT INTO procurement.stock_ledger", INV_SERVICE)
 
     def test_approval_rules_prevent_empty_report_and_self_approval(self):
         self.assertIn("Cannot submit an empty daily report.", ROUTER)
@@ -135,9 +148,15 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
         self.assertIn('require_permission("site_operations.material.request")', ROUTER)
         self.assertIn("available_stock", ROUTER)
         self.assertIn("INSERT INTO procurement.material_requests", ROUTER)
-        self.assertIn("'site_material_request'", ROUTER)
-        self.assertIn("INSERT INTO procurement.stock_ledger", ROUTER)
-        self.assertIn("INSERT INTO finance.cost_transactions", ROUTER)
+        # Issuing stock from the material request - both the stock_ledger
+        # movement and the finance.cost_transactions row - now goes through
+        # the shared inventory_service.issue_stock(), the same call used by
+        # the plain inventory issue endpoint, so both paths recognise actual
+        # project cost identically.
+        self.assertIn("inventory_service.issue_stock", ROUTER)
+        self.assertIn("source_type=\"site_material_request\"", ROUTER)
+        self.assertIn("INSERT INTO procurement.stock_ledger", INV_SERVICE)
+        self.assertIn("INSERT INTO finance.cost_transactions", INV_SERVICE)
         self.assertIn("INSERT INTO procurement.purchase_requisitions", ROUTER)
         self.assertIn("INSERT INTO procurement.requisition_lines", ROUTER)
         for event_type in [
@@ -145,9 +164,9 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
             "inventory.material_issued.v1",
             "material.requested.v1",
             "procurement.requisition.submitted.v1",
-            "finance.actual_cost_created.v1",
         ]:
             self.assertIn(event_type, ROUTER)
+        self.assertIn("finance.actual_cost_created.v1", INV_SERVICE)
 
     def test_site_material_request_schema_is_service_role_scoped_and_exposed_in_ui(
         self,

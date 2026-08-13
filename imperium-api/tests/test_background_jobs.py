@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from app.workers.arq_worker import (
     generate_quotation_documents_job,
     send_notification_job,
@@ -23,16 +23,35 @@ class BackgroundWorkersIntegrationTests(unittest.TestCase):
         self.assertIsNone(exponential_backoff_retry(ctx_try_3))
 
     def test_send_notification_job_execution(self):
-        """Tests email notification execution inside arq worker context."""
+        """Tests email notification execution inside arq worker context.
+
+        send_email() fails closed (returns False) when RESEND_API_KEY/
+        EMAIL_FROM_ADDRESS aren't configured - true in this dev/test
+        environment, and deliberately so per core/email.py. Mock the actual
+        dispatch so this test verifies the job's own orchestration (logging,
+        correlation id, calling send_email with the right args) rather than
+        depending on live Resend credentials being present.
+        """
         ctx = MagicMock()
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(
-                send_notification_job(
-                    ctx, "test@sixnine.co.zw", "HSE Alert", "Safety briefing required."
+            with patch(
+                "app.workers.arq_worker.send_email", new=AsyncMock(return_value=True)
+            ) as mock_send_email:
+                result = loop.run_until_complete(
+                    send_notification_job(
+                        ctx,
+                        "test@sixnine.co.zw",
+                        "HSE Alert",
+                        "Safety briefing required.",
+                    )
                 )
-            )
             self.assertTrue(result)
+            mock_send_email.assert_awaited_once_with(
+                to="test@sixnine.co.zw",
+                subject="HSE Alert",
+                html="Safety briefing required.",
+            )
         finally:
             loop.close()
 

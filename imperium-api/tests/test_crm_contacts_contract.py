@@ -13,22 +13,28 @@ CONTACTS_PAGE = (
     / "contacts"
     / "page.tsx"
 ).read_text(encoding="utf-8")
+USE_API_QUERIES_HOOK = (
+    ROOT.parent / "aegis-web" / "src" / "hooks" / "useApiQueries.ts"
+).read_text(encoding="utf-8")
 
 
 class CrmContactsContractTests(unittest.TestCase):
     """Guard CRM contacts against whole-page failure on partial source outages."""
 
     def test_crm_contacts_workspace_degrades_partial_sources(self):
-        self.assertIn("Promise.allSettled", CONTACTS_PAGE)
-        self.assertIn(
-            "The CRM contacts feed is still synchronizing. Please retry once the connection is ready.",
-            CONTACTS_PAGE,
-        )
+        # The multi-source degrade-on-partial-failure pattern (Promise.allSettled,
+        # critical vs warning sources, "<label> could not be loaded." messages) now
+        # lives in the shared useApiQueries hook - reused by CRM contacts,
+        # procurement, and finance - instead of being hand-rolled per page.
+        self.assertIn("useApiQueries", CONTACTS_PAGE)
+        self.assertIn("Promise.allSettled", USE_API_QUERIES_HOOK)
+        self.assertIn("could not be loaded.", USE_API_QUERIES_HOOK)
         self.assertIn(
             "Contacts could not be loaded from the CRM service.", CONTACTS_PAGE
         )
-        self.assertIn("Client organizations could not be loaded.", CONTACTS_PAGE)
-        self.assertIn("CRM activities could not be loaded.", CONTACTS_PAGE)
+        self.assertIn('criticalKeys: ["contacts"]', CONTACTS_PAGE)
+        self.assertIn("organizations: \"Client organizations\"", CONTACTS_PAGE)
+        self.assertIn("activities: \"CRM activities\"", CONTACTS_PAGE)
 
     def test_crm_contacts_workspace_does_not_reintroduce_hard_fail_loading(self):
         self.assertNotIn(

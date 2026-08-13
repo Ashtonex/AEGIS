@@ -7,10 +7,12 @@ import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowLeftRight,
   ArrowUp,
   Box,
   Building2,
   ChevronRight,
+  ClipboardEdit,
   FileText,
   Loader2,
   Package,
@@ -29,13 +31,17 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import {
   addInventoryItem,
   addInventoryStore,
+  adjustStock,
+  createSiteOperationSite,
   getInventoryCatalogue,
   getInventoryStockLevels,
   getInventoryStores,
   getInternalProjects,
+  getSiteOperationSites,
   getStockMovements,
   issueStock,
   receiveStock,
+  transferStock,
 } from "@/lib/api";
 
 type Rec = Record<string, any> & { id: string };
@@ -126,6 +132,8 @@ function InventoryWorkspace() {
 
   const [showIssue, setShowIssue] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [showAdjust, setShowAdjust] = useState(false);
   const [showAddItem, setShowAddItem] = useState(false);
   const [showAddStore, setShowAddStore] = useState(false);
   const [catalogueDetail, setCatalogueDetail] = useState<Rec | null>(null);
@@ -254,6 +262,18 @@ function InventoryWorkspace() {
             className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink"
           >
             <PackageMinus className="h-4 w-4" /> Issue Stock
+          </button>
+          <button
+            onClick={() => setShowTransfer(true)}
+            className="inline-flex h-10 items-center gap-2 border border-purple-500/40 bg-purple-950/20 px-3 font-mono text-xs uppercase tracking-wider text-purple-300 hover:border-purple-400 hover:bg-purple-950/40"
+          >
+            <ArrowLeftRight className="h-4 w-4" /> Transfer Stock
+          </button>
+          <button
+            onClick={() => setShowAdjust(true)}
+            className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
+          >
+            <ClipboardEdit className="h-4 w-4" /> Adjust Stock
           </button>
           <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
@@ -513,8 +533,8 @@ function InventoryWorkspace() {
             <input type="date" value={movDateTo} onChange={(e) => setMovDateTo(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             <select value={movTypeFilter} onChange={(e) => setMovTypeFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
               <option value="">All Types</option>
-              {["receipt", "issue", "consumption", "transfer", "adjustment", "return"].map((t) => (
-                <option key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</option>
+              {["receipt", "issue", "consumption", "transfer_in", "transfer_out", "adjustment", "return"].map((t) => (
+                <option key={t} value={t}>{t.split("_").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ")}</option>
               ))}
             </select>
             <select value={movStoreFilter} onChange={(e) => setMovStoreFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
@@ -545,7 +565,7 @@ function InventoryWorkspace() {
                   {filteredMovements.map((m) => {
                     const q = num(m.quantity ?? m.qty);
                     const mtype = tx(m.movement_type, "").toLowerCase();
-                    const isDebit = mtype === "issue" || mtype === "consumption";
+                    const isDebit = q < 0;
                     return (
                       <tr key={m.id} className="hover:bg-ink-light/40">
                         <td className="px-3 py-2.5 font-mono text-xs text-slate-light">{dateShort(m.created_at ?? m.movement_date)}</td>
@@ -610,6 +630,48 @@ function InventoryWorkspace() {
               await load();
             } catch (e) {
               flash(normalizeActionError(e, "Failed to receive stock."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
+      )}
+      {showTransfer && (
+        <TransferStockModal
+          catalogue={catalogue}
+          stores={stores}
+          saving={saving}
+          onClose={() => setShowTransfer(false)}
+          onSubmit={async (payload) => {
+            setSaving(true);
+            try {
+              await transferStock(payload);
+              flash("Stock transfer completed successfully.");
+              setShowTransfer(false);
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to transfer stock."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
+      )}
+      {showAdjust && (
+        <AdjustStockModal
+          catalogue={catalogue}
+          stores={stores}
+          saving={saving}
+          onClose={() => setShowAdjust(false)}
+          onSubmit={async (payload) => {
+            setSaving(true);
+            try {
+              await adjustStock(payload);
+              flash("Stock adjustment recorded successfully.");
+              setShowAdjust(false);
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to record adjustment."));
             } finally {
               setSaving(false);
             }
@@ -711,7 +773,8 @@ function MovBadge({ type }: { type: string }) {
     receipt: "border-emerald-500/40 bg-emerald-950/20 text-emerald-300",
     issue: "border-blue-500/40 bg-blue-950/20 text-blue-300",
     consumption: "border-amber-500/40 bg-amber-950/20 text-amber-300",
-    transfer: "border-purple-500/40 bg-purple-950/20 text-purple-300",
+    transfer_in: "border-purple-500/40 bg-purple-950/20 text-purple-300",
+    transfer_out: "border-purple-500/40 bg-purple-950/20 text-purple-300",
     adjustment: "border-slate-500/40 bg-slate-950/20 text-slate-300",
     return: "border-teal-500/40 bg-teal-950/20 text-teal-300",
   };
@@ -759,7 +822,7 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity) })}
+          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity), project_id: form.project_id || null })}
           disabled={saving || !form.item_id || !form.store_id || !form.quantity}
           className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
         >
@@ -822,6 +885,111 @@ function ReceiveStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
   );
 }
 
+function TransferStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
+  catalogue: Rec[]; stores: Rec[]; saving: boolean;
+  onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
+}) {
+  const [form, setForm] = useState({ item_id: "", from_store_id: "", to_store_id: "", quantity: "", notes: "" });
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const destinationOptions = stores.filter((s) => s.id !== form.from_store_id);
+  return (
+    <ModalShell title="Transfer Stock Between Sites" onClose={onClose}>
+      <div className="grid gap-3">
+        <FieldGroup label="Item">
+          <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field">
+            <option value="">Select item</option>
+            {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} — {tx(i.item_name ?? i.name)}</option>)}
+          </select>
+        </FieldGroup>
+        <div className="grid grid-cols-2 gap-3">
+          <FieldGroup label="From Store / Site">
+            <select value={form.from_store_id} onChange={(e) => set("from_store_id", e.target.value)} className="field">
+              <option value="">Select source</option>
+              {stores.map((s) => <option key={s.id} value={s.id}>{tx(s.name ?? s.store_name)} ({tx(s.store_code)})</option>)}
+            </select>
+          </FieldGroup>
+          <FieldGroup label="To Store / Site">
+            <select value={form.to_store_id} onChange={(e) => set("to_store_id", e.target.value)} className="field" disabled={!form.from_store_id}>
+              <option value="">Select destination</option>
+              {destinationOptions.map((s) => <option key={s.id} value={s.id}>{tx(s.name ?? s.store_name)} ({tx(s.store_code)})</option>)}
+            </select>
+          </FieldGroup>
+        </div>
+        <FieldGroup label="Quantity">
+          <input type="number" min="0" value={form.quantity} onChange={(e) => set("quantity", e.target.value)} placeholder="0.000" className="field" />
+        </FieldGroup>
+        <FieldGroup label="Notes">
+          <input value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Optional notes (e.g. reason for transfer)" className="field" />
+        </FieldGroup>
+      </div>
+      <div className="mt-6 flex justify-end gap-3">
+        <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button
+          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity) })}
+          disabled={saving || !form.item_id || !form.from_store_id || !form.to_store_id || !form.quantity}
+          className="inline-flex h-10 items-center gap-2 border border-purple-500/50 bg-purple-950/30 px-4 font-mono text-xs font-bold uppercase text-purple-300 disabled:opacity-50 hover:bg-purple-950/50"
+        >
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+          <ArrowLeftRight className="h-4 w-4" /> Transfer Stock
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function AdjustStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
+  catalogue: Rec[]; stores: Rec[]; saving: boolean;
+  onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
+}) {
+  const [form, setForm] = useState({ item_id: "", store_id: "", direction: "increase" as "increase" | "decrease", quantity: "", reason: "" });
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const magnitude = Number(form.quantity) || 0;
+  const signedDelta = form.direction === "decrease" ? -magnitude : magnitude;
+  return (
+    <ModalShell title="Adjust Stock (Count / Correction)" onClose={onClose}>
+      <div className="grid gap-3">
+        <FieldGroup label="Item">
+          <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field">
+            <option value="">Select item</option>
+            {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} — {tx(i.item_name ?? i.name)}</option>)}
+          </select>
+        </FieldGroup>
+        <FieldGroup label="Store / Site">
+          <select value={form.store_id} onChange={(e) => set("store_id", e.target.value)} className="field">
+            <option value="">Select store</option>
+            {stores.map((s) => <option key={s.id} value={s.id}>{tx(s.name ?? s.store_name)} ({tx(s.store_code)})</option>)}
+          </select>
+        </FieldGroup>
+        <div className="grid grid-cols-2 gap-3">
+          <FieldGroup label="Direction">
+            <select value={form.direction} onChange={(e) => set("direction", e.target.value)} className="field">
+              <option value="increase">Increase (count found more)</option>
+              <option value="decrease">Decrease (damage / loss / shrinkage)</option>
+            </select>
+          </FieldGroup>
+          <FieldGroup label="Quantity">
+            <input type="number" min="0" value={form.quantity} onChange={(e) => set("quantity", e.target.value)} placeholder="0.000" className="field" />
+          </FieldGroup>
+        </div>
+        <FieldGroup label="Reason">
+          <input value={form.reason} onChange={(e) => set("reason", e.target.value)} placeholder="Required — e.g. physical count variance, damaged on site" className="field" />
+        </FieldGroup>
+      </div>
+      <div className="mt-6 flex justify-end gap-3">
+        <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button
+          onClick={() => onSubmit({ item_id: form.item_id, store_id: form.store_id, quantity_delta: signedDelta, reason: form.reason })}
+          disabled={saving || !form.item_id || !form.store_id || !magnitude || form.reason.trim().length < 3}
+          className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
+        >
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+          <ClipboardEdit className="h-4 w-4" /> Record Adjustment
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
   const [form, setForm] = useState({ item_code: "", item_name: "", category: "", uom: "", standard_cost: "", reorder_level: "", is_hazardous: false, description: "" });
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
@@ -872,8 +1040,27 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
 }
 
 function AddStoreModal({ saving, projects, onClose, onSubmit }: { saving: boolean; projects: Rec[]; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
-  const [form, setForm] = useState({ name: "", store_code: "", store_type: "warehouse", project_id: "", location: "" });
+  const [form, setForm] = useState({ name: "", store_code: "", store_type: "warehouse", project_id: "", site_id: "", location_label: "" });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const [sites, setSites] = useState<Rec[]>([]);
+  const [sitesLoading, setSitesLoading] = useState(false);
+  const [showCreateSite, setShowCreateSite] = useState(false);
+
+  const loadSites = useCallback(async (projectId: string) => {
+    if (!projectId) { setSites([]); return; }
+    setSitesLoading(true);
+    try {
+      const res = await getSiteOperationSites(projectId);
+      setSites(Array.isArray(res.data) ? res.data : []);
+    } catch {
+      setSites([]);
+    } finally {
+      setSitesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadSites(form.project_id); }, [form.project_id, loadSites]);
+
   return (
     <ModalShell title="Register Store / Yard" onClose={onClose}>
       <div className="grid gap-3 md:grid-cols-2">
@@ -888,30 +1075,114 @@ function AddStoreModal({ saving, projects, onClose, onSubmit }: { saving: boolea
             <option value="warehouse">Warehouse</option>
             <option value="site">Site Store</option>
             <option value="yard">Yard</option>
-            <option value="transit">Transit</option>
+            <option value="vehicle">Vehicle</option>
           </select>
         </FieldGroup>
-        <FieldGroup label="Project / Site">
-          <select value={form.project_id} onChange={(e) => set("project_id", e.target.value)} className="field">
+        <FieldGroup label="Project">
+          <select value={form.project_id} onChange={(e) => { set("project_id", e.target.value); set("site_id", ""); }} className="field">
             <option value="">Not project-specific</option>
             {projects.map((p) => <option key={p.id} value={p.id}>{tx(p.name ?? p.project_name ?? p.project_code, p.id)}</option>)}
           </select>
         </FieldGroup>
         <div className="md:col-span-2">
+          <FieldGroup label="Site">
+            <div className="flex gap-2">
+              <select
+                value={form.site_id}
+                onChange={(e) => set("site_id", e.target.value)}
+                disabled={!form.project_id || sitesLoading}
+                className="field flex-1 disabled:opacity-50"
+              >
+                <option value="">{form.project_id ? (sitesLoading ? "Loading sites…" : "Not site-specific") : "Select a project first"}</option>
+                {sites.map((s) => <option key={s.id} value={s.id}>{tx(s.name)} ({tx(s.site_code, "")})</option>)}
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowCreateSite(true)}
+                disabled={!form.project_id}
+                className="inline-flex h-10 shrink-0 items-center gap-1 border border-ink-mid px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
+              >
+                <Plus className="h-3.5 w-3.5" /> New Site
+              </button>
+            </div>
+          </FieldGroup>
+        </div>
+        <div className="md:col-span-2">
           <FieldGroup label="Location / Address">
-            <input value={form.location} onChange={(e) => set("location", e.target.value)} placeholder="Physical location or GPS reference" className="field" />
+            <input value={form.location_label} onChange={(e) => set("location_label", e.target.value)} placeholder="Physical location or GPS reference" className="field" />
           </FieldGroup>
         </div>
       </div>
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit(form)}
+          onClick={() => onSubmit({ ...form, project_id: form.project_id || null, site_id: form.site_id || null })}
           disabled={saving || !form.name || !form.store_code}
           className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
         >
           {saving && <Loader2 className="h-4 w-4 animate-spin" />}
           <Plus className="h-4 w-4" /> Register Store
+        </button>
+      </div>
+      {showCreateSite && form.project_id && (
+        <CreateSiteModal
+          projectId={form.project_id}
+          onClose={() => setShowCreateSite(false)}
+          onCreated={async (siteId) => {
+            setShowCreateSite(false);
+            await loadSites(form.project_id);
+            set("site_id", siteId);
+          }}
+        />
+      )}
+    </ModalShell>
+  );
+}
+
+function CreateSiteModal({ projectId, onClose, onCreated }: { projectId: string; onClose: () => void; onCreated: (siteId: string) => void }) {
+  const [form, setForm] = useState({ site_code: "", name: "", location_label: "" });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await createSiteOperationSite({ project_id: projectId, ...form });
+      const siteId = (res.data as Rec | undefined)?.id;
+      if (siteId) onCreated(String(siteId));
+      else onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to create site.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell title="New Site" onClose={onClose}>
+      <div className="grid gap-3">
+        <FieldGroup label="Site Name">
+          <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. North Wing Compound" className="field" />
+        </FieldGroup>
+        <FieldGroup label="Site Code">
+          <input value={form.site_code} onChange={(e) => set("site_code", e.target.value)} placeholder="e.g. SITE-A" className="field" />
+        </FieldGroup>
+        <FieldGroup label="Location / Address">
+          <input value={form.location_label} onChange={(e) => set("location_label", e.target.value)} placeholder="Physical location or GPS reference" className="field" />
+        </FieldGroup>
+      </div>
+      {err && <p className="mt-3 text-xs text-red-300">{err}</p>}
+      <div className="mt-6 flex justify-end gap-3">
+        <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button
+          onClick={submit}
+          disabled={saving || !form.name}
+          className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
+        >
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+          <Plus className="h-4 w-4" /> Create Site
         </button>
       </div>
     </ModalShell>
@@ -981,7 +1252,7 @@ function CatalogueDetailPanel({ item, stockLevels, movements, onClose }: { item:
                       <span className="ml-2 text-slate-light">{tx(m.store_name ?? m.store_code)} \u00b7 {tx(m.project_name ?? m.project_id, "No project")}</span>
                     </div>
                     <div className="text-right">
-                      <p className={`font-mono font-semibold ${["issue", "consumption"].includes(tx(m.movement_type, "")) ? "text-red-300" : "text-emerald-300"}`}>{qty(m.quantity ?? m.qty)}</p>
+                      <p className={`font-mono font-semibold ${num(m.quantity ?? m.qty) < 0 ? "text-red-300" : "text-emerald-300"}`}>{qty(m.quantity ?? m.qty)}</p>
                       <p className="font-mono text-[10px] text-slate">{dateShort(m.created_at ?? m.movement_date)}</p>
                     </div>
                   </div>

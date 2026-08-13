@@ -2305,8 +2305,11 @@ export async function getInventoryCatalogue(): Promise<ApiResponse<any[]>> {
 }
 
 /** Stores / warehouses / yards registered in the platform. */
-export async function getInventoryStores(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/site-operations/stores', { cache: 'no-store', allowFallback: false });
+export async function getInventoryStores(params?: { project_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.project_id) search.set('project_id', params.project_id);
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/inventory/stores${qs}`, { cache: 'no-store', allowFallback: false });
 }
 
 /** Stock movement ledger. Filterable by store, type, or limit. */
@@ -2337,6 +2340,24 @@ export async function issueStock(payload: Record<string, unknown>): Promise<ApiR
   });
 }
 
+/** Transfer stock from one store/site to another. */
+export async function transferStock(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/inventory/transfer', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Record a stock count / adjustment (shrinkage, damage, correction). */
+export async function adjustStock(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/inventory/adjustment', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 /** Add a new item to the master catalogue. */
 export async function addInventoryItem(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/inventory-items/', {
@@ -2348,7 +2369,7 @@ export async function addInventoryItem(payload: Record<string, unknown>): Promis
 
 /** Register a new store / warehouse / yard. */
 export async function addInventoryStore(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>('/api/v1/site-operations/stores', {
+  return fetchApi<ApiResponse<any>>('/api/v1/inventory/stores', {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,

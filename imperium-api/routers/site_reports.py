@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
-from app.shared.events import emit_notification
+from app.services import inventory_service
+from app.shared.events import emit_event, emit_notification
 from app.shared.sequences import next_reference
 from app.shared.sql import (
     safe_payload_columns,
@@ -161,39 +162,6 @@ def result(data, message: str, total: Optional[int] = None):
     }
 
 
-async def emit_event(
-    db: AsyncSession,
-    *,
-    user: dict,
-    event_type: str,
-    aggregate_type: str,
-    aggregate_id: UUID,
-    project_id: Optional[UUID],
-    event_data: dict[str, Any],
-) -> None:
-    await db.execute(
-        text("""
-        INSERT INTO core.domain_events (
-            organization_id, event_type, schema_version, aggregate_type, aggregate_id,
-            project_id, actor_id, idempotency_key, payload
-        ) VALUES (
-            :org_id, :event_type, 1, :aggregate_type, :aggregate_id,
-            :project_id, :actor_id, :idempotency_key, CAST(:payload AS jsonb)
-        ) ON CONFLICT (organization_id, idempotency_key) DO NOTHING
-    """),
-        {
-            "org_id": user["org_id"],
-            "event_type": event_type,
-            "aggregate_type": aggregate_type,
-            "aggregate_id": aggregate_id,
-            "project_id": project_id,
-            "actor_id": user["user_id"],
-            "idempotency_key": f"{event_type}:{aggregate_id}",
-            "payload": json.dumps(event_data, default=str),
-        },
-    )
-
-
 async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> None:
     found = await db.execute(
         text("""
@@ -311,44 +279,6 @@ async def store_or_404(
         raise HTTPException(status_code=404, detail="Store not found for this project")
 
 
-async def available_stock(
-    db: AsyncSession, *, org_id: str, item_id: UUID, store_id: Optional[UUID]
-) -> Decimal:
-    row = (
-        (
-            await db.execute(
-                text("""
-        SELECT COALESCE(SUM(quantity), 0) AS available_qty
-        FROM procurement.stock_ledger
-        WHERE organization_id=:org_id
-          AND item_id=:item_id
-          AND (CAST(:store_id AS uuid) IS NULL OR store_id=CAST(:store_id AS uuid))
-    """),
-                {"org_id": org_id, "item_id": item_id, "store_id": store_id},
-            )
-        )
-        .mappings()
-        .one()
-    )
-    return Decimal(str(row["available_qty"] or 0))
-
-
-async def budget_available(db: AsyncSession, org_id: str, project_id: UUID) -> Decimal:
-    row = (
-        await db.execute(
-            text("""
-        SELECT
-          COALESCE((SELECT total_amount FROM finance.project_budgets WHERE organization_id=:org_id AND project_id=:project_id AND status='approved' AND is_deleted=false LIMIT 1), 0)
-          - COALESCE((SELECT SUM(committed_amount) FROM finance.commitments WHERE organization_id=:org_id AND project_id=:project_id AND status <> 'cancelled' AND is_deleted=false), 0)
-          - COALESCE((SELECT SUM(amount) FROM finance.cost_transactions WHERE organization_id=:org_id AND project_id=:project_id), 0)
-          AS available
-    """),
-            {"org_id": org_id, "project_id": project_id},
-        )
-    ).first()
-    return Decimal(str(row.available or 0))
-
-
 @router.get("/sites")
 async def list_sites(
     project_id: Optional[UUID] = None,
@@ -417,8 +347,15 @@ async def list_inventory_items(
 ):
     rows = await db.execute(
         text("""
-        SELECT i.id, i.item_name, i.stock_quantity, i.created_at, i.updated_at
+        SELECT i.id, i.item_name, COALESCE(bal.available_qty, 0) AS stock_quantity,
+               i.created_at, i.updated_at
         FROM procurement.inventory_items i
+        LEFT JOIN (
+            SELECT item_id, SUM(quantity) AS available_qty
+            FROM procurement.stock_ledger
+            WHERE organization_id=:org_id
+            GROUP BY item_id
+        ) bal ON bal.item_id = i.id
         WHERE i.organization_id=:org_id AND i.is_deleted=false
         ORDER BY i.item_name NULLS LAST, i.created_at DESC
         LIMIT 500
@@ -463,10 +400,10 @@ async def request_site_material(
     await store_or_404(db, payload.store_id, payload.project_id, user["org_id"])
     item = await inventory_item(db, payload.item_id, user["org_id"])
 
-    available = await available_stock(
+    available_stock = await inventory_service.stock_balance(
         db, org_id=user["org_id"], item_id=payload.item_id, store_id=payload.store_id
     )
-    issue_qty = min(payload.quantity, max(available, Decimal("0")))
+    issue_qty = min(payload.quantity, max(available_stock, Decimal("0")))
     shortfall_qty = payload.quantity - issue_qty
     effective_unit_cost = payload.unit_cost or Decimal(
         str(item.get("standard_cost") or 0)
@@ -519,54 +456,21 @@ async def request_site_material(
 
     stock_ledger_id: Optional[UUID] = None
     if issue_qty > 0:
-        stock_ledger_id = (
-            await db.execute(
-                text("""
-            INSERT INTO procurement.stock_ledger (
-                organization_id, item_id, store_id, project_id, movement_type, quantity,
-                unit_cost, total_cost, source_type, source_id, reference, recorded_by
-            ) VALUES (
-                :org_id, :item_id, :store_id, :project_id, 'issue', (:quantity * -1),
-                :unit_cost, ROUND(CAST(:quantity AS numeric) * CAST(:unit_cost AS numeric), 2),
-                'site_material_request', :request_id, :reference, :user_id
-            ) ON CONFLICT (organization_id, source_type, source_id, item_id, movement_type) DO UPDATE
-              SET quantity=EXCLUDED.quantity, unit_cost=EXCLUDED.unit_cost, total_cost=EXCLUDED.total_cost, recorded_by=EXCLUDED.recorded_by
-            RETURNING id
-        """),
-                {
-                    "org_id": user["org_id"],
-                    "item_id": payload.item_id,
-                    "store_id": payload.store_id,
-                    "project_id": payload.project_id,
-                    "quantity": issue_qty,
-                    "unit_cost": effective_unit_cost,
-                    "request_id": material_request_id,
-                    "reference": request_number,
-                    "user_id": user["user_id"],
-                },
-            )
-        ).scalar()
-        await db.execute(
-            text("""
-            INSERT INTO finance.cost_transactions (
-                organization_id, project_id, source_type, source_id, cost_category,
-                description, quantity, unit_cost, amount, transaction_date, posted_by
-            ) VALUES (
-                :org_id, :project_id, 'site_material_request', :request_id, 'materials',
-                :description, :quantity, :unit_cost, ROUND(CAST(:quantity AS numeric) * CAST(:unit_cost AS numeric), 2),
-                CURRENT_DATE, :user_id
-            ) ON CONFLICT (organization_id, source_type, source_id, cost_category) DO NOTHING
-        """),
-            {
-                "org_id": user["org_id"],
-                "project_id": payload.project_id,
-                "request_id": material_request_id,
-                "description": f"Site material request {request_number} issued from stock",
-                "quantity": issue_qty,
-                "unit_cost": effective_unit_cost,
-                "user_id": user["user_id"],
-            },
+        issue_outcome = await inventory_service.issue_stock(
+            db,
+            user,
+            item_id=payload.item_id,
+            store_id=payload.store_id,
+            project_id=payload.project_id,
+            quantity=issue_qty,
+            unit_cost=effective_unit_cost,
+            source_type="site_material_request",
+            source_id=material_request_id,
+            reference=request_number,
+            cost_category="materials",
+            cost_description=f"Site material request {request_number} issued from stock",
         )
+        stock_ledger_id = issue_outcome["movement_id"]
         await emit_event(
             db,
             user=user,
@@ -580,24 +484,12 @@ async def request_site_material(
                 "stock_ledger_id": str(stock_ledger_id),
             },
         )
-        await emit_event(
-            db,
-            user=user,
-            event_type="finance.actual_cost_created.v1",
-            aggregate_type="material_request",
-            aggregate_id=material_request_id,
-            project_id=payload.project_id,
-            event_data={
-                "quantity": str(issue_qty),
-                "unit_cost": str(effective_unit_cost),
-            },
-        )
 
     requisition_id: Optional[UUID] = None
     requisition_number: Optional[str] = None
     if shortfall_qty > 0:
-        available_budget = await budget_available(
-            db, user["org_id"], payload.project_id
+        available_budget = await inventory_service.budget_available(
+            db, org_id=user["org_id"], project_id=payload.project_id
         )
         requisition_total = (shortfall_qty * effective_unit_cost).quantize(
             Decimal("0.01")
@@ -728,7 +620,7 @@ async def request_site_material(
         event_data={
             "request_number": request_number,
             "requested_quantity": str(payload.quantity),
-            "available_quantity": str(available),
+            "available_quantity": str(available_stock),
             "issued_quantity": str(issue_qty),
             "shortfall_quantity": str(shortfall_qty),
             "purchase_requisition_id": str(requisition_id) if requisition_id else None,
@@ -740,7 +632,7 @@ async def request_site_material(
             "id": str(material_request_id),
             "request_number": request_number,
             "status": status_value,
-            "available_quantity": str(available),
+            "available_quantity": str(available_stock),
             "issued_quantity": str(issue_qty),
             "shortfall_quantity": str(shortfall_qty),
             "stock_ledger_id": str(stock_ledger_id) if stock_ledger_id else None,
@@ -1281,22 +1173,22 @@ async def post_costs_and_stock(
         params,
     )
     for line in material_rows.mappings():
-        await db.execute(
-            text("""
-            INSERT INTO procurement.stock_ledger (
-                organization_id, item_id, store_id, project_id, movement_type, quantity,
-                unit_cost, total_cost, source_type, source_id, reference, recorded_by
-            ) VALUES (
-                :org_id, :item_id, :store_id, :project_id, 'consumption', (:quantity_used * -1),
-                :unit_cost, :total_cost, 'daily_report_material', :line_id, :reference, :user_id
-            ) ON CONFLICT (organization_id, source_type, source_id, item_id, movement_type) DO NOTHING
-        """),
-            {
-                **params,
-                **dict(line),
-                "line_id": line["id"],
-                "reference": f"DSR-{report['id']}",
-            },
+        # Note: the daily report's aggregate 'materials' cost_transactions row
+        # above already recognises this line's cost - only the stock_ledger
+        # consumption movement is recorded here (via record_stock_movement,
+        # not issue_stock) to avoid posting the same cost twice.
+        await inventory_service.record_stock_movement(
+            db,
+            user,
+            item_id=line["item_id"],
+            store_id=line["store_id"],
+            project_id=report["project_id"],
+            movement_type="consumption",
+            quantity=-Decimal(str(line["quantity_used"])),
+            unit_cost=Decimal(str(line["unit_cost"] or 0)),
+            source_type="daily_report_material",
+            source_id=line["id"],
+            reference=f"DSR-{report['id']}",
         )
     return posted
 

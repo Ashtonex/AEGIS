@@ -1,9 +1,18 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolved relative to this file rather than left as a bare ".env" - pydantic-settings
+# resolves a relative env_file against the process's current working directory at
+# spawn time, not this package's location. Some launch configs (e.g. a preview tool
+# that passes --app-dir instead of actually cd'ing into imperium-api/) start this
+# process with the repo root as CWD, which would otherwise silently load the wrong
+# .env (a stale one with an unreachable direct DB host) instead of this one.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -83,7 +92,7 @@ class Settings(BaseSettings):
     PWA_VAPID_PUBLIC_KEY_PATH: str = ".aegis-runtime/pwa/vapid_public.pem"
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
     )
 
     @field_validator("DATABASE_URL")
