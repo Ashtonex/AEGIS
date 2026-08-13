@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROC = (ROOT / "routers" / "procurement.py").read_text()
 INV = (ROOT / "routers" / "inventory.py").read_text()
+INV_SERVICE = (ROOT / "app" / "services" / "inventory_service.py").read_text()
 MAIN = (ROOT / "main.py").read_text()
 WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text()
 INVENTORY_PAGE = (
@@ -11,6 +12,9 @@ INVENTORY_PAGE = (
 ).read_text()
 PROCUREMENT_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx"
+).read_text()
+USE_API_QUERIES_HOOK = (
+    ROOT.parent / "aegis-web" / "src" / "hooks" / "useApiQueries.ts"
 ).read_text()
 
 
@@ -64,7 +68,11 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         ]:
             self.assertIn(event, PROC)
         self.assertIn("INSERT INTO finance.commitments", PROC)
-        self.assertIn("INSERT INTO procurement.stock_ledger", PROC)
+        # Goods receipt now delegates the stock_ledger write to the shared
+        # inventory_service (used by inventory.py, site_reports.py and
+        # procurement.py alike) instead of duplicating the INSERT here.
+        self.assertIn("inventory_service.receive_stock", PROC)
+        self.assertIn("INSERT INTO procurement.stock_ledger", INV_SERVICE)
         self.assertIn("UPDATE finance.commitments", PROC)
 
     def test_documents_gate_supplier_payment_approval(self):
@@ -161,16 +169,55 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("SUM(quantity) AS available_qty", INV)
         self.assertIn('require_permission("inventory.receipt.create")', INV)
         self.assertIn('require_permission("inventory.issue.create")', INV)
-        self.assertIn("inventory.receipt_recorded.v1", INV)
-        self.assertIn("inventory.issue_recorded.v1", INV)
+        # Ledger writes and event emission for receive/issue live in the
+        # shared inventory_service, called from here rather than duplicated.
+        self.assertIn("inventory_service.receive_stock", INV)
+        self.assertIn("inventory_service.issue_stock", INV)
+        self.assertIn("inventory.receipt_recorded.v1", INV_SERVICE)
+        self.assertIn("inventory.issue_recorded.v1", INV_SERVICE)
 
     def test_inventory_issue_prevents_negative_stock_and_emits_reorder_event(self):
-        self.assertIn("async def stock_balance", INV)
-        self.assertIn("if available < payload.quantity", INV)
-        self.assertIn("Insufficient stock available for issue.", INV)
-        self.assertIn("Use a material request to procure the shortfall.", INV)
-        self.assertIn("inventory.below_reorder_level.v1", INV)
-        self.assertIn("remaining <= threshold", INV)
+        self.assertIn("async def stock_balance", INV_SERVICE)
+        self.assertIn("if available < quantity", INV_SERVICE)
+        self.assertIn("Insufficient stock available for issue.", INV_SERVICE)
+        self.assertIn("Use a material request to procure the shortfall.", INV_SERVICE)
+        self.assertIn("inventory.below_reorder_level.v1", INV_SERVICE)
+        self.assertIn("remaining <= threshold", INV_SERVICE)
+
+    def test_inventory_transfer_and_adjustment_are_wired(self):
+        for route in [
+            '@router.post("/transfer"',
+            '@router.post("/adjustment"',
+            '@router.get("/stores"',
+            '@router.post("/stores"',
+        ]:
+            self.assertIn(route, INV)
+        self.assertIn('require_permission("inventory.transfer.create")', INV)
+        self.assertIn('require_permission("inventory.count.create")', INV)
+        self.assertIn('require_permission("inventory.store.manage")', INV)
+        self.assertIn("Source and destination store must differ.", INV_SERVICE)
+        self.assertIn("Adjustment quantity cannot be zero.", INV_SERVICE)
+        self.assertIn("inventory.transfer.completed.v1", INV_SERVICE)
+        self.assertIn("inventory.adjustment.recorded.v1", INV_SERVICE)
+        self.assertIn("transfer_out", INV_SERVICE)
+        self.assertIn("transfer_in", INV_SERVICE)
+
+    def test_issue_stock_posts_actual_cost_when_project_supplied(self):
+        """The cost-recognition unification: any stock issue tied to a
+        project posts a real finance.cost_transactions row, not just a
+        budget commitment - this is what makes PO-sourced materials show
+        up as actual project spend the same way site-issued materials do."""
+        self.assertIn("async def issue_stock", INV_SERVICE)
+        self.assertIn("if project_id is not None:", INV_SERVICE)
+        self.assertIn("INSERT INTO finance.cost_transactions", INV_SERVICE)
+        self.assertIn("finance.actual_cost_created.v1", INV_SERVICE)
+        self.assertIn("async def receive_stock", INV_SERVICE)
+        self.assertNotIn(
+            "INSERT INTO finance.cost_transactions",
+            INV_SERVICE.split("async def receive_stock")[1].split(
+                "async def issue_stock"
+            )[0],
+        )
 
     def test_inventory_page_degrades_supporting_sources_without_killing_stock_view(
         self,
@@ -188,15 +235,21 @@ class ProcurementInventoryContractTests(unittest.TestCase):
     def test_procurement_page_degrades_supporting_sources_without_killing_workflow(
         self,
     ):
-        self.assertIn("Promise.allSettled", PROCUREMENT_PAGE)
+        # Multi-source loading (Promise.allSettled + critical-vs-warning source
+        # split) is centralized in the shared useApiQueries hook rather than
+        # hand-rolled here - see test_crm_contacts_workspace_degrades_partial_sources
+        # for the same pattern on the CRM contacts page.
+        self.assertIn("useApiQueries", PROCUREMENT_PAGE)
+        self.assertIn("Promise.allSettled", USE_API_QUERIES_HOOK)
+        self.assertIn("could not be loaded.", USE_API_QUERIES_HOOK)
         self.assertIn(
             "The procurement feed is still synchronizing. Please retry once the connection is ready.",
             PROCUREMENT_PAGE,
         )
-        self.assertIn("Requisitions could not be loaded.", PROCUREMENT_PAGE)
-        self.assertIn("RFQs could not be loaded.", PROCUREMENT_PAGE)
-        self.assertIn("Purchase orders could not be loaded.", PROCUREMENT_PAGE)
-        self.assertIn("Suppliers could not be loaded.", PROCUREMENT_PAGE)
+        self.assertIn('criticalKeys: ["requisitions"]', PROCUREMENT_PAGE)
+        self.assertIn('rfqs: "RFQs"', PROCUREMENT_PAGE)
+        self.assertIn('orders: "Purchase orders"', PROCUREMENT_PAGE)
+        self.assertIn('suppliers: "Suppliers"', PROCUREMENT_PAGE)
 
 
 if __name__ == "__main__":

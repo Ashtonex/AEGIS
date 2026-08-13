@@ -17,6 +17,9 @@ FINANCE_PAGE = (
 EQUIPMENT_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "equipment" / "page.tsx"
 ).read_text(encoding="utf-8")
+USE_API_QUERIES_HOOK = (
+    ROOT.parent / "aegis-web" / "src" / "hooks" / "useApiQueries.ts"
+).read_text(encoding="utf-8")
 
 
 class EquipmentFinanceContractTests(unittest.TestCase):
@@ -126,16 +129,23 @@ class EquipmentFinanceContractTests(unittest.TestCase):
             self.assertIn(live_field, FLEET_PAGE)
 
     def test_finance_page_degrades_supporting_sources_without_killing_kpis(self):
-        self.assertIn("Promise.allSettled", FINANCE_PAGE)
+        # Multi-source loading (Promise.allSettled + critical-vs-warning source
+        # split) is centralized in the shared useApiQueries hook - see
+        # test_crm_contacts_workspace_degrades_partial_sources for the same
+        # pattern on the CRM contacts page.
+        self.assertIn("useApiQueries", FINANCE_PAGE)
+        self.assertIn("Promise.allSettled", USE_API_QUERIES_HOOK)
+        self.assertIn("could not be loaded.", USE_API_QUERIES_HOOK)
         self.assertIn(
             "The finance feed is still synchronizing. Please retry once the connection is ready.",
             FINANCE_PAGE,
         )
-        self.assertIn("Project financial summaries could not be loaded.", FINANCE_PAGE)
-        self.assertIn("Cost codes could not be loaded.", FINANCE_PAGE)
-        self.assertIn("Variation register could not be loaded.", FINANCE_PAGE)
-        self.assertIn("Progress claims could not be loaded.", FINANCE_PAGE)
-        self.assertIn("Budgets could not be loaded.", FINANCE_PAGE)
+        self.assertIn('criticalKeys: ["summaries"]', FINANCE_PAGE)
+        self.assertIn('summaries: "Project financial summaries"', FINANCE_PAGE)
+        self.assertIn('costCodes: "Cost codes"', FINANCE_PAGE)
+        self.assertIn('variations: "Variation register"', FINANCE_PAGE)
+        self.assertIn('claims: "Progress claims"', FINANCE_PAGE)
+        self.assertIn('budgets: "Budgets"', FINANCE_PAGE)
 
     def test_equipment_page_surfaces_inspection_load_failure(self):
         for marker in [
