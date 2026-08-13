@@ -345,7 +345,7 @@ async def get_project_detail(
         ),
         "procurement_orders": await _rows(
             db,
-            "SELECT to_jsonb(o) AS item FROM procurement.procurement_orders o WHERE o.organization_id = :org_id AND o.is_deleted = false AND COALESCE(to_jsonb(o)->>'project_id', '') = :project_id",
+            "SELECT to_jsonb(o) AS item FROM procurement.purchase_orders o WHERE o.organization_id = :org_id AND o.is_deleted = false AND COALESCE(to_jsonb(o)->>'project_id', '') = :project_id",
             params,
             source="project_detail.procurement_orders",
             source_errors=source_errors,
@@ -420,7 +420,7 @@ async def get_executive_stats(
     # 4. Procurement orders count
     try:
         orders_query = text(
-            "SELECT COUNT(*) FROM procurement.procurement_orders WHERE organization_id = :org_id AND is_deleted = false"
+            "SELECT COUNT(*) FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false"
         )
         orders_res = await db.execute(orders_query, {"org_id": org_id})
         orders_count = orders_res.scalar() or 0
@@ -927,13 +927,13 @@ async def get_pending_approvals(
     pos_res = await _rows(
         db,
         """
-            SELECT id, po_number, total_amount, created_at 
-            FROM procurement.procurement_orders 
+            SELECT id, po_number, total_amount, created_at
+            FROM procurement.purchase_orders
             WHERE organization_id = :org_id AND is_deleted = false AND total_amount > 25000
             ORDER BY created_at DESC
         """,
         {"org_id": org_id},
-        source="procurement.procurement_orders",
+        source="procurement.purchase_orders",
         source_errors=source_errors
     )
     pending_pos = [
@@ -1066,9 +1066,9 @@ async def get_financial_runway(
     # Outflow 3: monthly procurement bills
     po_res = await _rows(
         db,
-        "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.procurement_orders WHERE organization_id = :org_id AND is_deleted = false",
+        "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
         {"org_id": org_id},
-        source="procurement.procurement_orders",
+        source="procurement.purchase_orders",
         source_errors=source_errors
     )
     procurement_burn = float(po_res[0]["total"]) if po_res else 0.0

@@ -11,7 +11,7 @@ class GeneratedRouterRbacContractTests(unittest.TestCase):
 
     def test_generated_crud_routers_use_resource_permission_dependency(self):
         resources = (
-            "projects site_operations workforce fleet equipment_assets procurement_orders inventory_items "
+            "projects site_operations workforce fleet equipment_assets inventory_items "
             "budgets financial_performance quotations hr_records compliance_items hse_incidents documents "
             "crm_contacts crm_organizations crm_activities crm_automations client_portal_tickets supplier_records "
             "internal_messages kpi_metrics bi_reports risk_register tender_bids maintenance_schedules "

@@ -56,7 +56,6 @@ TABLE_PERMISSION_MAP: dict[str, str] = {
     "fleet.fleet": "fleet",
     "fleet.equipment_assets": "equipment_assets",
     "fleet.maintenance_schedules": "maintenance_schedules",
-    "procurement.procurement_orders": "procurement_orders",
     "procurement.inventory_items": "inventory_items",
     "procurement.suppliers": "supplier_records",
     "finance.budgets": "budgets",
