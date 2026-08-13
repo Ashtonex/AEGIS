@@ -267,6 +267,37 @@ def verify_token_str(token: str) -> dict:
         ) from exc
 
 
+async def resolve_primary_role(
+    db: AsyncSession, user_id: str, org_id: str, fallback_role: str = "authenticated"
+) -> tuple[str, str | None]:
+    """Resolve a user's single canonical role and that role's default landing
+    path. A user commonly holds both the default EMPLOYEE assignment from
+    auto-provisioning and a specific functional role granted afterwards - the
+    functional role should win. The ORDER BY puts any non-EMPLOYEE role ahead
+    of EMPLOYEE (and SUPERADMIN ahead of everything), so the first row is
+    correct. Shared by get_current_user (permission checks) and
+    portals.py's /resolve-access (post-login routing) so both use the exact
+    same precedence rule."""
+    assigned = await db.execute(
+        text("""
+        SELECT r.name, r.default_landing_path FROM core.user_roles ur
+        JOIN core.roles r ON r.id = ur.role_id
+        WHERE ur.user_id = :user_id AND ur.organization_id = :org_id
+          AND r.organization_id = :org_id AND r.is_deleted = false
+        ORDER BY (r.name = :superadmin) DESC, (r.name = 'EMPLOYEE') ASC, r.name
+    """),
+        {"user_id": user_id, "org_id": org_id, "superadmin": SUPERADMIN_ROLE},
+    )
+    rows = assigned.fetchall()
+    role_names = [row.name for row in rows]
+    if SUPERADMIN_ROLE in role_names:
+        row = next(r for r in rows if r.name == SUPERADMIN_ROLE)
+        return SUPERADMIN_ROLE, row.default_landing_path
+    if rows:
+        return rows[0].name, rows[0].default_landing_path
+    return fallback_role, None
+
+
 async def get_current_user(
     payload: dict = Depends(verify_token), db: AsyncSession = Depends(get_db)
 ) -> dict:
@@ -372,27 +403,7 @@ async def get_current_user(
     # app_metadata.role claim in sync with core.user_roles once an admin
     # assigns a functional role via Settings, so the actual role name is
     # looked up here rather than trusted from the token.
-    assigned_roles = await db.execute(
-        text("""
-        SELECT r.name FROM core.user_roles ur
-        JOIN core.roles r ON r.id = ur.role_id
-        WHERE ur.user_id = :user_id AND ur.organization_id = :org_id
-          AND r.organization_id = :org_id AND r.is_deleted = false
-        ORDER BY (r.name = :superadmin) DESC, (r.name = 'EMPLOYEE') ASC, r.name
-    """),
-        {"user_id": user_id, "org_id": org_id, "superadmin": SUPERADMIN_ROLE},
-    )
-    # A user commonly holds both the default EMPLOYEE assignment from
-    # auto-provisioning and a specific functional role granted afterwards -
-    # the functional role should win. The ORDER BY above already puts any
-    # non-EMPLOYEE role ahead of EMPLOYEE, so the first row is correct.
-    role_names = [row.name for row in assigned_roles]
-    if SUPERADMIN_ROLE in role_names:
-        resolved_role = SUPERADMIN_ROLE
-    elif role_names:
-        resolved_role = role_names[0]
-    else:
-        resolved_role = role
+    resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id, fallback_role=role)
 
     # Makes the acting user visible to core.process_audit_log() (the DB
     # trigger backing core.audit_log) for the rest of this request's

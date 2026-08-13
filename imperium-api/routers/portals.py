@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import get_current_user
+from core.security import get_current_user, resolve_primary_role
 
 router = APIRouter()
 
@@ -126,15 +126,6 @@ async def resolve_portal_access(
             "meta": {},
         }
 
-    # 3. Employee check
-    if "EMPLOYEE" in role_names:
-        return {
-            "success": True,
-            "data": {"portal": "employee", "destination": "/dashboard/executive"},
-            "message": "Employee portal access confirmed.",
-            "meta": {},
-        }
-
     # 4. Client check - external accounts are confined to the client portal,
     # never falling through to the internal dashboard below.
     if "CLIENT" in role_names:
@@ -184,13 +175,24 @@ async def resolve_portal_access(
 
     # 6. Any other internal role (Executive (Admin), Finance Manager, Project
     # Manager, and the rest of the functional/management role catalog) lands
-    # on the internal ERP dashboard. Only the external CLIENT/SUPPLIER roles
-    # and the site-team roles above are confined elsewhere - everyone else
-    # holding a real, organization-scoped role is internal staff.
+    # on that role's own working page - core.roles.default_landing_path,
+    # resolved via the same primary-role precedence get_current_user uses
+    # (functional role wins over the base EMPLOYEE assignment most staff also
+    # hold). Falls back to the internal ERP dashboard for EMPLOYEE-only
+    # accounts and any role with no landing page configured. Only the
+    # external CLIENT/SUPPLIER roles and the site-team roles above are
+    # confined elsewhere - everyone else holding a real, organization-scoped
+    # role is internal staff.
     if role_names:
+        _primary_role, landing_path = await resolve_primary_role(
+            db, user["user_id"], user["org_id"], fallback_role="EMPLOYEE"
+        )
         return {
             "success": True,
-            "data": {"portal": "employee", "destination": "/dashboard/executive"},
+            "data": {
+                "portal": "employee",
+                "destination": landing_path or "/dashboard/executive",
+            },
             "message": "Internal portal access confirmed.",
             "meta": {},
         }
