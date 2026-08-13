@@ -521,7 +521,7 @@ async def _source_health(
     allowed_relations = {
         "projects.projects",
         "projects.hse_incidents",
-        "procurement.procurement_orders",
+        "procurement.purchase_orders",
         "hr.employees",
         "crm.leads",
         "crm.opportunities",
@@ -550,6 +550,10 @@ async def _source_health(
             "last_updated": last_updated,
         }
     except Exception:
+        # A failed statement leaves the session's transaction aborted;
+        # without a rollback every source checked after this one in the
+        # same request would also raise and be misreported as unavailable.
+        await db.rollback()
         return {
             "source": name,
             "status": "unavailable",
@@ -568,7 +572,7 @@ async def get_executive_data_health(
     sources = [
         _source_health(db, org_id, "Projects", "projects.projects"),
         _source_health(db, org_id, "HSE", "projects.hse_incidents"),
-        _source_health(db, org_id, "Procurement", "procurement.procurement_orders"),
+        _source_health(db, org_id, "Procurement", "procurement.purchase_orders"),
         _source_health(db, org_id, "Workforce", "hr.employees"),
         _source_health(db, org_id, "CRM Leads", "crm.leads"),
         _source_health(db, org_id, "CRM Deals", "crm.opportunities"),
