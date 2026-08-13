@@ -16,6 +16,7 @@ from core.database import get_db
 from core.security import require_permission
 from app.services import inventory_service
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
+from app.shared.events import emit_notification, emit_role_notification
 
 router = APIRouter()
 
@@ -499,6 +500,14 @@ async def submit_requisition(
         project_id=req["project_id"],
         payload={"status": "submitted"},
     )
+    await emit_role_notification(
+        db,
+        org_id=user["org_id"],
+        role_names=["Procurement Manager"],
+        title="New requisition awaiting approval",
+        message=f"Requisition {req['requisition_number']} has been submitted for approval.",
+        action_url="/dashboard/procurement?tab=requisitions",
+    )
     await db.commit()
     return ok(
         {"id": str(req_id), "status": "submitted"}, "Purchase requisition submitted."
@@ -560,6 +569,18 @@ async def decide_requisition(
         aggregate_id=req_id,
         project_id=req["project_id"],
         payload=payload.model_dump(mode="json"),
+    )
+    await emit_notification(
+        db,
+        org_id=user["org_id"],
+        user_id=str(req["requested_by"]),
+        title=f"Requisition {payload.decision}",
+        message=(
+            f"Your requisition {req['requisition_number']} has been approved."
+            if payload.decision == "approved"
+            else f"Your requisition {req['requisition_number']} has been rejected. Reason: {payload.reason or 'Not specified'}."
+        ),
+        action_url="/dashboard/procurement?tab=requisitions",
     )
     await db.commit()
     return ok(
@@ -1086,6 +1107,14 @@ async def create_purchase_order_from_rfq(
             "rfq_response_id": str(payload.rfq_response_id),
         },
     )
+    await emit_notification(
+        db,
+        org_id=user["org_id"],
+        user_id=str(req["requested_by"]),
+        title="Requisition converted to purchase order",
+        message=f"Your requisition {req['requisition_number']} is now purchase order {po_no}.",
+        action_url="/dashboard/procurement?tab=orders",
+    )
     await db.commit()
     return ok(
         {"id": str(po_id), "po_number": po_no},
@@ -1204,6 +1233,14 @@ async def create_purchase_order(
         aggregate_id=po_id,
         project_id=req["project_id"],
         payload={"po_number": po_no, "requisition_id": str(payload.requisition_id)},
+    )
+    await emit_notification(
+        db,
+        org_id=user["org_id"],
+        user_id=str(req["requested_by"]),
+        title="Requisition converted to purchase order",
+        message=f"Your requisition {req['requisition_number']} is now purchase order {po_no}.",
+        action_url="/dashboard/procurement?tab=orders",
     )
 
     # CCB Rate Interception & Commercial Audit Check

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.services import inventory_service
-from app.shared.events import emit_event, emit_notification
+from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.sequences import next_reference
 from app.shared.sql import (
     safe_payload_columns,
@@ -594,6 +594,14 @@ async def request_site_material(
                     "material_request_id": str(material_request_id),
                     "status": "submitted",
                 },
+            )
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["Procurement Manager"],
+                title="New requisition awaiting approval",
+                message=f"Requisition {requisition_number} (site material shortfall) has been submitted for approval.",
+                action_url="/dashboard/procurement?tab=requisitions",
             )
 
     if stock_ledger_id:
