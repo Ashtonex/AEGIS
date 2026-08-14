@@ -8,18 +8,23 @@ import {
   Search, Eye, Linkedin, Inbox, Plus, Trash2, X, Copy, Check,
   Send, HelpCircle, CheckSquare, Sliders, ExternalLink, Lock,
   Filter, Globe, Database, UserCheck, RefreshCw, Layout, Smartphone,
-  UserPlus, HelpCircle as HelpIcon, MoreVertical, UploadCloud
+  UserPlus, HelpCircle as HelpIcon, MoreVertical, UploadCloud,
+  MessageCircle, Pencil, PhoneCall, Mail, Users2, MapPinned, FileEdit
 } from 'lucide-react';
 import {
   getCrmLeads,
   getCrmTenderSignals,
   qualifyCrmLead,
   createCrmLead,
+  updateCrmLead,
   disqualifyCrmLead,
   deleteCrmLead,
   findDuplicateCrmLeads,
   mergeCrmLeads,
-  updateCrmLeadStatus
+  updateCrmLeadStatus,
+  getCrmComplianceRequirementTypes,
+  getCrmCommunications,
+  createCrmCommunication
 } from '@/lib/api';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
@@ -47,7 +52,28 @@ interface Lead {
   lead_source: string;
   status: string;
   created_at: string;
+  expected_close_date?: string | null;
+  labels?: string[] | null;
+  budget_confirmed?: boolean | null;
+  required_compliance_types?: string[] | null;
+  missing_compliance_labels?: string[] | null;
 }
+
+interface ComplianceRequirementType {
+  id: string;
+  code: string;
+  label: string;
+}
+
+const LEAD_SOURCE_OPTIONS = ['Manual Log', 'Referral', 'Website', 'Tender Notice', 'Cold Call', 'Government Portal'];
+
+const ACTIVITY_CHANNELS: { value: string; label: string; icon: typeof PhoneCall }[] = [
+  { value: 'phone_call', label: 'Call', icon: PhoneCall },
+  { value: 'email', label: 'Email', icon: Mail },
+  { value: 'meeting', label: 'Meeting', icon: Users2 },
+  { value: 'site_visit', label: 'Site Visit', icon: MapPinned },
+  { value: 'manual_note', label: 'Note', icon: FileEdit },
+];
 
 interface ExternalProspectSignal {
   id: string;
@@ -81,6 +107,21 @@ export default function CRMLeadsApp() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [disqualifyReason, setDisqualifyReason] = useState('');
 
+  // Editing an existing lead reuses the manual-log modal in "edit" mode -
+  // null means the modal (if open) is creating a brand new lead.
+  const [editingLead, setEditingLead] = useState<Lead | null>(null);
+  const [isSavingLead, setIsSavingLead] = useState(false);
+
+  const [complianceTypes, setComplianceTypes] = useState<ComplianceRequirementType[]>([]);
+
+  // Activity history panel - which lead it's open for, its timeline, and
+  // the small "log a new one" form.
+  const [activityLead, setActivityLead] = useState<Lead | null>(null);
+  const [activityItems, setActivityItems] = useState<any[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityForm, setActivityForm] = useState({ channel: 'phone_call', body: '', outcome: '' });
+  const [isLoggingActivity, setIsLoggingActivity] = useState(false);
+
   // Duplicate Check States
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false);
   const [duplicateLeads, setDuplicateLeads] = useState<Lead[]>([]);
@@ -89,8 +130,8 @@ export default function CRMLeadsApp() {
   const externalProspects: ExternalProspectSignal[] = [];
   const externalLinkedInProfiles: ExternalLinkedInProfile[] = [];
 
-  // Manual Lead Form
-  const [manualForm, setManualForm] = useState({
+  // Manual Lead Form - also reused for editing an existing lead.
+  const DEFAULT_MANUAL_FORM = {
     company_name: '',
     contact_name: '',
     contact_email: '',
@@ -99,8 +140,22 @@ export default function CRMLeadsApp() {
     estimated_budget: 0,
     ai_score: 50,
     ai_rationale: 'Manually logged opportunity signal.',
-    lead_source: 'Manual Log'
-  });
+    lead_source: 'Manual Log',
+    expected_close_date: '',
+    labels: '',
+    budget_confirmed: false,
+    required_compliance_types: [] as string[],
+    initial_notes: ''
+  };
+  const [manualForm, setManualForm] = useState(DEFAULT_MANUAL_FORM);
+
+  useEffect(() => {
+    void getCrmComplianceRequirementTypes()
+      .then((res) => {
+        if (res.success && Array.isArray(res.data)) setComplianceTypes(res.data);
+      })
+      .catch(() => setComplianceTypes([]));
+  }, []);
 
   const showToast: (message: string, type?: 'success' | 'info' | 'error') => void = useCallback((message: string, type: 'success' | 'info' | 'error' = 'success') => {
     setNotification({ message, type });
@@ -143,7 +198,34 @@ export default function CRMLeadsApp() {
       .catch(() => setExternalTenderSignals([]));
   }, []);
 
-  const handleCreateManualLead = async (e: React.FormEvent) => {
+  const openCreateLeadModal = () => {
+    setEditingLead(null);
+    setManualForm(DEFAULT_MANUAL_FORM);
+    setIsManualModalOpen(true);
+  };
+
+  const openEditLeadModal = (lead: Lead) => {
+    setEditingLead(lead);
+    setManualForm({
+      company_name: lead.company_name || '',
+      contact_name: lead.contact_name || '',
+      contact_email: lead.contact_email || '',
+      contact_phone: lead.contact_phone || '',
+      sector: lead.sector || 'Private',
+      estimated_budget: lead.estimated_budget || 0,
+      ai_score: lead.ai_score ?? 50,
+      ai_rationale: lead.ai_rationale || 'Manually logged opportunity signal.',
+      lead_source: lead.lead_source || 'Manual Log',
+      expected_close_date: lead.expected_close_date ? lead.expected_close_date.slice(0, 10) : '',
+      labels: (lead.labels || []).join(', '),
+      budget_confirmed: Boolean(lead.budget_confirmed),
+      required_compliance_types: lead.required_compliance_types || [],
+      initial_notes: ''
+    });
+    setIsManualModalOpen(true);
+  };
+
+  const handleSaveLead = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualForm.company_name.trim()) return;
     if (manualForm.estimated_budget < 0) {
@@ -151,30 +233,104 @@ export default function CRMLeadsApp() {
       return;
     }
 
+    const labelsArray = manualForm.labels
+      .split(',')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    setIsSavingLead(true);
     try {
-      const res = await createCrmLead({
-        ...manualForm,
+      const payload = {
+        company_name: manualForm.company_name,
+        contact_name: manualForm.contact_name,
+        contact_email: manualForm.contact_email || undefined,
+        contact_phone: manualForm.contact_phone || undefined,
+        sector: manualForm.sector,
         estimated_budget: Number(manualForm.estimated_budget),
-        ai_score: Number(manualForm.ai_score)
-      });
+        ai_score: Number(manualForm.ai_score),
+        ai_rationale: manualForm.ai_rationale,
+        lead_source: manualForm.lead_source,
+        expected_close_date: manualForm.expected_close_date || undefined,
+        labels: labelsArray,
+        budget_confirmed: manualForm.budget_confirmed,
+        required_compliance_types: manualForm.required_compliance_types
+      };
+
+      const res = editingLead
+        ? await updateCrmLead(editingLead.id, payload)
+        : await createCrmLead(payload);
+
       if (res.success) {
-        showToast("Lead logged successfully in database.");
+        const leadId = editingLead ? editingLead.id : (res.data && (res.data as any).id);
+        if (!editingLead && leadId && manualForm.initial_notes.trim()) {
+          await createCrmCommunication({
+            lead_id: leadId,
+            channel: 'manual_note',
+            direction: 'internal',
+            body: manualForm.initial_notes.trim()
+          }).catch(() => undefined);
+        }
+        showToast(editingLead ? "Lead updated." : "Lead logged successfully in database.");
         setIsManualModalOpen(false);
-        setManualForm({
-          company_name: '',
-          contact_name: '',
-          contact_email: '',
-          contact_phone: '',
-          sector: 'Private',
-          estimated_budget: 0,
-          ai_score: 50,
-          ai_rationale: 'Manually logged opportunity signal.',
-          lead_source: 'Manual Log'
-        });
+        setEditingLead(null);
+        setManualForm(DEFAULT_MANUAL_FORM);
         void loadLeads();
+      } else {
+        showToast(editingLead ? "Could not update lead." : "Could not save manual lead.", "error");
       }
     } catch (err) {
-      showToast("Could not save manual lead.", "error");
+      showToast(editingLead ? "Could not update lead." : "Could not save manual lead.", "error");
+    } finally {
+      setIsSavingLead(false);
+    }
+  };
+
+  const toggleRequiredComplianceType = (code: string) => {
+    setManualForm((prev) => ({
+      ...prev,
+      required_compliance_types: prev.required_compliance_types.includes(code)
+        ? prev.required_compliance_types.filter((c) => c !== code)
+        : [...prev.required_compliance_types, code]
+    }));
+  };
+
+  const openActivityPanel = async (lead: Lead) => {
+    setActivityLead(lead);
+    setActivityForm({ channel: 'phone_call', body: '', outcome: '' });
+    setActivityLoading(true);
+    try {
+      const res = await getCrmCommunications({ lead_id: lead.id, limit: 50 });
+      setActivityItems(res.success && Array.isArray(res.data) ? res.data : []);
+    } catch {
+      setActivityItems([]);
+    } finally {
+      setActivityLoading(false);
+    }
+  };
+
+  const handleLogActivity = async () => {
+    if (!activityLead || !activityForm.body.trim()) return;
+    setIsLoggingActivity(true);
+    try {
+      const res = await createCrmCommunication({
+        lead_id: activityLead.id,
+        channel: activityForm.channel,
+        direction: 'outbound',
+        body: activityForm.body.trim(),
+        outcome: activityForm.outcome.trim() || undefined
+      });
+      if (res.success) {
+        setActivityForm({ channel: activityForm.channel, body: '', outcome: '' });
+        const refreshed = await getCrmCommunications({ lead_id: activityLead.id, limit: 50 });
+        setActivityItems(refreshed.success && Array.isArray(refreshed.data) ? refreshed.data : []);
+        showToast("Activity logged.");
+      } else {
+        showToast("Could not log activity.", "error");
+      }
+    } catch {
+      showToast("Could not log activity.", "error");
+    } finally {
+      setIsLoggingActivity(false);
     }
   };
 
@@ -432,7 +588,7 @@ export default function CRMLeadsApp() {
             Import / Export
           </Link>
           <button
-            onClick={() => setIsManualModalOpen(true)}
+            onClick={openCreateLeadModal}
             className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] transition text-white"
           >
             <Plus className="h-4 w-4" />
@@ -470,7 +626,7 @@ export default function CRMLeadsApp() {
               icon={Target}
               title="No leads yet"
               description="Log a manual lead or connect a signal source to start populating the pipeline."
-              action={{ label: "Log Manual Lead", onClick: () => setIsManualModalOpen(true) }}
+              action={{ label: "Log Manual Lead", onClick: openCreateLeadModal }}
             />
           ) : viewMode === 'list' ? (
             /* Table Feed View */
@@ -492,10 +648,25 @@ export default function CRMLeadsApp() {
                   const canChangeStatus = !isDecided || canOverrideLeadStatus;
                   return (
                   <TableRow key={lead.id}>
-                    <TableCell className="font-semibold text-snc-text-primary">{lead.company_name}</TableCell>
+                    <TableCell className="font-semibold text-snc-text-primary">
+                      {lead.company_name}
+                      {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
+                        <span
+                          title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
+                          className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" /> Compliance
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell>{lead.contact_name}</TableCell>
                     <TableCell>{lead.sector}</TableCell>
-                    <TableCell className="font-semibold text-emerald-400">${lead.estimated_budget.toLocaleString()}</TableCell>
+                    <TableCell className="font-semibold text-emerald-400">
+                      ${lead.estimated_budget.toLocaleString()}
+                      {!lead.budget_confirmed && (
+                        <span title="Estimated - not yet confirmed by the client" className="ml-1.5 text-[9px] font-semibold text-amber-400 align-middle">Est.</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}</span>
                     </TableCell>
@@ -503,6 +674,18 @@ export default function CRMLeadsApp() {
                       <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">{lead.status || 'Inquiry'}</span>
                     </TableCell>
                     <TableCell className="text-right space-x-2">
+                      <button
+                        onClick={() => openActivityPanel(lead)}
+                        className="px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
+                      >
+                        Activity
+                      </button>
+                      <button
+                        onClick={() => openEditLeadModal(lead)}
+                        className="px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
+                      >
+                        Edit
+                      </button>
                       <button
                         onClick={() => handleCheckDuplicates(lead)}
                         className="px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
@@ -575,18 +758,45 @@ export default function CRMLeadsApp() {
                           <h4 className="text-sm font-bold text-white line-clamp-1">{lead.company_name}</h4>
                           <span className="text-[9px] font-mono text-slate-400">{lead.sector} | {lead.lead_source}</span>
                         </div>
+                        {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
+                          <div
+                            title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
+                            className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 w-fit"
+                          >
+                            <AlertTriangle className="h-2.5 w-2.5" /> Missing {lead.missing_compliance_labels.length} compliance doc{lead.missing_compliance_labels.length > 1 ? 's' : ''}
+                          </div>
+                        )}
                         <div className="flex justify-between items-center text-xs">
-                          <span className="font-semibold text-emerald-400">${lead.estimated_budget.toLocaleString()}</span>
+                          <span className="font-semibold text-emerald-400">
+                            ${lead.estimated_budget.toLocaleString()}
+                            {!lead.budget_confirmed && <span title="Estimated - not yet confirmed by the client" className="ml-1 text-[9px] font-semibold text-amber-400">Est.</span>}
+                          </span>
                           <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}%</span>
                         </div>
-                        <div draggable={false} className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between items-center">
-                          <button
-                            draggable={false}
-                            onClick={() => handleCheckDuplicates(lead)}
-                            className="text-[10px] text-[#3B82F6] hover:underline"
-                          >
-                            Merge Check
-                          </button>
+                        <div draggable={false} className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between items-center flex-wrap">
+                          <div draggable={false} className="flex gap-1.5 items-center">
+                            <button
+                              draggable={false}
+                              onClick={() => openActivityPanel(lead)}
+                              className="text-[10px] text-slate-400 hover:text-white hover:underline flex items-center gap-1"
+                            >
+                              <MessageCircle className="h-2.5 w-2.5" /> Activity
+                            </button>
+                            <button
+                              draggable={false}
+                              onClick={() => openEditLeadModal(lead)}
+                              className="text-[10px] text-slate-400 hover:text-white hover:underline flex items-center gap-1"
+                            >
+                              <Pencil className="h-2.5 w-2.5" /> Edit
+                            </button>
+                            <button
+                              draggable={false}
+                              onClick={() => handleCheckDuplicates(lead)}
+                              className="text-[10px] text-[#3B82F6] hover:underline"
+                            >
+                              Merge Check
+                            </button>
+                          </div>
                           <div draggable={false} className="flex gap-1.5 items-center">
                             {canChangeStatus && (
                               <>
@@ -650,15 +860,15 @@ export default function CRMLeadsApp() {
         </div>
       )}
 
-      {/* Modal: Log Manual Lead */}
+      {/* Modal: Log / Edit Lead */}
       {isManualModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md bg-[#111827] border border-[#1E293B] rounded-xl p-6 relative">
-            <button onClick={() => setIsManualModalOpen(false)} className="absolute top-4 right-4 text-slate-400 hover:text-white">
+          <div className="w-full max-w-lg bg-[#111827] border border-[#1E293B] rounded-xl p-6 relative max-h-[90vh] overflow-y-auto">
+            <button onClick={() => { setIsManualModalOpen(false); setEditingLead(null); }} className="absolute top-4 right-4 text-slate-400 hover:text-white">
               <X className="h-4 w-4" />
             </button>
-            <h2 className="text-lg font-bold text-white mb-4">Log Manual Lead Signal</h2>
-            <form onSubmit={handleCreateManualLead} className="space-y-4 text-xs">
+            <h2 className="text-lg font-bold text-white mb-4">{editingLead ? 'Edit Lead' : 'Log Manual Lead Signal'}</h2>
+            <form onSubmit={handleSaveLead} className="space-y-4 text-xs">
               <div>
                 <label className="block text-slate-400 mb-1 font-semibold">Company Name</label>
                 <input
@@ -692,6 +902,57 @@ export default function CRMLeadsApp() {
                   </select>
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-semibold">Contact Email</label>
+                  <input
+                    type="email"
+                    value={manualForm.contact_email}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, contact_email: e.target.value }))}
+                    className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-semibold">Contact Phone</label>
+                  <input
+                    type="tel"
+                    value={manualForm.contact_phone}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, contact_phone: e.target.value }))}
+                    className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-semibold">Lead Source</label>
+                  <select
+                    value={manualForm.lead_source}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, lead_source: e.target.value }))}
+                    className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                  >
+                    {LEAD_SOURCE_OPTIONS.map((opt) => <option key={opt}>{opt}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-semibold">Expected Close Date</label>
+                  <input
+                    type="date"
+                    value={manualForm.expected_close_date}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, expected_close_date: e.target.value }))}
+                    className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1 font-semibold">Labels (comma separated)</label>
+                <input
+                  type="text"
+                  value={manualForm.labels}
+                  onChange={(e) => setManualForm(prev => ({ ...prev, labels: e.target.value }))}
+                  placeholder="e.g. priority, referral, repeat-client"
+                  className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                />
+              </div>
               <div>
                 <label className="block text-slate-400 mb-1 font-semibold">Estimated Value / Budget ($)</label>
                 <input
@@ -701,11 +962,127 @@ export default function CRMLeadsApp() {
                   onChange={(e) => setManualForm(prev => ({ ...prev, estimated_budget: Math.max(0, Number(e.target.value) || 0) }))}
                   className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
                 />
+                <label className="flex items-center gap-2 mt-2 text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={manualForm.budget_confirmed}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, budget_confirmed: e.target.checked }))}
+                    className="rounded border-[#1E293B] bg-[#0A0D14]"
+                  />
+                  Client confirmed this figure (leave unchecked if it's an estimate)
+                </label>
               </div>
-              <button type="submit" className="w-full py-2 bg-[#3B82F6] hover:bg-[#2563EB] text-white rounded font-bold transition">
-                Create Lead Record
+              {complianceTypes.length > 0 && (
+                <div>
+                  <label className="block text-slate-400 mb-1.5 font-semibold">Required compliance documentation</label>
+                  <div className="grid grid-cols-2 gap-1.5 bg-[#0A0D14] border border-[#1E293B] rounded p-2">
+                    {complianceTypes.map((type) => (
+                      <label key={type.id} className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={manualForm.required_compliance_types.includes(type.code)}
+                          onChange={() => toggleRequiredComplianceType(type.code)}
+                          className="rounded border-[#1E293B] bg-[#111827]"
+                        />
+                        {type.label}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-1">Checking one we don't currently hold on file emails an Executive with the revenue at risk.</p>
+                </div>
+              )}
+              {!editingLead && (
+                <div>
+                  <label className="block text-slate-400 mb-1 font-semibold">Initial Notes</label>
+                  <textarea
+                    value={manualForm.initial_notes}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, initial_notes: e.target.value }))}
+                    placeholder="What's the context on this lead so far?"
+                    rows={3}
+                    className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                  />
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={isSavingLead}
+                className="w-full py-2 bg-[#3B82F6] hover:bg-[#2563EB] text-white rounded font-bold transition disabled:opacity-50"
+              >
+                {isSavingLead ? 'Saving...' : editingLead ? 'Save Changes' : 'Create Lead Record'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Panel: Lead Activity History */}
+      {activityLead && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg bg-[#111827] border border-[#1E293B] rounded-xl p-6 relative max-h-[90vh] flex flex-col">
+            <button onClick={() => setActivityLead(null)} className="absolute top-4 right-4 text-slate-400 hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
+            <h2 className="text-lg font-bold text-white mb-1">Activity History</h2>
+            <p className="text-xs text-slate-400 mb-4">{activityLead.company_name}</p>
+
+            <div className="flex-1 overflow-y-auto space-y-2 mb-4 min-h-[120px]">
+              {activityLoading ? (
+                <p className="text-xs text-slate-500 italic">Loading...</p>
+              ) : activityItems.length === 0 ? (
+                <p className="text-xs text-slate-500 italic">No activity logged yet for this lead.</p>
+              ) : (
+                activityItems.map((item) => {
+                  const channelMeta = ACTIVITY_CHANNELS.find((c) => c.value === item.channel);
+                  const ChannelIcon = channelMeta?.icon || FileEdit;
+                  return (
+                    <div key={item.id} className="bg-[#0A0D14] border border-[#1E293B] rounded-lg p-3 text-xs">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="flex items-center gap-1.5 font-semibold text-white">
+                          <ChannelIcon className="h-3 w-3 text-[#3B82F6]" />
+                          {channelMeta?.label || item.channel}
+                        </span>
+                        <span className="text-[10px] text-slate-500">{item.created_at ? new Date(item.created_at).toLocaleString() : ''}</span>
+                      </div>
+                      {item.body && <p className="text-slate-300 whitespace-pre-wrap">{item.body}</p>}
+                      {item.outcome && <p className="text-[10px] text-slate-500 mt-1">Outcome: {item.outcome}</p>}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="border-t border-[#1E293B] pt-3 space-y-2">
+              <div className="flex gap-2">
+                <select
+                  value={activityForm.channel}
+                  onChange={(e) => setActivityForm(prev => ({ ...prev, channel: e.target.value }))}
+                  className="bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white text-xs"
+                >
+                  {ACTIVITY_CHANNELS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+                <input
+                  type="text"
+                  value={activityForm.outcome}
+                  onChange={(e) => setActivityForm(prev => ({ ...prev, outcome: e.target.value }))}
+                  placeholder="Outcome (optional)"
+                  className="flex-1 bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white text-xs"
+                />
+              </div>
+              <textarea
+                value={activityForm.body}
+                onChange={(e) => setActivityForm(prev => ({ ...prev, body: e.target.value }))}
+                placeholder="What happened?"
+                rows={2}
+                className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white text-xs"
+              />
+              <button
+                onClick={handleLogActivity}
+                disabled={isLoggingActivity || !activityForm.body.trim()}
+                className="w-full py-2 bg-[#3B82F6] hover:bg-[#2563EB] text-white rounded font-bold transition text-xs disabled:opacity-50"
+              >
+                {isLoggingActivity ? 'Logging...' : 'Log Activity'}
+              </button>
+            </div>
           </div>
         </div>
       )}

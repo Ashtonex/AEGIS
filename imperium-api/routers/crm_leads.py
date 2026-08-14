@@ -183,30 +183,53 @@ async def list_items(
     user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
     db: AsyncSession = Depends(get_db),
 ):
-    # Fetch active records scoped to the user's organization
+    # Fetch active records scoped to the user's organization. Two aggregate
+    # subqueries surface compliance-requirement state without an N+1 fetch
+    # per lead on the frontend: the codes currently selected (to prefill an
+    # edit form) and the labels of any that are still unmet (to badge the
+    # card) - "unmet" mirrors check_and_alert_lead_compliance_gap's own
+    # satisfied-check exactly, so the badge never disagrees with the alert.
     query_sql = """
-        SELECT *
-        FROM crm.leads
-        WHERE organization_id = :org_id AND is_deleted = false
+        SELECT l.*,
+               (
+                   SELECT COALESCE(array_agg(t.code ORDER BY t.code), ARRAY[]::text[])
+                   FROM crm.lead_compliance_requirements lcr
+                   JOIN crm.compliance_requirement_types t ON t.id = lcr.requirement_type_id
+                   WHERE lcr.lead_id = l.id AND lcr.organization_id = l.organization_id
+               ) AS required_compliance_types,
+               (
+                   SELECT COALESCE(array_agg(t.label ORDER BY t.label), ARRAY[]::text[])
+                   FROM crm.lead_compliance_requirements lcr
+                   JOIN crm.compliance_requirement_types t ON t.id = lcr.requirement_type_id
+                   WHERE lcr.lead_id = l.id AND lcr.organization_id = l.organization_id
+                     AND NOT EXISTS (
+                         SELECT 1 FROM core.compliance_items ci
+                         WHERE ci.organization_id = l.organization_id AND ci.requirement_type_id = t.id
+                           AND ci.is_deleted = false
+                           AND (ci.expiry_date IS NULL OR ci.expiry_date >= CURRENT_DATE)
+                     )
+               ) AS missing_compliance_labels
+        FROM crm.leads l
+        WHERE l.organization_id = :org_id AND l.is_deleted = false
     """
     params: Dict[str, Any] = {"org_id": _require_org_id(user)}
     if source:
-        query_sql += " AND lead_source = :source"
+        query_sql += " AND l.lead_source = :source"
         params["source"] = source
     if owner:
-        query_sql += " AND (assigned_to::text = :owner OR owner_user_id::text = :owner)"
+        query_sql += " AND (l.assigned_to::text = :owner OR l.owner_user_id::text = :owner)"
         params["owner"] = owner
     if sector:
-        query_sql += " AND sector = :sector"
+        query_sql += " AND l.sector = :sector"
         params["sector"] = sector
     if status:
-        query_sql += " AND lower(status) = lower(:status)"
+        query_sql += " AND lower(l.status) = lower(:status)"
         params["status"] = status
     if min_score is not None:
-        query_sql += " AND COALESCE(ai_score, 0) >= :min_score"
+        query_sql += " AND COALESCE(l.ai_score, 0) >= :min_score"
         params["min_score"] = min_score
     query_sql += """
-        ORDER BY created_at DESC
+        ORDER BY l.created_at DESC
         LIMIT 100
     """
     result = await db.execute(text(query_sql), params)

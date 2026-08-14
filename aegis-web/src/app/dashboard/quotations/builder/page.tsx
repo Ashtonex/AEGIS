@@ -657,6 +657,16 @@ export default function QuotationBuilder() {
         </div>
       </div>
 
+      {editId && selectedProjectId && (
+        <div className="p-4 border border-sky-500/20 bg-sky-950/20 rounded-sm flex items-center space-x-3 text-sky-400 text-sm print:hidden">
+          <Info className="w-5 h-5 shrink-0" />
+          <span>
+            This quotation is linked to a live project. Line-item changes won&apos;t affect the budget until a{" "}
+            <Link href="/dashboard/finance/variations" className="underline hover:text-sky-300">Variation</Link> is raised and approved.
+          </span>
+        </div>
+      )}
+
       {successMsg && (
         <div className="p-4 border border-emerald-500/20 bg-emerald-950/20 rounded-sm flex items-center space-x-3 text-emerald-400 text-sm print:hidden">
           <CheckCircle className="w-5 h-5 shrink-0" />
