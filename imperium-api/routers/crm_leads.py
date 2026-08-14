@@ -338,6 +338,11 @@ async def create_item(
                 params.get("company_name") or "Unnamed lead",
                 params.get("estimated_budget"),
             )
+            # emit_notification's INSERT into core.notifications isn't
+            # committed by that call itself (this codebase commits
+            # explicitly, never implicitly) - without this, get_db's
+            # session.close() silently rolls it back at request end.
+            await db.commit()
 
         return {
             "success": True,
@@ -449,6 +454,9 @@ async def update_item(
                 (lead_summary.company_name if lead_summary else None) or "Unnamed lead",
                 lead_summary.estimated_budget if lead_summary else None,
             )
+            # See the matching comment in create_item - emit_notification's
+            # INSERT isn't committed by that call itself.
+            await db.commit()
 
         return {
             "success": True,
