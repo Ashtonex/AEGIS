@@ -833,11 +833,30 @@ export async function createCrmLead(data: {
   lead_source: string;
   ai_score?: number;
   ai_rationale?: string;
+  expected_close_date?: string;
+  labels?: string[];
+  budget_confirmed?: boolean;
+  required_compliance_types?: string[];
 }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm-leads/', {
     method: 'POST',
     body: JSON.stringify(data)
   });
+}
+
+export async function updateCrmLead(leadId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-leads/${leadId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmComplianceRequirementTypes(): Promise<ApiResponse<{ id: string; code: string; label: string }[]>> {
+  return fetchApi<ApiResponse<{ id: string; code: string; label: string }[]>>(
+    '/api/v1/crm-leads/compliance-requirement-types',
+    { cache: 'no-store', allowFallback: false }
+  );
 }
 
 export async function getSubcontractors(): Promise<ApiResponse<any[]>> {

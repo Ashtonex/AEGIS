@@ -382,3 +382,44 @@ class QuotationCalculator:
             price_validity_days=price_validity_days,
             is_inflation_adjusted=is_inflation_adjusted,
         )
+
+
+def sum_buildup_by_type(item: Dict[str, Any], component_type: str) -> float:
+    return sum(
+        (float(b.get("qty", 0)) or 0) * (float(b.get("rate", 0)) or 0)
+        for b in (item.get("buildup") or [])
+        if b.get("type") == component_type
+    )
+
+
+def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Maps a quotation's stored metadata blob into the shape
+    QuotationCalculator.calculate() expects. Shared by every code path that
+    needs to re-derive a priced cost breakdown from a quotation - originally
+    inlined in quotations.py's decide_quotation, extracted so
+    mark_opportunity_won (crm.py) can run the identical calculation instead
+    of re-deriving its own, subtly different version."""
+    return {
+        "quotation_id": quotation_id,
+        "preliminaries": metadata.get("preliminaries", 0),
+        "overhead_rate": float(metadata.get("overhead_pct", 0) or 0) / 100.0,
+        "contingency_rate": float(metadata.get("contingency_pct", 0) or 0) / 100.0,
+        "profit_rate": float(metadata.get("profit_pct", 0) or 0) / 100.0,
+        "discount": metadata.get("discount", 0),
+        "tax_rate": 0.15 if metadata.get("apply_vat") else 0,
+        "provisional_sums": metadata.get("provisional_sums", 0),
+        "built_area_sqm": metadata.get("built_area_sqm", 0),
+        "items": [
+            {
+                "description": it.get("description"),
+                "quantity": it.get("qty"),
+                "unit": it.get("unit"),
+                "rate": it.get("rate"),
+                "material_rate": sum_buildup_by_type(it, "material"),
+                "labour_rate": sum_buildup_by_type(it, "labour"),
+                "equipment_rate": sum_buildup_by_type(it, "equipment"),
+                "subcontractor_rate": sum_buildup_by_type(it, "subcontractor"),
+            }
+            for it in (metadata.get("items") or [])
+        ],
+    }

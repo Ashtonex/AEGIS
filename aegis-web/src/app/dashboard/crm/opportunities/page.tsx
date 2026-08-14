@@ -576,7 +576,7 @@ export default function OpportunitiesKanban() {
         const created = await createCrmWinLossReason({ reason_type: 'won', label: winNotes.trim() });
         if (created.success) reasonId = created.data?.id;
       }
-      await markCrmOpportunityWon(selectedOpportunityId, {
+      const wonResult = await markCrmOpportunityWon(selectedOpportunityId, {
         create_project: true,
         win_loss_reason: winNotes.trim() || undefined,
         win_loss_reason_id: reasonId,
@@ -584,6 +584,14 @@ export default function OpportunitiesKanban() {
         originating_department_id: selectedWinOriginatingDepartmentId || undefined,
       });
       setIsCloseWinModalOpen(false);
+      const budgetPendingReason = wonResult?.data?.budget_pending_reason;
+      if (budgetPendingReason) {
+        // The win itself always goes through - this only flags that the
+        // project's execution budget wasn't auto-seeded (segregation of
+        // duties, or an unpriced BOQ) and still needs a second person to
+        // confirm it via Quotations > Decision.
+        alert(`Deal marked won. Budget not yet seeded: ${budgetPendingReason}`);
+      }
       try {
         await createCrmActivity({
           type: 'System Log',

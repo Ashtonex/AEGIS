@@ -16,7 +16,7 @@ from app.services.documents.renderers import (
     QuotationPDFRenderer,
 )
 from app.services.quotations.boq_importer import BOQImporter
-from app.services.quotations.calculator import QuotationCalculator
+from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.services.quotations.intelligence_engine import (
     QuotationBrain,
     AssemblyLibrary,
@@ -1486,14 +1486,6 @@ async def delete_item(
     }
 
 
-def _sum_buildup_by_type(item: Dict[str, Any], component_type: str) -> float:
-    return sum(
-        (float(b.get("qty", 0)) or 0) * (float(b.get("rate", 0)) or 0)
-        for b in (item.get("buildup") or [])
-        if b.get("type") == component_type
-    )
-
-
 @router.post("/{item_id}/decision")
 async def decide_quotation(
     item_id: str,
@@ -1579,30 +1571,7 @@ async def decide_quotation(
         )
 
         if decision == "won" and quotation.get("project_id"):
-            calc_input = {
-                "quotation_id": item_id,
-                "preliminaries": metadata.get("preliminaries", 0),
-                "overhead_rate": float(metadata.get("overhead_pct", 0) or 0) / 100.0,
-                "contingency_rate": float(metadata.get("contingency_pct", 0) or 0) / 100.0,
-                "profit_rate": float(metadata.get("profit_pct", 0) or 0) / 100.0,
-                "discount": metadata.get("discount", 0),
-                "tax_rate": 0.15 if metadata.get("apply_vat") else 0,
-                "provisional_sums": metadata.get("provisional_sums", 0),
-                "built_area_sqm": metadata.get("built_area_sqm", 0),
-                "items": [
-                    {
-                        "description": it.get("description"),
-                        "quantity": it.get("qty"),
-                        "unit": it.get("unit"),
-                        "rate": it.get("rate"),
-                        "material_rate": _sum_buildup_by_type(it, "material"),
-                        "labour_rate": _sum_buildup_by_type(it, "labour"),
-                        "equipment_rate": _sum_buildup_by_type(it, "equipment"),
-                        "subcontractor_rate": _sum_buildup_by_type(it, "subcontractor"),
-                    }
-                    for it in (metadata.get("items") or [])
-                ],
-            }
+            calc_input = build_calc_input_from_metadata(item_id, metadata)
             calculation = QuotationCalculator.calculate(calc_input)
             budget_id = await seed_project_budget_from_quotation(
                 db, user["org_id"], str(quotation["project_id"]), item_id, calculation, created_by=user["sub"],

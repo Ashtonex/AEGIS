@@ -11,10 +11,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
 
 from core.database import get_db
-from core.security import require_permission, user_has_permission
+from core.security import require_permission, user_has_permission, is_self_certification, SUPERADMIN_ROLE
 from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
 from app.services.crm.automation_engine import fire_trigger
 from app.services.finance.department_transfers import post_department_transfer
+from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
+from app.services.finance.project_forecast import (
+    seed_project_budget_from_quotation,
+    refresh_project_forecast,
+    check_and_alert_margin_threat,
+)
 from app.shared.sql import update_tenant_row_sql
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -1784,10 +1790,11 @@ async def mark_opportunity_won(
     opportunity = await _single_row(
         db,
         """
-        SELECT o.*, q.id AS latest_quote_id, q.quote_amount, co.name AS organization_name, c.contact_name
+        SELECT o.*, q.id AS latest_quote_id, q.quote_amount, q.metadata AS latest_quote_metadata,
+               q.created_by AS latest_quote_created_by, co.name AS organization_name, c.contact_name
         FROM crm.opportunities o
         LEFT JOIN LATERAL (
-            SELECT id, quote_amount
+            SELECT id, quote_amount, metadata, created_by
             FROM finance.quotations
             WHERE organization_id=o.organization_id AND opportunity_id=o.id AND is_deleted=false
             ORDER BY created_at DESC
@@ -1804,6 +1811,10 @@ async def mark_opportunity_won(
     await _ensure_opportunity_stage_unlocked(db, user, opportunity.get("stage"))
 
     project_id = payload.project_id or opportunity.get("project_id")
+    budget_id = None
+    forecast_metrics = None
+    margin_alert_raised = False
+    budget_pending_reason = None
     try:
         if not project_id and payload.create_project:
             project_row = await db.execute(
@@ -1873,6 +1884,77 @@ async def mark_opportunity_won(
                 """),
                 {"quote_id": opportunity.get("latest_quote_id"), "project_id": project_id, "org_id": org_id},
             )
+
+            # Seed the project's execution budget from this quotation inline
+            # - previously, marking Won only flipped the quotation's status,
+            # leaving budget-seeding as an easy-to-miss separate manual step
+            # (Quotations > Decision), so a project could exist with no
+            # budget at all if nobody remembered that second step.
+            #
+            # Segregation of duties still applies here exactly as it does in
+            # quotations.py's decide_quotation: whoever authored the
+            # quotation cannot also be the one whose Won confirmation
+            # commits its budget. That doesn't block the win itself - the
+            # project/opportunity handoff above already happened - it just
+            # means the budget-seed is skipped and left for a second person
+            # to complete via the existing Quotations > Decision action.
+            if project_id:
+                if user.get("role") != SUPERADMIN_ROLE and is_self_certification(
+                    user_id, opportunity.get("latest_quote_created_by")
+                ):
+                    budget_pending_reason = (
+                        "You authored this quotation and cannot also be the one whose "
+                        "Won confirmation commits its budget - get an independent "
+                        "commercial sign-off via Quotations > Decision."
+                    )
+                else:
+                    try:
+                        async with db.begin_nested():
+                            metadata = opportunity.get("latest_quote_metadata") or {}
+                            if isinstance(metadata, str):
+                                metadata = json.loads(metadata)
+                            calc_input = build_calc_input_from_metadata(
+                                str(opportunity.get("latest_quote_id")), metadata
+                            )
+                            calculation = QuotationCalculator.calculate(calc_input)
+                            direct_costs_total = sum(
+                                float(v or 0)
+                                for v in (calculation.breakdown_log.get("direct_costs_breakdown") or {}).values()
+                            )
+                            execution_total = (
+                                direct_costs_total
+                                + float(calculation.preliminaries or 0)
+                                + float(calculation.overhead_amount or 0)
+                                + float(calculation.contingency_amount or 0)
+                            )
+                            if not metadata.get("items") or execution_total <= 0:
+                                # Never silently seed an approved $0 budget -
+                                # e.g. a quotation still holding unpriced
+                                # rate=0 lines straight from a Drawing
+                                # Takeoff import that was never priced.
+                                budget_pending_reason = (
+                                    "Quotation has no priced line items - price the BOQ, "
+                                    "then confirm via Quotations > Decision."
+                                )
+                            else:
+                                budget_id = await seed_project_budget_from_quotation(
+                                    db, org_id, str(project_id), str(opportunity.get("latest_quote_id")),
+                                    calculation, created_by=user_id,
+                                )
+                                forecast_metrics = await refresh_project_forecast(
+                                    db, org_id, str(project_id), computed_by=user_id,
+                                )
+                                if forecast_metrics:
+                                    margin_alert_raised = await check_and_alert_margin_threat(
+                                        db, org_id, str(project_id), forecast_metrics,
+                                    )
+                    except Exception:
+                        budget_id = None
+                        forecast_metrics = None
+                        budget_pending_reason = (
+                            "Budget could not be seeded automatically - confirm via "
+                            "Quotations > Decision instead."
+                        )
 
         # Commercial-sourced referral credit: fires only if a matching
         # finance.department_transfer_rules row is configured - no rule
@@ -1954,8 +2036,18 @@ async def mark_opportunity_won(
 
     return {
         "success": True,
-        "data": {"id": str(opportunity_id), "project_id": str(project_id) if project_id else None},
-        "message": "Opportunity marked won and project handoff completed.",
+        "data": {
+            "id": str(opportunity_id),
+            "project_id": str(project_id) if project_id else None,
+            "budget_id": budget_id,
+            "budget_seeded": budget_id is not None,
+            "budget_pending_reason": budget_pending_reason,
+            "forecast": forecast_metrics,
+            "margin_alert_raised": margin_alert_raised,
+        },
+        "message": "Opportunity marked won and project handoff completed." + (
+            " Project execution budget seeded from this quotation." if budget_id else ""
+        ),
         "meta": {},
     }
 

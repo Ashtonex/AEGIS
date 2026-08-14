@@ -501,7 +501,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       mounted = false;
       window.clearTimeout(timer);
     };
-  }, [pathname, session, tourStorageKey]);
+    // Deliberately NOT keyed on pathname - DashboardShell mounts once per
+    // session (it lives in the shared dashboard layout), so this should
+    // check completion once, not re-fetch the profile and potentially
+    // reopen the full-screen tour (which spotlights the sidebar itself) on
+    // every single navigation, which is what was reading as "the whole nav
+    // keeps reloading."
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, tourStorageKey]);
 
   const renderNavGroups = () => (
     <>
