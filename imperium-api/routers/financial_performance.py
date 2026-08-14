@@ -14,6 +14,7 @@ from app.shared.pagination import ok
 from app.services.finance.payroll_tax import compute_statutory
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
+from app.services.finance.project_forecast import refresh_project_forecast, check_and_alert_margin_threat
 from routers.payroll_runs import _compute_gross
 
 router = APIRouter()
@@ -38,6 +39,13 @@ class VariationCreate(BaseModel):
     initiated_by: str = Field(default="client", max_length=40)
     cost_impact: float = 0.0
     time_impact_days: int = 0
+
+
+class VariationDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    status: str = Field(pattern="^(approved|rejected)$")
+    rejection_reason: Optional[str] = None
 
 
 class CashAccountCreate(BaseModel):
@@ -637,6 +645,67 @@ async def create_variation(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Variation number already exists.")
+
+
+@router.post("/variations/{item_id}/decision")
+async def decide_variation(
+    item_id: UUID,
+    payload: VariationDecision,
+    user: dict = Depends(require_permission("finance.variation.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve or reject a variation order. This is the only mechanism that
+    moves a post-win BOQ/scope change into a project's financials - approving
+    immediately refreshes the project's forecast so the variation's
+    cost_impact feeds the revised contract value and cost ceiling."""
+    row = await db.execute(
+        text("""
+            SELECT id, project_id, status
+            FROM finance.variations
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"id": str(item_id), "org_id": user["org_id"]},
+    )
+    variation = row.first()
+    if not variation:
+        raise HTTPException(status_code=404, detail="Variation not found.")
+    if variation.status != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Variation is already {variation.status} - it can't be decided again.",
+        )
+
+    if payload.status == "rejected":
+        if not payload.rejection_reason:
+            raise HTTPException(status_code=422, detail="rejection_reason is required to reject a variation.")
+        await db.execute(
+            text("""
+                UPDATE finance.variations
+                SET status = 'rejected', rejection_reason = :reason, updated_at = NOW()
+                WHERE id = :id AND organization_id = :org_id
+            """),
+            {"id": str(item_id), "org_id": user["org_id"], "reason": payload.rejection_reason},
+        )
+        await db.commit()
+        return ok({"id": str(item_id), "status": "rejected"}, "Variation rejected.")
+
+    await db.execute(
+        text("""
+            UPDATE finance.variations
+            SET status = 'approved', approved_by = :user_id, approved_at = NOW(), updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {"id": str(item_id), "org_id": user["org_id"], "user_id": user["sub"]},
+    )
+    metrics = await refresh_project_forecast(db, user["org_id"], str(variation.project_id), computed_by=user["sub"])
+    alert_raised = False
+    if metrics:
+        alert_raised = await check_and_alert_margin_threat(db, user["org_id"], str(variation.project_id), metrics)
+    await db.commit()
+    return ok(
+        {"id": str(item_id), "status": "approved", "forecast": metrics, "margin_alert_raised": alert_raised},
+        "Variation approved.",
+    )
 
 
 @router.get("/progress-claims")

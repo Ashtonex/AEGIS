@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from core.database import get_db
 from core.security import require_permission, user_has_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 from app.services.crm.automation_engine import fire_trigger
+from app.services.crm.compliance_gap import check_and_alert_lead_compliance_gap
 
 router = APIRouter()
 
@@ -67,6 +68,7 @@ MUTABLE_COLUMNS = {
     "contact_id",
     "opportunity_id",
     "campaign_id",
+    "budget_confirmed",
 }
 
 """
@@ -113,6 +115,62 @@ def _require_org_id(user: dict) -> str:
             status_code=403, detail="User does not belong to an organization."
         )
     return org_id
+
+
+async def _sync_lead_compliance_requirements(
+    db: AsyncSession, org_id: str, lead_id: str, codes: List[str], created_by: str
+) -> None:
+    """Makes crm.lead_compliance_requirements match `codes` exactly -
+    removes any requirement no longer selected, adds any newly selected
+    one. Unknown codes are silently ignored (the INSERT's JOIN just won't
+    match them) rather than erroring, since this is a client-supplied list
+    of type codes, not a validated enum."""
+    codes = list(dict.fromkeys(codes or []))
+    await db.execute(
+        text("""
+            DELETE FROM crm.lead_compliance_requirements
+            WHERE lead_id = :lead_id AND organization_id = :org_id
+              AND requirement_type_id NOT IN (
+                  SELECT id FROM crm.compliance_requirement_types
+                  WHERE organization_id = :org_id AND code = ANY(:codes)
+              )
+        """),
+        {"lead_id": lead_id, "org_id": org_id, "codes": codes},
+    )
+    if codes:
+        await db.execute(
+            text("""
+                INSERT INTO crm.lead_compliance_requirements (organization_id, lead_id, requirement_type_id, created_by)
+                SELECT :org_id, :lead_id, t.id, :created_by
+                FROM crm.compliance_requirement_types t
+                WHERE t.organization_id = :org_id AND t.code = ANY(:codes) AND t.is_deleted = false
+                ON CONFLICT (lead_id, requirement_type_id) DO NOTHING
+            """),
+            {"org_id": org_id, "lead_id": lead_id, "created_by": created_by, "codes": codes},
+        )
+
+
+@router.get("/compliance-requirement-types")
+async def list_compliance_requirement_types(
+    user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        text("""
+            SELECT id, code, label
+            FROM crm.compliance_requirement_types
+            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+            ORDER BY label
+        """),
+        {"org_id": _require_org_id(user)},
+    )
+    items = [dict(row._mapping) for row in result]
+    return {
+        "success": True,
+        "data": items,
+        "message": "Compliance requirement types fetched.",
+        "meta": {"total": len(items)},
+    }
 
 
 @router.get("/")
@@ -199,6 +257,7 @@ async def create_item(
     db: AsyncSession = Depends(get_db),
 ):
     payload = await request.json()
+    required_compliance_types = payload.pop("required_compliance_types", None)
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -245,6 +304,18 @@ async def create_item(
         await db.commit()
         new_id = str(result.scalar())
         await fire_trigger(db, params["org_id"], user["sub"], "lead_created", {**params, "id": new_id})
+
+        if required_compliance_types is not None:
+            await _sync_lead_compliance_requirements(
+                db, params["org_id"], new_id, required_compliance_types, user["sub"],
+            )
+            await db.commit()
+            await check_and_alert_lead_compliance_gap(
+                db, params["org_id"], new_id,
+                params.get("company_name") or "Unnamed lead",
+                params.get("estimated_budget"),
+            )
+
         return {
             "success": True,
             "data": {"id": new_id},
@@ -291,43 +362,71 @@ async def update_item(
     db: AsyncSession = Depends(get_db),
 ):
     payload = await request.json()
+    required_compliance_types = payload.pop("required_compliance_types", None)
     safe_keys = _validated_payload_keys(payload)
+    org_id = _require_org_id(user)
 
-    if not safe_keys:
+    if not safe_keys and required_compliance_types is None:
         return {
             "success": True,
             "data": {"id": item_id},
             "message": "No fields to update.",
         }
 
-    params = {k: payload[k] for k in safe_keys}
-    params["item_id"] = item_id
-    params["org_id"] = _require_org_id(user)
-
-    if "status" in params:
-        current = await db.execute(
-            text("SELECT status FROM crm.leads WHERE id=:item_id AND organization_id=:org_id AND is_deleted=false"),
-            {"item_id": item_id, "org_id": params["org_id"]},
-        )
-        current_row = current.first()
-        if not current_row:
-            raise HTTPException(status_code=404, detail="Item not found")
-        if params["status"] != current_row.status:
-            await _ensure_lead_status_unlocked(db, user, current_row.status)
-
-    query = update_returning_id_sql("crm.leads", safe_keys, MUTABLE_COLUMNS)
-
     try:
-        result = await db.execute(query, params)
-        if not result.first():
-            raise HTTPException(status_code=404, detail="Item not found")
+        if safe_keys:
+            params = {k: payload[k] for k in safe_keys}
+            params["item_id"] = item_id
+            params["org_id"] = org_id
 
-        await db.commit()
-        if "ai_score" in params:
-            await fire_trigger(
-                db, params["org_id"], user["sub"], "lead_score_changed",
-                {"id": item_id, "lead_id": item_id, "ai_score": params["ai_score"]},
+            if "status" in params:
+                current = await db.execute(
+                    text("SELECT status FROM crm.leads WHERE id=:item_id AND organization_id=:org_id AND is_deleted=false"),
+                    {"item_id": item_id, "org_id": org_id},
+                )
+                current_row = current.first()
+                if not current_row:
+                    raise HTTPException(status_code=404, detail="Item not found")
+                if params["status"] != current_row.status:
+                    await _ensure_lead_status_unlocked(db, user, current_row.status)
+
+            query = update_returning_id_sql("crm.leads", safe_keys, MUTABLE_COLUMNS)
+            result = await db.execute(query, params)
+            if not result.first():
+                raise HTTPException(status_code=404, detail="Item not found")
+
+            await db.commit()
+            if "ai_score" in params:
+                await fire_trigger(
+                    db, org_id, user["sub"], "lead_score_changed",
+                    {"id": item_id, "lead_id": item_id, "ai_score": params["ai_score"]},
+                )
+
+        if required_compliance_types is not None:
+            lead_row = await db.execute(
+                text("SELECT id FROM crm.leads WHERE id=:item_id AND organization_id=:org_id AND is_deleted=false"),
+                {"item_id": item_id, "org_id": org_id},
             )
+            if not lead_row.first():
+                raise HTTPException(status_code=404, detail="Item not found")
+
+            await _sync_lead_compliance_requirements(
+                db, org_id, item_id, required_compliance_types, user["sub"],
+            )
+            await db.commit()
+
+            lead_summary = (
+                await db.execute(
+                    text("SELECT company_name, estimated_budget FROM crm.leads WHERE id=:item_id AND organization_id=:org_id"),
+                    {"item_id": item_id, "org_id": org_id},
+                )
+            ).first()
+            await check_and_alert_lead_compliance_gap(
+                db, org_id, item_id,
+                (lead_summary.company_name if lead_summary else None) or "Unnamed lead",
+                lead_summary.estimated_budget if lead_summary else None,
+            )
+
         return {
             "success": True,
             "data": {"id": item_id},
@@ -391,6 +490,7 @@ class OpportunityQualify(BaseModel):
     stage: str
     budget: Optional[float] = None
     probability: Optional[int] = 0
+    budget_confirmed: Optional[bool] = False
 
 
 class ActivityQualify(BaseModel):
@@ -595,9 +695,9 @@ async def qualify_lead(
         opp_data = payload.opportunity
         insert_opp_query = text("""
             INSERT INTO crm.opportunities (
-                organization_id, client_id, name, stage, budget, probability, created_by, lead_id
+                organization_id, client_id, name, stage, budget, probability, created_by, lead_id, budget_confirmed
             ) VALUES (
-                :org_id, :client_id, :name, :stage, :budget, :probability, :user_id, :lead_id
+                :org_id, :client_id, :name, :stage, :budget, :probability, :user_id, :lead_id, :budget_confirmed
             ) RETURNING id
         """)
         insert_opp_res = await db.execute(
@@ -611,6 +711,7 @@ async def qualify_lead(
                 "probability": opp_data.probability,
                 "user_id": user_id,
                 "lead_id": lead_id,
+                "budget_confirmed": bool(opp_data.budget_confirmed),
             },
         )
         opportunity_id = insert_opp_res.scalar()
