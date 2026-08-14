@@ -8,9 +8,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.email import send_email
+from core.security import SUPERADMIN_ROLE
 from app.shared.events import emit_role_notification
 
-ALERT_ROLES = ["Executive (Admin)"]
+# SUPERADMIN alongside Executive (Admin) mirrors project_forecast.py's own
+# COMMERCIAL_ALERT_ROLES for the identical reason: relying on "someone holds
+# Executive (Admin)" alone is fragile - if nobody in the org currently does
+# (a real, observed state in this system), emit_role_notification silently
+# reaches zero people instead of erroring.
+ALERT_ROLES = ["Executive (Admin)", SUPERADMIN_ROLE]
 
 _MISSING_REQUIREMENTS_SQL = """
     SELECT t.id AS requirement_type_id, t.code, t.label
