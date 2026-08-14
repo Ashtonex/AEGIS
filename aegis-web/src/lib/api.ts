@@ -941,8 +941,33 @@ export async function deleteCrmContact(id: string): Promise<ApiResponse<any>> {
 }
 
 // --- CRM ACTIVITIES --- //
-export async function getCrmActivities(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-activities/', { cache: 'no-store' });
+export interface CrmActivity {
+  id: string;
+  type: string;
+  subject: string;
+  description?: string | null;
+  activity_date: string;
+  status?: string;
+  contact_id?: string | null;
+  lead_id?: string | null;
+  opportunity_id?: string | null;
+  owner_user_id?: string | null;
+  owner_name?: string | null;
+  priority?: "low" | "normal" | "high" | "urgent";
+  contact_name?: string | null;
+  lead_company?: string | null;
+  opportunity_name?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+export async function getCrmActivities(params?: { start_date?: string; end_date?: string; limit?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.start_date) search.set("start_date", params.start_date);
+  if (params?.end_date) search.set("end_date", params.end_date);
+  if (params?.limit) search.set("limit", String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-activities/${query}`, { cache: 'no-store' });
 }
 
 export async function createCrmActivity(data: {
@@ -954,6 +979,8 @@ export async function createCrmActivity(data: {
   contact_id?: string | null;
   lead_id?: string | null;
   opportunity_id?: string | null;
+  owner_user_id?: string | null;
+  priority?: "low" | "normal" | "high" | "urgent";
 }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm-activities/', {
     method: 'POST',
