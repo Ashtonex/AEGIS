@@ -24,7 +24,8 @@ import {
   updateCrmLeadStatus,
   getCrmComplianceRequirementTypes,
   getCrmCommunications,
-  createCrmCommunication
+  createCrmCommunication,
+  grantClientPortalAccess
 } from '@/lib/api';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
@@ -94,6 +95,15 @@ export default function CRMLeadsApp() {
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('kanban');
 
   const [qualifyingId, setQualifyingId] = useState<string | null>(null);
+  // Set after a lead is successfully qualified - surfaces an explicit,
+  // separate "Grant portal access" prompt rather than firing the real
+  // Supabase Auth invite email automatically as part of qualification.
+  const [qualifiedLeadPrompt, setQualifiedLeadPrompt] = useState<{
+    contactId: string;
+    contactName: string;
+    email?: string;
+  } | null>(null);
+  const [isGrantingPortalAccess, setIsGrantingPortalAccess] = useState(false);
   const [dismissedLeadIds, setDismissedLeadIds] = useState<string[]>([]);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
   const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
@@ -366,12 +376,38 @@ export default function CRMLeadsApp() {
       });
       if (res.success) {
         showToast("Lead successfully converted to Organization + Opportunity!");
+        const contactId = (res.data as any)?.contact_id;
+        if (contactId) {
+          setQualifiedLeadPrompt({
+            contactId,
+            contactName: lead.contact_name,
+            email: lead.contact_email
+          });
+        }
         void loadLeads();
       }
     } catch {
       showToast("Lead qualification was not saved. Check the CRM service connection and retry.", "error");
     } finally {
       setQualifyingId(null);
+    }
+  };
+
+  const handleGrantPortalAccess = async () => {
+    if (!qualifiedLeadPrompt) return;
+    setIsGrantingPortalAccess(true);
+    try {
+      const res = await grantClientPortalAccess(qualifiedLeadPrompt.contactId);
+      if (res.success) {
+        showToast(`Portal invite sent to ${res.data?.email || qualifiedLeadPrompt.email}.`);
+        setQualifiedLeadPrompt(null);
+      } else {
+        showToast("Portal access was not granted. Check the CRM service connection and retry.", "error");
+      }
+    } catch {
+      showToast("Portal access was not granted. Check the CRM service connection and retry.", "error");
+    } finally {
+      setIsGrantingPortalAccess(false);
     }
   };
 
@@ -1109,6 +1145,43 @@ export default function CRMLeadsApp() {
                 className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded font-bold transition"
               >
                 Mark Disqualified
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Grant Portal Access (post-qualification, explicit action) */}
+      {qualifiedLeadPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm bg-[#111827] border border-[#1E293B] rounded-xl p-6 relative">
+            <button onClick={() => setQualifiedLeadPrompt(null)} className="absolute top-4 right-4 text-slate-400 hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
+            <h2 className="text-lg font-bold text-white mb-2 text-emerald-400">Grant Portal Access?</h2>
+            <p className="text-xs text-slate-400 mb-4">
+              This lead is now a client. Give <span className="text-white font-bold">{qualifiedLeadPrompt.contactName}</span> a client portal
+              account? This creates a real login and sends them an invite email
+              {qualifiedLeadPrompt.email ? <> to <span className="text-white font-bold">{qualifiedLeadPrompt.email}</span></> : null}.
+            </p>
+            {!qualifiedLeadPrompt.email && (
+              <p className="text-[11px] text-amber-400 mb-4">
+                This contact has no email on file - add one before an invite can be sent.
+              </p>
+            )}
+            <div className="flex gap-3 text-xs">
+              <button
+                onClick={() => setQualifiedLeadPrompt(null)}
+                className="flex-1 py-2 bg-[#1E293B] hover:bg-[#273449] text-white rounded font-bold transition"
+              >
+                Skip for now
+              </button>
+              <button
+                onClick={handleGrantPortalAccess}
+                disabled={isGrantingPortalAccess || !qualifiedLeadPrompt.email}
+                className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded font-bold transition"
+              >
+                {isGrantingPortalAccess ? 'Sending invite...' : 'Grant Portal Access'}
               </button>
             </div>
           </div>

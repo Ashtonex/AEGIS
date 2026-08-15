@@ -12,6 +12,10 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
 import { DepartmentTransfersPanel } from "./DepartmentTransfersPanel";
 import { StatutoryPanel } from "./StatutoryPanel";
+import { VendorPaymentsPanel } from "./VendorPaymentsPanel";
+import { ClientPaymentsPanel } from "./ClientPaymentsPanel";
+import { HistoricalEntryPanel } from "./HistoricalEntryPanel";
+import { FinancialStatementsPanel } from "./FinancialStatementsPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -33,7 +37,7 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -49,6 +53,10 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   transfers: "/dashboard/finance/transfers",
   "department-pnl": "/dashboard/finance/department-pnl",
   statutory: "/dashboard/finance/statutory",
+  "vendor-payments": "/dashboard/finance/vendor-payments",
+  "client-payments": "/dashboard/finance/client-payments",
+  "historical-entry": "/dashboard/finance/historical-entry",
+  "financial-statements": "/dashboard/finance/financial-statements",
 };
 
 function normalizeTab(value: string | null | undefined): FinanceTab {
@@ -549,6 +557,30 @@ function FinanceWorkspace() {
         >
           Statutory
         </Link>
+        <Link
+          href={TAB_ROUTES["vendor-payments"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "vendor-payments" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Vendor Payments
+        </Link>
+        <Link
+          href={TAB_ROUTES["client-payments"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "client-payments" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Client Payments
+        </Link>
+        <Link
+          href={TAB_ROUTES["historical-entry"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "historical-entry" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Historical Entry
+        </Link>
+        <Link
+          href={TAB_ROUTES["financial-statements"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "financial-statements" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Financial Statements
+        </Link>
       </div>
 
       {/* Tab Panels */}
@@ -567,6 +599,14 @@ function FinanceWorkspace() {
           )}
 
           {activeTab === "statutory" && <StatutoryPanel />}
+
+          {activeTab === "vendor-payments" && <VendorPaymentsPanel />}
+
+          {activeTab === "client-payments" && <ClientPaymentsPanel />}
+
+          {activeTab === "historical-entry" && <HistoricalEntryPanel />}
+
+          {activeTab === "financial-statements" && <FinancialStatementsPanel />}
 
           {activeTab === "project-financials" && (
             <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">

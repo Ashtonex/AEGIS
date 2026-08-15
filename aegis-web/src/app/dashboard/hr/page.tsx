@@ -20,15 +20,17 @@ import {
   approveHRLeaveRequest,
   getInternalProjects
 } from "@/lib/api";
+import { VendorVerificationPanel } from "./VendorVerificationPanel";
 
 type RecordData = Record<string, any>;
-type HRTab = "employees" | "attendance" | "leave" | "payroll";
+type HRTab = "employees" | "attendance" | "leave" | "payroll" | "vendor-verification";
 
 const TAB_ROUTES: Record<HRTab, string> = {
   employees: "/dashboard/hr/employees",
   attendance: "/dashboard/hr/attendance",
   leave: "/dashboard/hr/leave",
   payroll: "/dashboard/hr/payroll",
+  "vendor-verification": "/dashboard/hr/vendor-verification",
 };
 
 function normalizeTab(value: string | null | undefined): HRTab {
@@ -377,7 +379,19 @@ function HRWorkspace() {
         >
           Payroll Runs
         </Link>
+        <Link
+          href={TAB_ROUTES["vendor-verification"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "vendor-verification" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Vendor Verification
+        </Link>
       </div>
+
+      {activeTab === "vendor-verification" && (
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+          <VendorVerificationPanel />
+        </div>
+      )}
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -1,20 +1,22 @@
-from datetime import date
+import calendar
+from datetime import date, datetime, timedelta
+from datetime import time as datetime_time
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from typing import Optional, List, Any, Dict
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db
 from core.security import require_permission
+from app.shared.events import emit_notification
 from app.shared.pagination import ok
 from app.services.finance.payroll_tax import compute_statutory
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
-from app.services.finance.project_forecast import refresh_project_forecast, check_and_alert_margin_threat
 from routers.payroll_runs import _compute_gross
 
 router = APIRouter()
@@ -39,13 +41,6 @@ class VariationCreate(BaseModel):
     initiated_by: str = Field(default="client", max_length=40)
     cost_impact: float = 0.0
     time_impact_days: int = 0
-
-
-class VariationDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    status: str = Field(pattern="^(approved|rejected)$")
-    rejection_reason: Optional[str] = None
 
 
 class CashAccountCreate(BaseModel):
@@ -293,12 +288,19 @@ async def get_project_financial_detail(
             COALESCE(p.contract_value, 0) AS contract_value,
             
             COALESCE((
-                SELECT SUM(v.cost_impact) 
-                FROM finance.variations v 
-                WHERE v.project_id = p.id AND v.organization_id = :org_id 
+                SELECT SUM(v.cost_impact)
+                FROM finance.variations v
+                WHERE v.project_id = p.id AND v.organization_id = :org_id
                   AND v.status = 'approved' AND v.is_deleted = false
             ), 0) AS approved_variations,
-            
+
+            COALESCE((
+                SELECT SUM(v.time_impact_days)
+                FROM finance.variations v
+                WHERE v.project_id = p.id AND v.organization_id = :org_id
+                  AND v.status = 'approved' AND v.is_deleted = false
+            ), 0) AS approved_time_impact_days,
+
             COALESCE((
                 SELECT SUM(ct.amount)
                 FROM finance.cost_transactions ct
@@ -380,13 +382,7 @@ async def get_project_financial_detail(
     return ok(detail, "Project financial detail retrieved.")
 
 
-@router.get("/departments/pnl")
-async def get_department_pnl(
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
-    user: dict = Depends(require_permission("finance.cost.read")),
-    db: AsyncSession = Depends(get_db),
-):
+async def _compute_department_pnl(db: AsyncSession, org_id: str, date_from: Optional[date], date_to: Optional[date]) -> dict:
     """
     Revenue and cost per department, plus an "Unassigned" row for anything
     without a department yet and an org-wide total - this is what actually
@@ -398,15 +394,32 @@ async def get_department_pnl(
     project's department, excluding rows superseded by a posted transfer),
     and non-project direct cost (cashbook/payroll/supplier-payment rows
     that already carry their own department_id from Phase 1 but were never
-    rolled up anywhere until now).
+    rolled up anywhere until now). All five legs are date-bound identically
+    when date_from/date_to are supplied - shared by both /departments/pnl
+    and /statements so a fix here benefits both.
     """
     date_filters = ""
-    params: dict = {"org_id": user["org_id"]}
+    revenue_date_filter = ""
+    cost_date_filter = ""
+    cashbook_date_filter = ""
+    payroll_date_filter = ""
+    supplier_payment_date_filter = ""
+    params: dict = {"org_id": org_id}
     if date_from:
         date_filters += " AND t.transfer_date >= :date_from"
+        revenue_date_filter += " AND pc.certified_at >= :date_from"
+        cost_date_filter += " AND ct.transaction_date >= :date_from"
+        cashbook_date_filter += " AND cb.transaction_date >= :date_from"
+        payroll_date_filter += " AND pr.payment_date >= :date_from"
+        supplier_payment_date_filter += " AND spb.payment_date >= :date_from"
         params["date_from"] = date_from
     if date_to:
         date_filters += " AND t.transfer_date <= :date_to"
+        revenue_date_filter += " AND pc.certified_at <= :date_to"
+        cost_date_filter += " AND ct.transaction_date <= :date_to"
+        cashbook_date_filter += " AND cb.transaction_date <= :date_to"
+        payroll_date_filter += " AND pr.payment_date <= :date_to"
+        supplier_payment_date_filter += " AND spb.payment_date <= :date_to"
         params["date_to"] = date_to
 
     query = text(f"""
@@ -426,6 +439,7 @@ async def get_department_pnl(
                 JOIN projects.projects p ON p.id = pc.project_id
                 WHERE p.organization_id = :org_id AND p.department_id IS NOT DISTINCT FROM d.id
                   AND pc.status IN ('certified', 'paid') AND pc.is_deleted = false
+                  {revenue_date_filter}
             ), 0) AS external_revenue,
 
             COALESCE((
@@ -446,6 +460,7 @@ async def get_department_pnl(
                         AND dt2.source_type = ct.source_type AND dt2.source_id = ct.source_id
                         AND dt2.status = 'posted'
                   )
+                  {cost_date_filter}
             ), 0) AS project_cost,
 
             COALESCE((
@@ -459,15 +474,19 @@ async def get_department_pnl(
                 SELECT SUM(cb.amount) FROM finance.cashbook_transactions cb
                 WHERE cb.organization_id = :org_id AND cb.department_id IS NOT DISTINCT FROM d.id
                   AND cb.project_id IS NULL AND cb.direction = 'outflow' AND cb.is_deleted = false
+                  {cashbook_date_filter}
             ), 0)
             + COALESCE((
                 SELECT SUM(pi.net_pay) FROM finance.payroll_items pi
                 JOIN finance.payroll_runs pr ON pr.id = pi.payroll_run_id AND pr.status = 'posted'
                 WHERE pi.organization_id = :org_id AND pi.department_id IS NOT DISTINCT FROM d.id AND pi.project_id IS NULL
+                {payroll_date_filter}
             ), 0)
             + COALESCE((
                 SELECT SUM(spi.amount) FROM finance.supplier_payment_items spi
+                JOIN finance.supplier_payment_batches spb ON spb.id = spi.batch_id
                 WHERE spi.organization_id = :org_id AND spi.department_id IS NOT DISTINCT FROM d.id AND spi.project_id IS NULL
+                {supplier_payment_date_filter}
             ), 0) AS direct_cost_non_project
 
         FROM depts d
@@ -498,7 +517,117 @@ async def get_department_pnl(
         "net": org_revenue - org_cost,
     }
 
-    return ok({"departments": rows, "consolidated": org_row}, "Department P&L retrieved.")
+    return {"departments": rows, "consolidated": org_row}
+
+
+@router.get("/departments/pnl")
+async def get_department_pnl(
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    user: dict = Depends(require_permission("finance.cost.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    data = await _compute_department_pnl(db, user["org_id"], date_from, date_to)
+    return ok(data, "Department P&L retrieved.")
+
+
+PERIOD_TYPES = ("day", "week", "month", "quarter", "year")
+
+
+def _resolve_period(period: Optional[str], anchor_date: Optional[date]) -> tuple[date, date]:
+    """Resolves a period keyword + anchor date into a (date_from, date_to)
+    pair. anchor_date defaults to today - callers pass a past date to view
+    a historical period (e.g. anchor_date=2026-03-15, period=month -> all
+    of March 2026)."""
+    anchor = anchor_date or date.today()
+    if period == "day":
+        return anchor, anchor
+    if period == "week":
+        start = anchor - timedelta(days=anchor.weekday())
+        return start, start + timedelta(days=6)
+    if period == "quarter":
+        quarter_start_month = ((anchor.month - 1) // 3) * 3 + 1
+        start = date(anchor.year, quarter_start_month, 1)
+        end_month = quarter_start_month + 2
+        end_day = calendar.monthrange(anchor.year, end_month)[1]
+        return start, date(anchor.year, end_month, end_day)
+    if period == "year":
+        return date(anchor.year, 1, 1), date(anchor.year, 12, 31)
+    # default / "month"
+    last_day = calendar.monthrange(anchor.year, anchor.month)[1]
+    return date(anchor.year, anchor.month, 1), date(anchor.year, anchor.month, last_day)
+
+
+@router.get("/statements")
+async def get_financial_statements(
+    period: Optional[str] = Query(default=None, pattern=r"^(day|week|month|quarter|year)$"),
+    anchor_date: Optional[date] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    department_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("finance.statement.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Period- and segment-filterable financial statement. If explicit
+    date_from/date_to aren't supplied, `period` (+ optional anchor_date,
+    defaulting to today) resolves them server-side - `period=month` with no
+    anchor is the current calendar month, `period=month&anchor_date=2026-03-15`
+    is all of March 2026, etc. Built on the same department P&L computation
+    /departments/pnl uses (now properly date-bound on every leg, not just
+    internal transfers), plus a cash-position snapshot.
+    """
+    if not date_from or not date_to:
+        date_from, date_to = _resolve_period(period, anchor_date)
+
+    pnl = await _compute_department_pnl(db, user["org_id"], date_from, date_to)
+
+    if department_id:
+        row = next((d for d in pnl["departments"] if str(d["department_id"]) == str(department_id)), None)
+        segment = row or {"department_id": department_id, "department_name": "Unknown", "total_revenue": 0, "total_cost": 0, "net": 0}
+    else:
+        segment = pnl["consolidated"]
+
+    cash_row = (
+        await db.execute(
+            text("""
+            SELECT COALESCE(SUM(current_balance), 0) AS total_cash
+            FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+        """),
+            {"org_id": user["org_id"]},
+        )
+    ).first()
+    total_cash = float(cash_row.total_cash) if cash_row else 0.0
+
+    burn_row = (
+        await db.execute(
+            text("""
+            SELECT COALESCE(SUM(amount), 0) AS total_outflow
+            FROM finance.cashbook_transactions
+            WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
+              AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
+        """),
+            {"org_id": user["org_id"]},
+        )
+    ).first()
+    monthly_burn = (float(burn_row.total_outflow) / 3.0) if burn_row else 0.0
+    runway_months = round(total_cash / monthly_burn, 1) if monthly_burn > 0 else None
+
+    return ok(
+        {
+            "period": {"date_from": date_from, "date_to": date_to, "type": period or "month"},
+            "departments": pnl["departments"],
+            "consolidated": pnl["consolidated"],
+            "segment": segment,
+            "cash_position": {
+                "total_cash": total_cash,
+                "trailing_monthly_burn": round(monthly_burn, 2),
+                "runway_months": runway_months,
+            },
+        },
+        "Financial statement retrieved.",
+    )
 
 
 @router.get("/cost-codes")
@@ -647,64 +776,614 @@ async def create_variation(
         raise HTTPException(status_code=409, detail="Variation number already exists.")
 
 
-@router.post("/variations/{item_id}/decision")
+class VariationDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    decision: str = Field(pattern=r"^(approve|reject)$")
+    rejection_reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+@router.post("/variations/{variation_id}/decision")
 async def decide_variation(
-    item_id: UUID,
+    variation_id: UUID,
     payload: VariationDecision,
     user: dict = Depends(require_permission("finance.variation.approve")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Approve or reject a variation order. This is the only mechanism that
-    moves a post-win BOQ/scope change into a project's financials - approving
-    immediately refreshes the project's forecast so the variation's
-    cost_impact feeds the revised contract value and cost ceiling."""
-    row = await db.execute(
-        text("""
-            SELECT id, project_id, status
-            FROM finance.variations
-            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
-        """),
-        {"id": str(item_id), "org_id": user["org_id"]},
-    )
-    variation = row.first()
-    if not variation:
-        raise HTTPException(status_code=404, detail="Variation not found.")
-    if variation.status != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Variation is already {variation.status} - it can't be decided again.",
-        )
-
-    if payload.status == "rejected":
-        if not payload.rejection_reason:
-            raise HTTPException(status_code=422, detail="rejection_reason is required to reject a variation.")
+    """
+    Approve or reject a variation. Approving immediately affects the
+    project's financial detail view (GET /projects/{project_id}) - both
+    approved_variations (cost) and approved_time_impact_days sum approved
+    rows live, so no separate propagation step is needed.
+    """
+    row = (
         await db.execute(
             text("""
-                UPDATE finance.variations
-                SET status = 'rejected', rejection_reason = :reason, updated_at = NOW()
-                WHERE id = :id AND organization_id = :org_id
-            """),
-            {"id": str(item_id), "org_id": user["org_id"], "reason": payload.rejection_reason},
+            SELECT id, status FROM finance.variations
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+            {"id": variation_id, "org_id": user["org_id"]},
         )
-        await db.commit()
-        return ok({"id": str(item_id), "status": "rejected"}, "Variation rejected.")
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Variation not found.")
+    if row.status not in ("pending", "submitted"):
+        raise HTTPException(status_code=409, detail=f"Cannot decide a variation in '{row.status}' state.")
+    if payload.decision == "reject" and not payload.rejection_reason:
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
+
+    new_status = "approved" if payload.decision == "approve" else "rejected"
+    await db.execute(
+        text("""
+        UPDATE finance.variations
+        SET status = :status, approved_by = :user_id, approved_at = NOW(),
+            rejection_reason = :rejection_reason, updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+    """),
+        {
+            "status": new_status, "user_id": user["user_id"], "rejection_reason": payload.rejection_reason,
+            "id": variation_id, "org_id": user["org_id"],
+        },
+    )
+    await db.commit()
+    return ok({"id": str(variation_id), "status": new_status}, f"Variation {payload.decision}d.")
+
+
+# ---------------------------------------------------------------------------
+# Client payment requests - AEGIS-initiated "client owes us" requests, raised
+# by internal staff and clearable by either the client (via their portal,
+# see routers/portals.py) or Finance, always with a receipt. Complements
+# finance.progress_claims rather than replacing it.
+# ---------------------------------------------------------------------------
+
+class ClientPaymentRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    progress_claim_id: Optional[UUID] = None
+    title: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+    amount: float = Field(gt=0)
+    currency: str = Field(default="USD", max_length=3)
+    due_date: Optional[date] = None
+
+
+class ClientPaymentRequestClearByFinance(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    receipt_document_id: UUID
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+async def _pick_client_cash_account(db: AsyncSession, org_id: str, currency: str) -> str:
+    account_id = (
+        await db.execute(
+            text("""
+            SELECT id FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+            ORDER BY (currency = :currency) DESC, created_at ASC
+            LIMIT 1
+        """),
+            {"org_id": org_id, "currency": currency},
+        )
+    ).scalar()
+    if not account_id:
+        raise HTTPException(status_code=422, detail="No active cash account is configured.")
+    return str(account_id)
+
+
+@router.get("/client-payment-requests")
+async def list_client_payment_requests(
+    project_id: Optional[UUID] = None,
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    user: dict = Depends(require_permission("finance.client_payment.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    filters = ["cpr.organization_id = :org_id", "cpr.is_deleted = false"]
+    params: dict = {"org_id": user["org_id"]}
+    if project_id:
+        filters.append("cpr.project_id = :project_id")
+        params["project_id"] = project_id
+    if status_filter:
+        filters.append("cpr.status = :status")
+        params["status"] = status_filter
+
+    rows = await db.execute(
+        text(f"""
+            SELECT cpr.*, p.name AS project_name
+            FROM finance.client_payment_requests cpr
+            JOIN projects.projects p ON p.id = cpr.project_id AND p.organization_id = cpr.organization_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY cpr.created_at DESC
+        """),
+        params,
+    )
+    return ok([dict(r._mapping) for r in rows], "Client payment requests listed.")
+
+
+@router.post("/client-payment-requests", status_code=status.HTTP_201_CREATED)
+async def create_client_payment_request(
+    payload: ClientPaymentRequestCreate,
+    user: dict = Depends(require_permission("finance.client_payment.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    project = (
+        await db.execute(
+            text("SELECT client_org_id FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": payload.project_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    row = (
+        await db.execute(
+            text("""
+            INSERT INTO finance.client_payment_requests (
+                organization_id, project_id, progress_claim_id, title, description,
+                amount, currency, due_date, created_by
+            ) VALUES (
+                :org_id, :project_id, :progress_claim_id, :title, :description,
+                :amount, :currency, :due_date, :user_id
+            ) RETURNING *
+        """),
+            {
+                "org_id": user["org_id"], "project_id": payload.project_id,
+                "progress_claim_id": payload.progress_claim_id, "title": payload.title,
+                "description": payload.description, "amount": payload.amount, "currency": payload.currency,
+                "due_date": payload.due_date, "user_id": user["user_id"],
+            },
+        )
+    ).first()
+
+    portal_users = await db.execute(
+        text("""
+            SELECT cpa.user_id
+            FROM crm.client_portal_access cpa
+            JOIN crm.contacts c ON c.id = cpa.contact_id AND c.organization_id = cpa.organization_id
+            WHERE cpa.organization_id = :org_id AND c.client_org_id = :client_org_id AND cpa.is_active = true
+        """),
+        {"org_id": user["org_id"], "client_org_id": project.client_org_id},
+    )
+    for portal_user in portal_users:
+        await emit_notification(
+            db, org_id=user["org_id"], user_id=str(portal_user.user_id),
+            title="New payment request", message=f"{payload.title}: {payload.currency} {payload.amount:,.2f}",
+            notification_type="client_payment_request", action_url="/portal/client",
+        )
+
+    await db.commit()
+    return ok(dict(row._mapping), "Client payment request created.")
+
+
+@router.post("/client-payment-requests/{request_id}/clear")
+async def clear_client_payment_request_as_finance(
+    request_id: UUID,
+    payload: ClientPaymentRequestClearByFinance,
+    user: dict = Depends(require_permission("finance.client_payment.clear")),
+    db: AsyncSession = Depends(get_db),
+):
+    req = (
+        await db.execute(
+            text("""
+            SELECT id, amount, currency, status, project_id, progress_claim_id, title
+            FROM finance.client_payment_requests
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+            {"id": request_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Payment request not found.")
+    if req.status in ("cleared", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Payment request already '{req.status}'.")
+
+    doc = (
+        await db.execute(
+            text("SELECT id FROM core.documents WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": payload.receipt_document_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Receipt document not found.")
+
+    cash_account_id = await _pick_client_cash_account(db, user["org_id"], req.currency)
+    tx_number = f"CPR-{str(req.id)[:8].upper()}"
+    cashbook_row = await db.execute(
+        text("""
+            INSERT INTO finance.cashbook_transactions (
+                organization_id, cash_account_id, transaction_number, transaction_date,
+                transaction_type, direction, source_type, source_id, project_id,
+                counterparty_type, counterparty_name, payment_method, description,
+                amount, currency, posted_by
+            ) VALUES (
+                :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+                'receipt', 'inflow', 'client_payment_request', :source_id, :project_id,
+                'client', :counterparty_name, 'bank_transfer', :description,
+                :amount, :currency, :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": user["org_id"], "cash_account_id": cash_account_id, "tx_number": tx_number,
+            "source_id": str(req.id), "project_id": str(req.project_id),
+            "counterparty_name": req.title, "description": f"Client payment: {req.title}",
+            "amount": float(req.amount), "currency": req.currency, "user_id": user["user_id"],
+        },
+    )
+    cashbook_id = str(cashbook_row.scalar())
 
     await db.execute(
         text("""
-            UPDATE finance.variations
-            SET status = 'approved', approved_by = :user_id, approved_at = NOW(), updated_at = NOW()
+            UPDATE finance.client_payment_requests
+            SET status = 'cleared', cleared_by_party = 'finance', cleared_by = :user_id, cleared_at = NOW(),
+                cashbook_transaction_id = :cashbook_id, updated_at = NOW()
             WHERE id = :id AND organization_id = :org_id
         """),
-        {"id": str(item_id), "org_id": user["org_id"], "user_id": user["sub"]},
+        {"user_id": user["user_id"], "cashbook_id": cashbook_id, "id": request_id, "org_id": user["org_id"]},
     )
-    metrics = await refresh_project_forecast(db, user["org_id"], str(variation.project_id), computed_by=user["sub"])
-    alert_raised = False
-    if metrics:
-        alert_raised = await check_and_alert_margin_threat(db, user["org_id"], str(variation.project_id), metrics)
+    if req.progress_claim_id:
+        await db.execute(
+            text("""
+                INSERT INTO finance.receipt_allocations (organization_id, cashbook_transaction_id, progress_claim_id, project_id, allocated_amount, allocated_by)
+                VALUES (:org_id, :cashbook_id, :progress_claim_id, :project_id, :amount, :user_id)
+            """),
+            {
+                "org_id": user["org_id"], "cashbook_id": cashbook_id, "progress_claim_id": req.progress_claim_id,
+                "project_id": req.project_id, "amount": float(req.amount), "user_id": user["user_id"],
+            },
+        )
+        await db.execute(
+            text("UPDATE finance.progress_claims SET status = 'paid', updated_at = NOW() WHERE id = :id AND organization_id = :org_id"),
+            {"id": req.progress_claim_id, "org_id": user["org_id"]},
+        )
+    await db.execute(
+        text("""
+            INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+            VALUES (:org_id, :document_id, 'client_payment_request', :entity_id, 'receipt', :user_id)
+            ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+        """),
+        {"org_id": user["org_id"], "document_id": payload.receipt_document_id, "entity_id": request_id, "user_id": user["user_id"]},
+    )
+    await db.commit()
+    return ok({"id": str(request_id), "status": "cleared"}, "Payment request cleared.")
+
+
+# ---------------------------------------------------------------------------
+# Historical (pre-AEGIS) backfill - lets a Finance Manager seed months of
+# past project history into the real tables the live system already reads,
+# rather than a parallel/shadow record. Revenue is driven through the exact
+# same progress_claims lifecycle (create -> certify -> pay) a live claim
+# uses, just backdated and without the receipt-document requirement that
+# makes sense for a live transaction but not a bulk historical entry.
+# ---------------------------------------------------------------------------
+
+class HistoricalProjectCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=255)
+    department_id: UUID
+    project_code: Optional[str] = Field(default=None, max_length=80)
+    project_type: Optional[str] = Field(default=None, max_length=100)
+    start_date: Optional[date] = None
+    client_org_id: Optional[UUID] = None
+    new_client_name: Optional[str] = Field(default=None, max_length=255)
+    new_contact_name: Optional[str] = Field(default=None, max_length=255)
+    new_contact_email: Optional[str] = Field(default=None, max_length=255)
+
+
+class HistoricalRevenueCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    amount: float = Field(gt=0)
+    historical_date: date
+    description: Optional[str] = Field(default=None, max_length=500)
+
+
+class HistoricalCostActivityCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    cost_category: str = Field(pattern=r"^(labour|equipment|materials|subcontract|overhead|other)$")
+    description: str = Field(min_length=1, max_length=500)
+    amount: float = Field(gt=0)
+    historical_date: date
+    paid: bool = True
+
+
+@router.post("/historical/projects", status_code=status.HTTP_201_CREATED)
+async def create_historical_project(
+    payload: HistoricalProjectCreate,
+    user: dict = Depends(require_permission("finance.historical_entry.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Quick-creates a project for historical backfill, mirroring the INSERT
+    shape mark_opportunity_won uses (crm.py) minus the opportunity/quotation
+    linkage - there is no opportunity behind pre-AEGIS history. Mirrors the
+    opportunity-create modal's pick-existing-or-create-inline pattern for
+    the client organization/contact (aegis-web crm/opportunities/page.tsx).
+    department_id is required (not optional) - it's what makes the
+    Construction/Plant & Equipment/Commercial segment filter on the
+    financial-statements page mean anything for this project.
+    """
+    org_id = user["org_id"]
+
+    dept = await db.execute(
+        text("SELECT 1 FROM finance.departments WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": str(payload.department_id), "org_id": org_id},
+    )
+    if not dept.first():
+        raise HTTPException(status_code=404, detail="Department (segment) not found.")
+
+    client_org_id = str(payload.client_org_id) if payload.client_org_id else None
+    if not client_org_id and payload.new_client_name:
+        client_org_id = (
+            await db.execute(
+                text("""
+                INSERT INTO crm.organizations (organization_id, created_by, name)
+                VALUES (:org_id, :user_id, :name)
+                RETURNING id
+            """),
+                {"org_id": org_id, "user_id": user["user_id"], "name": payload.new_client_name},
+            )
+        ).scalar()
+        client_org_id = str(client_org_id)
+
+    if payload.new_contact_name:
+        email = (payload.new_contact_email or "").strip()
+        contact_id = None
+        if email:
+            contact_id = (
+                await db.execute(
+                    text("""
+                    SELECT id FROM crm.contacts
+                    WHERE organization_id = :org_id AND lower(email) = lower(:email) AND is_deleted = false
+                    LIMIT 1
+                """),
+                    {"org_id": org_id, "email": email},
+                )
+            ).scalar()
+        if not contact_id:
+            await db.execute(
+                text("""
+                INSERT INTO crm.contacts (organization_id, created_by, contact_name, email, client_org_id)
+                VALUES (:org_id, :user_id, :contact_name, :email, :client_org_id)
+            """),
+                {
+                    "org_id": org_id, "user_id": user["user_id"], "contact_name": payload.new_contact_name,
+                    "email": email or None, "client_org_id": client_org_id,
+                },
+            )
+
+    project_row = (
+        await db.execute(
+            text("""
+            INSERT INTO projects.projects (
+                organization_id, created_by, name, status, project_code, project_type,
+                client_name, start_date, client_org_id, department_id
+            ) VALUES (
+                :org_id, :user_id, :name, 'active', :project_code, :project_type,
+                :client_name, :start_date, :client_org_id, :department_id
+            ) RETURNING id, name, status, project_code, department_id, client_org_id
+        """),
+            {
+                "org_id": org_id, "user_id": user["user_id"], "name": payload.name,
+                "project_code": payload.project_code, "project_type": payload.project_type,
+                "client_name": payload.new_client_name, "start_date": payload.start_date,
+                "client_org_id": client_org_id, "department_id": str(payload.department_id),
+            },
+        )
+    ).first()
+
+    await db.commit()
+    return ok(dict(project_row._mapping), "Historical project created.")
+
+
+@router.post("/historical/revenue", status_code=status.HTTP_201_CREATED)
+async def create_historical_revenue(
+    payload: HistoricalRevenueCreate,
+    user: dict = Depends(require_permission("finance.historical_entry.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Records historical project revenue by driving a progress claim straight
+    through its real lifecycle (create -> certify -> pay) in one atomic
+    call, backdated to historical_date wherever the live endpoints would
+    normally use NOW()/date.today() - so certified_to_date/cash_collected
+    on the existing project views are correct with no separate plumbing.
+    No receipt document is required (unlike a live client-payment-request
+    clearing) since there's nothing to upload for a transaction that
+    happened months ago.
+    """
+    org_id = user["org_id"]
+    project = (
+        await db.execute(
+            text("SELECT id FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": str(payload.project_id), "org_id": org_id},
+        )
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    claim_number = f"HIST-{uuid4().hex[:8].upper()}"
+    description = payload.description or "Historical backfill entry"
+
+    vat_amount = 0.0
+    rate_table_id = None
+    try:
+        vat_table = await resolve_rate_table(db, org_id=org_id, tax_type="vat_output", currency="USD", as_at=payload.historical_date)
+        vat_amount = float((Decimal(str(payload.amount)) * vat_table.bands[0].rate_pct / Decimal("100")).quantize(Decimal("0.01")))
+        rate_table_id = vat_table.id
+    except NoRateTableError:
+        pass
+
+    # progress_claims has no department_id column - join via project instead.
+    claim_row = (
+        await db.execute(
+            text("""
+            INSERT INTO finance.progress_claims (
+                organization_id, claim_number, project_id, claim_period_start, claim_period_end,
+                contract_value, this_claim_amount, retention_pct, retention_amount, net_claim_amount,
+                status, submitted_by, submitted_at, certified_amount, certified_by, certified_at,
+                vat_amount, vat_rate_table_id, notes, created_by
+            ) VALUES (
+                :org_id, :claim_number, :project_id, :historical_date, :historical_date,
+                :amount, :amount, 0, 0, :amount,
+                'certified', :user_id, :historical_timestamp, :amount, :user_id, :historical_timestamp,
+                :vat_amount, :rate_table_id, :notes, :user_id
+            ) RETURNING id, project_id
+        """),
+            {
+                "org_id": org_id, "claim_number": claim_number, "project_id": str(payload.project_id),
+                "historical_date": payload.historical_date,
+                "historical_timestamp": datetime.combine(payload.historical_date, datetime_time()),
+                "amount": payload.amount,
+                "user_id": user["user_id"], "vat_amount": vat_amount, "rate_table_id": rate_table_id,
+                "notes": f"{description} (historical backfill, recorded {date.today().isoformat()})",
+            },
+        )
+    ).first()
+    claim_id = claim_row.id
+
+    if vat_amount > 0:
+        dept_row = (
+            await db.execute(
+                text("SELECT department_id FROM projects.projects WHERE id = :id"),
+                {"id": str(payload.project_id)},
+            )
+        ).first()
+        await accrue_liability_line(
+            db, org_id=org_id, authority="zimra", liability_type="vat", currency="USD",
+            as_at=payload.historical_date, direction="output", source_type="progress_claim", source_id=claim_id,
+            project_id=str(payload.project_id), department_id=str(dept_row.department_id) if dept_row and dept_row.department_id else None,
+            taxable_base=payload.amount, rate_table_id=rate_table_id, computed_amount=vat_amount,
+            basis={"claim_number": claim_number},
+        )
+
+    cash_account_id = await _pick_client_cash_account(db, org_id, "USD")
+    tx_number = f"HIST-{str(claim_id)[:8].upper()}"
+    cashbook_row = await db.execute(
+        text("""
+        INSERT INTO finance.cashbook_transactions (
+            organization_id, cash_account_id, transaction_number, transaction_date,
+            transaction_type, direction, source_type, source_id, project_id,
+            counterparty_type, counterparty_name, payment_method, description,
+            amount, currency, posted_by
+        ) VALUES (
+            :org_id, :cash_account_id, :tx_number, :historical_date,
+            'receipt', 'inflow', 'historical_backfill', :source_id, :project_id,
+            'client', :counterparty_name, 'bank_transfer', :description,
+            :amount, 'USD', :user_id
+        ) RETURNING id
+    """),
+        {
+            "org_id": org_id, "cash_account_id": cash_account_id, "tx_number": tx_number,
+            "historical_date": payload.historical_date, "source_id": str(claim_id),
+            "project_id": str(payload.project_id), "counterparty_name": description, "description": description,
+            "amount": payload.amount, "user_id": user["user_id"],
+        },
+    )
+    cashbook_id = str(cashbook_row.scalar())
+
+    await db.execute(
+        text("""
+        INSERT INTO finance.receipt_allocations (organization_id, cashbook_transaction_id, progress_claim_id, project_id, allocated_amount, allocated_by)
+        VALUES (:org_id, :cashbook_id, :claim_id, :project_id, :amount, :user_id)
+    """),
+        {
+            "org_id": org_id, "cashbook_id": cashbook_id, "claim_id": str(claim_id),
+            "project_id": str(payload.project_id), "amount": payload.amount, "user_id": user["user_id"],
+        },
+    )
+    await db.execute(
+        text("UPDATE finance.progress_claims SET status = 'paid', updated_at = NOW() WHERE id = :id"),
+        {"id": str(claim_id)},
+    )
+
     await db.commit()
     return ok(
-        {"id": str(item_id), "status": "approved", "forecast": metrics, "margin_alert_raised": alert_raised},
-        "Variation approved.",
+        {"id": str(claim_id), "claim_number": claim_number, "status": "paid", "amount": payload.amount, "vat_amount": vat_amount},
+        "Historical revenue recorded.",
+    )
+
+
+@router.post("/historical/cost-activities", status_code=status.HTTP_201_CREATED)
+async def create_historical_cost_activity(
+    payload: HistoricalCostActivityCreate,
+    user: dict = Depends(require_permission("finance.historical_entry.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Records a single historical cost/activity line item against a project.
+    Writes into finance.cost_transactions - the same table every live cost
+    writer (inventory issues, approved site reports, fleet usage) posts to -
+    using a new source_type so it flows into actual_cost_to_date/committed
+    project summaries automatically. `paid` (default true, since backfilled
+    history is by definition money already spent) additionally posts a
+    matching cashbook outflow so it affects cash position, not just project
+    cost; leaving it false records the cost without touching cash, for a
+    genuinely still-outstanding historical liability.
+    """
+    org_id = user["org_id"]
+    project = (
+        await db.execute(
+            text("SELECT id, department_id FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": str(payload.project_id), "org_id": org_id},
+        )
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    source_id = uuid4()
+    await db.execute(
+        text("""
+        INSERT INTO finance.cost_transactions (
+            organization_id, project_id, source_type, source_id, cost_category,
+            description, amount, transaction_date, status, posted_by, posted_at
+        ) VALUES (
+            :org_id, :project_id, 'historical_backfill', :source_id, :cost_category,
+            :description, :amount, :historical_date, 'posted', :user_id, NOW()
+        )
+    """),
+        {
+            "org_id": org_id, "project_id": str(payload.project_id), "source_id": str(source_id),
+            "cost_category": payload.cost_category, "description": payload.description,
+            "amount": payload.amount, "historical_date": payload.historical_date, "user_id": user["user_id"],
+        },
+    )
+
+    cashbook_id = None
+    if payload.paid:
+        cash_account_id = await _pick_client_cash_account(db, org_id, "USD")
+        tx_number = f"HIST-{str(source_id)[:8].upper()}"
+        cashbook_row = await db.execute(
+            text("""
+            INSERT INTO finance.cashbook_transactions (
+                organization_id, cash_account_id, transaction_number, transaction_date,
+                transaction_type, direction, source_type, source_id, project_id,
+                counterparty_type, counterparty_name, payment_method, description,
+                amount, currency, posted_by
+            ) VALUES (
+                :org_id, :cash_account_id, :tx_number, :historical_date,
+                'payment', 'outflow', 'historical_backfill', :source_id, :project_id,
+                'supplier', :counterparty_name, 'bank_transfer', :description,
+                :amount, 'USD', :user_id
+            ) RETURNING id
+        """),
+            {
+                "org_id": org_id, "cash_account_id": cash_account_id, "tx_number": tx_number,
+                "historical_date": payload.historical_date, "source_id": str(source_id),
+                "project_id": str(payload.project_id), "counterparty_name": payload.description, "description": payload.description,
+                "amount": payload.amount, "user_id": user["user_id"],
+            },
+        )
+        cashbook_id = str(cashbook_row.scalar())
+
+    await db.commit()
+    return ok(
+        {"source_id": str(source_id), "cashbook_transaction_id": cashbook_id, "paid": payload.paid},
+        "Historical cost activity recorded.",
     )
 
 

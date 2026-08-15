@@ -1028,21 +1028,42 @@ async def get_financial_runway(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Computes rolling cash burn rate vs inflows to project operational runway."""
+    """Computes rolling cash burn rate vs real cash reserves to project
+    operational runway. cash_reserves is the real sum of active cash
+    account balances (finance.cash_accounts.current_balance, which is
+    trigger-maintained as opening_balance + posted cashbook deltas) - not
+    a hardcoded constant. total_burn is the trailing-3-month average of
+    real cashbook outflows when any exist; the payroll/fleet/procurement
+    estimate below is kept only as a fallback for an org with no cashbook
+    history yet (e.g. brand new, or before any historical backfill), and
+    is always reported alongside the real figures for transparency."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
-    
-    # Inflow: approved quotations
-    quote_res = await _rows(
+
+    cash_res = await _rows(
         db,
-        "SELECT COALESCE(SUM(quote_amount), 0) as total FROM finance.quotations WHERE organization_id = :org_id AND is_deleted = false",
+        "SELECT COALESCE(SUM(current_balance), 0) as total FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false",
         {"org_id": org_id},
-        source="finance.quotations",
+        source="finance.cash_accounts",
         source_errors=source_errors
     )
-    cash_inflows = float(quote_res[0]["total"]) if quote_res else 0.0
-    
-    # Outflow 1: payroll burn (HR Employees)
+    cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
+
+    burn_res = await _rows(
+        db,
+        """
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM finance.cashbook_transactions
+        WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
+          AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
+        """,
+        {"org_id": org_id},
+        source="finance.cashbook_transactions",
+        source_errors=source_errors
+    )
+    real_monthly_burn = (float(burn_res[0]["total"]) / 3.0) if burn_res else 0.0
+
+    # Outflow 1: payroll burn (HR Employees) - fallback estimate only
     emp_res = await _rows(
         db,
         "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
@@ -1052,8 +1073,8 @@ async def get_financial_runway(
     )
     emp_count = emp_res[0]["total"] if emp_res else 0
     payroll_burn = emp_count * 3500.00
-    
-    # Outflow 2: fleet lease/ownership costs
+
+    # Outflow 2: fleet lease/ownership costs - fallback estimate only
     fleet_res = await _rows(
         db,
         "SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
@@ -1062,8 +1083,8 @@ async def get_financial_runway(
         source_errors=source_errors
     )
     fleet_burn = float(fleet_res[0]["total"]) if fleet_res else 0.0
-    
-    # Outflow 3: monthly procurement bills
+
+    # Outflow 3: monthly procurement bills - fallback estimate only
     po_res = await _rows(
         db,
         "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
@@ -1072,17 +1093,18 @@ async def get_financial_runway(
         source_errors=source_errors
     )
     procurement_burn = float(po_res[0]["total"]) if po_res else 0.0
-    
-    total_burn = payroll_burn + fleet_burn + procurement_burn
-    
-    # Calculate runway
-    cash_reserves = 500000.00 + cash_inflows
+
+    estimated_burn = payroll_burn + fleet_burn + procurement_burn
+    using_real_burn = real_monthly_burn > 0
+    total_burn = real_monthly_burn if using_real_burn else estimated_burn
+
     runway_months = (cash_reserves / total_burn) if total_burn > 0 else 99.0
-    
+
     return {
         "success": True,
         "data": {
             "total_burn_monthly": round(total_burn, 2),
+            "burn_source": "cashbook_trailing_90_days" if using_real_burn else "estimated_payroll_fleet_procurement",
             "payroll_burn_monthly": round(payroll_burn, 2),
             "fleet_burn_monthly": round(fleet_burn, 2),
             "procurement_burn_monthly": round(procurement_burn, 2),

@@ -152,6 +152,8 @@ ALTER TABLE core.compliance_items
     ADD COLUMN IF NOT EXISTS reference VARCHAR(160);
 
 ALTER TABLE finance.statutory_liabilities
+    DROP CONSTRAINT IF EXISTS statutory_liabilities_compliance_item_fk;
+ALTER TABLE finance.statutory_liabilities
     ADD CONSTRAINT statutory_liabilities_compliance_item_fk
     FOREIGN KEY (compliance_item_id) REFERENCES core.compliance_items(id)
     ON DELETE SET NULL NOT VALID;

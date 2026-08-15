@@ -32,8 +32,13 @@ import {
   createCrmDocument,
   getCrmOpportunities,
   getCrmTenders,
+  getCrmLeads,
+  getCrmContacts,
+  attachCrmLeadDocument,
+  attachCrmContactDocument,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { supabase } from "@/lib/supabase";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -295,6 +300,8 @@ export default function CRMDocumentsPage() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [opportunities, setOpportunities] = useState<any[]>([]);
   const [tenders, setTenders] = useState<any[]>([]);
+  const [leads, setLeads] = useState<any[]>([]);
+  const [contacts, setContacts] = useState<any[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Filter state
@@ -323,9 +330,12 @@ export default function CRMDocumentsPage() {
   const [formFileName, setFormFileName] = useState("");
   const [formCategory, setFormCategory] = useState("Quotations");
   const [formFileSize, setFormFileSize] = useState("102400");
-  const [formLinkType, setFormLinkType] = useState<"none" | "opportunity" | "tender">("none");
+  const [formLinkType, setFormLinkType] = useState<"none" | "opportunity" | "tender" | "lead" | "contact">("none");
   const [formOpportunityId, setFormOpportunityId] = useState("");
   const [formTenderId, setFormTenderId] = useState("");
+  const [formLeadId, setFormLeadId] = useState("");
+  const [formContactId, setFormContactId] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
@@ -336,10 +346,12 @@ export default function CRMDocumentsPage() {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const [docsRes, oppsRes, tendersRes] = await Promise.allSettled([
+      const [docsRes, oppsRes, tendersRes, leadsRes, contactsRes] = await Promise.allSettled([
         getCrmDocuments(),
         getCrmOpportunities(),
         getCrmTenders(),
+        getCrmLeads(),
+        getCrmContacts(),
       ]);
 
       if (docsRes.status === "fulfilled" && docsRes.value.success) {
@@ -360,6 +372,14 @@ export default function CRMDocumentsPage() {
 
       if (tendersRes.status === "fulfilled" && tendersRes.value.success) {
         setTenders(tendersRes.value.data || []);
+      }
+
+      if (leadsRes.status === "fulfilled" && leadsRes.value.success) {
+        setLeads(leadsRes.value.data || []);
+      }
+
+      if (contactsRes.status === "fulfilled" && contactsRes.value.success) {
+        setContacts(contactsRes.value.data || []);
       }
     } catch (err: any) {
       setLoadError(normalizeLoadError(err, "Failed to load document vault."));
@@ -418,6 +438,7 @@ export default function CRMDocumentsPage() {
     if (!formTitle) setFormTitle(file.name.replace(/\.[^/.]+$/, "").replace(/_/g, " "));
     setFormFileName(file.name);
     setFormFileSize(String(file.size));
+    setUploadFile(file);
   }, [formTitle]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -444,46 +465,80 @@ export default function CRMDocumentsPage() {
 
   // ─── Virus Scan Simulation ──────────────────────────────────────────────────
 
-  async function runVirusScan(): Promise<boolean> {
+  // Runs the scan-style progress animation while the real upload to Supabase
+  // Storage happens underneath it - the animation is cosmetic, the upload is not.
+  async function runVirusScan(file: File): Promise<{ storagePath: string; mimeType?: string }> {
     setScanPhase("queued");
     setScanProgress(0);
-    await delay(500);
+    await delay(300);
 
     setScanPhase("scanning");
-    // Animate 0 → 85% over ~2.5 seconds
-    for (let p = 0; p <= 85; p += 5) {
-      setScanProgress(p);
-      await delay(150);
-    }
+    const fileExt = file.name.split(".").pop();
+    const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ""}`;
+    const filePath = `documents/${storedName}`;
+
+    // Animate 0 -> 85% alongside the real upload request
+    const animation = (async () => {
+      for (let p = 0; p <= 85; p += 5) {
+        setScanProgress(p);
+        await delay(150);
+      }
+    })();
+
+    const { error: uploadError } = await supabase.storage
+      .from("documents")
+      .upload(filePath, file, { cacheControl: "3600", upsert: false });
+    await animation;
+    if (uploadError) throw uploadError;
 
     setScanPhase("clean");
     setScanProgress(100);
-    await delay(800);
+    await delay(500);
 
     setScanPhase("committing");
-    await delay(600);
+    await delay(400);
 
-    return true;
+    return { storagePath: filePath, mimeType: file.type || undefined };
   }
 
   function delay(ms: number) {
     return new Promise<void>((res) => setTimeout(res, ms));
   }
 
+  const closeUploadModal = () => {
+    setShowUploadModal(false);
+    setScanPhase("idle");
+    setScanProgress(0);
+    setFormTitle("");
+    setFormFileName("");
+    setFormFileSize("102400");
+    setFormLinkType("none");
+    setFormOpportunityId("");
+    setFormTenderId("");
+    setFormLeadId("");
+    setFormContactId("");
+    setUploadFile(null);
+    setFormErrors({});
+    setSubmitError(null);
+  };
+
   // ─── Form Validation ────────────────────────────────────────────────────────
 
   const validateForm = (): Record<string, string> => {
     const errors: Record<string, string> = {};
     if (!formTitle.trim()) errors.title = "Document title is required.";
-    if (!formFileName.trim()) errors.fileName = "File name is required.";
-    if (!formFileSize || isNaN(Number(formFileSize)) || Number(formFileSize) <= 0) {
-      errors.fileSize = "Valid file size in bytes is required.";
-    }
+    if (!uploadFile) errors.fileName = "Select a file to upload.";
     if (formLinkType === "opportunity" && !formOpportunityId) {
       errors.link = "Please select an opportunity.";
     }
     if (formLinkType === "tender" && !formTenderId) {
       errors.link = "Please select a tender.";
+    }
+    if (formLinkType === "lead" && !formLeadId) {
+      errors.link = "Please select a lead.";
+    }
+    if (formLinkType === "contact" && !formContactId) {
+      errors.link = "Please select a contact.";
     }
     return errors;
   };
@@ -499,14 +554,16 @@ export default function CRMDocumentsPage() {
     setSubmitError(null);
     if (Object.keys(errors).length > 0) return;
 
+    if (!uploadFile) return;
+
     setIsSubmitting(true);
     setUploadSuccess(false);
 
     try {
-      // 1. Virus scan simulation
-      await runVirusScan();
+      // 1. Real upload to Supabase Storage, animated with a scan-style progress bar
+      const { storagePath, mimeType } = await runVirusScan(uploadFile);
 
-      // 2. Commit to API
+      // 2. Commit metadata to API
       const payload = {
         title: formTitle.trim(),
         file_name: formFileName.trim(),
@@ -514,11 +571,21 @@ export default function CRMDocumentsPage() {
         category: CATEGORY_VALUE_MAP[formCategory] ?? formCategory,
         opportunity_id: formLinkType === "opportunity" ? formOpportunityId : undefined,
         tender_id: formLinkType === "tender" ? formTenderId : undefined,
+        storage_path: storagePath,
+        mime_type: mimeType,
       };
 
       const response = await createCrmDocument(payload) as any;
-      if (!response.success) {
+      if (!response.success || !response.data?.id) {
         throw new Error("Could not register document.");
+      }
+
+      // 3. Link to lead/contact via the polymorphic document_links table
+      // (opportunity/tender already link via direct columns on the row above)
+      if (formLinkType === "lead" && formLeadId) {
+        await attachCrmLeadDocument(formLeadId, response.data.id);
+      } else if (formLinkType === "contact" && formContactId) {
+        await attachCrmContactDocument(formContactId, response.data.id);
       }
 
       setScanPhase("done");
@@ -531,6 +598,9 @@ export default function CRMDocumentsPage() {
       setFormLinkType("none");
       setFormOpportunityId("");
       setFormTenderId("");
+      setFormLeadId("");
+      setFormContactId("");
+      setUploadFile(null);
 
       await delay(1000);
       setShowUploadModal(false);
@@ -919,7 +989,7 @@ export default function CRMDocumentsPage() {
                 </h2>
               </div>
               <button
-                onClick={() => { setShowUploadModal(false); setScanPhase("idle"); setScanProgress(0); }}
+                onClick={closeUploadModal}
                 disabled={isSubmitting}
                 className="text-slate-500 hover:text-paper transition-colors disabled:opacity-40"
               >
@@ -995,7 +1065,7 @@ export default function CRMDocumentsPage() {
                     )}
                   </div>
 
-                  {/* File Name */}
+                  {/* File Name (read-only, derived from the selected file) */}
                   <div>
                     <label className="block font-mono text-[9px] text-slate-500 uppercase tracking-wider mb-1">
                       Physical File Name <span className="text-red-400">*</span>
@@ -1003,9 +1073,9 @@ export default function CRMDocumentsPage() {
                     <input
                       type="text"
                       value={formFileName}
-                      onChange={(e) => setFormFileName(e.target.value)}
-                      placeholder="e.g. stage_2_site_layout.pdf"
-                      className="w-full bg-ink/80 border border-white/8 rounded-sm px-3 py-2 text-xs text-paper focus:border-signal outline-none font-mono placeholder:text-slate-600 transition-colors"
+                      readOnly
+                      placeholder="Select a file above"
+                      className="w-full bg-ink/40 border border-white/8 rounded-sm px-3 py-2 text-xs text-slate-400 outline-none font-mono placeholder:text-slate-600 cursor-not-allowed"
                     />
                     {formErrors.fileName && (
                       <p className="font-mono text-[9px] text-red-400 mt-1">{formErrors.fileName}</p>
@@ -1016,17 +1086,14 @@ export default function CRMDocumentsPage() {
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block font-mono text-[9px] text-slate-500 uppercase tracking-wider mb-1">
-                        File Size (bytes)
+                        File Size
                       </label>
                       <input
-                        type="number"
-                        value={formFileSize}
-                        onChange={(e) => setFormFileSize(e.target.value)}
-                        className="w-full bg-ink/80 border border-white/8 rounded-sm px-3 py-2 text-xs text-paper focus:border-signal outline-none font-mono transition-colors"
+                        type="text"
+                        value={formFileSize ? formatBytes(Number(formFileSize)) : ""}
+                        readOnly
+                        className="w-full bg-ink/40 border border-white/8 rounded-sm px-3 py-2 text-xs text-slate-400 outline-none font-mono cursor-not-allowed"
                       />
-                      {formErrors.fileSize && (
-                        <p className="font-mono text-[9px] text-red-400 mt-1">{formErrors.fileSize}</p>
-                      )}
                     </div>
                     <div>
                       <label className="block font-mono text-[9px] text-slate-500 uppercase tracking-wider mb-1">
@@ -1049,8 +1116,8 @@ export default function CRMDocumentsPage() {
                     <label className="block font-mono text-[9px] text-slate-500 uppercase tracking-wider mb-2">
                       Link to Context
                     </label>
-                    <div className="flex space-x-4 mb-3">
-                      {(["none", "opportunity", "tender"] as const).map((ltype) => (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1.5 mb-3">
+                      {(["none", "opportunity", "tender", "lead", "contact"] as const).map((ltype) => (
                         <label key={ltype} className="flex items-center space-x-1.5 cursor-pointer font-mono text-[10px] text-slate-400 hover:text-paper transition-colors">
                           <input
                             type="radio"
@@ -1074,6 +1141,32 @@ export default function CRMDocumentsPage() {
                         <option value="">— Select Opportunity —</option>
                         {opportunities.map((o) => (
                           <option key={o.id} value={o.id}>{o.name}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {formLinkType === "lead" && (
+                      <select
+                        value={formLeadId}
+                        onChange={(e) => setFormLeadId(e.target.value)}
+                        className="w-full bg-ink/80 border border-white/8 rounded-sm px-3 py-2 text-xs text-paper focus:border-signal outline-none font-sans transition-colors"
+                      >
+                        <option value="">— Select Lead —</option>
+                        {leads.map((l) => (
+                          <option key={l.id} value={l.id}>{l.company_name || l.contact_name}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {formLinkType === "contact" && (
+                      <select
+                        value={formContactId}
+                        onChange={(e) => setFormContactId(e.target.value)}
+                        className="w-full bg-ink/80 border border-white/8 rounded-sm px-3 py-2 text-xs text-paper focus:border-signal outline-none font-sans transition-colors"
+                      >
+                        <option value="">— Select Contact —</option>
+                        {contacts.map((c) => (
+                          <option key={c.id} value={c.id}>{c.contact_name}</option>
                         ))}
                       </select>
                     )}
@@ -1111,7 +1204,7 @@ export default function CRMDocumentsPage() {
               <div className="flex justify-end space-x-3 px-5 py-4 border-t border-white/8 shrink-0">
                 <button
                   type="button"
-                  onClick={() => { setShowUploadModal(false); setScanPhase("idle"); setScanProgress(0); }}
+                  onClick={closeUploadModal}
                   disabled={isSubmitting}
                   className="px-4 py-1.5 text-xs font-mono text-slate-400 border border-white/10 rounded-sm hover:border-white/20 hover:text-paper transition-all disabled:opacity-40"
                 >

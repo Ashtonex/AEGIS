@@ -1,4 +1,7 @@
-"""Payments router — supplier payment batches (finance.supplier_payment_batches).
+"""Payments router — supplier payment batches (finance.supplier_payment_batches)
+and the self-service vendor payment request queue
+(finance.vendor_payment_requests, raised from the supplier/subcontractor
+portal - see routers/portals.py).
 
 A payment batch groups multiple supplier invoices into a single payment run,
 generating one cashbook entry and updating each invoice's match status.
@@ -14,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.shared.events import emit_notification
 from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, require_permission
@@ -358,3 +362,156 @@ async def decide_payment_batch(
     except Exception as exc:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Vendor payment requests (self-service, from the supplier/subcontractor
+# portal) - the Finance-side queue for reconciling/clearing them.
+# ---------------------------------------------------------------------------
+
+class VendorPaymentRequestClearByFinance(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    receipt_document_id: UUID
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+async def _pick_cash_account_for_finance(db: AsyncSession, org_id: str, currency: str) -> str:
+    account_id = (
+        await db.execute(
+            text("""
+            SELECT id FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+            ORDER BY (currency = :currency) DESC, created_at ASC
+            LIMIT 1
+        """),
+            {"org_id": org_id, "currency": currency},
+        )
+    ).scalar()
+    if not account_id:
+        raise HTTPException(status_code=422, detail="No active cash account is configured.")
+    return str(account_id)
+
+
+@router.get("/vendor-requests", summary="List self-service vendor payment requests")
+async def list_vendor_payment_requests(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    user: dict = Depends(require_permission("finance.vendor_payment.clear")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    filters = ["vpr.organization_id = :org_id", "vpr.is_deleted = false"]
+    params: dict = {"org_id": org_id}
+    if status_filter:
+        filters.append("vpr.status = :status")
+        params["status"] = status_filter
+
+    rows = await db.execute(
+        text(f"""
+            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type
+            FROM finance.vendor_payment_requests vpr
+            JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY vpr.submitted_at DESC
+        """),
+        params,
+    )
+    return ok([dict(r._mapping) for r in rows], "Vendor payment requests listed.")
+
+
+@router.post("/vendor-requests/{request_id}/clear", summary="Clear a vendor payment request as Finance")
+async def clear_vendor_payment_request_as_finance(
+    request_id: UUID,
+    payload: VendorPaymentRequestClearByFinance,
+    user: dict = Depends(require_permission("finance.vendor_payment.clear")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    req = (
+        await db.execute(
+            text("""
+            SELECT vpr.id, vpr.amount, vpr.currency, vpr.status, vpr.reference_description,
+                   vpr.project_id, vpr.subcontractor_id, s.name AS vendor_name,
+                   s.submission_data->>'account_type' AS account_type
+            FROM finance.vendor_payment_requests vpr
+            JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
+            WHERE vpr.id = :id AND vpr.organization_id = :org_id AND vpr.is_deleted = false
+        """),
+            {"id": str(request_id), "org_id": org_id},
+        )
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Payment request not found.")
+    if req.status in ("cleared", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Payment request already '{req.status}'.")
+
+    doc = (
+        await db.execute(
+            text("SELECT id FROM core.documents WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": str(payload.receipt_document_id), "org_id": org_id},
+        )
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Receipt document not found.")
+
+    cash_account_id = await _pick_cash_account_for_finance(db, org_id, req.currency)
+    tx_number = f"VPR-{str(req.id)[:8].upper()}"
+    cashbook_row = await db.execute(
+        text("""
+            INSERT INTO finance.cashbook_transactions (
+                organization_id, cash_account_id, transaction_number, transaction_date,
+                transaction_type, direction, source_type, source_id, project_id,
+                counterparty_type, counterparty_name, payment_method, description,
+                amount, currency, posted_by
+            ) VALUES (
+                :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+                'payment', 'outflow', 'vendor_payment_request', :source_id, :project_id,
+                :counterparty_type, :counterparty_name, 'bank_transfer', :description,
+                :amount, :currency, :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": org_id, "cash_account_id": cash_account_id, "tx_number": tx_number,
+            "source_id": str(req.id), "project_id": str(req.project_id) if req.project_id else None,
+            "counterparty_type": "supplier" if req.account_type == "supplier" else "subcontractor",
+            "counterparty_name": req.vendor_name, "description": f"Vendor payment: {req.reference_description}",
+            "amount": float(req.amount), "currency": req.currency, "user_id": user["user_id"],
+        },
+    )
+    cashbook_id = str(cashbook_row.scalar())
+
+    await db.execute(
+        text("""
+            UPDATE finance.vendor_payment_requests
+            SET status = 'cleared', cleared_by_party = 'finance', cleared_by = :user_id, cleared_at = NOW(),
+                cashbook_transaction_id = :cashbook_id, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {"user_id": user["user_id"], "cashbook_id": cashbook_id, "id": str(request_id), "org_id": org_id},
+    )
+    await db.execute(
+        text("""
+            INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+            VALUES (:org_id, :document_id, 'vendor_payment_request', :entity_id, 'receipt', :user_id)
+            ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+        """),
+        {"org_id": org_id, "document_id": str(payload.receipt_document_id), "entity_id": str(request_id), "user_id": user["user_id"]},
+    )
+
+    portal_users = await db.execute(
+        text("""
+            SELECT user_id FROM crm.supplier_portal_access
+            WHERE subcontractor_id = :id AND organization_id = :org_id AND is_active = true
+        """),
+        {"id": str(req.subcontractor_id), "org_id": org_id},
+    )
+    for portal_user in portal_users:
+        await emit_notification(
+            db, org_id=org_id, user_id=str(portal_user.user_id),
+            title="Payment request cleared",
+            message=f"Finance cleared your payment request '{req.reference_description}' with a receipt.",
+            notification_type="vendor_payment_request", action_url="/portal/supplier",
+        )
+
+    await db.commit()
+    return ok({"id": str(request_id), "status": "cleared"}, "Payment request cleared.")

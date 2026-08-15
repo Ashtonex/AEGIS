@@ -52,7 +52,7 @@ DECLARE
     'fleet.fleet',
     'fleet.equipment_assets',
     'fleet.maintenance_schedules',
-    'procurement.procurement_orders',
+    'procurement.purchase_orders',
     'procurement.inventory_items',
     'procurement.suppliers',
     'finance.budgets'

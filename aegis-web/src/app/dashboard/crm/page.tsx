@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp } from 'lucide-react';
-import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, getRiskMatrices } from '@/lib/api';
+import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, getRiskMatrices, getCrmOrganizations } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
 import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
@@ -61,6 +61,7 @@ export default function CRMCommercialEngine() {
   const [opportunities, setOpportunities] = useState<any[]>([]);
   const [tenders, setTenders] = useState<any[]>([]);
   const [riskMatrices, setRiskMatrices] = useState<any>(null);
+  const [organizations, setOrganizations] = useState<any[]>([]);
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
 
   // Modals state
@@ -68,7 +69,7 @@ export default function CRMCommercialEngine() {
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   
   // Forms state
-  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0 });
+  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '' });
   const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0 });
   const [oppFormErrors, setOppFormErrors] = useState<Record<string, string>>({});
   const [tenderFormErrors, setTenderFormErrors] = useState<Record<string, string>>({});
@@ -95,11 +96,12 @@ export default function CRMCommercialEngine() {
     setIsLoading(true);
     setLoadErrors({});
     try {
-      const [accRes, oppsRes, tendersRes, riskRes] = await Promise.allSettled([
+      const [accRes, oppsRes, tendersRes, riskRes, orgsRes] = await Promise.allSettled([
         getAccountabilityMetrics(),
         getCrmOpportunities(),
         getCrmTenders(),
-        getRiskMatrices()
+        getRiskMatrices(),
+        getCrmOrganizations()
       ]);
       const nextErrors: Record<string, string> = {};
 
@@ -133,6 +135,10 @@ export default function CRMCommercialEngine() {
         nextErrors.risk = riskRes.status === 'rejected'
           ? getErrorMessage(riskRes.reason, 'Risk matrices did not load.')
           : getApiError(riskRes.value, 'Risk matrices did not load.');
+      }
+
+      if (orgsRes.status === 'fulfilled' && orgsRes.value.success && Array.isArray(orgsRes.value.data)) {
+        setOrganizations(orgsRes.value.data);
       }
 
       setLoadErrors(nextErrors);
@@ -184,12 +190,13 @@ export default function CRMCommercialEngine() {
         name: oppForm.name.trim(),
         stage: oppForm.stage,
         budget: Number(oppForm.budget),
-        probability: Number(oppForm.probability)
+        probability: Number(oppForm.probability),
+        ...(oppForm.client_org_id ? { client_org_id: oppForm.client_org_id } : {})
       });
       if (!response.success) throw new Error(getApiError(response, 'Opportunity was not created.'));
 
       setIsOppModalOpen(false);
-      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0 });
+      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '' });
       await loadData();
     } catch (error) {
       setCreateErrors((current) => ({
@@ -682,6 +689,17 @@ export default function CRMCommercialEngine() {
                 </div>
               </div>
               
+              <div className="space-y-1.5">
+                <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Client Organization</label>
+                <select value={oppForm.client_org_id} onChange={e => setOppForm({...oppForm, client_org_id: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-signal focus:ring-1 focus:ring-signal/50 outline-none font-sans transition-all">
+                  <option value="">-- No Organization Associated --</option>
+                  {organizations.map((o: any) => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+                <p className="font-mono text-[9px] text-slate-light/70 pl-1">Link this deal to an organization so multiple deals can roll up under one client on Customer 360.</p>
+              </div>
+
               <div className="pt-6 flex justify-end space-x-3 border-t border-white/5 mt-6">
                 <button type="button" onClick={() => setIsOppModalOpen(false)} className="px-6 py-3 font-mono text-xs text-slate-light hover:text-paper hover:bg-white/5 rounded-sm transition-colors">CANCEL</button>
                 <button type="submit" disabled={isSubmitting} className="px-6 py-3 bg-signal text-ink rounded-sm font-mono text-xs font-bold hover:bg-signal/90 hover:shadow-[0_0_20px_rgba(var(--color-signal),0.4)] disabled:opacity-50 transition-all">

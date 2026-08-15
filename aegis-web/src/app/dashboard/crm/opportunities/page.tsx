@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 
 import {
@@ -19,6 +19,7 @@ import {
   mergeCrmOpportunities,
   getCrmContacts,
   createCrmContact,
+  getCrmOrganizations,
   getCrmActivities,
   createCrmActivity,
   createCrmOpportunityQuotation,
@@ -93,6 +94,8 @@ interface Opportunity {
   risk_level?: string;
   client_id?: string;
   client_name?: string;
+  client_org_id?: string;
+  organization_name?: string;
   quote_id?: string;
   quote_status?: string;
   project_id?: string;
@@ -113,6 +116,11 @@ interface Contact {
   email?: string;
 }
 
+interface CrmOrganization {
+  id: string;
+  name: string;
+}
+
 interface ActivityLog {
   id: string;
   type: string;
@@ -130,6 +138,7 @@ export default function OpportunitiesKanban() {
 
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [organizations, setOrganizations] = useState<CrmOrganization[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -176,6 +185,7 @@ export default function OpportunitiesKanban() {
     expected_margin: '15',
     risk_level: 'Low',
     client_id: '',
+    client_org_id: '',
     new_contact_name: '',
     new_contact_email: ''
   });
@@ -191,6 +201,7 @@ export default function OpportunitiesKanban() {
     expected_margin: string;
     risk_level: string;
     client_id: string;
+    client_org_id: string;
   } | null>(null);
 
   // New Note State
@@ -225,10 +236,11 @@ export default function OpportunitiesKanban() {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const [oppsRes, contactsRes, activitiesRes] = await Promise.allSettled([
+      const [oppsRes, contactsRes, activitiesRes, orgsRes] = await Promise.allSettled([
         getCrmOpportunities(),
         getCrmContacts(),
-        getCrmActivities()
+        getCrmActivities(),
+        getCrmOrganizations()
       ]);
 
       const warnings: string[] = [];
@@ -246,6 +258,11 @@ export default function OpportunitiesKanban() {
         setActivities(activitiesRes.value.data);
       } else {
         warnings.push("Activity log could not be loaded.");
+      }
+      if (orgsRes.status === "fulfilled" && orgsRes.value.success && Array.isArray(orgsRes.value.data)) {
+        setOrganizations(orgsRes.value.data);
+      } else {
+        warnings.push("Organizations could not be loaded.");
       }
       setSourceWarnings(warnings);
       if (oppsRes.status === "rejected") {
@@ -271,6 +288,7 @@ export default function OpportunitiesKanban() {
   useLiveTable("crm.opportunities", () => void loadData());
   useLiveTable("crm.contacts", () => void loadData());
   useLiveTable("crm.activities", () => void loadData());
+  useLiveTable("crm.organizations", () => void loadData());
 
   // Drag and Drop Event Handlers
   const handleDragStart = (e: React.DragEvent, oppId: string) => {
@@ -420,6 +438,7 @@ export default function OpportunitiesKanban() {
       };
 
       if (finalClientId) oppPayload.client_id = finalClientId;
+      if (newDeal.client_org_id) oppPayload.client_org_id = newDeal.client_org_id;
       if (marginVal) oppPayload.expected_margin = marginVal;
       if (newDeal.risk_level) oppPayload.risk_level = newDeal.risk_level;
 
@@ -442,6 +461,7 @@ export default function OpportunitiesKanban() {
           expected_margin: '15',
           risk_level: 'Low',
           client_id: '',
+          client_org_id: '',
           new_contact_name: '',
           new_contact_email: ''
         });
@@ -474,7 +494,8 @@ export default function OpportunitiesKanban() {
         probability: probVal,
         expected_margin: marginVal,
         risk_level: editForm.risk_level,
-        client_id: editForm.client_id || null
+        client_id: editForm.client_id || null,
+        client_org_id: editForm.client_org_id || null
       };
 
       const res = await updateCrmOpportunity(selectedOpportunityId, updatePayload);
@@ -748,10 +769,28 @@ export default function OpportunitiesKanban() {
     return matchesSearch && matchesMinBudget && matchesRange && matchesRisk;
   });
 
+  // Contacts list is a raw, unjoined SELECT with no uniqueness guard on the
+  // backend - the "+ New Client Contact" quick-add historically produced
+  // duplicate rows for the same person. Backend dedup/merge now exists, but
+  // the picker still de-dupes client-side (keyed on lowercased email, else
+  // lowercased name) so a stray duplicate never shows twice here regardless.
+  const dedupedContacts = useMemo(() => {
+    const seen = new Set<string>();
+    return contacts.filter((c) => {
+      const key = (c.email && c.email.trim().toLowerCase()) || c.contact_name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [contacts]);
+
   const selectedOpp = opportunities.find(o => o.id === selectedOpportunityId);
   const selectedOppActivities = activities.filter(a => a.opportunity_id === selectedOpportunityId);
   const selectedOppContact = selectedOpp?.client_id
     ? contacts.find(c => c.id === selectedOpp.client_id)
+    : null;
+  const selectedOppOrganization = selectedOpp?.client_org_id
+    ? organizations.find(o => o.id === selectedOpp.client_org_id)
     : null;
 
   // Initialize edit drawer form when drawer opens
@@ -764,7 +803,8 @@ export default function OpportunitiesKanban() {
         probability: String(selectedOpp.probability || ''),
         expected_margin: String(selectedOpp.expected_margin || ''),
         risk_level: selectedOpp.risk_level || 'Low',
-        client_id: selectedOpp.client_id || ''
+        client_id: selectedOpp.client_id || '',
+        client_org_id: selectedOpp.client_org_id || ''
       });
     } else {
       setEditForm(null);
@@ -1185,6 +1225,22 @@ export default function OpportunitiesKanban() {
                 </div>
               </div>
 
+              {/* Organization Selection */}
+              <div className="border-t border-white/5 pt-3 space-y-1">
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Client Organization</label>
+                <select
+                  value={newDeal.client_org_id}
+                  onChange={e => setNewDeal({ ...newDeal, client_org_id: e.target.value })}
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                >
+                  <option value="">-- No Organization Associated --</option>
+                  {organizations.map(o => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+                <p className="text-[9px] font-mono text-slate-light/70">A deal can carry its own name while still rolling up under one organization on Customer 360.</p>
+              </div>
+
               {/* Client Selection */}
               <div className="border-t border-white/5 pt-3 space-y-3">
                 <div className="flex justify-between items-center">
@@ -1205,7 +1261,7 @@ export default function OpportunitiesKanban() {
                     className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                   >
                     <option value="">-- No Contact Associated --</option>
-                    {contacts.map(c => (
+                    {dedupedContacts.map(c => (
                       <option key={c.id} value={c.id}>{c.contact_name}</option>
                     ))}
                   </select>
@@ -1454,6 +1510,21 @@ export default function OpportunitiesKanban() {
                     </div>
                   </div>
 
+                  {/* Linked organization display/change */}
+                  <div className="space-y-1">
+                    <label className="block font-mono text-[8px] text-slate-light uppercase">Client Organization</label>
+                    <select
+                      value={editForm.client_org_id}
+                      onChange={e => setEditForm({ ...editForm, client_org_id: e.target.value })}
+                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                    >
+                      <option value="">-- No Organization --</option>
+                      {organizations.map(o => (
+                        <option key={o.id} value={o.id}>{o.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
                   {/* Linked client display/change */}
                   <div className="space-y-1">
                     <label className="block font-mono text-[8px] text-slate-light uppercase">Client Contact Link</label>
@@ -1463,7 +1534,7 @@ export default function OpportunitiesKanban() {
                       className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                     >
                       <option value="">-- No Contact --</option>
-                      {contacts.map(c => (
+                      {dedupedContacts.map(c => (
                         <option key={c.id} value={c.id}>{c.contact_name}</option>
                       ))}
                     </select>
@@ -1474,6 +1545,21 @@ export default function OpportunitiesKanban() {
               {/* LINKED CONTACT DETAIL BLOCK */}
               <div className="space-y-2 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
                 <span className="block font-mono text-[9px] text-[#3B82F6] uppercase tracking-wider">Associated client profile</span>
+
+                {selectedOppOrganization && (
+                  <Link
+                    href={`/dashboard/crm/organizations/${selectedOppOrganization.id}`}
+                    className="flex items-center space-x-3 pt-1 pb-2 border-b border-white/5 hover:bg-white/[0.02] -mx-1 px-1 rounded-sm transition-all"
+                  >
+                    <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-slate-light">
+                      <Landmark className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-semibold text-paper leading-tight">{selectedOppOrganization.name}</h4>
+                      <span className="font-mono text-[9px] text-slate">View Customer 360 &rarr;</span>
+                    </div>
+                  </Link>
+                )}
 
                 {selectedOppContact ? (
                   <div className="flex items-center space-x-3 pt-1">

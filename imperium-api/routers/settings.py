@@ -85,6 +85,10 @@ class InviteUserPayload(Payload):
     role_ids: list[UUID] = Field(default_factory=list, max_length=8)
 
 
+class GrantClientPortalAccessPayload(Payload):
+    contact_id: UUID
+
+
 class UserStatusPayload(Payload):
     is_active: bool
 
@@ -1576,6 +1580,126 @@ async def invite_user(
     )
 
 
+@router.post("/client-portal-access")
+async def grant_client_portal_access(
+    payload: GrantClientPortalAccessPayload,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Grant portal access to an EXISTING CRM contact (typically one just
+    created by lead qualification) - unlike /managed-accounts, this never
+    creates a new organization or contact row, it only invites the person
+    already on file. Must be triggered by an explicit user action; the
+    Supabase Auth account and invite email this creates are real and
+    externally visible, so this is never called as a side effect of
+    qualifying a lead."""
+    org_id = user["org_id"]
+    contact = (
+        await db.execute(
+            text("""
+        SELECT id, contact_name, email, client_org_id
+        FROM crm.contacts
+        WHERE id=:contact_id AND organization_id=:org_id AND is_deleted=false
+    """),
+            {"contact_id": payload.contact_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found.")
+    if not contact["email"]:
+        raise HTTPException(
+            status_code=422,
+            detail="This contact has no email address - add one before granting portal access.",
+        )
+    if not contact["client_org_id"]:
+        raise HTTPException(
+            status_code=422,
+            detail="This contact isn't linked to a client organization yet.",
+        )
+
+    portal_role_id = await _role_id_by_name(db, org_id, "CLIENT")
+    if not portal_role_id:
+        raise HTTPException(
+            status_code=503,
+            detail="The CLIENT portal role is not migrated yet. Run migration 014_portal_access_roles.sql.",
+        )
+
+    resend_configured = _resend_configured()
+    action_link: Optional[str] = None
+    if resend_configured:
+        invited_user_id, action_link = await _generate_invite_link(
+            contact["email"], contact["contact_name"], org_id
+        )
+    else:
+        invited_user_id = await _invite_auth_user(
+            db, contact["email"], contact["contact_name"], org_id
+        )
+
+    try:
+        await db.execute(
+            text("""
+        INSERT INTO core.users (id, organization_id, email, full_name, is_active, must_change_password)
+        VALUES (:user_id, :org_id, :email, :full_name, true, true)
+        ON CONFLICT (id) DO UPDATE SET
+            organization_id=EXCLUDED.organization_id,
+            email=EXCLUDED.email,
+            full_name=EXCLUDED.full_name,
+            is_active=true,
+            must_change_password=true,
+            updated_at=NOW(),
+            is_deleted=false
+    """),
+            {
+                "user_id": invited_user_id,
+                "org_id": org_id,
+                "email": contact["email"],
+                "full_name": contact["contact_name"],
+            },
+        )
+        await _assign_roles(db, org_id, invited_user_id, [portal_role_id])
+        await db.execute(
+            text("""
+        INSERT INTO crm.client_portal_access (user_id, organization_id, contact_id, is_active)
+        VALUES (:user_id, :org_id, :contact_id, true)
+        ON CONFLICT (organization_id, contact_id) DO UPDATE SET
+            user_id=EXCLUDED.user_id, is_active=true, updated_at=NOW()
+    """),
+            {"user_id": invited_user_id, "org_id": org_id, "contact_id": payload.contact_id},
+        )
+        await _write_audit(
+            db,
+            user,
+            "settings.client_portal_access.granted",
+            "contact",
+            payload.contact_id,
+            {"email": contact["email"], "contact_name": contact["contact_name"]},
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="A user with this email already exists in another organization.",
+        ) from exc
+
+    if resend_configured and action_link:
+        notified = await _send_branded_invite_email(contact["email"], contact["contact_name"], action_link)
+        if not notified:
+            logger.warning(
+                "settings.invite_branded_email_failed",
+                email=contact["email"],
+                detail="Resend is configured but the branded invite email failed to send - the invitee has no delivered link.",
+            )
+
+    return _response(
+        {"user_id": str(invited_user_id), "contact_id": str(payload.contact_id), "email": contact["email"]},
+        f"Portal access granted. Invite sent to {contact['email']}.",
+    )
+
+
 async def _lookup_user_with_superadmin_flag(db: AsyncSession, org_id: str, target_user_id: UUID):
     return (
         await db.execute(
@@ -1742,12 +1866,27 @@ async def create_managed_account(
     try:
         if payload.account_type == "client":
             account_id = await _create_client_account(db, payload, user)
-        elif payload.account_type == "supplier":
+        else:
+            # Both "supplier" and "subcontractor" account kinds share the same
+            # portal identity (crm.subcontractors + crm.supplier_portal_access)
+            # and are now also bridged onto procurement.suppliers so every
+            # vendor payment - materials or services - goes through the one
+            # cashbook-integrated payment pipeline instead of forking a second
+            # one for subcontractors.
             supplier_id = await _create_supplier_account(db, payload, user)
             subcontractor_id = await _create_subcontractor_profile(db, payload, user)
-            account_id = supplier_id
-        else:
-            subcontractor_id = await _create_subcontractor_profile(db, payload, user)
+            await db.execute(
+                text("""
+                UPDATE crm.subcontractors
+                SET linked_supplier_id = :supplier_id, updated_at = NOW()
+                WHERE id = :subcontractor_id AND organization_id = :org_id
+            """),
+                {
+                    "supplier_id": supplier_id,
+                    "subcontractor_id": subcontractor_id,
+                    "org_id": org_id,
+                },
+            )
             account_id = subcontractor_id
 
         portal_role_name = PORTAL_ROLE_BY_ACCOUNT_TYPE[payload.account_type]

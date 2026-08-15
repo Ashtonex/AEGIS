@@ -1,15 +1,27 @@
 """Server-side portal admission. A session alone never selects a portal."""
 
 import json
+from datetime import date
+from typing import Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.shared.events import emit_role_notification
 from core.database import get_db
 from core.security import get_current_user, resolve_primary_role
 
 router = APIRouter()
+
+REQUIRED_VENDOR_PROFILE_FIELDS = (
+    "registration_number", "tax_clearance_number", "nssa_number",
+    "contact_name", "contact_email", "contact_phone", "address",
+)
+REQUIRED_COMPLIANCE_CATEGORIES = ("registration_certificate", "tax_clearance")
 
 _PORTALS = {
     "executive": "/dashboard/executive",
@@ -532,3 +544,997 @@ async def create_client_message(
         "message": "Client portal message sent.",
         "meta": {},
     }
+
+
+# =============================================================================
+# Supplier / Subcontractor portal
+#
+# Both "supplier" and "subcontractor" managed-account kinds share this single
+# route (see PORTAL_ROLE_BY_ACCOUNT_TYPE in routers/settings.py - both map to
+# the SUPPLIER role) and the same crm.subcontractors + supplier_portal_access
+# identity. The frontend branches its copy/forms on the account's
+# submission_data->>'account_type', not a different backend route.
+# =============================================================================
+
+async def _get_supplier_portal_context(user: dict, db: AsyncSession) -> dict:
+    context = (
+        await db.execute(
+            text("""
+            SELECT
+                spa.subcontractor_id,
+                s.name, s.registration_number, s.tax_clearance_number,
+                s.nssa_number, s.praz_number, s.contact_name, s.contact_email,
+                s.contact_phone, s.address, s.coverage_provinces,
+                s.compliance_status, s.review_status, s.verification_stage,
+                s.system_verified_at, s.system_verification_notes,
+                s.hr_verified_at, s.hr_verification_notes,
+                s.linked_supplier_id,
+                s.submission_data->>'account_type' AS account_type
+            FROM crm.supplier_portal_access spa
+            JOIN crm.subcontractors s ON s.id = spa.subcontractor_id
+             AND s.organization_id = spa.organization_id
+             AND s.is_deleted = false
+            WHERE spa.user_id = :user_id
+              AND spa.organization_id = :org_id
+              AND spa.is_active = true
+        """),
+            {"user_id": user["user_id"], "org_id": user["org_id"]},
+        )
+    ).first()
+
+    if not context:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is not provisioned for the supplier portal.",
+        )
+
+    return dict(context._mapping)
+
+
+async def _pick_cash_account(db: AsyncSession, org_id: str, currency: str) -> str:
+    account_id = (
+        await db.execute(
+            text("""
+            SELECT id FROM finance.cash_accounts
+            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+            ORDER BY (currency = :currency) DESC, created_at ASC
+            LIMIT 1
+        """),
+            {"org_id": org_id, "currency": currency},
+        )
+    ).scalar()
+    if not account_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No active cash account is configured. Ask Finance to set one up before clearing payments.",
+        )
+    return str(account_id)
+
+
+class SupplierProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: Optional[str] = Field(default=None, max_length=255)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_clearance_number: Optional[str] = Field(default=None, max_length=100)
+    nssa_number: Optional[str] = Field(default=None, max_length=100)
+    praz_number: Optional[str] = Field(default=None, max_length=100)
+    contact_name: Optional[str] = Field(default=None, max_length=255)
+    contact_email: Optional[str] = Field(default=None, max_length=255)
+    contact_phone: Optional[str] = Field(default=None, max_length=50)
+    address: Optional[str] = None
+    coverage_provinces: Optional[list[str]] = None
+
+
+class SupplierDocumentRegister(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    storage_path: str = Field(min_length=1, max_length=500)
+    file_name: str = Field(min_length=1, max_length=255)
+    mime_type: Optional[str] = Field(default=None, max_length=120)
+    size_bytes: Optional[int] = None
+    category: str = Field(min_length=1, max_length=80)
+    expiry_date: Optional[date] = None
+
+
+class VendorRateItemCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    rate_type: str = Field(pattern=r"^(material|transport|service)$")
+    item_code: Optional[str] = Field(default=None, max_length=80)
+    description: str = Field(min_length=1)
+    unit_of_measure: str = Field(default="each", max_length=40)
+    unit_price: float = Field(gt=0)
+    currency: str = Field(default="USD", max_length=3)
+    min_quantity: Optional[float] = None
+    lead_time_days: Optional[int] = None
+    route_from: Optional[str] = Field(default=None, max_length=255)
+    route_to: Optional[str] = Field(default=None, max_length=255)
+
+
+class VendorPaymentRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: Optional[UUID] = None
+    rate_type: Optional[str] = Field(default=None, pattern=r"^(material|transport|service)$")
+    reference_description: str = Field(min_length=5)
+    amount: float = Field(gt=0)
+    currency: str = Field(default="USD", max_length=3)
+
+
+class VendorPaymentRequestClear(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    receipt_document_id: UUID
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+@router.get("/supplier/workspace")
+async def get_supplier_workspace(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    subcontractor_id = vendor["subcontractor_id"]
+
+    rate_counts = await db.execute(
+        text("""
+        SELECT rate_type, COUNT(*) AS count
+        FROM procurement.vendor_rate_items
+        WHERE organization_id = :org_id AND subcontractor_id = :id AND is_deleted = false
+        GROUP BY rate_type
+    """),
+        {"org_id": user["org_id"], "id": subcontractor_id},
+    )
+
+    payment_rows = await db.execute(
+        text("""
+        SELECT id, reference_description, amount, currency, status, submitted_at, cleared_at
+        FROM finance.vendor_payment_requests
+        WHERE organization_id = :org_id AND subcontractor_id = :id AND is_deleted = false
+        ORDER BY submitted_at DESC LIMIT 50
+    """),
+        {"org_id": user["org_id"], "id": subcontractor_id},
+    )
+    payment_requests = [dict(r._mapping) for r in payment_rows]
+
+    doc_rows = await db.execute(
+        text("""
+        SELECT d.id, d.title, d.category, d.expiry_date, d.created_at
+        FROM core.document_links dl
+        JOIN core.documents d ON d.id = dl.document_id AND d.organization_id = dl.organization_id AND d.is_deleted = false
+        WHERE dl.organization_id = :org_id AND dl.entity_type = 'subcontractor' AND dl.entity_id = :id
+          AND dl.is_deleted = false
+        ORDER BY d.created_at DESC
+    """),
+        {"org_id": user["org_id"], "id": subcontractor_id},
+    )
+    documents = [dict(r._mapping) for r in doc_rows]
+    open_requests = sum(1 for p in payment_requests if p["status"] in ("submitted", "acknowledged"))
+
+    return {
+        "success": True,
+        "data": {
+            "vendor": vendor,
+            "rate_item_counts": {row.rate_type: row.count for row in rate_counts},
+            "documents": documents,
+            "payment_requests": payment_requests,
+            "modules": [
+                {"key": "profile", "label": "Company profile", "status": "active"},
+                {"key": "documents", "label": "Compliance documents", "status": "active"},
+                {"key": "rates", "label": "Rate catalog", "status": "active"},
+                {"key": "payments", "label": "Payment requests", "status": "active"},
+            ],
+        },
+        "message": "Supplier portal workspace loaded.",
+        "meta": {"total_documents": len(documents), "open_payment_requests": open_requests},
+    }
+
+
+@router.patch("/supplier/profile")
+async def update_supplier_profile(
+    payload: SupplierProfileUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="No profile fields supplied.")
+
+    set_clauses = []
+    params: dict = {"id": vendor["subcontractor_id"], "org_id": user["org_id"]}
+    for field, value in updates.items():
+        if field == "coverage_provinces":
+            set_clauses.append("coverage_provinces = CAST(:coverage_provinces AS text[])")
+        else:
+            set_clauses.append(f"{field} = :{field}")
+        params[field] = value
+
+    # Any profile edit invalidates a prior verification pass - re-review required.
+    set_clauses.append("verification_stage = 'incomplete'")
+    set_clauses.append("system_verified_at = NULL")
+    set_clauses.append("hr_verified_at = NULL")
+    set_clauses.append("updated_at = NOW()")
+
+    await db.execute(
+        text(f"UPDATE crm.subcontractors SET {', '.join(set_clauses)} WHERE id = :id AND organization_id = :org_id"),
+        params,
+    )
+    await db.commit()
+    return {"success": True, "data": {"id": vendor["subcontractor_id"]}, "message": "Profile updated.", "meta": {}}
+
+
+@router.post("/supplier/profile/submit-for-review")
+async def submit_supplier_profile_for_review(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    subcontractor_id = vendor["subcontractor_id"]
+
+    profile_row = (
+        await db.execute(
+            text("""
+            SELECT registration_number, tax_clearance_number, nssa_number,
+                   contact_name, contact_email, contact_phone, address
+            FROM crm.subcontractors WHERE id = :id AND organization_id = :org_id
+        """),
+            {"id": subcontractor_id, "org_id": user["org_id"]},
+        )
+    ).first()
+
+    missing = [f for f in REQUIRED_VENDOR_PROFILE_FIELDS if not getattr(profile_row, f, None)]
+
+    doc_rows = await db.execute(
+        text("""
+        SELECT d.category, d.expiry_date
+        FROM core.document_links dl
+        JOIN core.documents d ON d.id = dl.document_id AND d.organization_id = dl.organization_id AND d.is_deleted = false
+        WHERE dl.organization_id = :org_id AND dl.entity_type = 'subcontractor' AND dl.entity_id = :id
+          AND dl.link_role = 'compliance' AND dl.is_deleted = false
+    """),
+        {"org_id": user["org_id"], "id": subcontractor_id},
+    )
+    docs = [dict(r._mapping) for r in doc_rows]
+    present_categories = {d["category"] for d in docs if d["category"]}
+    missing_categories = [c for c in REQUIRED_COMPLIANCE_CATEGORIES if c not in present_categories]
+    expired = [d["category"] for d in docs if d["expiry_date"] and d["expiry_date"] < date.today()]
+
+    problems = []
+    if missing:
+        problems.append("Missing profile fields: " + ", ".join(missing))
+    if missing_categories:
+        problems.append("Missing compliance documents: " + ", ".join(missing_categories))
+    if expired:
+        problems.append("Expired compliance documents: " + ", ".join(expired))
+
+    if problems:
+        await db.execute(
+            text("""
+            UPDATE crm.subcontractors
+            SET verification_stage = 'system_pending', system_verification_notes = :notes, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+            {"notes": " | ".join(problems), "id": subcontractor_id, "org_id": user["org_id"]},
+        )
+        await db.commit()
+        return {
+            "success": True,
+            "data": {"verification_stage": "system_pending", "problems": problems},
+            "message": "Profile is not yet complete for verification.",
+            "meta": {},
+        }
+
+    await db.execute(
+        text("""
+        UPDATE crm.subcontractors
+        SET verification_stage = 'system_verified', system_verified_at = NOW(),
+            system_verification_notes = NULL, updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+    """),
+        {"id": subcontractor_id, "org_id": user["org_id"]},
+    )
+    await emit_role_notification(
+        db,
+        org_id=user["org_id"],
+        role_names=["HR Manager", "HR Officer"],
+        title="Vendor profile ready for verification",
+        message=f"{vendor['name']} passed automated checks and is awaiting HR verification.",
+        notification_type="vendor_verification",
+        action_url="/dashboard/hr/vendor-verification",
+    )
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"verification_stage": "system_verified"},
+        "message": "Profile passed automated checks and has been sent to HR for verification.",
+        "meta": {},
+    }
+
+
+@router.post("/supplier/documents", status_code=status.HTTP_201_CREATED)
+async def register_supplier_document(
+    payload: SupplierDocumentRegister,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    subcontractor_id = vendor["subcontractor_id"]
+
+    attachment_id = (
+        await db.execute(
+            text("""
+            INSERT INTO core.file_attachments (organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes)
+            VALUES (:org_id, :user_id, :file_name, :storage_path, :mime_type, :size_bytes)
+            RETURNING id
+        """),
+            {
+                "org_id": user["org_id"], "user_id": user["user_id"], "file_name": payload.file_name,
+                "storage_path": payload.storage_path, "mime_type": payload.mime_type, "size_bytes": payload.size_bytes,
+            },
+        )
+    ).scalar()
+
+    document = (
+        await db.execute(
+            text("""
+            INSERT INTO core.documents (organization_id, created_by, title, file_attachment_id, category, file_size_bytes, file_name, expiry_date)
+            VALUES (:org_id, :user_id, :title, :attachment_id, :category, :size_bytes, :file_name, :expiry_date)
+            RETURNING id, title, category, expiry_date, created_at
+        """),
+            {
+                "org_id": user["org_id"], "user_id": user["user_id"], "title": payload.file_name,
+                "attachment_id": attachment_id, "category": payload.category, "size_bytes": payload.size_bytes,
+                "file_name": payload.file_name, "expiry_date": payload.expiry_date,
+            },
+        )
+    ).first()
+
+    # Receipts are registered here too (so the same upload widget can be
+    # reused for "attach a receipt when clearing a payment request"), but
+    # they link to the payment request itself at clear-time, not to the
+    # vendor's compliance record - only skip the compliance link for those.
+    if payload.category != "receipt":
+        await db.execute(
+            text("""
+            INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+            VALUES (:org_id, :document_id, 'subcontractor', :entity_id, 'compliance', :user_id)
+            ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+        """),
+            {"org_id": user["org_id"], "document_id": document.id, "entity_id": subcontractor_id, "user_id": user["user_id"]},
+        )
+    await db.commit()
+    return {"success": True, "data": dict(document._mapping), "message": "Document registered.", "meta": {}}
+
+
+@router.post("/client/documents", status_code=status.HTTP_201_CREATED)
+async def register_client_document(
+    payload: SupplierDocumentRegister,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Register an uploaded file (currently: payment-request receipts only)
+    for the client portal. The document is linked to its target entity at
+    the point of use (e.g. clear_client_payment_request), not here."""
+    await _get_client_portal_context(user, db)
+
+    attachment_id = (
+        await db.execute(
+            text("""
+            INSERT INTO core.file_attachments (organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes)
+            VALUES (:org_id, :user_id, :file_name, :storage_path, :mime_type, :size_bytes)
+            RETURNING id
+        """),
+            {
+                "org_id": user["org_id"], "user_id": user["user_id"], "file_name": payload.file_name,
+                "storage_path": payload.storage_path, "mime_type": payload.mime_type, "size_bytes": payload.size_bytes,
+            },
+        )
+    ).scalar()
+
+    document = (
+        await db.execute(
+            text("""
+            INSERT INTO core.documents (organization_id, created_by, title, file_attachment_id, category, file_size_bytes, file_name)
+            VALUES (:org_id, :user_id, :title, :attachment_id, :category, :size_bytes, :file_name)
+            RETURNING id, title, category, created_at
+        """),
+            {
+                "org_id": user["org_id"], "user_id": user["user_id"], "title": payload.file_name,
+                "attachment_id": attachment_id, "category": payload.category, "size_bytes": payload.size_bytes,
+                "file_name": payload.file_name,
+            },
+        )
+    ).first()
+    await db.commit()
+    return {"success": True, "data": dict(document._mapping), "message": "Document registered.", "meta": {}}
+
+
+@router.get("/supplier/rate-items")
+async def list_supplier_rate_items(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    rows = await db.execute(
+        text("""
+        SELECT * FROM procurement.vendor_rate_items
+        WHERE organization_id = :org_id AND subcontractor_id = :id AND is_deleted = false
+        ORDER BY rate_type, created_at DESC
+    """),
+        {"org_id": user["org_id"], "id": vendor["subcontractor_id"]},
+    )
+    return {"success": True, "data": [dict(r._mapping) for r in rows], "message": "Rate items loaded.", "meta": {}}
+
+
+@router.post("/supplier/rate-items", status_code=status.HTTP_201_CREATED)
+async def create_supplier_rate_item(
+    payload: VendorRateItemCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    try:
+        row = (
+            await db.execute(
+                text("""
+                INSERT INTO procurement.vendor_rate_items (
+                    organization_id, subcontractor_id, rate_type, item_code, description,
+                    unit_of_measure, unit_price, currency, min_quantity, lead_time_days,
+                    route_from, route_to, submitted_by, created_by
+                ) VALUES (
+                    :org_id, :subcontractor_id, :rate_type, :item_code, :description,
+                    :unit_of_measure, :unit_price, :currency, :min_quantity, :lead_time_days,
+                    :route_from, :route_to, :user_id, :user_id
+                ) RETURNING *
+            """),
+                {
+                    "org_id": user["org_id"], "subcontractor_id": vendor["subcontractor_id"], "user_id": user["user_id"],
+                    **payload.model_dump(),
+                },
+            )
+        ).first()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="An item with this code and rate type already exists.") from exc
+    await db.commit()
+    return {"success": True, "data": dict(row._mapping), "message": "Rate item added.", "meta": {}}
+
+
+@router.get("/supplier/payment-requests")
+async def list_supplier_payment_requests(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    rows = await db.execute(
+        text("""
+        SELECT * FROM finance.vendor_payment_requests
+        WHERE organization_id = :org_id AND subcontractor_id = :id AND is_deleted = false
+        ORDER BY submitted_at DESC
+    """),
+        {"org_id": user["org_id"], "id": vendor["subcontractor_id"]},
+    )
+    return {"success": True, "data": [dict(r._mapping) for r in rows], "message": "Payment requests loaded.", "meta": {}}
+
+
+@router.post("/supplier/payment-requests", status_code=status.HTTP_201_CREATED)
+async def create_supplier_payment_request(
+    payload: VendorPaymentRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    if vendor["verification_stage"] != "hr_verified":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your profile must be HR-verified before you can request payment.",
+        )
+
+    row = (
+        await db.execute(
+            text("""
+            INSERT INTO finance.vendor_payment_requests (
+                organization_id, subcontractor_id, supplier_id, project_id, rate_type,
+                reference_description, amount, currency, submitted_by, created_by
+            ) VALUES (
+                :org_id, :subcontractor_id, :supplier_id, :project_id, :rate_type,
+                :reference_description, :amount, :currency, :user_id, :user_id
+            ) RETURNING *
+        """),
+            {
+                "org_id": user["org_id"], "subcontractor_id": vendor["subcontractor_id"],
+                "supplier_id": vendor["linked_supplier_id"],
+                "project_id": str(payload.project_id) if payload.project_id else None,
+                "rate_type": payload.rate_type, "reference_description": payload.reference_description,
+                "amount": payload.amount, "currency": payload.currency, "user_id": user["user_id"],
+            },
+        )
+    ).first()
+
+    await emit_role_notification(
+        db, org_id=user["org_id"], role_names=["Finance Manager"],
+        title="New vendor payment request",
+        message=f"{vendor['name']} requested payment of {payload.currency} {payload.amount:,.2f}.",
+        notification_type="vendor_payment_request", action_url="/dashboard/finance/vendor-payments",
+    )
+    await db.commit()
+    return {"success": True, "data": dict(row._mapping), "message": "Payment request submitted.", "meta": {}}
+
+
+@router.post("/supplier/payment-requests/{request_id}/clear")
+async def clear_supplier_payment_request(
+    request_id: UUID,
+    payload: VendorPaymentRequestClear,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    req = (
+        await db.execute(
+            text("""
+            SELECT id, amount, currency, status, reference_description, project_id
+            FROM finance.vendor_payment_requests
+            WHERE id = :id AND organization_id = :org_id AND subcontractor_id = :subcontractor_id AND is_deleted = false
+        """),
+            {"id": str(request_id), "org_id": user["org_id"], "subcontractor_id": vendor["subcontractor_id"]},
+        )
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Payment request not found.")
+    if req.status in ("cleared", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Payment request already '{req.status}'.")
+
+    doc = (
+        await db.execute(
+            text("SELECT id FROM core.documents WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": str(payload.receipt_document_id), "org_id": user["org_id"]},
+        )
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Receipt document not found.")
+
+    cash_account_id = await _pick_cash_account(db, user["org_id"], req.currency)
+    tx_number = f"VPR-{str(req.id)[:8].upper()}"
+    cashbook_row = await db.execute(
+        text("""
+        INSERT INTO finance.cashbook_transactions (
+            organization_id, cash_account_id, transaction_number, transaction_date,
+            transaction_type, direction, source_type, source_id, project_id,
+            counterparty_type, counterparty_name, payment_method, description,
+            amount, currency, posted_by
+        ) VALUES (
+            :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+            'payment', 'outflow', 'vendor_payment_request', :source_id, :project_id,
+            :counterparty_type, :counterparty_name, 'bank_transfer', :description,
+            :amount, :currency, :user_id
+        ) RETURNING id
+    """),
+        {
+            "org_id": user["org_id"], "cash_account_id": cash_account_id, "tx_number": tx_number,
+            "source_id": str(req.id), "project_id": str(req.project_id) if req.project_id else None,
+            "counterparty_type": "supplier" if vendor.get("account_type") == "supplier" else "subcontractor",
+            "counterparty_name": vendor["name"], "description": f"Vendor payment: {req.reference_description}",
+            "amount": float(req.amount), "currency": req.currency, "user_id": user["user_id"],
+        },
+    )
+    cashbook_id = str(cashbook_row.scalar())
+
+    await db.execute(
+        text("""
+        UPDATE finance.vendor_payment_requests
+        SET status = 'cleared', cleared_by_party = 'vendor', cleared_by = :user_id, cleared_at = NOW(),
+            cashbook_transaction_id = :cashbook_id, updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+    """),
+        {"user_id": user["user_id"], "cashbook_id": cashbook_id, "id": str(request_id), "org_id": user["org_id"]},
+    )
+    await db.execute(
+        text("""
+        INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+        VALUES (:org_id, :document_id, 'vendor_payment_request', :entity_id, 'receipt', :user_id)
+        ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+    """),
+        {
+            "org_id": user["org_id"], "document_id": str(payload.receipt_document_id),
+            "entity_id": str(request_id), "user_id": user["user_id"],
+        },
+    )
+    await emit_role_notification(
+        db, org_id=user["org_id"], role_names=["Finance Manager"],
+        title="Vendor payment request cleared by vendor",
+        message=f"{vendor['name']} marked payment request '{req.reference_description}' as cleared with a receipt. Please reconcile.",
+        notification_type="vendor_payment_request", action_url="/dashboard/finance/vendor-payments",
+    )
+    await db.commit()
+    return {"success": True, "data": {"id": str(request_id), "status": "cleared"}, "message": "Payment request cleared.", "meta": {}}
+
+
+# =============================================================================
+# Client portal - projects, issues, additional requests, variations, and
+# payment requests. Extends the existing tickets/messages workspace above.
+# =============================================================================
+
+class ClientProjectRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    subject: str = Field(min_length=3, max_length=255)
+    description: str = Field(min_length=10)
+
+
+class ClientVariationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    title: str = Field(min_length=3, max_length=255)
+    description: Optional[str] = None
+    scope_impact: Optional[str] = None
+    cost_impact: Optional[float] = None
+    time_impact_days: Optional[int] = None
+
+
+class ClientPaymentRequestClear(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    receipt_document_id: UUID
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+async def _client_org_id(user: dict, client: dict, db: AsyncSession) -> Optional[str]:
+    row = (
+        await db.execute(
+            text("SELECT client_org_id FROM crm.contacts WHERE id = :id AND organization_id = :org_id"),
+            {"id": client["contact_id"], "org_id": user["org_id"]},
+        )
+    ).first()
+    return str(row.client_org_id) if row and row.client_org_id else None
+
+
+@router.get("/client/projects")
+async def list_client_projects(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    client_org_id = await _client_org_id(user, client, db)
+    if not client_org_id:
+        return {"success": True, "data": [], "message": "No projects linked to this account yet.", "meta": {}}
+
+    rows = await db.execute(
+        text("""
+        SELECT id, name, status, project_code, project_type,
+               start_date, planned_completion_date, actual_completion_date
+        FROM projects.projects
+        WHERE client_org_id = :client_org_id AND organization_id = :org_id AND is_deleted = false
+        ORDER BY created_at DESC
+    """),
+        {"client_org_id": client_org_id, "org_id": user["org_id"]},
+    )
+    return {"success": True, "data": [dict(r._mapping) for r in rows], "message": "Projects loaded.", "meta": {}}
+
+
+@router.get("/client/projects/{project_id}")
+async def get_client_project_detail(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    client_org_id = await _client_org_id(user, client, db)
+    project = (
+        await db.execute(
+            text("""
+            SELECT id, name, status, project_code, project_type,
+                   start_date, planned_completion_date, actual_completion_date
+            FROM projects.projects
+            WHERE id = :id AND organization_id = :org_id AND client_org_id = :client_org_id AND is_deleted = false
+        """),
+            {"id": str(project_id), "org_id": user["org_id"], "client_org_id": client_org_id},
+        )
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    tickets = await db.execute(
+        text("""
+        SELECT id, subject, description, status, priority, category, created_at, updated_at
+        FROM crm.support_tickets
+        WHERE organization_id = :org_id AND project_id = :project_id AND contact_id = :contact_id AND is_deleted = false
+        ORDER BY created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": str(project_id), "contact_id": client["contact_id"]},
+    )
+    variations = await db.execute(
+        text("""
+        SELECT id, variation_number, title, description, scope_impact, cost_impact,
+               time_impact_days, status, submitted_at, approved_at, rejection_reason
+        FROM finance.variations
+        WHERE organization_id = :org_id AND project_id = :project_id AND is_deleted = false
+        ORDER BY created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": str(project_id)},
+    )
+    payment_requests = await db.execute(
+        text("""
+        SELECT id, title, description, amount, currency, due_date, status, cleared_at
+        FROM finance.client_payment_requests
+        WHERE organization_id = :org_id AND project_id = :project_id AND is_deleted = false
+        ORDER BY created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": str(project_id)},
+    )
+    return {
+        "success": True,
+        "data": {
+            "project": dict(project._mapping),
+            "tickets": [dict(r._mapping) for r in tickets],
+            "variations": [dict(r._mapping) for r in variations],
+            "payment_requests": [dict(r._mapping) for r in payment_requests],
+        },
+        "message": "Project detail loaded.",
+        "meta": {},
+    }
+
+
+async def _create_client_project_ticket(category: str, payload: ClientProjectRequestCreate, user: dict, db: AsyncSession):
+    client = await _get_client_portal_context(user, db)
+    result = await db.execute(
+        text("""
+        INSERT INTO crm.support_tickets (organization_id, created_by, contact_id, project_id, subject, description, category)
+        VALUES (:org_id, :user_id, :contact_id, :project_id, :subject, :description, :category)
+        RETURNING id, subject, description, status, priority, category, project_id, created_at, updated_at
+    """),
+        {
+            "org_id": user["org_id"], "user_id": user["user_id"], "contact_id": client["contact_id"],
+            "project_id": str(payload.project_id), "subject": payload.subject, "description": payload.description,
+            "category": category,
+        },
+    )
+    ticket = result.first()
+    await emit_role_notification(
+        db, org_id=user["org_id"], role_names=["Project Manager", "Executive (Admin)"],
+        title=f"Client {category.replace('_', ' ')}",
+        message=f"{client['contact_name']}: {payload.subject}",
+        notification_type="client_portal", action_url="/dashboard/client-portal",
+    )
+    await db.commit()
+    return ticket
+
+
+@router.post("/client/issues", status_code=status.HTTP_201_CREATED)
+async def create_client_issue(
+    payload: ClientProjectRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ticket = await _create_client_project_ticket("issue", payload, user, db)
+    return {"success": True, "data": dict(ticket._mapping) if ticket else None, "message": "Issue raised.", "meta": {}}
+
+
+@router.post("/client/additional-requests", status_code=status.HTTP_201_CREATED)
+async def create_client_additional_request(
+    payload: ClientProjectRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ticket = await _create_client_project_ticket("additional_request", payload, user, db)
+    return {"success": True, "data": dict(ticket._mapping) if ticket else None, "message": "Request submitted.", "meta": {}}
+
+
+@router.get("/client/variations")
+async def list_client_variations(
+    project_id: Optional[UUID] = Query(default=None),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_client_portal_context(user, db)
+    filters = ["v.organization_id = :org_id", "v.is_deleted = false"]
+    params: dict = {"org_id": user["org_id"]}
+    if project_id:
+        filters.append("v.project_id = :project_id")
+        params["project_id"] = str(project_id)
+    rows = await db.execute(
+        text(f"""
+        SELECT v.id, v.variation_number, v.project_id, v.title, v.description, v.scope_impact,
+               v.cost_impact, v.time_impact_days, v.status, v.submitted_at, v.approved_at, v.rejection_reason
+        FROM finance.variations v
+        WHERE {' AND '.join(filters)}
+        ORDER BY v.created_at DESC
+    """),
+        params,
+    )
+    return {"success": True, "data": [dict(r._mapping) for r in rows], "message": "Variations loaded.", "meta": {}}
+
+
+@router.post("/client/variations", status_code=status.HTTP_201_CREATED)
+async def create_client_variation(
+    payload: ClientVariationCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    client_org_id = await _client_org_id(user, client, db)
+    project = (
+        await db.execute(
+            text("SELECT client_org_id FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": str(payload.project_id), "org_id": user["org_id"]},
+        )
+    ).first()
+    if not project or not client_org_id or str(project.client_org_id) != client_org_id:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    seq = (
+        await db.execute(
+            text("SELECT COUNT(*) + 1 FROM finance.variations WHERE organization_id = :org_id AND project_id = :project_id"),
+            {"org_id": user["org_id"], "project_id": str(payload.project_id)},
+        )
+    ).scalar()
+    variation_number = f"VAR-{str(payload.project_id)[:8].upper()}-{seq:03d}"
+
+    row = (
+        await db.execute(
+            text("""
+            INSERT INTO finance.variations (
+                organization_id, variation_number, project_id, title, description,
+                initiated_by, scope_impact, cost_impact, time_impact_days,
+                status, submitted_by, submitted_at, created_by
+            ) VALUES (
+                :org_id, :variation_number, :project_id, :title, :description,
+                'client', :scope_impact, :cost_impact, :time_impact_days,
+                'pending', :user_id, NOW(), :user_id
+            ) RETURNING id, variation_number, project_id, title, description, scope_impact, cost_impact, time_impact_days, status, submitted_at
+        """),
+            {
+                "org_id": user["org_id"], "variation_number": variation_number, "project_id": str(payload.project_id),
+                "title": payload.title, "description": payload.description, "scope_impact": payload.scope_impact,
+                "cost_impact": payload.cost_impact, "time_impact_days": payload.time_impact_days, "user_id": user["user_id"],
+            },
+        )
+    ).first()
+
+    await emit_role_notification(
+        db, org_id=user["org_id"], role_names=["Project Manager", "Finance Manager", "Executive (Admin)"],
+        title="Client variation request",
+        message=f"{client['contact_name']} submitted variation '{payload.title}'.",
+        notification_type="variation", action_url="/dashboard/finance/variations",
+    )
+    await db.commit()
+    return {"success": True, "data": dict(row._mapping), "message": "Variation submitted.", "meta": {}}
+
+
+@router.get("/client/payment-requests")
+async def list_client_payment_requests(
+    project_id: Optional[UUID] = Query(default=None),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    client_org_id = await _client_org_id(user, client, db)
+    if not client_org_id:
+        return {"success": True, "data": [], "message": "No payment requests.", "meta": {}}
+
+    filters = ["cpr.organization_id = :org_id", "cpr.is_deleted = false", "p.client_org_id = :client_org_id"]
+    params: dict = {"org_id": user["org_id"], "client_org_id": client_org_id}
+    if project_id:
+        filters.append("cpr.project_id = :project_id")
+        params["project_id"] = str(project_id)
+
+    rows = await db.execute(
+        text(f"""
+        SELECT cpr.id, cpr.project_id, cpr.title, cpr.description, cpr.amount, cpr.currency,
+               cpr.due_date, cpr.status, cpr.cleared_by_party, cpr.cleared_at, cpr.created_at
+        FROM finance.client_payment_requests cpr
+        JOIN projects.projects p ON p.id = cpr.project_id AND p.organization_id = cpr.organization_id
+        WHERE {' AND '.join(filters)}
+        ORDER BY cpr.created_at DESC
+    """),
+        params,
+    )
+    return {"success": True, "data": [dict(r._mapping) for r in rows], "message": "Payment requests loaded.", "meta": {}}
+
+
+@router.post("/client/payment-requests/{request_id}/clear")
+async def clear_client_payment_request(
+    request_id: UUID,
+    payload: ClientPaymentRequestClear,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    client_org_id = await _client_org_id(user, client, db)
+    req = (
+        await db.execute(
+            text("""
+            SELECT cpr.id, cpr.amount, cpr.currency, cpr.status, cpr.project_id, cpr.progress_claim_id, cpr.title
+            FROM finance.client_payment_requests cpr
+            JOIN projects.projects p ON p.id = cpr.project_id AND p.organization_id = cpr.organization_id
+            WHERE cpr.id = :id AND cpr.organization_id = :org_id AND p.client_org_id = :client_org_id AND cpr.is_deleted = false
+        """),
+            {"id": str(request_id), "org_id": user["org_id"], "client_org_id": client_org_id},
+        )
+    ).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Payment request not found.")
+    if req.status in ("cleared", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"Payment request already '{req.status}'.")
+
+    doc = (
+        await db.execute(
+            text("SELECT id FROM core.documents WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": str(payload.receipt_document_id), "org_id": user["org_id"]},
+        )
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Receipt document not found.")
+
+    cash_account_id = await _pick_cash_account(db, user["org_id"], req.currency)
+    tx_number = f"CPR-{str(req.id)[:8].upper()}"
+    cashbook_row = await db.execute(
+        text("""
+        INSERT INTO finance.cashbook_transactions (
+            organization_id, cash_account_id, transaction_number, transaction_date,
+            transaction_type, direction, source_type, source_id, project_id,
+            counterparty_type, counterparty_name, payment_method, description,
+            amount, currency, posted_by
+        ) VALUES (
+            :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+            'receipt', 'inflow', 'client_payment_request', :source_id, :project_id,
+            'client', :counterparty_name, 'bank_transfer', :description,
+            :amount, :currency, :user_id
+        ) RETURNING id
+    """),
+        {
+            "org_id": user["org_id"], "cash_account_id": cash_account_id, "tx_number": tx_number,
+            "source_id": str(req.id), "project_id": str(req.project_id),
+            "counterparty_name": client.get("company_name") or client.get("contact_name"),
+            "description": f"Client payment: {req.title}", "amount": float(req.amount), "currency": req.currency,
+            "user_id": user["user_id"],
+        },
+    )
+    cashbook_id = str(cashbook_row.scalar())
+
+    await db.execute(
+        text("""
+        UPDATE finance.client_payment_requests
+        SET status = 'cleared', cleared_by_party = 'client', cleared_by = :user_id, cleared_at = NOW(),
+            cashbook_transaction_id = :cashbook_id, updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+    """),
+        {"user_id": user["user_id"], "cashbook_id": cashbook_id, "id": str(request_id), "org_id": user["org_id"]},
+    )
+    if req.progress_claim_id:
+        await db.execute(
+            text("""
+            INSERT INTO finance.receipt_allocations (organization_id, cashbook_transaction_id, progress_claim_id, project_id, allocated_amount, allocated_by)
+            VALUES (:org_id, :cashbook_id, :progress_claim_id, :project_id, :amount, :user_id)
+        """),
+            {
+                "org_id": user["org_id"], "cashbook_id": cashbook_id, "progress_claim_id": str(req.progress_claim_id),
+                "project_id": str(req.project_id), "amount": float(req.amount), "user_id": user["user_id"],
+            },
+        )
+        await db.execute(
+            text("UPDATE finance.progress_claims SET status = 'paid', updated_at = NOW() WHERE id = :id AND organization_id = :org_id"),
+            {"id": str(req.progress_claim_id), "org_id": user["org_id"]},
+        )
+    await db.execute(
+        text("""
+        INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+        VALUES (:org_id, :document_id, 'client_payment_request', :entity_id, 'receipt', :user_id)
+        ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+    """),
+        {
+            "org_id": user["org_id"], "document_id": str(payload.receipt_document_id),
+            "entity_id": str(request_id), "user_id": user["user_id"],
+        },
+    )
+    await emit_role_notification(
+        db, org_id=user["org_id"], role_names=["Finance Manager"],
+        title="Client payment request cleared by client",
+        message=f"{client['contact_name']} marked payment request '{req.title}' as cleared with a receipt. Please reconcile.",
+        notification_type="client_payment_request", action_url="/dashboard/finance/client-payments",
+    )
+    await db.commit()
+    return {"success": True, "data": {"id": str(request_id), "status": "cleared"}, "message": "Payment request cleared.", "meta": {}}

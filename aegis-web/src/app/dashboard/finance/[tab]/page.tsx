@@ -14,6 +14,10 @@ const TAB_ROUTES: Record<string, string> = {
   transfers: "/dashboard/finance?tab=transfers",
   "department-pnl": "/dashboard/finance?tab=department-pnl",
   statutory: "/dashboard/finance?tab=statutory",
+  "vendor-payments": "/dashboard/finance?tab=vendor-payments",
+  "client-payments": "/dashboard/finance?tab=client-payments",
+  "historical-entry": "/dashboard/finance?tab=historical-entry",
+  "financial-statements": "/dashboard/finance?tab=financial-statements",
 };
 
 export default async function FinanceTabPage({

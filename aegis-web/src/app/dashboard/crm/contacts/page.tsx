@@ -2,11 +2,11 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { 
-  ArrowLeft, Users, Mail, Phone, ExternalLink, Plus, Search, 
+import {
+  ArrowLeft, Users, Mail, Phone, ExternalLink, Plus, Search,
   Linkedin, CheckCircle2, Loader2, MessageSquare, PlusSquare,
   Calendar, FileText, CheckSquare, Bell, Clock, Building2,
-  Save, PhoneCall, Trash2, Edit2, AlertCircle, UploadCloud
+  Save, PhoneCall, Trash2, Edit2, AlertCircle, UploadCloud, Copy
 } from 'lucide-react';
 import {
   getCrmContacts,
@@ -16,6 +16,8 @@ import {
   getCrmOrganizations,
   getCrmActivities,
   createCrmActivity,
+  findDuplicateCrmContacts,
+  mergeCrmContacts,
   describeActionError
 } from '@/lib/api';
 import { useApiQueries } from '@/hooks/useApiQueries';
@@ -56,7 +58,13 @@ export default function ContactsRegistry() {
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [isDeleteContactModalOpen, setIsDeleteContactModalOpen] = useState(false);
   const [isDeletingContact, setIsDeletingContact] = useState(false);
-  
+
+  // Duplicate Resolution Engine
+  const [isDuplicateChecking, setIsDuplicateChecking] = useState(false);
+  const [duplicateContacts, setDuplicateContacts] = useState<Contact[]>([]);
+  const [isDupModalOpen, setIsDupModalOpen] = useState(false);
+  const [isMerging, setIsMerging] = useState(false);
+
   // Modals & Submits
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -213,6 +221,43 @@ export default function ContactsRegistry() {
       ), "error");
     } finally {
       setIsDeletingContact(false);
+    }
+  };
+
+  const handleCheckDuplicateContacts = async (contact: Contact) => {
+    setIsDuplicateChecking(true);
+    try {
+      const res = await findDuplicateCrmContacts({ name: contact.contact_name, email: contact.email });
+      if (res.success && Array.isArray(res.data)) {
+        setDuplicateContacts(res.data.filter((c: Contact) => c.id !== contact.id));
+      } else {
+        setDuplicateContacts([]);
+      }
+      setIsDupModalOpen(true);
+    } catch (err) {
+      showToast("Duplicate check failed. Check the CRM service connection and retry.", "error");
+    } finally {
+      setIsDuplicateChecking(false);
+    }
+  };
+
+  const handleMergeIntoExisting = async (existingContactId: string) => {
+    if (!selectedContactId) return;
+    setIsMerging(true);
+    try {
+      const res = await mergeCrmContacts(existingContactId, [selectedContactId]);
+      if (res.success) {
+        setIsDupModalOpen(false);
+        setSelectedContactId(existingContactId);
+        await reloadContacts();
+        showToast("Contacts merged into a single record.");
+      } else {
+        showToast("Contacts were not merged. Check the CRM service connection and retry.", "error");
+      }
+    } catch (err) {
+      showToast("Contacts were not merged. Check the CRM service connection and retry.", "error");
+    } finally {
+      setIsMerging(false);
     }
   };
 
@@ -531,6 +576,14 @@ export default function ContactsRegistry() {
                         <span className="font-mono text-[8px] bg-ink border border-ink-mid text-slate-light px-1.5 py-0.5">
                           ID: {selectedContact.id.substring(0, 8)}
                         </span>
+                        <button
+                          onClick={() => handleCheckDuplicateContacts(selectedContact)}
+                          disabled={isDuplicateChecking}
+                          title="Find duplicates"
+                          className="w-6 h-6 flex items-center justify-center bg-ink border border-ink-mid text-slate-light hover:text-signal hover:border-signal/40 transition-colors disabled:opacity-40"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </button>
                         <button
                           onClick={() => setIsDeleteContactModalOpen(true)}
                           title="Delete contact"
@@ -910,6 +963,47 @@ export default function ContactsRegistry() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* DUPLICATE RESOLUTION ENGINE */}
+      {isDupModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-lg p-5">
+            <h3 className="font-mono text-sm text-signal uppercase font-bold tracking-wider mb-2">Duplicate Resolution Engine</h3>
+            <p className="text-xs text-slate-light mb-4">
+              Potential matches for <span className="text-paper font-bold">{selectedContact?.contact_name}</span>.
+            </p>
+            <div className="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
+              {duplicateContacts.length === 0 ? (
+                <p className="text-[11px] text-slate italic">No duplicate matches found. This contact looks clean.</p>
+              ) : (
+                duplicateContacts.map((dup) => (
+                  <div key={dup.id} className="bg-ink border border-ink-mid p-3 flex items-center justify-between text-xs">
+                    <div>
+                      <h4 className="font-bold text-paper">{dup.contact_name}</h4>
+                      <p className="text-slate-light font-mono text-[10px]">{dup.email || 'No email'} {dup.phone ? `| ${dup.phone}` : ''}</p>
+                    </div>
+                    <button
+                      onClick={() => handleMergeIntoExisting(dup.id)}
+                      disabled={isMerging}
+                      className="px-3 py-1 bg-signal/10 text-signal hover:bg-signal/20 rounded-sm font-mono text-[9px] font-semibold uppercase disabled:opacity-40"
+                    >
+                      Merge into existing
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={() => setIsDupModalOpen(false)}
+                className="px-4 py-2 border border-ink-mid rounded-sm text-slate-light text-[10px] font-mono uppercase hover:bg-white/5"
+              >
+                Close view
+              </button>
+            </div>
           </div>
         </div>
       )}

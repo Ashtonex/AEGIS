@@ -69,3 +69,7 @@ tmp/
 # Frontend build artifacts that must never be committed
 aegis-web/.aegis-build.lock
 *.tsbuildinfo
+
+# Runtime-generated secrets (e.g. VAPID keypair for web push) - never commit
+imperium-api/.aegis-runtime/
+*.pem

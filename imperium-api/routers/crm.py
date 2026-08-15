@@ -1594,9 +1594,9 @@ async def find_duplicate_opportunities(
         SELECT id, name, stage, budget, deal_value, client_org_id, client_id, created_at
         FROM crm.opportunities
         WHERE organization_id=:org_id AND is_deleted=false AND (
-            (:name IS NOT NULL AND lower(name)=lower(:name))
-            OR (:client_org_id IS NOT NULL AND client_org_id::text=:client_org_id)
-            OR (:client_id IS NOT NULL AND client_id::text=:client_id)
+            (CAST(:name AS text) IS NOT NULL AND lower(name)=lower(CAST(:name AS text)))
+            OR (CAST(:client_org_id AS text) IS NOT NULL AND client_org_id::text=CAST(:client_org_id AS text))
+            OR (CAST(:client_id AS text) IS NOT NULL AND client_id::text=CAST(:client_id AS text))
         )
         ORDER BY created_at DESC
         LIMIT 25

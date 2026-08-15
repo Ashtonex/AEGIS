@@ -902,6 +902,8 @@ export async function createCrmDocument(data: {
   category?: string | null;
   opportunity_id?: string | null;
   tender_id?: string | null;
+  storage_path?: string | null;
+  mime_type?: string | null;
 }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/documents/', {
     method: 'POST',
@@ -956,6 +958,54 @@ export async function updateCrmContact(id: string, data: any): Promise<ApiRespon
 export async function deleteCrmContact(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/crm-contacts/${id}`, {
     method: 'DELETE'
+  });
+}
+
+export async function findDuplicateCrmContacts(params: { name?: string; email?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params.name) search.set("name", params.name);
+  if (params.email) search.set("email", params.email);
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-contacts/duplicates?${search.toString()}`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function mergeCrmContacts(contactId: string, sourceContactIds: string[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-contacts/${contactId}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ source_contact_ids: sourceContactIds }),
+    allowFallback: false,
+  });
+}
+
+export async function attachCrmContactDocument(contactId: string, documentId: string, linkRole?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-contacts/${contactId}/documents`, {
+    method: "POST",
+    body: JSON.stringify({ document_id: documentId, ...(linkRole ? { link_role: linkRole } : {}) }),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmContactDocuments(contactId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-contacts/${contactId}/documents`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function attachCrmLeadDocument(leadId: string, documentId: string, linkRole?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-leads/${leadId}/documents`, {
+    method: "POST",
+    body: JSON.stringify({ document_id: documentId, ...(linkRole ? { link_role: linkRole } : {}) }),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmLeadDocuments(leadId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-leads/${leadId}/documents`, {
+    cache: "no-store",
+    allowFallback: false,
   });
 }
 
@@ -1774,6 +1824,310 @@ export async function getClientPortalTickets(): Promise<ApiResponse<ClientPortal
   });
 }
 
+// ---------------------------------------------------------------------------
+// Supplier / Subcontractor portal
+// ---------------------------------------------------------------------------
+
+export type VendorVerificationStage = "incomplete" | "system_pending" | "system_verified" | "hr_verified" | "rejected";
+export type VendorRateType = "material" | "transport" | "service";
+
+export interface SupplierPortalVendor {
+  subcontractor_id: string;
+  name: string;
+  registration_number?: string;
+  tax_clearance_number?: string;
+  nssa_number?: string;
+  praz_number?: string;
+  contact_name?: string;
+  contact_email?: string;
+  contact_phone?: string;
+  address?: string;
+  coverage_provinces?: string[];
+  compliance_status?: string;
+  review_status?: string;
+  verification_stage: VendorVerificationStage;
+  system_verified_at?: string;
+  system_verification_notes?: string;
+  hr_verified_at?: string;
+  hr_verification_notes?: string;
+  linked_supplier_id?: string;
+  account_type?: "supplier" | "subcontractor";
+}
+
+export interface VendorDocument {
+  id: string;
+  title: string;
+  category: string;
+  expiry_date?: string;
+  created_at: string;
+}
+
+export interface VendorPaymentRequest {
+  id: string;
+  subcontractor_id: string;
+  supplier_id?: string;
+  project_id?: string;
+  rate_type?: VendorRateType;
+  reference_description: string;
+  amount: number;
+  currency: string;
+  status: "submitted" | "acknowledged" | "cleared" | "disputed" | "cancelled";
+  cleared_by_party?: "vendor" | "finance";
+  cleared_at?: string;
+  submitted_at: string;
+}
+
+export interface SupplierPortalWorkspace {
+  vendor: SupplierPortalVendor;
+  rate_item_counts: Record<string, number>;
+  documents: VendorDocument[];
+  payment_requests: VendorPaymentRequest[];
+  modules: Array<{ key: string; label: string; status: "active" | "pending" }>;
+}
+
+export interface VendorRateItem {
+  id: string;
+  subcontractor_id: string;
+  rate_type: VendorRateType;
+  item_code?: string;
+  description: string;
+  unit_of_measure: string;
+  unit_price: number;
+  currency: string;
+  min_quantity?: number;
+  lead_time_days?: number;
+  route_from?: string;
+  route_to?: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export async function getSupplierPortalWorkspace(): Promise<ApiResponse<SupplierPortalWorkspace>> {
+  return fetchApi<ApiResponse<SupplierPortalWorkspace>>(`/api/v1/portals/supplier/workspace`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function updateSupplierPortalProfile(payload: Partial<SupplierPortalVendor>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/portals/supplier/profile`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function submitSupplierPortalProfileForReview(): Promise<ApiResponse<{ verification_stage: VendorVerificationStage; problems?: string[] }>> {
+  return fetchApi<ApiResponse<{ verification_stage: VendorVerificationStage; problems?: string[] }>>(`/api/v1/portals/supplier/profile/submit-for-review`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function registerSupplierPortalDocument(payload: {
+  storage_path: string;
+  file_name: string;
+  mime_type?: string;
+  size_bytes?: number;
+  category: string;
+  expiry_date?: string;
+}): Promise<ApiResponse<VendorDocument>> {
+  return fetchApi<ApiResponse<VendorDocument>>(`/api/v1/portals/supplier/documents`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getSupplierPortalRateItems(): Promise<ApiResponse<VendorRateItem[]>> {
+  return fetchApi<ApiResponse<VendorRateItem[]>>(`/api/v1/portals/supplier/rate-items`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createSupplierPortalRateItem(payload: {
+  rate_type: VendorRateType;
+  item_code?: string;
+  description: string;
+  unit_of_measure?: string;
+  unit_price: number;
+  currency?: string;
+  min_quantity?: number;
+  lead_time_days?: number;
+  route_from?: string;
+  route_to?: string;
+}): Promise<ApiResponse<VendorRateItem>> {
+  return fetchApi<ApiResponse<VendorRateItem>>(`/api/v1/portals/supplier/rate-items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getSupplierPortalPaymentRequests(): Promise<ApiResponse<VendorPaymentRequest[]>> {
+  return fetchApi<ApiResponse<VendorPaymentRequest[]>>(`/api/v1/portals/supplier/payment-requests`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createSupplierPortalPaymentRequest(payload: {
+  project_id?: string;
+  rate_type?: VendorRateType;
+  reference_description: string;
+  amount: number;
+  currency?: string;
+}): Promise<ApiResponse<VendorPaymentRequest>> {
+  return fetchApi<ApiResponse<VendorPaymentRequest>>(`/api/v1/portals/supplier/payment-requests`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function clearSupplierPortalPaymentRequest(id: string, receiptDocumentId: string, notes?: string): Promise<ApiResponse<{ id: string; status: string }>> {
+  return fetchApi<ApiResponse<{ id: string; status: string }>>(`/api/v1/portals/supplier/payment-requests/${id}/clear`, {
+    method: 'POST',
+    body: JSON.stringify({ receipt_document_id: receiptDocumentId, notes }),
+    allowFallback: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Client portal - projects, issues, variations, payment requests
+// ---------------------------------------------------------------------------
+
+export interface ClientPortalProject {
+  id: string;
+  name: string;
+  status: string;
+  project_code?: string;
+  project_type?: string;
+  start_date?: string;
+  planned_completion_date?: string;
+  actual_completion_date?: string;
+}
+
+export interface ClientProjectVariation {
+  id: string;
+  variation_number: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  scope_impact?: string;
+  cost_impact?: number;
+  time_impact_days?: number;
+  status: "pending" | "submitted" | "approved" | "rejected" | "cancelled" | "incorporated";
+  submitted_at?: string;
+  approved_at?: string;
+  rejection_reason?: string;
+}
+
+export interface ClientPaymentRequest {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  amount: number;
+  currency: string;
+  due_date?: string;
+  status: "sent" | "viewed" | "cleared" | "disputed" | "cancelled";
+  cleared_by_party?: "client" | "finance";
+  cleared_at?: string;
+  created_at: string;
+}
+
+export interface ClientProjectDetail {
+  project: ClientPortalProject;
+  tickets: ClientPortalTicket[];
+  variations: ClientProjectVariation[];
+  payment_requests: ClientPaymentRequest[];
+}
+
+export async function getClientPortalProjects(): Promise<ApiResponse<ClientPortalProject[]>> {
+  return fetchApi<ApiResponse<ClientPortalProject[]>>(`/api/v1/portals/client/projects`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getClientPortalProjectDetail(projectId: string): Promise<ApiResponse<ClientProjectDetail>> {
+  return fetchApi<ApiResponse<ClientProjectDetail>>(`/api/v1/portals/client/projects/${projectId}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createClientPortalIssue(payload: { project_id: string; subject: string; description: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/portals/client/issues`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function createClientPortalAdditionalRequest(payload: { project_id: string; subject: string; description: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/portals/client/additional-requests`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getClientPortalVariations(projectId?: string): Promise<ApiResponse<ClientProjectVariation[]>> {
+  const query = projectId ? `?project_id=${projectId}` : '';
+  return fetchApi<ApiResponse<ClientProjectVariation[]>>(`/api/v1/portals/client/variations${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createClientPortalVariation(payload: {
+  project_id: string;
+  title: string;
+  description?: string;
+  scope_impact?: string;
+  cost_impact?: number;
+  time_impact_days?: number;
+}): Promise<ApiResponse<ClientProjectVariation>> {
+  return fetchApi<ApiResponse<ClientProjectVariation>>(`/api/v1/portals/client/variations`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getClientPortalPaymentRequests(projectId?: string): Promise<ApiResponse<ClientPaymentRequest[]>> {
+  const query = projectId ? `?project_id=${projectId}` : '';
+  return fetchApi<ApiResponse<ClientPaymentRequest[]>>(`/api/v1/portals/client/payment-requests${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function clearClientPortalPaymentRequest(id: string, receiptDocumentId: string, notes?: string): Promise<ApiResponse<{ id: string; status: string }>> {
+  return fetchApi<ApiResponse<{ id: string; status: string }>>(`/api/v1/portals/client/payment-requests/${id}/clear`, {
+    method: 'POST',
+    body: JSON.stringify({ receipt_document_id: receiptDocumentId, notes }),
+    allowFallback: false,
+  });
+}
+
+export async function registerClientPortalDocument(payload: {
+  storage_path: string;
+  file_name: string;
+  mime_type?: string;
+  size_bytes?: number;
+  category: string;
+}): Promise<ApiResponse<{ id: string; title: string; category: string; created_at: string }>> {
+  return fetchApi<ApiResponse<{ id: string; title: string; category: string; created_at: string }>>(`/api/v1/portals/client/documents`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getMyProfile(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/profile/me', { cache: 'no-store' });
 }
@@ -1998,6 +2352,14 @@ export async function createSettingsManagedAccount(payload: Record<string, unkno
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/managed-accounts`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function grantClientPortalAccess(contactId: string): Promise<ApiResponse<{ user_id: string; contact_id: string; email: string }>> {
+  return fetchApi<ApiResponse<{ user_id: string; contact_id: string; email: string }>>(`/api/v1/settings/client-portal-access`, {
+    method: 'POST',
+    body: JSON.stringify({ contact_id: contactId }),
     allowFallback: false,
   });
 }
@@ -2286,6 +2648,169 @@ export async function createFinanceVariation(payload: Record<string, unknown>): 
   return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/variations', {
     method: 'POST',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Approve or reject a variation (including client-submitted ones from the client portal). */
+export async function decideFinanceVariation(variationId: string, decision: "approve" | "reject", rejectionReason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/variations/${variationId}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, rejection_reason: rejectionReason }),
+    allowFallback: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Finance historical backfill - pre-AEGIS project revenue/cost entry,
+// driven through the same lifecycles the live system uses (see
+// imperium-api/routers/financial_performance.py historical/* endpoints).
+// ---------------------------------------------------------------------------
+
+export interface HistoricalProjectCreatePayload {
+  name: string;
+  department_id: string;
+  project_code?: string;
+  project_type?: string;
+  start_date?: string;
+  client_org_id?: string;
+  new_client_name?: string;
+  new_contact_name?: string;
+  new_contact_email?: string;
+}
+
+export async function createHistoricalProject(payload: HistoricalProjectCreatePayload): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/historical/projects', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function createHistoricalRevenue(payload: {
+  project_id: string;
+  amount: number;
+  historical_date: string;
+  description?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/historical/revenue', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function createHistoricalCostActivity(payload: {
+  project_id: string;
+  cost_category: "labour" | "equipment" | "materials" | "subcontract" | "overhead" | "other";
+  description: string;
+  amount: number;
+  historical_date: string;
+  paid?: boolean;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/historical/cost-activities', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export interface FinancialStatementParams {
+  period?: "day" | "week" | "month" | "quarter" | "year";
+  anchor_date?: string;
+  date_from?: string;
+  date_to?: string;
+  department_id?: string;
+}
+
+export async function getFinanceStatements(params?: FinancialStatementParams): Promise<ApiResponse<any>> {
+  const search = new URLSearchParams();
+  if (params?.period) search.set('period', params.period);
+  if (params?.anchor_date) search.set('anchor_date', params.anchor_date);
+  if (params?.date_from) search.set('date_from', params.date_from);
+  if (params?.date_to) search.set('date_to', params.date_to);
+  if (params?.department_id) search.set('department_id', params.department_id);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/statements${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getFinancialRunway(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/executive/financial-runway', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Internal staff: HR vendor verification queue, Finance payment-request queues
+// ---------------------------------------------------------------------------
+
+export async function getHrVendorVerificationQueue(stage?: string): Promise<ApiResponse<any[]>> {
+  const query = stage ? `?stage=${stage}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/hr/vendor-verification/queue${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function decideHrVendorVerification(subcontractorId: string, decision: "approve" | "reject", notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${subcontractorId}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, notes }),
+    allowFallback: false,
+  });
+}
+
+export async function getFinanceVendorPaymentRequests(status?: string): Promise<ApiResponse<any[]>> {
+  const query = status ? `?status=${status}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/payments/vendor-requests${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function clearFinanceVendorPaymentRequest(id: string, receiptDocumentId: string, notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/payments/vendor-requests/${id}/clear`, {
+    method: 'POST',
+    body: JSON.stringify({ receipt_document_id: receiptDocumentId, notes }),
+    allowFallback: false,
+  });
+}
+
+export async function getFinanceClientPaymentRequests(params?: { project_id?: string; status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.status) search.set('status', params.status);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/client-payment-requests${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createFinanceClientPaymentRequest(payload: {
+  project_id: string;
+  progress_claim_id?: string;
+  title: string;
+  description?: string;
+  amount: number;
+  currency?: string;
+  due_date?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/client-payment-requests', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function clearFinanceClientPaymentRequest(id: string, receiptDocumentId: string, notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/client-payment-requests/${id}/clear`, {
+    method: 'POST',
+    body: JSON.stringify({ receipt_document_id: receiptDocumentId, notes }),
     allowFallback: false,
   });
 }

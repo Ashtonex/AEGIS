@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Dict, Any, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core.database import get_db
 from core.security import require_permission, user_has_permission
@@ -258,9 +258,9 @@ async def find_duplicates(
         SELECT id, company_name, contact_name, contact_email, contact_phone, status, ai_score, created_at
         FROM crm.leads
         WHERE organization_id=:org_id AND is_deleted=false AND (
-            (:email IS NOT NULL AND lower(contact_email)=lower(:email))
-            OR (:phone IS NOT NULL AND regexp_replace(COALESCE(contact_phone, ''), '[^0-9]', '', 'g') = regexp_replace(:phone, '[^0-9]', '', 'g'))
-            OR (:company_name IS NOT NULL AND lower(company_name)=lower(:company_name))
+            (CAST(:email AS text) IS NOT NULL AND lower(contact_email)=lower(CAST(:email AS text)))
+            OR (CAST(:phone AS text) IS NOT NULL AND regexp_replace(COALESCE(contact_phone, ''), '[^0-9]', '', 'g') = regexp_replace(CAST(:phone AS text), '[^0-9]', '', 'g'))
+            OR (CAST(:company_name AS text) IS NOT NULL AND lower(company_name)=lower(CAST(:company_name AS text)))
         )
         ORDER BY created_at DESC
         LIMIT 25
@@ -726,9 +726,9 @@ async def qualify_lead(
         opp_data = payload.opportunity
         insert_opp_query = text("""
             INSERT INTO crm.opportunities (
-                organization_id, client_id, name, stage, budget, probability, created_by, lead_id, budget_confirmed
+                organization_id, client_id, client_org_id, name, stage, budget, probability, created_by, lead_id, budget_confirmed
             ) VALUES (
-                :org_id, :client_id, :name, :stage, :budget, :probability, :user_id, :lead_id, :budget_confirmed
+                :org_id, :client_id, :client_org_id, :name, :stage, :budget, :probability, :user_id, :lead_id, :budget_confirmed
             ) RETURNING id
         """)
         insert_opp_res = await db.execute(
@@ -736,6 +736,7 @@ async def qualify_lead(
             {
                 "org_id": org_id,
                 "client_id": contact_id,
+                "client_org_id": client_org_id,
                 "name": opp_data.name,
                 "stage": opp_data.stage,
                 "budget": opp_data.budget,
@@ -835,3 +836,78 @@ async def qualify_lead(
             status_code=500,
             detail=f"Database error during lead qualification: {str(e)}",
         )
+
+
+class LeadDocumentPayload(BaseModel):
+    document_id: str
+    link_role: str = Field(default="attachment", max_length=80)
+
+
+@router.post("/{lead_id}/documents", status_code=201)
+async def attach_lead_document(
+    lead_id: str,
+    payload: LeadDocumentPayload,
+    user: dict = Depends(require_permission(LEAD_UPDATE_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Same core.document_links polymorphic pattern already used for
+    support-ticket attachments (crm_lifecycle.py) - leads had zero document
+    linkage before this."""
+    org_id = _require_org_id(user)
+    lead = await db.execute(
+        text("SELECT 1 FROM crm.leads WHERE id=:lead_id AND organization_id=:org_id AND is_deleted=false"),
+        {"lead_id": lead_id, "org_id": org_id},
+    )
+    if not lead.scalar():
+        raise HTTPException(status_code=404, detail="Lead not found")
+    document = await db.execute(
+        text("SELECT 1 FROM core.documents WHERE id=:document_id AND organization_id=:org_id AND is_deleted=false"),
+        {"document_id": payload.document_id, "org_id": org_id},
+    )
+    if not document.scalar():
+        raise HTTPException(status_code=404, detail="Document not found in this organization.")
+    result = await db.execute(
+        text("""
+            INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+            VALUES (:org_id, :document_id, 'lead', :lead_id, :link_role, :user_id)
+            ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+            RETURNING id
+        """),
+        {
+            "org_id": org_id,
+            "document_id": payload.document_id,
+            "lead_id": lead_id,
+            "link_role": payload.link_role,
+            "user_id": user["sub"],
+        },
+    )
+    new_id = result.scalar()
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": str(new_id) if new_id else None},
+        "message": "Document attached to lead." if new_id else "Document was already attached to this lead.",
+        "meta": {},
+    }
+
+
+@router.get("/{lead_id}/documents")
+async def list_lead_documents(
+    lead_id: str,
+    user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    rows = await db.execute(
+        text("""
+            SELECT d.id, d.title, d.file_name, d.file_size_bytes, d.category, dl.link_role, dl.linked_at
+            FROM core.document_links dl
+            JOIN core.documents d ON d.id = dl.document_id AND d.organization_id = dl.organization_id
+            WHERE dl.organization_id=:org_id AND dl.entity_type='lead' AND dl.entity_id=:lead_id
+              AND dl.is_deleted=false AND d.is_deleted=false
+            ORDER BY dl.linked_at DESC
+        """),
+        {"org_id": org_id, "lead_id": lead_id},
+    )
+    items = [dict(row._mapping) for row in rows]
+    return {"success": True, "data": items, "message": "Lead documents listed.", "meta": {"total": len(items)}}
