@@ -331,23 +331,23 @@ function HRWorkspace() {
 
       {/* KPI strip */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Total Headcount</p>
           <p className="text-xl font-semibold text-paper tracking-tight mt-1">{kpis.total}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Active Deployed</p>
           <p className="text-xl font-semibold text-emerald-400 tracking-tight mt-1">{kpis.active}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">On Approved Leave</p>
           <p className="text-xl font-semibold text-blue-400 tracking-tight mt-1">{kpis.leave}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Suspended / Inactive</p>
           <p className="text-xl font-semibold text-amber-500 tracking-tight mt-1">{kpis.suspended}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Competence Registered SKUs</p>
           <p className="text-xl font-semibold text-paper tracking-tight mt-1">{kpis.skillsCount}</p>
         </div>
@@ -388,7 +388,7 @@ function HRWorkspace() {
       </div>
 
       {activeTab === "vendor-verification" && (
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <VendorVerificationPanel />
         </div>
       )}
@@ -399,7 +399,7 @@ function HRWorkspace() {
           {activeTab === "employees" && (
             <div className="space-y-4">
               {/* Search & Filters */}
-              <div className="bg-ink-light border border-ink-mid p-4 rounded-sm flex flex-col md:flex-row gap-4 items-center">
+              <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex flex-col md:flex-row gap-4 items-center">
                 <div className="relative flex-1 w-full">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate" />
                   <input
@@ -436,7 +436,7 @@ function HRWorkspace() {
               </div>
 
               {/* Table */}
-              <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+              <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
                 <table className="w-full text-left border-collapse text-sm">
                   <thead>
                     <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
@@ -479,7 +479,7 @@ function HRWorkspace() {
 
           {activeTab === "attendance" && (
             <div className="space-y-4">
-              <div className="bg-ink-light border border-ink-mid p-4 rounded-sm flex justify-between items-center">
+              <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex justify-between items-center">
                 <span className="font-mono text-xs uppercase text-slate tracking-wider">Attendance date filter</span>
                 <input
                   type="date"
@@ -488,7 +488,7 @@ function HRWorkspace() {
                   className="bg-ink border border-ink-mid rounded px-3 py-1.5 text-sm text-paper focus:outline-none focus:border-signal/50"
                 />
               </div>
-              <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+              <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
                 <table className="w-full text-left border-collapse text-sm">
                   <thead>
                     <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
@@ -528,7 +528,7 @@ function HRWorkspace() {
           )}
 
           {activeTab === "leave" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <table className="w-full text-left border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
@@ -586,7 +586,7 @@ function HRWorkspace() {
           )}
 
           {activeTab === "payroll" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Payroll Processing</span>
               </div>
@@ -604,7 +604,7 @@ function HRWorkspace() {
 
         {/* Detailed Side Panel */}
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-5 rounded-sm">
+          <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
             <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Workforce Intelligence</h2>
             {detailLoading ? (
               <div className="flex h-48 items-center justify-center">
@@ -689,7 +689,7 @@ function HRWorkspace() {
       {/* Attendance Modal */}
       {showAttendanceModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Log Attendance</span>
               <button onClick={() => setShowAttendanceModal(false)} className="text-slate hover:text-paper">
@@ -802,7 +802,7 @@ function HRWorkspace() {
       {/* Leave Modal */}
       {showLeaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Submit Leave Request</span>
               <button onClick={() => setShowLeaveModal(false)} className="text-slate hover:text-paper">

@@ -361,7 +361,7 @@ function ComplianceWorkspace() {
 
       {/* Compliance Stats strip */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm flex justify-between items-center">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex justify-between items-center">
           <div>
             <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Compliance Score</p>
             <p className={`text-xl font-bold tracking-tight mt-1 ${score === null ? 'text-slate-light' : score >= 80 ? 'text-emerald-400' : score >= 60 ? 'text-amber-500' : 'text-red-500'}`}>
@@ -371,19 +371,19 @@ function ComplianceWorkspace() {
           </div>
           <ShieldCheck className={`h-8 w-8 ${score === null ? 'text-slate' : score >= 80 ? 'text-emerald-400' : 'text-amber-500'}`} />
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Total Obligations</p>
           <p className="text-xl font-semibold text-paper tracking-tight mt-1">{obligations.length}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Expiring Soon (30d)</p>
           <p className="text-xl font-semibold text-amber-500 tracking-tight mt-1">{complianceKPIS.expiringSoon}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Expired Credentials</p>
           <p className="text-xl font-semibold text-red-500 tracking-tight mt-1">{complianceKPIS.expiredCount}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Blocked Deployments</p>
           <p className="text-xl font-semibold text-red-400 tracking-tight mt-1">{complianceKPIS.blockedDeployments}</p>
         </div>
@@ -430,7 +430,7 @@ function ComplianceWorkspace() {
       </div>
 
       {/* Tab Panels */}
-      <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+      <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
         {activeTab === "obligations" && (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-sm">
@@ -790,7 +790,7 @@ function ComplianceWorkspace() {
       {/* Obligation Modal */}
       {showObligationModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Record Obligation</span>
               <button onClick={() => setShowObligationModal(false)} className="text-slate hover:text-paper">
@@ -895,7 +895,7 @@ function ComplianceWorkspace() {
       {/* Deployment Requirement Modal */}
       {showRequirementModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-2xl p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-2xl p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Add Deployment Gate Requirement</span>
               <button onClick={() => setShowRequirementModal(false)} className="text-slate hover:text-paper">
@@ -1014,7 +1014,7 @@ function ComplianceWorkspace() {
       {/* Corrective Action Modal */}
       {showActionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Record Corrective Action (CAPA)</span>
               <button onClick={() => setShowActionModal(false)} className="text-slate hover:text-paper">

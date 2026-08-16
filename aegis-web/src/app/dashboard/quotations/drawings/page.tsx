@@ -262,7 +262,7 @@ export default function DrawingTakeoffPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* LEFT: Upload + revision list */}
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
               <Upload className="w-4 h-4 text-signal" /> New Drawing Revision
             </h2>
@@ -328,7 +328,7 @@ export default function DrawingTakeoffPage() {
             </button>
           </div>
 
-          <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-3">
+          <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-3">
             <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2">
               Revisions
             </h2>
@@ -364,7 +364,7 @@ export default function DrawingTakeoffPage() {
         {/* RIGHT: Selected revision detail */}
         <div className="lg:col-span-2 space-y-6">
           {!selectedId ? (
-            <div className="bg-ink-light border border-dashed border-ink-mid rounded-sm py-24 flex flex-col items-center justify-center space-y-3 text-slate">
+            <div className="bg-ink-light border border-dashed border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] py-24 flex flex-col items-center justify-center space-y-3 text-slate">
               <FileText className="w-12 h-12 opacity-30" />
               <p className="text-sm">Select a revision to review its measurements and checklist.</p>
             </div>
@@ -372,7 +372,7 @@ export default function DrawingTakeoffPage() {
             <div className="py-24 flex justify-center"><Loader2 className="w-8 h-8 text-signal animate-spin" /></div>
           ) : (
             <>
-              <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-2">
+              <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2">
                 <div className="flex items-center justify-between">
                   <h2 className="font-display font-semibold text-lg text-white">{selected.drawing_name} ({selected.revision_label})</h2>
                   <span className={`inline-flex px-2 py-0.5 rounded-sm border text-[10px] font-mono uppercase ${statusColor(selected.status)}`}>{selected.status}</span>
@@ -392,7 +392,7 @@ export default function DrawingTakeoffPage() {
               </div>
 
               {/* Measurements table */}
-              <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+              <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
                 <div className="flex items-center justify-between border-b border-ink-mid pb-2">
                   <h3 className="font-display font-semibold text-sm text-white">Draft Measurements</h3>
                   <button
@@ -467,7 +467,7 @@ export default function DrawingTakeoffPage() {
               </div>
 
               {/* Checklist */}
-              <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-3">
+              <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-3">
                 <h3 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-signal" /> Change-Control Checklist
                 </h3>

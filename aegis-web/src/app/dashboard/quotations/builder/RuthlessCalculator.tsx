@@ -1305,7 +1305,7 @@ export default function RuthlessCalculator({
         </div>
 
         {/* Yield and Logistics Output */}
-        <div className="bg-ink-light/50 border border-ink-mid/60 p-4 rounded-sm space-y-3">
+        <div className="bg-ink-light/50 border border-ink-mid/60 p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-3">
           <h4 className="text-[10px] font-mono text-white uppercase tracking-wider border-b border-ink-mid/30 pb-1 flex items-center gap-1.5">
             <Package className="w-3.5 h-3.5 text-signal" /> Materials Yields &amp; Logistics
           </h4>
@@ -1328,7 +1328,7 @@ export default function RuthlessCalculator({
         </div>
 
         {/* Timeline Metrics */}
-        <div className="bg-ink-light/50 border border-ink-mid/60 p-4 rounded-sm">
+        <div className="bg-ink-light/50 border border-ink-mid/60 p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <h4 className="text-[10px] font-mono text-white uppercase tracking-wider border-b border-ink-mid/30 pb-1 flex items-center gap-1.5">
             <Clock className="w-3.5 h-3.5 text-signal" /> Project Time &amp; Duration
           </h4>

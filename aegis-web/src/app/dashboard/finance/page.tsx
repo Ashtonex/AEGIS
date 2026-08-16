@@ -437,31 +437,31 @@ function FinanceWorkspace() {
 
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4" data-tour="finance-kpis">
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Total Contract Value</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1">{money(kpis.contractTotal)}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Certified Revenue</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1">{money(kpis.certifiedTotal)}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Cash Collected</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1">{money(kpis.collectedTotal)}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Outstanding AR</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1 text-amber-400">{money(kpis.outstandingAR)}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Committed Costs</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1">{money(kpis.committedTotal)}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Actual Costs</p>
           <p className="text-lg font-semibold text-paper tracking-tight mt-1">{money(kpis.actualTotal)}</p>
         </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-sm">
+        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Forecast Margin %</p>
           <div className="flex items-center space-x-2 mt-1">
             <span className={`text-lg font-semibold tracking-tight ${kpis.marginPct >= 15 ? 'text-emerald-400' : kpis.marginPct >= 5 ? 'text-amber-400' : 'text-red-400'}`}>
@@ -609,7 +609,7 @@ function FinanceWorkspace() {
           {activeTab === "financial-statements" && <FinancialStatementsPanel />}
 
           {activeTab === "project-financials" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Active Project Ledgers</span>
               </div>
@@ -678,7 +678,7 @@ function FinanceWorkspace() {
           )}
 
           {activeTab === "cost-codes" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Cost Code Ledger Structure</span>
               </div>
@@ -712,7 +712,7 @@ function FinanceWorkspace() {
           )}
 
           {activeTab === "variations" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Variation Register (Change Orders)</span>
               </div>
@@ -758,7 +758,7 @@ function FinanceWorkspace() {
           )}
 
           {activeTab === "progress-claims" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Contract Claim Register</span>
               </div>
@@ -812,7 +812,7 @@ function FinanceWorkspace() {
           )}
 
           {activeTab === "budgets" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Project Approved Budgets</span>
               </div>
@@ -854,7 +854,7 @@ function FinanceWorkspace() {
           )}
 
           {activeTab === "banking" && (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Company Bank Accounts</span>
               </div>
@@ -872,7 +872,7 @@ function FinanceWorkspace() {
 
         {/* Project Detail Right Sidebar / Panel */}
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-5 rounded-sm">
+          <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
             <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Project Detail Control</h2>
             {detailLoading ? (
               <div className="flex h-48 items-center justify-center">
@@ -957,7 +957,7 @@ function FinanceWorkspace() {
       {/* Cost Code Modal */}
       {showCostCodeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Create Cost Code</span>
               <button onClick={() => setShowCostCodeModal(false)} className="text-slate hover:text-paper">
@@ -1025,7 +1025,7 @@ function FinanceWorkspace() {
       {/* Variation Modal */}
       {showVariationModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-lg p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-lg p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Record Variation Order</span>
               <button onClick={() => setShowVariationModal(false)} className="text-slate hover:text-paper">
@@ -1136,7 +1136,7 @@ function FinanceWorkspace() {
       {/* Progress Claim Modal */}
       {showClaimModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-lg p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-lg p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Submit Progress Claim</span>
               <button onClick={() => setShowClaimModal(false)} className="text-slate hover:text-paper">

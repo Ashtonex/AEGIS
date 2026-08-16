@@ -683,7 +683,7 @@ export default function QuotationBuilder() {
 
       {/* CSV Paste Importer box */}
       {showImporter && (
-        <div className="bg-ink border border-ink-mid p-5 rounded-sm space-y-4 print:hidden">
+        <div className="bg-ink border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4 print:hidden">
           <h3 className="text-sm font-semibold text-white flex items-center gap-2">
             <Upload className="w-4 h-4 text-signal" /> Paste comma/tab-separated BOQ rows
           </h3>
@@ -732,7 +732,7 @@ export default function QuotationBuilder() {
           <div className="space-y-6">
             
             {/* Metadata Card */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
                 <Info className="w-4 h-4 text-signal" /> Client &amp; Project Info
               </h2>
@@ -871,7 +871,7 @@ export default function QuotationBuilder() {
             </div>
 
             {/* Calculations Markups */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
                 <Coins className="w-4 h-4 text-signal" /> Markups &amp; Allowances
               </h2>
@@ -983,7 +983,7 @@ export default function QuotationBuilder() {
             </div>
 
             {/* Assumptions & Exclusions */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
                 <Info className="w-4 h-4 text-signal" /> Assumptions &amp; Exclusions
               </h2>
@@ -1015,7 +1015,7 @@ export default function QuotationBuilder() {
           <div className="xl:col-span-2 space-y-6">
             
             {/* BOQ Items table card */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <div className="flex justify-between items-center border-b border-ink-mid pb-2">
                 <h2 className="font-display font-semibold text-sm text-white">Bill of Quantities (BOQ)</h2>
                 <button
@@ -1113,7 +1113,7 @@ export default function QuotationBuilder() {
             </div>
 
             {/* Calculations buildup display card */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-4">
+            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2">
                 Cost Buildup Calculation Summary
               </h2>
@@ -1263,7 +1263,7 @@ export default function QuotationBuilder() {
             <div className="flex flex-col lg:flex-row gap-6 items-stretch">
               <div className="flex-1 space-y-4 flex flex-col justify-between">
                 
-                <div className="overflow-y-auto max-h-[350px] border border-ink-mid rounded-sm p-3 bg-ink-light space-y-2">
+                <div className="overflow-y-auto max-h-[350px] border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-3 bg-ink-light space-y-2">
                   {tempBuildup.length === 0 ? (
                     <div className="py-8 text-center text-xs text-slate">
                       No rate components recorded. Add material, labour, or equipment components.
@@ -1401,7 +1401,7 @@ export default function QuotationBuilder() {
         <div className="space-y-6">
           
           {/* Action header for preview (hidden on print) */}
-          <div className="bg-ink border border-ink-mid p-5 rounded-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4 print:hidden">
+          <div className="bg-ink border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex flex-col md:flex-row justify-between items-start md:items-center gap-4 print:hidden">
             <div className="space-y-1">
               <h2 className="text-sm font-bold font-mono uppercase text-white flex items-center gap-2">
                 <FileText className="w-4 h-4 text-signal" /> Branded Proposal &amp; Document Generator
@@ -1458,7 +1458,7 @@ export default function QuotationBuilder() {
           {/* PRINT PREVIEW CONTAINER (Always renders, prints directly via browser CSS) */}
           <div 
             id="quotation-print-container" 
-            className="bg-ink-light border border-ink-mid p-8 max-w-[800px] mx-auto text-paper flex flex-col justify-between min-h-[900px] rounded-sm print:border-0 print:p-0 print:bg-white print:text-black print:w-full print:min-h-0"
+            className="bg-ink-light border border-ink-mid p-8 max-w-[800px] mx-auto text-paper flex flex-col justify-between min-h-[900px] rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] print:border-0 print:p-0 print:bg-white print:text-black print:w-full print:min-h-0"
           >
             
             {/* Header Block */}

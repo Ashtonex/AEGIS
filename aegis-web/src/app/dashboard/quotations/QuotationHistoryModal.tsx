@@ -48,7 +48,7 @@ export default function QuotationHistoryModal({ quotationId, quotationLabel, onC
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-xl max-h-[85vh] overflow-y-auto bg-ink-light border border-ink-mid rounded-sm">
+      <div className="w-full max-w-xl max-h-[85vh] overflow-y-auto bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
         <div className="flex items-center justify-between border-b border-ink-mid px-5 py-4 sticky top-0 bg-ink-light">
           <div>
             <h3 className="font-display font-semibold text-white flex items-center gap-2">

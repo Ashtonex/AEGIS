@@ -164,7 +164,7 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   };
 
   if (loading) {
-    return <div className="bg-ink-light border border-ink-mid rounded-sm p-8 flex items-center gap-3 text-slate"><Loader2 className="h-4 w-4 animate-spin" />Loading finance operations...</div>;
+    return <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-8 flex items-center gap-3 text-slate"><Loader2 className="h-4 w-4 animate-spin" />Loading finance operations...</div>;
   }
 
   return (
@@ -293,11 +293,11 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
 }
 
 function Metric({ icon: Icon, label, value }: { icon: any; label: string; value: string }) {
-  return <div className="bg-ink-light border border-ink-mid rounded-sm p-4"><div className="flex items-center gap-2 text-slate text-xs font-mono uppercase"><Icon className="h-4 w-4" />{label}</div><div className="mt-2 text-xl font-semibold text-paper">{value}</div></div>;
+  return <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4"><div className="flex items-center gap-2 text-slate text-xs font-mono uppercase"><Icon className="h-4 w-4" />{label}</div><div className="mt-2 text-xl font-semibold text-paper">{value}</div></div>;
 }
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden"><div className="border-b border-ink-mid px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate">{title}</div><div className="p-4">{children}</div></div>;
+  return <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden"><div className="border-b border-ink-mid px-4 py-3 font-mono text-xs uppercase tracking-wider text-slate">{title}</div><div className="p-4">{children}</div></div>;
 }
 
 function SelectAccount({ accounts, value, onChange }: { accounts: RecordData[]; value: string; onChange: (value: string) => void }) {

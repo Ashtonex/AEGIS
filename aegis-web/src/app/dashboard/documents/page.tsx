@@ -338,7 +338,7 @@ function DocumentsWorkspace() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Category Sidebar */}
         <div className="space-y-2">
-          <div className="bg-ink-light border border-ink-mid rounded-sm p-4">
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
             <h2 className="text-xs font-semibold text-slate font-mono uppercase tracking-wider mb-3">Folders / Categories</h2>
             <div className="space-y-1">
               {categories.map((c) => (
@@ -358,7 +358,7 @@ function DocumentsWorkspace() {
         {/* Middle Document List / Grid */}
         <div className="lg:col-span-2 space-y-4">
           {/* Search/Filters */}
-          <div className="bg-ink-light border border-ink-mid p-4 rounded-sm space-y-3">
+          <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate" />
               <input
@@ -407,7 +407,7 @@ function DocumentsWorkspace() {
 
           {/* List View */}
           {viewMode === "list" ? (
-            <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <table className="w-full text-left border-collapse text-sm">
                 <thead>
                   <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
@@ -491,7 +491,7 @@ function DocumentsWorkspace() {
 
         {/* Document Detail side panel */}
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-5 rounded-sm">
+          <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
             <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Document Intelligence</h2>
             {detailLoading ? (
               <div className="flex h-48 items-center justify-center">
@@ -611,7 +611,7 @@ function DocumentsWorkspace() {
       {/* Upload Modal */}
       {showUploadModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Upload Controlled Document</span>
               <button onClick={() => setShowUploadModal(false)} className="text-slate hover:text-paper">

@@ -119,7 +119,7 @@ export function DepartmentTransfersPanel({
       <div className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {rows.map((d) => (
-            <div key={d.department_id ?? "unassigned"} className="bg-ink-light border border-ink-mid rounded-sm p-4 space-y-2">
+            <div key={d.department_id ?? "unassigned"} className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4 space-y-2">
               <p className="font-mono text-xs uppercase tracking-widest text-signal">{d.department_name}</p>
               <div className="text-sm text-slate-light">
                 <div className="flex justify-between"><span>External Revenue</span><span className="text-paper">{money(d.external_revenue)}</span></div>
@@ -149,7 +149,7 @@ export function DepartmentTransfersPanel({
   }
 
   return (
-    <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
       <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
         <span className="font-mono text-xs tracking-wider uppercase text-slate">Internal Department Transfers</span>
         <button onClick={() => setShowNewModal(true)} className="flex items-center space-x-2 bg-signal text-ink font-medium px-3 py-1.5 rounded-sm text-xs hover:bg-signal/95">
@@ -208,7 +208,7 @@ export function DepartmentTransfersPanel({
 
       {showNewModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="bg-ink border border-ink-mid rounded-sm p-6 w-full max-w-md space-y-4">
+          <div className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 w-full max-w-md space-y-4">
             <h3 className="font-mono text-sm uppercase text-signal">New Internal Transfer</h3>
             <form onSubmit={handleCreate} className="space-y-3">
               <select className={inputClass} value={form.transfer_type} onChange={(e) => setForm({ ...form, transfer_type: e.target.value })}>

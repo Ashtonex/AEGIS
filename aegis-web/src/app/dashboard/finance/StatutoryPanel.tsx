@@ -159,7 +159,7 @@ export function StatutoryPanel() {
   };
 
   if (loading) {
-    return <div className="bg-ink-light border border-ink-mid rounded-sm p-8 flex items-center justify-center text-slate"><Loader2 className="h-5 w-5 animate-spin" /></div>;
+    return <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-8 flex items-center justify-center text-slate"><Loader2 className="h-5 w-5 animate-spin" /></div>;
   }
 
   return (
@@ -173,7 +173,7 @@ export function StatutoryPanel() {
           const outstanding = rows.reduce((sum, r) => sum + Number(r.outstanding_amount || 0), 0);
           const nextDue = rows.map((r) => r.next_due_date).filter(Boolean).sort()[0];
           return (
-            <div key={type} className="bg-ink-light border border-ink-mid rounded-sm p-4">
+            <div key={type} className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
               <p className="text-[10px] uppercase font-mono tracking-widest text-slate">{type === "vat" ? "VAT Outstanding" : type === "paye" ? "PAYE Outstanding" : "NSSA (Employee) Outstanding"}</p>
               <p className={`text-lg font-semibold tracking-tight mt-1 ${outstanding > 0 ? "text-amber-400" : "text-paper"}`}>{money(outstanding)}</p>
               {nextDue && <p className="text-[10px] text-slate mt-1">Next due: {nextDue}</p>}
@@ -194,7 +194,7 @@ export function StatutoryPanel() {
       </div>
 
       {view === "liabilities" && (
-        <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+        <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-sm">
               <thead>
@@ -240,7 +240,7 @@ export function StatutoryPanel() {
       )}
 
       {view === "rate-tables" && (
-        <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+        <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
           <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
             <span className="font-mono text-xs tracking-wider uppercase text-slate">Statutory Rate Tables</span>
             <button onClick={() => setShowNewRateTable(true)} className="flex items-center gap-1.5 bg-signal text-ink font-medium px-3 py-1.5 rounded-sm text-xs hover:bg-signal/95">
@@ -297,7 +297,7 @@ export function StatutoryPanel() {
 
       {showRecompute && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="bg-ink border border-ink-mid rounded-sm p-6 w-full max-w-sm space-y-4">
+          <div className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 w-full max-w-sm space-y-4">
             <h3 className="font-mono text-sm uppercase text-signal">Recompute Statutory Period</h3>
             <p className="text-xs text-slate">Re-derives liability lines from source records for this period. Safe to re-run.</p>
             <form onSubmit={handleRecompute} className="space-y-3">
@@ -314,7 +314,7 @@ export function StatutoryPanel() {
 
       {showNewRateTable && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 overflow-y-auto">
-          <div className="bg-ink border border-ink-mid rounded-sm p-6 w-full max-w-xl space-y-4 my-8">
+          <div className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 w-full max-w-xl space-y-4 my-8">
             <h3 className="font-mono text-sm uppercase text-signal">New Rate Table</h3>
             <form onSubmit={handleCreateRateTable} className="space-y-3">
               <div className="grid grid-cols-3 gap-3">

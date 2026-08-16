@@ -357,7 +357,7 @@ export default function QuotationsDashboard() {
 
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6" data-tour="quotations-kpis">
-        <div className="p-5 bg-ink-light border border-ink-mid rounded-sm space-y-2 relative group hover:border-signal/20 transition-colors">
+        <div className="p-5 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2 relative group hover:border-signal/20 transition-colors">
           <DollarSign className="w-8 h-8 text-signal absolute right-5 top-5 opacity-40 group-hover:scale-110 transition-transform" />
           <p className="text-xs font-mono tracking-widest text-slate uppercase">Pipeline Value</p>
           <p className="text-xl font-bold font-display text-white">
@@ -366,7 +366,7 @@ export default function QuotationsDashboard() {
           <p className="text-[10px] font-mono text-slate-light">Total generated estimating volume</p>
         </div>
 
-        <div className="p-5 bg-ink-light border border-ink-mid rounded-sm space-y-2 relative group hover:border-signal/20 transition-colors">
+        <div className="p-5 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2 relative group hover:border-signal/20 transition-colors">
           <BarChart2 className="w-8 h-8 text-signal right-5 top-5 absolute opacity-40 group-hover:scale-110 transition-transform" />
           <p className="text-xs font-mono tracking-widest text-slate uppercase">Avg proposal size</p>
           <p className="text-xl font-bold font-display text-white">
@@ -375,14 +375,14 @@ export default function QuotationsDashboard() {
           <p className="text-[10px] font-mono text-slate-light">Average cost buildup total</p>
         </div>
 
-        <div className="p-5 bg-ink-light border border-ink-mid rounded-sm space-y-2 relative group hover:border-signal/20 transition-colors">
+        <div className="p-5 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2 relative group hover:border-signal/20 transition-colors">
           <Briefcase className="w-8 h-8 text-signal right-5 top-5 absolute opacity-40 group-hover:scale-110 transition-transform" />
           <p className="text-xs font-mono tracking-widest text-slate uppercase">Active Estimates</p>
           <p className="text-xl font-bold font-display text-white">{activeCount}</p>
           <p className="text-[10px] font-mono text-slate-light">Excludes cancelled/archived files</p>
         </div>
 
-        <div className="p-5 bg-ink-light border border-ink-mid rounded-sm space-y-2 relative group hover:border-signal/20 transition-colors">
+        <div className="p-5 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2 relative group hover:border-signal/20 transition-colors">
           <TrendingUp className="w-8 h-8 text-signal right-5 top-5 absolute opacity-40 group-hover:scale-110 transition-transform" />
           <p className="text-xs font-mono tracking-widest text-slate uppercase">Avg Target Margin</p>
           <p className="text-xl font-bold font-display text-white">{averageMargin.toFixed(1)}%</p>
@@ -395,7 +395,7 @@ export default function QuotationsDashboard() {
         
         {/* Ledger - Left Col */}
         <div className="lg:col-span-2 space-y-6" data-tour="quotations-ledger">
-          <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="font-display font-semibold text-lg text-white">Cost Proposals Ledger</h2>
@@ -605,7 +605,7 @@ export default function QuotationsDashboard() {
         <div className="space-y-6">
           
           {/* Quick link builder card */}
-          <div className="bg-gradient-to-br from-ink-light to-ink border border-ink-mid rounded-sm p-6 relative overflow-hidden group">
+          <div className="bg-gradient-to-br from-ink-light to-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 relative overflow-hidden group">
             <div className="absolute top-0 right-0 w-32 h-32 bg-signal/5 rounded-full blur-2xl -mr-10 -mt-10 group-hover:bg-signal/10 transition-colors"></div>
             <div className="space-y-4 relative">
               <div className="w-10 h-10 rounded-sm bg-signal/10 border border-signal/20 flex items-center justify-center text-signal">
@@ -627,7 +627,7 @@ export default function QuotationsDashboard() {
             </div>
           </div>
 
-          <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
             <div className="w-10 h-10 rounded-sm bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-300">
               <Brain className="w-5 h-5" />
             </div>
@@ -647,7 +647,7 @@ export default function QuotationsDashboard() {
           </div>
 
           {/* Historical link card */}
-          <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
             <h3 className="font-display font-semibold text-white">Export &amp; History Archive</h3>
             <p className="text-xs text-slate">
               View historic estimations, export logs, generated PDF/Excel document caches, and cost variances.
@@ -661,7 +661,7 @@ export default function QuotationsDashboard() {
           </div>
 
           {/* Active Projects Selector info */}
-          <div className="bg-ink-light border border-ink-mid rounded-sm p-6 space-y-4">
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
             <h3 className="font-display font-semibold text-white">Delivery Integration</h3>
             <p className="text-xs text-slate">
               Marking a quotation linked to a project as <span className="text-emerald-400 font-semibold">Won</span> seeds that project&apos;s execution budget from this quotation&apos;s own cost breakdown, and takes an initial forecast snapshot. From then on, actual site costs are tracked against this same baseline - referenceable anytime on the Finance dashboard - and a margin-threat alert fires automatically if costs run over without a matching approved variation.

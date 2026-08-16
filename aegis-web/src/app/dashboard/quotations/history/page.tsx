@@ -68,7 +68,7 @@ export default function QuotationHistory() {
         </div>
       )}
 
-      <div className="bg-ink-light border border-ink-mid p-6 rounded-sm space-y-6">
+      <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-6">
         <div>
           <h2 className="font-display font-semibold text-lg text-white">Generated Proposals Index</h2>
           <p className="text-xs text-slate">Audit logs of all cost proposal runs and dynamic file caches.</p>

@@ -175,7 +175,7 @@ function AnalyticsWorkspace() {
       )}
 
       {/* Exception Alerts Panel (Top Priority) */}
-      <div className="bg-ink-light border border-ink-mid p-5 rounded-sm space-y-4">
+      <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
         <div className="flex justify-between items-center border-b border-ink-mid pb-3">
           <div className="flex items-center space-x-2">
             <AlertTriangle className="h-5 w-5 text-signal" />
@@ -189,7 +189,7 @@ function AnalyticsWorkspace() {
           {exceptions.length === 0 ? (
             <EmptyPanel title="No active decision signals" detail="No source-backed exceptions are currently returned by the Executive Command Centre." />
           ) : exceptions.map((e) => (
-            <div key={e.id} className="bg-ink border border-ink-mid p-4 rounded-sm flex items-start space-x-3 hover:border-signal/30 transition-all">
+            <div key={e.id} className="bg-ink border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex items-start space-x-3 hover:border-signal/30 transition-all">
               <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${e.severity === 'critical' ? 'bg-red-500 animate-pulse' : 'bg-amber-400'}`} />
               <div className="space-y-1 flex-1">
                 <div className="flex justify-between items-center">
@@ -236,7 +236,7 @@ function AnalyticsWorkspace() {
       {/* Tab Panels */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main analytics data */}
-        <div className="lg:col-span-2 bg-ink-light border border-ink-mid rounded-sm overflow-hidden p-5">
+        <div className="lg:col-span-2 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden p-5">
           {activeTab === "projects" && (
             <div className="space-y-6">
               <h3 className="text-xs font-semibold text-paper font-mono uppercase tracking-wider">Project Forecast EAC vs Budget</h3>
@@ -287,10 +287,10 @@ function AnalyticsWorkspace() {
 
         {/* Right side analytics intelligence panel */}
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-5 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Decision Signals</h2>
             <div className="space-y-4">
-              {exceptions.slice(0, 2).length === 0 ? <EmptyPanel title="No decision signal narrative" detail="Narratives are generated only when source-backed exceptions exist." /> : exceptions.slice(0, 2).map((signal) => <div key={`signal-${String(signal.id)}`} className="bg-ink p-4 border border-ink-mid rounded-sm space-y-2">
+              {exceptions.slice(0, 2).length === 0 ? <EmptyPanel title="No decision signal narrative" detail="Narratives are generated only when source-backed exceptions exist." /> : exceptions.slice(0, 2).map((signal) => <div key={`signal-${String(signal.id)}`} className="bg-ink p-4 border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-2">
                 <div className="flex items-center space-x-2">
                   <Flame className="h-4 w-4 text-red-500" />
                   <span className="text-xs font-bold text-paper font-mono uppercase">{signal.category || signal.title || "Executive signal"}</span>

@@ -1077,7 +1077,7 @@ function WebsiteTab({ items, saving, saveContent }: { items: WebsiteContent[]; s
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="border border-ink-mid/70 bg-ink-mid/5 p-4 space-y-4 rounded-sm">
+        <div className="border border-ink-mid/70 bg-ink-mid/5 p-4 space-y-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <h3 className="text-xs font-bold uppercase tracking-widest text-paper font-mono border-b border-ink-mid pb-2 flex items-center gap-2"><Upload className="h-3.5 w-3.5 text-signal" /> New Broadcast</h3>
           
           <label className="block">
@@ -1116,7 +1116,7 @@ function WebsiteTab({ items, saving, saveContent }: { items: WebsiteContent[]; s
             <div className="grid gap-4 sm:grid-cols-2 max-h-[420px] overflow-y-auto pr-2">
               {feeds.map((feed) => (
                 <div key={feed.id} className="border border-ink-mid bg-ink-mid/5 p-3 flex gap-3 rounded-sm">
-                  <div className="w-20 h-20 bg-ink-mid relative shrink-0 overflow-hidden border border-ink-mid rounded-sm">
+                  <div className="w-20 h-20 bg-ink-mid relative shrink-0 overflow-hidden border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={feed.image_url} alt={feed.title} className="w-full h-full object-cover" />
                   </div>

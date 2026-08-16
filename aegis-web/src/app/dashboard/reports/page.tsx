@@ -223,7 +223,7 @@ function ReportsWorkspace() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {availableReports.length === 0 ? <div className="col-span-full border border-dashed border-ink-mid bg-ink-light p-6 text-center text-sm text-slate-light">No report templates are available from the reporting service.</div> : null}
           {availableReports.map((r) => (
-            <div key={r.id} className="bg-ink-light border border-ink-mid p-5 rounded-sm flex flex-col justify-between space-y-4">
+            <div key={r.id} className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex flex-col justify-between space-y-4">
               <div className="space-y-2">
                 <div className="flex justify-between items-start">
                   {getCategoryIcon(r.category)}
@@ -248,7 +248,7 @@ function ReportsWorkspace() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Recent reports generated */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="bg-ink-light border border-ink-mid rounded-sm overflow-hidden">
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
             <div className="px-4 py-3 border-b border-ink-mid bg-ink bg-opacity-20 flex justify-between items-center">
               <span className="font-mono text-xs uppercase tracking-wider text-slate">Recently Generated Runs</span>
             </div>
@@ -315,7 +315,7 @@ function ReportsWorkspace() {
         </div>
 
         {/* Schedule List */}
-        <div className="bg-ink-light border border-ink-mid p-5 rounded-sm space-y-4">
+        <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
           <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Distribution Schedules</h2>
           {scheduledReports.length === 0 ? (
             <p className="text-xs text-slate text-center py-8">No automated schedules currently active.</p>
@@ -341,7 +341,7 @@ function ReportsWorkspace() {
       {/* Generate Report Modal */}
       {showGenerateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-sm space-y-4">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
             <div className="flex justify-between items-center border-b border-ink-mid pb-3">
               <span className="text-base font-semibold text-paper">Run Report</span>
               <button onClick={() => setShowGenerateModal(false)} className="text-slate hover:text-paper">
