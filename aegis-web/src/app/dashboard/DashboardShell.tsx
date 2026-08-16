@@ -737,10 +737,6 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
         {/* MAIN CONTENT AREA */}
         <main ref={mainScrollRef} className="flex-1 overflow-auto bg-ink relative">
-          <div 
-            className="absolute inset-0 pointer-events-none opacity-[0.03] mix-blend-screen"
-            style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)', backgroundSize: '40px 40px' }}
-          />
           {children}
         </main>
       </div>

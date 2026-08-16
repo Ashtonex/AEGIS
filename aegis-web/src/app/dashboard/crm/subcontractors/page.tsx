@@ -343,10 +343,6 @@ export default function SubcontractorRegistry() {
 
   return (
     <div className="min-h-screen bg-ink text-paper selection:bg-signal selection:text-ink">
-      <div className="fixed inset-0 pointer-events-none" style={{
-        backgroundImage: 'linear-gradient(rgba(200,150,12,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(200,150,12,0.025) 1px,transparent 1px)',
-        backgroundSize: '48px 48px'
-      }} />
 
       <div className="relative max-w-[1600px] mx-auto px-4 md:px-6 py-6">
 

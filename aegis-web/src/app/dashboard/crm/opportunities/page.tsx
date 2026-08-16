@@ -822,11 +822,6 @@ export default function OpportunitiesKanban() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-paper p-6 relative overflow-hidden flex flex-col">
-      {/* Background decoration */}
-      <div className="absolute inset-0 opacity-[0.02] pointer-events-none" style={{
-        backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)',
-        backgroundSize: '32px 32px'
-      }} />
 
       {/* Header */}
       <header className="flex justify-between items-end border-b border-white/5 pb-4 mb-6 relative z-10 shrink-0">

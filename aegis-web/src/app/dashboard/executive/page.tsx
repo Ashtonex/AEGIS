@@ -362,12 +362,6 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
         <div className="grid grid-cols-1 lg:grid-cols-2 flex-1">
           <div className="p-4 border-b lg:border-b-0 lg:border-r border-ink-mid flex flex-col justify-between">
             <div className="relative w-full aspect-square max-h-[220px] border border-ink-mid bg-ink-light/50 rounded-md overflow-hidden flex items-center justify-center p-2">
-              <div className="absolute inset-0 grid grid-cols-6 grid-rows-6 opacity-[0.03]">
-                {Array.from({ length: 36 }).map((_, i) => (
-                  <div key={i} className="border border-paper" />
-                ))}
-              </div>
-
               {validCoordsRegions.length > 0 ? (
                 <svg className="w-full h-full relative z-10" viewBox="0 0 100 100">
                   <line x1="50" y1="0" x2="50" y2="100" stroke="#1e293b" strokeWidth="0.5" strokeDasharray="2,2" />

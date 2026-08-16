@@ -542,14 +542,6 @@ export default function CRMCommercialEngine() {
   return (
     <div className="h-full w-full bg-[#050505] text-paper selection:bg-signal selection:text-ink flex flex-col p-3 overflow-hidden relative">
       
-      {/* 3D Dynamic Background Layers */}
-      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
-        <div 
-          className="absolute inset-0 opacity-[0.03] mix-blend-overlay"
-          style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, rgba(255,255,255,1) 1px, transparent 0)', backgroundSize: '40px 40px' }}
-        />
-      </div>
-      
       <div className="relative z-10 flex flex-col flex-1 min-h-0 overflow-hidden">
         
         {/* Header Section */}

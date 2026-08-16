@@ -401,12 +401,7 @@ export default function CRMAutomationsPage() {
 
   return (
     <div className="flex flex-col h-screen bg-[#050505] text-paper overflow-hidden p-6 relative">
-      {/* Background radial grid */}
-      <div 
-        className="fixed inset-0 pointer-events-none opacity-[0.02] mix-blend-overlay"
-        style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, rgba(255,255,255,0.15) 1px, transparent 0)', backgroundSize: '32px 32px' }}
-      />
-      
+
       {/* Header */}
       <header className="shrink-0 mb-4 flex justify-between items-center border-b border-ink-mid pb-3">
         <div>

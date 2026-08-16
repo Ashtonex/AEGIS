@@ -418,12 +418,7 @@ export default function ClientOrganizationsRegistry() {
 
   return (
     <div className="min-h-screen bg-ink text-paper selection:bg-signal selection:text-ink">
-      {/* Grid Overlay */}
-      <div 
-        className="fixed inset-0 pointer-events-none opacity-[0.03] mix-blend-overlay"
-        style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, rgba(255,255,255,0.15) 1px, transparent 0)', backgroundSize: '32px 32px' }}
-      />
-      
+
       <div className="relative max-w-container mx-auto px-6 py-6 flex flex-col h-screen min-h-0 overflow-hidden">
         
         {/* Header */}
