@@ -12,9 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
-from app.shared.sql import safe_payload_columns, update_tenant_row_sql
+from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 
 router = APIRouter()
+
+# Fields that live on projects.project_profiles (a 1:1 side table) rather than
+# projects.projects itself. update_project() routes ProjectUpdate payload keys
+# to the right table based on this set.
+PROFILE_COLUMNS = {"region", "latitude", "longitude"}
 
 
 class ProjectCreate(BaseModel):
@@ -40,6 +45,9 @@ class ProjectUpdate(BaseModel):
     planned_completion_date: Optional[date] = None
     actual_completion_date: Optional[date] = None
     department_id: Optional[UUID] = None
+    region: Optional[str] = Field(default=None, max_length=120)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 
 
 class MilestonePayload(BaseModel):
@@ -95,8 +103,9 @@ async def _project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> No
 async def _project_ref_or_404(db: AsyncSession, project_ref: str, org_id: str) -> dict:
     result = await db.execute(
         text("""
-        SELECT p.*
+        SELECT p.*, pp.region, pp.latitude, pp.longitude
         FROM projects.projects p
+        LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
         WHERE p.organization_id = :org_id
           AND p.is_deleted = false
           AND (
@@ -326,22 +335,42 @@ async def update_project(
     values = payload.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(status_code=400, detail="No project changes were supplied.")
-    safe_keys = safe_payload_columns(values.keys())
+
+    project_values = {key: val for key, val in values.items() if key not in PROFILE_COLUMNS}
+    profile_values = {key: val for key, val in values.items() if key in PROFILE_COLUMNS}
+
     try:
-        await db.execute(
-            update_tenant_row_sql(
-                "projects.projects",
-                safe_keys,
-                ProjectUpdate.model_fields,
-                id_param="project_id",
-                require_not_deleted=False,
-            ),
-            {
-                **{key: values[key] for key in safe_keys},
-                "project_id": project_id,
-                "org_id": user["org_id"],
-            },
-        )
+        if project_values:
+            safe_keys = safe_payload_columns(project_values.keys())
+            await db.execute(
+                update_tenant_row_sql(
+                    "projects.projects",
+                    safe_keys,
+                    ProjectUpdate.model_fields,
+                    id_param="project_id",
+                    require_not_deleted=False,
+                ),
+                {
+                    **{key: project_values[key] for key in safe_keys},
+                    "project_id": project_id,
+                    "org_id": user["org_id"],
+                },
+            )
+        if profile_values:
+            await db.execute(
+                tenant_upsert_sql(
+                    "projects.project_profiles",
+                    profile_values.keys(),
+                    PROFILE_COLUMNS,
+                    base_columns=["project_id", "organization_id"],
+                    conflict_target="project_id",
+                ),
+                {
+                    **profile_values,
+                    "project_id": project_id,
+                    "organization_id": user["org_id"],
+                },
+            )
         await db.commit()
     except Exception as exc:
         await db.rollback()

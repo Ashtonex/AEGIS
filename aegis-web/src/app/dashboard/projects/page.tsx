@@ -33,6 +33,7 @@ import {
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { PROVINCES } from "@/lib/constants";
 
 type Project = Record<string, unknown> & {
   id: string;
@@ -53,6 +54,9 @@ type Project = Record<string, unknown> & {
   client_name?: string;
   client?: string;
   department_id?: string;
+  region?: string;
+  latitude?: number;
+  longitude?: number;
 };
 
 type Department = { id: string; code: string; name: string };
@@ -449,7 +453,66 @@ function ProjectDetail({
       setDepartmentSaving(false);
     }
   }, [project.id, onDepartmentChange]);
-  const viability = detail?.viability?.[0]; 
+  const viability = detail?.viability?.[0];
+
+  // Region/coordinates live on projects.project_profiles, not projects.projects, so they
+  // arrive either on `viability` (executive detail endpoint) or directly on `source`
+  // (plain project-record fallback) depending on which lookup succeeded in openProject().
+  const currentRegion = text((viability?.region ?? (source as Project).region) as string | undefined, "");
+  const currentLat = (viability?.latitude ?? (source as Project).latitude) as number | string | undefined;
+  const currentLong = (viability?.longitude ?? (source as Project).longitude) as number | string | undefined;
+
+  const [regionSaving, setRegionSaving] = useState(false);
+  const [regionError, setRegionError] = useState<string | null>(null);
+  const [regionOverride, setRegionOverride] = useState<string | null>(null);
+
+  const handleRegionSelect = useCallback(async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const region = event.target.value;
+    setRegionSaving(true);
+    setRegionError(null);
+    try {
+      await updateInternalProject(project.id, { region: region || null });
+      setRegionOverride(region);
+    } catch (err) {
+      setRegionError("Failed to update region.");
+    } finally {
+      setRegionSaving(false);
+    }
+  }, [project.id]);
+
+  const [coords, setCoords] = useState({ latitude: "", longitude: "" });
+  const [coordsSaving, setCoordsSaving] = useState(false);
+  const [coordsError, setCoordsError] = useState<string | null>(null);
+  const [coordsDirty, setCoordsDirty] = useState(false);
+
+  useEffect(() => {
+    if (coordsDirty) return;
+    setCoords({
+      latitude: currentLat !== undefined && currentLat !== null ? String(currentLat) : "",
+      longitude: currentLong !== undefined && currentLong !== null ? String(currentLong) : "",
+    });
+  }, [currentLat, currentLong, coordsDirty]);
+
+  const saveCoords = useCallback(async () => {
+    const lat = coords.latitude.trim();
+    const long = coords.longitude.trim();
+    const latNum = lat ? Number(lat) : null;
+    const longNum = long ? Number(long) : null;
+    if ((lat && !Number.isFinite(latNum)) || (long && !Number.isFinite(longNum))) {
+      setCoordsError("Latitude/longitude must be numbers.");
+      return;
+    }
+    setCoordsSaving(true);
+    setCoordsError(null);
+    try {
+      await updateInternalProject(project.id, { latitude: latNum, longitude: longNum });
+      setCoordsDirty(false);
+    } catch (err) {
+      setCoordsError("Failed to update coordinates.");
+    } finally {
+      setCoordsSaving(false);
+    }
+  }, [coords, project.id]);
 
   const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials">("overview");
 
@@ -679,6 +742,50 @@ function ProjectDetail({
               </select>
               {departmentSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
               {departmentError && <span className="text-[10px] text-red-300">{departmentError}</span>}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Region</span>
+                <select
+                  value={regionOverride ?? currentRegion}
+                  onChange={handleRegionSelect}
+                  disabled={regionSaving}
+                  className="h-7 border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
+                >
+                  <option value="">Unassigned</option>
+                  {PROVINCES.map((province) => (
+                    <option key={province} value={province}>{province}</option>
+                  ))}
+                </select>
+                {regionSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+                {regionError && <span className="text-[10px] text-red-300">{regionError}</span>}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Coordinates</span>
+                <input
+                  value={coords.latitude}
+                  onChange={(event) => { setCoords((prev) => ({ ...prev, latitude: event.target.value })); setCoordsDirty(true); }}
+                  placeholder="Latitude"
+                  inputMode="decimal"
+                  className="h-7 w-24 border border-ink-mid bg-ink-light px-2 text-xs text-paper placeholder:text-slate"
+                />
+                <input
+                  value={coords.longitude}
+                  onChange={(event) => { setCoords((prev) => ({ ...prev, longitude: event.target.value })); setCoordsDirty(true); }}
+                  placeholder="Longitude"
+                  inputMode="decimal"
+                  className="h-7 w-24 border border-ink-mid bg-ink-light px-2 text-xs text-paper placeholder:text-slate"
+                />
+                <button
+                  onClick={() => void saveCoords()}
+                  disabled={coordsSaving || !coordsDirty}
+                  className="h-7 border border-ink-mid bg-ink-light px-2 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-40"
+                >
+                  Save
+                </button>
+                {coordsSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+                {coordsError && <span className="text-[10px] text-red-300">{coordsError}</span>}
+              </div>
             </div>
           </div>
           <button
