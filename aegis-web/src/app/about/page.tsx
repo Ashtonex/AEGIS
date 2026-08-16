@@ -42,43 +42,43 @@ export default async function AboutPage() {
       />
 
       {/* Mission / Vision / Values */}
-      <section className="py-24 bg-snc-void border-b border-snc-border">
+      <section className="py-24 bg-void border-b border-ink-mid">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
           <StaggerContainer className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
             <StaggerItem>
-              <Card padding="standard" className="h-full border-t-[2px] border-t-snc-gold-primary">
-                <Target className="w-10 h-10 text-snc-gold-primary mb-6" strokeWidth={1.5} />
-                <h3 className="text-headline-md text-snc-text-primary mb-4">Our Mission</h3>
-                <p className="text-body text-snc-text-secondary">
+              <Card padding="standard" className="h-full border-t-[2px] border-t-signal">
+                <Target className="w-10 h-10 text-signal mb-6" strokeWidth={1.5} />
+                <h3 className="text-headline-md text-paper mb-4">Our Mission</h3>
+                <p className="text-body text-slate-light">
                   To engineer and deliver critical infrastructure that accelerates economic growth across Southern Africa, maintaining the highest standards of safety, quality, and technical precision.
                 </p>
               </Card>
             </StaggerItem>
             <StaggerItem>
-              <Card padding="standard" className="h-full border-t-[2px] border-t-snc-electric">
-                <Zap className="w-10 h-10 text-snc-electric mb-6" strokeWidth={1.5} />
-                <h3 className="text-headline-md text-snc-text-primary mb-4">Our Vision</h3>
-                <p className="text-body text-snc-text-secondary">
+              <Card padding="standard" className="h-full border-t-[2px] border-t-info">
+                <Zap className="w-10 h-10 text-info mb-6" strokeWidth={1.5} />
+                <h3 className="text-headline-md text-paper mb-4">Our Vision</h3>
+                <p className="text-body text-slate-light">
                   To be the most technologically advanced and reliable construction partner in the region, setting the benchmark for operational excellence through data-driven execution.
                 </p>
               </Card>
             </StaggerItem>
             <StaggerItem>
-              <Card padding="standard" className="h-full border-t-[2px] border-t-snc-success">
-                <Shield className="w-10 h-10 text-snc-success mb-6" strokeWidth={1.5} />
-                <h3 className="text-headline-md text-snc-text-primary mb-4">Our Values</h3>
-                <ul className="space-y-3 text-body text-snc-text-secondary">
+              <Card padding="standard" className="h-full border-t-[2px] border-t-success">
+                <Shield className="w-10 h-10 text-success mb-6" strokeWidth={1.5} />
+                <h3 className="text-headline-md text-paper mb-4">Our Values</h3>
+                <ul className="space-y-3 text-body text-slate-light">
                   <li className="flex items-start gap-3">
-                    <div className="w-1.5 h-1.5 rounded-full bg-snc-success mt-2.5 shrink-0 shadow-[0_0_8px_var(--snc-success)]" />
-                    <span><strong className="text-snc-text-primary font-semibold">Zero Harm:</strong> Safety without compromise.</span>
+                    <div className="w-1.5 h-1.5 rounded-full bg-success mt-2.5 shrink-0 shadow-[0_0_8px_var(--dxl-success)]" />
+                    <span><strong className="text-paper font-semibold">Zero Harm:</strong> Safety without compromise.</span>
                   </li>
                   <li className="flex items-start gap-3">
-                    <div className="w-1.5 h-1.5 rounded-full bg-snc-success mt-2.5 shrink-0 shadow-[0_0_8px_var(--snc-success)]" />
-                    <span><strong className="text-snc-text-primary font-semibold">Precision:</strong> Engineered accuracy in all things.</span>
+                    <div className="w-1.5 h-1.5 rounded-full bg-success mt-2.5 shrink-0 shadow-[0_0_8px_var(--dxl-success)]" />
+                    <span><strong className="text-paper font-semibold">Precision:</strong> Engineered accuracy in all things.</span>
                   </li>
                   <li className="flex items-start gap-3">
-                    <div className="w-1.5 h-1.5 rounded-full bg-snc-success mt-2.5 shrink-0 shadow-[0_0_8px_var(--snc-success)]" />
-                    <span><strong className="text-snc-text-primary font-semibold">Integrity:</strong> Institutional transparency.</span>
+                    <div className="w-1.5 h-1.5 rounded-full bg-success mt-2.5 shrink-0 shadow-[0_0_8px_var(--dxl-success)]" />
+                    <span><strong className="text-paper font-semibold">Integrity:</strong> Institutional transparency.</span>
                   </li>
                 </ul>
               </Card>
@@ -88,18 +88,18 @@ export default async function AboutPage() {
       </section>
 
       {/* Cinematic Timeline */}
-      <section className="py-32 bg-snc-navy relative overflow-hidden">
+      <section className="py-32 bg-ink relative overflow-hidden">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 relative z-10">
           <div className="text-center mb-24">
             <RevealOnScroll direction="up">
               <SectionLabel label="Our Journey" className="justify-center mb-4" />
-              <h2 className="text-display-lg text-snc-text-primary">A Legacy of Delivery</h2>
+              <h2 className="text-display-lg text-paper">A Legacy of Delivery</h2>
             </RevealOnScroll>
           </div>
 
           <div className="relative max-w-4xl mx-auto">
             {/* Center Line */}
-            <div className="absolute left-1/2 top-0 bottom-0 w-[1px] bg-snc-border -translate-x-1/2" />
+            <div className="absolute left-1/2 top-0 bottom-0 w-[1px] bg-ink-mid -translate-x-1/2" />
             
             <div className="flex flex-col gap-32">
               {TIMELINE_EVENTS.map((event, i) => {
@@ -109,17 +109,17 @@ export default async function AboutPage() {
                     
                     {/* Year Display (Massive) */}
                     <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-0 opacity-5 pointer-events-none text-center">
-                      <span className="font-display text-[120px] md:text-[200px] leading-none text-snc-text-primary select-none drop-shadow-2xl">
+                      <span className="font-display text-[120px] md:text-[200px] leading-none text-paper select-none drop-shadow-2xl">
                         {event.year}
                       </span>
                     </div>
 
                     {/* Content side */}
                     <div className={`w-1/2 flex flex-col justify-center ${isEven ? 'items-end text-right pr-12 md:pr-24' : 'items-start text-left pl-12 md:pl-24'} z-10`}>
-                      <h3 className="text-headline-xl text-snc-text-primary mb-4 leading-none">
+                      <h3 className="text-headline-xl text-paper mb-4 leading-none">
                         {event.title}
                       </h3>
-                      <p className="text-body-lg text-snc-text-secondary max-w-sm">
+                      <p className="text-body-lg text-slate-light max-w-sm">
                         {event.desc}
                       </p>
                     </div>
@@ -128,8 +128,8 @@ export default async function AboutPage() {
                     <div className="w-1/2" />
 
                     {/* Center Node */}
-                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-snc-navy-mid border-[2px] border-snc-gold-primary flex items-center justify-center shadow-[0_0_20px_var(--snc-gold-ghost)]">
-                      <span className="text-[10px] font-sans font-bold text-snc-gold-primary">{i + 1}</span>
+                    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-ink-mid border-[2px] border-signal flex items-center justify-center shadow-[0_0_20px_var(--dxl-signal-ghost)]">
+                      <span className="text-[10px] font-sans font-bold text-signal">{i + 1}</span>
                     </div>
                   </RevealOnScroll>
                 );
@@ -140,13 +140,13 @@ export default async function AboutPage() {
       </section>
 
       {/* Leadership Preview */}
-      <section className="py-24 bg-snc-void border-t border-snc-border">
+      <section className="py-24 bg-void border-t border-ink-mid">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
           <RevealOnScroll>
             <div className="flex flex-col md:flex-row md:items-end justify-between mb-16 gap-8">
               <div>
                 <SectionLabel label="Leadership" />
-                <h2 className="text-headline-xl text-snc-text-primary mt-4">Executive Team</h2>
+                <h2 className="text-headline-xl text-paper mt-4">Executive Team</h2>
               </div>
               <Link href="/about/leadership">
                 <Button variant="ghostWhite">View Full Team</Button>

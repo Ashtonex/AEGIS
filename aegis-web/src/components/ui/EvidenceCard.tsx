@@ -14,30 +14,30 @@ export function EvidenceCard({ title, metric, metricLabel, children, className, 
   return (
     <div 
       className={cn(
-        "bg-snc-navy-raised border border-snc-border rounded-sm p-8 shadow-[0_4px_20px_rgba(0,0,0,0.25)]",
+        "bg-ink-light border border-ink-mid rounded-sm p-8 shadow-[0_4px_20px_rgba(0,0,0,0.25)]",
         "transition-all duration-300 ease-snc",
-        "hover:border-snc-gold-muted hover:bg-snc-navy-high",
+        "hover:border-signal-muted hover:bg-ink-high",
         className
       )}
       {...props}
     >
       <div className="flex flex-col h-full">
         {/* Header */}
-        <h3 className="text-headline-md text-snc-text-primary mb-6">{title}</h3>
+        <h3 className="text-headline-md text-paper mb-6">{title}</h3>
         
         {/* Evidence Content */}
-        <div className="flex-grow text-body text-snc-text-secondary mb-8">
+        <div className="flex-grow text-body text-slate-light mb-8">
           {children}
         </div>
         
         {/* Proof Metric */}
         {metric && (
-          <div className="mt-auto pt-6 border-t border-snc-border/50">
-            <div className="font-display text-display-lg text-snc-gold-primary leading-none mb-1">
+          <div className="mt-auto pt-6 border-t border-ink-mid/50">
+            <div className="font-display text-display-lg text-signal leading-none mb-1">
               {metric}
             </div>
             {metricLabel && (
-              <div className="text-label text-snc-text-tertiary">
+              <div className="text-label text-slate">
                 {metricLabel}
               </div>
             )}

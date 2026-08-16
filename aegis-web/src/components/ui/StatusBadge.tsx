@@ -12,8 +12,8 @@ export function StatusBadge({ status, label, className, ...props }: StatusBadgeP
     success: "border-[#2ECC71] text-[#2ECC71] bg-[#2ECC71]/10", // Success
     error: "border-[#E74C3C] text-[#E74C3C] bg-[#E74C3C]/10", // Error
     warning: "border-[#F39C12] text-[#F39C12] bg-[#F39C12]/10", // Warning
-    neutral: "border-snc-text-tertiary text-snc-text-tertiary bg-snc-text-tertiary/10", // Gray
-    active: "border-snc-gold-primary text-snc-gold-primary bg-snc-gold-primary/10", // Construction Orange
+    neutral: "border-slate text-slate bg-slate/10", // Gray
+    active: "border-signal text-signal bg-signal/10", // Construction Orange
     data: "border-[#3498DB] text-[#3498DB] bg-[#3498DB]/10", // Info
   };
 

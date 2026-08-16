@@ -3,6 +3,14 @@ import { constructMetadata } from "@/lib/metadata";
 import { NavigationWrapper } from "@/components/layout/NavigationWrapper";
 import { PwaRegistration } from "@/components/PwaRegistration";
 import { PwaRuntime } from "@/components/pwa/PwaRuntime";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/inter/900.css";
+import "@fontsource/archivo/700.css";
+import "@fontsource/archivo/900.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/600.css";
 import "@/styles/globals.css";
 import { cn } from "@/lib/utils";
 import { AuthProvider } from "@/lib/auth/AuthContext";
@@ -28,7 +36,7 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/logo.png" />
       </head>
       <body className={cn(
-        "selection:bg-snc-gold-primary selection:text-snc-void"
+        "selection:bg-signal selection:text-void"
       )}>
         <AuthProvider>
           <AppThemeProvider>

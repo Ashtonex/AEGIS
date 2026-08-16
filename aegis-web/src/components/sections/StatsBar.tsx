@@ -6,9 +6,9 @@ import { StaggerContainer, StaggerItem } from "../ui/StaggerContainer";
 
 export function StatsBar() {
   return (
-    <section className="relative py-20 border-y border-snc-border bg-snc-navy-mid overflow-hidden">
+    <section className="relative py-20 border-y border-ink-mid bg-ink-mid overflow-hidden">
       <div className="absolute inset-0 z-0 opacity-10">
-        <div className="absolute inset-0 bg-gradient-to-r from-snc-navy-mid via-transparent to-snc-navy-mid" />
+        <div className="absolute inset-0 bg-gradient-to-r from-ink-mid via-transparent to-ink-mid" />
       </div>
 
       <div className="container relative z-10 max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">

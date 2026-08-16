@@ -26,7 +26,7 @@ export default async function KnowledgePage() {
         ]}
       />
 
-      <section className="py-24 bg-[var(--snc-void)]">
+      <section className="py-24 bg-[var(--dxl-void)]">
         <div className="container">
           
           {articles.length > 0 ? (
@@ -36,15 +36,15 @@ export default async function KnowledgePage() {
                ))}
             </div>
           ) : (
-            <div className="p-24 text-center border border-[var(--snc-navy-border)] bg-[var(--snc-navy-mid)] rounded-sm mb-24">
-               <p className="text-[var(--snc-mist)]">Knowledge base content is currently being updated.</p>
+            <div className="p-24 text-center border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-mid)] rounded-sm mb-24">
+               <p className="text-[var(--dxl-slate-light)]">Knowledge base content is currently being updated.</p>
             </div>
           )}
 
-          <div className="p-12 border border-[var(--snc-gold)]/30 bg-[var(--snc-gold-ghost)] rounded-sm text-center max-w-4xl mx-auto cad-line-accent">
+          <div className="p-12 border border-[var(--dxl-signal)]/30 bg-[var(--dxl-signal-ghost)] rounded-sm text-center max-w-4xl mx-auto cad-line-accent">
             <SectionLabel className="items-center mx-auto mb-6">Technical Briefing</SectionLabel>
-            <h2 className="text-3xl font-display text-[var(--snc-white)] mb-4">Subscribe to SNC Insights</h2>
-            <p className="text-[var(--snc-mist)] mb-8">Receive our quarterly technical briefings covering engineering innovations and infrastructure trends in Southern Africa.</p>
+            <h2 className="text-3xl font-display text-[var(--dxl-paper)] mb-4">Subscribe to SNC Insights</h2>
+            <p className="text-[var(--dxl-slate-light)] mb-8">Receive our quarterly technical briefings covering engineering innovations and infrastructure trends in Southern Africa.</p>
             <NewsletterForm />
           </div>
         </div>

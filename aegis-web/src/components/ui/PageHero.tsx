@@ -34,7 +34,7 @@ export function PageHero({
   if (variant === "full") {
     return (
       <section 
-        className={cn("relative min-h-[100dvh] pt-32 pb-20 bg-snc-void blueprint-grid flex flex-col justify-center overflow-hidden", className)}
+        className={cn("relative min-h-[100dvh] pt-32 pb-20 bg-void blueprint-grid flex flex-col justify-center overflow-hidden", className)}
         style={{ 
           backgroundImage: `linear-gradient(to bottom, rgba(11,15,20,0.8), rgba(7,10,13,1)), url('/hero_cinematic.png')`,
           backgroundSize: 'cover',
@@ -47,7 +47,7 @@ export function PageHero({
         <motion.div 
           className="absolute left-0 h-px top-[35%]"
           style={{ 
-            background: "linear-gradient(90deg, transparent, var(--snc-gold-primary) 20%, var(--snc-gold-primary) 80%, transparent)" 
+            background: "linear-gradient(90deg, transparent, var(--dxl-signal) 20%, var(--dxl-signal) 80%, transparent)" 
           }}
           initial={{ width: 0, opacity: 0 }}
           animate={{ width: "100%", opacity: 0.4 }}
@@ -66,7 +66,7 @@ export function PageHero({
 
             <h1 className="mt-4 mb-8">
               <motion.span 
-                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-snc-text-primary"
+                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-paper"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: 0.3 }}
@@ -74,7 +74,7 @@ export function PageHero({
                 INFRASTRUCTURE
               </motion.span>
               <motion.span 
-                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-snc-text-primary"
+                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-paper"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: 0.45 }}
@@ -82,7 +82,7 @@ export function PageHero({
                 BUILT WITH
               </motion.span>
               <motion.span 
-                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-snc-gold-primary"
+                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-signal"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: 0.6 }}
@@ -90,7 +90,7 @@ export function PageHero({
                 UNYIELDING
               </motion.span>
               <motion.span 
-                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-snc-text-primary"
+                className="block font-display text-[clamp(40px,8vw,120px)] leading-[0.95] text-paper"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.6, delay: 0.75 }}
@@ -100,7 +100,7 @@ export function PageHero({
             </h1>
 
             <motion.p 
-              className="text-body-xl text-snc-text-secondary max-w-2xl mb-10"
+              className="text-body-xl text-slate-light max-w-2xl mb-10"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 1.0 }}
@@ -124,17 +124,17 @@ export function PageHero({
 
             {/* TRUST INDICATORS & STAT ROW */}
             <motion.div 
-              className="flex flex-col md:flex-row md:items-center gap-10 md:gap-16 pt-8 border-t border-snc-border"
+              className="flex flex-col md:flex-row md:items-center gap-10 md:gap-16 pt-8 border-t border-ink-mid"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 1.6 }}
             >
               <div className="flex flex-row items-center gap-6">
-                <div className="text-caption text-snc-text-tertiary">ISO 9001:2015</div>
-                <div className="w-px h-6 bg-snc-border" />
-                <div className="text-caption text-snc-text-tertiary">PRAZ CATEGORY A</div>
-                <div className="w-px h-6 bg-snc-border" />
-                <div className="text-caption text-snc-text-tertiary">CIFOZ CLASS A</div>
+                <div className="text-caption text-slate">ISO 9001:2015</div>
+                <div className="w-px h-6 bg-ink-mid" />
+                <div className="text-caption text-slate">PRAZ CATEGORY A</div>
+                <div className="w-px h-6 bg-ink-mid" />
+                <div className="text-caption text-slate">CIFOZ CLASS A</div>
               </div>
               <div className="flex flex-row items-start gap-6 md:gap-16">
                 <StatCounter value={15} suffix="+" label="YEARS EXCELLENCE" showDivider={true} />
@@ -152,7 +152,7 @@ export function PageHero({
           transition={{ duration: 2, ease: "easeInOut", repeat: Infinity }}
         >
           <span className="text-caption">SCROLL</span>
-          <ChevronDown className="w-5 h-5 text-snc-gold-primary" />
+          <ChevronDown className="w-5 h-5 text-signal" />
         </motion.div>
       </section>
     );
@@ -161,7 +161,7 @@ export function PageHero({
   // HALF VARIANT (INNER PAGES)
   return (
     <section 
-      className={cn("relative min-h-[50vh] flex flex-col justify-end pt-32 pb-16 bg-snc-navy overflow-hidden", className)}
+      className={cn("relative min-h-[50vh] flex flex-col justify-end pt-32 pb-16 bg-ink overflow-hidden", className)}
       style={backgroundImage ? { 
         backgroundImage: `linear-gradient(to bottom, rgba(10,22,40,0.8), rgba(4,8,16,1)), url(${backgroundImage})`,
         backgroundSize: 'cover',
@@ -176,25 +176,25 @@ export function PageHero({
             <div className="flex items-center gap-2 text-caption">
               {breadcrumbs.map((crumb, index) => (
                 <div key={index} className="flex items-center gap-2">
-                  {index > 0 && <ChevronRight className="w-3 h-3 text-snc-gold-primary" />}
+                  {index > 0 && <ChevronRight className="w-3 h-3 text-signal" />}
                   {crumb.href ? (
-                    <Link href={crumb.href} className="text-snc-text-tertiary hover:text-snc-text-primary transition-colors">
+                    <Link href={crumb.href} className="text-slate hover:text-paper transition-colors">
                       {crumb.label}
                     </Link>
                   ) : (
-                    <span className="text-snc-text-primary">{crumb.label}</span>
+                    <span className="text-paper">{crumb.label}</span>
                   )}
                 </div>
               ))}
             </div>
-            <div className="w-12 h-px bg-snc-gold-primary mt-4" />
+            <div className="w-12 h-px bg-signal mt-4" />
           </div>
         )}
 
         <div className="max-w-4xl">
-          <h1 className="text-headline-xl text-snc-text-primary mb-6">{title}</h1>
+          <h1 className="text-headline-xl text-paper mb-6">{title}</h1>
           {subtitle && (
-            <p className="text-body-xl text-snc-text-secondary max-w-2xl">{subtitle}</p>
+            <p className="text-body-xl text-slate-light max-w-2xl">{subtitle}</p>
           )}
         </div>
       </div>

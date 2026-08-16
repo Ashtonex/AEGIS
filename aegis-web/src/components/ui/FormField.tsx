@@ -51,20 +51,20 @@ export const FormField = forwardRef<
     ref
   ) => {
     const baseClasses =
-      "w-full bg-snc-navy-mid border border-snc-border rounded-sm px-4 py-[14px] text-snc-text-primary font-sans text-[15px] transition-colors duration-150 ease-out focus:outline-none focus:border-snc-gold-primary focus:shadow-[0_0_0_3px_rgba(200,150,12,0.08)] placeholder:text-snc-text-disabled";
+      "w-full bg-ink-mid border border-ink-mid rounded-sm px-4 py-[14px] text-paper font-sans text-[15px] transition-colors duration-150 ease-out focus:outline-none focus:border-signal focus:shadow-[0_0_0_3px_rgba(200,150,12,0.08)] placeholder:text-slate-dark";
 
     const errorClasses =
-      "border-snc-danger focus:border-snc-danger focus:shadow-[0_0_0_3px_rgba(239,68,68,0.08)]";
+      "border-danger focus:border-danger focus:shadow-[0_0_0_3px_rgba(239,68,68,0.08)]";
 
     const fileBaseClasses =
-      "w-full bg-transparent border border-dashed border-snc-border rounded-sm p-8 text-center text-snc-text-secondary font-sans text-[15px] transition-all duration-150 hover:border-snc-gold-primary hover:bg-snc-gold-ghost cursor-pointer";
+      "w-full bg-transparent border border-dashed border-ink-mid rounded-sm p-8 text-center text-slate-light font-sans text-[15px] transition-all duration-150 hover:border-signal hover:bg-signal-ghost cursor-pointer";
 
     const resolvedClass = cn(baseClasses, error && errorClasses, className);
 
     return (
       <div className={cn("flex flex-col mb-4", containerClassName)}>
         {label && (
-          <label className="text-label text-[11px] text-snc-gold-primary mb-2 block">
+          <label className="text-label text-[11px] text-signal mb-2 block">
             {label}
           </label>
         )}
@@ -101,7 +101,7 @@ export const FormField = forwardRef<
                   </option>
                 ))}
               </select>
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-snc-gold-primary">
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-signal">
                 <ChevronDown className="w-4 h-4" />
               </div>
             </>
@@ -116,7 +116,7 @@ export const FormField = forwardRef<
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               />
               <div className="flex flex-col items-center justify-center pointer-events-none">
-                <Upload className="w-6 h-6 text-snc-text-tertiary mb-3" />
+                <Upload className="w-6 h-6 text-slate mb-3" />
                 <span>{props.placeholder || "Drag and drop or click to upload"}</span>
               </div>
             </div>
@@ -124,7 +124,7 @@ export const FormField = forwardRef<
         </div>
 
         {error && (
-          <div className="flex items-center gap-1.5 mt-1.5 text-snc-danger">
+          <div className="flex items-center gap-1.5 mt-1.5 text-danger">
             <AlertTriangle className="w-3.5 h-3.5" />
             <span className="font-sans text-[12px]">{error}</span>
           </div>

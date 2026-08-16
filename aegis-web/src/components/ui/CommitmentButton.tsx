@@ -8,13 +8,13 @@ interface CommitmentButtonProps extends React.ButtonHTMLAttributes<HTMLButtonEle
 
 export const CommitmentButton = React.forwardRef<HTMLButtonElement, CommitmentButtonProps>(
   ({ className, variant = "primary", size = "default", ...props }, ref) => {
-    const baseStyles = "inline-flex items-center justify-center rounded-sm font-sans font-semibold tracking-wide transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-snc-gold-primary focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50";
+    const baseStyles = "inline-flex items-center justify-center rounded-sm font-sans font-semibold tracking-wide transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50";
     
     const variants = {
-      primary: "bg-snc-gold-primary text-snc-void hover:bg-snc-gold-hover border border-transparent",
-      secondary: "bg-snc-navy text-snc-text-primary border border-snc-border hover:border-snc-gold-primary hover:text-snc-gold-primary",
-      ghost: "bg-transparent text-snc-text-primary hover:bg-snc-navy-raised hover:text-snc-gold-primary",
-      danger: "bg-snc-danger text-white hover:bg-red-600 border border-transparent",
+      primary: "bg-signal text-void hover:bg-signal-hover border border-transparent",
+      secondary: "bg-ink text-paper border border-ink-mid hover:border-signal hover:text-signal",
+      ghost: "bg-transparent text-paper hover:bg-ink-light hover:text-signal",
+      danger: "bg-danger text-white hover:bg-red-600 border border-transparent",
     };
 
     const sizes = {

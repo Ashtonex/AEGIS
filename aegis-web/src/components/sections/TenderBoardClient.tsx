@@ -54,9 +54,9 @@ export function TenderBoardClient({ initialTenders }: TenderBoardClientProps) {
       {/* Filters */}
       <div className="flex flex-col md:flex-row gap-4 mb-8">
         <div className="relative flex-1">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-snc-text-tertiary z-10" />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate z-10" />
           <FormField
-            className="pl-12 w-full mb-0 bg-snc-navy border-snc-border text-snc-text-primary placeholder:text-snc-text-tertiary focus:border-snc-gold-primary"
+            className="pl-12 w-full mb-0 bg-ink border-ink-mid text-paper placeholder:text-slate focus:border-signal"
             containerClassName="mb-0"
             placeholder="Search tender reference, title, or details..."
             value={searchTerm}
@@ -66,7 +66,7 @@ export function TenderBoardClient({ initialTenders }: TenderBoardClientProps) {
         <FormField
           as="select"
           containerClassName="mb-0 w-full md:w-48"
-          className="mb-0 text-snc-text-secondary bg-snc-navy border-snc-border focus:border-snc-gold-primary"
+          className="mb-0 text-slate-light bg-ink border-ink-mid focus:border-signal"
           value={categoryFilter}
           onChange={(e) => setCategoryFilter(e.target.value)}
           options={[
@@ -79,7 +79,7 @@ export function TenderBoardClient({ initialTenders }: TenderBoardClientProps) {
         <FormField
           as="select"
           containerClassName="mb-0 w-full md:w-48"
-          className="mb-0 text-snc-text-secondary bg-snc-navy border-snc-border focus:border-snc-gold-primary"
+          className="mb-0 text-slate-light bg-ink border-ink-mid focus:border-signal"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
           options={[
@@ -91,8 +91,8 @@ export function TenderBoardClient({ initialTenders }: TenderBoardClientProps) {
       </div>
 
       {/* Tender List */}
-      <div className="bg-snc-navy border border-snc-border rounded-[4px] overflow-hidden mb-16">
-        <div className="hidden lg:grid grid-cols-12 gap-6 p-4 border-b border-snc-border bg-snc-navy-mid font-sans text-[11px] font-semibold tracking-widest uppercase text-snc-text-tertiary">
+      <div className="bg-ink border border-ink-mid rounded-[4px] overflow-hidden mb-16">
+        <div className="hidden lg:grid grid-cols-12 gap-6 p-4 border-b border-ink-mid bg-ink-mid font-sans text-[11px] font-semibold tracking-widest uppercase text-slate">
           <div className="col-span-2">Reference</div>
           <div className="col-span-4">Title</div>
           <div className="col-span-3">Details</div>
@@ -107,7 +107,7 @@ export function TenderBoardClient({ initialTenders }: TenderBoardClientProps) {
                   <TenderCard
                     tender={tender}
                     variant="row"
-                    className="bg-snc-void"
+                    className="bg-void"
                     onRegisterInterest={(id) => setSelectedTenderId(id)}
                   />
                 </StaggerItem>
@@ -142,35 +142,35 @@ export function TenderBoardClient({ initialTenders }: TenderBoardClientProps) {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
               transition={{ duration: 0.25, ease: "easeOut" }}
-              className="relative w-full max-w-xl bg-snc-navy border border-snc-gold-primary shadow-2xl p-6 md:p-8 rounded-sm z-10 font-sans text-snc-text-primary"
+              className="relative w-full max-w-xl bg-ink border border-signal shadow-2xl p-6 md:p-8 rounded-sm z-10 font-sans text-paper"
             >
               {/* Close Button */}
               <button
                 onClick={() => setSelectedTenderId(null)}
-                className="absolute top-4 right-4 text-snc-text-tertiary hover:text-snc-text-primary transition-colors focus:outline-none"
+                className="absolute top-4 right-4 text-slate hover:text-paper transition-colors focus:outline-none"
               >
                 <X className="w-5 h-5" />
               </button>
 
               <div className="mb-6">
                 <div className="flex items-center gap-3 mb-2">
-                  <span className="text-[11px] font-mono text-snc-gold-primary tracking-wider uppercase border border-snc-gold-primary/30 px-2 py-0.5 rounded-sm">
+                  <span className="text-[11px] font-mono text-signal tracking-wider uppercase border border-signal/30 px-2 py-0.5 rounded-sm">
                     {selectedTender.reference}
                   </span>
-                  <span className="text-[11px] font-mono text-snc-text-tertiary uppercase">
+                  <span className="text-[11px] font-mono text-slate uppercase">
                     {selectedTender.category}
                   </span>
                 </div>
-                <h3 className="text-headline-md text-snc-text-primary mb-2 font-display">
+                <h3 className="text-headline-md text-paper mb-2 font-display">
                   Register Bid Interest
                 </h3>
-                <p className="text-body-sm text-snc-text-secondary">
+                <p className="text-body-sm text-slate-light">
                   Submit your organization&apos;s core details below to register interest in:{" "}
-                  <strong className="text-snc-text-primary">{selectedTender.title}</strong>.
+                  <strong className="text-paper">{selectedTender.title}</strong>.
                 </p>
               </div>
 
-              <div className="border-t border-snc-border/60 pt-6">
+              <div className="border-t border-ink-mid/60 pt-6">
                 <TenderInterestForm tenderId={selectedTender.id} />
               </div>
             </motion.div>

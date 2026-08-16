@@ -39,14 +39,14 @@ export function StatCounter({ value, suffix = "", label, duration = 2, showDivid
     <div ref={ref} className="flex items-center">
       <div className="flex flex-col">
         <div className="flex items-baseline">
-          <span className="text-display-lg text-snc-gold-primary">{displayValue}</span>
-          {suffix && <span className="text-display-lg text-snc-gold-primary">{suffix}</span>}
+          <span className="text-display-lg text-signal">{displayValue}</span>
+          {suffix && <span className="text-display-lg text-signal">{suffix}</span>}
         </div>
-        <span className="text-label text-snc-text-tertiary mt-2 block">{label}</span>
+        <span className="text-label text-slate mt-2 block">{label}</span>
       </div>
       
       {showDivider && (
-        <div className="hidden md:block w-px h-[60px] bg-snc-gold-primary/30 mx-8 lg:mx-16" />
+        <div className="hidden md:block w-px h-[60px] bg-signal/30 mx-8 lg:mx-16" />
       )}
     </div>
   );

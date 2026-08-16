@@ -28,11 +28,11 @@ export function TenderCard({ tender, variant = "row", className, onRegisterInter
   })();
 
   const StatusBadge = () => {
-    let colorClass = "text-snc-text-tertiary border-snc-border bg-transparent";
-    if (tender.status === "Open") colorClass = "text-snc-success border-snc-success/30 bg-snc-success/10";
-    else if (tender.status === "Closing Soon") colorClass = "text-snc-warning border-snc-warning/30 bg-snc-warning/10";
-    else if (tender.status === "Closed") colorClass = "text-snc-text-tertiary border-snc-border bg-snc-navy-raised";
-    else if (tender.status === "Awarded") colorClass = "text-snc-electric border-snc-electric/30 bg-snc-electric/10";
+    let colorClass = "text-slate border-ink-mid bg-transparent";
+    if (tender.status === "Open") colorClass = "text-success border-success/30 bg-success/10";
+    else if (tender.status === "Closing Soon") colorClass = "text-warning border-warning/30 bg-warning/10";
+    else if (tender.status === "Closed") colorClass = "text-slate border-ink-mid bg-ink-light";
+    else if (tender.status === "Awarded") colorClass = "text-info border-info/30 bg-info/10";
 
     return (
       <span className={cn("px-2 py-1 text-[10px] font-sans font-semibold uppercase tracking-widest border rounded-sm", colorClass)}>
@@ -55,9 +55,9 @@ export function TenderCard({ tender, variant = "row", className, onRegisterInter
           repeat: Infinity,
           ease: "easeInOut"
         }}
-        className="px-2 py-0.5 text-[9px] font-sans font-semibold uppercase tracking-widest bg-snc-gold-primary/20 text-snc-gold-primary border border-snc-gold-primary/40 rounded-sm flex items-center gap-1"
+        className="px-2 py-0.5 text-[9px] font-sans font-semibold uppercase tracking-widest bg-signal/20 text-signal border border-signal/40 rounded-sm flex items-center gap-1"
       >
-        <span className="w-1.5 h-1.5 rounded-full bg-snc-gold-primary animate-ping" />
+        <span className="w-1.5 h-1.5 rounded-full bg-signal animate-ping" />
         New
       </motion.span>
     );
@@ -65,29 +65,29 @@ export function TenderCard({ tender, variant = "row", className, onRegisterInter
 
   if (isRow) {
     return (
-      <div className={cn("grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 p-6 border-b border-snc-border hover:bg-snc-navy-raised/50 transition-colors group", className)}>
+      <div className={cn("grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-6 p-6 border-b border-ink-mid hover:bg-ink-light/50 transition-colors group", className)}>
         <div className="lg:col-span-2 flex flex-col items-start gap-2">
-          <span className="text-[12px] font-mono text-snc-text-tertiary">{tender.reference}</span>
+          <span className="text-[12px] font-mono text-slate">{tender.reference}</span>
           <div className="flex flex-wrap gap-2 items-center">
             <StatusBadge />
             <NewIndicator />
           </div>
         </div>
         <div className="lg:col-span-4">
-          <h4 className="font-sans font-semibold text-[15px] text-snc-text-primary group-hover:text-snc-gold-primary transition-colors mb-1">{tender.title}</h4>
-          <span className="text-[12px] text-snc-text-secondary">{tender.category}</span>
+          <h4 className="font-sans font-semibold text-[15px] text-paper group-hover:text-signal transition-colors mb-1">{tender.title}</h4>
+          <span className="text-[12px] text-slate-light">{tender.category}</span>
         </div>
-        <div className="lg:col-span-3 flex flex-col gap-1 text-[13px] text-snc-text-secondary">
-          <span className="flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-snc-text-tertiary" /> {tender.province}</span>
-          <span className="flex items-center gap-2"><Calendar className="w-3.5 h-3.5 text-snc-text-tertiary" /> Closes: {formatDate(tender.closingDate)}</span>
+        <div className="lg:col-span-3 flex flex-col gap-1 text-[13px] text-slate-light">
+          <span className="flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-slate" /> {tender.province}</span>
+          <span className="flex items-center gap-2"><Calendar className="w-3.5 h-3.5 text-slate" /> Closes: {formatDate(tender.closingDate)}</span>
         </div>
         <div className="lg:col-span-3 flex items-center justify-end gap-4">
-          <button className="text-snc-text-secondary hover:text-snc-text-primary transition-colors flex items-center gap-1 font-sans text-[11px] font-semibold uppercase tracking-[0.08em]">
+          <button className="text-slate-light hover:text-paper transition-colors flex items-center gap-1 font-sans text-[11px] font-semibold uppercase tracking-[0.08em]">
             <FileDown className="w-3.5 h-3.5" /> RFP
           </button>
           <button 
             onClick={() => onRegisterInterest?.(tender.id)}
-            className="text-snc-gold-primary hover:text-snc-gold-hover transition-colors flex items-center gap-1 font-sans text-[11px] font-semibold uppercase tracking-[0.08em]"
+            className="text-signal hover:text-signal-hover transition-colors flex items-center gap-1 font-sans text-[11px] font-semibold uppercase tracking-[0.08em]"
           >
             Interest <ArrowRight className="w-3.5 h-3.5" />
           </button>
@@ -99,16 +99,16 @@ export function TenderCard({ tender, variant = "row", className, onRegisterInter
   return (
     <Card variant="tender" padding="standard" className={cn("h-full flex flex-col", className)}>
       <div className="flex justify-between items-start mb-6">
-        <span className="text-[12px] font-mono text-snc-text-tertiary">{tender.reference}</span>
+        <span className="text-[12px] font-mono text-slate">{tender.reference}</span>
         <div className="flex flex-wrap gap-2 items-center justify-end">
           <StatusBadge />
           <NewIndicator />
         </div>
       </div>
-      <h4 className="text-headline-md text-snc-text-primary mb-4 flex-1">{tender.title}</h4>
+      <h4 className="text-headline-md text-paper mb-4 flex-1">{tender.title}</h4>
       <div className="space-y-2 text-caption mb-8">
-        <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-snc-text-tertiary" /> {tender.province}</div>
-        <div className="flex items-center gap-2"><Calendar className="w-4 h-4 text-snc-text-tertiary" /> Closes: {formatDate(tender.closingDate)}</div>
+        <div className="flex items-center gap-2"><MapPin className="w-4 h-4 text-slate" /> {tender.province}</div>
+        <div className="flex items-center gap-2"><Calendar className="w-4 h-4 text-slate" /> Closes: {formatDate(tender.closingDate)}</div>
       </div>
       <div className="flex flex-col gap-3">
         <Button variant="ghostWhite" size="full" className="gap-2">

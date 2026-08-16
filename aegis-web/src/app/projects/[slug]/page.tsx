@@ -36,8 +36,8 @@ export default async function ProjectDetailPage(props: { params: Promise<{ slug:
   return (
     <PageWrapper>
       {/* 1. Hero */}
-      <section className="relative min-h-[70vh] flex flex-col justify-end border-b border-[var(--snc-navy-border)] -mt-[104px] pt-[104px]">
-        <div className="absolute inset-0 z-0 bg-[var(--snc-navy)]">
+      <section className="relative min-h-[70vh] flex flex-col justify-end border-b border-[var(--dxl-ink-mid)] -mt-[104px] pt-[104px]">
+        <div className="absolute inset-0 z-0 bg-[var(--dxl-ink)]">
           {project.featuredImage ? (
             <Image
               src={project.featuredImage}
@@ -51,7 +51,7 @@ export default async function ProjectDetailPage(props: { params: Promise<{ slug:
           ) : (
             <div className="w-full h-full bg-blueprint opacity-20" />
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-[var(--snc-void)] via-[var(--snc-void)]/80 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[var(--dxl-void)] via-[var(--dxl-void)]/80 to-transparent" />
         </div>
 
         <div className="container relative z-10 pb-16">
@@ -69,18 +69,18 @@ export default async function ProjectDetailPage(props: { params: Promise<{ slug:
             <Badge variant={project.status === 'Completed' ? 'green' : 'blue'}>{project.status}</Badge>
           </div>
           
-          <h1 className="text-display mb-6 tracking-tight text-[var(--snc-white)] max-w-4xl">
+          <h1 className="text-display mb-6 tracking-tight text-[var(--dxl-paper)] max-w-4xl">
             {project.title}
           </h1>
 
-          <div className="flex flex-wrap gap-8 text-[var(--snc-mist)] font-medium">
+          <div className="flex flex-wrap gap-8 text-[var(--dxl-slate-light)] font-medium">
             <div className="flex items-center gap-2">
-              <MapPin className="w-5 h-5 text-[var(--snc-gold)]" />
+              <MapPin className="w-5 h-5 text-[var(--dxl-signal)]" />
               {project.province}
             </div>
             {project.value && (
               <div className="flex items-center gap-2">
-                <span className="text-[var(--snc-gold)]">$</span>
+                <span className="text-[var(--dxl-signal)]">$</span>
                 {formatCurrency(project.value)}
               </div>
             )}
@@ -89,33 +89,33 @@ export default async function ProjectDetailPage(props: { params: Promise<{ slug:
       </section>
 
       {/* 2. Project Overview */}
-      <section className="py-16 bg-[var(--snc-void)] border-b border-[var(--snc-navy-border)]">
+      <section className="py-16 bg-[var(--dxl-void)] border-b border-[var(--dxl-ink-mid)]">
         <div className="container">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
              <div>
-               <div className="text-xs uppercase tracking-widest text-[var(--snc-grey)] mb-2">Client</div>
-               <div className="font-semibold text-[var(--snc-white)]">{project.client}</div>
+               <div className="text-xs uppercase tracking-widest text-[var(--dxl-slate)] mb-2">Client</div>
+               <div className="font-semibold text-[var(--dxl-paper)]">{project.client}</div>
              </div>
              <div>
-               <div className="text-xs uppercase tracking-widest text-[var(--snc-grey)] mb-2">Contract Type</div>
-               <div className="font-semibold text-[var(--snc-white)]">{project.contractType}</div>
+               <div className="text-xs uppercase tracking-widest text-[var(--dxl-slate)] mb-2">Contract Type</div>
+               <div className="font-semibold text-[var(--dxl-paper)]">{project.contractType}</div>
              </div>
              <div>
-               <div className="text-xs uppercase tracking-widest text-[var(--snc-grey)] mb-2">Timeline</div>
-               <div className="font-semibold text-[var(--snc-white)]">
+               <div className="text-xs uppercase tracking-widest text-[var(--dxl-slate)] mb-2">Timeline</div>
+               <div className="font-semibold text-[var(--dxl-paper)]">
                  {new Date(project.timeline.start).getFullYear()} {project.timeline.end ? `- ${new Date(project.timeline.end).getFullYear()}` : '- Present'}
                </div>
              </div>
              <div>
-               <div className="text-xs uppercase tracking-widest text-[var(--snc-grey)] mb-2">Industry</div>
-               <div className="font-semibold text-[var(--snc-white)]">{project.industry}</div>
+               <div className="text-xs uppercase tracking-widest text-[var(--dxl-slate)] mb-2">Industry</div>
+               <div className="font-semibold text-[var(--dxl-paper)]">{project.industry}</div>
              </div>
           </div>
         </div>
       </section>
 
       {/* 3. Tabbed Case Study Sections & Operational Galleries */}
-      <section className="py-24 bg-[var(--snc-navy)]">
+      <section className="py-24 bg-[var(--dxl-ink)]">
         <ProjectDetailsTabs project={project} />
       </section>
 

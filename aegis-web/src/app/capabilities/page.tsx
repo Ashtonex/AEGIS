@@ -66,7 +66,7 @@ export default function CapabilitiesIndexPage() {
         backgroundImage="/hero_cinematic.png"
       />
 
-      <section className="py-24 bg-[var(--snc-white)] relative">
+      <section className="py-24 bg-[var(--dxl-paper)] relative">
         <div className="container relative z-10 max-w-[2000px] mx-auto px-6 lg:px-12">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8">
             {CAPABILITIES.map((cap, i) => (

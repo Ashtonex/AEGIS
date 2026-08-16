@@ -42,7 +42,7 @@ export default function CareersPage() {
       />
 
       {/* Why SNC */}
-      <section className="py-24 bg-snc-void border-b border-snc-border">
+      <section className="py-24 bg-void border-b border-ink-mid">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
           <RevealOnScroll>
             <SectionLabel label="Why SNC" className="mb-12" />
@@ -50,10 +50,10 @@ export default function CareersPage() {
           <StaggerContainer className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 md:gap-8">
             {benefits.map((b, i) => (
               <StaggerItem key={i}>
-                <Card className="h-full flex flex-col p-8 bg-snc-navy-raised border-t-[2px] border-t-snc-gold-primary hover:border-snc-gold-primary transition-colors group">
-                  <div className="text-snc-text-primary group-hover:text-snc-gold-primary transition-colors mb-6">{b.icon}</div>
-                  <h4 className="text-headline-sm text-snc-text-primary mb-3">{b.title}</h4>
-                  <p className="text-body text-snc-text-secondary flex-1">{b.desc}</p>
+                <Card className="h-full flex flex-col p-8 bg-ink-light border-t-[2px] border-t-signal hover:border-signal transition-colors group">
+                  <div className="text-paper group-hover:text-signal transition-colors mb-6">{b.icon}</div>
+                  <h4 className="text-headline-sm text-paper mb-3">{b.title}</h4>
+                  <p className="text-body text-slate-light flex-1">{b.desc}</p>
                 </Card>
               </StaggerItem>
             ))}
@@ -62,12 +62,12 @@ export default function CareersPage() {
       </section>
 
       {/* Open Positions */}
-      <section className="py-24 bg-snc-navy">
+      <section className="py-24 bg-ink">
         <div className="container max-w-5xl mx-auto px-6 md:px-10">
           <RevealOnScroll>
             <div className="text-center mb-16">
-              <h2 className="text-headline-xl text-snc-text-primary mb-4">Current Opportunities</h2>
-              <p className="text-body-lg text-snc-text-secondary">Explore roles across our engineering, commercial, and operational divisions.</p>
+              <h2 className="text-headline-xl text-paper mb-4">Current Opportunities</h2>
+              <p className="text-body-lg text-slate-light">Explore roles across our engineering, commercial, and operational divisions.</p>
             </div>
           </RevealOnScroll>
 
@@ -81,14 +81,14 @@ export default function CareersPage() {
             <StaggerContainer className="space-y-4">
               {positions.map((pos: any) => (
                 <StaggerItem key={pos.id}>
-                  <div className="p-8 border border-snc-border bg-snc-navy-raised rounded-[4px] hover:border-snc-gold-primary hover:bg-snc-navy-high transition-colors flex flex-col md:flex-row md:items-center justify-between gap-6 group">
+                  <div className="p-8 border border-ink-mid bg-ink-light rounded-[4px] hover:border-signal hover:bg-ink-high transition-colors flex flex-col md:flex-row md:items-center justify-between gap-6 group">
                     <div>
-                      <h4 className="text-headline-md text-snc-text-primary mb-3 group-hover:text-snc-gold-primary transition-colors">{pos.title}</h4>
+                      <h4 className="text-headline-md text-paper mb-3 group-hover:text-signal transition-colors">{pos.title}</h4>
                       <div className="flex flex-wrap items-center gap-4 text-caption mb-4 md:mb-0">
-                        <span className="px-2 py-1 bg-snc-void border border-snc-border text-snc-text-secondary rounded-sm uppercase tracking-widest">{pos.department}</span>
-                        <span className="px-2 py-1 bg-snc-electric/10 border border-snc-electric/30 text-snc-electric rounded-sm uppercase tracking-widest">{pos.type}</span>
-                        <span className="flex items-center gap-1.5 text-snc-text-tertiary"><MapPin className="w-3.5 h-3.5" /> {pos.location}</span>
-                        <span className="flex items-center gap-1.5 text-snc-text-tertiary"><Calendar className="w-3.5 h-3.5" /> Posted: {formatDate(pos.postedDate)}</span>
+                        <span className="px-2 py-1 bg-void border border-ink-mid text-slate-light rounded-sm uppercase tracking-widest">{pos.department}</span>
+                        <span className="px-2 py-1 bg-info/10 border border-info/30 text-info rounded-sm uppercase tracking-widest">{pos.type}</span>
+                        <span className="flex items-center gap-1.5 text-slate"><MapPin className="w-3.5 h-3.5" /> {pos.location}</span>
+                        <span className="flex items-center gap-1.5 text-slate"><Calendar className="w-3.5 h-3.5" /> Posted: {formatDate(pos.postedDate)}</span>
                       </div>
                     </div>
                     <Button 
@@ -103,11 +103,11 @@ export default function CareersPage() {
               ))}
             </StaggerContainer>
           ) : (
-            <div className="p-16 text-center border border-snc-border bg-snc-navy-raised rounded-[4px]">
-              <p className="text-body text-snc-text-secondary mb-6">There are no specific openings currently listed.</p>
+            <div className="p-16 text-center border border-ink-mid bg-ink-light rounded-[4px]">
+              <p className="text-body text-slate-light mb-6">There are no specific openings currently listed.</p>
               <button 
                 onClick={() => setSelectedPosition({ id: "speculative", title: "Speculative Application" })}
-                className="text-snc-gold-primary font-sans font-semibold text-[13px] uppercase tracking-[0.08em] hover:text-snc-gold-hover transition-colors underline underline-offset-4"
+                className="text-signal font-sans font-semibold text-[13px] uppercase tracking-[0.08em] hover:text-signal-hover transition-colors underline underline-offset-4"
               >
                 Submit a speculative application
               </button>
@@ -132,16 +132,16 @@ export default function CareersPage() {
               animate={{ x: 0 }} 
               exit={{ x: "100%" }} 
               transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              className="fixed inset-y-0 right-0 w-full max-w-2xl bg-snc-navy border-l border-snc-border shadow-2xl z-[101] overflow-y-auto flex flex-col"
+              className="fixed inset-y-0 right-0 w-full max-w-2xl bg-ink border-l border-ink-mid shadow-2xl z-[101] overflow-y-auto flex flex-col"
             >
-              <div className="sticky top-0 bg-[rgba(10,22,40,0.95)] backdrop-blur-md border-b border-snc-border p-8 flex items-center justify-between z-10">
+              <div className="sticky top-0 bg-[rgba(10,22,40,0.95)] backdrop-blur-md border-b border-ink-mid p-8 flex items-center justify-between z-10">
                 <div>
-                  <div className="text-[11px] font-sans font-semibold uppercase tracking-widest text-snc-text-tertiary mb-2">Applying for</div>
-                  <h3 className="text-headline-lg text-snc-text-primary">{selectedPosition.title}</h3>
+                  <div className="text-[11px] font-sans font-semibold uppercase tracking-widest text-slate mb-2">Applying for</div>
+                  <h3 className="text-headline-lg text-paper">{selectedPosition.title}</h3>
                 </div>
                 <button 
                   onClick={() => setSelectedPosition(null)}
-                  className="p-2 hover:bg-snc-navy-raised rounded-full transition-colors text-snc-text-secondary hover:text-snc-text-primary"
+                  className="p-2 hover:bg-ink-light rounded-full transition-colors text-slate-light hover:text-paper"
                 >
                   <X className="w-6 h-6" />
                 </button>

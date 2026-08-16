@@ -31,58 +31,58 @@ export default async function SupplierGuidelinesPage() {
         ]}
       />
 
-      <section className="py-24 bg-snc-void border-b border-snc-border">
+      <section className="py-24 bg-void border-b border-ink-mid">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
           <div className="max-w-3xl">
             <SectionLabel>REGISTRATION CHECKLIST</SectionLabel>
             <h2 className="text-headline-lg text-white mt-2 font-display">Required Onboarding Credentials</h2>
-            <p className="text-body text-snc-text-secondary mt-6 leading-relaxed">
+            <p className="text-body text-slate-light mt-6 leading-relaxed">
               To be provisioned as an active subcontractor or materials supplier, your organization must upload valid compliance documentation during registration. Submissions missing these files will be rejected.
             </p>
 
             <div className="mt-12 space-y-6">
-              <div className="flex gap-4 p-5 border border-snc-border bg-snc-navy-dark">
-                <CheckCircle2 className="w-6 h-6 text-snc-gold-primary shrink-0" />
+              <div className="flex gap-4 p-5 border border-ink-mid bg-ink-dark">
+                <CheckCircle2 className="w-6 h-6 text-signal shrink-0" />
                 <div>
                   <h4 className="text-lg font-bold text-white mb-1">1. Company Registrations</h4>
-                  <p className="text-sm text-snc-text-secondary">
+                  <p className="text-sm text-slate-light">
                     Certificate of Incorporation, CR14 (Directors List), and CR6 (Registered Office Address).
                   </p>
                 </div>
               </div>
-              <div className="flex gap-4 p-5 border border-snc-border bg-snc-navy-dark">
-                <CheckCircle2 className="w-6 h-6 text-snc-gold-primary shrink-0" />
+              <div className="flex gap-4 p-5 border border-ink-mid bg-ink-dark">
+                <CheckCircle2 className="w-6 h-6 text-signal shrink-0" />
                 <div>
                   <h4 className="text-lg font-bold text-white mb-1">2. Tax Compliance</h4>
-                  <p className="text-sm text-snc-text-secondary">
+                  <p className="text-sm text-slate-light">
                     Valid ITF263 Tax Clearance Certificate issued by ZIMRA, accompanied by VAT registration where applicable.
                   </p>
                 </div>
               </div>
-              <div className="flex gap-4 p-5 border border-snc-border bg-snc-navy-dark">
-                <CheckCircle2 className="w-6 h-6 text-snc-gold-primary shrink-0" />
+              <div className="flex gap-4 p-5 border border-ink-mid bg-ink-dark">
+                <CheckCircle2 className="w-6 h-6 text-signal shrink-0" />
                 <div>
                   <h4 className="text-lg font-bold text-white mb-1">3. Regulatory Licensing</h4>
-                  <p className="text-sm text-snc-text-secondary">
+                  <p className="text-sm text-slate-light">
                     Valid PRAZ (Procurement Regulatory Authority of Zimbabwe) certificate under relevant categories, and NSSA compliance.
                   </p>
                 </div>
               </div>
-              <div className="flex gap-4 p-5 border border-snc-border bg-snc-navy-dark">
-                <CheckCircle2 className="w-6 h-6 text-snc-gold-primary shrink-0" />
+              <div className="flex gap-4 p-5 border border-ink-mid bg-ink-dark">
+                <CheckCircle2 className="w-6 h-6 text-signal shrink-0" />
                 <div>
                   <h4 className="text-lg font-bold text-white mb-1">4. Trade References</h4>
-                  <p className="text-sm text-snc-text-secondary">
+                  <p className="text-sm text-slate-light">
                     At least three verifiable written references from main contractors for projects completed in the past 36 months.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="mt-12 p-8 border border-snc-gold-primary/30 bg-snc-gold-primary/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+            <div className="mt-12 p-8 border border-signal/30 bg-signal/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
               <div>
                 <h4 className="text-lg font-bold text-white">Ready to register?</h4>
-                <p className="text-sm text-snc-text-secondary mt-1">Ensure you have all documents scanned as PDFs before starting the form.</p>
+                <p className="text-sm text-slate-light mt-1">Ensure you have all documents scanned as PDFs before starting the form.</p>
               </div>
               <Link href="/suppliers/register">
                 <Button variant="primary">Start Supplier Intake</Button>

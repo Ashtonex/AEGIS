@@ -7,13 +7,13 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "border-transparent bg-[var(--snc-navy-border)] text-[var(--snc-mist)]",
-        gold: "border-[var(--snc-gold)] text-[var(--snc-gold)] bg-[var(--snc-gold-ghost)]",
-        grey: "border-transparent bg-[var(--snc-dim)] text-[var(--snc-mist)]",
-        green: "border-[var(--snc-success)] text-[var(--snc-success)] bg-[var(--snc-success)]/10",
-        red: "border-[var(--snc-danger)] text-[var(--snc-danger)] bg-[var(--snc-danger)]/10",
-        blue: "border-[var(--snc-info)] text-[var(--snc-info)] bg-[var(--snc-info)]/10",
-        outline: "text-[var(--snc-text)]",
+        default: "border-transparent bg-ink-mid text-slate-light",
+        gold: "border-signal text-signal bg-signal-ghost",
+        grey: "border-transparent bg-slate/15 text-slate-light",
+        green: "border-success text-success bg-success/10",
+        red: "border-danger text-danger bg-danger/10",
+        blue: "border-info text-info bg-info/10",
+        outline: "text-paper",
       },
     },
     defaultVariants: {

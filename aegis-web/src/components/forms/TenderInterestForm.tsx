@@ -42,9 +42,9 @@ export function TenderInterestForm({ tenderId, className }: TenderInterestFormPr
   if (status === "success") {
     return (
       <div className={cn("p-8 text-center", className)}>
-        <CheckCircle2 className="w-12 h-12 text-[var(--snc-success)] mx-auto mb-4" />
-        <h3 className="text-xl font-bold text-[var(--snc-white)] mb-2">Interest Registered</h3>
-        <p className="text-[var(--snc-mist)]">We will contact you with further instructions and updates regarding this tender.</p>
+        <CheckCircle2 className="w-12 h-12 text-[var(--dxl-success)] mx-auto mb-4" />
+        <h3 className="text-xl font-bold text-[var(--dxl-paper)] mb-2">Interest Registered</h3>
+        <p className="text-[var(--dxl-slate-light)]">We will contact you with further instructions and updates regarding this tender.</p>
       </div>
     );
   }
@@ -52,9 +52,9 @@ export function TenderInterestForm({ tenderId, className }: TenderInterestFormPr
   return (
     <form onSubmit={handleSubmit(onSubmit)} className={cn("space-y-4", className)}>
       {status === "error" && (
-        <div className="p-4 rounded-sm border border-[var(--snc-danger)] bg-[var(--snc-danger)]/10 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-[var(--snc-danger)] shrink-0" />
-          <p className="text-sm text-[var(--snc-danger)]">{errorMessage}</p>
+        <div className="p-4 rounded-sm border border-[var(--dxl-danger)] bg-[var(--dxl-danger)]/10 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-[var(--dxl-danger)] shrink-0" />
+          <p className="text-sm text-[var(--dxl-danger)]">{errorMessage}</p>
         </div>
       )}
 

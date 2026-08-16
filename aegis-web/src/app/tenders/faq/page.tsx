@@ -29,7 +29,7 @@ export default async function TendersFaqPage() {
         ]}
       />
 
-      <section className="py-24 bg-snc-void border-b border-snc-border">
+      <section className="py-24 bg-void border-b border-ink-mid">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
           <div className="max-w-3xl">
             <SectionLabel>TENDER COMPLIANCE FAQ</SectionLabel>
@@ -38,37 +38,37 @@ export default async function TendersFaqPage() {
             <div className="space-y-8">
               <div>
                 <h4 className="text-lg font-bold text-white flex items-center gap-2 mb-2">
-                  <HelpCircle className="w-5 h-5 text-snc-gold-primary shrink-0" />
+                  <HelpCircle className="w-5 h-5 text-signal shrink-0" />
                   What is the standard bid bond requirement?
                 </h4>
-                <p className="text-sm text-snc-text-secondary leading-relaxed pl-7">
+                <p className="text-sm text-slate-light leading-relaxed pl-7">
                   Unless specified otherwise in the specific Tender Document, all bids above USD 100,000 must be accompanied by a Bank Guarantee or Insurance Bid Bond equivalent to 2% of the total bid sum.
                 </p>
               </div>
               <div>
                 <h4 className="text-lg font-bold text-white flex items-center gap-2 mb-2">
-                  <HelpCircle className="w-5 h-5 text-snc-gold-primary shrink-0" />
+                  <HelpCircle className="w-5 h-5 text-signal shrink-0" />
                   Are Joint Ventures (JV) permitted?
                 </h4>
-                <p className="text-sm text-snc-text-secondary leading-relaxed pl-7">
+                <p className="text-sm text-slate-light leading-relaxed pl-7">
                   Yes, JVs are welcomed provided that a signed Joint Venture Agreement or Memorandum of Understanding (MOU) is submitted, explicitly outlining the lead partner and resource contribution ratios.
                 </p>
               </div>
               <div>
                 <h4 className="text-lg font-bold text-white flex items-center gap-2 mb-2">
-                  <HelpCircle className="w-5 h-5 text-snc-gold-primary shrink-0" />
+                  <HelpCircle className="w-5 h-5 text-signal shrink-0" />
                   Where do we submit physical bid samples or drawings?
                 </h4>
-                <p className="text-sm text-snc-text-secondary leading-relaxed pl-7">
+                <p className="text-sm text-slate-light leading-relaxed pl-7">
                   All digital bid documents must be submitted online through the Secure Supplier Portal. Physical material samples or heavy structural drawings should be delivered in sealed envelopes to the SNC Procurement Office in Harare or Mutare as specified in the tender instructions.
                 </p>
               </div>
               <div>
                 <h4 className="text-lg font-bold text-white flex items-center gap-2 mb-2">
-                  <HelpCircle className="w-5 h-5 text-snc-gold-primary shrink-0" />
+                  <HelpCircle className="w-5 h-5 text-signal shrink-0" />
                   How is supplier performance scored?
                 </h4>
-                <p className="text-sm text-snc-text-secondary leading-relaxed pl-7">
+                <p className="text-sm text-slate-light leading-relaxed pl-7">
                   SNC uses an automated Performance Index tracker assessing suppliers on: (1) On-time delivery rate, (2) Material quality compliance, (3) Safety performance on site, and (4) Responsiveness. High scores prioritize suppliers for future private invite tenders.
                 </p>
               </div>

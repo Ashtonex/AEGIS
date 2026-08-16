@@ -1002,7 +1002,7 @@ export default function CommercialControlBrainPage() {
                 max={52}
                 value={durationWeeks}
                 onChange={(event) => setDurationWeeks(toNumber(event.target.value, 16))}
-                className="mt-3 w-full accent-[var(--snc-gold)]"
+                className="mt-3 w-full accent-[var(--dxl-signal)]"
               />
             </div>
             <div className="mt-4">
@@ -1520,7 +1520,7 @@ export default function CommercialControlBrainPage() {
                         max={50}
                         value={simMatHike}
                         onChange={(e) => setSimMatHike(toNumber(e.target.value, 10))}
-                        className="mt-2 w-full accent-[var(--snc-gold)]"
+                        className="mt-2 w-full accent-[var(--dxl-signal)]"
                       />
                     </div>
                     <div>
@@ -1531,7 +1531,7 @@ export default function CommercialControlBrainPage() {
                         max={50}
                         value={simSubHike}
                         onChange={(e) => setSimSubHike(toNumber(e.target.value, 5))}
-                        className="mt-2 w-full accent-[var(--snc-gold)]"
+                        className="mt-2 w-full accent-[var(--dxl-signal)]"
                       />
                     </div>
                   </div>

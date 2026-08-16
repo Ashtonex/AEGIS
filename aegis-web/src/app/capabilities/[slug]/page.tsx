@@ -72,18 +72,18 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
         ]}
       />
 
-      <section className="py-24 bg-[var(--snc-void)]">
+      <section className="py-24 bg-[var(--dxl-void)]">
         <div className="container">
           <div className="grid lg:grid-cols-2 gap-16 mb-24">
             <div>
               <SectionLabel>The Challenge</SectionLabel>
-              <p className="text-lg text-[var(--snc-mist)] leading-relaxed">
+              <p className="text-lg text-[var(--dxl-slate-light)] leading-relaxed">
                 {capabilityData.challenge}
               </p>
             </div>
             <div>
               <SectionLabel>Our Approach</SectionLabel>
-              <p className="text-lg text-[var(--snc-mist)] leading-relaxed">
+              <p className="text-lg text-[var(--dxl-slate-light)] leading-relaxed">
                 {capabilityData.approach}
               </p>
             </div>
@@ -93,9 +93,9 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
             <SectionLabel>Capability Breakdown</SectionLabel>
             <div className="grid md:grid-cols-2 gap-6 mt-8">
               {capabilityData.breakdown.map((item, index) => (
-                <div key={index} className="flex items-start gap-4 p-6 border border-[var(--snc-navy-border)] bg-[var(--snc-navy-mid)] rounded-sm">
-                  <CheckCircle2 className="w-6 h-6 text-[var(--snc-gold)] shrink-0" />
-                  <span className="text-[var(--snc-white)]">{item}</span>
+                <div key={index} className="flex items-start gap-4 p-6 border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-mid)] rounded-sm">
+                  <CheckCircle2 className="w-6 h-6 text-[var(--dxl-signal)] shrink-0" />
+                  <span className="text-[var(--dxl-paper)]">{item}</span>
                 </div>
               ))}
             </div>
@@ -112,11 +112,11 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
             </div>
           )}
 
-          <div className="p-12 border border-[var(--snc-navy-border)] bg-[var(--snc-navy-raised)] rounded-sm relative overflow-hidden">
+          <div className="p-12 border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-light)] rounded-sm relative overflow-hidden">
             <div className="absolute inset-0 bg-blueprint opacity-20 pointer-events-none" />
             <div className="relative z-10 max-w-3xl">
-              <h2 className="text-3xl font-display text-[var(--snc-white)] mb-4">Request a Consultation</h2>
-              <p className="text-[var(--snc-mist)] mb-8">Discuss your specific {capName} requirements with our commercial engineering team.</p>
+              <h2 className="text-3xl font-display text-[var(--dxl-paper)] mb-4">Request a Consultation</h2>
+              <p className="text-[var(--dxl-slate-light)] mb-8">Discuss your specific {capName} requirements with our commercial engineering team.</p>
               
               <EnquiryForm defaultType="New Project" />
             </div>

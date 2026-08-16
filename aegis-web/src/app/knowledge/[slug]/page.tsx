@@ -29,9 +29,9 @@ export default async function KnowledgeDetailPage(props: { params: Promise<{ slu
 
   return (
     <PageWrapper>
-      <article className="min-h-screen bg-[var(--snc-void)] pb-24">
+      <article className="min-h-screen bg-[var(--dxl-void)] pb-24">
         {/* Article Hero */}
-        <div className="relative pt-[104px] border-b border-[var(--snc-navy-border)]">
+        <div className="relative pt-[104px] border-b border-[var(--dxl-ink-mid)]">
           {article.featuredImage ? (
             <div className="absolute inset-0 z-0">
                <Image
@@ -42,32 +42,32 @@ export default async function KnowledgeDetailPage(props: { params: Promise<{ slu
                  sizes="100vw"
                  className="w-full h-full object-cover"
                />
-               <div className="absolute inset-0 bg-gradient-to-t from-[var(--snc-void)] to-[var(--snc-void)]/40" />
+               <div className="absolute inset-0 bg-gradient-to-t from-[var(--dxl-void)] to-[var(--dxl-void)]/40" />
             </div>
           ) : (
-            <div className="absolute inset-0 z-0 bg-[var(--snc-navy)]">
+            <div className="absolute inset-0 z-0 bg-[var(--dxl-ink)]">
                <div className="absolute inset-0 bg-blueprint opacity-20" />
-               <div className="absolute inset-0 bg-gradient-to-t from-[var(--snc-void)] to-transparent" />
+               <div className="absolute inset-0 bg-gradient-to-t from-[var(--dxl-void)] to-transparent" />
             </div>
           )}
           
           <div className="container relative z-10 py-20 max-w-4xl">
-            <Link href="/knowledge" className="inline-flex items-center gap-2 text-sm font-semibold tracking-wider uppercase text-[var(--snc-gold)] hover:text-[var(--snc-white)] transition-colors mb-12">
+            <Link href="/knowledge" className="inline-flex items-center gap-2 text-sm font-semibold tracking-wider uppercase text-[var(--dxl-signal)] hover:text-[var(--dxl-paper)] transition-colors mb-12">
               <ArrowLeft className="w-4 h-4" /> Back to Knowledge Centre
             </Link>
             
             <div className="flex items-center gap-4 mb-6">
               <Badge variant="gold">{article.category}</Badge>
-              <span className="text-[var(--snc-mist)] text-sm">{formatDate(article.publishDate)}</span>
+              <span className="text-[var(--dxl-slate-light)] text-sm">{formatDate(article.publishDate)}</span>
             </div>
             
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-display text-[var(--snc-white)] mb-8 tracking-tight">
+            <h1 className="text-4xl md:text-5xl lg:text-6xl font-display text-[var(--dxl-paper)] mb-8 tracking-tight">
               {article.title}
             </h1>
             
             {article.author && (
-              <div className="text-sm uppercase tracking-widest text-[var(--snc-grey)]">
-                By <span className="text-[var(--snc-mist)]">{article.author}</span>
+              <div className="text-sm uppercase tracking-widest text-[var(--dxl-slate)]">
+                By <span className="text-[var(--dxl-slate-light)]">{article.author}</span>
               </div>
             )}
           </div>
@@ -80,13 +80,13 @@ export default async function KnowledgeDetailPage(props: { params: Promise<{ slu
             {/* Share Sidebar */}
             <div className="lg:col-span-1">
               <div className="sticky top-32 flex flex-row lg:flex-col gap-4">
-                <button className="w-10 h-10 rounded-full border border-[var(--snc-navy-border)] bg-[var(--snc-navy-raised)] flex items-center justify-center text-[var(--snc-mist)] hover:text-[var(--snc-gold)] hover:border-[var(--snc-gold)] transition-all">
+                <button className="w-10 h-10 rounded-full border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-light)] flex items-center justify-center text-[var(--dxl-slate-light)] hover:text-[var(--dxl-signal)] hover:border-[var(--dxl-signal)] transition-all">
                   <Linkedin className="w-4 h-4" />
                 </button>
-                <button className="w-10 h-10 rounded-full border border-[var(--snc-navy-border)] bg-[var(--snc-navy-raised)] flex items-center justify-center text-[var(--snc-mist)] hover:text-[var(--snc-gold)] hover:border-[var(--snc-gold)] transition-all">
+                <button className="w-10 h-10 rounded-full border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-light)] flex items-center justify-center text-[var(--dxl-slate-light)] hover:text-[var(--dxl-signal)] hover:border-[var(--dxl-signal)] transition-all">
                   <Twitter className="w-4 h-4" />
                 </button>
-                <button className="w-10 h-10 rounded-full border border-[var(--snc-navy-border)] bg-[var(--snc-navy-raised)] flex items-center justify-center text-[var(--snc-mist)] hover:text-[var(--snc-gold)] hover:border-[var(--snc-gold)] transition-all">
+                <button className="w-10 h-10 rounded-full border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-light)] flex items-center justify-center text-[var(--dxl-slate-light)] hover:text-[var(--dxl-signal)] hover:border-[var(--dxl-signal)] transition-all">
                   <LinkIcon className="w-4 h-4" />
                 </button>
               </div>
@@ -95,7 +95,7 @@ export default async function KnowledgeDetailPage(props: { params: Promise<{ slu
             {/* Content */}
             <div className="lg:col-span-11">
               <div 
-                className="prose prose-invert prose-lg max-w-none prose-headings:font-display prose-headings:tracking-wide prose-headings:text-[var(--snc-white)] prose-p:text-[var(--snc-mist)] prose-a:text-[var(--snc-gold)] hover:prose-a:text-[var(--snc-gold-bright)]"
+                className="prose prose-invert prose-lg max-w-none prose-headings:font-display prose-headings:tracking-wide prose-headings:text-[var(--dxl-paper)] prose-p:text-[var(--dxl-slate-light)] prose-a:text-[var(--dxl-signal)] hover:prose-a:text-[var(--dxl-signal-hover)]"
                 dangerouslySetInnerHTML={{ __html: article.content }}
               />
             </div>

@@ -4,7 +4,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Token Architecture:
  *   - Volume II tokens (--dxl-*) are the canonical source for the gateway
- *   - Legacy (--snc-*) aliases preserved for backward compatibility
+ *   - --dxl-* is the only token layer; the legacy --snc-* alias layer has been retired
  *   - The gateway (public) surface targets the Ink/Paper light-mode aesthetic
  *     on some sequences and the dark Ink mode on others per alternating spec
  */
@@ -15,9 +15,9 @@
 
 @layer base {
   :root {
-    /* Local deterministic font stacks. Do not depend on remote font fetches during Docker builds. */
-    --font-body: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-display: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    /* Self-hosted via @fontsource (npm-bundled woff2, no remote fetches — build stays fully offline-safe). */
+    --font-body: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-display: "Archivo", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-jetbrains-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
     /* ── Volume II Core Tokens ──────────────────────────────────────────────── */
@@ -25,11 +25,15 @@
     --dxl-ink:          #0A1628;
     --dxl-ink-light:    #152240;
     --dxl-ink-mid:      #1E3A5F;
+    --dxl-ink-high:     #242D37;
+    --dxl-void:         #070A0D;
 
     /* Signal — amber-gold accent, <5% of any surface */
-    --dxl-signal:       #C8960C;
-    --dxl-signal-muted: #8B6A08;
-    --dxl-signal-ghost: rgba(200, 150, 12, 0.08);
+    --dxl-signal:        #C8960C;
+    --dxl-signal-muted:  #8B6A08;
+    --dxl-signal-ghost:  rgba(200, 150, 12, 0.08);
+    --dxl-signal-hover:  #E8B422;
+    --dxl-signal-border: rgba(200, 150, 12, 0.4);
 
     /* Paper — warm off-white (NOT clinical white) */
     --dxl-paper:        #F5F5F0;
@@ -41,42 +45,19 @@
     --dxl-slate-dark:   #2D3748;
 
     /* ── Semantic / Status Tokens ───────────────────────────────────────────── */
-    --dxl-success:  #2ECC71;
-    --dxl-warning:  #F39C12;
-    --dxl-danger:   #E74C3C;
-    --dxl-info:     #3498DB;
-
-    /* ── Legacy snc-* aliases (backward compatibility) ─────────────────────── */
-    --snc-void:         #070A0D;
-    --snc-navy:         var(--dxl-ink);
-    --snc-navy-mid:     var(--dxl-ink-mid);
-    --snc-navy-raised:  var(--dxl-ink-light);
-    --snc-navy-high:    #242D37;
-    --snc-border:       var(--dxl-ink-mid);
-    --snc-border-gold:  rgba(200, 150, 12, 0.4);
-    --snc-gold:         var(--dxl-signal);
-    --snc-gold-primary: var(--dxl-signal);
-    --snc-gold-hover:   #E8B422;
-    --snc-gold-muted:   var(--dxl-signal-muted);
-    --snc-gold-ghost:   var(--dxl-signal-ghost);
-    --snc-text-primary: var(--dxl-paper);
-    --snc-text-secondary: var(--dxl-slate-light);
-    --snc-text-tertiary: var(--dxl-slate);
-    --snc-text-disabled: var(--dxl-slate-dark);
-    --snc-white:        var(--dxl-paper);
-    --snc-mist:         var(--dxl-slate-light);
-    --snc-grey:         var(--dxl-slate);
-    --snc-electric:     var(--dxl-info);
-    --snc-electric-ghost: rgba(52, 152, 219, 0.08);
-    --snc-danger:       var(--dxl-danger);
-    --snc-success:      var(--dxl-success);
-    --snc-warning:      var(--dxl-warning);
+    --dxl-success:    #2ECC71;
+    --dxl-warning:    #F39C12;
+    --dxl-danger:     #E74C3C;
+    --dxl-info:       #3498DB;
+    --dxl-info-ghost: rgba(52, 152, 219, 0.08);
   }
 
   html[data-theme="paper"] {
     --dxl-ink: #F5F5F0;
     --dxl-ink-light: #FFFFFF;
     --dxl-ink-mid: #D7D3C7;
+    --dxl-ink-high: #E6E2D7;
+    --dxl-void: #F5F5F0;
     --dxl-signal: #8B6A08;
     --dxl-signal-muted: #B28916;
     --dxl-signal-ghost: rgba(139, 106, 8, 0.10);
@@ -85,22 +66,14 @@
     --dxl-slate: #526074;
     --dxl-slate-light: #6C7A8B;
     --dxl-slate-dark: #3A4657;
-    --snc-void: #F5F5F0;
-    --snc-navy: var(--dxl-ink);
-    --snc-navy-mid: var(--dxl-ink-mid);
-    --snc-navy-raised: var(--dxl-ink-light);
-    --snc-navy-high: #E6E2D7;
-    --snc-border: var(--dxl-ink-mid);
-    --snc-text-primary: var(--dxl-paper);
-    --snc-text-secondary: var(--dxl-slate-light);
-    --snc-text-tertiary: var(--dxl-slate);
-    --snc-text-disabled: var(--dxl-slate-dark);
   }
 
   html[data-theme="slate"] {
     --dxl-ink: #0E1724;
     --dxl-ink-light: #172436;
     --dxl-ink-mid: #24364C;
+    --dxl-ink-high: #1D2B3F;
+    --dxl-void: #0B1220;
     --dxl-signal: #C8960C;
     --dxl-signal-muted: #9B760A;
     --dxl-signal-ghost: rgba(200, 150, 12, 0.08);
@@ -109,22 +82,14 @@
     --dxl-slate: #7B8CA3;
     --dxl-slate-light: #9AA8BA;
     --dxl-slate-dark: #425367;
-    --snc-void: #0B1220;
-    --snc-navy: var(--dxl-ink);
-    --snc-navy-mid: var(--dxl-ink-mid);
-    --snc-navy-raised: var(--dxl-ink-light);
-    --snc-navy-high: #1D2B3F;
-    --snc-border: var(--dxl-ink-mid);
-    --snc-text-primary: var(--dxl-paper);
-    --snc-text-secondary: var(--dxl-slate-light);
-    --snc-text-tertiary: var(--dxl-slate);
-    --snc-text-disabled: var(--dxl-slate-dark);
   }
 
   html[data-theme="contrast"] {
     --dxl-ink: #000000;
     --dxl-ink-light: #101010;
     --dxl-ink-mid: #2A2A2A;
+    --dxl-ink-high: #151515;
+    --dxl-void: #000000;
     --dxl-signal: #FFD24A;
     --dxl-signal-muted: #C6A023;
     --dxl-signal-ghost: rgba(255, 210, 74, 0.12);
@@ -133,16 +98,6 @@
     --dxl-slate: #9A9A9A;
     --dxl-slate-light: #C4C4C4;
     --dxl-slate-dark: #595959;
-    --snc-void: #000000;
-    --snc-navy: var(--dxl-ink);
-    --snc-navy-mid: var(--dxl-ink-mid);
-    --snc-navy-raised: var(--dxl-ink-light);
-    --snc-navy-high: #151515;
-    --snc-border: var(--dxl-ink-mid);
-    --snc-text-primary: var(--dxl-paper);
-    --snc-text-secondary: var(--dxl-slate-light);
-    --snc-text-tertiary: var(--dxl-slate);
-    --snc-text-disabled: var(--dxl-slate-dark);
   }
 
   /* ── Base Document ──────────────────────────────────────────────────────── */
@@ -183,7 +138,7 @@
   /* ── Semantic Heading Overrides ─────────────────────────────────────────── */
   /* Typography creates hierarchy — size and weight, not color boxes */
   h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-body), system-ui, sans-serif;
+    font-family: var(--font-display), system-ui, sans-serif;
     font-weight: 900;
     color: inherit;
     line-height: 1.0;
@@ -246,12 +201,9 @@
     border-top-color: var(--dxl-signal-muted);
   }
 
-  /* ── Engineering Grid Texture (blueprint) ───────────────────────────────── */
+  /* ── Engineering Grid Texture (blueprint) — retired, kept as a no-op so
+     existing .blueprint-grid usages don't need touching ─────────────────── */
   .blueprint-grid {
-    background-image:
-      linear-gradient(rgba(200, 150, 12, 0.04) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(200, 150, 12, 0.04) 1px, transparent 1px);
-    background-size: 48px 48px;
   }
 
   /* ── Skeleton / Shimmer Loaders ─────────────────────────────────────────── */
@@ -273,14 +225,14 @@
     font-weight: 600;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--snc-gold-primary);
+    color: var(--dxl-signal);
   }
 
   .text-caption {
     font-size: 14px;
     font-weight: 400;
     letter-spacing: 0.01em;
-    color: var(--snc-text-tertiary);
+    color: var(--dxl-slate);
   }
 
   .text-body-xl { font-size: 20px; font-weight: 400; line-height: 1.6; }

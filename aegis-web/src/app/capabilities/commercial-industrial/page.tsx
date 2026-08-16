@@ -28,35 +28,35 @@ export default async function CommercialIndustrialPage() {
         ]}
       />
 
-      <section className="py-24 bg-snc-void border-b border-snc-border">
+      <section className="py-24 bg-void border-b border-ink-mid">
         <div className="container max-w-[1400px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
             <div>
               <SectionLabel>INDUSTRIAL BUILDING</SectionLabel>
               <h2 className="text-headline-lg text-white mt-2 font-display">Logistics Hubs & Large Scale Enclosures</h2>
-              <p className="text-body text-snc-text-secondary mt-6 leading-relaxed">
+              <p className="text-body text-slate-light mt-6 leading-relaxed">
                 Modern commerce relies on efficient hubs and depots. SNC delivers turn-key commercial and industrial developments from early foundation piles to structural steel erection, cladding, office fit-outs, and heavy-duty loading bays.
               </p>
-              <p className="text-body text-snc-text-secondary mt-4 leading-relaxed">
+              <p className="text-body text-slate-light mt-4 leading-relaxed">
                 We utilize high-flatness post-tensioned floor slabs and steel-fiber reinforced concrete to ensure load-bearing performance for heavy forklift racking systems.
               </p>
             </div>
             <div className="space-y-6">
-              <div className="p-6 border border-snc-border bg-snc-navy-dark">
+              <div className="p-6 border border-ink-mid bg-ink-dark">
                 <h4 className="text-lg font-bold text-white mb-2">High-Flatness Floor Slabs</h4>
-                <p className="text-sm text-snc-text-secondary">
+                <p className="text-sm text-slate-light">
                   Jointless, post-tensioned concrete floor slabs designed for high-reach racking and intensive forklift wear.
                 </p>
               </div>
-              <div className="p-6 border border-snc-border bg-snc-navy-dark">
+              <div className="p-6 border border-ink-mid bg-ink-dark">
                 <h4 className="text-lg font-bold text-white mb-2">Portal Frame Structural Steel</h4>
-                <p className="text-sm text-snc-text-secondary">
+                <p className="text-sm text-slate-light">
                   Large-span portal frames, trusses, cladding, and insulation for distributions depots and factories.
                 </p>
               </div>
-              <div className="p-6 border border-snc-border bg-snc-navy-dark">
+              <div className="p-6 border border-ink-mid bg-ink-dark">
                 <h4 className="text-lg font-bold text-white mb-2">Loading Docks & Yards</h4>
-                <p className="text-sm text-snc-text-secondary">
+                <p className="text-sm text-slate-light">
                   Dock leveler pits, heavy trailer parking yards, perimeter security, and fire protection networks.
                 </p>
               </div>

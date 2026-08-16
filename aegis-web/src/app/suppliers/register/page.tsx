@@ -21,9 +21,9 @@ export default function SupplierRegistrationPage() {
         ]}
       />
 
-      <section className="py-24 bg-[var(--snc-void)]">
+      <section className="py-24 bg-[var(--dxl-void)]">
         <div className="container max-w-4xl">
-          <div className="p-8 md:p-12 border border-[var(--snc-navy-border)] bg-[var(--snc-navy)] rounded-sm cad-line-accent relative overflow-hidden">
+          <div className="p-8 md:p-12 border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink)] rounded-sm cad-line-accent relative overflow-hidden">
             <div className="absolute inset-0  opacity-10 pointer-events-none" />
             <div className="relative z-10">
               <SupplierForm />

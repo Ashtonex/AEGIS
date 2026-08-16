@@ -55,33 +55,33 @@ export default function StoryPage() {
         ]}
       />
 
-      <section className="py-24 bg-[var(--snc-void)]">
+      <section className="py-24 bg-[var(--dxl-void)]">
         <div className="container max-w-4xl">
           <div className="prose prose-invert prose-lg max-w-none mb-24">
-            <p className="text-xl leading-loose text-[var(--snc-white)] font-medium mb-8">
+            <p className="text-xl leading-loose text-[var(--dxl-paper)] font-medium mb-8">
               The infrastructure deficit in Southern Africa is not a problem of capital—it is a problem of execution. Six Nine Construction was founded to solve this exact challenge.
             </p>
             
-            <p className="text-[var(--snc-mist)] leading-relaxed mb-6">
+            <p className="text-[var(--dxl-slate-light)] leading-relaxed mb-6">
               From our inception in Zimbabwe, we observed a critical gap in the market: the divide between traditional, intuition-based construction management and the rigorous, data-driven approach required for modern, large-scale infrastructure.
             </p>
 
-            <blockquote className="border-l-4 border-[var(--snc-gold)] pl-8 my-12 py-4 bg-[var(--snc-navy)]/50 italic text-[var(--snc-white)] text-xl">
+            <blockquote className="border-l-4 border-[var(--dxl-signal)] pl-8 my-12 py-4 bg-[var(--dxl-ink)]/50 italic text-[var(--dxl-paper)] text-xl">
               &quot;We don&apos;t just build structures. We engineer certainty into unpredictable environments.&quot;
             </blockquote>
 
-            <p className="text-[var(--snc-mist)] leading-relaxed mb-6">
+            <p className="text-[var(--dxl-slate-light)] leading-relaxed mb-6">
               Our growth trajectory has been entirely organic, fueled by a reputation for absolute reliability. When a mining house needs a processing plant foundation poured to millimeter accuracy under a constrained shutdown schedule, they call SNC.
             </p>
 
-            <p className="text-[var(--snc-mist)] leading-relaxed">
+            <p className="text-[var(--dxl-slate-light)] leading-relaxed">
               Today, empowered by Project AEGIS, we are not just a construction company; we are an infrastructure delivery platform. Every cubic meter of earth moved, every ton of steel erected, and every man-hour deployed is tracked, analyzed, and optimized.
             </p>
           </div>
 
           <div className="mt-24">
             <SectionLabel label="The Journey" />
-            <h2 className="text-[var(--snc-white)] mb-12">Milestones of Growth</h2>
+            <h2 className="text-[var(--dxl-paper)] mb-12">Milestones of Growth</h2>
             <Timeline events={milestones} />
           </div>
         </div>

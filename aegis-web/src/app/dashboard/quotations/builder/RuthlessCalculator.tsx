@@ -704,7 +704,7 @@ export default function RuthlessCalculator({
   };
 
   return (
-    <div className="bg-snc-navy-mid border-l border-ink-mid/60 w-full lg:max-w-md xl:max-w-lg p-5 flex flex-col justify-between h-full overflow-y-auto blueprint-grid text-paper animate-in fade-in duration-300">
+    <div className="bg-ink-mid border-l border-ink-mid/60 w-full lg:max-w-md xl:max-w-lg p-5 flex flex-col justify-between h-full overflow-y-auto blueprint-grid text-paper animate-in fade-in duration-300">
       
       <div className="space-y-5">
         

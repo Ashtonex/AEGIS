@@ -60,9 +60,9 @@ export function ApplicationForm({ positionId = "speculative", positionTitle = "S
   if (status === "success") {
     return (
       <div className={cn("p-12 text-center", className)}>
-        <CheckCircle2 className="w-12 h-12 text-[var(--snc-success)] mx-auto mb-4" />
-        <h3 className="text-xl font-bold text-[var(--snc-white)] mb-2">Application Submitted</h3>
-        <p className="text-[var(--snc-mist)]">Your application for {positionTitle} has been received. Our HR team will review and be in touch within 5 days.</p>
+        <CheckCircle2 className="w-12 h-12 text-[var(--dxl-success)] mx-auto mb-4" />
+        <h3 className="text-xl font-bold text-[var(--dxl-paper)] mb-2">Application Submitted</h3>
+        <p className="text-[var(--dxl-slate-light)]">Your application for {positionTitle} has been received. Our HR team will review and be in touch within 5 days.</p>
       </div>
     );
   }
@@ -71,22 +71,22 @@ export function ApplicationForm({ positionId = "speculative", positionTitle = "S
     <form onSubmit={handleSubmit(onSubmit)} className={cn("space-y-6", className)}>
       <div className="flex gap-2 mb-8">
         {[1, 2, 3].map((s) => (
-          <div key={s} className="flex-1 h-1 rounded-full overflow-hidden bg-[var(--snc-navy-border)]">
-            <div className={cn("h-full bg-[var(--snc-gold)] transition-all", s <= step ? "w-full" : "w-0")} />
+          <div key={s} className="flex-1 h-1 rounded-full overflow-hidden bg-[var(--dxl-ink-mid)]">
+            <div className={cn("h-full bg-[var(--dxl-signal)] transition-all", s <= step ? "w-full" : "w-0")} />
           </div>
         ))}
       </div>
 
       {status === "error" && (
-        <div className="p-4 rounded-sm border border-[var(--snc-danger)] bg-[var(--snc-danger)]/10 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-[var(--snc-danger)] shrink-0" />
-          <p className="text-sm text-[var(--snc-danger)]">{errorMessage}</p>
+        <div className="p-4 rounded-sm border border-[var(--dxl-danger)] bg-[var(--dxl-danger)]/10 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-[var(--dxl-danger)] shrink-0" />
+          <p className="text-sm text-[var(--dxl-danger)]">{errorMessage}</p>
         </div>
       )}
 
       {step === 1 && (
         <div className="space-y-4 animate-in fade-in">
-          <h3 className="text-lg font-bold text-[var(--snc-white)] mb-4">Personal Details</h3>
+          <h3 className="text-lg font-bold text-[var(--dxl-paper)] mb-4">Personal Details</h3>
           <FormField label="Full Name" {...register("fullName")} error={errors.fullName?.message} />
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Email" type="email" {...register("email")} error={errors.email?.message} />
@@ -106,7 +106,7 @@ export function ApplicationForm({ positionId = "speculative", positionTitle = "S
 
       {step === 2 && (
         <div className="space-y-4 animate-in fade-in slide-in-from-right-4">
-          <h3 className="text-lg font-bold text-[var(--snc-white)] mb-4">Professional Profile</h3>
+          <h3 className="text-lg font-bold text-[var(--dxl-paper)] mb-4">Professional Profile</h3>
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Years Experience" type="number" {...register("experienceYears", { valueAsNumber: true })} error={errors.experienceYears?.message} />
             <FormField label="Highest Qualification" {...register("highestQualification")} error={errors.highestQualification?.message} />
@@ -123,12 +123,12 @@ export function ApplicationForm({ positionId = "speculative", positionTitle = "S
 
       {step === 3 && (
         <div className="space-y-4 animate-in fade-in slide-in-from-right-4">
-          <h3 className="text-lg font-bold text-[var(--snc-white)] mb-4">Declaration</h3>
-          <p className="text-sm text-[var(--snc-mist)] mb-4">Your CV and supporting documents may be requested by HR after this application is reviewed.</p>
+          <h3 className="text-lg font-bold text-[var(--dxl-paper)] mb-4">Declaration</h3>
+          <p className="text-sm text-[var(--dxl-slate-light)] mb-4">Your CV and supporting documents may be requested by HR after this application is reviewed.</p>
 
           <div className="flex items-start gap-3 mt-6">
             <input type="checkbox" id="declaration" className="mt-1" required />
-            <label htmlFor="declaration" className="text-sm text-[var(--snc-mist)]">
+            <label htmlFor="declaration" className="text-sm text-[var(--dxl-slate-light)]">
               I declare that the information provided is true and correct. I consent to background checks being conducted.
             </label>
           </div>

@@ -9,7 +9,7 @@ export function Skeleton({ className, ...props }: SkeletonProps) {
     <div
       className={cn(
         "rounded-sm animate-[shimmer_1.8s_ease-in-out_infinite]",
-        "bg-[linear-gradient(90deg,var(--snc-navy-raised)_25%,var(--snc-navy-high)_50%,var(--snc-navy-raised)_75%)] bg-[length:400%_100%]",
+        "bg-[linear-gradient(90deg,var(--dxl-ink-light)_25%,var(--dxl-ink-high)_50%,var(--dxl-ink-light)_75%)] bg-[length:400%_100%]",
         className
       )}
       {...props}
@@ -19,7 +19,7 @@ export function Skeleton({ className, ...props }: SkeletonProps) {
 
 export function SkeletonCard({ className }: SkeletonProps) {
   return (
-    <div className={cn("bg-snc-navy-raised border border-snc-border rounded-sm p-8 flex flex-col gap-4", className)}>
+    <div className={cn("bg-ink-light border border-ink-mid rounded-sm p-8 flex flex-col gap-4", className)}>
       <Skeleton className="w-full aspect-video mb-2" />
       <Skeleton className="h-6 w-3/4" />
       <Skeleton className="h-4 w-1/2" />
@@ -31,7 +31,7 @@ export function SkeletonCard({ className }: SkeletonProps) {
 
 export function SkeletonTableRows({ rows = 6, columns = 5, className }: SkeletonProps & { rows?: number; columns?: number }) {
   return (
-    <div className={cn("divide-y divide-snc-border/50", className)}>
+    <div className={cn("divide-y divide-ink-mid/50", className)}>
       {Array.from({ length: rows }).map((_, rowIndex) => (
         <div key={rowIndex} className="flex items-center gap-6 p-4">
           {Array.from({ length: columns }).map((__, colIndex) => (
@@ -45,7 +45,7 @@ export function SkeletonTableRows({ rows = 6, columns = 5, className }: Skeleton
 
 export function SkeletonTenderRow({ className }: SkeletonProps) {
   return (
-    <div className={cn("flex items-center justify-between p-4 border-b border-snc-border", className)}>
+    <div className={cn("flex items-center justify-between p-4 border-b border-ink-mid", className)}>
       <Skeleton className="h-4 w-1/4" />
       <Skeleton className="h-4 w-1/3" />
       <Skeleton className="h-8 w-24 rounded-sm" />

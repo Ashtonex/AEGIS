@@ -266,8 +266,8 @@ function FleetTrackerDashboard() {
                   </TableHeader>
                   <tbody>
                     {filteredAssets.map(asset => (
-                      <TableRow key={asset.id} onClick={() => setSelectedId(asset.id)} className={`cursor-pointer ${asset.id === selectedId ? "bg-snc-navy" : ""}`}>
-                        <TableCell><p className="font-medium text-snc-text-primary">{assetName(asset)}</p><p className="mt-1 font-mono text-[10px] text-snc-text-tertiary">{assetReference(asset)}</p></TableCell>
+                      <TableRow key={asset.id} onClick={() => setSelectedId(asset.id)} className={`cursor-pointer ${asset.id === selectedId ? "bg-ink" : ""}`}>
+                        <TableCell><p className="font-medium text-paper">{assetName(asset)}</p><p className="mt-1 font-mono text-[10px] text-slate">{assetReference(asset)}</p></TableCell>
                         <TableCell>{text(asset, "type", "asset_type", "category") || "Not recorded"}</TableCell>
                         <TableCell><StatusPill record={asset} /></TableCell>
                         <TableCell>{text(asset, "location", "site", "assigned_project", "project_name") || "Not allocated"}</TableCell>
@@ -313,7 +313,7 @@ function FleetTrackerDashboard() {
                     return (
                       <TableRow key={gate.id}>
                         <TableCell>{dateFrom(gate, "checked_at") || "Not recorded"}</TableCell>
-                        <TableCell className="text-snc-text-primary">{text(gate, "asset_code", "vehicle_registration", "fleet_id") || "General asset"}</TableCell>
+                        <TableCell className="text-paper">{text(gate, "asset_code", "vehicle_registration", "fleet_id") || "General asset"}</TableCell>
                         <TableCell>{text(gate, "employee_name", "employee_number") || "Unknown operator"}</TableCell>
                         <TableCell>{text(gate, "project_name") || "No project"}</TableCell>
                         <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${gateStatus.toLowerCase() === "blocked" ? "border-red-500/30 bg-red-950/20 text-red-300" : "border-green-500/30 bg-green-950/20 text-green-300"}`}>{gateStatus}</span></TableCell>

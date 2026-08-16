@@ -4,7 +4,8 @@
  * Volume II Design Tokens encoded as named design tokens.
  * No arbitrary values in className strings — everything references a named token.
  *
- * Color Roles (never deviate from role, only swap hex if SNC brand requires):
+ * Color Roles (values live in src/styles/globals.css --dxl-* vars, themeable
+ * per html[data-theme]; defaults shown below):
  *   ink       → primary surfaces & dark text  (#0A1628)
  *   signal    → accent, <5% of any surface    (#C8960C)
  *   paper     → warm off-white background     (#F5F5F0)
@@ -33,69 +34,48 @@ const config: Config = {
 
     extend: {
       // ── Volume II Color Tokens ─────────────────────────────────────────────
+      // Every color reads from the --dxl-* custom properties in globals.css,
+      // which are re-pointed per html[data-theme] — so every class below is
+      // theme-reactive automatically, with no separate legacy alias layer.
       colors: {
-        // Public Gateway palette
         ink: {
-          DEFAULT: "#0A1628",     // Primary Ink — deep navy
-          light: "#152240",       // Elevated surface on ink
-          mid: "#1E3A5F",         // Mid surface — borders, subtle dividers
+          DEFAULT: "var(--dxl-ink)",       // Primary Ink — deep navy
+          light: "var(--dxl-ink-light)",   // Elevated surface on ink
+          mid: "var(--dxl-ink-mid)",       // Mid surface — borders, subtle dividers
+          high: "var(--dxl-ink-high)",     // Raised chip/icon-box surface
         },
         signal: {
-          DEFAULT: "#C8960C",     // Accent — bold amber. Use sparingly (<5%)
-          muted: "#8B6A08",       // Muted signal for borders, ghosts
-          ghost: "rgba(200,150,12,0.08)",
+          DEFAULT: "var(--dxl-signal)",        // Accent — bold amber. Use sparingly (<5%)
+          muted: "var(--dxl-signal-muted)",    // Muted signal for borders, ghosts
+          ghost: "var(--dxl-signal-ghost)",
+          hover: "var(--dxl-signal-hover)",    // Brightened signal for hover states
+          border: "var(--dxl-signal-border)",  // Signal-tinted border accent
         },
         paper: {
-          DEFAULT: "#F5F5F0",     // Warm off-white — NOT clinical white
-          warm: "#EEEDE8",        // Slightly deeper for alternating surfaces
+          DEFAULT: "var(--dxl-paper)",       // Warm off-white — NOT clinical white
+          warm: "var(--dxl-paper-warm)",     // Slightly deeper for alternating surfaces
         },
         slate: {
-          DEFAULT: "#4A5568",     // Muted / secondary text, dividers, captions
-          light: "#718096",       // Lighter slate for tertiary elements
-          dark: "#2D3748",        // Darker slate for strong borders
+          DEFAULT: "var(--dxl-slate)",       // Muted / secondary text, dividers, captions
+          light: "var(--dxl-slate-light)",   // Lighter slate for tertiary elements
+          dark: "var(--dxl-slate-dark)",     // Darker slate for strong borders
         },
-
-        // Legacy aliases (keeps existing pages from breaking during migration)
-        snc: {
-          void: "var(--snc-void)",
-          navy: {
-            DEFAULT: "var(--snc-navy)",
-            mid: "var(--snc-navy-mid)",
-            raised: "var(--snc-navy-raised)",
-            high: "var(--snc-navy-high)",
-          },
-          border: {
-            DEFAULT: "var(--snc-border)",
-            gold: "var(--snc-border-gold)",
-          },
-          gold: {
-            DEFAULT: "var(--snc-gold-primary)",
-            primary: "var(--snc-gold-primary)",
-            hover: "var(--snc-gold-hover)",
-            muted: "var(--snc-gold-muted)",
-            ghost: "var(--snc-gold-ghost)",
-          },
-          text: {
-            primary: "var(--snc-text-primary)",
-            secondary: "var(--snc-text-secondary)",
-            tertiary: "var(--snc-text-tertiary)",
-            disabled: "var(--snc-text-disabled)",
-          },
-          electric: {
-            DEFAULT: "var(--snc-electric)",
-            ghost: "var(--snc-electric-ghost)",
-          },
-          danger: "var(--snc-danger)",
-          success: "var(--snc-success)",
-          warning: "var(--snc-warning)",
+        void: "var(--dxl-void)",             // Deepest background, below ink
+        success: "var(--dxl-success)",
+        warning: "var(--dxl-warning)",
+        danger: "var(--dxl-danger)",
+        info: {
+          DEFAULT: "var(--dxl-info)",
+          ghost: "var(--dxl-info-ghost)",
         },
       },
 
       // ── Volume II Typography ───────────────────────────────────────────────
       fontFamily: {
-        // Inter for all display and body — strict, no decorative typefaces
+        // Inter for body copy
         sans: ["var(--font-body)", "system-ui", "sans-serif"],
-        display: ["var(--font-body)", "system-ui", "sans-serif"],
+        // Archivo for headings/display — self-hosted, has a true 900 Black weight
+        display: ["var(--font-display)", "system-ui", "sans-serif"],
         // JetBrains Mono for data labels, coords, reference numbers
         mono: ["var(--font-jetbrains-mono)", "monospace"],
       },
@@ -146,12 +126,12 @@ const config: Config = {
         "wide":      "1200px",
       },
 
-      // ── Border Radius — Razor precision, max 4px ───────────────────────────
+      // ── Border Radius — disciplined scale, still no soft/pill defaults ─────
       borderRadius: {
         none: "0px",
-        sm: "4px",    // Maximum allowed — brutalist discipline
-        md: "4px",
-        lg: "4px",
+        sm: "4px",    // Chips, badges, small icon boxes — stays crisp
+        md: "8px",    // Secondary surfaces
+        lg: "14px",   // Cards — enough to read as a surface, not a box
         full: "9999px",  // Only for pill-shaped status indicators
       },
 

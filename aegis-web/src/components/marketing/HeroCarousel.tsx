@@ -25,7 +25,7 @@ export const HeroCarousel = () => {
   }, []);
 
   return (
-    <section className="relative h-[100dvh] w-full overflow-hidden flex items-center bg-[var(--snc-navy)] -mt-[104px] pt-[104px]">
+    <section className="relative h-[100dvh] w-full overflow-hidden flex items-center bg-[var(--dxl-ink)] -mt-[104px] pt-[104px]">
       {/* Background Images with Fade Transition */}
       <AnimatePresence initial={false}>
         <motion.div
@@ -48,29 +48,29 @@ export const HeroCarousel = () => {
       </AnimatePresence>
 
       {/* Gradients to ensure text readability */}
-      <div className="absolute inset-0 z-10 bg-gradient-to-t from-[var(--snc-navy)] via-[var(--snc-navy)]/60 to-transparent" />
-      <div className="absolute inset-0 z-10 bg-gradient-to-r from-[var(--snc-navy)] via-transparent to-transparent opacity-80" />
+      <div className="absolute inset-0 z-10 bg-gradient-to-t from-[var(--dxl-ink)] via-[var(--dxl-ink)]/60 to-transparent" />
+      <div className="absolute inset-0 z-10 bg-gradient-to-r from-[var(--dxl-ink)] via-transparent to-transparent opacity-80" />
 
       {/* Content */}
       <div className="container relative z-20 mx-auto px-6 lg:px-12">
         <div className="max-w-4xl">
           <Reveal delay={0.2}>
-            <div className="inline-flex items-center gap-2 px-4 py-1.5 mb-8 rounded-full border border-[var(--snc-border)]/20 bg-white/10 backdrop-blur-md">
-              <div className="w-2 h-2 rounded-full bg-[var(--snc-red)] animate-pulse" />
-              <span className="text-xs font-semibold tracking-[0.2em] uppercase text-[var(--snc-white)]">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 mb-8 rounded-full border border-[var(--dxl-ink-mid)]/20 bg-white/10 backdrop-blur-md">
+              <div className="w-2 h-2 rounded-full bg-[var(--dxl-signal)] animate-pulse" />
+              <span className="text-xs font-semibold tracking-[0.2em] uppercase text-[var(--dxl-paper)]">
                 BUILDING ZIMBABWE&apos;S FUTURE
               </span>
             </div>
           </Reveal>
 
           <Reveal delay={0.4}>
-            <h1 className="text-6xl md:text-[80px] lg:text-[100px] font-display text-[var(--snc-white)] leading-[0.9] tracking-tight mb-8 drop-shadow-2xl">
-              Envision it. <span className="text-[var(--snc-red)] drop-shadow-[0_0_20px_var(--snc-red-ghost)]">We build it.</span>
+            <h1 className="text-6xl md:text-[80px] lg:text-[100px] font-display text-[var(--dxl-paper)] leading-[0.9] tracking-tight mb-8 drop-shadow-2xl">
+              Envision it. <span className="text-[var(--dxl-signal)] drop-shadow-[0_0_20px_var(--dxl-signal-ghost)]">We build it.</span>
             </h1>
           </Reveal>
 
           <Reveal delay={0.6}>
-            <p className="text-xl md:text-2xl text-[var(--snc-mist)] max-w-2xl mb-12 font-medium leading-relaxed">
+            <p className="text-xl md:text-2xl text-[var(--dxl-slate-light)] max-w-2xl mb-12 font-medium leading-relaxed">
               Six Nine Construction delivers high-quality, sustainable industrial, commercial and civil builds across Zimbabwe and the wider region — backed by our sister company <strong className="text-white">Dreamcast Construction</strong> for earthmoving and premix concrete.
             </p>
           </Reveal>
@@ -79,7 +79,7 @@ export const HeroCarousel = () => {
             <div className="flex flex-wrap gap-4">
               <Link href="/projects">
                 <Button 
-                  className="bg-[var(--snc-red)] hover:bg-[var(--snc-red-bright)] text-white shadow-[0_0_30px_rgba(209,32,38,0.4)] border-none text-lg h-14 px-8"
+                  className="bg-[var(--dxl-signal)] hover:bg-[var(--dxl-signal-hover)] text-white shadow-[0_0_30px_rgba(209,32,38,0.4)] border-none text-lg h-14 px-8"
                 >
                   Start a Project
                 </Button>
@@ -104,7 +104,7 @@ export const HeroCarousel = () => {
             key={i}
             onClick={() => setCurrentIndex(i)}
             className={`h-1.5 rounded-full transition-all duration-500 ${
-              currentIndex === i ? "w-12 bg-[var(--snc-red)] shadow-[0_0_10px_var(--snc-red)]" : "w-6 bg-white/30 hover:bg-white/50"
+              currentIndex === i ? "w-12 bg-[var(--dxl-signal)] shadow-[0_0_10px_var(--dxl-signal)]" : "w-6 bg-white/30 hover:bg-white/50"
             }`}
           />
         ))}

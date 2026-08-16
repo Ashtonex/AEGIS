@@ -56,10 +56,10 @@ export function SupplierForm({ className }: SupplierFormProps) {
 
   if (status === "success") {
     return (
-      <div className={cn("p-12 text-center border border-[var(--snc-success)]/30 rounded-sm bg-[var(--snc-navy-raised)]", className)}>
-        <CheckCircle2 className="w-16 h-16 text-[var(--snc-success)] mx-auto mb-6" />
-        <h3 className="text-2xl font-bold text-[var(--snc-white)] mb-4">Registration Submitted</h3>
-        <p className="text-[var(--snc-mist)] mb-8 max-w-lg mx-auto">Your supplier application has been received. Our procurement team will review your credentials and you will be notified of the outcome.</p>
+      <div className={cn("p-12 text-center border border-[var(--dxl-success)]/30 rounded-sm bg-[var(--dxl-ink-light)]", className)}>
+        <CheckCircle2 className="w-16 h-16 text-[var(--dxl-success)] mx-auto mb-6" />
+        <h3 className="text-2xl font-bold text-[var(--dxl-paper)] mb-4">Registration Submitted</h3>
+        <p className="text-[var(--dxl-slate-light)] mb-8 max-w-lg mx-auto">Your supplier application has been received. Our procurement team will review your credentials and you will be notified of the outcome.</p>
       </div>
     );
   }
@@ -68,24 +68,24 @@ export function SupplierForm({ className }: SupplierFormProps) {
     <form onSubmit={handleSubmit(onSubmit)} className={cn("space-y-8", className)}>
       <div className="flex gap-2 mb-8">
         {[1, 2, 3].map((s) => (
-          <div key={s} className="flex-1 h-1 rounded-full overflow-hidden bg-[var(--snc-navy-border)] relative">
-             <div className={cn("absolute inset-y-0 left-0 bg-[var(--snc-gold)] transition-all duration-300", s <= step ? "w-full" : "w-0")} />
+          <div key={s} className="flex-1 h-1 rounded-full overflow-hidden bg-[var(--dxl-ink-mid)] relative">
+             <div className={cn("absolute inset-y-0 left-0 bg-[var(--dxl-signal)] transition-all duration-300", s <= step ? "w-full" : "w-0")} />
           </div>
         ))}
       </div>
 
       {status === "error" && (
-        <div className="p-4 rounded-sm border border-[var(--snc-danger)] bg-[var(--snc-danger)]/10 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-[var(--snc-danger)] shrink-0" />
-          <p className="text-sm text-[var(--snc-danger)]">{errorMessage}</p>
+        <div className="p-4 rounded-sm border border-[var(--dxl-danger)] bg-[var(--dxl-danger)]/10 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-[var(--dxl-danger)] shrink-0" />
+          <p className="text-sm text-[var(--dxl-danger)]">{errorMessage}</p>
         </div>
       )}
 
       {step === 1 && (
         <div className="space-y-6 animate-in fade-in">
           <div>
-            <h3 className="text-xl font-bold text-[var(--snc-white)] mb-1">Company Information</h3>
-            <p className="text-sm text-[var(--snc-mist)]">Step 1 of 3: Provide your legal entity details.</p>
+            <h3 className="text-xl font-bold text-[var(--dxl-paper)] mb-1">Company Information</h3>
+            <p className="text-sm text-[var(--dxl-slate-light)]">Step 1 of 3: Provide your legal entity details.</p>
           </div>
           
           <div className="grid md:grid-cols-2 gap-6">
@@ -97,7 +97,7 @@ export function SupplierForm({ className }: SupplierFormProps) {
             <FormField label="Number of Employees" type="number" {...register("employees", { valueAsNumber: true })} error={errors.employees?.message} />
           </div>
 
-          <div className="border-t border-[var(--snc-navy-border)] pt-6 grid md:grid-cols-2 gap-6">
+          <div className="border-t border-[var(--dxl-ink-mid)] pt-6 grid md:grid-cols-2 gap-6">
             <FormField label="Primary Contact Person" {...register("contactPerson")} error={errors.contactPerson?.message} />
             <FormField label="Email Address" type="email" {...register("email")} error={errors.email?.message} />
             <FormField label="Phone Number" type="tel" {...register("phone")} error={errors.phone?.message} />
@@ -116,40 +116,40 @@ export function SupplierForm({ className }: SupplierFormProps) {
       {step === 2 && (
         <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
           <div>
-            <h3 className="text-xl font-bold text-[var(--snc-white)] mb-1">Capability & Coverage</h3>
-            <p className="text-sm text-[var(--snc-mist)]">Step 2 of 3: What do you supply and where.</p>
+            <h3 className="text-xl font-bold text-[var(--dxl-paper)] mb-1">Capability & Coverage</h3>
+            <p className="text-sm text-[var(--dxl-slate-light)]">Step 2 of 3: What do you supply and where.</p>
           </div>
           
           <div className="space-y-4">
-            <label className="text-xs font-semibold uppercase tracking-wider text-[var(--snc-mist)]">Category of Supply</label>
+            <label className="text-xs font-semibold uppercase tracking-wider text-[var(--dxl-slate-light)]">Category of Supply</label>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {[
                 "Construction Materials", "Plant & Equipment", "Engineering Services",
                 "Professional Services", "IT & Technology", "Fuel & Lubricants",
                 "Safety Equipment", "Labour", "Transport"
               ].map(cat => (
-                <div key={cat} className="flex items-center gap-2 bg-[var(--snc-navy-mid)] p-3 rounded-sm border border-[var(--snc-navy-border)]">
-                  <input type="checkbox" id={`cat-${cat}`} value={cat} {...register("categories")} className="rounded-sm border-[var(--snc-navy-border)] bg-[var(--snc-navy)] text-[var(--snc-gold)] focus:ring-[var(--snc-gold)]" />
-                  <label htmlFor={`cat-${cat}`} className="text-sm text-[var(--snc-white)] cursor-pointer">{cat}</label>
+                <div key={cat} className="flex items-center gap-2 bg-[var(--dxl-ink-mid)] p-3 rounded-sm border border-[var(--dxl-ink-mid)]">
+                  <input type="checkbox" id={`cat-${cat}`} value={cat} {...register("categories")} className="rounded-sm border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink)] text-[var(--dxl-signal)] focus:ring-[var(--dxl-signal)]" />
+                  <label htmlFor={`cat-${cat}`} className="text-sm text-[var(--dxl-paper)] cursor-pointer">{cat}</label>
                 </div>
               ))}
             </div>
-            {errors.categories && <p className="text-[10px] text-[var(--snc-danger)] mt-1 font-medium">{errors.categories.message}</p>}
+            {errors.categories && <p className="text-[10px] text-[var(--dxl-danger)] mt-1 font-medium">{errors.categories.message}</p>}
           </div>
 
           <FormField label="Detailed Description of Services/Products" as="textarea" {...register("description")} error={errors.description?.message} />
 
           <div className="space-y-4">
-            <label className="text-xs font-semibold uppercase tracking-wider text-[var(--snc-mist)]">Geographic Coverage</label>
+            <label className="text-xs font-semibold uppercase tracking-wider text-[var(--dxl-slate-light)]">Geographic Coverage</label>
             <div className="grid grid-cols-2 gap-3">
               {PROVINCES.map(prov => (
                 <div key={prov} className="flex items-center gap-2">
-                  <input type="checkbox" id={`prov-${prov}`} value={prov} {...register("provinces")} className="rounded-sm border-[var(--snc-navy-border)] bg-[var(--snc-navy)] text-[var(--snc-gold)] focus:ring-[var(--snc-gold)]" />
-                  <label htmlFor={`prov-${prov}`} className="text-sm text-[var(--snc-mist)] cursor-pointer">{prov}</label>
+                  <input type="checkbox" id={`prov-${prov}`} value={prov} {...register("provinces")} className="rounded-sm border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink)] text-[var(--dxl-signal)] focus:ring-[var(--dxl-signal)]" />
+                  <label htmlFor={`prov-${prov}`} className="text-sm text-[var(--dxl-slate-light)] cursor-pointer">{prov}</label>
                 </div>
               ))}
             </div>
-            {errors.provinces && <p className="text-[10px] text-[var(--snc-danger)] mt-1 font-medium">{errors.provinces.message}</p>}
+            {errors.provinces && <p className="text-[10px] text-[var(--dxl-danger)] mt-1 font-medium">{errors.provinces.message}</p>}
           </div>
 
           <FormField label="Key Clients / References (Provide at least one)" as="textarea" {...register("references")} error={errors.references?.message} />
@@ -164,22 +164,22 @@ export function SupplierForm({ className }: SupplierFormProps) {
       {step === 3 && (
         <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
           <div>
-            <h3 className="text-xl font-bold text-[var(--snc-white)] mb-1">Declaration</h3>
-            <p className="text-sm text-[var(--snc-mist)]">Step 3 of 3: Confirm your registration details.</p>
+            <h3 className="text-xl font-bold text-[var(--dxl-paper)] mb-1">Declaration</h3>
+            <p className="text-sm text-[var(--dxl-slate-light)]">Step 3 of 3: Confirm your registration details.</p>
           </div>
 
-          <p className="text-sm text-[var(--snc-mist)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form.</p>
+          <p className="text-sm text-[var(--dxl-slate-light)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form.</p>
 
           <div className="pt-6 space-y-4">
             <div className="flex items-start gap-3">
               <input type="checkbox" id="banking" className="mt-1" required />
-              <label htmlFor="banking" className="text-sm text-[var(--snc-mist)]">
+              <label htmlFor="banking" className="text-sm text-[var(--dxl-slate-light)]">
                 I confirm that the company holds an active corporate bank account in the name of the registered entity.
               </label>
             </div>
             <div className="flex items-start gap-3">
               <input type="checkbox" id="declaration" className="mt-1" required />
-              <label htmlFor="declaration" className="text-sm text-[var(--snc-mist)]">
+              <label htmlFor="declaration" className="text-sm text-[var(--dxl-slate-light)]">
                 I declare that the information provided is true and correct, and that I am authorised to complete this registration on behalf of the company.
               </label>
             </div>

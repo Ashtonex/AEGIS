@@ -13,7 +13,7 @@ export function GoldRule({ className }: GoldRuleProps) {
 
   return (
     <motion.div
-      className={cn("h-[2px] bg-[var(--snc-gold)]", className)}
+      className={cn("h-[2px] bg-[var(--dxl-signal)]", className)}
       style={{ width: "48px", transformOrigin: "left" }}
       initial={{ scaleX: 0 }}
       whileInView={{ scaleX: 1 }}

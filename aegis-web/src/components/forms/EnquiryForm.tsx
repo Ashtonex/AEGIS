@@ -47,10 +47,10 @@ export function EnquiryForm({ defaultType = "General", className }: EnquiryFormP
 
   if (status === "success") {
     return (
-      <div className={cn("p-12 text-center border border-[var(--snc-success)]/30 rounded-sm bg-[var(--snc-navy-raised)]", className)}>
-        <CheckCircle2 className="w-12 h-12 text-[var(--snc-success)] mx-auto mb-4" />
-        <h3 className="text-xl font-bold text-[var(--snc-white)] mb-2">Enquiry Received</h3>
-        <p className="text-[var(--snc-mist)] mb-6">Thank you for contacting Six Nine Construction. Our commercial team will be in touch shortly.</p>
+      <div className={cn("p-12 text-center border border-[var(--dxl-success)]/30 rounded-sm bg-[var(--dxl-ink-light)]", className)}>
+        <CheckCircle2 className="w-12 h-12 text-[var(--dxl-success)] mx-auto mb-4" />
+        <h3 className="text-xl font-bold text-[var(--dxl-paper)] mb-2">Enquiry Received</h3>
+        <p className="text-[var(--dxl-slate-light)] mb-6">Thank you for contacting Six Nine Construction. Our commercial team will be in touch shortly.</p>
         <Button variant="outline" onClick={() => setStatus("idle")}>Send Another</Button>
       </div>
     );
@@ -59,9 +59,9 @@ export function EnquiryForm({ defaultType = "General", className }: EnquiryFormP
   return (
     <form onSubmit={handleSubmit(onSubmit)} className={cn("space-y-6", className)}>
       {status === "error" && (
-        <div className="p-4 rounded-sm border border-[var(--snc-danger)] bg-[var(--snc-danger)]/10 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-[var(--snc-danger)] shrink-0" />
-          <p className="text-sm text-[var(--snc-danger)]">{errorMessage}</p>
+        <div className="p-4 rounded-sm border border-[var(--dxl-danger)] bg-[var(--dxl-danger)]/10 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-[var(--dxl-danger)] shrink-0" />
+          <p className="text-sm text-[var(--dxl-danger)]">{errorMessage}</p>
         </div>
       )}
 

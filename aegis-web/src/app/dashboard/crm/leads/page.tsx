@@ -684,7 +684,7 @@ export default function CRMLeadsApp() {
                   const canChangeStatus = !isDecided || canOverrideLeadStatus;
                   return (
                   <TableRow key={lead.id}>
-                    <TableCell className="font-semibold text-snc-text-primary">
+                    <TableCell className="font-semibold text-paper">
                       {lead.company_name}
                       {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
                         <span

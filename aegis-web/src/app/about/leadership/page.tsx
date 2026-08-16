@@ -25,7 +25,7 @@ export default async function LeadershipPage() {
         ]}
       />
 
-      <section className="py-24 bg-[var(--snc-void)] min-h-[50vh]">
+      <section className="py-24 bg-[var(--dxl-void)] min-h-[50vh]">
         <div className="container">
           
           {/* Filters placeholder - in a real app this would be a client component */}
@@ -35,8 +35,8 @@ export default async function LeadershipPage() {
                 key={dept}
                 className={`px-4 py-2 rounded-sm text-sm font-semibold tracking-wider uppercase transition-colors ${
                   i === 0 
-                    ? "bg-[var(--snc-gold)] text-[var(--snc-navy)]" 
-                    : "border border-[var(--snc-navy-border)] text-[var(--snc-mist)] hover:border-[var(--snc-mist)]"
+                    ? "bg-[var(--dxl-signal)] text-[var(--dxl-ink)]" 
+                    : "border border-[var(--dxl-ink-mid)] text-[var(--dxl-slate-light)] hover:border-[var(--dxl-slate-light)]"
                 }`}
               >
                 {dept}
@@ -53,7 +53,7 @@ export default async function LeadershipPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                {[1,2,3,4,5,6,7,8].map(i => (
-                 <div key={i} className="aspect-[3/4] bg-[var(--snc-navy-mid)] animate-pulse rounded-sm border border-[var(--snc-navy-border)]" />
+                 <div key={i} className="aspect-[3/4] bg-[var(--dxl-ink-mid)] animate-pulse rounded-sm border border-[var(--dxl-ink-mid)]" />
                ))}
             </div>
           )}

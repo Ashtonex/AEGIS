@@ -7,7 +7,7 @@ interface OperationalTableProps extends React.TableHTMLAttributes<HTMLTableEleme
 
 export function OperationalTable({ children, className, ...props }: OperationalTableProps) {
   return (
-    <div className="w-full overflow-auto border border-snc-border bg-snc-navy-raised">
+    <div className="w-full overflow-auto border border-ink-mid bg-ink-light">
       <table 
         className={cn("w-full text-left border-collapse", className)} 
         {...props}
@@ -20,7 +20,7 @@ export function OperationalTable({ children, className, ...props }: OperationalT
 
 export function TableHeader({ children, className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
   return (
-    <thead className={cn("bg-snc-navy-high border-b border-snc-border", className)} {...props}>
+    <thead className={cn("bg-ink-high border-b border-ink-mid", className)} {...props}>
       {children}
     </thead>
   );
@@ -30,7 +30,7 @@ export function TableRow({ children, className, ...props }: React.HTMLAttributes
   return (
     <tr 
       className={cn(
-        "border-b border-snc-border/50 hover:bg-snc-navy/50 transition-colors",
+        "border-b border-ink-mid/50 hover:bg-ink/50 transition-colors",
         className
       )} 
       {...props}
@@ -44,7 +44,7 @@ export function TableHead({ children, className, ...props }: React.ThHTMLAttribu
   return (
     <th 
       className={cn(
-        "h-12 px-4 text-left align-middle font-sans text-label text-snc-text-tertiary uppercase tracking-wider",
+        "h-12 px-4 text-left align-middle font-sans text-label text-slate uppercase tracking-wider",
         className
       )} 
       {...props}
@@ -58,7 +58,7 @@ export function TableCell({ children, className, ...props }: React.TdHTMLAttribu
   return (
     <td 
       className={cn(
-        "p-4 align-middle text-body text-snc-text-secondary tabular-nums",
+        "p-4 align-middle text-body text-slate-light tabular-nums",
         className
       )} 
       {...props}

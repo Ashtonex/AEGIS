@@ -9,7 +9,7 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
   }, [error]);
 
   return (
-    <div className="min-h-screen pt-[104px] flex items-center justify-center bg-[var(--snc-void)] px-6">
+    <div className="min-h-screen pt-[104px] flex items-center justify-center bg-[var(--dxl-void)] px-6">
       <ErrorState
         title="Something went wrong"
         message="This page failed to load. Try again, or head back home."

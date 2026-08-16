@@ -38,7 +38,7 @@ export function NewsletterForm({ className }: NewsletterFormProps) {
 
   if (status === "success") {
     return (
-      <div className={cn("flex items-center justify-center gap-3 max-w-lg mx-auto text-[var(--snc-success)]", className)}>
+      <div className={cn("flex items-center justify-center gap-3 max-w-lg mx-auto text-[var(--dxl-success)]", className)}>
         <CheckCircle2 className="w-5 h-5 shrink-0" />
         <p className="text-sm">Subscribed. Watch your inbox for the next briefing.</p>
       </div>
@@ -48,7 +48,7 @@ export function NewsletterForm({ className }: NewsletterFormProps) {
   return (
     <form onSubmit={onSubmit} className={cn("max-w-lg mx-auto", className)}>
       {status === "error" && (
-        <div className="mb-4 flex items-center justify-center gap-2 text-sm text-[var(--snc-danger)]">
+        <div className="mb-4 flex items-center justify-center gap-2 text-sm text-[var(--dxl-danger)]">
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span>{errorMessage}</span>
         </div>
@@ -61,7 +61,7 @@ export function NewsletterForm({ className }: NewsletterFormProps) {
           placeholder="Corporate Email Address"
           required
           disabled={status === "submitting"}
-          className="flex-1 px-4 py-3 bg-[var(--snc-navy)] border border-[var(--snc-navy-border)] rounded-sm text-[var(--snc-white)] focus:outline-none focus:border-[var(--snc-gold)] disabled:opacity-60"
+          className="flex-1 px-4 py-3 bg-[var(--dxl-ink)] border border-[var(--dxl-ink-mid)] rounded-sm text-[var(--dxl-paper)] focus:outline-none focus:border-[var(--dxl-signal)] disabled:opacity-60"
         />
         <Button type="submit" variant="default" disabled={status === "submitting"}>
           {status === "submitting" ? "Subscribing..." : "Subscribe"}

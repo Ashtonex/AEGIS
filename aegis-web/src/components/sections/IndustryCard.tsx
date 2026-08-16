@@ -17,12 +17,12 @@ export function IndustryCard({ title, description, slug, icon, className }: Indu
   return (
     <Link href={`/industries/${slug}`} className="block h-full group">
       <Card padding="standard" className={cn("h-full flex flex-col items-center text-center", className)}>
-        <div className="w-16 h-16 rounded-full border border-snc-border bg-snc-navy flex items-center justify-center text-snc-gold-primary mb-6 group-hover:shadow-[0_0_20px_var(--snc-gold-ghost)] transition-all">
+        <div className="w-16 h-16 rounded-full border border-ink-mid bg-ink flex items-center justify-center text-signal mb-6 group-hover:shadow-[0_0_20px_var(--dxl-signal-ghost)] transition-all">
           {icon}
         </div>
-        <h4 className="text-headline-md text-snc-text-primary mb-3 group-hover:text-snc-gold-primary transition-colors">{title}</h4>
-        <p className="text-body text-snc-text-secondary mb-8 flex-1 line-clamp-3">{description}</p>
-        <div className="mt-auto w-10 h-10 rounded-full border border-snc-border flex items-center justify-center group-hover:bg-snc-gold-primary group-hover:border-snc-gold-primary group-hover:text-snc-void transition-colors">
+        <h4 className="text-headline-md text-paper mb-3 group-hover:text-signal transition-colors">{title}</h4>
+        <p className="text-body text-slate-light mb-8 flex-1 line-clamp-3">{description}</p>
+        <div className="mt-auto w-10 h-10 rounded-full border border-ink-mid flex items-center justify-center group-hover:bg-signal group-hover:border-signal group-hover:text-void transition-colors">
           <ArrowRight className="w-4 h-4" />
         </div>
       </Card>

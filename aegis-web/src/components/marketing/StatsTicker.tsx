@@ -29,14 +29,14 @@ const StatItem = ({ endValue, label, suffix = "" }: StatItemProps) => {
   }, [endValue, isInView, suffix]);
 
   return (
-    <div className="flex flex-col items-center justify-center p-8 text-center border-r border-[var(--snc-border)] last:border-r-0">
+    <div className="flex flex-col items-center justify-center p-8 text-center border-r border-[var(--dxl-ink-mid)] last:border-r-0">
       <span
         ref={nodeRef}
-        className="text-5xl md:text-6xl font-display text-[var(--snc-navy)] mb-2 tracking-tight"
+        className="text-5xl md:text-6xl font-display text-[var(--dxl-ink)] mb-2 tracking-tight"
       >
         0{suffix}
       </span>
-      <span className="text-sm md:text-base font-semibold text-[var(--snc-slate)] uppercase tracking-wider">
+      <span className="text-sm md:text-base font-semibold text-[var(--dxl-slate)] uppercase tracking-wider">
         {label}
       </span>
     </div>
@@ -45,8 +45,8 @@ const StatItem = ({ endValue, label, suffix = "" }: StatItemProps) => {
 
 export const StatsTicker = () => {
   return (
-    <div className="bg-white border-y border-[var(--snc-border)] relative z-20 -mt-16 mx-4 lg:mx-auto max-w-6xl rounded-sm shadow-2xl">
-      <div className="grid grid-cols-2 md:grid-cols-4 divide-y md:divide-y-0 divide-[var(--snc-border)]">
+    <div className="bg-white border-y border-[var(--dxl-ink-mid)] relative z-20 -mt-16 mx-4 lg:mx-auto max-w-6xl rounded-sm shadow-2xl">
+      <div className="grid grid-cols-2 md:grid-cols-4 divide-y md:divide-y-0 divide-[var(--dxl-ink-mid)]">
         <StatItem endValue={12500} suffix="+" label="Projects Completed" />
         <StatItem endValue={45000} suffix="+" label="Square Meters Built" />
         <StatItem endValue={18} label="Years of Excellence" />

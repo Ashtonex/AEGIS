@@ -9,12 +9,12 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: "bg-snc-gold-primary text-snc-void hover:bg-snc-gold-hover hover:-translate-y-[1px]",
-        default: "bg-snc-gold-primary text-snc-void hover:bg-snc-gold-hover hover:-translate-y-[1px]",
-        ghostWhite: "bg-transparent border border-[rgba(245,245,240,0.25)] text-snc-text-primary hover:border-[rgba(245,245,240,0.6)] hover:bg-[rgba(245,245,240,0.04)] hover:-translate-y-[1px]",
-        ghostGold: "bg-transparent border border-snc-gold-primary text-snc-gold-primary hover:bg-[rgba(200,150,12,0.08)] hover:-translate-y-[1px]",
-        outline: "bg-transparent border border-snc-border text-snc-text-primary hover:border-snc-gold-primary hover:text-snc-gold-primary",
-        ghost: "bg-transparent border border-transparent text-snc-text-primary hover:bg-[rgba(245,245,240,0.04)] hover:-translate-y-[1px]",
+        primary: "bg-signal text-void hover:bg-signal-hover hover:-translate-y-[1px]",
+        default: "bg-signal text-void hover:bg-signal-hover hover:-translate-y-[1px]",
+        ghostWhite: "bg-transparent border border-[rgba(245,245,240,0.25)] text-paper hover:border-[rgba(245,245,240,0.6)] hover:bg-[rgba(245,245,240,0.04)] hover:-translate-y-[1px]",
+        ghostGold: "bg-transparent border border-signal text-signal hover:bg-[rgba(200,150,12,0.08)] hover:-translate-y-[1px]",
+        outline: "bg-transparent border border-ink-mid text-paper hover:border-signal hover:text-signal",
+        ghost: "bg-transparent border border-transparent text-paper hover:bg-[rgba(245,245,240,0.04)] hover:-translate-y-[1px]",
       },
       size: {
         default: "px-8 py-4", // 16px 32px roughly matches this in Tailwind

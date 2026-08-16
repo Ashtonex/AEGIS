@@ -30,7 +30,7 @@ export default async function NewsIndexPage(props: {
         ]}
       />
 
-      <section className="py-8 bg-[var(--snc-navy)] border-b border-[var(--snc-navy-border)] sticky top-[104px] z-30">
+      <section className="py-8 bg-[var(--dxl-ink)] border-b border-[var(--dxl-ink-mid)] sticky top-[104px] z-30">
         <div className="container">
           <div className="flex gap-2 overflow-x-auto hide-scrollbar">
             {["All", "Press Release", "Project Update", "Company News", "Award", "Industry"].map((cat) => {
@@ -42,8 +42,8 @@ export default async function NewsIndexPage(props: {
                   href={href}
                   className={`px-4 py-2 rounded-sm text-sm font-semibold tracking-wider uppercase whitespace-nowrap transition-colors ${
                     isActive 
-                      ? "bg-[var(--snc-gold)] text-[var(--snc-navy)]" 
-                      : "border border-[var(--snc-navy-border)] text-[var(--snc-mist)] hover:border-[var(--snc-mist)] bg-transparent"
+                      ? "bg-[var(--dxl-signal)] text-[var(--dxl-ink)]" 
+                      : "border border-[var(--dxl-ink-mid)] text-[var(--dxl-slate-light)] hover:border-[var(--dxl-slate-light)] bg-transparent"
                   }`}
                 >
                   {cat}
@@ -54,7 +54,7 @@ export default async function NewsIndexPage(props: {
         </div>
       </section>
 
-      <section className="py-24 bg-[var(--snc-void)] min-h-[50vh]">
+      <section className="py-24 bg-[var(--dxl-void)] min-h-[50vh]">
         <div className="container">
           {articles.length > 0 ? (
             <>
@@ -72,9 +72,9 @@ export default async function NewsIndexPage(props: {
             </>
           ) : (
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-               <div className="lg:col-span-3 aspect-[3/1] bg-[var(--snc-navy-mid)] animate-pulse rounded-sm border border-[var(--snc-navy-border)] mb-6" />
+               <div className="lg:col-span-3 aspect-[3/1] bg-[var(--dxl-ink-mid)] animate-pulse rounded-sm border border-[var(--dxl-ink-mid)] mb-6" />
                {[1,2,3].map(i => (
-                 <div key={i} className="aspect-[4/3] bg-[var(--snc-navy-mid)] animate-pulse rounded-sm border border-[var(--snc-navy-border)]" />
+                 <div key={i} className="aspect-[4/3] bg-[var(--dxl-ink-mid)] animate-pulse rounded-sm border border-[var(--dxl-ink-mid)]" />
                ))}
             </div>
           )}
