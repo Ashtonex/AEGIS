@@ -36,6 +36,7 @@ from app.shared.events import emit_role_notification
 from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
     refresh_project_forecast,
+    seed_boq_line_items_from_quotation,
     seed_project_budget_from_quotation,
 )
 from routers.sop_compliance import get_missing_required_sops
@@ -1575,6 +1576,9 @@ async def decide_quotation(
             calculation = QuotationCalculator.calculate(calc_input)
             budget_id = await seed_project_budget_from_quotation(
                 db, user["org_id"], str(quotation["project_id"]), item_id, calculation, created_by=user["sub"],
+            )
+            await seed_boq_line_items_from_quotation(
+                db, user["org_id"], str(quotation["project_id"]), item_id, metadata, created_by=user["sub"],
             )
             forecast_metrics = await refresh_project_forecast(
                 db, user["org_id"], str(quotation["project_id"]), computed_by=user["sub"],

@@ -216,6 +216,8 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Cost Codes", href: "/dashboard/finance/cost-codes", icon: FileText },
       { name: "Variations", href: "/dashboard/finance/variations", icon: BarChart },
       { name: "Progress Claims", href: "/dashboard/finance/progress-claims", icon: ClipboardCheck },
+      { name: "Earned Value", href: "/dashboard/finance/earned-value", icon: TrendingUp },
+      { name: "Close-Out", href: "/dashboard/finance/close-out", icon: ShieldCheck },
       { name: "Budgets", href: "/dashboard/finance/budgets", icon: PieChart },
       { name: "Banking & Cash", href: "/dashboard/finance/banking", icon: Banknote },
       { name: "Cashbook", href: "/dashboard/finance/cashbook", icon: BookMarked },
@@ -604,9 +606,9 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <Image
               src="/logo.png"
               alt="SNC Logo"
-              width={54}
-              height={36}
-              className="h-9 w-auto object-contain"
+              width={72}
+              height={48}
+              className="h-11 w-auto object-contain"
             />
             <span className="font-display text-lg tracking-tight text-paper">IMPERIUM</span>
           </Link>

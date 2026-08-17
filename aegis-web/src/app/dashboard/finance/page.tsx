@@ -16,6 +16,8 @@ import { VendorPaymentsPanel } from "./VendorPaymentsPanel";
 import { ClientPaymentsPanel } from "./ClientPaymentsPanel";
 import { HistoricalEntryPanel } from "./HistoricalEntryPanel";
 import { FinancialStatementsPanel } from "./FinancialStatementsPanel";
+import { EarnedValuePanel } from "./EarnedValuePanel";
+import { FinalAccountPanel } from "./FinalAccountPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -37,13 +39,15 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
   "cost-codes": "/dashboard/finance/cost-codes",
   variations: "/dashboard/finance/variations",
   "progress-claims": "/dashboard/finance/progress-claims",
+  "earned-value": "/dashboard/finance/earned-value",
+  "close-out": "/dashboard/finance/close-out",
   budgets: "/dashboard/finance/budgets",
   banking: "/dashboard/finance/banking",
   "cash-accounts": "/dashboard/finance/cash-accounts",
@@ -503,6 +507,18 @@ function FinanceWorkspace() {
           Progress Claims
         </Link>
         <Link
+          href={TAB_ROUTES["earned-value"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "earned-value" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Earned Value
+        </Link>
+        <Link
+          href={TAB_ROUTES["close-out"]}
+          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "close-out" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+        >
+          Close-Out
+        </Link>
+        <Link
           href={TAB_ROUTES.budgets}
           className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "budgets" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
         >
@@ -810,6 +826,10 @@ function FinanceWorkspace() {
               </div>
             </div>
           )}
+
+          {activeTab === "earned-value" && <EarnedValuePanel />}
+
+          {activeTab === "close-out" && <FinalAccountPanel />}
 
           {activeTab === "budgets" && (
             <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">

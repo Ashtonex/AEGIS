@@ -356,3 +356,67 @@ async def seed_project_budget_from_quotation(
         )
 
     return str(budget_id)
+
+
+async def seed_boq_line_items_from_quotation(
+    db: AsyncSession,
+    org_id: str,
+    project_id: str,
+    quotation_id: str,
+    metadata: Dict[str, Any],
+    created_by: Optional[str] = None,
+) -> int:
+    """Gives a won quotation's BOQ lines a persistent, addressable identity
+    for the first time - finance.quotations.metadata->'items' is a JSONB
+    array with no per-item identity, so nothing can track "quantity measured
+    to date" against it. Any prior line items from an earlier win on this
+    project are superseded rather than deleted, preserving their measurement
+    history. Returns the number of line items seeded.
+    """
+    await db.execute(
+        text("""
+            UPDATE finance.boq_line_items
+            SET status = 'superseded', updated_at = NOW()
+            WHERE project_id = :project_id AND organization_id = :org_id
+              AND status = 'active' AND is_deleted = false
+        """),
+        {"project_id": project_id, "org_id": org_id},
+    )
+
+    items = metadata.get("items") or []
+    seeded = 0
+    for idx, item in enumerate(items):
+        try:
+            qty = float(item.get("qty") or 0)
+            rate = float(item.get("rate") or 0)
+        except (TypeError, ValueError):
+            continue
+        description = str(item.get("description") or "Unspecified item").strip()
+        if not description or qty <= 0:
+            continue
+        await db.execute(
+            text("""
+                INSERT INTO finance.boq_line_items (
+                    organization_id, project_id, source_quotation_id, item_no,
+                    description, unit, contract_qty, rate, sort_order, created_by
+                ) VALUES (
+                    :org_id, :project_id, :quotation_id, :item_no,
+                    :description, :unit, :contract_qty, :rate, :sort_order, :created_by
+                )
+            """),
+            {
+                "org_id": org_id,
+                "project_id": project_id,
+                "quotation_id": quotation_id,
+                "item_no": str(item.get("item_no")) if item.get("item_no") else None,
+                "description": description,
+                "unit": str(item.get("unit") or "item"),
+                "contract_qty": round(qty, 3),
+                "rate": round(rate, 4),
+                "sort_order": idx,
+                "created_by": created_by,
+            },
+        )
+        seeded += 1
+
+    return seeded

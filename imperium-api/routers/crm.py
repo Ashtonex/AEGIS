@@ -18,6 +18,7 @@ from app.services.finance.department_transfers import post_department_transfer
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.services.finance.project_forecast import (
     seed_project_budget_from_quotation,
+    seed_boq_line_items_from_quotation,
     refresh_project_forecast,
     check_and_alert_margin_threat,
 )
@@ -1940,6 +1941,10 @@ async def mark_opportunity_won(
                                 budget_id = await seed_project_budget_from_quotation(
                                     db, org_id, str(project_id), str(opportunity.get("latest_quote_id")),
                                     calculation, created_by=user_id,
+                                )
+                                await seed_boq_line_items_from_quotation(
+                                    db, org_id, str(project_id), str(opportunity.get("latest_quote_id")),
+                                    metadata, created_by=user_id,
                                 )
                                 forecast_metrics = await refresh_project_forecast(
                                     db, org_id, str(project_id), computed_by=user_id,

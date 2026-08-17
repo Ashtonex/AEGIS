@@ -2859,6 +2859,119 @@ export async function getFinanceBudgets(params?: { project_id?: string; departme
   });
 }
 
+// --- BOQ PROGRESS (measured-quantity earned value) ---
+
+/** Priced BOQ line items for a project, with measured qty/% complete/earned value. */
+export async function getBoqLineItems(projectId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/boq-progress/projects/${projectId}/line-items`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Submit a measured quantity against a BOQ line item, pending approval. */
+export async function recordBoqMeasurement(lineItemId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/boq-progress/line-items/${lineItemId}/measurements`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Submitted/approved/rejected BOQ measurement entries for a project. */
+export async function getBoqMeasurements(projectId: string, status?: string): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams({ project_id: projectId });
+  if (status) search.set('status_filter', status);
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/boq-progress/measurements?${search.toString()}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Approve a submitted BOQ measurement, updating the line item's qty measured to date. */
+export async function approveBoqMeasurement(entryId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/boq-progress/measurements/${entryId}/approve`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Reject a submitted BOQ measurement with a reason. */
+export async function rejectBoqMeasurement(entryId: string, rejectionReason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/boq-progress/measurements/${entryId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ rejection_reason: rejectionReason }),
+    allowFallback: false,
+  });
+}
+
+/** Value-weighted earned-value summary for a project (contract value, earned value, % complete, claimable). */
+export async function getBoqProgressSummary(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/boq-progress/projects/${projectId}/summary`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Amount claimable now: earned value to date minus what's already been certified. */
+export async function getBoqClaimableAmount(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/boq-progress/projects/${projectId}/claimable-amount`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+// --- FINAL ACCOUNTS (project close-out) ---
+
+/** Snapshots current live financials into a new draft final account, with any unresolved variations/claims flagged as blockers. */
+export async function prepareFinalAccount(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/final-accounts/projects/${projectId}/prepare`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Current/latest final account for a project, including version history. */
+export async function getFinalAccount(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/final-accounts/projects/${projectId}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Edit a draft/under-negotiation final account (e.g. negotiated retention adjustment, notes). */
+export async function updateFinalAccount(finalAccountId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/final-accounts/${finalAccountId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Mark a final account as client-agreed. Requires all variations/claims resolved. */
+export async function agreeFinalAccount(finalAccountId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/final-accounts/${finalAccountId}/agree`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Permanently close a final account: releases retention and locks the project's commercial position. */
+export async function closeFinalAccount(finalAccountId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/final-accounts/${finalAccountId}/close`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Structured Final Cost Report data for a final account. */
+export async function getFinalAccountReport(finalAccountId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/final-accounts/${finalAccountId}/report`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 // --- INVENTORY & MATERIALS CONTROL ---
 
 /** Stock levels across all stores. Optionally filtered by store or reorder threshold. */
