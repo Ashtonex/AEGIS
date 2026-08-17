@@ -770,6 +770,30 @@ export async function deleteCrmTender(id: string): Promise<ApiResponse<any>> {
   });
 }
 
+export async function getTenderRequirements(tenderId: string): Promise<ApiResponse<any[]>> {
+  return await fetchApi<ApiResponse<any[]>>(`/api/v1/tender-bids/${tenderId}/requirements`, { cache: 'no-store' });
+}
+
+export async function createTenderRequirement(tenderId: string, label: string): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/requirements`, {
+    method: 'POST',
+    body: JSON.stringify({ label })
+  });
+}
+
+export async function toggleTenderRequirement(tenderId: string, requirementId: string, isSatisfied: boolean): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/requirements/${requirementId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_satisfied: isSatisfied })
+  });
+}
+
+export async function deleteTenderRequirement(tenderId: string, requirementId: string): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/requirements/${requirementId}`, {
+    method: 'DELETE'
+  });
+}
+
 export async function getCrmLeads(): Promise<ApiResponse<any[]>> {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/crm-leads/', { cache: 'no-store' });
 }
@@ -3323,13 +3347,14 @@ export async function overrideComplianceDeploymentGateCheck(id: string, payload:
 
 // --- DOCUMENT MANAGEMENT --- //
 
-export async function getDocuments(params?: { category?: string; status?: string; classification?: string; search?: string; project_id?: string }): Promise<ApiResponse<any[]>> {
+export async function getDocuments(params?: { category?: string; status?: string; classification?: string; search?: string; project_id?: string; tender_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.category && params.category !== 'all') search.set('category', params.category);
   if (params?.status && params.status !== 'all') search.set('status', params.status);
   if (params?.classification && params.classification !== 'all') search.set('classification', params.classification);
   if (params?.search) search.set('search', params.search);
   if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.tender_id) search.set('tender_id', params.tender_id);
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/documents/${qs}`, { cache: 'no-store', allowFallback: false });
 }
@@ -3367,6 +3392,14 @@ export async function getDocumentVersions(id: string): Promise<ApiResponse<any[]
 
 export async function getDocumentLinks(id: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/documents/${id}/links`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function linkDocument(id: string, payload: { entity_type: string; entity_id: string; link_role?: string; project_id?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/documents/${id}/links`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
 }
 
 // --- REPORTS --- //
@@ -3457,6 +3490,15 @@ export async function getQuotations(params?: {
 
 export async function getQuotation(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getQuotationsNeedsBoq(): Promise<ApiResponse<{ tenders: any[]; opportunities: any[]; leads: any[] }>> {
+  return fetchApi<ApiResponse<{ tenders: any[]; opportunities: any[]; leads: any[] }>>(`/api/v1/quotations/needs-boq`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getQuotationSourceLookup(sourceType: string, sourceId: string): Promise<ApiResponse<{ source: any; existing_quotation_id: string | null }>> {
+  const query = new URLSearchParams({ source_type: sourceType, source_id: sourceId }).toString();
+  return fetchApi<ApiResponse<{ source: any; existing_quotation_id: string | null }>>(`/api/v1/quotations/source-lookup?${query}`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function getQuotationHistory(id: string): Promise<ApiResponse<any[]>> {

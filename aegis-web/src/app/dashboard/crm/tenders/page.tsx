@@ -13,8 +13,16 @@ import {
   createCrmTender,
   updateCrmTender,
   deleteCrmTender,
+  getTenderRequirements,
+  createTenderRequirement,
+  toggleTenderRequirement,
+  deleteTenderRequirement,
+  getDocuments,
+  createDocument,
+  getDocumentSignedUrl,
   describeActionError
 } from '@/lib/api';
+import { supabase } from '@/lib/supabase';
 
 // Stages definition
 const STAGES = [
@@ -39,18 +47,26 @@ interface Tender {
   tender_name: string;
   bid_number?: string;
   category?: string;
-  bid_amount: number | string;
+  bid_amount: number | string | null;
   stage: string;
   submission_deadline?: string;
   bid_bond_secured: boolean;
   jv_partners?: string;
-  bond_amount?: number | string;
+  bond_amount?: number | string | null;
   technical_proposal: boolean;
   financial_proposal: boolean;
   nssa_clearance: boolean;
   praz_registration: boolean;
   tax_clearance: boolean;
   created_at: string;
+}
+
+interface TenderRequirement {
+  id: string;
+  tender_id: string;
+  label: string;
+  is_satisfied: boolean;
+  sort_order: number;
 }
 
 export default function TendersCommand() {
@@ -62,6 +78,16 @@ export default function TendersCommand() {
   const [isDeleteTenderModalOpen, setIsDeleteTenderModalOpen] = useState(false);
   const [isDeletingTender, setIsDeletingTender] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Requirements checklist state
+  const [requirements, setRequirements] = useState<TenderRequirement[]>([]);
+  const [isLoadingRequirements, setIsLoadingRequirements] = useState(false);
+  const [newRequirementLabel, setNewRequirementLabel] = useState('');
+
+  // Tender documents state
+  const [tenderDocuments, setTenderDocuments] = useState<any[]>([]);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -239,27 +265,26 @@ export default function TendersCommand() {
 
     setIsSubmitting(true);
     try {
-      const bidAmountVal = Number(newTender.bid_amount) || 0;
-      const bondAmountVal = Number(newTender.bond_amount) || 0;
-
       const payload: any = {
         tender_name: newTender.tender_name.trim(),
-        stage: newTender.stage,
-        bid_amount: bidAmountVal
+        stage: newTender.stage
       };
+      if (newTender.bid_amount.trim() !== '') {
+        payload.bid_amount = Number(newTender.bid_amount);
+      }
 
       const res = await createCrmTender(payload);
 
       if (res.success && (res.data as any)?.id) {
         const generatedId = (res.data as any).id;
-        
+
         // Update all specific bid board columns
         const extraPayload: any = {
           bid_number: newTender.bid_number.trim() || `BID-2026-${generatedId.substring(0, 5).toUpperCase()}`,
           category: newTender.category,
           bid_bond_secured: newTender.bid_bond_secured,
           jv_partners: newTender.jv_partners.trim() || null,
-          bond_amount: bondAmountVal,
+          bond_amount: newTender.bond_amount.trim() !== '' ? Number(newTender.bond_amount) : null,
           technical_proposal: newTender.technical_proposal,
           financial_proposal: newTender.financial_proposal,
           nssa_clearance: newTender.nssa_clearance,
@@ -311,18 +336,18 @@ export default function TendersCommand() {
 
     setIsSubmitting(true);
     try {
-      const bidAmountVal = Number(editForm.bid_amount) || 0;
-      const bondAmountVal = Number(editForm.bond_amount) || 0;
+      const bidAmountStr = String(editForm.bid_amount ?? '').trim();
+      const bondAmountStr = String(editForm.bond_amount ?? '').trim();
 
       const payload: any = {
         tender_name: editForm.tender_name,
         bid_number: editForm.bid_number || '',
         category: editForm.category || 'Civil Works',
         stage: editForm.stage,
-        bid_amount: bidAmountVal,
+        bid_amount: bidAmountStr !== '' ? Number(bidAmountStr) : null,
         bid_bond_secured: editForm.bid_bond_secured,
         jv_partners: editForm.jv_partners || null,
-        bond_amount: bondAmountVal,
+        bond_amount: bondAmountStr !== '' ? Number(bondAmountStr) : null,
         technical_proposal: editForm.technical_proposal,
         financial_proposal: editForm.financial_proposal,
         nssa_clearance: editForm.nssa_clearance,
@@ -394,6 +419,124 @@ export default function TendersCommand() {
     } catch (err) {
       console.error(`Failed to toggle ${itemKey}:`, err);
       loadData();
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedTenderId) {
+      setRequirements([]);
+      return;
+    }
+    setIsLoadingRequirements(true);
+    getTenderRequirements(selectedTenderId)
+      .then(res => setRequirements(res.success ? (res.data as TenderRequirement[]) : []))
+      .catch(() => setRequirements([]))
+      .finally(() => setIsLoadingRequirements(false));
+  }, [selectedTenderId]);
+
+  const handleAddRequirement = async () => {
+    const label = newRequirementLabel.trim();
+    if (!label || !selectedTenderId) return;
+    setNewRequirementLabel('');
+    try {
+      const res = await createTenderRequirement(selectedTenderId, label);
+      if (res.success) {
+        setRequirements(prev => [...prev, { id: (res.data as any).id, tender_id: selectedTenderId, label, is_satisfied: false, sort_order: prev.length }]);
+      }
+    } catch (err) {
+      console.error('Failed to add requirement:', err);
+      alert(describeActionError(err, "You don't have permission to edit this tender.", "Requirement was not saved. Check the CRM service connection and retry."));
+    }
+  };
+
+  const handleToggleRequirement = async (req: TenderRequirement) => {
+    if (!selectedTenderId) return;
+    const newVal = !req.is_satisfied;
+    setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, is_satisfied: newVal } : r));
+    try {
+      const res = await toggleTenderRequirement(selectedTenderId, req.id, newVal);
+      if (!res.success) {
+        setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, is_satisfied: req.is_satisfied } : r));
+      }
+    } catch (err) {
+      console.error('Failed to toggle requirement:', err);
+      setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, is_satisfied: req.is_satisfied } : r));
+    }
+  };
+
+  const handleDeleteRequirement = async (req: TenderRequirement) => {
+    if (!selectedTenderId) return;
+    setRequirements(prev => prev.filter(r => r.id !== req.id));
+    try {
+      const res = await deleteTenderRequirement(selectedTenderId, req.id);
+      if (!res.success) {
+        setRequirements(prev => [...prev, req]);
+      }
+    } catch (err) {
+      console.error('Failed to delete requirement:', err);
+      setRequirements(prev => [...prev, req]);
+    }
+  };
+
+  const loadTenderDocuments = async (tenderId: string) => {
+    setIsLoadingDocuments(true);
+    try {
+      const res = await getDocuments({ tender_id: tenderId });
+      setTenderDocuments(res.success ? (res.data as any[]) : []);
+    } catch (err) {
+      console.error('Failed to load tender documents:', err);
+      setTenderDocuments([]);
+    } finally {
+      setIsLoadingDocuments(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!selectedTenderId) {
+      setTenderDocuments([]);
+      return;
+    }
+    loadTenderDocuments(selectedTenderId);
+  }, [selectedTenderId]);
+
+  const handleUploadTenderDocument = async (file: File) => {
+    if (!selectedTenderId) return;
+    setIsUploadingDocument(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ''}`;
+      const filePath = `documents/${storedName}`;
+      const { error: uploadError } = await supabase.storage
+        .from('documents')
+        .upload(filePath, file, { cacheControl: '3600', upsert: false });
+      if (uploadError) throw uploadError;
+
+      await createDocument({
+        title: file.name,
+        category: 'tender',
+        tender_id: selectedTenderId,
+        file_name: file.name,
+        file_size_bytes: file.size,
+        storage_path: filePath,
+        mime_type: file.type || undefined,
+      });
+      await loadTenderDocuments(selectedTenderId);
+    } catch (err) {
+      console.error('Failed to upload document:', err);
+      alert(describeActionError(err, "You don't have permission to upload documents.", "Document upload failed. Check the CRM service connection and retry."));
+    } finally {
+      setIsUploadingDocument(false);
+    }
+  };
+
+  const handleDownloadTenderDocument = async (docId: string) => {
+    try {
+      const res = await getDocumentSignedUrl(docId);
+      if (res.success && res.data?.url) {
+        window.open(res.data.url, '_blank', 'noopener,noreferrer');
+      }
+    } catch (err) {
+      console.error('Failed to get document link:', err);
     }
   };
 
@@ -671,7 +814,11 @@ export default function TendersCommand() {
                       <div className="space-y-1.5 my-3 text-[10px] text-slate-light font-mono">
                         <div className="flex justify-between">
                           <span>Bid Value:</span>
-                          <span className="text-paper font-bold">${(Number(t.bid_amount) || 0).toLocaleString()}</span>
+                          <span className="text-paper font-bold">
+                            {t.bid_amount === null || t.bid_amount === undefined || t.bid_amount === ''
+                              ? <span className="text-[#D4AF37]">TBD - Pending BOQ</span>
+                              : `$${Number(t.bid_amount).toLocaleString()}`}
+                          </span>
                         </div>
                         
                         <div className="flex justify-between items-center">
@@ -843,13 +990,12 @@ export default function TendersCommand() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Bid Amount ($)</label>
-                  <input 
-                    required 
-                    type="number" 
-                    value={newTender.bid_amount} 
+                  <input
+                    type="number"
+                    value={newTender.bid_amount}
                     onChange={e => setNewTender({ ...newTender, bid_amount: e.target.value })}
-                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
-                    placeholder="Bid budget in USD" 
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                    placeholder="TBD - pending BOQ"
                   />
                 </div>
 
@@ -1044,11 +1190,12 @@ export default function TendersCommand() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Total Bid Amount ($)</label>
-                      <input 
-                        type="number" 
-                        value={editForm.bid_amount} 
+                      <input
+                        type="number"
+                        value={editForm.bid_amount ?? ''}
                         onChange={e => setEditForm({ ...editForm, bid_amount: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                        placeholder="TBD - pending BOQ"
                       />
                     </div>
 
@@ -1134,6 +1281,118 @@ export default function TendersCommand() {
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Freeform requirements checklist */}
+              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Tender Requirements</span>
+                  {requirements.length > 0 && (
+                    <span className="font-mono text-[10px] text-[#D4AF37] tabular-nums font-bold">
+                      {requirements.filter(r => r.is_satisfied).length}/{requirements.length}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newRequirementLabel}
+                    onChange={e => setNewRequirementLabel(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddRequirement(); } }}
+                    placeholder="Add a requirement..."
+                    className="flex-1 bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddRequirement}
+                    disabled={!newRequirementLabel.trim()}
+                    className="px-3 bg-[#D4AF37]/10 border border-[#D4AF37]/30 rounded-sm text-[#D4AF37] hover:bg-[#D4AF37]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {isLoadingRequirements ? (
+                  <div className="text-[10px] font-mono text-slate-light">Loading...</div>
+                ) : requirements.length === 0 ? (
+                  <div className="text-[10px] font-mono text-slate-light">No requirements logged yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {requirements.map(req => (
+                      <div
+                        key={req.id}
+                        className={`flex items-center justify-between p-2.5 border rounded-sm transition-all ${
+                          req.is_satisfied
+                            ? 'bg-[#D4AF37]/5 border-[#D4AF37]/30'
+                            : 'bg-black border-white/5'
+                        }`}
+                      >
+                        <span
+                          onClick={() => handleToggleRequirement(req)}
+                          className={`text-xs font-sans cursor-pointer flex-1 pr-2 ${req.is_satisfied ? 'text-[#D4AF37] line-through' : 'text-paper'}`}
+                        >
+                          {req.label}
+                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div onClick={() => handleToggleRequirement(req)} className="cursor-pointer">
+                            {req.is_satisfied ? (
+                              <ToggleRight className="w-6 h-6 text-[#D4AF37]" />
+                            ) : (
+                              <ToggleLeft className="w-6 h-6 text-slate" />
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteRequirement(req)}
+                            className="text-slate hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Tender documents */}
+              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
+                <div className="flex justify-between items-center mb-1">
+                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Tender Documents</span>
+                  <label className={`px-3 py-1.5 bg-[#D4AF37]/10 border border-[#D4AF37]/30 rounded-sm text-[8px] font-mono uppercase text-[#D4AF37] hover:bg-[#D4AF37]/20 transition-colors cursor-pointer ${isUploadingDocument ? 'opacity-40 pointer-events-none' : ''}`}>
+                    {isUploadingDocument ? 'Uploading...' : 'Upload'}
+                    <input
+                      type="file"
+                      className="hidden"
+                      disabled={isUploadingDocument}
+                      onChange={e => {
+                        const file = e.target.files?.[0];
+                        if (file) handleUploadTenderDocument(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
+
+                {isLoadingDocuments ? (
+                  <div className="text-[10px] font-mono text-slate-light">Loading...</div>
+                ) : tenderDocuments.length === 0 ? (
+                  <div className="text-[10px] font-mono text-slate-light">No documents uploaded yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {tenderDocuments.map(doc => (
+                      <div
+                        key={doc.id}
+                        onClick={() => handleDownloadTenderDocument(doc.id)}
+                        className="flex items-center gap-2 p-2.5 border border-white/5 bg-black rounded-sm cursor-pointer hover:border-[#D4AF37]/30 transition-all"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
+                        <span className="text-xs text-paper truncate">{doc.title || doc.file_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Countdown panel */}

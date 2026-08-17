@@ -396,6 +396,19 @@ async def generate_autonomous_quote(
     source_id = str(payload["source_id"]) if payload.get("source_id") else None
     source_context = await _load_autonomous_quote_source(db, user["org_id"], source_type, source_id)
 
+    if source_id:
+        existing_quotation_id = await _find_existing_quotation_id(db, user["org_id"], source_type, source_id)
+        if existing_quotation_id:
+            return {
+                "success": True,
+                "data": jsonable_encoder({
+                    "quotation": {"id": existing_quotation_id},
+                    "resumed": True,
+                }),
+                "message": "An estimate already exists for this source - resuming it instead of generating a new draft.",
+                "meta": {},
+            }
+
     context = dict(source_context)
     for key in (
         "scope_text", "built_area_sqm", "area_sqm", "project_duration_weeks", "profit_rate",
@@ -410,11 +423,20 @@ async def generate_autonomous_quote(
     calculation = QuotationCalculator.calculate(quote_payload)
     calculation_data = calculation.model_dump(mode="json")
     project_id = None
+    opportunity_id = None
+    tender_id = None
+    lead_id = None
     normalized_source_type = source_type.strip().lower()
     if normalized_source_type == "project":
         project_id = source_id
     elif context.get("project_id"):
         project_id = str(context.get("project_id"))
+    if normalized_source_type == "opportunity":
+        opportunity_id = source_id
+    elif normalized_source_type == "tender":
+        tender_id = source_id
+    elif normalized_source_type == "lead":
+        lead_id = source_id
 
     brain_payload = dict(quote_payload)
     brain_payload["project_id"] = project_id
@@ -444,9 +466,11 @@ async def generate_autonomous_quote(
             text(
                 """
                 INSERT INTO finance.quotations (
-                    organization_id, created_by, client_name, quote_amount, project_id, metadata, status
+                    organization_id, created_by, client_name, quote_amount, project_id,
+                    opportunity_id, tender_id, lead_id, metadata, status
                 ) VALUES (
-                    :org_id, :created_by, :client_name, :quote_amount, :project_id, CAST(:metadata AS jsonb), :status
+                    :org_id, :created_by, :client_name, :quote_amount, :project_id,
+                    :opportunity_id, :tender_id, :lead_id, CAST(:metadata AS jsonb), :status
                 )
                 RETURNING id
                 """
@@ -457,6 +481,9 @@ async def generate_autonomous_quote(
                 "client_name": quote_payload["client_name"],
                 "quote_amount": calculation_data.get("grand_total", 0),
                 "project_id": project_id,
+                "opportunity_id": opportunity_id,
+                "tender_id": tender_id,
+                "lead_id": lead_id,
                 "metadata": json.dumps(metadata, default=str),
                 "status": "draft",
             },
@@ -1212,10 +1239,124 @@ async def list_document_changes(
     }
 
 
+_SOURCE_LINK_COLUMNS = {
+    "tender": "tender_id",
+    "opportunity": "opportunity_id",
+    "lead": "lead_id",
+}
+
+
+async def _find_existing_quotation_id(
+    db: AsyncSession, org_id: str, source_type: str, source_id: str
+) -> Optional[str]:
+    """Looks up a non-deleted quotation already linked to this source, if any.
+
+    The single mechanism behind "don't create duplicates" everywhere a
+    quotation can be spun up from a CRM source: the manual builder's
+    source-lookup, generate-quote, and the opportunity create-quotation
+    handoff all resume this row instead of inserting a new one.
+    """
+    column = _SOURCE_LINK_COLUMNS.get(source_type.strip().lower())
+    if not column:
+        return None
+    result = await db.execute(
+        text(f"""
+            SELECT id FROM finance.quotations
+            WHERE organization_id = :org_id AND is_deleted = false AND {column} = :source_id
+            LIMIT 1
+        """),  # nosec B608 - column is selected from a fixed allowlist above, never user input
+        {"org_id": org_id, "source_id": source_id},
+    )
+    row = result.first()
+    return str(row.id) if row else None
+
+
+@router.get("/needs-boq")
+async def list_needs_boq(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tenders/opportunities/leads with no BOQ/estimate started against them yet."""
+    org_id = user["org_id"]
+
+    tenders_result = await db.execute(
+        text("""
+            SELECT t.id, t.tender_name AS label, t.bid_amount, t.stage, t.submission_deadline, t.created_at
+            FROM crm.tenders t
+            WHERE t.organization_id = :org_id AND t.is_deleted = false
+              AND NOT EXISTS (
+                  SELECT 1 FROM finance.quotations q
+                  WHERE q.tender_id = t.id AND q.is_deleted = false
+              )
+            ORDER BY t.created_at DESC
+            LIMIT 100
+        """),
+        {"org_id": org_id},
+    )
+    opportunities_result = await db.execute(
+        text("""
+            SELECT o.id, o.name AS label, o.deal_value AS bid_amount, o.stage, o.expected_close_date, o.created_at
+            FROM crm.opportunities o
+            WHERE o.organization_id = :org_id AND o.is_deleted = false
+              AND NOT EXISTS (
+                  SELECT 1 FROM finance.quotations q
+                  WHERE q.opportunity_id = o.id AND q.is_deleted = false
+              )
+            ORDER BY o.created_at DESC
+            LIMIT 100
+        """),
+        {"org_id": org_id},
+    )
+    leads_result = await db.execute(
+        text("""
+            SELECT l.id, l.company_name AS label, l.estimated_budget AS bid_amount, l.status AS stage, l.expected_close_date, l.created_at
+            FROM crm.leads l
+            WHERE l.organization_id = :org_id AND l.is_deleted = false
+              AND NOT EXISTS (
+                  SELECT 1 FROM finance.quotations q
+                  WHERE q.lead_id = l.id AND q.is_deleted = false
+              )
+            ORDER BY l.created_at DESC
+            LIMIT 100
+        """),
+        {"org_id": org_id},
+    )
+
+    tenders = [dict(row._mapping) for row in tenders_result]
+    opportunities = [dict(row._mapping) for row in opportunities_result]
+    leads = [dict(row._mapping) for row in leads_result]
+
+    return {
+        "success": True,
+        "data": jsonable_encoder({"tenders": tenders, "opportunities": opportunities, "leads": leads}),
+        "message": "Sources awaiting a BOQ/estimate listed.",
+        "meta": {"total": len(tenders) + len(opportunities) + len(leads)},
+    }
+
+
+@router.get("/source-lookup")
+async def source_lookup(
+    source_type: str,
+    source_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Validates a tender/opportunity/lead/project source and reports whether a quotation already exists for it."""
+    source = await _load_autonomous_quote_source(db, user["org_id"], source_type, source_id)
+    existing_quotation_id = await _find_existing_quotation_id(db, user["org_id"], source_type, source_id)
+
+    return {
+        "success": True,
+        "data": jsonable_encoder({"source": source, "existing_quotation_id": existing_quotation_id}),
+        "message": "Source resolved.",
+        "meta": {},
+    }
+
+
 _LIST_SORT_COLUMNS = {
     "created_at": "created_at",
-    "client_name": "client_name",
     "status": "status",
+    "client_name": "client_name",
     "quote_amount": "quote_amount",
 }
 

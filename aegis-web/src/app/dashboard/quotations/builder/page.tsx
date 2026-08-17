@@ -9,7 +9,13 @@ import {
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
   Sparkles
 } from "lucide-react";
-import { getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation, getDrawingRevisionAsBoq, importBoqFile, getFinanceActiveRateTable } from "@/lib/api";
+import {
+  getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation,
+  getDrawingRevisionAsBoq, importBoqFile, getFinanceActiveRateTable,
+  getCrmTenders, getCrmOpportunities, getCrmLeads, getQuotationSourceLookup,
+  createDocument, linkDocument,
+} from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
 
@@ -33,10 +39,20 @@ export default function QuotationBuilder() {
   const router = useRouter();
   const editId = searchParams ? searchParams.get("edit") : null;
   const fromDrawingId = searchParams ? searchParams.get("from_drawing") : null;
+  const paramSourceType = searchParams ? searchParams.get("source_type") : null;
+  const paramSourceId = searchParams ? searchParams.get("source_id") : null;
 
   // Project selector list
   const [projectsList, setProjectsList] = useState<any[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
+
+  // Source picker: this BOQ must be linked to exactly one tender/opportunity/lead/project
+  const [sourceType, setSourceType] = useState<"project" | "tender" | "opportunity" | "lead">("project");
+  const [sourceId, setSourceId] = useState("");
+  const [tendersList, setTendersList] = useState<any[]>([]);
+  const [opportunitiesList, setOpportunitiesList] = useState<any[]>([]);
+  const [leadsList, setLeadsList] = useState<any[]>([]);
+  const [sourceNotice, setSourceNotice] = useState("");
 
   // Form states
   const [clientName, setClientName] = useState("");
@@ -101,10 +117,18 @@ export default function QuotationBuilder() {
       setLoading(true);
       setErrorMsg("");
       try {
-        const projRes = await getInternalProjects();
+        const [projRes, tendersRes, opportunitiesRes, leadsRes] = await Promise.all([
+          getInternalProjects(),
+          getCrmTenders(),
+          getCrmOpportunities(),
+          getCrmLeads(),
+        ]);
         if (projRes.success && Array.isArray(projRes.data)) {
           setProjectsList(projRes.data);
         }
+        if (tendersRes.success && Array.isArray(tendersRes.data)) setTendersList(tendersRes.data);
+        if (opportunitiesRes.success && Array.isArray(opportunitiesRes.data)) setOpportunitiesList(opportunitiesRes.data);
+        if (leadsRes.success && Array.isArray(leadsRes.data)) setLeadsList(leadsRes.data);
 
         if (editId) {
           const res = await getQuotation(editId);
@@ -112,7 +136,11 @@ export default function QuotationBuilder() {
             const q = res.data;
             setClientName(q.client_name || "");
             setSelectedProjectId(q.project_id || "");
-            
+            if (q.tender_id) { setSourceType("tender"); setSourceId(q.tender_id); }
+            else if (q.opportunity_id) { setSourceType("opportunity"); setSourceId(q.opportunity_id); }
+            else if (q.lead_id) { setSourceType("lead"); setSourceId(q.lead_id); }
+            else if (q.project_id) { setSourceType("project"); setSourceId(q.project_id); }
+
             // Populate meta details
             const meta = q.metadata || {};
             setClientEmail(meta.client_email || "");
@@ -208,6 +236,38 @@ export default function QuotationBuilder() {
     }
     if (session) void loadFromDrawing();
   }, [session, fromDrawingId]);
+
+  // Keep the legacy project-linkage state in sync with the source picker -
+  // selectedProjectId still drives the "linked to a live project" notice
+  // below and the save payload's project_id.
+  useEffect(() => {
+    setSelectedProjectId(sourceType === "project" ? sourceId : "");
+  }, [sourceType, sourceId]);
+
+  // Resolves a tender/opportunity/lead/project source and, if a quotation
+  // already exists for it, resumes that draft instead of letting the user
+  // start a duplicate one - the actual anti-duplication mechanism.
+  const handleSourceSelect = async (type: "project" | "tender" | "opportunity" | "lead", id: string) => {
+    setSourceType(type);
+    setSourceId(id);
+    setSourceNotice("");
+    if (!id || type === "project" || editId) return;
+    try {
+      const res = await getQuotationSourceLookup(type, id);
+      if (res.success && res.data?.existing_quotation_id) {
+        setSourceNotice("An estimate for this source already exists - opening it now.");
+        router.replace(`/dashboard/quotations/builder?edit=${res.data.existing_quotation_id}`);
+      }
+    } catch {
+      // Non-blocking: if the lookup fails, let the user continue with a fresh draft.
+    }
+  };
+
+  // Auto-select the source when arriving from the "Needs BOQ" queue.
+  useEffect(() => {
+    if (editId || !paramSourceType || !paramSourceId) return;
+    void handleSourceSelect(paramSourceType as any, paramSourceId);
+  }, [editId, paramSourceType, paramSourceId]);
 
   // Mathematics buildup - MUST mirror QuotationCalculator.calculate() in
   // imperium-api/app/services/quotations/calculator.py exactly, or this live
@@ -328,9 +388,39 @@ export default function QuotationBuilder() {
           }))
         );
         const warnings = res.data?.warnings || [];
+        let linkNote = "";
+        if (sourceId) {
+          try {
+            const fileExt = file.name.split(".").pop();
+            const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ""}`;
+            const filePath = `documents/${storedName}`;
+            const { error: uploadError } = await supabase.storage
+              .from("documents")
+              .upload(filePath, file, { cacheControl: "3600", upsert: false });
+            if (uploadError) throw uploadError;
+
+            const docRes = await createDocument({
+              title: file.name,
+              category: "boq",
+              file_name: file.name,
+              file_size_bytes: file.size,
+              storage_path: filePath,
+              mime_type: file.type || undefined,
+              ...(sourceType === "tender" ? { tender_id: sourceId } : {}),
+              ...(sourceType === "opportunity" ? { opportunity_id: sourceId } : {}),
+            });
+            if (docRes.success && docRes.data?.id) {
+              await linkDocument(docRes.data.id, { entity_type: sourceType, entity_id: sourceId });
+              linkNote = ` File linked to this ${sourceType}.`;
+            }
+          } catch {
+            linkNote = " (File could not be attached - line items were still imported.)";
+          }
+        }
         setSuccessMsg(
           `Imported ${items.length} BOQ item(s) from ${file.name}.` +
-          (warnings.length > 0 ? ` ${warnings.length} row warning(s) - review before saving.` : "")
+          (warnings.length > 0 ? ` ${warnings.length} row warning(s) - review before saving.` : "") +
+          linkNote
         );
       } else {
         setErrorMsg((res.data?.warnings || []).join(" ") || `No usable rows found in ${file.name}.`);
@@ -377,6 +467,10 @@ export default function QuotationBuilder() {
     e.preventDefault();
     if (!clientName || !projectTitle || lineItems.some(i => !i.description)) {
       setErrorMsg("Please fill out all required fields and item descriptions.");
+      return;
+    }
+    if (!sourceId) {
+      setErrorMsg("Select the project, tender, opportunity, or lead this BOQ belongs to before saving.");
       return;
     }
 
@@ -474,8 +568,14 @@ export default function QuotationBuilder() {
       }
     };
 
-    if (selectedProjectId) {
-      payload.project_id = selectedProjectId;
+    if (sourceType === "project" && sourceId) {
+      payload.project_id = sourceId;
+    } else if (sourceType === "tender" && sourceId) {
+      payload.tender_id = sourceId;
+    } else if (sourceType === "opportunity" && sourceId) {
+      payload.opportunity_id = sourceId;
+    } else if (sourceType === "lead" && sourceId) {
+      payload.lead_id = sourceId;
     }
 
     try {
@@ -772,25 +872,58 @@ export default function QuotationBuilder() {
                 />
               </label>
 
-              {/* Scope to active projects selector */}
-              <label className="block">
-                <span className="font-mono text-[9px] uppercase text-slate flex items-center gap-1">
-                  Scope to Active Project
-                  <span title="Linking automatically integrates estimating metrics inside the project details.">
-                    <HelpCircle className="w-3 h-3 text-slate-light" />
+              {/* Source picker - every BOQ must be linked to exactly one
+                  project/tender/opportunity/lead, so it stays consistently
+                  maintained and doesn't fragment into duplicate/orphaned
+                  estimates for the same piece of work. */}
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="font-mono text-[9px] uppercase text-slate flex items-center gap-1">
+                    Source Type *
+                    <span title="Every BOQ must be linked to the project, tender, opportunity, or lead it belongs to.">
+                      <HelpCircle className="w-3 h-3 text-slate-light" />
+                    </span>
                   </span>
-                </span>
-                <select
-                  value={selectedProjectId}
-                  onChange={(e) => setSelectedProjectId(e.target.value)}
-                  className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-slate-light focus:text-white outline-none focus:border-signal cursor-pointer"
-                >
-                  <option value="">-- Optional: Link to database project --</option>
-                  {projectsList.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </label>
+                  <select
+                    value={sourceType}
+                    onChange={(e) => handleSourceSelect(e.target.value as any, "")}
+                    className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-slate-light focus:text-white outline-none focus:border-signal cursor-pointer"
+                  >
+                    <option value="project">Project</option>
+                    <option value="tender">Tender</option>
+                    <option value="opportunity">Opportunity</option>
+                    <option value="lead">Lead</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="font-mono text-[9px] uppercase text-slate">
+                    {sourceType === "project" ? "Project *" : sourceType === "tender" ? "Tender *" : sourceType === "opportunity" ? "Opportunity *" : "Lead *"}
+                  </span>
+                  <select
+                    required
+                    value={sourceId}
+                    onChange={(e) => handleSourceSelect(sourceType, e.target.value)}
+                    className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-slate-light focus:text-white outline-none focus:border-signal cursor-pointer"
+                  >
+                    <option value="">-- Select --</option>
+                    {sourceType === "project" && projectsList.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                    {sourceType === "tender" && tendersList.map((t) => (
+                      <option key={t.id} value={t.id}>{t.tender_name}</option>
+                    ))}
+                    {sourceType === "opportunity" && opportunitiesList.map((o) => (
+                      <option key={o.id} value={o.id}>{o.name}</option>
+                    ))}
+                    {sourceType === "lead" && leadsList.map((l) => (
+                      <option key={l.id} value={l.id}>{l.company_name || l.contact_name}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {sourceNotice && (
+                <p className="text-[10px] font-mono text-sky-400">{sourceNotice}</p>
+              )}
 
               <div className="grid grid-cols-2 gap-3 pt-2">
                 <label className="block">

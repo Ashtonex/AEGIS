@@ -8,7 +8,7 @@ import {
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
   ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp
 } from "lucide-react";
-import { getQuotations, getInternalProjects, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
+import { getQuotations, getInternalProjects, getQuotationsNeedsBoq, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -52,6 +52,7 @@ export default function QuotationsDashboard() {
   const quotationsTour = useModuleTour("quotations");
   const [quotes, setQuotes] = useState<any[]>([]);
   const [projectsList, setProjectsList] = useState<any[]>([]);
+  const [needsBoq, setNeedsBoq] = useState<{ tenders: any[]; opportunities: any[]; leads: any[] }>({ tenders: [], opportunities: [], leads: [] });
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -105,9 +106,10 @@ export default function QuotationsDashboard() {
     // (primary) quotations ledger. They used to be yoked in one Promise.all,
     // which meant a single missing permission on projects.read made every
     // real quotation disappear from this page.
-    const [quotesResult, projectsResult] = await Promise.allSettled([
+    const [quotesResult, projectsResult, needsBoqResult] = await Promise.allSettled([
       getQuotations({ limit: LOAD_LIMIT, sort_by: "created_at", sort_dir: "desc" }),
       getInternalProjects(),
+      getQuotationsNeedsBoq(),
     ]);
 
     if (quotesResult.status === "fulfilled" && quotesResult.value.success && Array.isArray(quotesResult.value.data)) {
@@ -142,6 +144,14 @@ export default function QuotationsDashboard() {
           )
         );
       }
+    }
+
+    // Also non-blocking: this queue is a secondary discovery widget, so a
+    // failure here should never affect the primary ledger or its errors.
+    if (needsBoqResult.status === "fulfilled" && needsBoqResult.value.success && needsBoqResult.value.data) {
+      setNeedsBoq(needsBoqResult.value.data);
+    } else {
+      setNeedsBoq({ tenders: [], opportunities: [], leads: [] });
     }
 
     setLoading(false);
@@ -352,6 +362,60 @@ export default function QuotationsDashboard() {
         <div className="p-4 border border-emerald-500/20 bg-emerald-950/20 rounded-sm flex items-center space-x-3 text-emerald-400 text-sm">
           <CheckCircle className="w-5 h-5 shrink-0" />
           <span>{successMsg}</span>
+        </div>
+      )}
+
+      {/* Needs BOQ queue - tenders/opportunities/leads with no estimate started yet */}
+      {(needsBoq.tenders.length + needsBoq.opportunities.length + needsBoq.leads.length) > 0 && (
+        <div className="border border-signal/20 bg-signal/5 rounded-sm p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Briefcase className="w-4 h-4 text-signal" />
+            <h2 className="text-sm font-bold text-white">Needs BOQ</h2>
+            <span className="text-xs text-slate">
+              {needsBoq.tenders.length + needsBoq.opportunities.length + needsBoq.leads.length} awaiting an estimate
+            </span>
+          </div>
+          <div className="flex gap-3 overflow-x-auto pb-1">
+            {needsBoq.tenders.map((t) => (
+              <Link
+                key={`tender-${t.id}`}
+                href={`/dashboard/quotations/builder?source_type=tender&source_id=${t.id}`}
+                className="shrink-0 w-56 p-3 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 transition-all"
+              >
+                <span className="text-[10px] font-mono uppercase text-amber-400">Tender</span>
+                <p className="text-xs font-semibold text-white truncate mt-1">{t.label}</p>
+                <p className="text-[11px] text-slate mt-1">
+                  {t.bid_amount ? `$${Number(t.bid_amount).toLocaleString()}` : "TBD - pending BOQ"}
+                </p>
+              </Link>
+            ))}
+            {needsBoq.opportunities.map((o) => (
+              <Link
+                key={`opportunity-${o.id}`}
+                href={`/dashboard/quotations/builder?source_type=opportunity&source_id=${o.id}`}
+                className="shrink-0 w-56 p-3 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 transition-all"
+              >
+                <span className="text-[10px] font-mono uppercase text-emerald-400">Opportunity</span>
+                <p className="text-xs font-semibold text-white truncate mt-1">{o.label}</p>
+                <p className="text-[11px] text-slate mt-1">
+                  {o.bid_amount ? `$${Number(o.bid_amount).toLocaleString()}` : "TBD"}
+                </p>
+              </Link>
+            ))}
+            {needsBoq.leads.map((l) => (
+              <Link
+                key={`lead-${l.id}`}
+                href={`/dashboard/quotations/builder?source_type=lead&source_id=${l.id}`}
+                className="shrink-0 w-56 p-3 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 transition-all"
+              >
+                <span className="text-[10px] font-mono uppercase text-sky-400">Lead</span>
+                <p className="text-xs font-semibold text-white truncate mt-1">{l.label}</p>
+                <p className="text-[11px] text-slate mt-1">
+                  {l.bid_amount ? `$${Number(l.bid_amount).toLocaleString()}` : "TBD"}
+                </p>
+              </Link>
+            ))}
+          </div>
         </div>
       )}
 

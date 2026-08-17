@@ -44,6 +44,27 @@ class StatusUpdate(BaseModel):
     status: str = Field(min_length=1, max_length=40)
 
 
+# entity_type -> table to validate entity_id against (org-scoped, not deleted).
+# core.documents only has dedicated FK columns for opportunity_id/tender_id -
+# core.document_links is the polymorphic table that also covers lead/project,
+# which is why a BOQ file linked to a lead has nowhere else to go.
+_DOCUMENT_LINK_ENTITY_TABLES = {
+    "tender": "crm.tenders",
+    "opportunity": "crm.opportunities",
+    "lead": "crm.leads",
+    "project": "projects.projects",
+}
+
+
+class DocumentLinkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    entity_type: str = Field(min_length=1, max_length=120)
+    entity_id: UUID
+    link_role: str = Field(default="boq_source", max_length=80)
+    project_id: Optional[UUID] = None
+
+
 @router.get("/")
 async def list_documents(
     category: Optional[str] = None,
@@ -51,6 +72,7 @@ async def list_documents(
     classification: Optional[str] = None,
     search: Optional[str] = None,
     project_id: Optional[UUID] = None,
+    tender_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("documents.read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -76,6 +98,9 @@ async def list_documents(
     if project_id:
         query_str += " AND d.project_id = :project_id"
         params["project_id"] = project_id
+    if tender_id:
+        query_str += " AND d.tender_id = :tender_id"
+        params["tender_id"] = tender_id
     if search:
         query_str += " AND (d.title ILIKE :search OR d.file_name ILIKE :search OR d.doc_number ILIKE :search)"
         params["search"] = f"%{search}%"
@@ -360,3 +385,67 @@ async def get_links(
     )
     items = [dict(row._mapping) for row in result]
     return ok(items, "Document links retrieved.")
+
+
+@router.post("/{document_id}/links", status_code=status.HTTP_201_CREATED)
+async def create_link(
+    document_id: UUID,
+    payload: DocumentLinkCreate,
+    user: dict = Depends(require_permission("documents.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    entity_table = _DOCUMENT_LINK_ENTITY_TABLES.get(payload.entity_type.strip().lower())
+    if not entity_table:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
+        )
+
+    doc_check = await db.execute(
+        text("""
+            SELECT 1 FROM core.documents
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"id": document_id, "org_id": user["org_id"]},
+    )
+    if not doc_check.first():
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    entity_check = await db.execute(
+        text(f"""
+            SELECT 1 FROM {entity_table}
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),  # nosec B608 - entity_table is selected from a fixed allowlist above, never user input
+        {"id": payload.entity_id, "org_id": user["org_id"]},
+    )
+    if not entity_check.first():
+        raise HTTPException(status_code=404, detail=f"{payload.entity_type} not found.")
+
+    try:
+        result = await db.execute(
+            text("""
+                INSERT INTO core.document_links (
+                    organization_id, document_id, entity_type, entity_id, project_id, link_role, linked_by
+                ) VALUES (
+                    :org_id, :document_id, :entity_type, :entity_id, :project_id, :link_role, :user_id
+                )
+                ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+                RETURNING id
+            """),
+            {
+                "org_id": user["org_id"],
+                "document_id": document_id,
+                "entity_type": payload.entity_type.strip().lower(),
+                "entity_id": payload.entity_id,
+                "project_id": payload.project_id,
+                "link_role": payload.link_role,
+                "user_id": user["user_id"],
+            },
+        )
+        await db.commit()
+        link_id = result.scalar()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return ok({"id": str(link_id) if link_id else None}, "Document link recorded.")

@@ -305,8 +305,10 @@ class WinLossReasonPayload(CrmPayload):
 class TenderCreate(CrmPayload):
     tender_name: str = Field(..., min_length=1, max_length=255)
     stage: TenderStage = Field(default=TenderStage.TENDER_IDENTIFIED)
-    bid_amount: Decimal = Field(
-        default=Decimal("0"),
+    # Nullable: most tenders arrive without a budget - the real figure comes
+    # from the BOQ once it's priced, and gets filled in via a later update.
+    bid_amount: Optional[Decimal] = Field(
+        default=None,
         ge=Decimal("0"),
         le=Decimal("9999999999999.99"),
         max_digits=15,
@@ -1683,6 +1685,35 @@ async def create_opportunity_quotation(
     )
     if not opportunity:
         raise HTTPException(status_code=404, detail="Opportunity not found.")
+
+    # Resume an existing quotation instead of creating a duplicate if this
+    # opportunity already has one - this handoff previously overwrote
+    # opportunities.quote_id on every call with no duplicate check.
+    existing = await _single_row(
+        db,
+        """
+        SELECT id FROM finance.quotations
+        WHERE opportunity_id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+        LIMIT 1
+        """,
+        {"opportunity_id": opportunity_id, "org_id": org_id},
+    )
+    if existing:
+        await db.execute(
+            text("""
+                UPDATE crm.opportunities
+                SET quote_id=:quote_id, updated_at=NOW()
+                WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+            """),
+            {"quote_id": existing["id"], "opportunity_id": opportunity_id, "org_id": org_id},
+        )
+        await db.commit()
+        return {
+            "success": True,
+            "data": {"id": str(existing["id"]), "opportunity_id": str(opportunity_id), "resumed": True},
+            "message": "An estimate already exists for this opportunity - resuming it.",
+            "meta": {},
+        }
 
     quote_amount = payload.quote_amount
     if quote_amount is None:
