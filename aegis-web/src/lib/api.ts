@@ -3465,8 +3465,13 @@ export async function importBoqFile(file: File): Promise<ApiResponse<{ items: an
   const headers = await getApiHeaders();
   headers.delete("Content-Type"); // let the browser set the multipart boundary
   const response = await fetch(url, { method: "POST", headers, body: formData });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(response.status, body?.detail || body?.message || "BOQ import failed.");
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      body?.detail || body?.message || `BOQ import failed (server responded ${response.status}).`
+    );
+  }
   return body;
 }
 

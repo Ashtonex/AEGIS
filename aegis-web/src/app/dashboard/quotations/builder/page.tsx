@@ -4,10 +4,10 @@ import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { 
-  FileText, Plus, Trash2, Printer, CheckCircle, 
-  AlertCircle, Loader2, Sliders, ArrowLeft, Download, 
+  FileText, Plus, Trash2, Printer, CheckCircle,
+  AlertCircle, Loader2, Sliders, ArrowLeft, Download,
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
-  Sparkles
+  Sparkles, X
 } from "lucide-react";
 import {
   getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation,
@@ -100,6 +100,12 @@ export default function QuotationBuilder() {
   // Excel/CSV file importer state (backend BOQImporter service)
   const [importingBoqFile, setImportingBoqFile] = useState(false);
   const boqFileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [boqPreview, setBoqPreview] = useState<{
+    file: File;
+    warnings: string[];
+    rows: Array<{ selected: boolean; description: string; qty: number; unit: string; rate: number }>;
+  } | null>(null);
+  const [boqImportMode, setBoqImportMode] = useState<"replace" | "append">("replace");
 
   // Status & notifications
   const [submitting, setSubmitting] = useState(false);
@@ -365,7 +371,10 @@ export default function QuotationBuilder() {
 
   // Excel/CSV file importer - uses the backend BOQImporter service (handles
   // real spreadsheet column-header mapping, unlike the manual paste importer
-  // above which only understands a fixed comma/tab column order).
+  // above which only understands a fixed comma/tab column order). Parsing
+  // only opens a review modal (handleReviewBoqImport below) - nothing is
+  // committed to the real line items or uploaded/linked until the user
+  // explicitly reviews, selects, and confirms.
   const handleBoqFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -378,50 +387,18 @@ export default function QuotationBuilder() {
       const res = await importBoqFile(file);
       const items = res.data?.items || [];
       if (items.length > 0) {
-        setLineItems(
-          items.map((it: any) => ({
+        setBoqPreview({
+          file,
+          warnings: res.data?.warnings || [],
+          rows: items.map((it: any) => ({
+            selected: true,
             description: it.description,
             qty: Number(it.quantity) || 0,
             unit: it.unit || "unit",
             rate: Number(it.rate) || 0,
-            buildup: [],
-          }))
-        );
-        const warnings = res.data?.warnings || [];
-        let linkNote = "";
-        if (sourceId) {
-          try {
-            const fileExt = file.name.split(".").pop();
-            const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ""}`;
-            const filePath = `documents/${storedName}`;
-            const { error: uploadError } = await supabase.storage
-              .from("documents")
-              .upload(filePath, file, { cacheControl: "3600", upsert: false });
-            if (uploadError) throw uploadError;
-
-            const docRes = await createDocument({
-              title: file.name,
-              category: "boq",
-              file_name: file.name,
-              file_size_bytes: file.size,
-              storage_path: filePath,
-              mime_type: file.type || undefined,
-              ...(sourceType === "tender" ? { tender_id: sourceId } : {}),
-              ...(sourceType === "opportunity" ? { opportunity_id: sourceId } : {}),
-            });
-            if (docRes.success && docRes.data?.id) {
-              await linkDocument(docRes.data.id, { entity_type: sourceType, entity_id: sourceId });
-              linkNote = ` File linked to this ${sourceType}.`;
-            }
-          } catch {
-            linkNote = " (File could not be attached - line items were still imported.)";
-          }
-        }
-        setSuccessMsg(
-          `Imported ${items.length} BOQ item(s) from ${file.name}.` +
-          (warnings.length > 0 ? ` ${warnings.length} row warning(s) - review before saving.` : "") +
-          linkNote
-        );
+          })),
+        });
+        setBoqImportMode("replace");
       } else {
         setErrorMsg((res.data?.warnings || []).join(" ") || `No usable rows found in ${file.name}.`);
       }
@@ -430,6 +407,82 @@ export default function QuotationBuilder() {
     } finally {
       setImportingBoqFile(false);
     }
+  };
+
+  const toggleBoqPreviewRow = (index: number) => {
+    setBoqPreview((prev) => {
+      if (!prev) return prev;
+      const rows = [...prev.rows];
+      rows[index] = { ...rows[index], selected: !rows[index].selected };
+      return { ...prev, rows };
+    });
+  };
+
+  const editBoqPreviewRow = (index: number, field: "description" | "qty" | "unit" | "rate", value: any) => {
+    setBoqPreview((prev) => {
+      if (!prev) return prev;
+      const rows = [...prev.rows];
+      rows[index] = { ...rows[index], [field]: value };
+      return { ...prev, rows };
+    });
+  };
+
+  const handleCancelBoqImport = () => setBoqPreview(null);
+
+  const handleConfirmBoqImport = async () => {
+    if (!boqPreview) return;
+    const selectedRows = boqPreview.rows.filter((r) => r.selected);
+    if (selectedRows.length === 0) {
+      setErrorMsg("Select at least one row to import.");
+      return;
+    }
+    const importedItems: LineItem[] = selectedRows.map((r) => ({
+      description: r.description, qty: r.qty, unit: r.unit, rate: r.rate, buildup: [],
+    }));
+
+    if (boqImportMode === "replace") {
+      setLineItems(importedItems);
+    } else {
+      setLineItems((prev) => {
+        const existingIsBlank = prev.length === 1 && !prev[0].description && prev[0].rate === 0;
+        const base = existingIsBlank ? [] : prev;
+        return [...base, ...importedItems];
+      });
+    }
+
+    const file = boqPreview.file;
+    let linkNote = "";
+    if (sourceId) {
+      try {
+        const fileExt = file.name.split(".").pop();
+        const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ""}`;
+        const filePath = `documents/${storedName}`;
+        const { error: uploadError } = await supabase.storage
+          .from("documents")
+          .upload(filePath, file, { cacheControl: "3600", upsert: false });
+        if (uploadError) throw uploadError;
+
+        const docRes = await createDocument({
+          title: file.name,
+          category: "boq",
+          file_name: file.name,
+          file_size_bytes: file.size,
+          storage_path: filePath,
+          mime_type: file.type || undefined,
+          ...(sourceType === "tender" ? { tender_id: sourceId } : {}),
+          ...(sourceType === "opportunity" ? { opportunity_id: sourceId } : {}),
+        });
+        if (docRes.success && docRes.data?.id) {
+          await linkDocument(docRes.data.id, { entity_type: sourceType, entity_id: sourceId });
+          linkNote = ` File linked to this ${sourceType}.`;
+        }
+      } catch {
+        linkNote = " (File could not be attached - line items were still imported.)";
+      }
+    }
+
+    setSuccessMsg(`Imported ${importedItems.length} of ${boqPreview.rows.length} BOQ item(s) from ${file.name}.${linkNote}`);
+    setBoqPreview(null);
   };
 
   // Cost rate buildup sub-modal
@@ -1851,6 +1904,122 @@ export default function QuotationBuilder() {
 
           </div>
 
+        </div>
+      )}
+
+      {/* BOQ IMPORT REVIEW MODAL */}
+      {boqPreview && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 print:hidden">
+          <div className="bg-ink border border-ink-mid rounded-sm p-6 max-w-5xl w-full max-h-[85vh] flex flex-col space-y-4">
+            <div className="flex justify-between items-start border-b border-ink-mid pb-3 shrink-0">
+              <div>
+                <h3 className="font-display font-semibold text-lg text-white">Review BOQ Import</h3>
+                <p className="text-xs text-slate mt-1">
+                  {boqPreview.file.name} - {boqPreview.rows.length} row(s) parsed. Deselect or edit any row before importing.
+                </p>
+              </div>
+              <button type="button" onClick={handleCancelBoqImport} className="text-slate hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {boqPreview.warnings.length > 0 && (
+              <div className="shrink-0 p-3 border border-amber-500/30 bg-amber-950/20 rounded-sm text-[11px] text-amber-400 max-h-24 overflow-y-auto">
+                {boqPreview.warnings.map((w, i) => <div key={i}>{w}</div>)}
+              </div>
+            )}
+
+            <div className="flex items-center gap-4 shrink-0">
+              <span className="font-mono text-[9px] uppercase text-slate">On import:</span>
+              <label className="flex items-center gap-1.5 text-xs text-paper cursor-pointer">
+                <input type="radio" checked={boqImportMode === "replace"} onChange={() => setBoqImportMode("replace")} />
+                Replace existing lines
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-paper cursor-pointer">
+                <input type="radio" checked={boqImportMode === "append"} onChange={() => setBoqImportMode("append")} />
+                Append to existing lines
+              </label>
+              <span className="ml-auto text-xs text-slate">
+                {boqPreview.rows.filter(r => r.selected).length} of {boqPreview.rows.length} selected
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto border border-ink-mid rounded-lg">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-ink-light">
+                  <tr className="text-left font-mono text-[9px] text-slate uppercase">
+                    <th className="p-2 w-8"></th>
+                    <th className="p-2">Description</th>
+                    <th className="p-2 w-24">Qty</th>
+                    <th className="p-2 w-24">Unit</th>
+                    <th className="p-2 w-28">Rate</th>
+                    <th className="p-2 w-28 text-right">Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {boqPreview.rows.map((row, idx) => (
+                    <tr key={idx} className={`border-t border-ink-mid/50 ${row.selected ? "" : "opacity-40"}`}>
+                      <td className="p-2">
+                        <input type="checkbox" checked={row.selected} onChange={() => toggleBoqPreviewRow(idx)} />
+                      </td>
+                      <td className="p-2">
+                        <input
+                          type="text"
+                          value={row.description}
+                          onChange={(e) => editBoqPreviewRow(idx, "description", e.target.value)}
+                          className="w-full bg-transparent border border-transparent hover:border-ink-mid focus:border-signal rounded-sm px-1.5 py-1 outline-none"
+                        />
+                      </td>
+                      <td className="p-2">
+                        <input
+                          type="number"
+                          value={row.qty}
+                          onChange={(e) => editBoqPreviewRow(idx, "qty", Number(e.target.value))}
+                          className="w-full bg-transparent border border-transparent hover:border-ink-mid focus:border-signal rounded-sm px-1.5 py-1 outline-none"
+                        />
+                      </td>
+                      <td className="p-2">
+                        <input
+                          type="text"
+                          value={row.unit}
+                          onChange={(e) => editBoqPreviewRow(idx, "unit", e.target.value)}
+                          className="w-full bg-transparent border border-transparent hover:border-ink-mid focus:border-signal rounded-sm px-1.5 py-1 outline-none"
+                        />
+                      </td>
+                      <td className="p-2">
+                        <input
+                          type="number"
+                          value={row.rate}
+                          onChange={(e) => editBoqPreviewRow(idx, "rate", Number(e.target.value))}
+                          className="w-full bg-transparent border border-transparent hover:border-ink-mid focus:border-signal rounded-sm px-1.5 py-1 outline-none"
+                        />
+                      </td>
+                      <td className="p-2 text-right font-mono text-slate-light">
+                        ${(row.qty * row.rate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-3 shrink-0 pt-2 border-t border-ink-mid">
+              <button
+                type="button"
+                onClick={handleCancelBoqImport}
+                className="px-4 py-2 border border-ink-mid text-slate hover:text-white text-xs font-semibold rounded-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBoqImport}
+                className="px-4 py-2 bg-signal text-ink text-xs font-bold rounded-sm hover:scale-[1.02] transition-all"
+              >
+                Import Selected
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

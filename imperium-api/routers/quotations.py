@@ -291,7 +291,23 @@ async def import_boq(
             status_code=413, detail="BOQ file exceeds configured upload size limit."
         )
 
-    result = BOQImporter.import_boq(content, extension)
+    # BOQImporter already recovers from a bad/corrupt file for the initial
+    # pandas read, but nothing previously guarded the per-row parse loop -
+    # one malformed cell (an overflowing number, an unexpected Excel type)
+    # could raise straight out of this handler as a bare 500 with a
+    # non-JSON body, which the frontend has no way to show as anything but
+    # a generic "import failed" message. Never let that escape uncaught.
+    try:
+        result = BOQImporter.import_boq(content, extension)
+    except Exception as exc:
+        logger.exception("BOQ import failed for %s", file.filename)
+        return {
+            "success": False,
+            "data": {"items": [], "warnings": [f"Could not parse this file: {exc}"], "summary": {}},
+            "message": "BOQ import failed.",
+            "meta": {"user_id": user["user_id"], "filename": file.filename},
+        }
+
     return {
         "success": bool(result.items),
         "data": jsonable_encoder(result.to_dict()),
