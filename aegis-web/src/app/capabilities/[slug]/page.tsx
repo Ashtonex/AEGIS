@@ -6,10 +6,9 @@ import { CAPABILITIES } from "@/lib/constants";
 import { notFound } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 import { SectionLabel } from "@/components/ui/SectionLabel";
-import { getProjectsByCapability } from "@/lib/mockProjects";
 import { getCapabilityContent } from "@/lib/capabilitiesContent";
 import { ProjectCard } from "@/components/sections/ProjectCard";
-import { Project } from "@/types/website";
+import { getProjects } from "@/lib/api";
 
 export async function generateStaticParams() {
   return CAPABILITIES.map((cap) => ({
@@ -38,27 +37,8 @@ export default async function CapabilityDetailPage(props: { params: Promise<{ sl
 
   const capabilityData = getCapabilityContent(params.slug);
 
-  const relatedProjects: Project[] = getProjectsByCapability(capName).map(p => ({
-    id: p.id,
-    slug: p.slug,
-    title: p.title,
-    category: p.category,
-    industry: p.industry,
-    province: p.province,
-    status: p.status,
-    value: p.value,
-    description: p.scopeSummary,
-    client: p.client,
-    timeline: p.timeline,
-    contractType: p.contractType,
-    scopeSummary: p.scopeSummary,
-    challenge: p.challenge,
-    approach: p.approach,
-    outcomes: p.outcomes,
-    featuredImage: p.image,
-    gallery: p.gallery,
-    documents: p.documents,
-  }));
+  const projectsRes = await getProjects({ category: capName }).catch(() => null);
+  const relatedProjects = projectsRes?.success ? projectsRes.data : [];
 
   return (
     <PageWrapper>

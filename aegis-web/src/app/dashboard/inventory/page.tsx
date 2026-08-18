@@ -32,6 +32,7 @@ import {
   addInventoryItem,
   addInventoryStore,
   adjustStock,
+  createInternalProject,
   createSiteOperationSite,
   getInventoryCatalogue,
   getInventoryStockLevels,
@@ -702,6 +703,7 @@ function InventoryWorkspace() {
           saving={saving}
           projects={projects}
           onClose={() => setShowAddStore(false)}
+          onProjectCreated={(project) => setProjects((prev) => [project, ...prev])}
           onSubmit={async (payload) => {
             setSaving(true);
             try {
@@ -1039,12 +1041,13 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
   );
 }
 
-function AddStoreModal({ saving, projects, onClose, onSubmit }: { saving: boolean; projects: Rec[]; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
+function AddStoreModal({ saving, projects, onClose, onSubmit, onProjectCreated }: { saving: boolean; projects: Rec[]; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void; onProjectCreated: (project: Rec) => void }) {
   const [form, setForm] = useState({ name: "", store_code: "", store_type: "warehouse", project_id: "", site_id: "", location_label: "" });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const [sites, setSites] = useState<Rec[]>([]);
   const [sitesLoading, setSitesLoading] = useState(false);
   const [showCreateSite, setShowCreateSite] = useState(false);
+  const [showCreateFieldProject, setShowCreateFieldProject] = useState(false);
 
   const loadSites = useCallback(async (projectId: string) => {
     if (!projectId) { setSites([]); return; }
@@ -1079,10 +1082,23 @@ function AddStoreModal({ saving, projects, onClose, onSubmit }: { saving: boolea
           </select>
         </FieldGroup>
         <FieldGroup label="Project">
-          <select value={form.project_id} onChange={(e) => { set("project_id", e.target.value); set("site_id", ""); }} className="field">
-            <option value="">Not project-specific</option>
-            {projects.map((p) => <option key={p.id} value={p.id}>{tx(p.name ?? p.project_name ?? p.project_code, p.id)}</option>)}
-          </select>
+          <div className="flex gap-2">
+            <select value={form.project_id} onChange={(e) => { set("project_id", e.target.value); set("site_id", ""); }} className="field flex-1">
+              <option value="">Not project-specific</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {tx(p.name ?? p.project_name ?? p.project_code, p.id)}{p.status === "field_intake" ? " (Field Intake)" : ""}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowCreateFieldProject(true)}
+              className="inline-flex h-10 shrink-0 items-center gap-1 border border-ink-mid px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
+            >
+              <Plus className="h-3.5 w-3.5" /> New Field Intake Project
+            </button>
+          </div>
         </FieldGroup>
         <div className="md:col-span-2">
           <FieldGroup label="Site">
@@ -1135,6 +1151,79 @@ function AddStoreModal({ saving, projects, onClose, onSubmit }: { saving: boolea
           }}
         />
       )}
+      {showCreateFieldProject && (
+        <CreateFieldIntakeProjectModal
+          onClose={() => setShowCreateFieldProject(false)}
+          onCreated={(project) => {
+            setShowCreateFieldProject(false);
+            onProjectCreated(project);
+            set("project_id", String(project.id));
+          }}
+        />
+      )}
+    </ModalShell>
+  );
+}
+
+// A Field Intake project is a real projects.projects row (status="field_intake")
+// for tracking an ongoing site project that predates AEGIS or never went
+// through the CRM tender/opportunity/quotation pipeline - it can be started
+// here from Stores and later promoted to a fully registered project once
+// Finance signs off (see the Field Intake panel on the project detail page).
+function CreateFieldIntakeProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: (project: Rec) => void }) {
+  const [form, setForm] = useState({ name: "", start_date: "" });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await createInternalProject({
+        name: form.name,
+        status: "field_intake",
+        start_date: form.start_date || undefined,
+      });
+      const id = (res.data as Rec | undefined)?.id;
+      if (id) {
+        onCreated({ id, name: form.name, status: "field_intake" });
+      } else {
+        setErr("Project was not created.");
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to create project.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell title="New Field Intake Project" onClose={onClose}>
+      <p className="mb-4 text-xs text-slate-light">
+        For a real ongoing site project not yet formally registered in AEGIS. You can add Requisitions/RFQs against it
+        right away, and Finance can promote it to a fully registered project once the formal details are known.
+      </p>
+      <div className="grid gap-3">
+        <FieldGroup label="Project Name">
+          <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Marist Brothers Site Works" className="field" />
+        </FieldGroup>
+        <FieldGroup label="Real Start Date (optional)">
+          <input type="date" value={form.start_date} onChange={(e) => set("start_date", e.target.value)} className="field" />
+        </FieldGroup>
+      </div>
+      {err && <p className="mt-3 text-xs text-red-300">{err}</p>}
+      <div className="mt-6 flex justify-end gap-3">
+        <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button
+          onClick={submit}
+          disabled={saving || !form.name}
+          className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
+        >
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+          <Plus className="h-4 w-4" /> Create Project
+        </button>
+      </div>
     </ModalShell>
   );
 }

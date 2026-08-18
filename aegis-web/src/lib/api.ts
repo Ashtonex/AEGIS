@@ -3,8 +3,6 @@ import { Project, Tender, Article, JobPosition, LeadershipProfile } from "@/type
 import { API_BASE_URL } from "./constants";
 import { resolveBackendOrigin } from "./backend-url";
 import { getSupabase, getCachedAccessToken } from "./supabase";
-import { MOCK_TENDERS, MOCK_NEWS_ARTICLES, MOCK_KNOWLEDGE_ARTICLES, getMockArticleBySlug } from "./mockArticles";
-import { MOCK_PROJECTS, getMockProjectBySlug } from "./mockProjects";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -128,37 +126,20 @@ function buildFallbackResponse<T>(endpoint: string): T {
     endpoint.endsWith("/leadership");
 
   if (isList) {
-    let fallbackData: any = [];
-    if (endpoint.includes("/tenders")) {
-      fallbackData = MOCK_TENDERS;
-    } else if (endpoint.includes("/articles")) {
-      fallbackData = MOCK_NEWS_ARTICLES;
-    } else if (endpoint.includes("/knowledge")) {
-      fallbackData = MOCK_KNOWLEDGE_ARTICLES;
-    } else if (endpoint.includes("/projects")) {
-      fallbackData = MOCK_PROJECTS;
-    }
+    // No fallback content: a failed/empty public-content fetch should
+    // surface as a genuine empty state, never fabricated placeholder
+    // tenders/articles/projects a real visitor could mistake for the truth.
+    const fallbackData: any[] = [];
     return {
       success: true,
       data: fallbackData,
-      meta: { total: fallbackData.length, page: 1, limit: 10, size: fallbackData.length, totalPages: 1 }
+      meta: { total: 0, page: 1, limit: 10, size: 0, totalPages: 1 }
     } as T;
   } else {
-    // Single item fallback
-    let fallbackData: any = null;
-    if (endpoint.includes("/projects/")) {
-      const slug = endpoint.split("/projects/").pop()?.split("?")[0] || "";
-      const proj = getMockProjectBySlug(slug);
-      fallbackData = proj || null;
-    } else if (endpoint.includes("/articles/") || endpoint.includes("/knowledge/")) {
-      const separator = endpoint.includes("/articles/") ? "/articles/" : "/knowledge/";
-      const slug = endpoint.split(separator).pop()?.split("?")[0] || "";
-      fallbackData = getMockArticleBySlug(decodeURIComponent(slug)) || null;
-    }
     return {
       success: true,
-      data: fallbackData,
-      meta: { total: fallbackData ? 1 : 0, page: 1, limit: 1, size: fallbackData ? 1 : 0, totalPages: 1 }
+      data: null,
+      meta: { total: 0, page: 1, limit: 1, size: 0, totalPages: 1 }
     } as T;
   }
 }
@@ -1708,11 +1689,47 @@ export async function getInternalProjects(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/projects/`, { cache: 'no-store', allowFallback: false });
 }
 
+/** Create an internal project. Used for Field Intake projects started from the Stores page. */
+export async function createInternalProject(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 /** Update fields on an internal project (e.g. department assignment). */
 export async function updateInternalProject(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Submit a Field Intake project for Finance sign-off, proposing its formal fields. */
+export async function submitProjectRegistration(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/submit-registration`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Finance approves/rejects a pending Field Intake registration submission. */
+export async function decideProjectRegistration(projectId: string, decision: 'approved' | 'rejected', reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/registration-decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
+/** Finance sets an ad-hoc execution budget ceiling on a project with no quotation-derived budget. */
+export async function setProjectBudget(projectId: string, totalAmount: number, notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/budget`, {
+    method: 'POST',
+    body: JSON.stringify({ total_amount: totalAmount, notes }),
     allowFallback: false,
   });
 }

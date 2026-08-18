@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import { ProjectDetail } from "./mockProjects";
 
 const GALLERY_FOLDER_MAPPING: Record<string, { folder?: string; folders?: string[]; range?: [number, number] }> = {
   "SNC-MEGA-MARKET": { folders: ["mm_flour_mill_substation", "mm_retaining_walls", "mm_stormwater", "mm_transport_yard", "mm_transport_ablution"] },

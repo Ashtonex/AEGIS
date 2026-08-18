@@ -385,7 +385,7 @@ async def create_requisition(
         ) VALUES (
             :org_id, :number, :project_id, :site_id, :cost_code_id,
             :user_id, :required_by_date, :priority, :justification, :total,
-            true, :available, :user_id
+            :budget_checked, :available, :user_id
         ) RETURNING id
     """),
             {
@@ -399,6 +399,7 @@ async def create_requisition(
                 "priority": payload.priority,
                 "justification": payload.justification,
                 "total": total,
+                "budget_checked": available is not None,
                 "available": available,
             },
         )
@@ -478,7 +479,8 @@ async def submit_requisition(
             status_code=409, detail="Only draft requisitions can be submitted."
         )
     if (
-        Decimal(str(req["total_estimated"]))
+        req["budget_checked"]
+        and Decimal(str(req["total_estimated"]))
         > Decimal(str(req["budget_available"] or 0))
         and user.get("role") != "SUPERADMIN"
     ):
@@ -531,6 +533,7 @@ async def decide_requisition(
         raise HTTPException(status_code=409, detail="Self-approval is not permitted.")
     if (
         payload.decision == "approved"
+        and req["budget_checked"]
         and Decimal(str(req["total_estimated"]))
         > Decimal(str(req["budget_available"] or 0))
         and user.get("role") != "SUPERADMIN"

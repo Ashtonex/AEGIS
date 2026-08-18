@@ -31,9 +31,15 @@ import {
   Calendar
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
-import { ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject } from "@/lib/api";
+import {
+  ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject,
+  submitProjectRegistration, decideProjectRegistration, setProjectBudget,
+} from "@/lib/api";
+import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { PROVINCES } from "@/lib/constants";
+
+const FINANCE_SIGNOFF_ROLES = new Set(["Finance Manager", "Executive (Admin)", "SUPERADMIN"]);
 
 type Project = Record<string, unknown> & {
   id: string;
@@ -352,10 +358,11 @@ function ProjectsWorkspace() {
             setSelected((prev) => (prev ? { ...prev, department_id: deptId } : prev));
             setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, department_id: deptId } : p)));
           }}
-          detail={detail} 
-          loading={detailLoading} 
-          error={detailError} 
-          onClose={() => setSelected(null)} 
+          detail={detail}
+          loading={detailLoading}
+          error={detailError}
+          onClose={() => setSelected(null)}
+          onRefresh={() => openProject(selected)}
         />
       ) : null}
     </div>
@@ -404,6 +411,111 @@ function Info({ label, value }: { label: string; value: string }) {
   ); 
 }
 
+function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<string, unknown>; isFinance: boolean; onRefresh: () => void }) {
+  const isFieldIntake = project.status === "field_intake";
+  const [form, setForm] = useState({ client_name: "", contract_value: "", start_date: "", project_code: "" });
+  const [budgetAmount, setBudgetAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const projectId = String(project.id ?? "");
+
+  const submit = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      await submitProjectRegistration(projectId, {
+        client_name: form.client_name || undefined,
+        contract_value: form.contract_value ? Number(form.contract_value) : undefined,
+        start_date: form.start_date || undefined,
+        project_code: form.project_code || undefined,
+      });
+      setSubmitted(true);
+      setMsg("Submitted for Finance sign-off.");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to submit for registration.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decide = async (decision: "approved" | "rejected") => {
+    setBusy(true); setMsg(null);
+    try {
+      await decideProjectRegistration(projectId, decision, decision === "rejected" ? "Not approved" : undefined);
+      setMsg(decision === "approved" ? "Project registered." : "Registration rejected.");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to record decision.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitBudget = async () => {
+    if (!budgetAmount) return;
+    setBusy(true); setMsg(null);
+    try {
+      await setProjectBudget(projectId, Number(budgetAmount));
+      setMsg("Budget set.");
+      setBudgetAmount("");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to set budget.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="border border-signal/30 bg-signal/5 p-4 rounded-sm space-y-4">
+      <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-signal">Field Intake Registration</h3>
+
+      {isFieldIntake && !submitted && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input value={form.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Client name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={form.contract_value} onChange={(e) => set("contract_value", e.target.value)} type="number" placeholder="Contract value ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={form.start_date} onChange={(e) => set("start_date", e.target.value)} type="date" placeholder="Real start date" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={form.project_code} onChange={(e) => set("project_code", e.target.value)} placeholder="Project code (optional)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <button onClick={submit} disabled={busy} className="sm:col-span-2 h-10 bg-signal font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+            Submit for Finance Sign-off
+          </button>
+        </div>
+      )}
+
+      {isFieldIntake && submitted && (
+        <p className="text-xs text-slate-light">Awaiting Finance sign-off.</p>
+      )}
+
+      {isFieldIntake && isFinance && (
+        <div className="flex gap-3 border-t border-ink-mid/50 pt-3">
+          <button onClick={() => decide("approved")} disabled={busy} className="h-9 border border-emerald-500/40 bg-emerald-950/20 px-3 font-mono text-xs uppercase text-emerald-300 disabled:opacity-50">
+            Approve & Register
+          </button>
+          <button onClick={() => decide("rejected")} disabled={busy} className="h-9 border border-red-500/40 bg-red-950/20 px-3 font-mono text-xs uppercase text-red-300 disabled:opacity-50">
+            Reject
+          </button>
+        </div>
+      )}
+
+      {!isFieldIntake && isFinance && (
+        <div className="flex items-end gap-3 border-t border-ink-mid/50 pt-3">
+          <div className="flex-1">
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Set Execution Budget ($)</label>
+            <input value={budgetAmount} onChange={(e) => setBudgetAmount(e.target.value)} type="number" placeholder="Total budget ceiling" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
+          <button onClick={submitBudget} disabled={busy || !budgetAmount} className="h-10 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+            Set Budget
+          </button>
+        </div>
+      )}
+
+      {msg && <p className="text-xs text-slate-light">{msg}</p>}
+    </div>
+  );
+}
+
 interface GanttMilestone {
   id: string;
   name: string;
@@ -426,6 +538,7 @@ function ProjectDetail({
   onClose,
   departments,
   onDepartmentChange,
+  onRefresh,
 }: {
   project: Project;
   detail: Detail | null;
@@ -434,7 +547,9 @@ function ProjectDetail({
   onClose: () => void;
   departments: Department[];
   onDepartmentChange: (departmentId: string) => void;
+  onRefresh: () => void;
 }) {
+  const { role } = useAuth();
   const source = detail?.project ?? project;
 
   const [departmentSaving, setDepartmentSaving] = useState(false);
@@ -863,6 +978,14 @@ function ProjectDetail({
                   <Info label="Project Manager" value={text(viability?.delivery_manager ?? source.project_manager ?? source.manager)} />
                   <Info label="Programme End" value={formatDate(text(viability?.planned_end_date ?? source.end_date, ""))} />
                 </div>
+
+                {(source.status === "field_intake" || FINANCE_SIGNOFF_ROLES.has(role ?? "")) && (
+                  <FieldIntakePanel
+                    project={source}
+                    isFinance={FINANCE_SIGNOFF_ROLES.has(role ?? "")}
+                    onRefresh={onRefresh}
+                  />
+                )}
 
                 <section>
                   <h3 className="mb-3 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-signal">

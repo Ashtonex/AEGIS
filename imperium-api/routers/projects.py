@@ -1,5 +1,6 @@
 """Tenant-safe project lifecycle, programme, commercial and risk controls."""
 
+import json
 from datetime import date
 from decimal import Decimal
 from typing import Literal, Optional
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
+from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 
 router = APIRouter()
@@ -48,6 +50,28 @@ class ProjectUpdate(BaseModel):
     region: Optional[str] = Field(default=None, max_length=120)
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+
+class ProjectRegistrationSubmit(BaseModel):
+    """Formal fields proposed when promoting a Field Intake project to a
+    fully registered one - held in the approval instance's metadata until
+    Finance signs off, then applied to the project row on approval."""
+
+    client_name: Optional[str] = Field(default=None, max_length=255)
+    client_org_id: Optional[UUID] = None
+    contract_value: Optional[Decimal] = None
+    start_date: Optional[date] = None
+    project_code: Optional[str] = Field(default=None, max_length=80)
+
+
+class ProjectRegistrationDecision(BaseModel):
+    decision: Literal["approved", "rejected"]
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ProjectBudgetSet(BaseModel):
+    total_amount: Decimal = Field(gt=0)
+    notes: Optional[str] = None
 
 
 class MilestonePayload(BaseModel):
@@ -321,6 +345,245 @@ async def get_project(
     _: dict = Depends(require_permission("projects.read")),
 ):
     return _result(await _project_ref_or_404(db, project_id, user["org_id"]), "Project retrieved.")
+
+
+@router.post("/{project_id}/submit-registration", status_code=201)
+async def submit_project_registration(
+    project_id: UUID,
+    payload: ProjectRegistrationSubmit,
+    user: dict = Depends(require_permission("projects.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submits a Field Intake project for Finance sign-off, proposing the
+    formal fields (client, contract value, real start date) it should carry
+    once registered. Nothing on the project itself changes until approved -
+    every requisition/store/cost transaction already carries the correct
+    project_id from day one, so there's nothing to reparent on promotion."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if project.get("status") != "field_intake":
+        raise HTTPException(
+            status_code=409,
+            detail="Only Field Intake projects can be submitted for registration.",
+        )
+
+    metadata = payload.model_dump(mode="json", exclude_none=True)
+    approval_id = (
+        await db.execute(
+            text("""
+        INSERT INTO core.approval_instances (
+            organization_id, workflow_key, target_type, target_id, project_id, submitted_by, metadata
+        ) VALUES (
+            :org_id, 'project_field_intake_registration', 'project', :project_id, :project_id,
+            :user_id, CAST(:metadata AS jsonb)
+        ) ON CONFLICT (organization_id, workflow_key, target_type, target_id)
+          WHERE is_deleted=false AND status='pending'
+          DO UPDATE SET metadata = CAST(:metadata AS jsonb), updated_at=NOW()
+        RETURNING id
+    """),
+            {
+                "org_id": user["org_id"],
+                "project_id": project_id,
+                "user_id": user["user_id"],
+                "metadata": json.dumps(metadata),
+            },
+        )
+    ).scalar()
+    await db.execute(
+        text("""
+        INSERT INTO core.approval_steps (organization_id, approval_instance_id, step_number, role_name)
+        VALUES (:org_id, :approval_id, 1, 'Finance Manager')
+        ON CONFLICT (organization_id, approval_instance_id, step_number) DO NOTHING
+    """),
+        {"org_id": user["org_id"], "approval_id": approval_id},
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="project.field_intake_registration.submitted.v1",
+        aggregate_type="project",
+        aggregate_id=project_id,
+        project_id=project_id,
+        event_data=metadata,
+    )
+    await db.commit()
+    return _result(
+        {"id": str(project_id), "approval_id": str(approval_id)},
+        "Submitted for Finance sign-off.",
+    )
+
+
+@router.post("/{project_id}/registration-decision")
+async def decide_project_registration(
+    project_id: UUID,
+    payload: ProjectRegistrationDecision,
+    user: dict = Depends(require_permission("projects.registration.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    approval = (
+        (
+            await db.execute(
+                text("""
+        SELECT id, submitted_by, metadata FROM core.approval_instances
+        WHERE organization_id=:org_id AND workflow_key='project_field_intake_registration'
+          AND target_type='project' AND target_id=:project_id
+          AND status='pending' AND is_deleted=false
+        ORDER BY created_at DESC LIMIT 1
+    """),
+                {"org_id": user["org_id"], "project_id": project_id},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not approval:
+        raise HTTPException(
+            status_code=409, detail="No pending registration approval exists for this project."
+        )
+    if str(approval["submitted_by"]) == str(user["user_id"]):
+        raise HTTPException(status_code=403, detail="Self-approval is not permitted.")
+
+    if payload.decision == "approved":
+        metadata = approval["metadata"] or {}
+        # metadata came back out of jsonb, so start_date is a plain string -
+        # asyncpg needs a real date object to bind against the CAST(...AS date)
+        # placeholder below, the same class of bug fixed for tender_bids.py's
+        # submission_deadline.
+        metadata_start_date = (
+            date.fromisoformat(metadata["start_date"]) if metadata.get("start_date") else None
+        )
+        await db.execute(
+            text("""
+            UPDATE projects.projects
+            SET status='planning',
+                client_name=COALESCE(:client_name, client_name),
+                client_org_id=COALESCE(CAST(:client_org_id AS uuid), client_org_id),
+                contract_value=COALESCE(CAST(:contract_value AS numeric), contract_value),
+                start_date=COALESCE(CAST(:start_date AS date), start_date),
+                project_code=COALESCE(:project_code, project_code),
+                updated_at=NOW()
+            WHERE id=:project_id AND organization_id=:org_id
+        """),
+            {
+                "project_id": project_id,
+                "org_id": user["org_id"],
+                "client_name": metadata.get("client_name"),
+                "client_org_id": metadata.get("client_org_id"),
+                "contract_value": metadata.get("contract_value"),
+                "start_date": metadata_start_date,
+                "project_code": metadata.get("project_code"),
+            },
+        )
+        event_type = "project.field_intake_registration.approved.v1"
+        notif_title = "Project Registration Approved"
+        notif_message = f"{project.get('name')} has been registered as a formal AEGIS project."
+    else:
+        event_type = "project.field_intake_registration.rejected.v1"
+        notif_title = "Project Registration Rejected"
+        notif_message = f"Registration for {project.get('name')} was rejected. Reason: {payload.reason or 'Not specified'}"
+
+    await db.execute(
+        text("""
+        UPDATE core.approval_instances
+        SET status=:decision, decided_by=:user_id, decided_at=NOW(), decision_reason=:reason, updated_at=NOW()
+        WHERE id=:approval_id AND organization_id=:org_id
+    """),
+        {
+            "approval_id": approval["id"],
+            "org_id": user["org_id"],
+            "decision": payload.decision,
+            "user_id": user["user_id"],
+            "reason": payload.reason,
+        },
+    )
+    await db.execute(
+        text("""
+        UPDATE core.approval_steps
+        SET status=:decision, decided_by=:user_id, decided_at=NOW(), reason=:reason, updated_at=NOW()
+        WHERE approval_instance_id=:approval_id AND organization_id=:org_id AND step_number=1
+    """),
+        {
+            "approval_id": approval["id"],
+            "org_id": user["org_id"],
+            "decision": payload.decision,
+            "user_id": user["user_id"],
+            "reason": payload.reason,
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type=event_type,
+        aggregate_type="project",
+        aggregate_id=project_id,
+        project_id=project_id,
+        event_data={"decision": payload.decision, "reason": payload.reason},
+    )
+    if approval["submitted_by"]:
+        await emit_notification(
+            db,
+            org_id=user["org_id"],
+            user_id=str(approval["submitted_by"]),
+            title=notif_title,
+            message=notif_message,
+        )
+    await db.commit()
+    return _result({"id": str(project_id), "decision": payload.decision}, "Registration decision recorded.")
+
+
+@router.post("/{project_id}/budget", status_code=201)
+async def set_project_budget(
+    project_id: UUID,
+    payload: ProjectBudgetSet,
+    user: dict = Depends(require_permission("projects.registration.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Finance sets an ad-hoc execution budget ceiling directly, for a
+    project that never went through a won quotation (e.g. a promoted Field
+    Intake project) - same finance.project_budgets shape
+    seed_project_budget_from_quotation produces, just without a quotation
+    behind it."""
+    await _project_or_404(db, project_id, user["org_id"])
+    await db.execute(
+        text("""
+        UPDATE finance.project_budgets
+        SET status='superseded', updated_at=NOW()
+        WHERE project_id=:project_id AND organization_id=:org_id AND status='approved' AND is_deleted=false
+    """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    next_version = (
+        await db.execute(
+            text("""
+        SELECT COALESCE(MAX(budget_version), 0) + 1 FROM finance.project_budgets
+        WHERE project_id=:project_id AND organization_id=:org_id
+    """),
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )
+    ).scalar()
+    row = (
+        await db.execute(
+            text("""
+        INSERT INTO finance.project_budgets (
+            organization_id, project_id, budget_version, status, label,
+            effective_date, total_amount, notes, approved_by, approved_at, created_by
+        ) VALUES (
+            :org_id, :project_id, :version, 'approved', 'Finance-set ad-hoc budget',
+            CURRENT_DATE, :total_amount, :notes, :user_id, NOW(), :user_id
+        ) RETURNING id
+    """),
+            {
+                "org_id": user["org_id"],
+                "project_id": project_id,
+                "version": next_version,
+                "total_amount": payload.total_amount,
+                "notes": payload.notes,
+                "user_id": user["user_id"],
+            },
+        )
+    ).first()
+    await db.commit()
+    return _result({"id": str(row.id)}, "Project budget set.")
 
 
 @router.patch("/{project_id}")

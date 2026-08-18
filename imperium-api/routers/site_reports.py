@@ -495,7 +495,9 @@ async def request_site_material(
             Decimal("0.01")
         )
         should_submit = payload.auto_submit_requisition and (
-            requisition_total <= available_budget or user.get("role") == "SUPERADMIN"
+            available_budget is None
+            or requisition_total <= available_budget
+            or user.get("role") == "SUPERADMIN"
         )
         requisition_number = await next_reference(
             db, user["org_id"], "purchase_requisition"
@@ -513,7 +515,7 @@ async def request_site_material(
                 CAST(:status AS varchar),
                 CASE WHEN CAST(:status AS varchar)='submitted' THEN NOW() ELSE NULL END,
                 CASE WHEN CAST(:status AS varchar)='submitted' THEN CAST(:user_id AS uuid) ELSE NULL END,
-                true, :budget_available, :user_id
+                :budget_checked, :budget_available, :user_id
             ) RETURNING id
         """),
                 {
@@ -528,6 +530,7 @@ async def request_site_material(
                     or f"Shortfall from site material request {request_number}",
                     "total_estimated": requisition_total,
                     "status": "submitted" if should_submit else "draft",
+                    "budget_checked": available_budget is not None,
                     "budget_available": available_budget,
                 },
             )

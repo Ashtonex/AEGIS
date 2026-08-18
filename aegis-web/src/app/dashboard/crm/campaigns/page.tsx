@@ -14,13 +14,9 @@ export default function CampaignsPage() {
       setIsLoading(true);
       try {
         const res = await getCrmCampaigns();
-        if (res.success) {
-          setCampaigns(res.data || []);
-        } else {
-          setCampaigns(getMockCampaigns());
-        }
+        setCampaigns(res.success ? (res.data || []) : []);
       } catch {
-        setCampaigns(getMockCampaigns());
+        setCampaigns([]);
       } finally {
         setIsLoading(false);
       }
@@ -56,6 +52,8 @@ export default function CampaignsPage() {
           <div className="flex justify-center py-10">
             <RefreshCw className="h-8 w-8 animate-spin text-[#3B82F6]" />
           </div>
+        ) : campaigns.length === 0 ? (
+          <div className="py-10 text-center text-slate-400 text-xs">No campaigns yet. Create one to get started.</div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {campaigns.map((camp: any) => (
@@ -86,12 +84,4 @@ export default function CampaignsPage() {
       </div>
     </main>
   );
-}
-
-function getMockCampaigns() {
-  return [
-    { id: '1', name: 'Q3 Mining Infrastructure Outreach', channel: 'Email', segment_name: 'Mining Corporates', status: 'Active' },
-    { id: '2', name: 'WhatsApp Site Visit Booking Campaign', channel: 'WhatsApp', segment_name: 'Identified Leads', status: 'Active' },
-    { id: '3', name: 'Cape Town Regional Civil Contractors Invite', channel: 'Email', segment_name: 'Subcontractors Western Cape', status: 'Draft' }
-  ];
 }

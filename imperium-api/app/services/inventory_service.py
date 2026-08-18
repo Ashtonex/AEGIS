@@ -72,25 +72,34 @@ async def reorder_level(db: AsyncSession, *, org_id: str, item_id: UUID) -> Deci
 
 async def budget_available(
     db: AsyncSession, *, org_id: str, project_id: Optional[UUID]
-) -> Decimal:
+) -> Optional[Decimal]:
     """Single source of truth for project budget headroom - replaces the
     byte-identical budget_available() previously duplicated in
-    procurement.py and site_reports.py."""
+    procurement.py and site_reports.py.
+
+    Returns None (not Decimal("0")) when the project has no approved
+    finance.project_budgets row yet - e.g. a Field Intake project that
+    hasn't been through Finance sign-off. Callers must treat None as "no
+    ceiling configured, don't block" rather than "$0 available, block
+    everything" - the two used to be indistinguishable, which made any
+    non-zero requisition against an un-budgeted project unsubmittable.
+    """
     if project_id is None:
         return Decimal("0")
     row = (
         await db.execute(
             text("""
         SELECT
-          COALESCE((SELECT total_amount FROM finance.project_budgets WHERE organization_id=:org_id AND project_id=:project_id AND status='approved' AND is_deleted=false LIMIT 1), 0)
-          - COALESCE((SELECT SUM(committed_amount) FROM finance.commitments WHERE organization_id=:org_id AND project_id=:project_id AND status <> 'cancelled' AND is_deleted=false), 0)
-          - COALESCE((SELECT SUM(amount) FROM finance.cost_transactions WHERE organization_id=:org_id AND project_id=:project_id), 0)
-          AS available
+          (SELECT total_amount FROM finance.project_budgets WHERE organization_id=:org_id AND project_id=:project_id AND status='approved' AND is_deleted=false LIMIT 1) AS budget,
+          COALESCE((SELECT SUM(committed_amount) FROM finance.commitments WHERE organization_id=:org_id AND project_id=:project_id AND status <> 'cancelled' AND is_deleted=false), 0) AS committed,
+          COALESCE((SELECT SUM(amount) FROM finance.cost_transactions WHERE organization_id=:org_id AND project_id=:project_id), 0) AS spent
     """),
             {"org_id": org_id, "project_id": project_id},
         )
     ).first()
-    return Decimal(str(row.available or 0))
+    if row.budget is None:
+        return None
+    return Decimal(str(row.budget)) - Decimal(str(row.committed or 0)) - Decimal(str(row.spent or 0))
 
 
 async def post_cost_transaction(

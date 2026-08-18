@@ -71,11 +71,8 @@ export default async function NewsIndexPage(props: {
               </div>
             </>
           ) : (
-             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-               <div className="lg:col-span-3 aspect-[3/1] bg-[var(--dxl-ink-mid)] animate-pulse rounded-sm border border-[var(--dxl-ink-mid)] mb-6" />
-               {[1,2,3].map(i => (
-                 <div key={i} className="aspect-[4/3] bg-[var(--dxl-ink-mid)] animate-pulse rounded-sm border border-[var(--dxl-ink-mid)]" />
-               ))}
+            <div className="p-24 text-center border border-[var(--dxl-ink-mid)] bg-[var(--dxl-ink-mid)] rounded-sm">
+              <p className="text-[var(--dxl-slate-light)]">No news articles published yet. Check back soon.</p>
             </div>
           )}
         </div>

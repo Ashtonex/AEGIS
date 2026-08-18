@@ -1030,12 +1030,16 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
   const estimatedTotal = lines.reduce((s, l) => s + num(l.qty) * num(l.unit_cost), 0);
 
   const submit = async () => {
-    if (!form.project_id) { setError("Select a project."); return; }
     if (!form.required_by_date) { setError("Required-by date is mandatory."); return; }
     if (lines.some((l) => !l.description.trim())) { setError("All line items must have a description."); return; }
     setSaving(true); setError(null);
     try {
-      await createProcurementRequisition({ ...form, line_items: lines.map((l) => ({ ...l, qty: num(l.qty), unit_cost: num(l.unit_cost) })), total_estimated: estimatedTotal });
+      await createProcurementRequisition({
+        ...form,
+        project_id: form.project_id || null,
+        line_items: lines.map((l) => ({ ...l, qty: num(l.qty), unit_cost: num(l.unit_cost) })),
+        total_estimated: estimatedTotal,
+      });
       onCreated();
     } catch (e) { setError(normalizeActionError(e, "Could not create requisition.")); setSaving(false); }
   };
@@ -1054,10 +1058,14 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
           {error && <Banner tone="error" message={error} />}
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Project *</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Project</label>
               <select value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper">
-                <option value="">Select project…</option>
-                {projects.map((p) => <option key={p.id} value={p.id}>{tx(p.name ?? p.project_name ?? p.project_code, p.id)}</option>)}
+                <option value="">Not project-specific</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {tx(p.name ?? p.project_name ?? p.project_code, p.id)}{p.status === "field_intake" ? " (Field Intake)" : ""}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
