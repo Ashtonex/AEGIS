@@ -123,9 +123,9 @@ export function ExecutiveNav() {
             <Image
               src="/logo.png"
               alt="SNC Logo"
-              width={72}
-              height={48}
-              className="h-[48px] w-auto object-contain transition-transform duration-300 group-hover:scale-105"
+              width={96}
+              height={64}
+              className="h-14 w-auto object-contain transition-transform duration-300 group-hover:scale-105"
             />
           </Link>
 
