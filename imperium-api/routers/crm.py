@@ -2202,6 +2202,23 @@ async def create_tender(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org_id(user)
+
+    duplicate = await db.execute(
+        text("""
+            SELECT id FROM crm.tenders
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND lower(tender_name) = lower(:tender_name)
+            LIMIT 1
+        """),
+        {"org_id": org_id, "tender_name": payload.tender_name},
+    )
+    duplicate_id = duplicate.scalar()
+    if duplicate_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A tender named \"{payload.tender_name}\" already exists on the board: {duplicate_id}",
+        )
+
     query = text("""
         INSERT INTO crm.tenders (tender_name, stage, bid_amount, region, organization_id)
         VALUES (:name, :stage, :amount, :region, :org_id)

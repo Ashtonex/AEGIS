@@ -10,6 +10,7 @@ import {
   Eye, Download
 } from 'lucide-react';
 import {
+  ApiError,
   getCrmTenders,
   createCrmTender,
   updateCrmTender,
@@ -346,11 +347,15 @@ export default function TendersCommand() {
       }
     } catch (err) {
       console.error('Failed to create tender:', err);
-      alert(describeActionError(
-        err,
-        "You don't have permission to log tenders.",
-        "Tender was not logged. Check the CRM service connection and retry."
-      ));
+      if (err instanceof ApiError && err.status === 409) {
+        alert(`A tender named "${newTender.tender_name.trim()}" already exists on the board. Open it from a stage column instead of logging it again.`);
+      } else {
+        alert(describeActionError(
+          err,
+          "You don't have permission to log tenders.",
+          "Tender was not logged. Check the CRM service connection and retry."
+        ));
+      }
     } finally {
       setIsSubmitting(false);
     }
