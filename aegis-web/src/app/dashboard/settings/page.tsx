@@ -396,12 +396,12 @@ export default function SettingsPage() {
       setSaving(null);
     }
   };
-  const inviteUser = async (payload: { full_name: string; email: string; role_ids: string[] }) => {
+  const inviteUser = async (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => {
     setSaving("invite-user");
     setNotice(null);
     try {
       const response = await inviteSettingsUser(payload);
-      setNotice(`Invite sent to ${payload.email}. They must set a password before they can sign in.`);
+      setNotice(response.message ?? `Invite sent to ${payload.email}.`);
       await load(true);
       return response.data ?? null;
     } catch (err) {
@@ -481,12 +481,14 @@ function SettingRow({ setting, saving, onSave }: { setting: SystemSetting; savin
   return <div className="grid gap-3 py-4 md:grid-cols-[1fr_minmax(220px,0.8fr)]"><div><p className="font-semibold text-paper">{setting.label}</p><p className="mt-1 text-xs text-slate-light">{setting.description}</p><p className="mt-1 font-mono text-[10px] uppercase text-slate">{setting.category} | Updated {dateTime(setting.updated_at)}</p></div><div className="flex items-center gap-2">{type === "boolean" ? <select disabled={saving} value={String(draft)} onChange={(event) => setDraft(event.target.value === "true")} className="min-w-0 flex-1 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper disabled:opacity-50"><option value="true">Enabled</option><option value="false">Disabled</option></select> : <input disabled={saving} type={type === "number" ? "number" : "text"} value={String(draft)} onChange={(event) => setDraft(type === "number" ? Number(event.target.value) : event.target.value)} className="min-w-0 flex-1 border border-ink-mid bg-ink px-2 py-2 text-xs text-paper disabled:opacity-50" />}<button disabled={saving} onClick={() => void onSave(setting, draft as string | number | boolean)} className="inline-flex h-8 w-8 items-center justify-center border border-signal/50 text-signal hover:bg-signal/10 disabled:opacity-50" title={`Save ${setting.label}`}><Save className="h-3.5 w-3.5" /></button></div></div>;
 }
 
-function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose: () => void; onInvite: (payload: { full_name: string; email: string; role_ids: string[] }) => Promise<any> }) {
+function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose: () => void; onInvite: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any> }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [roleIds, setRoleIds] = useState<string[]>([]);
+  const [noRealEmail, setNoRealEmail] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [issued, setIssued] = useState<{ email: string; temporary_password: string } | null>(null);
   const visibleRoles = roles.filter((role) => role.name.toUpperCase() !== "SUPERADMIN");
 
   const toggleRole = (roleId: string) => setRoleIds((current) => current.includes(roleId) ? current.filter((id) => id !== roleId) : [...current, roleId]);
@@ -500,8 +502,12 @@ function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose:
     }
     setSubmitting(true);
     try {
-      await onInvite({ full_name: fullName.trim(), email: email.trim(), role_ids: roleIds });
-      onClose();
+      const result = await onInvite({ full_name: fullName.trim(), email: email.trim(), role_ids: roleIds, no_real_email: noRealEmail });
+      if (noRealEmail && result?.temporary_password) {
+        setIssued({ email: result.email ?? email.trim(), temporary_password: result.temporary_password });
+      } else {
+        onClose();
+      }
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : "The invite could not be sent.");
     } finally {
@@ -509,12 +515,35 @@ function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose:
     }
   };
 
+  if (issued) {
+    return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md border border-ink-mid bg-ink-light p-6">
+        <div className="mb-5 flex items-start justify-between gap-3 border-b border-ink-mid pb-4">
+          <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><ShieldCheck className="h-4 w-4 text-signal" /> Account created</h2>
+          <button type="button" onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+        </div>
+        <p className="mb-4 text-xs leading-relaxed text-slate-light">This address has no real inbox, so nothing was emailed. Copy the password below now and hand it to them directly - it will not be shown again, and they must change it on first login.</p>
+        <div className="space-y-2">
+          <div className="border border-ink-mid bg-ink p-2">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Sign-in email</p>
+            <p className="mt-1 break-all font-mono text-[12px] text-paper">{issued.email}</p>
+          </div>
+          <div className="border border-signal/40 bg-signal/5 p-2">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Temporary password</p>
+            <p className="mt-1 break-all font-mono text-[12px] text-paper">{issued.temporary_password}</p>
+          </div>
+        </div>
+        <button type="button" onClick={onClose} className="mt-5 flex w-full items-center justify-center gap-2 bg-signal py-3 font-mono text-xs uppercase tracking-widest text-ink">Done</button>
+      </div>
+    </div>;
+  }
+
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
     <div className="w-full max-w-md border border-ink-mid bg-ink-light p-6">
       <div className="mb-5 flex items-start justify-between gap-3 border-b border-ink-mid pb-4">
         <div>
           <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Mail className="h-4 w-4 text-signal" /> Invite internal user</h2>
-          <p className="mt-2 text-xs leading-relaxed text-slate-light">Supabase emails them a sign-in link and requires them to set their own password before the account is usable. No credentials are shared manually.</p>
+          <p className="mt-2 text-xs leading-relaxed text-slate-light">{noRealEmail ? "No email is sent. The account is created immediately with a password you set and hand to them directly." : "Supabase emails them a sign-in link and requires them to set their own password before the account is usable. No credentials are shared manually."}</p>
         </div>
         <button type="button" onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
       </div>
@@ -526,7 +555,12 @@ function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose:
         </label>
         <label className="block">
           <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Email</span>
-          <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="mt-1 w-full border border-ink-mid bg-ink p-2 text-sm text-paper focus:border-signal focus:outline-none" />
+          <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder={noRealEmail ? "firstname.lastname@aegis.local" : undefined} className="mt-1 w-full border border-ink-mid bg-ink p-2 text-sm text-paper focus:border-signal focus:outline-none" />
+          {noRealEmail && <span className="mt-1 block text-[11px] text-slate-light">Doesn&apos;t need to be a real mailbox - just unique. Use a made-up address like a placeholder domain (e.g. <span className="text-paper">@aegis.local</span>); it only has to work for signing in to AEGIS.</span>}
+        </label>
+        <label className="flex items-start gap-2 border border-ink-mid/60 p-3 text-xs text-slate-light">
+          <input type="checkbox" checked={noRealEmail} onChange={(event) => setNoRealEmail(event.target.checked)} className="mt-0.5" />
+          <span>This person has no real email inbox (e.g. an intern). Skip the email invite and issue a password directly instead.</span>
         </label>
         <div>
           <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Roles (optional)</span>
@@ -538,14 +572,14 @@ function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose:
           </div>
         </div>
         <button type="submit" disabled={submitting} className="flex w-full items-center justify-center gap-2 bg-signal py-3 font-mono text-xs uppercase tracking-widest text-ink disabled:opacity-50">
-          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <><UserPlus className="h-4 w-4" /> Send invite</>}
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <><UserPlus className="h-4 w-4" /> {noRealEmail ? "Create account" : "Send invite"}</>}
         </button>
       </form>
     </div>
   </div>;
 }
 
-function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, inviteUser }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[] }) => Promise<any> }) {
+function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, inviteUser }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any> }) {
   const [inviteOpen, setInviteOpen] = useState(false);
   return <div className="space-y-6">
     {inviteOpen && <InviteUserModal roles={overview.roles} onClose={() => setInviteOpen(false)} onInvite={inviteUser} />}

@@ -2453,7 +2453,7 @@ export async function removeSettingsUserRole(userId: string, roleId: string): Pr
   });
 }
 
-export async function inviteSettingsUser(payload: { full_name: string; email: string; role_ids: string[] }): Promise<ApiResponse<any>> {
+export async function inviteSettingsUser(payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/invite`, {
     method: 'POST',
     body: JSON.stringify(payload),

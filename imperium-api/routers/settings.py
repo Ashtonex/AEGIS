@@ -83,6 +83,11 @@ class InviteUserPayload(Payload):
     full_name: str = Field(min_length=1, max_length=255)
     email: EmailStr
     role_ids: list[UUID] = Field(default_factory=list, max_length=8)
+    # When true, skip Supabase's email-based invite entirely and provision
+    # the account with an admin-set password instead - for staff (e.g.
+    # interns) who don't have a real mailbox. The address still has to be
+    # syntactically valid and unique; nothing is ever sent to it.
+    no_real_email: bool = False
 
 
 class GrantClientPortalAccessPayload(Payload):
@@ -553,6 +558,52 @@ async def _create_invited_auth_user(
             detail="Supabase Auth rejected the user provisioning request.",
         )
     user_id = getattr(auth_user, "id", None)
+    if not user_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth did not return a provisioned user id.",
+        )
+    return UUID(str(user_id)), temp_password
+
+
+async def _create_internal_only_auth_user(email: str, full_name: str, org_id: str) -> tuple[UUID, str]:
+    """Provision a Supabase Auth user for an address with no real inbox
+    (e.g. an intern who has no company email) - admin-set password,
+    immediately confirmed, no email ever sent. Same mechanism as
+    _create_invited_auth_user but for plain staff invites rather than
+    managed client/supplier/subcontractor accounts."""
+    temp_password = _generate_temporary_password()
+    payload = {
+        "email": email,
+        "password": temp_password,
+        "email_confirm": True,
+        "user_metadata": {"full_name": full_name, "organization_id": org_id, "account_type": "internal_no_email"},
+        "app_metadata": {"must_change_password": True, "organization_id": org_id, "account_type": "internal_no_email"},
+    }
+    try:
+        response = await asyncio.wait_for(
+            asyncio.to_thread(lambda: supabase_admin.auth.admin.create_user(payload)),
+            timeout=15,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
+    except Exception as exc:
+        logger.error("settings.create_internal_only_user_failed", email=email, error=str(exc))
+        message = str(exc).lower()
+        if "already" in message and ("registered" in message or "exists" in message):
+            raise HTTPException(
+                status_code=409,
+                detail=f"An account with email {email} already exists.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth could not create the provisioned user.",
+        ) from exc
+    auth_user = getattr(response, "user", None)
+    user_id = getattr(auth_user, "id", None) if auth_user else None
     if not user_id:
         raise HTTPException(
             status_code=502,
@@ -1511,7 +1562,12 @@ async def invite_user(
 
     resend_configured = _resend_configured()
     action_link: Optional[str] = None
-    if resend_configured:
+    temp_password: Optional[str] = None
+    if payload.no_real_email:
+        invited_user_id, temp_password = await _create_internal_only_auth_user(
+            str(payload.email), payload.full_name, org_id
+        )
+    elif resend_configured:
         invited_user_id, action_link = await _generate_invite_link(str(payload.email), payload.full_name, org_id)
     else:
         invited_user_id = await _invite_auth_user(db, str(payload.email), payload.full_name, org_id)
@@ -1564,7 +1620,8 @@ async def invite_user(
     # send_email() fails closed and never raises, so this can't affect the
     # response - the invite itself already committed above. If Resend isn't
     # configured, Supabase already sent its own (unbranded) email above and
-    # there's nothing left to send here.
+    # there's nothing left to send here. Skipped entirely for no_real_email -
+    # nothing was ever sent because the address can't receive anything.
     if resend_configured and action_link:
         notified = await _send_branded_invite_email(str(payload.email), payload.full_name, action_link)
         if not notified:
@@ -1574,6 +1631,12 @@ async def invite_user(
                 detail="Resend is configured but the branded invite email failed to send - the invitee has no delivered link.",
             )
 
+    if temp_password:
+        return _response(
+            {"user_id": str(invited_user_id), "email": str(payload.email), "temporary_password": temp_password},
+            f"Account created for {payload.email}. Copy the temporary password now and hand it to them directly - "
+            "it will not be shown again, and they must change it on first login.",
+        )
     return _response(
         {"user_id": str(invited_user_id), "email": str(payload.email)},
         f"Invite sent to {payload.email}. They must set a password before they can sign in.",
