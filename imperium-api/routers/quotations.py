@@ -374,9 +374,14 @@ async def evaluate_quotation_intelligence(
 
     baseline_id = None
     try:
-        baseline_id = await _persist_commercial_baseline(db, user, payload, result)
+        # Only persist a commercial baseline snapshot when this evaluation is
+        # actually tied to a real project - an unlinked call is exploratory
+        # use of the Master Commercial Brain tool (its own pre-filled demo
+        # values, most likely), not a real quotation to keep a record of.
+        if payload.get("project_id"):
+            baseline_id = await _persist_commercial_baseline(db, user, payload, result)
 
-        if result["worthiness_rating"] == "HIGH_RISK_REJECT_OR_REPRICE":
+        if payload.get("project_id") and result["worthiness_rating"] == "HIGH_RISK_REJECT_OR_REPRICE":
             await emit_role_notification(
                 db,
                 org_id=user["org_id"],
@@ -396,8 +401,12 @@ async def evaluate_quotation_intelligence(
     return {
         "success": True,
         "data": jsonable_encoder(result),
-        "message": "Quotation Intelligence evaluation complete.",
-        "meta": {"user_id": user["user_id"], "baseline_id": baseline_id},
+        "message": (
+            "Quotation Intelligence evaluation complete."
+            if payload.get("project_id")
+            else "Quotation Intelligence evaluation complete (preview only - link a project to record this baseline)."
+        ),
+        "meta": {"user_id": user["user_id"], "baseline_id": baseline_id, "persisted": baseline_id is not None},
     }
 
 
@@ -1011,6 +1020,26 @@ async def audit_site_request(
 
     audit_id = None
     investigation_case_id = None
+    if project_id is None:
+        # No linked project - this is exploratory use of the tool (the demo
+        # form's own pre-filled example values, most likely), not a real
+        # site request. Compute and return the result same as always, but
+        # don't write it into the governance/exception log - every prior
+        # click here regardless of real input was permanently recorded,
+        # which is how the "live" CCB exception log on the executive
+        # dashboard ended up full of duplicate placeholder entries.
+        return {
+            "success": True,
+            "data": jsonable_encoder(audit),
+            "message": "Commercial guard audit complete (preview only - link a project to record this in the governance log).",
+            "meta": {
+                "user_id": user["user_id"],
+                "audit_id": None,
+                "investigation_case_id": None,
+                "persistence_failed": False,
+                "persisted": False,
+            },
+        }
     try:
         insert_result = await db.execute(
             text(
@@ -1107,6 +1136,7 @@ async def audit_site_request(
             "audit_id": audit_id,
             "investigation_case_id": investigation_case_id,
             "persistence_failed": persistence_failed,
+            "persisted": not persistence_failed,
         },
     }
 
@@ -1166,7 +1196,18 @@ async def watch_document_revision(
         else "COST_DECREASE" if result["cost_delta"] < 0
         else "NO_CHANGE"
     )
+    watch_project_id = str(payload.get("project_id")) if payload.get("project_id") else None
     change_id = None
+    if watch_project_id is None:
+        # Same reasoning as /guard/audit: no linked project means this is
+        # exploratory use of the demo form, not a real revision review -
+        # don't permanently record it in the change log.
+        return {
+            "success": True,
+            "data": jsonable_encoder(result),
+            "message": "Document revision commercial impact analyzed (preview only - link a project to record this in the change log).",
+            "meta": {"user_id": user["user_id"], "change_id": None, "persistence_failed": False, "persisted": False},
+        }
     try:
         insert_result = await db.execute(
             text(
@@ -1183,7 +1224,7 @@ async def watch_document_revision(
             ),
             {
                 "org_id": user["org_id"],
-                "project_id": str(payload.get("project_id")) if payload.get("project_id") else None,
+                "project_id": watch_project_id,
                 "document_name": doc_name,
                 "revision": rev,
                 "change_type": change_type,
@@ -1225,7 +1266,7 @@ async def watch_document_revision(
             if not persistence_failed
             else "Document revision analyzed, but the change log entry FAILED TO SAVE — this review is not recorded."
         ),
-        "meta": {"user_id": user["user_id"], "change_id": change_id, "persistence_failed": persistence_failed},
+        "meta": {"user_id": user["user_id"], "change_id": change_id, "persistence_failed": persistence_failed, "persisted": not persistence_failed},
     }
 
 
