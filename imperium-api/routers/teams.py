@@ -100,11 +100,11 @@ async def list_team_members(
 
     result = await db.execute(
         text("""
-            SELECT u.id, u.full_name, u.email
+            SELECT u.id, u.full_name, u.email, tm.is_lead
             FROM core.team_members tm
             JOIN core.users u ON u.id = tm.user_id AND u.is_deleted = false
             WHERE tm.team_id = :team_id
-            ORDER BY u.full_name
+            ORDER BY tm.is_lead DESC, u.full_name
         """),
         {"team_id": team_id},
     )
@@ -164,3 +164,38 @@ async def remove_team_member(
     )
     await db.commit()
     return {"success": True, "data": None, "message": "Member removed.", "meta": {}}
+
+
+class TeamLeadPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    is_lead: bool
+
+
+@router.patch("/{team_id}/members/{member_user_id}")
+async def set_team_member_lead(
+    team_id: UUID,
+    member_user_id: UUID,
+    payload: TeamLeadPayload,
+    user: dict = Depends(require_permission("teams.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    team_check = await db.execute(
+        text("SELECT 1 FROM core.teams WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": team_id, "org_id": user["org_id"]},
+    )
+    if not team_check.first():
+        raise HTTPException(status_code=404, detail="Team not found.")
+
+    result = await db.execute(
+        text("""
+            UPDATE core.team_members SET is_lead = :is_lead
+            WHERE team_id = :team_id AND user_id = :user_id
+            RETURNING team_id
+        """),
+        {"is_lead": payload.is_lead, "team_id": team_id, "user_id": member_user_id},
+    )
+    if not result.first():
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Member not found on this team.")
+    await db.commit()
+    return {"success": True, "data": None, "message": "Team lead updated.", "meta": {}}

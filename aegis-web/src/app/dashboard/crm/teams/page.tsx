@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Loader2, Plus, Trash2, Users, X } from "lucide-react";
+import { ArrowLeft, Crown, Loader2, Plus, Trash2, Users, X } from "lucide-react";
 import {
   getTeams,
   createTeam,
@@ -10,6 +10,7 @@ import {
   getTeamMembers,
   addTeamMember,
   removeTeamMember,
+  setTeamMemberLead,
   getAssignableUsers,
 } from "@/lib/api";
 
@@ -24,6 +25,10 @@ interface AssignableUser {
   id: string;
   full_name: string;
   email: string;
+}
+
+interface Member extends AssignableUser {
+  is_lead?: boolean;
 }
 
 function normalizeError(reason: unknown, fallback: string) {
@@ -155,7 +160,7 @@ export default function TeamsPage() {
 }
 
 function TeamMembersModal({ team, allUsers, onClose }: { team: Team; allUsers: AssignableUser[]; onClose: () => void }) {
-  const [members, setMembers] = useState<AssignableUser[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [addUserId, setAddUserId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -207,6 +212,20 @@ function TeamMembersModal({ team, allUsers, onClose }: { team: Team; allUsers: A
     }
   };
 
+  const handleToggleLead = async (member: Member) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await setTeamMemberLead(team.id, member.id, !member.is_lead);
+      if (!res.success) throw new Error("Team lead could not be updated.");
+      await load();
+    } catch (e) {
+      setError(normalizeError(e, "Team lead could not be updated."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div className="w-full max-w-md border border-ink-mid bg-ink" onClick={(e) => e.stopPropagation()}>
@@ -233,13 +252,26 @@ function TeamMembersModal({ team, allUsers, onClose }: { team: Team; allUsers: A
             <ul className="divide-y divide-ink-mid border border-ink-mid">
               {members.map((m) => (
                 <li key={m.id} className="flex items-center justify-between p-2.5">
-                  <div>
-                    <p className="text-sm text-paper">{m.full_name}</p>
-                    <p className="text-[11px] text-slate-light">{m.email}</p>
+                  <div className="flex items-center gap-2">
+                    {m.is_lead && <Crown className="h-3.5 w-3.5 text-signal" aria-label="Team lead" />}
+                    <div>
+                      <p className="text-sm text-paper">{m.full_name}</p>
+                      <p className="text-[11px] text-slate-light">{m.email}</p>
+                    </div>
                   </div>
-                  <button onClick={() => void handleRemove(m.id)} disabled={busy} className="text-slate-light hover:text-red-300 disabled:opacity-40">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => void handleToggleLead(m)}
+                      disabled={busy}
+                      title={m.is_lead ? "Remove as team lead" : "Make team lead"}
+                      className={`text-[10px] uppercase tracking-wider disabled:opacity-40 ${m.is_lead ? "text-signal hover:text-slate-light" : "text-slate-light hover:text-signal"}`}
+                    >
+                      {m.is_lead ? "Lead" : "Make lead"}
+                    </button>
+                    <button onClick={() => void handleRemove(m.id)} disabled={busy} className="text-slate-light hover:text-red-300 disabled:opacity-40">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>

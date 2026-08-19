@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Calendar, CheckCircle2, Circle, Loader2, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Calendar, CheckCircle2, Circle, Layers, Loader2, Plus, Trash2, Users, X } from "lucide-react";
 import {
   getCrmTasks,
   createCrmTask,
   updateCrmTask,
   deleteCrmTask,
   getAssignableUsers,
+  getTeams,
+  assignTaskStack,
 } from "@/lib/api";
 
 interface Task {
@@ -19,6 +21,9 @@ interface Task {
   entity_id: string | null;
   assigned_to_user_id: string | null;
   assigned_to_name: string | null;
+  assigned_to_team_id: string | null;
+  assigned_to_team_name: string | null;
+  source: "manual" | "template";
   due_date: string | null;
   status: "open" | "in_progress" | "done" | "cancelled";
   priority: "low" | "normal" | "high" | "urgent";
@@ -29,6 +34,11 @@ interface AssignableUser {
   id: string;
   full_name: string;
   email: string;
+}
+
+interface Team {
+  id: string;
+  name: string;
 }
 
 const STATUS_OPTIONS: { value: Task["status"]; label: string }[] = [
@@ -50,29 +60,38 @@ function normalizeError(reason: unknown, fallback: string) {
   return message || fallback;
 }
 
+function groupKey(task: Task) {
+  return task.entity_type && task.entity_id ? `${task.entity_type}:${task.entity_id}` : "unlinked";
+}
+
 export default function CrmTasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [stackTeamPick, setStackTeamPick] = useState<Record<string, string>>({});
+  const [assigningStack, setAssigningStack] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [tasksRes, usersRes] = await Promise.all([
+      const [tasksRes, usersRes, teamsRes] = await Promise.all([
         getCrmTasks({
           status: statusFilter !== "all" ? statusFilter : undefined,
           assigned_to_user_id: assigneeFilter !== "all" ? assigneeFilter : undefined,
         }),
         getAssignableUsers(),
+        getTeams(),
       ]);
       if (tasksRes.success && Array.isArray(tasksRes.data)) setTasks(tasksRes.data);
       if (usersRes.success && Array.isArray(usersRes.data)) setUsers(usersRes.data);
+      if (teamsRes.success && Array.isArray(teamsRes.data)) setTeams(teamsRes.data);
     } catch (e) {
       setError(normalizeError(e, "Tasks did not load."));
     } finally {
@@ -81,6 +100,16 @@ export default function CrmTasksPage() {
   }, [statusFilter, assigneeFilter]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const groups = useMemo(() => {
+    const map = new Map<string, Task[]>();
+    for (const task of tasks) {
+      const key = groupKey(task);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(task);
+    }
+    return Array.from(map.entries());
+  }, [tasks]);
 
   const handleToggleDone = async (task: Task) => {
     setBusyId(task.id);
@@ -111,6 +140,35 @@ export default function CrmTasksPage() {
     }
   };
 
+  const handleDistribute = async (task: Task, userId: string) => {
+    setBusyId(task.id);
+    try {
+      const res = await updateCrmTask(task.id, { assigned_to_user_id: userId || null });
+      if (!res.success) throw new Error("Task could not be reassigned.");
+      await load();
+    } catch (e) {
+      setError(normalizeError(e, "Task could not be reassigned."));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleAssignStack = async (key: string, entityType: string, entityId: string) => {
+    const teamId = stackTeamPick[key];
+    if (!teamId) return;
+    setAssigningStack(key);
+    setError(null);
+    try {
+      const res = await assignTaskStack(entityType, entityId, teamId);
+      if (!res.success) throw new Error("Stack could not be assigned to that team.");
+      await load();
+    } catch (e) {
+      setError(normalizeError(e, "Stack could not be assigned to that team."));
+    } finally {
+      setAssigningStack(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-ink p-6 text-paper">
       <div className="mx-auto max-w-4xl space-y-6">
@@ -120,7 +178,7 @@ export default function CrmTasksPage() {
               <ArrowLeft className="h-3.5 w-3.5" /> Back to CRM
             </Link>
             <h1 className="mt-2 font-display text-2xl font-semibold text-paper">Tasks</h1>
-            <p className="mt-1 text-sm text-slate-light">Create and assign tasks to a specific person. They're notified immediately.</p>
+            <p className="mt-1 text-sm text-slate-light">Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people.</p>
           </div>
           <button
             onClick={() => setShowCreate(true)}
@@ -150,48 +208,99 @@ export default function CrmTasksPage() {
         ) : tasks.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-light">No tasks match these filters.</p>
         ) : (
-          <ul className="divide-y divide-ink-mid border border-ink-mid">
-            {tasks.map((task) => (
-              <li key={task.id} className="flex items-start gap-3 p-4">
-                <button
-                  type="button"
-                  disabled={busyId === task.id}
-                  onClick={() => void handleToggleDone(task)}
-                  className="mt-0.5 shrink-0 disabled:opacity-40"
-                >
-                  {task.status === "done" ? (
-                    <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
-                  ) : (
-                    <Circle className="h-4.5 w-4.5 text-slate-light" />
-                  )}
-                </button>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className={`text-sm font-medium ${task.status === "done" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
-                    <span className={`border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${PRIORITY_TONE[task.priority]}`}>{task.priority}</span>
-                    {task.entity_type && (
-                      <span className="border border-ink-mid px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-light">{task.entity_type}</span>
+          <div className="space-y-6">
+            {groups.map(([key, groupTasks]) => {
+              const [entityType, entityId] = key === "unlinked" ? [null, null] : key.split(":");
+              return (
+                <div key={key} className="border border-ink-mid">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <Layers className="h-3.5 w-3.5 text-signal" />
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">
+                        {entityType ? `${entityType} · ${entityId?.slice(0, 8)}` : "General tasks"}
+                      </span>
+                      <span className="text-[11px] text-slate-light">({groupTasks.length})</span>
+                    </div>
+                    {entityType && entityId && (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={stackTeamPick[key] ?? ""}
+                          onChange={(e) => setStackTeamPick((current) => ({ ...current, [key]: e.target.value }))}
+                          className="border border-ink-mid bg-ink px-2 py-1 text-[11px] text-paper"
+                        >
+                          <option value="">-- Assign stack to team --</option>
+                          {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={!stackTeamPick[key] || assigningStack === key}
+                          onClick={() => void handleAssignStack(key, entityType, entityId)}
+                          className="flex items-center gap-1 border border-ink-mid px-2 py-1 text-[11px] text-slate-light hover:text-paper disabled:opacity-40"
+                        >
+                          {assigningStack === key ? <Loader2 className="h-3 w-3 animate-spin" /> : <Users className="h-3 w-3" />} Assign
+                        </button>
+                      </div>
                     )}
                   </div>
-                  {task.description && <p className="mt-1 text-xs text-slate-light">{task.description}</p>}
-                  <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-light">
-                    <span>{task.assigned_to_name ? `Assigned to ${task.assigned_to_name}` : "Unassigned"}</span>
-                    {task.due_date && (
-                      <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {new Date(task.due_date).toLocaleDateString()}</span>
-                    )}
-                  </div>
+                  <ul className="divide-y divide-ink-mid">
+                    {groupTasks.map((task) => (
+                      <li key={task.id} className="flex items-start gap-3 p-4">
+                        <button
+                          type="button"
+                          disabled={busyId === task.id}
+                          onClick={() => void handleToggleDone(task)}
+                          className="mt-0.5 shrink-0 disabled:opacity-40"
+                        >
+                          {task.status === "done" ? (
+                            <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
+                          ) : (
+                            <Circle className="h-4.5 w-4.5 text-slate-light" />
+                          )}
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className={`text-sm font-medium ${task.status === "done" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
+                            <span className={`border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${PRIORITY_TONE[task.priority]}`}>{task.priority}</span>
+                            {task.source === "template" && (
+                              <span className="border border-signal/30 bg-signal/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-signal">Auto</span>
+                            )}
+                          </div>
+                          {task.description && <p className="mt-1 text-xs text-slate-light">{task.description}</p>}
+                          <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-slate-light">
+                            {task.due_date && (
+                              <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {new Date(task.due_date).toLocaleDateString()}</span>
+                            )}
+                          </div>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            {task.assigned_to_team_name && !task.assigned_to_user_id && (
+                              <span className="text-[11px] text-slate-light">Team: <span className="text-paper">{task.assigned_to_team_name}</span> ·</span>
+                            )}
+                            <select
+                              value={task.assigned_to_user_id ?? ""}
+                              onChange={(e) => void handleDistribute(task, e.target.value)}
+                              disabled={busyId === task.id}
+                              className="border border-ink-mid bg-ink-light px-2 py-1 text-[11px] text-paper disabled:opacity-40"
+                            >
+                              <option value="">{task.assigned_to_team_name ? "-- Distribute to a person --" : "-- Unassigned --"}</option>
+                              {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busyId === task.id}
+                          onClick={() => void handleDelete(task)}
+                          className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300 disabled:opacity-40"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <button
-                  type="button"
-                  disabled={busyId === task.id}
-                  onClick={() => void handleDelete(task)}
-                  className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300 disabled:opacity-40"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
+              );
+            })}
+          </div>
         )}
       </div>
 

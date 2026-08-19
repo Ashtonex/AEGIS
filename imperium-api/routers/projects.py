@@ -15,6 +15,7 @@ from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
+from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
 
@@ -207,6 +208,9 @@ async def create_project(
             )
         ).first()
         await db.commit()
+        await generate_task_stack(
+            db, org_id=user["org_id"], entity_type="project", entity_id=row.id, created_by=user["user_id"],
+        )
         return _result({"id": str(row.id)}, "Project created.")
     except Exception as exc:
         await db.rollback()

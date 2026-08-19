@@ -1499,6 +1499,40 @@ export async function deleteCrmTask(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${id}`, { method: 'DELETE', allowFallback: false });
 }
 
+/** Assigns every open task linked to one entity to a team in one call. */
+export async function assignTaskStack(entityType: string, entityId: string, assignedToTeamId: string): Promise<ApiResponse<{ task_count: number }>> {
+  return fetchApi<ApiResponse<{ task_count: number }>>('/api/v1/crm-tasks/assign-stack', {
+    method: 'POST',
+    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, assigned_to_team_id: assignedToTeamId }),
+    allowFallback: false,
+  });
+}
+
+export async function getTaskTemplates(entityType?: string): Promise<ApiResponse<any[]>> {
+  const qs = entityType ? `?entity_type=${encodeURIComponent(entityType)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-tasks/templates${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createTaskTemplate(payload: { entity_type: string; title: string; description?: string; sort_order?: number }): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/crm-tasks/templates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteTaskTemplate(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/templates/${id}`, { method: 'DELETE', allowFallback: false });
+}
+
+export async function setTeamMemberLead(teamId: string, userId: string, isLead: boolean): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/teams/${teamId}/members/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_lead: isLead }),
+    allowFallback: false,
+  });
+}
+
 export interface SystemNotification {
   id: string;
   title: string;

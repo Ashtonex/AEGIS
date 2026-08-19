@@ -23,6 +23,7 @@ from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
 )
 from app.shared.sql import update_tenant_row_sql
+from app.shared.task_stacks import generate_task_stack
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 router = APIRouter()
@@ -1484,6 +1485,7 @@ async def create_opportunity(
                 "user_id": user_id,
             },
         )
+        new_opportunity_id = result.scalar()
         await db.commit()
     except (DataError, IntegrityError) as exc:
         await db.rollback()
@@ -1492,9 +1494,13 @@ async def create_opportunity(
             detail="Opportunity payload violates CRM database constraints.",
         ) from exc
 
+    await generate_task_stack(
+        db, org_id=org_id, entity_type="opportunity", entity_id=new_opportunity_id, created_by=user_id,
+    )
+
     return {
         "success": True,
-        "data": {"id": str(result.scalar())},
+        "data": {"id": str(new_opportunity_id)},
         "message": "Opportunity created successfully.",
         "meta": {},
     }
@@ -2235,6 +2241,7 @@ async def create_tender(
                 "org_id": org_id,
             },
         )
+        new_tender_id = result.scalar()
         await db.commit()
     except (DataError, IntegrityError) as exc:
         await db.rollback()
@@ -2243,9 +2250,13 @@ async def create_tender(
             detail="Tender payload violates CRM database constraints.",
         ) from exc
 
+    await generate_task_stack(
+        db, org_id=org_id, entity_type="tender", entity_id=new_tender_id, created_by=user.get("sub"),
+    )
+
     return {
         "success": True,
-        "data": {"id": str(result.scalar())},
+        "data": {"id": str(new_tender_id)},
         "message": "Tender created successfully.",
         "meta": {},
     }
