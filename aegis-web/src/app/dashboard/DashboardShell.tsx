@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
-import { getMyProfile, updateMyProfile } from "@/lib/api";
+import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
 import { matchesRole } from "@/lib/rbacMatch";
 import {
@@ -35,6 +35,12 @@ type ModuleNavItem = {
   // it into a full allow-list and enumerate every other role that currently
   // relies on the open-by-default behavior.
   restrictedRoles?: string[];
+  // Permission key that also grants visibility, on top of allowedRoles -
+  // backfilled from PAGE_ACCESS in imperium-api/routers/settings.py so a
+  // brand-new self-service role (with no allowedRoles entry at all) still
+  // gets this item once granted the matching permission. Undefined items
+  // keep today's role-only gating unchanged.
+  requiredPermission?: string;
 };
 
 type ModuleGroup = {
@@ -48,6 +54,8 @@ type ModuleGroup = {
   allowedRoles?: string[];
   // See ModuleNavItem.restrictedRoles.
   restrictedRoles?: string[];
+  // See ModuleNavItem.requiredPermission.
+  requiredPermission?: string;
 };
 
 // Plain case-insensitive membership check for restrictedRoles. Deliberately
@@ -67,7 +75,8 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: LayoutDashboard,
     allowedRoles: ["Executive (Admin)"],
     restrictedRoles: ["CRM Associate"],
-    subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard }],
+    requiredPermission: "executive.view_dashboard",
+    subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard, requiredPermission: "executive.view_dashboard" }],
   },
   {
     name: "Messages",
@@ -87,24 +96,29 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "CRM",
     href: "/dashboard/crm",
     icon: Briefcase,
+    // No group-level requiredPermission - unlike the single-page groups
+    // below, CRM's subItems are gated individually (a self-service role
+    // granted only crm_leads.read should still see Leads even without
+    // crm.view_opportunities), matching how restrictedRoles already works
+    // per-subitem here rather than on the group as a whole.
     subItems: [
-      { name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, restrictedRoles: ["CRM Associate"] },
-      { name: "Leads", href: "/dashboard/crm/leads", icon: Target },
-      { name: "Opportunities", href: "/dashboard/crm/opportunities", icon: Briefcase },
+      { name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, restrictedRoles: ["CRM Associate"], requiredPermission: "crm.view_opportunities" },
+      { name: "Leads", href: "/dashboard/crm/leads", icon: Target, requiredPermission: "crm_leads.read" },
+      { name: "Opportunities", href: "/dashboard/crm/opportunities", icon: Briefcase, requiredPermission: "crm.view_opportunities" },
       { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2 },
-      { name: "Organizations", href: "/dashboard/crm/organizations", icon: Handshake, restrictedRoles: ["CRM Associate"] },
-      { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, restrictedRoles: ["CRM Associate"] },
+      { name: "Organizations", href: "/dashboard/crm/organizations", icon: Handshake, restrictedRoles: ["CRM Associate"], requiredPermission: "crm_organizations.read" },
+      { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, restrictedRoles: ["CRM Associate"], requiredPermission: "crm_contacts.read" },
       { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat, restrictedRoles: ["CRM Associate"] },
-      { name: "Activities", href: "/dashboard/crm/activities", icon: MapPin, restrictedRoles: ["CRM Associate"] },
-      { name: "Documents", href: "/dashboard/crm/documents", icon: BookOpen, restrictedRoles: ["CRM Associate"] },
-      { name: "Sales Inbox", href: "/dashboard/crm/inbox", icon: Inbox, restrictedRoles: ["CRM Associate"] },
-      { name: "Automations", href: "/dashboard/crm/automations", icon: Zap, restrictedRoles: ["CRM Associate"] },
+      { name: "Activities", href: "/dashboard/crm/activities", icon: MapPin, restrictedRoles: ["CRM Associate"], requiredPermission: "crm_activities.read" },
+      { name: "Documents", href: "/dashboard/crm/documents", icon: BookOpen, restrictedRoles: ["CRM Associate"], requiredPermission: "documents.read" },
+      { name: "Sales Inbox", href: "/dashboard/crm/inbox", icon: Inbox, restrictedRoles: ["CRM Associate"], requiredPermission: "crm_communications.read" },
+      { name: "Automations", href: "/dashboard/crm/automations", icon: Zap, restrictedRoles: ["CRM Associate"], requiredPermission: "crm_automations.read" },
       { name: "Marketing", href: "/dashboard/crm/marketing", icon: Megaphone, restrictedRoles: ["CRM Associate"] },
-      { name: "Campaigns", href: "/dashboard/crm/campaigns", icon: TrendingUp, restrictedRoles: ["CRM Associate"] },
+      { name: "Campaigns", href: "/dashboard/crm/campaigns", icon: TrendingUp, restrictedRoles: ["CRM Associate"], requiredPermission: "crm.marketing.read" },
       { name: "Segments", href: "/dashboard/crm/segments", icon: PieChart, restrictedRoles: ["CRM Associate"] },
       { name: "Templates", href: "/dashboard/crm/templates", icon: FileText, restrictedRoles: ["CRM Associate"] },
-      { name: "Import & Export", href: "/dashboard/crm/import", icon: Upload, restrictedRoles: ["CRM Associate"] },
-      { name: "Support", href: "/dashboard/crm/support", icon: LifeBuoy, restrictedRoles: ["CRM Associate"] },
+      { name: "Import & Export", href: "/dashboard/crm/import", icon: Upload, restrictedRoles: ["CRM Associate"], requiredPermission: "crm.import" },
+      { name: "Support", href: "/dashboard/crm/support", icon: LifeBuoy, restrictedRoles: ["CRM Associate"], requiredPermission: "crm.support.read" },
       { name: "Tickets", href: "/dashboard/crm/tickets", icon: Ticket, restrictedRoles: ["CRM Associate"] },
       {
         name: "Reports",
@@ -112,6 +126,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
         icon: BarChart,
         allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer"],
         restrictedRoles: ["CRM Associate"],
+        requiredPermission: "crm.reports.read",
       },
       { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck },
       { name: "Teams", href: "/dashboard/crm/teams", icon: Users },
@@ -137,6 +152,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: HardHat,
     allowedRoles: ["Executive (Admin)", "Project Manager"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "projects.read",
     subItems: [
       { name: "Projects Command", href: "/dashboard/projects", icon: LayoutDashboard },
       { name: "Overview", href: "/dashboard/projects/overview", icon: LayoutDashboard },
@@ -151,6 +167,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: Activity,
     allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Storekeeper"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "site_operations.read",
     subItems: [{ name: "Daily Reports", href: "/dashboard/site-operations", icon: Activity }],
   },
   {
@@ -159,6 +176,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: Users,
     allowedRoles: ["Executive (Admin)", "HR Manager", "Project Manager"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "workforce.read",
     subItems: [{ name: "Overview", href: "/dashboard/workforce", icon: Users }],
   },
   {
@@ -167,6 +185,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: Truck,
     allowedRoles: ["Executive (Admin)", "Fleet Supervisor"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "fleet.read",
     subItems: [{ name: "Overview", href: "/dashboard/fleet", icon: Truck }],
   },
   {
@@ -175,6 +194,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: Wrench,
     allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "equipment_assets.read",
     subItems: [{ name: "Overview", href: "/dashboard/equipment", icon: Wrench }],
   },
   {
@@ -183,6 +203,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: ShoppingCart,
     allowedRoles: ["Executive (Admin)", "Procurement Manager", "Project Manager", "Finance Manager", "Site Agent"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "procurement.requisition.read",
     subItems: [
       { name: "Procurement Pipeline", href: "/dashboard/procurement", icon: LayoutDashboard },
       { name: "Requisitions", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
@@ -212,6 +233,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: DollarSign,
     allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Payroll Administrator", "Accounts Payable / Cash Officer", "Budget & Reporting Analyst"],
     restrictedRoles: ["CRM Associate"],
+    requiredPermission: "finance.cost.read",
     subItems: [
       { name: "Finance & Cost Control", href: "/dashboard/finance", icon: LayoutDashboard },
       { name: "Project Financials", href: "/dashboard/finance/project-financials", icon: DollarSign },
@@ -307,7 +329,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     icon: Settings,
     restrictedRoles: ["CRM Associate"],
     subItems: [
-      { name: "Settings Overview", href: "/dashboard/settings", icon: LayoutDashboard },
+      { name: "Settings Overview", href: "/dashboard/settings", icon: LayoutDashboard, requiredPermission: "settings.read" },
       // Configuration/Access Control/Account Setup/Website Content/Audit Log
       // previously had no role restriction at all - every logged-in employee
       // could open them (the underlying endpoints still enforced their own
@@ -393,6 +415,33 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const displayName = userEmail.split('@')[0].charAt(0).toUpperCase() + userEmail.split('@')[0].slice(1);
   const userRole = role || "EMPLOYEE";
 
+  // Resolved permission keys for the signed-in user, used to layer
+  // requiredPermission checks on top of the existing role-based nav gates.
+  // null = not loaded yet - treated as "no additional restriction" so
+  // existing role-gated items don't flash hidden while this is in flight;
+  // once loaded, items with a requiredPermission are gated strictly.
+  const [permissions, setPermissions] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    if (!session?.access_token) {
+      setPermissions(null);
+      return;
+    }
+    let cancelled = false;
+    getMyPermissions()
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.data)) setPermissions(new Set(res.data));
+      })
+      .catch(() => {
+        // Leave permissions null on failure - falls back to role-only gating.
+      });
+    return () => { cancelled = true; };
+  }, [session?.access_token]);
+
+  const hasPermission = useCallback(
+    (requiredPermission?: string) => !requiredPermission || !permissions || permissions.has(requiredPermission),
+    [permissions]
+  );
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
@@ -418,18 +467,20 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       MODULE_GROUPS.filter(
         (group) =>
           (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
-          !isRoleRestricted(userRole, group.restrictedRoles)
+          !isRoleRestricted(userRole, group.restrictedRoles) &&
+          hasPermission(group.requiredPermission)
       )
         .map((group) => ({
           ...group,
           subItems: group.subItems.filter(
             (sub) =>
               (!sub.allowedRoles || matchesRole(userRole, sub.allowedRoles)) &&
-              !isRoleRestricted(userRole, sub.restrictedRoles)
+              !isRoleRestricted(userRole, sub.restrictedRoles) &&
+              hasPermission(sub.requiredPermission)
           ),
         }))
         .filter((group) => group.subItems.length > 0),
-    [userRole]
+    [userRole, hasPermission]
   );
 
   const activeGroup = useMemo(

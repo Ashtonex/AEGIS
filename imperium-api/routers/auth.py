@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 from schemas.auth import UserRegister, UserLogin, TokenRefresh
-from core.database import supabase
-from core.security import get_current_user
+from core.database import supabase, get_db
+from core.security import get_current_user, get_user_permission_keys
 from core.rate_limit import limiter
 
 router = APIRouter()
@@ -73,6 +74,20 @@ async def get_me(user: dict = Depends(get_current_user)):
         "success": True,
         "data": user,
         "message": "Current user retrieved.",
+        "meta": {},
+    }
+
+
+@router.get("/permissions")
+async def get_permissions(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    keys = await get_user_permission_keys(db, user)
+    return {
+        "success": True,
+        "data": sorted(keys),
+        "message": "Permissions retrieved.",
         "meta": {},
     }
 

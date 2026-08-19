@@ -103,6 +103,11 @@ class RolePermissionPayload(Payload):
     enabled: bool
 
 
+class RoleCreatePayload(Payload):
+    name: str = Field(min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=255)
+
+
 class WebsiteContentPayload(Payload):
     page_key: str = Field(min_length=1, max_length=120)
     section_key: str = Field(min_length=1, max_length=120)
@@ -1858,6 +1863,34 @@ async def delete_user(
     )
     await db.commit()
     return _response(None, "User removed.")
+
+
+@router.post("/roles")
+async def create_role(
+    payload: RoleCreatePayload,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    name = payload.name.strip()
+    existing_id = await _role_id_by_name(db, org_id, name)
+    if existing_id:
+        raise HTTPException(status_code=409, detail=f'A role named "{name}" already exists.')
+    role_id = (
+        await db.execute(
+            text("""
+        INSERT INTO core.roles (organization_id, name, description)
+        VALUES (:org_id, :name, :description)
+        RETURNING id
+    """),
+            {"org_id": org_id, "name": name, "description": payload.description},
+        )
+    ).scalar()
+    await _write_audit(
+        db, user, "settings.access.role_created", "role", role_id, {"name": name}
+    )
+    await db.commit()
+    return _response({"id": str(role_id), "name": name, "description": payload.description, "permissions": []}, "Role created.")
 
 
 @router.patch("/roles/{role_id}/permissions")

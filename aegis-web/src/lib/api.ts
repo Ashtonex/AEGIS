@@ -2518,6 +2518,18 @@ export async function setSettingsRolePermission(roleId: string, permissionKey: s
   });
 }
 
+export async function createSettingsRole(name: string, description?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/settings/roles`, {
+    method: 'POST',
+    body: JSON.stringify({ name, description: description || null }),
+    allowFallback: false,
+  });
+}
+
+export async function getMyPermissions(): Promise<ApiResponse<string[]>> {
+  return fetchApi<ApiResponse<string[]>>(`/api/v1/auth/permissions`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function createSettingsManagedAccount(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/managed-accounts`, {
     method: 'POST',

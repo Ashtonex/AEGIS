@@ -9,6 +9,7 @@ import {
   ApiError,
   assignSettingsUserRole,
   createSettingsManagedAccount,
+  createSettingsRole,
   deleteSettingsUser,
   getSettingsAuditEvents,
   getSettingsOverview,
@@ -412,6 +413,20 @@ export default function SettingsPage() {
     }
   };
   const togglePermission = async (roleId: string, permission: string, enabled: boolean) => { setSaving(`${roleId}-${permission}`); try { await setSettingsRolePermission(roleId, permission, enabled); setNotice("Page access updated."); await load(true); } catch { setNotice("Unable to update page access."); } finally { setSaving(null); } };
+  const createRole = async (name: string, description?: string) => {
+    setSaving("create-role");
+    setNotice(null);
+    try {
+      const response = await createSettingsRole(name, description);
+      setNotice(response.message ?? `Role "${name}" created.`);
+      await load(true);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to create the role."));
+      throw err;
+    } finally {
+      setSaving(null);
+    }
+  };
   const createManagedAccount = async (payload: Record<string, unknown>) => {
     setSaving("managed-account");
     setNotice(null);
@@ -463,7 +478,7 @@ export default function SettingsPage() {
     <nav className="flex overflow-x-auto border-b border-ink-mid font-mono text-xs">{([ ["configuration", Database, "Configuration"], ["access", Users, "Access control"], ["accounts", Building2, "Account setup"], ["website", Globe2, "Website content"], ["audit", History, "Audit log"] ] as const).map(([value, Icon, label]) => <Link key={value} href={TAB_ROUTES[value]} className={`flex shrink-0 items-center gap-2 border-b-2 px-5 py-3 font-bold uppercase tracking-wider ${tab === value ? "border-signal bg-signal/5 text-signal" : "border-transparent text-slate hover:text-paper"}`}><Icon className="h-4 w-4" /> {label}</Link>)}</nav>
 
     {tab === "configuration" && <ConfigurationTab overview={overview} saving={saving} saveSetting={saveSetting} />}
-    {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} inviteUser={inviteUser} />}
+    {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} inviteUser={inviteUser} createRole={createRole} />}
     {tab === "accounts" && <ManagedAccountsTab overview={overview} saving={saving === "managed-account"} createManagedAccount={createManagedAccount} />}
     {tab === "website" && <WebsiteTab items={overview.website_content} saving={saving} saveContent={saveContent} />}
     {tab === "audit" && <AuditTab events={filteredEvents} loading={auditLoading} error={auditError} auditSearch={auditSearch} setAuditSearch={setAuditSearch} auditStatus={auditStatus} setAuditStatus={setAuditStatus} onRefresh={() => void loadAudit(true)} />}
@@ -579,7 +594,43 @@ function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose:
   </div>;
 }
 
-function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, inviteUser }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any> }) {
+function NewRoleForm({ saving, createRole }: { saving: string | null; createRole: (name: string, description?: string) => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const busy = saving === "create-role";
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim() || busy) return;
+    try {
+      await createRole(name.trim(), description.trim() || undefined);
+      setName("");
+      setDescription("");
+      setOpen(false);
+    } catch {
+      // notice already surfaced by parent
+    }
+  };
+
+  if (!open) {
+    return <button onClick={() => setOpen(true)} className="inline-flex items-center gap-2 border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-signal hover:bg-signal/10"><Plus className="h-3.5 w-3.5" /> New role</button>;
+  }
+  return <form onSubmit={submit} className="flex flex-wrap items-end gap-2 border border-ink-mid/70 bg-ink p-3">
+    <div>
+      <label className="block font-mono text-[10px] uppercase tracking-wider text-slate-light">Role name</label>
+      <input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Site Material Clerk" className="mt-1 border border-ink-mid bg-ink-light px-2 py-2 text-xs text-paper" autoFocus />
+    </div>
+    <div>
+      <label className="block font-mono text-[10px] uppercase tracking-wider text-slate-light">Description (optional)</label>
+      <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this role is for" className="mt-1 border border-ink-mid bg-ink-light px-2 py-2 text-xs text-paper" />
+    </div>
+    <button type="submit" disabled={!name.trim() || busy} className="inline-flex items-center gap-2 border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-signal disabled:opacity-50">{busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Create"}</button>
+    <button type="button" onClick={() => setOpen(false)} className="border border-ink-mid px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:text-paper">Cancel</button>
+  </form>;
+}
+
+function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, inviteUser, createRole }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any>; createRole: (name: string, description?: string) => Promise<void> }) {
   const [inviteOpen, setInviteOpen] = useState(false);
   return <div className="space-y-6">
     {inviteOpen && <InviteUserModal roles={overview.roles} onClose={() => setInviteOpen(false)} onInvite={inviteUser} />}
@@ -596,7 +647,11 @@ function AccessTab({ overview, saving, assignRole, removeRole, togglePermission,
       </div>
     </section>
     <section className="border border-ink-mid bg-ink p-5">
-      <h2 className="mb-4 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><LockKeyhole className="h-4 w-4 text-signal" /> Page access by role</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-widest text-paper"><LockKeyhole className="h-4 w-4 text-signal" /> Page access by role</h2>
+        <NewRoleForm saving={saving} createRole={createRole} />
+      </div>
+      <p className="mb-4 text-[11px] text-slate-light">A new role starts with no page access. Tick the pages it should see below, then assign it to a user above — the sidebar shows only what a role is granted.</p>
       <div className="hidden overflow-x-auto xl:block">
         <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">ERP page</th><th className="p-3">Permission</th>{overview.roles.map((role) => <th key={role.id} className="p-3 text-center">{role.name}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.page_access.map((page) => <tr key={`${page.route}|${page.permission}`}><td className="p-3"><p className="font-semibold text-paper">{page.page}</p><p className="text-[11px] text-slate-light">{page.module} · {page.route}</p></td><td className="p-3 font-mono text-[11px] text-slate-light">{page.permission}</td>{overview.roles.map((role) => { const enabled = role.permissions.includes(page.permission); return <td key={role.id} className="p-3 text-center"><input type="checkbox" checked={enabled} disabled={saving === `${role.id}-${page.permission}`} onChange={(event) => void togglePermission(role.id, page.permission, event.target.checked)} /></td>; })}</tr>)}</tbody></table>
       </div>
