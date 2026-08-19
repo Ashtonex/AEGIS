@@ -113,6 +113,8 @@ const MODULE_GROUPS: ModuleGroup[] = [
         allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer"],
         restrictedRoles: ["CRM Associate"],
       },
+      { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck },
+      { name: "Teams", href: "/dashboard/crm/teams", icon: Users },
     ],
   },
   {
@@ -589,7 +591,16 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
         onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}
         className={`fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-50 shrink-0 transition-transform duration-300 ease-out ${
-          topBarVisible ? "translate-y-0" : "-translate-y-full"
+          // Mobile has no persistent sidebar - this bar (and the hamburger
+          // inside it) is the only way to reach navigation there, so it must
+          // never actually hide on mobile regardless of the desktop-only
+          // auto-hide timer's state. scheduleTopBarHide() already skips
+          // scheduling a hide on mobile, but that alone doesn't cover the
+          // case where the bar was auto-hidden at desktop width and the
+          // viewport is then narrowed below the breakpoint - this render-time
+          // guard is the single source of truth so there's no state-timing
+          // window where mobile navigation is unreachable.
+          (topBarVisible || !isDesktop) ? "translate-y-0" : "-translate-y-full"
         }`}
       >
         <div className="flex items-center space-x-4 md:space-x-8">
