@@ -91,7 +91,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, restrictedRoles: ["CRM Associate"] },
       { name: "Leads", href: "/dashboard/crm/leads", icon: Target },
       { name: "Opportunities", href: "/dashboard/crm/opportunities", icon: Briefcase },
-      { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2, restrictedRoles: ["CRM Associate"] },
+      { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2 },
       { name: "Organizations", href: "/dashboard/crm/organizations", icon: Handshake, restrictedRoles: ["CRM Associate"] },
       { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, restrictedRoles: ["CRM Associate"] },
       { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat, restrictedRoles: ["CRM Associate"] },
