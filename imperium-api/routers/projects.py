@@ -63,6 +63,11 @@ class ProjectRegistrationSubmit(BaseModel):
     contract_value: Optional[Decimal] = None
     start_date: Optional[date] = None
     project_code: Optional[str] = Field(default=None, max_length=80)
+    # For a project that was already underway before entering AEGIS - so its
+    # progress and remaining budget reflect reality from day one instead of
+    # starting artificially at 0%/fully-funded.
+    initial_percent_complete: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    initial_costs_incurred: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class ProjectRegistrationDecision(BaseModel):
@@ -478,6 +483,43 @@ async def decide_project_registration(
                 "project_code": metadata.get("project_code"),
             },
         )
+        initial_percent_complete = metadata.get("initial_percent_complete")
+        initial_costs_incurred = metadata.get("initial_costs_incurred")
+        if initial_percent_complete is not None or initial_costs_incurred is not None:
+            await db.execute(
+                text("""
+                INSERT INTO projects.project_profiles (project_id, organization_id, initial_percent_complete, initial_costs_incurred)
+                VALUES (:project_id, :org_id, :initial_percent_complete, :initial_costs_incurred)
+                ON CONFLICT (project_id) DO UPDATE SET
+                    initial_percent_complete = COALESCE(EXCLUDED.initial_percent_complete, projects.project_profiles.initial_percent_complete),
+                    initial_costs_incurred = COALESCE(EXCLUDED.initial_costs_incurred, projects.project_profiles.initial_costs_incurred),
+                    updated_at = NOW()
+            """),
+                {
+                    "project_id": project_id,
+                    "org_id": user["org_id"],
+                    "initial_percent_complete": initial_percent_complete,
+                    "initial_costs_incurred": initial_costs_incurred,
+                },
+            )
+        if initial_costs_incurred:
+            await db.execute(
+                text("""
+                INSERT INTO finance.cost_transactions (
+                    organization_id, project_id, source_type, source_id, cost_category,
+                    description, quantity, unit_cost, amount, transaction_date, posted_by
+                ) VALUES (
+                    :org_id, :project_id, 'project_opening_balance', :project_id, 'other',
+                    'Opening balance - costs incurred prior to AEGIS registration', 1, :amount, :amount, CURRENT_DATE, :posted_by
+                ) ON CONFLICT (organization_id, source_type, source_id, cost_category) DO NOTHING
+            """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": project_id,
+                    "amount": initial_costs_incurred,
+                    "posted_by": user["user_id"],
+                },
+            )
         event_type = "project.field_intake_registration.approved.v1"
         notif_title = "Project Registration Approved"
         notif_message = f"{project.get('name')} has been registered as a formal AEGIS project."

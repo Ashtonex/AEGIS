@@ -415,7 +415,7 @@ function Info({ label, value }: { label: string; value: string }) {
 
 function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<string, unknown>; isFinance: boolean; onRefresh: () => void }) {
   const isFieldIntake = project.status === "field_intake";
-  const [form, setForm] = useState({ client_name: "", contract_value: "", start_date: "", project_code: "" });
+  const [form, setForm] = useState({ client_name: "", contract_value: "", start_date: "", project_code: "", initial_percent_complete: "", initial_costs_incurred: "" });
   const [budgetAmount, setBudgetAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -432,6 +432,8 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
         contract_value: form.contract_value ? Number(form.contract_value) : undefined,
         start_date: form.start_date || undefined,
         project_code: form.project_code || undefined,
+        initial_percent_complete: form.initial_percent_complete ? Number(form.initial_percent_complete) : undefined,
+        initial_costs_incurred: form.initial_costs_incurred ? Number(form.initial_costs_incurred) : undefined,
       });
       setSubmitted(true);
       setMsg("Submitted for Finance sign-off.");
@@ -480,6 +482,13 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
           <input value={form.contract_value} onChange={(e) => set("contract_value", e.target.value)} type="number" placeholder="Contract value ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           <input value={form.start_date} onChange={(e) => set("start_date", e.target.value)} type="date" placeholder="Real start date" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           <input value={form.project_code} onChange={(e) => set("project_code", e.target.value)} placeholder="Project code (optional)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <div className="sm:col-span-2 border-t border-ink-mid/50 pt-3">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate">Already underway? Capture where it stands (optional)</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <input value={form.initial_percent_complete} onChange={(e) => set("initial_percent_complete", e.target.value)} type="number" min="0" max="100" placeholder="Percent complete so far (%)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              <input value={form.initial_costs_incurred} onChange={(e) => set("initial_costs_incurred", e.target.value)} type="number" min="0" placeholder="Costs already incurred ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+          </div>
           <button onClick={submit} disabled={busy} className="sm:col-span-2 h-10 bg-signal font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
             Submit for Finance Sign-off
           </button>
