@@ -147,6 +147,7 @@ class OpportunityCreate(CrmPayload):
     )
     risk_level: Optional[str] = Field(default=None, max_length=50)
     originating_department_id: Optional[UUID] = None
+    region: Optional[str] = Field(default=None, max_length=120)
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -186,6 +187,7 @@ class OpportunityUpdate(CrmPayload):
     next_activity_due_at: Optional[str] = None
     competitor: Optional[str] = Field(default=None, max_length=255)
     originating_department_id: Optional[UUID] = None
+    region: Optional[str] = Field(default=None, max_length=120)
     margin_approval_required: Optional[bool] = None
     risk_approval_required: Optional[bool] = None
     approval_status: Optional[str] = Field(default=None, max_length=40)
@@ -216,6 +218,7 @@ OPPORTUNITY_UPDATE_COLUMNS = (
     "risk_approval_required",
     "approval_status",
     "originating_department_id",
+    "region",
 )
 
 
@@ -314,6 +317,7 @@ class TenderCreate(CrmPayload):
         max_digits=15,
         decimal_places=2,
     )
+    region: Optional[str] = Field(default=None, max_length=120)
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -1449,12 +1453,12 @@ async def create_opportunity(
         INSERT INTO crm.opportunities (
             name, stage, budget, probability, client_id, contact_id, client_org_id,
             sales_owner_id, owner_user_id, expected_close_date, deal_value, weighted_value,
-            expected_margin, risk_level, originating_department_id, organization_id, created_by
+            expected_margin, risk_level, originating_department_id, region, organization_id, created_by
         )
         VALUES (
             :name, :stage, :budget, :probability, :client_id, :client_id, :client_org_id,
             :sales_owner_id, :sales_owner_id, :expected_close_date, :deal_value, :weighted_value,
-            :expected_margin, :risk_level, :originating_department_id, :org_id, :user_id
+            :expected_margin, :risk_level, :originating_department_id, :region, :org_id, :user_id
         )
         RETURNING id
     """)
@@ -1475,6 +1479,7 @@ async def create_opportunity(
                 "expected_margin": payload.expected_margin,
                 "risk_level": payload.risk_level,
                 "originating_department_id": payload.originating_department_id,
+                "region": payload.region,
                 "org_id": org_id,
                 "user_id": user_id,
             },
@@ -2198,8 +2203,8 @@ async def create_tender(
 ):
     org_id = _require_org_id(user)
     query = text("""
-        INSERT INTO crm.tenders (tender_name, stage, bid_amount, organization_id)
-        VALUES (:name, :stage, :amount, :org_id)
+        INSERT INTO crm.tenders (tender_name, stage, bid_amount, region, organization_id)
+        VALUES (:name, :stage, :amount, :region, :org_id)
         RETURNING id
     """)
     try:
@@ -2209,6 +2214,7 @@ async def create_tender(
                 "name": payload.tender_name,
                 "stage": payload.stage.value,
                 "amount": payload.bid_amount,
+                "region": payload.region,
                 "org_id": org_id,
             },
         )

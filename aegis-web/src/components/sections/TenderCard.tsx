@@ -18,12 +18,11 @@ interface TenderCardProps {
 export function TenderCard({ tender, variant = "row", className, onRegisterInterest }: TenderCardProps) {
   const isRow = variant === "row";
   
-  // A tender is "new" if issued within 7 days of current mock time (July 13, 2026)
+  // A tender is "new" if issued within 7 days of now.
   const isNew = (() => {
     if (!tender.issueDate) return false;
     const issueTime = new Date(tender.issueDate).getTime();
-    const currentTime = new Date("2026-07-13T09:44:09+02:00").getTime();
-    const diffDays = (currentTime - issueTime) / (1000 * 60 * 60 * 24);
+    const diffDays = (Date.now() - issueTime) / (1000 * 60 * 60 * 24);
     return diffDays >= 0 && diffDays <= 7;
   })();
 

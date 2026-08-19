@@ -6,7 +6,8 @@ import {
   FileText, Plus, X, ChevronLeft, ChevronRight,
   DollarSign, Clock, ShieldCheck, CheckSquare,
   Briefcase, UserCheck, AlertTriangle, Loader2, Save,
-  Calendar, Users, Info, ToggleLeft, ToggleRight, Search, Landmark, ShieldAlert, Trash2
+  Calendar, Users, Info, ToggleLeft, ToggleRight, Search, Landmark, ShieldAlert, Trash2,
+  Eye, Download
 } from 'lucide-react';
 import {
   getCrmTenders,
@@ -23,6 +24,7 @@ import {
   describeActionError
 } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
+import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 
 // Stages definition
 const STAGES = [
@@ -67,6 +69,7 @@ interface TenderRequirement {
   label: string;
   is_satisfied: boolean;
   sort_order: number;
+  satisfied_document_id?: string | null;
 }
 
 export default function TendersCommand() {
@@ -87,6 +90,7 @@ export default function TendersCommand() {
   // Tender documents state
   const [tenderDocuments, setTenderDocuments] = useState<any[]>([]);
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<{ title: string; url: string; isImage: boolean } | null>(null);
   const [isUploadingDocument, setIsUploadingDocument] = useState(false);
 
   // Filter States
@@ -537,6 +541,20 @@ export default function TendersCommand() {
       }
     } catch (err) {
       console.error('Failed to get document link:', err);
+    }
+  };
+
+  const isPreviewableFile = (name?: string) => /\.(pdf|png|jpe?g|gif|webp)$/i.test(name || '');
+  const isImageFile = (name?: string) => /\.(png|jpe?g|gif|webp)$/i.test(name || '');
+
+  const handlePreviewTenderDocument = async (doc: any) => {
+    try {
+      const res = await getDocumentSignedUrl(doc.id);
+      if (res.success && res.data?.url) {
+        setPreviewDoc({ title: doc.title || doc.file_name, url: res.data.url, isImage: isImageFile(doc.file_name) });
+      }
+    } catch (err) {
+      console.error('Failed to get preview link:', err);
     }
   };
 
@@ -1335,6 +1353,9 @@ export default function TendersCommand() {
                           {req.label}
                         </span>
                         <div className="flex items-center gap-2 shrink-0">
+                          {req.satisfied_document_id && (
+                            <span className="text-[8px] font-mono uppercase tracking-wider text-[#D4AF37] border border-[#D4AF37]/30 px-1 py-0.5 shrink-0">Auto</span>
+                          )}
                           <div onClick={() => handleToggleRequirement(req)} className="cursor-pointer">
                             {req.is_satisfied ? (
                               <ToggleRight className="w-6 h-6 text-[#D4AF37]" />
@@ -1384,15 +1405,38 @@ export default function TendersCommand() {
                     {tenderDocuments.map(doc => (
                       <div
                         key={doc.id}
-                        onClick={() => handleDownloadTenderDocument(doc.id)}
-                        className="flex items-center gap-2 p-2.5 border border-white/5 bg-black rounded-sm cursor-pointer hover:border-[#D4AF37]/30 transition-all"
+                        className="flex items-center gap-2 p-2.5 border border-white/5 bg-black rounded-sm hover:border-[#D4AF37]/30 transition-all"
                       >
                         <FileText className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
-                        <span className="text-xs text-paper truncate">{doc.title || doc.file_name}</span>
+                        <span className="flex-1 text-xs text-paper truncate">{doc.title || doc.file_name}</span>
+                        {isPreviewableFile(doc.file_name) && (
+                          <button
+                            type="button"
+                            onClick={() => void handlePreviewTenderDocument(doc)}
+                            title="Preview"
+                            className="shrink-0 text-slate-light hover:text-paper"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadTenderDocument(doc.id)}
+                          title="Download"
+                          className="shrink-0 text-slate-light hover:text-paper"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     ))}
                   </div>
                 )}
+              </div>
+
+              {/* Assignment */}
+              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
+                <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Assigned To</span>
+                <AssignmentPanel entityType="tender" entityId={selectedTender.id} />
               </div>
 
               {/* Countdown panel */}
@@ -1433,6 +1477,25 @@ export default function TendersCommand() {
               <button onClick={handleDeleteTender} disabled={isDeletingTender} className="px-3 py-1.5 bg-rose-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
                 {isDeletingTender ? 'Deleting...' : 'Delete Tender'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewDoc && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4" onClick={() => setPreviewDoc(null)}>
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col bg-[#0A0A0A] border border-white/10" onClick={(e) => e.stopPropagation()}>
+            <header className="flex items-center justify-between border-b border-white/5 p-3">
+              <p className="truncate text-sm text-paper">{previewDoc.title}</p>
+              <button onClick={() => setPreviewDoc(null)} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+            </header>
+            <div className="flex-1 overflow-auto bg-black/40 p-2">
+              {previewDoc.isImage ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={previewDoc.url} alt={previewDoc.title} className="mx-auto max-h-[75vh] w-auto" />
+              ) : (
+                <iframe src={previewDoc.url} title={previewDoc.title} className="h-[75vh] w-full border-0" />
+              )}
             </div>
           </div>
         </div>

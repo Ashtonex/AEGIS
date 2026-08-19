@@ -33,6 +33,8 @@ import {
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
+import { EntityDocumentsPanel } from '@/components/documents/EntityDocumentsPanel';
+import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 
 // A deal that's already won (Contract) or lost is a decided deal - only
 // these roles can reopen/re-stage it (matches the backend's
@@ -1415,6 +1417,18 @@ export default function OpportunitiesKanban() {
                     <Trash2 className="w-3 h-3" /> Delete deal
                   </button>
                 </div>
+              </section>
+
+              {/* DOCUMENTS */}
+              <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
+                <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Documents</span>
+                <EntityDocumentsPanel entityType="opportunity" entityId={selectedOpp.id} />
+              </section>
+
+              {/* ASSIGNMENT */}
+              <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
+                <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Assigned To</span>
+                <AssignmentPanel entityType="opportunity" entityId={selectedOpp.id} />
               </section>
 
               {/* EDIT FORM BLOCK */}

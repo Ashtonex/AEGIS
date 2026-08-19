@@ -18,6 +18,8 @@ import {
   recordAssetMeterReading,
   recordAssetDefect,
 } from "@/lib/api";
+import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
+import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import {
   Activity,
   AlertTriangle,
@@ -36,6 +38,7 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  UserCog,
   Wrench,
   X,
   Zap,
@@ -1227,9 +1230,17 @@ function DetailPanel({
         {/* Documents */}
         <div className="px-5 py-4">
           <SectionHead icon={<FileText size={13} />} title="Linked Documents" />
-          <p className="mt-3 text-xs text-slate-light">
-            Document linking for assets is managed via the Documents module.
-          </p>
+          <div className="mt-3">
+            <EntityDocumentsPanel entityType="machinery" entityId={asset.id} />
+          </div>
+        </div>
+
+        {/* Assignment */}
+        <div className="border-t border-ink-mid px-5 py-4">
+          <SectionHead icon={<UserCog size={13} />} title="Assigned To" />
+          <div className="mt-3">
+            <AssignmentPanel entityType="machinery" entityId={asset.id} />
+          </div>
         </div>
       </div>
 

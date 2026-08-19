@@ -20,6 +20,12 @@ from app.shared.events import emit_notification, emit_role_notification
 
 router = APIRouter()
 
+# Roles permitted to push a requisition/stock action through past a budget or
+# stock-level cap, provided they supply a reason. SUPERADMIN could always do
+# this silently before; this makes the bypass visible, role-scoped, and
+# auditable instead of an undocumented backend-only escape hatch.
+BUDGET_OVERRIDE_ROLES = {"SUPERADMIN", "Finance Manager", "Project Manager"}
+
 
 class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -50,6 +56,11 @@ class RequisitionCreate(Payload):
 class DecisionPayload(Payload):
     decision: Literal["approved", "rejected"]
     reason: Optional[str] = Field(default=None, max_length=2000)
+    override_reason: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SubmitRequisitionPayload(Payload):
+    override_reason: Optional[str] = Field(default=None, max_length=2000)
 
 
 class RfqCreatePayload(Payload):
@@ -470,6 +481,7 @@ async def requisition_or_404(
 @router.post("/requisitions/{req_id}/submit")
 async def submit_requisition(
     req_id: UUID,
+    payload: SubmitRequisitionPayload = SubmitRequisitionPayload(),
     user: dict = Depends(require_permission("procurement.requisition.submit")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -478,14 +490,35 @@ async def submit_requisition(
         raise HTTPException(
             status_code=409, detail="Only draft requisitions can be submitted."
         )
-    if (
+    over_budget = (
         req["budget_checked"]
         and Decimal(str(req["total_estimated"]))
         > Decimal(str(req["budget_available"] or 0))
-        and user.get("role") != "SUPERADMIN"
-    ):
-        raise HTTPException(
-            status_code=409, detail="Requisition exceeds available approved budget."
+    )
+    if over_budget:
+        if user.get("role") not in BUDGET_OVERRIDE_ROLES:
+            raise HTTPException(
+                status_code=409, detail="Requisition exceeds available approved budget."
+            )
+        if not payload.override_reason:
+            raise HTTPException(
+                status_code=409,
+                detail="Requisition exceeds available approved budget. Provide an override reason to submit anyway.",
+            )
+        await emit_event(
+            db,
+            user=user,
+            event_type="procurement.requisition.budget_overridden.v1",
+            aggregate_type="purchase_requisition",
+            aggregate_id=req_id,
+            project_id=req["project_id"],
+            payload={
+                "stage": "submit",
+                "override_reason": payload.override_reason,
+                "overridden_by_role": user.get("role"),
+                "total_estimated": str(req["total_estimated"]),
+                "budget_available": str(req["budget_available"] or 0),
+            },
         )
     await db.execute(
         text(
@@ -531,16 +564,37 @@ async def decide_requisition(
         )
     if str(req["requested_by"]) == user["user_id"]:
         raise HTTPException(status_code=409, detail="Self-approval is not permitted.")
-    if (
+    over_budget = (
         payload.decision == "approved"
         and req["budget_checked"]
         and Decimal(str(req["total_estimated"]))
         > Decimal(str(req["budget_available"] or 0))
-        and user.get("role") != "SUPERADMIN"
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot approve requisition above available approved budget.",
+    )
+    if over_budget:
+        if user.get("role") not in BUDGET_OVERRIDE_ROLES:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot approve requisition above available approved budget.",
+            )
+        if not payload.override_reason:
+            raise HTTPException(
+                status_code=409,
+                detail="Requisition exceeds available approved budget. Provide an override reason to approve anyway.",
+            )
+        await emit_event(
+            db,
+            user=user,
+            event_type="procurement.requisition.budget_overridden.v1",
+            aggregate_type="purchase_requisition",
+            aggregate_id=req_id,
+            project_id=req["project_id"],
+            payload={
+                "stage": "approve",
+                "override_reason": payload.override_reason,
+                "overridden_by_role": user.get("role"),
+                "total_estimated": str(req["total_estimated"]),
+                "budget_available": str(req["budget_available"] or 0),
+            },
         )
     await db.execute(
         text("""

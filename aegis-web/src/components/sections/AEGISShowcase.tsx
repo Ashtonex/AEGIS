@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { SectionLabel } from "../ui/SectionLabel";
-import { DashboardMock } from "../ui/DashboardMock";
 import { Button } from "../ui/Button";
 import { RevealOnScroll } from "../ui/RevealOnScroll";
 import { StaggerContainer, StaggerItem } from "../ui/StaggerContainer";
@@ -34,11 +33,6 @@ export function AEGISShowcase() {
               Six Nine Construction operates on PROJECT AEGIS — a bespoke enterprise resource planning ecosystem built specifically for construction. Every project, every asset, every person, every document — unified.
             </p>
           </div>
-        </RevealOnScroll>
-
-        <RevealOnScroll delay={0.2} className="relative mb-20">
-          <div className="absolute -inset-4 md:-inset-10 bg-gradient-to-b from-info/10 to-transparent blur-3xl rounded-full z-0 opacity-50" />
-          <DashboardMock />
         </RevealOnScroll>
 
         <StaggerContainer className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4 mb-16">

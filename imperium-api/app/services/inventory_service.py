@@ -29,6 +29,12 @@ MovementType = Literal[
     "receipt", "issue", "return", "transfer_in", "transfer_out", "adjustment", "consumption"
 ]
 
+# Mirrors routers/procurement.py's BUDGET_OVERRIDE_ROLES - kept as a separate
+# constant rather than a shared import to avoid a circular import (procurement.py
+# already imports this module). Roles permitted to push stock issue/transfer/
+# adjustment past a hard availability check, provided they supply a reason.
+BUDGET_OVERRIDE_ROLES = {"SUPERADMIN", "Finance Manager", "Project Manager"}
+
 
 async def stock_balance(
     db: AsyncSession, *, org_id: str, item_id: UUID, store_id: Optional[UUID]
@@ -300,6 +306,7 @@ async def issue_stock(
     notes: Optional[str] = None,
     cost_category: str = "materials",
     cost_description: Optional[str] = None,
+    override_reason: Optional[str] = None,
 ) -> dict[str, Any]:
     """Stock leaving a store. If project_id is supplied, also posts an actual
     cost to finance.cost_transactions - this is what makes materials issued
@@ -308,11 +315,19 @@ async def issue_stock(
     available = await stock_balance(
         db, org_id=user["org_id"], item_id=item_id, store_id=store_id
     )
+    is_override = False
     if available < quantity:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Insufficient stock available for issue. Available quantity is {available}. Use a material request to procure the shortfall.",
-        )
+        if user.get("role") not in BUDGET_OVERRIDE_ROLES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Insufficient stock available for issue. Available quantity is {available}. Use a material request to procure the shortfall.",
+            )
+        if not override_reason:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Insufficient stock available for issue. Available quantity is {available}. Provide an override reason to issue anyway.",
+            )
+        is_override = True
     movement_id = await record_stock_movement(
         db,
         user,
@@ -341,6 +356,23 @@ async def issue_stock(
             "unit_cost": str(unit_cost),
         },
     )
+    if is_override:
+        await emit_event(
+            db,
+            user=user,
+            event_type="inventory.issue_overridden.v1",
+            aggregate_type="stock_ledger",
+            aggregate_id=movement_id,
+            project_id=project_id,
+            event_data={
+                "item_id": str(item_id),
+                "store_id": str(store_id) if store_id else None,
+                "quantity_requested": str(quantity),
+                "quantity_available": str(available),
+                "override_reason": override_reason,
+                "overridden_by_role": user.get("role"),
+            },
+        )
     await _below_reorder_check(
         db,
         user,
@@ -399,6 +431,7 @@ async def transfer_stock(
     reference: Optional[str] = None,
     notes: Optional[str] = None,
     transfer_id: Optional[UUID] = None,
+    override_reason: Optional[str] = None,
 ) -> dict[str, Any]:
     """Moves stock from one store to another. Never posts a Finance cost -
     the stock hasn't left the organisation, it's just moved location."""
@@ -409,11 +442,19 @@ async def transfer_stock(
     available = await stock_balance(
         db, org_id=user["org_id"], item_id=item_id, store_id=from_store_id
     )
+    is_override = False
     if available < quantity:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Insufficient stock available to transfer. Available quantity at source store is {available}.",
-        )
+        if user.get("role") not in BUDGET_OVERRIDE_ROLES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Insufficient stock available to transfer. Available quantity at source store is {available}.",
+            )
+        if not override_reason:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Insufficient stock available to transfer. Available quantity at source store is {available}. Provide an override reason to transfer anyway.",
+            )
+        is_override = True
     transfer_group_id = transfer_id or uuid4()
 
     out_movement_id = await record_stock_movement(
@@ -459,6 +500,23 @@ async def transfer_stock(
             "unit_cost": str(unit_cost),
         },
     )
+    if is_override:
+        await emit_event(
+            db,
+            user=user,
+            event_type="inventory.transfer_overridden.v1",
+            aggregate_type="stock_ledger",
+            aggregate_id=transfer_group_id,
+            project_id=None,
+            event_data={
+                "item_id": str(item_id),
+                "from_store_id": str(from_store_id),
+                "quantity_requested": str(quantity),
+                "quantity_available": str(available),
+                "override_reason": override_reason,
+                "overridden_by_role": user.get("role"),
+            },
+        )
     return {
         "transfer_id": transfer_group_id,
         "out_movement_id": out_movement_id,
@@ -486,15 +544,21 @@ async def adjust_stock(
         raise HTTPException(
             status_code=422, detail="Adjustment quantity cannot be zero."
         )
+    is_override = False
     if quantity_delta < 0:
         available = await stock_balance(
             db, org_id=user["org_id"], item_id=item_id, store_id=store_id
         )
         if available + quantity_delta < 0:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Adjustment would drive stock negative. Available quantity is {available}.",
-            )
+            if user.get("role") not in BUDGET_OVERRIDE_ROLES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Adjustment would drive stock negative. Available quantity is {available}.",
+                )
+            # The mandatory `reason` param already doubles as the override
+            # justification here, unlike issue/transfer which have no
+            # required reason field for the non-override path.
+            is_override = True
     movement_id = await record_stock_movement(
         db,
         user,
@@ -523,4 +587,20 @@ async def adjust_stock(
             "reason": reason,
         },
     )
+    if is_override:
+        await emit_event(
+            db,
+            user=user,
+            event_type="inventory.adjustment_overridden.v1",
+            aggregate_type="stock_ledger",
+            aggregate_id=movement_id,
+            project_id=None,
+            event_data={
+                "item_id": str(item_id),
+                "store_id": str(store_id),
+                "quantity_delta": str(quantity_delta),
+                "override_reason": reason,
+                "overridden_by_role": user.get("role"),
+            },
+        )
     return {"movement_id": movement_id}

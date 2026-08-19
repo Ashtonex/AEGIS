@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { ApiError, getComplianceDeploymentGateChecks, getFleet } from "@/lib/api";
+import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
+import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from "@/components/ui/OperationalTable";
@@ -400,6 +402,14 @@ function AssetDetail({ selected, gateChecks }: { selected: FleetRecord; gateChec
           <h4 className="font-mono text-[10px] uppercase tracking-wider text-slate">Linked equipment assignment gate evidence</h4>
           {gateChecks.length ? <div className="mt-3 space-y-2">{gateChecks.map((gate) => { const missing = Array.isArray(gate.missing_requirements) ? gate.missing_requirements : []; return <div key={gate.id} className="border border-ink-mid bg-ink p-3"><p className="text-sm text-paper">{text(gate, "status") || "pending"} · {dateFrom(gate, "checked_at") || "time not recorded"}</p><p className="mt-1 text-xs text-slate-light">{missing.length ? missing.map((item: FleetRecord) => text(item, "certification_name", "reason") || "Missing requirement").join(", ") : "Requirements satisfied"}</p></div>; })}</div> : <p className="mt-3 text-sm text-slate-light">No deployment gate checks are linked to this asset yet.</p>}
         </div>
+      </div>
+      <div className="border-t border-ink-mid p-4">
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-light">Documents</h3>
+        <EntityDocumentsPanel entityType="fleet" entityId={selected.id} />
+      </div>
+      <div className="border-t border-ink-mid p-4">
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-light">Assigned To</h3>
+        <AssignmentPanel entityType="fleet" entityId={selected.id} />
       </div>
     </section>
   );

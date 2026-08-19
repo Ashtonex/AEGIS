@@ -664,7 +664,7 @@ export async function getCrmOpportunities() {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/crm/opportunities', { cache: 'no-store' });
 }
 
-export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number }): Promise<ApiResponse<any>> {
+export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/opportunities', {
     method: 'POST',
     body: JSON.stringify(data)
@@ -698,7 +698,7 @@ export async function getCrmTenderSignals(params?: {
   );
 }
 
-export async function createCrmTender(data: { tender_name: string, stage: string, bid_amount?: number }): Promise<ApiResponse<any>> {
+export async function createCrmTender(data: { tender_name: string, stage: string, bid_amount?: number, region?: string }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/tenders', {
     method: 'POST',
     body: JSON.stringify(data)
@@ -1405,6 +1405,100 @@ export async function getUsers(): Promise<ApiResponse<any[]>> {
   });
 }
 
+/** Narrow, broadly-granted user list for assignment pickers (id/name/email only). */
+export async function getAssignableUsers(): Promise<ApiResponse<{ id: string; full_name: string; email: string }[]>> {
+  return fetchApi<ApiResponse<{ id: string; full_name: string; email: string }[]>>('/api/v1/users/assignable', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+// ─── Teams ──────────────────────────────────────────────────────────────────
+
+export async function getTeams(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/teams/', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createTeam(name: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/teams/', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+    allowFallback: false,
+  });
+}
+
+export async function deleteTeam(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/teams/${id}`, { method: 'DELETE', allowFallback: false });
+}
+
+export async function getTeamMembers(id: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/teams/${id}/members`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function addTeamMember(teamId: string, userId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/teams/${teamId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId }),
+    allowFallback: false,
+  });
+}
+
+export async function removeTeamMember(teamId: string, userId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/teams/${teamId}/members/${userId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+// ─── Assignment (lead/opportunity/tender/project/fleet/machinery → person or team) ─
+
+export async function getAssignment(entityType: string, entityId: string): Promise<ApiResponse<{ assigned_to_user_id: string | null; assigned_to_team_id: string | null; assigned_user_name: string | null; assigned_team_name: string | null }>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/assignments/?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function setAssignment(entityType: string, entityId: string, target: { assigned_to_user_id?: string | null; assigned_to_team_id?: string | null }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/assignments/', {
+    method: 'POST',
+    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, ...target }),
+    allowFallback: false,
+  });
+}
+
+// ─── CRM Tasks ──────────────────────────────────────────────────────────────
+
+export async function getCrmTasks(params?: { assigned_to_user_id?: string; status?: string; entity_type?: string; entity_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.assigned_to_user_id) search.set('assigned_to_user_id', params.assigned_to_user_id);
+  if (params?.status) search.set('status', params.status);
+  if (params?.entity_type) search.set('entity_type', params.entity_type);
+  if (params?.entity_id) search.set('entity_id', params.entity_id);
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-tasks/${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createCrmTask(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/crm-tasks/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateCrmTask(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteCrmTask(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${id}`, { method: 'DELETE', allowFallback: false });
+}
+
 export interface SystemNotification {
   id: string;
   title: string;
@@ -1533,17 +1627,18 @@ export async function createProcurementRequisition(payload: Record<string, unkno
   });
 }
 
-export async function submitProcurementRequisition(id: string): Promise<ApiResponse<any>> {
+export async function submitProcurementRequisition(id: string, overrideReason?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/requisitions/${id}/submit`, {
     method: "POST",
+    body: JSON.stringify({ override_reason: overrideReason }),
     allowFallback: false,
   });
 }
 
-export async function approveProcurementRequisition(id: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
+export async function approveProcurementRequisition(id: string, decision: "approved" | "rejected", reason?: string, overrideReason?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/requisitions/${id}/decision`, {
     method: "POST",
-    body: JSON.stringify({ decision, reason }),
+    body: JSON.stringify({ decision, reason, override_reason: overrideReason }),
     allowFallback: false,
   });
 }
@@ -3415,6 +3510,21 @@ export async function linkDocument(id: string, payload: { entity_type: string; e
   return fetchApi<ApiResponse<any>>(`/api/v1/documents/${id}/links`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Every document attached to one lead/opportunity/tender/project/fleet/machinery record, regardless of uploader. */
+export async function getDocumentsForEntity(entityType: string, entityId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/documents/for-entity?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function deleteDocument(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/documents/${id}`, {
+    method: 'DELETE',
     allowFallback: false,
   });
 }

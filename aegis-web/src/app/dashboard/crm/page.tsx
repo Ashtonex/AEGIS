@@ -2,11 +2,12 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp } from 'lucide-react';
-import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, getRiskMatrices, getCrmOrganizations } from '@/lib/api';
+import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp, ListChecks } from 'lucide-react';
+import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
 import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
+import { PROVINCES } from '@/lib/constants';
 
 const CRM_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -69,8 +70,9 @@ export default function CRMCommercialEngine() {
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   
   // Forms state
-  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '' });
-  const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0 });
+  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '' });
+  const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '' });
+  const [regionAssigning, setRegionAssigning] = useState<string | null>(null);
   const [oppFormErrors, setOppFormErrors] = useState<Record<string, string>>({});
   const [tenderFormErrors, setTenderFormErrors] = useState<Record<string, string>>({});
   const [createErrors, setCreateErrors] = useState<Record<string, string>>({});
@@ -191,12 +193,13 @@ export default function CRMCommercialEngine() {
         stage: oppForm.stage,
         budget: Number(oppForm.budget),
         probability: Number(oppForm.probability),
-        ...(oppForm.client_org_id ? { client_org_id: oppForm.client_org_id } : {})
+        ...(oppForm.client_org_id ? { client_org_id: oppForm.client_org_id } : {}),
+        ...(oppForm.region ? { region: oppForm.region } : {})
       });
       if (!response.success) throw new Error(getApiError(response, 'Opportunity was not created.'));
 
       setIsOppModalOpen(false);
-      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '' });
+      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '' });
       await loadData();
     } catch (error) {
       setCreateErrors((current) => ({
@@ -221,12 +224,13 @@ export default function CRMCommercialEngine() {
       const response = await createCrmTender({
         tender_name: tenderForm.tender_name.trim(),
         stage: tenderForm.stage,
-        bid_amount: Number(tenderForm.bid_amount)
+        bid_amount: Number(tenderForm.bid_amount),
+        ...(tenderForm.region ? { region: tenderForm.region } : {})
       });
       if (!response.success) throw new Error(getApiError(response, 'Tender was not created.'));
 
       setIsTenderModalOpen(false);
-      setTenderForm({ tender_name: '', stage: 'Tender Identified', bid_amount: 0 });
+      setTenderForm({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '' });
       await loadData();
     } catch (error) {
       setCreateErrors((current) => ({
@@ -237,10 +241,48 @@ export default function CRMCommercialEngine() {
       setIsSubmitting(false);
     }
   };
+  const handleAssignRegion = async (kind: 'opportunity' | 'tender', id: string, region: string) => {
+    setRegionAssigning(id);
+    try {
+      const response = kind === 'opportunity' ? await updateCrmOpportunity(id, { region }) : await updateCrmTender(id, { region });
+      if (!response.success) throw new Error(getApiError(response, 'Region was not saved.'));
+      if (kind === 'opportunity') {
+        setOpportunities((current) => current.map((o) => (o.id === id ? { ...o, region } : o)));
+      } else {
+        setTenders((current) => current.map((t) => (t.id === id ? { ...t, region } : t)));
+      }
+    } catch {
+      // Silent: the select reverts to the last known value on next render since
+      // local state was never optimistically updated on failure.
+    } finally {
+      setRegionAssigning(null);
+    }
+  };
   const calculateTotalPipeline = () => {
     const oppValue = opportunities.reduce((acc, opp) => acc + (Number(opp.budget) || 0), 0);
     const tenderValue = tenders.reduce((acc, t) => acc + (Number(t.bid_amount) || 0), 0);
     return oppValue + tenderValue;
+  };
+
+  const getRegionalBreakdown = () => {
+    const byRegion = new Map<string, { count: number; value: number }>();
+    for (const opp of opportunities) {
+      if (!opp.region) continue;
+      const entry = byRegion.get(opp.region) || { count: 0, value: 0 };
+      entry.count += 1;
+      entry.value += Number(opp.budget) || 0;
+      byRegion.set(opp.region, entry);
+    }
+    for (const tender of tenders) {
+      if (!tender.region) continue;
+      const entry = byRegion.get(tender.region) || { count: 0, value: 0 };
+      entry.count += 1;
+      entry.value += Number(tender.bid_amount) || 0;
+      byRegion.set(tender.region, entry);
+    }
+    return Array.from(byRegion.entries())
+      .map(([region, stats]) => ({ region, ...stats }))
+      .sort((a, b) => b.value - a.value);
   };
 
   const calculateWeightedPipeline = () => {
@@ -331,9 +373,21 @@ export default function CRMCommercialEngine() {
                   <h3 className="font-sans text-[10px] font-semibold text-slate-light mb-1 shrink-0">{stage} <span className="float-right text-slate font-mono">{items.length}</span></h3>
                   <div className="space-y-1 flex-1 overflow-y-auto custom-scrollbar min-h-0">
                     {items.slice(0, 5).map(opp => (
-                      <div key={opp.id} className="bg-ink/80 border border-white/10 p-1.5 rounded-sm hover:border-signal/40 transition-colors group cursor-pointer">
+                      <div key={opp.id} className="bg-ink/80 border border-white/10 p-1.5 rounded-sm hover:border-signal/40 transition-colors group">
                         <p className="text-[11px] font-medium text-paper truncate group-hover:text-signal">{opp.name}</p>
                         <p className="text-[9px] font-mono text-slate-light mt-0.5">${Number(opp.budget).toLocaleString()}</p>
+                        <select
+                          value={opp.region || ''}
+                          onChange={(e) => handleAssignRegion('opportunity', opp.id, e.target.value)}
+                          disabled={regionAssigning === opp.id}
+                          onClick={(e) => e.stopPropagation()}
+                          className="mt-1 w-full bg-black/40 border border-white/10 rounded-sm px-1 py-0.5 text-[8px] font-mono text-slate-light disabled:opacity-50"
+                        >
+                          <option value="">Unassigned region</option>
+                          {PROVINCES.map((province) => (
+                            <option key={province} value={province}>{province}</option>
+                          ))}
+                        </select>
                       </div>
                     ))}
                     {items.length === 0 && <div className="text-center py-2 text-[9px] font-mono text-slate-dark">No deals</div>}
@@ -369,10 +423,21 @@ export default function CRMCommercialEngine() {
                   <h3 className="font-sans text-[10px] font-semibold text-slate-light mb-1 shrink-0">{stage} <span className="float-right text-slate font-mono">{items.length}</span></h3>
                   <div className="space-y-1 flex-1 overflow-y-auto custom-scrollbar min-h-0">
                     {items.slice(0, 5).map(tender => (
-                      <div key={tender.id} className="bg-ink/80 border border-white/10 p-1.5 rounded-sm hover:border-blue-400/40 transition-colors group cursor-pointer relative">
+                      <div key={tender.id} className="bg-ink/80 border border-white/10 p-1.5 rounded-sm hover:border-blue-400/40 transition-colors group relative">
                          {stage === 'Bid Prep' && <div className="absolute top-0 right-0 w-1 h-1 m-1.5 rounded-full bg-blue-500 animate-ping"></div>}
                         <p className="text-[11px] font-medium text-paper line-clamp-2 pr-1 group-hover:text-blue-400">{tender.tender_name}</p>
                         <p className="text-[9px] font-mono text-slate-light mt-0.5">${Number(tender.bid_amount).toLocaleString()}</p>
+                        <select
+                          value={tender.region || ''}
+                          onChange={(e) => handleAssignRegion('tender', tender.id, e.target.value)}
+                          disabled={regionAssigning === tender.id}
+                          className="mt-1 w-full bg-black/40 border border-white/10 rounded-sm px-1 py-0.5 text-[8px] font-mono text-slate-light disabled:opacity-50"
+                        >
+                          <option value="">Unassigned region</option>
+                          {PROVINCES.map((province) => (
+                            <option key={province} value={province}>{province}</option>
+                          ))}
+                        </select>
                       </div>
                     ))}
                     {items.length === 0 && <div className="text-center py-2 text-[9px] font-mono text-slate-dark">No bids</div>}
@@ -386,8 +451,10 @@ export default function CRMCommercialEngine() {
     );
   };
 
-  // Col 2: Morning Briefing Terminal (top) and Geographic Intelligence Radar map (bottom) stacked
+  // Col 2: Morning Briefing Terminal (top) and Geographic Intelligence breakdown (bottom) stacked
   const renderCol2Stacked = () => {
+    const regionalBreakdown = getRegionalBreakdown();
+    const maxRegionalValue = regionalBreakdown.length > 0 ? regionalBreakdown[0].value : 0;
     return (
       <div className="w-[30%] flex flex-col gap-2 min-h-0">
         {/* Morning Briefing Terminal */}
@@ -421,11 +488,27 @@ export default function CRMCommercialEngine() {
             </h3>
           </div>
 
-          <div className="relative flex-1 z-10 flex flex-col items-center justify-center min-h-0 text-center gap-1">
-            <MapPin className="w-6 h-6 text-slate animate-pulse" />
-            <p className="text-paper font-mono text-[10px]">No regional deal data recorded.</p>
-            <p className="text-slate-light font-mono text-[9px]">Assign a region to each opportunity or tender to populate this map.</p>
-          </div>
+          {regionalBreakdown.length === 0 ? (
+            <div className="relative flex-1 z-10 flex flex-col items-center justify-center min-h-0 text-center gap-1">
+              <MapPin className="w-6 h-6 text-slate animate-pulse" />
+              <p className="text-paper font-mono text-[10px]">No regional deal data recorded.</p>
+              <p className="text-slate-light font-mono text-[9px]">Assign a region to each opportunity or tender to populate this breakdown.</p>
+            </div>
+          ) : (
+            <div className="relative z-10 flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-1.5 pr-0.5">
+              {regionalBreakdown.map((r) => (
+                <div key={r.region} className="space-y-0.5">
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[10px] font-sans text-paper truncate">{r.region}</span>
+                    <span className="text-[9px] font-mono text-slate-light shrink-0 ml-2">{r.count} deal{r.count === 1 ? '' : 's'} · ${formatCurrency(r.value)}</span>
+                  </div>
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div className="h-full bg-signal/70 rounded-full" style={{ width: `${maxRegionalValue > 0 ? (r.value / maxRegionalValue) * 100 : 0}%` }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -610,6 +693,20 @@ export default function CRMCommercialEngine() {
               <TrendingUp className="w-3.5 h-3.5 mr-1.5" />
               REPORTS
             </Link>
+            <Link
+              href="/dashboard/crm/tasks"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <ListChecks className="w-3.5 h-3.5 mr-1.5" />
+              TASKS
+            </Link>
+            <Link
+              href="/dashboard/crm/teams"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <Users className="w-3.5 h-3.5 mr-1.5" />
+              TEAMS
+            </Link>
           </div>
         </header>
 
@@ -692,6 +789,17 @@ export default function CRMCommercialEngine() {
                 <p className="font-mono text-[9px] text-slate-light/70 pl-1">Link this deal to an organization so multiple deals can roll up under one client on Customer 360.</p>
               </div>
 
+              <div className="space-y-1.5">
+                <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Region</label>
+                <select value={oppForm.region} onChange={e => setOppForm({...oppForm, region: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-signal focus:ring-1 focus:ring-signal/50 outline-none font-sans transition-all">
+                  <option value="">-- Unassigned --</option>
+                  {PROVINCES.map((province) => (
+                    <option key={province} value={province}>{province}</option>
+                  ))}
+                </select>
+                <p className="font-mono text-[9px] text-slate-light/70 pl-1">Feeds the Geographic Intelligence breakdown on the pipeline dashboard.</p>
+              </div>
+
               <div className="pt-6 flex justify-end space-x-3 border-t border-white/5 mt-6">
                 <button type="button" onClick={() => setIsOppModalOpen(false)} className="px-6 py-3 font-mono text-xs text-slate-light hover:text-paper hover:bg-white/5 rounded-sm transition-colors">CANCEL</button>
                 <button type="submit" disabled={isSubmitting} className="px-6 py-3 bg-signal text-ink rounded-sm font-mono text-xs font-bold hover:bg-signal/90 hover:shadow-[0_0_20px_rgba(var(--color-signal),0.4)] disabled:opacity-50 transition-all">
@@ -751,7 +859,18 @@ export default function CRMCommercialEngine() {
                   <input required type="number" value={tenderForm.bid_amount || ''} onChange={e => setTenderForm({...tenderForm, bid_amount: Number(e.target.value)})} className="w-full bg-black/50 border border-white/10 rounded-sm pl-8 pr-4 py-3 text-sm text-paper focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none font-mono transition-all" placeholder="0.00" />
                 </div>
               </div>
-              
+
+              <div className="space-y-1.5">
+                <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Region</label>
+                <select value={tenderForm.region} onChange={e => setTenderForm({...tenderForm, region: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none font-sans transition-all">
+                  <option value="">-- Unassigned --</option>
+                  {PROVINCES.map((province) => (
+                    <option key={province} value={province}>{province}</option>
+                  ))}
+                </select>
+                <p className="font-mono text-[9px] text-slate-light/70 pl-1">Feeds the Geographic Intelligence breakdown on the pipeline dashboard.</p>
+              </div>
+
               <div className="pt-6 flex justify-end space-x-3 border-t border-white/5 mt-6">
                 <button type="button" onClick={() => setIsTenderModalOpen(false)} className="px-6 py-3 font-mono text-xs text-slate-light hover:text-paper hover:bg-white/5 rounded-sm transition-colors">CANCEL</button>
                 <button type="submit" disabled={isSubmitting} className="px-6 py-3 bg-blue-500 text-white rounded-sm font-mono text-xs font-bold hover:bg-blue-400 hover:shadow-[0_0_20px_rgba(59,130,246,0.4)] disabled:opacity-50 transition-all">

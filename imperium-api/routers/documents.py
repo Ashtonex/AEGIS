@@ -53,6 +53,8 @@ _DOCUMENT_LINK_ENTITY_TABLES = {
     "opportunity": "crm.opportunities",
     "lead": "crm.leads",
     "project": "projects.projects",
+    "fleet": "fleet.fleet",
+    "machinery": "fleet.equipment_assets",
 }
 
 
@@ -63,6 +65,38 @@ class DocumentLinkCreate(BaseModel):
     entity_id: UUID
     link_role: str = Field(default="boq_source", max_length=80)
     project_id: Optional[UUID] = None
+
+
+async def _auto_match_tender_requirements(
+    db: AsyncSession, *, org_id: str, tender_id: UUID, document_id: UUID, file_name: Optional[str], title: str
+) -> None:
+    """Case-insensitive substring match of the uploaded file's name/title
+    against open (unsatisfied) checklist labels for this tender - ticks the
+    first match automatically instead of requiring a separate manual step.
+    Ambiguous or no matches are left for the user to tick by hand."""
+    haystack = f"{file_name or ''} {title}".lower()
+    open_items = (
+        await db.execute(
+            text("""
+                SELECT id, label FROM crm.tender_requirements
+                WHERE tender_id = :tender_id AND organization_id = :org_id
+                  AND is_satisfied = false AND is_deleted = false
+            """),
+            {"tender_id": tender_id, "org_id": org_id},
+        )
+    ).mappings().all()
+    for item in open_items:
+        label = (item["label"] or "").strip().lower()
+        if label and label in haystack:
+            await db.execute(
+                text("""
+                    UPDATE crm.tender_requirements
+                    SET is_satisfied = true, satisfied_document_id = :document_id, updated_at = NOW()
+                    WHERE id = :id
+                """),
+                {"id": item["id"], "document_id": document_id},
+            )
+            break
 
 
 @router.get("/")
@@ -110,6 +144,41 @@ async def list_documents(
     result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
     return ok(items, "Documents listed.")
+
+
+@router.get("/for-entity")
+async def list_documents_for_entity(
+    entity_type: str = Query(...),
+    entity_id: UUID = Query(...),
+    user: dict = Depends(require_permission("documents.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Documents attached to one lead/opportunity/tender/project/fleet/machinery
+    record, regardless of who uploaded them - the single feed a Documents
+    panel on that record's detail view reads from."""
+    entity_key = entity_type.strip().lower()
+    if entity_key not in _DOCUMENT_LINK_ENTITY_TABLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
+        )
+
+    result = await db.execute(
+        text("""
+            SELECT d.*, fa.mime_type, fa.storage_path, dl.link_role,
+                   u.full_name AS uploaded_by_name, u.email AS uploaded_by_email
+            FROM core.document_links dl
+            JOIN core.documents d ON d.id = dl.document_id AND d.is_deleted = false
+            LEFT JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
+            LEFT JOIN core.users u ON u.id = d.created_by AND u.organization_id = d.organization_id
+            WHERE dl.organization_id = :org_id AND dl.is_deleted = false
+              AND dl.entity_type = :entity_type AND dl.entity_id = :entity_id
+            ORDER BY d.created_at DESC
+        """),
+        {"org_id": user["org_id"], "entity_type": entity_key, "entity_id": entity_id},
+    )
+    items = [dict(row._mapping) for row in result]
+    return ok(items, "Documents for entity retrieved.")
 
 
 @router.get("/{document_id}")
@@ -206,6 +275,15 @@ async def create_document(
                 },
             )
         ).scalar()
+        if payload.tender_id:
+            await _auto_match_tender_requirements(
+                db,
+                org_id=user["org_id"],
+                tender_id=payload.tender_id,
+                document_id=doc_id,
+                file_name=payload.file_name,
+                title=payload.title,
+            )
         await db.commit()
         return ok(
             {"id": str(doc_id)},
@@ -216,6 +294,35 @@ async def create_document(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: UUID,
+    user: dict = Depends(require_permission("documents.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        text("""
+            UPDATE core.documents
+            SET is_deleted = true, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """),
+        {"id": document_id, "org_id": user["org_id"]},
+    )
+    if not result.first():
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Document not found.")
+    await db.execute(
+        text("""
+            UPDATE core.document_links SET is_deleted = true
+            WHERE document_id = :id AND organization_id = :org_id
+        """),
+        {"id": document_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return ok({"id": str(document_id)}, "Document deleted.")
 
 
 @router.get("/{document_id}/signed-url")
@@ -401,14 +508,16 @@ async def create_link(
             detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
         )
 
-    doc_check = await db.execute(
-        text("""
-            SELECT 1 FROM core.documents
-            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
-        """),
-        {"id": document_id, "org_id": user["org_id"]},
-    )
-    if not doc_check.first():
+    doc_row = (
+        await db.execute(
+            text("""
+                SELECT title, file_name FROM core.documents
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"id": document_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not doc_row:
         raise HTTPException(status_code=404, detail="Document not found.")
 
     entity_check = await db.execute(
@@ -442,8 +551,17 @@ async def create_link(
                 "user_id": user["user_id"],
             },
         )
-        await db.commit()
         link_id = result.scalar()
+        if payload.entity_type.strip().lower() == "tender":
+            await _auto_match_tender_requirements(
+                db,
+                org_id=user["org_id"],
+                tender_id=payload.entity_id,
+                document_id=document_id,
+                file_name=doc_row["file_name"],
+                title=doc_row["title"],
+            )
+        await db.commit()
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

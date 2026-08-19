@@ -35,6 +35,7 @@ class StockMovementPayload(Payload):
     reference: Optional[str] = Field(default=None, max_length=160)
     work_package: Optional[str] = Field(default=None, max_length=160)
     notes: Optional[str] = None
+    override_reason: Optional[str] = Field(default=None, max_length=2000)
 
 
 class TransferStockPayload(Payload):
@@ -47,6 +48,7 @@ class TransferStockPayload(Payload):
     )
     reference: Optional[str] = Field(default=None, max_length=160)
     notes: Optional[str] = None
+    override_reason: Optional[str] = Field(default=None, max_length=2000)
 
 
 class AdjustStockPayload(Payload):
@@ -328,6 +330,7 @@ async def issue_stock(
         or f"ISSUE-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         notes=payload.notes,
         cost_description=payload.reference or "Manual stock issue",
+        override_reason=payload.override_reason,
     )
     await db.commit()
     return ok({"id": str(outcome["movement_id"])}, "Stock issue recorded.")
@@ -359,6 +362,7 @@ async def transfer_stock(
         reference=payload.reference
         or f"TRANSFER-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         notes=payload.notes,
+        override_reason=payload.override_reason,
     )
     await db.commit()
     return ok(

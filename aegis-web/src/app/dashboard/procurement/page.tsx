@@ -146,10 +146,14 @@ function loadFailureMessage(reason: unknown) {
 
 function normalizeActionError(reason: unknown, fallback: string) {
   const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
-  if (/aborted|cancelled|timed out|network error|fetch failed|not found/i.test(rawMessage)) {
+  if (!rawMessage || /aborted|cancelled|timed out|network error|fetch failed|not found/i.test(rawMessage)) {
     return fallback;
   }
-  return fallback;
+  // Business-rule rejections (budget caps, self-approval, stage guards) come
+  // through as the backend's own HTTPException detail text, which is written
+  // to be user-facing - surface it instead of a generic fallback so the user
+  // knows what to actually do (e.g. supply an override reason).
+  return rawMessage;
 }
 
 // ─── Page export ──────────────────────────────────────────────────────────────
@@ -192,6 +196,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [selectedPO, setSelectedPO] = useState<Rec | null>(null);
   const [approvingPR, setApprovingPR] = useState<Rec | null>(null);
+  const [overridePromptFor, setOverridePromptFor] = useState<{ id: string; action: "submit" | "approve"; message: string; decisionReason?: string } | null>(null);
   const [creatingRfqFromPR, setCreatingRfqFromPR] = useState<Rec | null>(null);
   const [creatingPOFromPR, setCreatingPOFromPR] = useState<Rec | null>(null);
   const [quotingRfq, setQuotingRfq] = useState<Rec | null>(null);
@@ -257,24 +262,41 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     return { openPRs, awaitingApproval, activePOs, grnsPending, invPending, committed, activeRFQs };
   }, [requisitions, rfqs, orders, invoices]);
 
-  const submitPR = async (id: string) => {
+  const submitPR = async (id: string, overrideReason?: string) => {
     setSaving(`submit-${id}`);
     try {
-      await submitProcurementRequisition(id);
+      await submitProcurementRequisition(id, overrideReason);
       setNotice("Requisition submitted for approval.");
+      setOverridePromptFor(null);
       await load();
-    } catch (e) { setNotice(normalizeActionError(e, "Submission failed.")); }
+    } catch (e) {
+      const message = normalizeActionError(e, "Submission failed.");
+      if (/override reason/i.test(message)) {
+        setOverridePromptFor({ id, action: "submit", message });
+      } else {
+        setNotice(message);
+      }
+    }
     finally { setSaving(null); }
   };
 
-  const decidePR = async (id: string, decision: "approved" | "rejected", reason?: string) => {
+  const decidePR = async (id: string, decision: "approved" | "rejected", reason?: string, overrideReason?: string) => {
     setSaving(`decide-${id}`);
     try {
-      await approveProcurementRequisition(id, decision, reason);
+      await approveProcurementRequisition(id, decision, reason, overrideReason);
       setNotice(`Requisition ${decision}.`);
       setApprovingPR(null);
+      setOverridePromptFor(null);
       await load();
-    } catch (e) { setNotice(normalizeActionError(e, "Decision failed.")); }
+    } catch (e) {
+      const message = normalizeActionError(e, "Decision failed.");
+      if (/override reason/i.test(message)) {
+        setApprovingPR(null);
+        setOverridePromptFor({ id, action: "approve", message, decisionReason: reason });
+      } else {
+        setNotice(message);
+      }
+    }
     finally { setSaving(null); }
   };
 
@@ -571,6 +593,17 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {showCreatePR && <CreatePRModal projects={projects} onClose={() => setShowCreatePR(false)} onCreated={() => { setShowCreatePR(false); setNotice("Purchase requisition created."); void load(); }} />}
       {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
       {approvingPR && <ApproveModal pr={approvingPR} saving={saving?.startsWith("decide-") ?? false} onDecide={(d, r) => void decidePR(approvingPR.id, d, r)} onClose={() => setApprovingPR(null)} />}
+      {overridePromptFor && (
+        <OverrideReasonModal
+          message={overridePromptFor.message}
+          saving={saving === `submit-${overridePromptFor.id}` || saving === `decide-${overridePromptFor.id}`}
+          onConfirm={(reason) => {
+            if (overridePromptFor.action === "submit") void submitPR(overridePromptFor.id, reason);
+            else void decidePR(overridePromptFor.id, "approved", overridePromptFor.decisionReason, reason);
+          }}
+          onClose={() => setOverridePromptFor(null)}
+        />
+      )}
       {creatingRfqFromPR && <CreateRfqModal pr={creatingRfqFromPR} saving={saving === `rfq-${creatingRfqFromPR.id}`} onCreate={(payload) => void createRfq(creatingRfqFromPR, payload)} onClose={() => setCreatingRfqFromPR(null)} />}
       {creatingPOFromPR && <CreatePOModal pr={creatingPOFromPR} suppliers={suppliers} saving={saving === `po-${creatingPOFromPR.id}`} onCreate={(supplierId, supplierSelectionReason) => void createPO(creatingPOFromPR, supplierId, supplierSelectionReason)} onClose={() => setCreatingPOFromPR(null)} />}
       {quotingRfq && <RfqResponseModal rfq={quotingRfq} suppliers={suppliers} saving={saving === `quote-${quotingRfq.id}`} onSubmit={(payload) => void recordQuote(quotingRfq, payload)} onClose={() => setQuotingRfq(null)} />}
@@ -1567,6 +1600,36 @@ function ApproveModal({ pr, saving, onDecide, onClose }: { pr: Rec; saving: bool
           </button>
           <button onClick={() => onDecide("approved", reason || undefined)} disabled={saving} className="inline-flex h-9 items-center gap-1.5 bg-emerald-700 px-4 font-mono text-xs font-bold uppercase text-white hover:bg-emerald-600 disabled:opacity-40">
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}Approve
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function OverrideReasonModal({ message, saving, onConfirm, onClose }: { message: string; saving: boolean; onConfirm: (reason: string) => void; onClose: () => void; }) {
+  const [reason, setReason] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+      <div className="w-full max-w-md border border-ink-mid bg-ink shadow-2xl">
+        <header className="flex items-center justify-between border-b border-ink-mid p-4">
+          <p className="font-mono text-xs uppercase tracking-widest text-amber-400">Budget Override Required</p>
+          <button onClick={onClose} className="text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+        </header>
+        <div className="space-y-4 p-5">
+          <div className="flex items-start gap-3 border border-amber-500/20 bg-amber-950/10 p-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <p className="text-xs text-amber-200">{message}</p>
+          </div>
+          <div>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Override reason (required, audited)</label>
+            <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} placeholder="Why this should proceed above the approved budget…" className="w-full border border-ink-mid bg-ink-light p-3 text-sm text-paper resize-none" />
+          </div>
+        </div>
+        <footer className="flex justify-end gap-2 border-t border-ink-mid p-4">
+          <button onClick={onClose} className="h-9 border border-ink-mid px-3 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+          <button onClick={() => onConfirm(reason)} disabled={saving || !reason.trim()} className="inline-flex h-9 items-center gap-1.5 bg-amber-600 px-4 font-mono text-xs font-bold uppercase text-white hover:bg-amber-500 disabled:opacity-40">
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldAlert className="h-3.5 w-3.5" />}Proceed With Override
           </button>
         </footer>
       </div>

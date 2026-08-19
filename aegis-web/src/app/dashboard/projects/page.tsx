@@ -38,6 +38,8 @@ import {
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { PROVINCES } from "@/lib/constants";
+import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
+import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 
 const FINANCE_SIGNOFF_ROLES = new Set(["Finance Manager", "Executive (Admin)", "SUPERADMIN"]);
 
@@ -629,7 +631,7 @@ function ProjectDetail({
     }
   }, [coords, project.id]);
 
-  const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials" | "documents" | "assign">("overview");
 
   // Stable seed is used only for visual schedule placeholders, not financial figures.
   const seed = useMemo(() => {
@@ -953,6 +955,26 @@ function ProjectDetail({
             }`}
           >
             Material Consumption
+          </button>
+          <button
+            onClick={() => setActiveTab("documents")}
+            className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
+              activeTab === "documents"
+                ? "border-signal text-signal bg-ink-light/40 font-bold"
+                : "border-transparent text-slate hover:text-paper"
+            }`}
+          >
+            Documents
+          </button>
+          <button
+            onClick={() => setActiveTab("assign")}
+            className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
+              activeTab === "assign"
+                ? "border-signal text-signal bg-ink-light/40 font-bold"
+                : "border-transparent text-slate hover:text-paper"
+            }`}
+          >
+            Assigned To
           </button>
         </nav>
 
@@ -1622,10 +1644,28 @@ function ProjectDetail({
               </div>
             )}
 
+            {/* ---------------------------------------------------- */}
+            {/* DOCUMENTS TAB */}
+            {/* ---------------------------------------------------- */}
+            {activeTab === "documents" && (
+              <div className="animate-fade-in">
+                <EntityDocumentsPanel entityType="project" entityId={project.id} />
+              </div>
+            )}
+
+            {/* ---------------------------------------------------- */}
+            {/* ASSIGNED TO TAB */}
+            {/* ---------------------------------------------------- */}
+            {activeTab === "assign" && (
+              <div className="max-w-md animate-fade-in">
+                <AssignmentPanel entityType="project" entityId={project.id} />
+              </div>
+            )}
+
           </div>
         )}
       </aside>
     </div>
-  ); 
+  );
 }
 

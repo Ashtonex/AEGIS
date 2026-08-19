@@ -30,6 +30,26 @@ async def list_users(
     }
 
 
+@router.get("/assignable")
+async def list_assignable_users(
+    user: dict = Depends(require_permission("users.read_assignable")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Narrow, broadly-granted alternative to list_users() (admin-only) - just
+    enough (id/name/email) to populate an assignment picker, nothing else."""
+    query = text(
+        "SELECT id, email, full_name FROM core.users WHERE organization_id = :org_id AND is_deleted = false AND is_active = true ORDER BY full_name"
+    )
+    result = await db.execute(query, {"org_id": user["org_id"]})
+    users = [dict(row._mapping) for row in result]
+    return {
+        "success": True,
+        "data": users,
+        "message": "Assignable users fetched.",
+        "meta": {"total": len(users)},
+    }
+
+
 @router.get("/{id}")
 async def get_user(
     id: UUID, user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)

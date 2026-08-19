@@ -9,8 +9,10 @@ import {
   Send, HelpCircle, CheckSquare, Sliders, ExternalLink, Lock,
   Filter, Globe, Database, UserCheck, RefreshCw, Layout, Smartphone,
   UserPlus, HelpCircle as HelpIcon, MoreVertical, UploadCloud,
-  MessageCircle, Pencil, PhoneCall, Mail, Users2, MapPinned, FileEdit
+  MessageCircle, Pencil, PhoneCall, Mail, Users2, MapPinned, FileEdit,
+  Paperclip
 } from 'lucide-react';
+import { EntityDocumentsDrawer } from '@/components/documents/EntityDocumentsDrawer';
 import {
   getCrmLeads,
   getCrmTenderSignals,
@@ -116,6 +118,7 @@ export default function CRMLeadsApp() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [disqualifyReason, setDisqualifyReason] = useState('');
+  const [documentsFor, setDocumentsFor] = useState<{ id: string; label: string } | null>(null);
 
   // Editing an existing lead reuses the manual-log modal in "edit" mode -
   // null means the modal (if open) is creating a brand new lead.
@@ -723,6 +726,12 @@ export default function CRMLeadsApp() {
                         Edit
                       </button>
                       <button
+                        onClick={() => setDocumentsFor({ id: lead.id, label: lead.company_name })}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
+                      >
+                        <Paperclip className="h-2.5 w-2.5" /> Docs
+                      </button>
+                      <button
                         onClick={() => handleCheckDuplicates(lead)}
                         className="px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
                       >
@@ -1258,6 +1267,15 @@ export default function CRMLeadsApp() {
             </div>
           </div>
         </div>
+      )}
+
+      {documentsFor && (
+        <EntityDocumentsDrawer
+          entityType="lead"
+          entityId={documentsFor.id}
+          entityLabel={documentsFor.label}
+          onClose={() => setDocumentsFor(null)}
+        />
       )}
     </main>
   );
