@@ -1653,6 +1653,22 @@ export async function getProcurementRequisitions(params?: { status?: string; pro
   return fetchApi<ApiResponse<any[]>>(`/api/v1/procurement/requisitions${query}`, { cache: "no-store", allowFallback: false });
 }
 
+export async function getMaterialRequests(params?: { is_price_confirmed?: boolean; project_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.is_price_confirmed !== undefined) search.set("is_price_confirmed", String(params.is_price_confirmed));
+  if (params?.project_id) search.set("project_id", params.project_id);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/procurement/material-requests${query}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function confirmMaterialRequestPrice(id: string, unitCost: number): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/material-requests/${id}/price`, {
+    method: "PATCH",
+    body: JSON.stringify({ unit_cost: unitCost }),
+    allowFallback: false,
+  });
+}
+
 export async function createProcurementRequisition(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>("/api/v1/procurement/requisitions", {
     method: "POST",

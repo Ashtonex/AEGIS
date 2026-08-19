@@ -42,9 +42,11 @@ import {
   createPurchaseOrderFromRfq,
   decideProcurementRfqResponse,
   decideSupplierInvoicePayment,
+  confirmMaterialRequestPrice,
   getDocuments,
   getInternalProjects,
   getInventoryStores,
+  getMaterialRequests,
   getProcurementInvoices,
   getProcurementOrders,
   getProcurementRequisitions,
@@ -62,7 +64,7 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Rec = Record<string, any> & { id: string };
-type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices";
+type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
 interface LineItem { description: string; qty: string; uom: string; unit_cost: string; }
 interface PaymentEvidencePayload {
   poDocumentId: string;
@@ -162,7 +164,7 @@ export default function ProcurementPage() {
   const searchParams = useSearchParams();
   const requestedTab = searchParams?.get("tab");
   const initialTab: Tab =
-    requestedTab === "rfqs" || requestedTab === "orders" || requestedTab === "suppliers" || requestedTab === "invoices"
+    requestedTab === "rfqs" || requestedTab === "orders" || requestedTab === "suppliers" || requestedTab === "invoices" || requestedTab === "pricing"
       ? (requestedTab === "orders" ? "orders" : requestedTab)
       : "requisitions";
 
@@ -181,6 +183,7 @@ const TAB_ROUTES: Record<Tab, string> = {
   orders: "/dashboard/procurement/purchase-orders",
   suppliers: "/dashboard/procurement/suppliers",
   invoices: "/dashboard/procurement/invoices",
+  pricing: "/dashboard/procurement/pricing",
 };
 
 function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Tab }) {
@@ -223,6 +226,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       invoices: () => getProcurementInvoices({ match_status: invMatchStatus }),
       projects: () => getInternalProjects(),
       stores: () => getInventoryStores(),
+      pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
     },
     [prStatus, rfqStatus, poStatus, invMatchStatus],
     {
@@ -235,6 +239,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
         invoices: "Invoices",
         projects: "Project register",
         stores: "Store register",
+        pendingPricing: "Pending pricing",
       },
     }
   );
@@ -249,6 +254,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const invoices = useMemo(() => (Array.isArray(procurementData.invoices?.data) ? procurementData.invoices.data : []), [procurementData.invoices]);
   const projects = useMemo(() => (Array.isArray(procurementData.projects?.data) ? procurementData.projects.data : []), [procurementData.projects]);
   const stores = useMemo(() => (Array.isArray(procurementData.stores?.data) ? procurementData.stores.data : []), [procurementData.stores]);
+  const pendingPricing = useMemo(() => (Array.isArray(procurementData.pendingPricing?.data) ? procurementData.pendingPricing.data : []), [procurementData.pendingPricing]);
   const error = loadError ? loadFailureMessage(loadError) : null;
 
   const kpis = useMemo(() => {
@@ -392,6 +398,16 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     finally { setSaving(null); }
   };
 
+  const confirmPricing = async (requestId: string, unitCost: number) => {
+    setSaving(`price-${requestId}`);
+    try {
+      await confirmMaterialRequestPrice(requestId, unitCost);
+      setNotice("Material request price confirmed.");
+      await load();
+    } catch (e) { setNotice(normalizeActionError(e, "Price could not be confirmed.")); }
+    finally { setSaving(null); }
+  };
+
   const matchInvoice = async (invoice: Rec) => {
     setSaving(`match-invoice-${invoice.id}`);
     try {
@@ -438,6 +454,11 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     const q = query.toLowerCase();
     return requisitions.filter((r) => `${r.pr_number ?? r.reference_number ?? r.id} ${r.project_name ?? ""} ${r.requested_by ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
   }, [requisitions, query]);
+
+  const filteredPricing = useMemo(() => {
+    const q = query.toLowerCase();
+    return pendingPricing.filter((r) => `${r.request_number ?? r.id} ${r.project_name ?? ""} ${r.item_name ?? ""}`.toLowerCase().includes(q));
+  }, [pendingPricing, query]);
 
   const filteredPOs = useMemo(() => {
     const q = query.toLowerCase();
@@ -505,13 +526,14 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
       {/* Module bar */}
       <div className="flex border-b border-ink-mid">
-        {(["requisitions", "rfqs", "orders", "suppliers", "invoices"] as Tab[]).map((item) => {
+        {(["requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"] as Tab[]).map((item) => {
           const isCurrent = tab === item;
           const label =
             item === "requisitions" ? "Requisitions" :
             item === "rfqs" ? "RFQs" :
             item === "orders" ? "Purchase Orders" :
             item === "suppliers" ? "Suppliers" :
+            item === "pricing" ? "Pending Pricing" :
             "Invoices";
           return (
             <Link
@@ -524,6 +546,11 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
                 <span className="flex items-center gap-1.5">
                   {label}
                   {unmatchedCount > 0 && !loading && <span className="rounded-full bg-red-600 px-1.5 py-0.5 font-mono text-[10px] text-white">{unmatchedCount}</span>}
+                </span>
+              ) : item === "pricing" ? (
+                <span className="flex items-center gap-1.5">
+                  {label}
+                  {pendingPricing.length > 0 && !loading && <span className="rounded-full bg-amber-600 px-1.5 py-0.5 font-mono text-[10px] text-white">{pendingPricing.length}</span>}
                 </span>
               ) : label}
             </Link>
@@ -585,6 +612,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
           tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} /> :
+          tab === "pricing" ? <PendingPricingTable rows={filteredPricing} saving={saving} onConfirm={confirmPricing} /> :
           <InvoicesTab rows={filteredInvoices} unmatchedCount={unmatchedCount} saving={saving} onMatch={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} />
         }
       </section>
@@ -669,6 +697,61 @@ function RequisitionsTable({ rows, saving, onSubmit, onApprove, onCreateRFQ, onC
                         </button>
                       </>
                     )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Pending Pricing Tab ────────────────────────────────────────────────────
+
+function PendingPricingTable({ rows, saving, onConfirm }: { rows: Rec[]; saving: string | null; onConfirm: (id: string, unitCost: number) => void; }) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  if (rows.length === 0) return <EmptyState label="No material requests are waiting on pricing." sub="Site material requests submitted with no known price appear here until procurement or inventory confirms the real cost." />;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[900px] text-sm">
+        <thead>
+          <tr className="border-b border-ink-mid bg-ink-light/50 text-left">
+            {["Request", "Project", "Item", "Qty", "Issued", "Required By", "Confirm Unit Cost"].map((h) => (
+              <th key={h} className="px-4 py-3 font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-ink-mid">
+          {rows.map((row) => {
+            const draft = drafts[row.id] ?? "";
+            const busy = saving === `price-${row.id}`;
+            const parsed = Number(draft);
+            const valid = draft.trim() !== "" && Number.isFinite(parsed) && parsed > 0;
+            return (
+              <tr key={row.id} className="hover:bg-ink-light/40">
+                <td className="px-4 py-3 font-mono text-xs text-signal">{tx(row.request_number, row.id.slice(0, 8).toUpperCase())}</td>
+                <td className="px-4 py-3 text-paper">{tx(row.project_name)}</td>
+                <td className="px-4 py-3 text-paper">{tx(row.item_name ?? row.item_code)}</td>
+                <td className="px-4 py-3 text-slate-light">{tx(String(row.requested_quantity ?? ""))} {tx(row.unit_of_measure, "")}</td>
+                <td className="px-4 py-3 text-slate-light">{tx(String(row.issued_quantity ?? "0"))}</td>
+                <td className="px-4 py-3 text-slate-light">{dt(row.required_by_date)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={draft}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                      type="number" min="0" step="0.0001" placeholder="Unit cost ($)"
+                      className="h-8 w-28 border border-ink-mid bg-ink px-2 text-xs text-paper"
+                    />
+                    <button
+                      onClick={() => onConfirm(row.id, parsed)}
+                      disabled={!valid || busy}
+                      className="inline-flex items-center gap-1 border border-emerald-500/40 px-2 py-1 font-mono text-[10px] uppercase text-emerald-300 hover:bg-emerald-950/30 disabled:opacity-40"
+                    >
+                      <BadgeCheck className="h-3 w-3" />Confirm
+                    </button>
                   </div>
                 </td>
               </tr>

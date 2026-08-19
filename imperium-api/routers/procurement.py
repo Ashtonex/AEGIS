@@ -59,6 +59,10 @@ class DecisionPayload(Payload):
     override_reason: Optional[str] = Field(default=None, max_length=2000)
 
 
+class MaterialRequestPricePayload(Payload):
+    unit_cost: Decimal = Field(gt=0, max_digits=15, decimal_places=4)
+
+
 class SubmitRequisitionPayload(Payload):
     override_reason: Optional[str] = Field(default=None, max_length=2000)
 
@@ -370,6 +374,162 @@ async def list_requisitions(
     )
     data = [dict(r._mapping) for r in rows]
     return ok(data, "Purchase requisitions listed.", len(data))
+
+
+@router.get("/material-requests")
+async def list_material_requests(
+    is_price_confirmed: Optional[bool] = Query(default=None),
+    project_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("procurement.requisition.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await db.execute(
+        text("""
+        SELECT mr.*, i.item_name, i.item_code, i.unit_of_measure, p.name AS project_name
+        FROM procurement.material_requests mr
+        JOIN procurement.inventory_items i ON i.id=mr.item_id
+        LEFT JOIN projects.projects p ON p.id=mr.project_id AND p.organization_id=mr.organization_id
+        WHERE mr.organization_id=:org_id AND mr.is_deleted=false
+          AND (CAST(:is_price_confirmed AS boolean) IS NULL OR mr.is_price_confirmed=CAST(:is_price_confirmed AS boolean))
+          AND (CAST(:project_id AS uuid) IS NULL OR mr.project_id=CAST(:project_id AS uuid))
+        ORDER BY mr.created_at DESC
+        LIMIT 500
+    """),
+        {
+            "org_id": user["org_id"],
+            "is_price_confirmed": is_price_confirmed,
+            "project_id": project_id,
+        },
+    )
+    data = [dict(r._mapping) for r in rows]
+    return ok(data, "Material requests listed.", len(data))
+
+
+@router.patch("/material-requests/{request_id}/price")
+async def confirm_material_request_price(
+    request_id: UUID,
+    payload: MaterialRequestPricePayload,
+    user: dict = Depends(require_permission("procurement.requisition.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Procurement or inventory confirms the real unit cost for a material
+    request a site submitted with no known price (a supplier quotation now
+    exists). This is a correction, not a silent overwrite: the finance cost
+    transaction and stock ledger unit cost already posted at issue time are
+    updated to match, using the same DO UPDATE upsert pattern fleet.py uses
+    for its own cost corrections, so the audit trail (posted_at, priced_by/
+    priced_at) shows the price changed rather than losing the original post."""
+    request_row = (
+        (
+            await db.execute(
+                text("""
+        SELECT * FROM procurement.material_requests
+        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+    """),
+                {"id": request_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not request_row:
+        raise HTTPException(status_code=404, detail="Material request not found.")
+
+    total_estimated = (
+        request_row["requested_quantity"] * payload.unit_cost
+    ).quantize(Decimal("0.01"))
+    await db.execute(
+        text("""
+        UPDATE procurement.material_requests
+        SET unit_cost=:unit_cost, total_estimated=:total_estimated,
+            is_price_confirmed=true, priced_by=:user_id, priced_at=NOW(), updated_at=NOW()
+        WHERE id=:id AND organization_id=:org_id
+    """),
+        {
+            "unit_cost": payload.unit_cost,
+            "total_estimated": total_estimated,
+            "user_id": user["user_id"],
+            "id": request_id,
+            "org_id": user["org_id"],
+        },
+    )
+
+    if request_row["stock_ledger_id"]:
+        await db.execute(
+            text("""
+            UPDATE procurement.stock_ledger
+            SET unit_cost=:unit_cost, total_cost=ROUND(ABS(quantity) * CAST(:unit_cost AS numeric), 2)
+            WHERE id=:stock_ledger_id AND organization_id=:org_id
+        """),
+            {
+                "unit_cost": payload.unit_cost,
+                "stock_ledger_id": request_row["stock_ledger_id"],
+                "org_id": user["org_id"],
+            },
+        )
+        issued_amount = (
+            request_row["issued_quantity"] * payload.unit_cost
+        ).quantize(Decimal("0.01"))
+        await db.execute(
+            text("""
+            INSERT INTO finance.cost_transactions (
+                organization_id, project_id, source_type, source_id, cost_category,
+                description, quantity, unit_cost, amount, transaction_date, posted_by
+            ) VALUES (
+                :org_id, :project_id, 'site_material_request', :source_id, 'materials',
+                :description, :quantity, :unit_cost, :amount, CURRENT_DATE, :user_id
+            )
+            ON CONFLICT (organization_id, source_type, source_id, cost_category) DO UPDATE
+            SET unit_cost=EXCLUDED.unit_cost, amount=EXCLUDED.amount,
+                description=EXCLUDED.description, posted_at=NOW()
+        """),
+            {
+                "org_id": user["org_id"],
+                "project_id": request_row["project_id"],
+                "source_id": request_id,
+                "description": f"Site material request {request_row['request_number']} - price confirmed",
+                "quantity": request_row["issued_quantity"],
+                "unit_cost": payload.unit_cost,
+                "amount": issued_amount,
+                "user_id": user["user_id"],
+            },
+        )
+
+    if request_row["purchase_requisition_id"]:
+        await db.execute(
+            text("""
+            UPDATE procurement.requisition_lines
+            SET estimated_unit_cost=:unit_cost, is_price_confirmed=true
+            WHERE requisition_id=:requisition_id AND item_id=:item_id AND organization_id=:org_id
+        """),
+            {
+                "unit_cost": payload.unit_cost,
+                "requisition_id": request_row["purchase_requisition_id"],
+                "item_id": request_row["item_id"],
+                "org_id": user["org_id"],
+            },
+        )
+        await db.execute(
+            text("""
+            UPDATE procurement.purchase_requisitions pr
+            SET total_estimated = (
+                SELECT COALESCE(SUM(quantity * estimated_unit_cost), 0)
+                FROM procurement.requisition_lines rl
+                WHERE rl.requisition_id=pr.id AND rl.organization_id=pr.organization_id AND rl.is_deleted=false
+            ), updated_at=NOW()
+            WHERE pr.id=:requisition_id AND pr.organization_id=:org_id
+        """),
+            {
+                "requisition_id": request_row["purchase_requisition_id"],
+                "org_id": user["org_id"],
+            },
+        )
+
+    await db.commit()
+    return ok(
+        {"id": str(request_id), "unit_cost": str(payload.unit_cost)},
+        "Material request price confirmed.",
+    )
 
 
 @router.post("/requisitions", status_code=status.HTTP_201_CREATED)

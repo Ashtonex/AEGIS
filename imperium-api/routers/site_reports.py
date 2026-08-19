@@ -405,9 +405,12 @@ async def request_site_material(
     )
     issue_qty = min(payload.quantity, max(available_stock, Decimal("0")))
     shortfall_qty = payload.quantity - issue_qty
-    effective_unit_cost = payload.unit_cost or Decimal(
-        str(item.get("standard_cost") or 0)
-    )
+    # Sites don't know supplier prices, so a $0/omitted unit_cost is a real
+    # "unpriced" request, not a signal to silently fall back to the item's
+    # standard_cost - it stays at $0 and is flagged for procurement or
+    # inventory to confirm the real price via PATCH .../price below.
+    effective_unit_cost = payload.unit_cost
+    is_price_confirmed = effective_unit_cost > 0
     total_estimated = (payload.quantity * effective_unit_cost).quantize(Decimal("0.01"))
     status_value = (
         "fulfilled_from_stock"
@@ -424,12 +427,12 @@ async def request_site_material(
             organization_id, request_number, project_id, site_id, store_id, item_id,
             requested_by, requested_quantity, issued_quantity, shortfall_quantity,
             unit_cost, total_estimated, required_by_date, priority, status,
-            work_package, justification, created_by
+            work_package, justification, created_by, is_price_confirmed
         ) VALUES (
             :org_id, :request_number, :project_id, :site_id, :store_id, :item_id,
             :user_id, :requested_quantity, :issued_quantity, :shortfall_quantity,
             :unit_cost, :total_estimated, :required_by_date, :priority, :status,
-            :work_package, :justification, :user_id
+            :work_package, :justification, :user_id, :is_price_confirmed
         ) RETURNING id
     """),
             {
@@ -450,6 +453,7 @@ async def request_site_material(
                 "status": status_value,
                 "work_package": payload.work_package,
                 "justification": payload.justification,
+                "is_price_confirmed": is_price_confirmed,
             },
         )
     ).scalar()
@@ -539,10 +543,10 @@ async def request_site_material(
             text("""
             INSERT INTO procurement.requisition_lines (
                 organization_id, requisition_id, item_id, description, quantity,
-                unit_of_measure, estimated_unit_cost, work_package, notes
+                unit_of_measure, estimated_unit_cost, work_package, notes, is_price_confirmed
             ) VALUES (
                 :org_id, :requisition_id, :item_id, :description, :quantity,
-                :uom, :unit_cost, :work_package, :notes
+                :uom, :unit_cost, :work_package, :notes, :is_price_confirmed
             )
         """),
             {
@@ -557,6 +561,7 @@ async def request_site_material(
                 "unit_cost": effective_unit_cost,
                 "work_package": payload.work_package,
                 "notes": f"Generated from material request {request_number}",
+                "is_price_confirmed": is_price_confirmed,
             },
         )
         await db.execute(
