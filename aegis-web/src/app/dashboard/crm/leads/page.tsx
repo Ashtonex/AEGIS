@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { EntityDocumentsDrawer } from '@/components/documents/EntityDocumentsDrawer';
 import {
+  ApiError,
   getCrmLeads,
   getCrmTenderSignals,
   qualifyCrmLead,
@@ -292,7 +293,14 @@ export default function CRMLeadsApp() {
         showToast(editingLead ? "Could not update lead." : "Could not save manual lead.", "error");
       }
     } catch (err) {
-      showToast(editingLead ? "Could not update lead." : "Could not save manual lead.", "error");
+      const fallback = editingLead ? "Could not update lead." : "Could not save manual lead.";
+      if (err instanceof ApiError && err.status === 409) {
+        showToast("A lead with this company name, email, or phone already exists. Check the pipeline before logging it again.", "error");
+      } else if (err instanceof ApiError && err.message) {
+        showToast(err.message, "error");
+      } else {
+        showToast(fallback, "error");
+      }
     } finally {
       setIsSavingLead(false);
     }
