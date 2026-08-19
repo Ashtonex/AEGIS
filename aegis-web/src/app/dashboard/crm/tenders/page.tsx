@@ -202,6 +202,20 @@ export default function TendersCommand() {
     }
   };
 
+  // The backend returns submission_deadline as a UTC-offset ISO string
+  // (e.g. "2026-09-01T12:30:00+00:00"). A <input type="datetime-local">
+  // needs "YYYY-MM-DDTHH:MM" in the *browser's local time* - naively
+  // slicing the raw string's first 16 characters displays the UTC wall
+  // clock time mislabeled as local, silently shifting the deadline by the
+  // user's UTC offset the moment they touch the field again.
+  const toLocalDatetimeInputValue = (isoString?: string | null) => {
+    if (!isoString) return '';
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
   const getCountdown = (deadlineStr?: string) => {
     if (!deadlineStr) return { text: 'N/A', urgency: 'none' };
     
@@ -300,7 +314,15 @@ export default function TendersCommand() {
           extraPayload.submission_deadline = new Date(newTender.submission_deadline).toISOString();
         }
 
-        await updateCrmTender(generatedId, extraPayload);
+        const extraRes = await updateCrmTender(generatedId, extraPayload);
+        if (!extraRes.success) {
+          // The tender itself was created (generatedId is real) - only the
+          // extra fields (category, deadline, bond, checklist...) failed to
+          // save. Surfacing this distinctly instead of silently proceeding
+          // as if everything succeeded, or letting it read as a total
+          // failure when a real tender now exists half-filled-in.
+          alert("Tender was logged, but its extra details (category, deadline, bond, checklist) did not save. Open it from the board and fill them in again.");
+        }
 
         // Reset state
         setNewTender({
@@ -1196,9 +1218,9 @@ export default function TendersCommand() {
 
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Submission Deadline</label>
-                      <input 
-                        type="datetime-local" 
-                        value={editForm.submission_deadline ? editForm.submission_deadline.substring(0, 16) : ''} 
+                      <input
+                        type="datetime-local"
+                        value={toLocalDatetimeInputValue(editForm.submission_deadline)}
                         onChange={e => setEditForm({ ...editForm, submission_deadline: e.target.value })}
                         className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono" 
                       />
