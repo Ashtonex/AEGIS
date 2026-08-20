@@ -229,21 +229,9 @@ async def shutdown(ctx):
 
 # 5. Parse Redis settings safely
 redis_url = settings.REDIS_URL
-if redis_url and redis_url.startswith("redis://"):
+if redis_url and urlparse(redis_url).scheme in ("redis", "rediss", "unix"):
     try:
-        url = urlparse(redis_url)
-        db_num = 0
-        if url.path:
-            try:
-                db_num = int(url.path.lstrip("/"))
-            except ValueError:
-                pass
-        redis_settings = RedisSettings(
-            host=url.hostname or "localhost",
-            port=url.port or 6379,
-            password=url.password,
-            database=db_num,
-        )
+        redis_settings = RedisSettings.from_dsn(redis_url)
     except Exception as parse_err:
         logger.error(
             f"Failed to parse REDIS_URL '{redis_url}', falling back to defaults. Error: {str(parse_err)}"
