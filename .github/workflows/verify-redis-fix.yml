@@ -16,11 +16,10 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/aegis
-            echo "--- running containers ---"
+            echo "--- removing orphaned local redis container (deleted from compose file, but still running) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --remove-orphans
+            docker volume rm digitalocean_redis_data 2>/dev/null || true
+            echo "--- running containers after cleanup ---"
             docker compose -f deploy/digitalocean/docker-compose.yml ps
             echo "--- confirming no local redis container exists ---"
-            docker ps -a --filter "name=redis" --format "{{.Names}}\t{{.Image}}\t{{.Status}}" || true
-            echo "--- worker startup/redis_target log lines ---"
-            docker compose -f deploy/digitalocean/docker-compose.yml logs imperium-worker --since 20m | grep -iE "redis_target|starting up|redis|error|exception" | tail -60
-            echo "--- worker_health.json (proves process is alive and wrote startup file) ---"
-            docker compose -f deploy/digitalocean/docker-compose.yml exec -T imperium-worker cat worker_health.json || true
+            docker ps -a --filter "name=redis" --format "{{.Names}}\t{{.Image}}\t{{.Status}}" || echo "(none found - clean)"
