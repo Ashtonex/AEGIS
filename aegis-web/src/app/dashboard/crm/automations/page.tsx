@@ -515,10 +515,10 @@ export default function CRMAutomationsPage() {
 
       {/* Main workspace */}
       {activeTab === 'visual' ? (
-        <div className="flex-1 flex gap-4 min-h-0 overflow-hidden mb-2">
+        <div className="flex-1 flex gap-4 min-h-0 overflow-x-auto overflow-y-hidden mb-2">
           
           {/* COLUMN 1: INTERACTIVE WORKFLOW CANVAS (73%) */}
-          <div className="w-[73%] flex flex-col bg-ink border border-ink-mid min-h-0 relative">
+          <div className="w-[73%] min-w-[420px] shrink-0 flex flex-col bg-ink border border-ink-mid min-h-0 relative">
             
             {/* Canvas Control Strip */}
             <div className="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-ink-light/85 border border-ink-mid p-1.5 text-xs font-mono">
@@ -712,7 +712,7 @@ export default function CRMAutomationsPage() {
           </div>
 
           {/* COLUMN 2: WORKFLOW SIDEBAR INSPECTOR (27%) */}
-          <div className="w-[27%] min-w-[240px] bg-ink-light border border-ink-mid p-4 flex flex-col gap-4 min-h-0 overflow-y-auto custom-scrollbar">
+          <div className="w-[27%] min-w-[240px] shrink-0 bg-ink-light border border-ink-mid p-4 flex flex-col gap-4 min-h-0 overflow-y-auto custom-scrollbar">
             <h3 className="font-mono text-[10px] text-slate-light tracking-widest uppercase border-b border-ink-mid pb-1.5 flex items-center">
               <Settings className="w-3.5 h-3.5 mr-1 text-signal" />
               Workflow Node Inspector

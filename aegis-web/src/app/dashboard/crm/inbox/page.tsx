@@ -482,10 +482,10 @@ export default function CRMSalesInbox() {
           <Loader2 className="w-8 h-8 text-signal animate-spin" />
         </div>
       ) : (
-        <div className="flex-1 flex gap-4 min-h-0 overflow-hidden">
-          
+        <div className="flex-1 flex gap-4 min-h-0 overflow-x-auto overflow-y-hidden">
+
           {/* COLUMN 1: THREAD LIST (30%) */}
-          <div className="w-[30%] min-w-[280px] flex flex-col bg-ink-light border border-ink-mid p-3 min-h-0">
+          <div className="w-[30%] min-w-[280px] shrink-0 flex flex-col bg-ink-light border border-ink-mid p-3 min-h-0">
             {/* Search and Filters */}
             <div className="space-y-2 mb-3 shrink-0">
               <div className="relative">
@@ -625,7 +625,7 @@ export default function CRMSalesInbox() {
           </div>
 
           {/* COLUMN 2: MESSAGE CONVERSATION THREAD & RESPONDER (43%) */}
-          <div className="w-[43%] flex flex-col bg-ink-light border border-ink-mid p-4 min-h-0">
+          <div className="w-[43%] min-w-[320px] shrink-0 flex flex-col bg-ink-light border border-ink-mid p-4 min-h-0">
             {selectedThread ? (
               <div className="flex-1 flex flex-col min-h-0">
                 {/* Header info */}
@@ -750,7 +750,7 @@ export default function CRMSalesInbox() {
           </div>
 
           {/* COLUMN 3: CRM CLIENT CONTEXT PANEL & LIVE GATEWAY (27%) */}
-          <div className="w-[27%] min-w-[240px] bg-ink-light border border-ink-mid p-4 flex flex-col gap-4 min-h-0 overflow-y-auto custom-scrollbar">
+          <div className="w-[27%] min-w-[240px] shrink-0 bg-ink-light border border-ink-mid p-4 flex flex-col gap-4 min-h-0 overflow-y-auto custom-scrollbar">
             <h3 className="font-mono text-[10px] text-slate-light tracking-widest uppercase border-b border-ink-mid pb-1.5 flex items-center">
               <Database className="w-3.5 h-3.5 mr-1 text-signal" />
               CRM Pipeline Context

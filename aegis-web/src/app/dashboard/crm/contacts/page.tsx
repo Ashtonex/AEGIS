@@ -459,10 +459,10 @@ export default function ContactsRegistry() {
             <Loader2 className="w-8 h-8 text-signal animate-spin" />
           </div>
         ) : (
-          <div className="flex-grow flex gap-4 min-h-0 overflow-hidden mb-2">
-            
+          <div className="flex-grow flex gap-4 min-h-0 overflow-x-auto overflow-y-hidden mb-2">
+
             {/* LEFT COLUMN: HIGH DENSITY LIST DIRECTORY (58%) */}
-            <div className="w-[58%] bg-ink-light border border-ink-mid overflow-y-auto custom-scrollbar">
+            <div className="w-[58%] min-w-[420px] shrink-0 bg-ink-light border border-ink-mid overflow-y-auto custom-scrollbar">
               <OperationalTable className="font-sans text-xs">
                 <TableHeader>
                   <TableRow>
@@ -549,7 +549,7 @@ export default function ContactsRegistry() {
             </div>
 
             {/* RIGHT COLUMN: DETAILED SUMMARY & TIMELINE (42%) */}
-            <div className="w-[42%] flex flex-col bg-ink-light border border-ink-mid p-4 min-h-0 overflow-y-auto custom-scrollbar gap-4">
+            <div className="w-[42%] min-w-[300px] shrink-0 flex flex-col bg-ink-light border border-ink-mid p-4 min-h-0 overflow-y-auto custom-scrollbar gap-4">
               {selectedContact ? (
                 <>
                   {/* Profile Header Card */}

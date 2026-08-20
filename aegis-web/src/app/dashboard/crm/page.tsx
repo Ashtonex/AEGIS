@@ -354,7 +354,7 @@ export default function CRMCommercialEngine() {
     const tenderStages = ['Tender Identified', 'Bid Prep', 'Submitted', 'Adjudication'];
     
     return (
-      <div className="w-[40%] flex flex-col gap-2 min-h-0 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-100 ease-out fill-mode-both" data-tour="crm-pipeline">
+      <div className="w-[40%] min-w-[360px] shrink-0 flex flex-col gap-2 min-h-0 animate-in fade-in slide-in-from-bottom-6 duration-700 delay-100 ease-out fill-mode-both" data-tour="crm-pipeline">
         {/* Left Funnel: Organic Opportunities */}
         <div className="bg-ink/40 backdrop-blur-md border border-white/5 rounded-sm p-2.5 flex flex-col shadow-xl flex-1 min-h-0 animate-in fade-in duration-300">
           <div className="flex justify-between items-center mb-1.5 shrink-0">
@@ -463,7 +463,7 @@ export default function CRMCommercialEngine() {
     const regionalBreakdown = getRegionalBreakdown();
     const maxRegionalValue = regionalBreakdown.length > 0 ? regionalBreakdown[0].value : 0;
     return (
-      <div className="w-[30%] flex flex-col gap-2 min-h-0">
+      <div className="w-[30%] min-w-[280px] shrink-0 flex flex-col gap-2 min-h-0">
         {/* Morning Briefing Terminal */}
         <div className="bg-ink/40 backdrop-blur-xl border border-white/10 p-2.5 rounded-sm shadow-2xl relative overflow-hidden flex flex-col flex-1 min-h-0 animate-in fade-in duration-300">
           <div className="flex items-center space-x-2 mb-1.5 border-b border-white/10 pb-1 shrink-0">
@@ -535,7 +535,7 @@ export default function CRMCommercialEngine() {
     const { client_concentration, subcontractor_risk, win_loss_diagnostic } = riskMatrices;
 
     return (
-      <div className="w-[30%] flex flex-col gap-2 min-h-0" data-tour="crm-risk">
+      <div className="w-[30%] min-w-[280px] shrink-0 flex flex-col gap-2 min-h-0" data-tour="crm-risk">
         {/* Client Concentration */}
         <div className="bg-ink/40 backdrop-blur-xl border border-white/5 rounded-sm p-2.5 shadow-xl relative overflow-hidden group flex-1 min-h-0 flex flex-col justify-between animate-in fade-in duration-300">
            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500 to-transparent"></div>
@@ -720,7 +720,7 @@ export default function CRMCommercialEngine() {
         {renderKpiCards()}
 
         {/* 3-column Layout */}
-        <div className="flex-1 min-h-0 flex gap-3">
+        <div className="flex-1 min-h-0 flex gap-3 overflow-x-auto">
           {renderCol1Funnels()}
           {renderCol2Stacked()}
           {renderCol3Stacked()}

@@ -539,10 +539,10 @@ export default function ClientOrganizationsRegistry() {
             <Loader2 className="w-8 h-8 text-signal animate-spin" />
           </div>
         ) : (
-          <div className="flex-1 flex gap-4 min-h-0 overflow-hidden mb-2">
+          <div className="flex-1 flex gap-4 min-h-0 overflow-x-auto overflow-y-hidden mb-2">
             
             {/* LEFT PANELS: HIGH DENSITY LIST DIRECTORY (60%) */}
-            <div className="w-[58%] flex flex-col gap-4 min-h-0">
+            <div className="w-[58%] min-w-[420px] shrink-0 flex flex-col gap-4 min-h-0">
               
               {/* Directory Grid */}
               <div className="flex-1 bg-ink-light border border-ink-mid overflow-y-auto custom-scrollbar">
@@ -670,7 +670,7 @@ export default function ClientOrganizationsRegistry() {
             </div>
 
             {/* RIGHT PANEL: SELECTED ORG DETAILS & ACTIVITIES (42%) */}
-            <div className="w-[42%] flex flex-col bg-ink-light border border-ink-mid p-4 min-h-0 overflow-y-auto custom-scrollbar gap-4">
+            <div className="w-[42%] min-w-[300px] shrink-0 flex flex-col bg-ink-light border border-ink-mid p-4 min-h-0 overflow-y-auto custom-scrollbar gap-4">
               
               {selectedOrg ? (
                 <>

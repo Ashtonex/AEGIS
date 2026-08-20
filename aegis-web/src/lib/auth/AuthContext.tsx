@@ -14,6 +14,12 @@ interface AuthContextType {
    * sync once an admin assigns a functional role via Settings. */
   role: string | null;
   isLoading: boolean;
+  /** True until the initial Supabase session check resolves - does NOT wait
+   * on the follow-up /auth/me role round trip the way isLoading does. Use
+   * this for gates that only need to know "is there a session", so they
+   * don't pay for a network hop they never needed (see PortalHome and
+   * DashboardShell's portal-route branch). */
+  sessionLoading: boolean;
   signOut: () => Promise<void>;
 }
 
@@ -24,6 +30,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionLoading, setSessionLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
   const resolvedUserIdRef = useRef<string | null>(null);
@@ -57,10 +64,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           setUser(session?.user ?? null);
           setCachedAccessToken(session?.access_token ?? null);
           resolvedUserIdRef.current = session?.user?.id ?? null;
+          setSessionLoading(false);
           await resolveRole(session?.access_token);
         }
       } catch (error) {
         console.error("Error fetching session:", error);
+        if (mounted) setSessionLoading(false);
       } finally {
         if (mounted) {
           setIsLoading(false);
@@ -149,7 +158,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   // page's own gate), so this only needs to catch every other page.
   const passwordCheckedTokenRef = useRef<string | null>(null);
   useEffect(() => {
-    if (isLoading || !session?.access_token) return;
+    if (sessionLoading || !session?.access_token) return;
     if (pathname === '/login' || pathname === '/setup-password') return;
     if (passwordCheckedTokenRef.current === session.access_token) return;
     passwordCheckedTokenRef.current = session.access_token;
@@ -163,7 +172,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       .catch(() => {
         // Fail open - a background check shouldn't block normal navigation.
       });
-  }, [isLoading, session, pathname, router]);
+  }, [sessionLoading, session, pathname, router]);
 
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -177,6 +186,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       session,
       role,
       isLoading,
+      sessionLoading,
       signOut
     }}>
       {children}

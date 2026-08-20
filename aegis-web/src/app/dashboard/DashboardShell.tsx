@@ -350,7 +350,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { session, role, isLoading, signOut } = useAuth();
+  const { session, role, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
   const [time, setTime] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
@@ -425,7 +425,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // once loaded, items with a requiredPermission are gated strictly.
   const [permissions, setPermissions] = useState<Set<string> | null>(null);
   useEffect(() => {
-    if (!session?.access_token) {
+    // portalGroups (the nav rendered on /portal routes) carries no
+    // requiredPermission gates, so this fetch is dead weight there - one
+    // fewer request competing with the portal page's own data calls.
+    if (!session?.access_token || isPortalRoute) {
       setPermissions(null);
       return;
     }
@@ -438,7 +441,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         // Leave permissions null on failure - falls back to role-only gating.
       });
     return () => { cancelled = true; };
-  }, [session?.access_token]);
+  }, [session?.access_token, isPortalRoute]);
 
   const hasPermission = useCallback(
     (requiredPermission?: string) => !requiredPermission || !permissions || permissions.has(requiredPermission),
@@ -641,7 +644,12 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // resolved. Rendering nothing here (instead of the full shell with
   // placeholder "System User" data) closes the window where protected
   // content could flash before AuthContext's redirect-to-/login fires.
-  if (isLoading || !session) {
+  //
+  // Portal routes gate on sessionLoading rather than isLoading: the portal
+  // nav (portalGroups, above) doesn't filter by role, so there's no reason
+  // to block first paint on the /auth/me round trip isLoading waits for -
+  // that only matters for the role-filtered MODULE_GROUPS nav below.
+  if ((isPortalRoute ? sessionLoading : isLoading) || !session) {
     return (
       <div className="min-h-screen bg-ink flex items-center justify-center">
         <div className="h-6 w-6 rounded-full border-2 border-signal border-t-transparent animate-spin" />

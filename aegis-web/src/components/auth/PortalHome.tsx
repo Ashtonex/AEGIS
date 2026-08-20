@@ -33,11 +33,17 @@ function PortalLoading() {
  */
 export function PortalHome({ portal }: { portal: ExternalPortal }) {
   const router = useRouter();
-  const { session, isLoading } = useAuth();
+  // sessionLoading, not isLoading: portal admission only needs to know
+  // there's a session, not the resolved employee role (that's a separate
+  // /auth/me round trip DashboardShell kicks off in parallel and doesn't
+  // gate portal routes on). Waiting on isLoading here serialized session ->
+  // role -> portal admission -> portal data into three sequential network
+  // hops before any portal content could start loading.
+  const { session, sessionLoading } = useAuth();
   const [admitted, setAdmitted] = useState(false);
 
   useEffect(() => {
-    if (isLoading) return;
+    if (sessionLoading) return;
     if (!session) {
       router.replace("/login");
       return;
@@ -54,7 +60,7 @@ export function PortalHome({ portal }: { portal: ExternalPortal }) {
         await supabase.auth.signOut();
         router.replace("/login");
       });
-  }, [isLoading, portal, router, session]);
+  }, [sessionLoading, portal, router, session]);
 
   if (!admitted) return <PortalLoading />;
 

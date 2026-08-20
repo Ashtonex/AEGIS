@@ -176,8 +176,8 @@ export function FinancialStatementsPanel() {
           </div>
 
           {!departmentId && statement?.departments && statement.departments.length > 0 && (
-            <div className="overflow-hidden rounded-sm border border-ink-mid bg-ink-light">
-              <table className="w-full border-collapse text-left text-sm">
+            <div className="overflow-x-auto rounded-sm border border-ink-mid bg-ink-light">
+              <table className="w-full min-w-[480px] border-collapse text-left text-sm">
                 <thead>
                   <tr className="border-b border-ink-mid bg-ink-light font-mono text-[11px] uppercase tracking-wider text-slate">
                     <th className="p-4">Segment</th>
