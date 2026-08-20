@@ -50,6 +50,28 @@ services:
       retries: 5
       start_period: 30s
 
+  imperium-worker:
+    build:
+      context: ../../imperium-api
+    restart: unless-stopped
+    command: arq app.workers.arq_worker.WorkerSettings
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT}
+      DEBUG: ${DEBUG}
+      DATABASE_URL: ${DATABASE_URL}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      SECRET_KEY: ${SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
+      FRONTEND_HOSTNAME: ${FRONTEND_HOSTNAME}
+      REDIS_URL: ${REDIS_URL}
+      BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
+
 volumes:
   caddy_data:
   caddy_config:
