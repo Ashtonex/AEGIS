@@ -28,7 +28,8 @@ import {
   getCrmComplianceRequirementTypes,
   getCrmCommunications,
   createCrmCommunication,
-  grantClientPortalAccess
+  grantClientPortalAccess,
+  getFinanceDepartments
 } from '@/lib/api';
 import { useApiQuery } from '@/hooks/useApiQuery';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
@@ -61,6 +62,12 @@ interface Lead {
   budget_confirmed?: boolean | null;
   required_compliance_types?: string[] | null;
   missing_compliance_labels?: string[] | null;
+  originating_department_id?: string | null;
+}
+
+interface Department {
+  id: string;
+  name: string;
 }
 
 interface ComplianceRequirementType {
@@ -159,9 +166,18 @@ export default function CRMLeadsApp() {
     labels: '',
     budget_confirmed: false,
     required_compliance_types: [] as string[],
-    initial_notes: ''
+    initial_notes: '',
+    originating_department_id: ''
   };
   const [manualForm, setManualForm] = useState(DEFAULT_MANUAL_FORM);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [departmentFilter, setDepartmentFilter] = useState('');
+
+  useEffect(() => {
+    void getFinanceDepartments()
+      .then((res) => setDepartments(res.success && Array.isArray(res.data) ? res.data : []))
+      .catch(() => setDepartments([]));
+  }, []);
 
   useEffect(() => {
     void getCrmComplianceRequirementTypes()
@@ -182,12 +198,12 @@ export default function CRMLeadsApp() {
     error: leadsError,
     refetch: loadLeads,
   } = useApiQuery<Lead[]>(async () => {
-    const res = await getCrmLeads();
+    const res = await getCrmLeads({ department_id: departmentFilter || undefined });
     if (res.success && Array.isArray(res.data)) {
       return res.data;
     }
     throw new Error("CRM leads could not be loaded from the CRM service.");
-  }, []);
+  }, [departmentFilter]);
 
   const leads = leadsData ?? [];
 
@@ -234,7 +250,8 @@ export default function CRMLeadsApp() {
       labels: (lead.labels || []).join(', '),
       budget_confirmed: Boolean(lead.budget_confirmed),
       required_compliance_types: lead.required_compliance_types || [],
-      initial_notes: ''
+      initial_notes: '',
+      originating_department_id: lead.originating_department_id || ''
     });
     setIsManualModalOpen(true);
   };
@@ -267,7 +284,8 @@ export default function CRMLeadsApp() {
         expected_close_date: manualForm.expected_close_date || undefined,
         labels: labelsArray,
         budget_confirmed: manualForm.budget_confirmed,
-        required_compliance_types: manualForm.required_compliance_types
+        required_compliance_types: manualForm.required_compliance_types,
+        originating_department_id: manualForm.originating_department_id || undefined
       };
 
       const res = editingLead
@@ -620,6 +638,14 @@ export default function CRMLeadsApp() {
           <p className="text-slate-400 text-xs mt-1">Qualify automatic signals, discover duplicates, and route telemetry sources.</p>
         </div>
         <div className="flex gap-2">
+          <select
+            value={departmentFilter}
+            onChange={(e) => setDepartmentFilter(e.target.value)}
+            className="px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] text-white"
+          >
+            <option value="">All Departments</option>
+            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
           <button
             onClick={() => setViewMode(prev => prev === 'list' ? 'kanban' : 'list')}
             className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-white"
@@ -956,6 +982,17 @@ export default function CRMLeadsApp() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-semibold">Department</label>
+                  <select
+                    value={manualForm.originating_department_id}
+                    onChange={(e) => setManualForm(prev => ({ ...prev, originating_department_id: e.target.value }))}
+                    className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
+                  >
+                    <option value="">Unassigned</option>
+                    {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
                 <div>
                   <label className="block text-slate-400 mb-1 font-semibold">Contact Email</label>
                   <input

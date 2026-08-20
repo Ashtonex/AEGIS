@@ -110,6 +110,7 @@ interface Opportunity {
   risk_approval_required?: boolean;
   is_stale?: boolean;
   created_at: string;
+  originating_department_id?: string;
 }
 
 interface Contact {
@@ -189,10 +190,22 @@ export default function OpportunitiesKanban() {
     client_id: '',
     client_org_id: '',
     new_contact_name: '',
-    new_contact_email: ''
+    new_contact_email: '',
+    originating_department_id: ''
   });
 
   const [showNewContactFields, setShowNewContactFields] = useState(false);
+
+  // Pipeline-wide department options for the create/edit forms and list
+  // filter - separate from winDepartmentOptions, which only loads lazily
+  // when the Mark Won modal opens.
+  const [pipelineDepartments, setPipelineDepartments] = useState<{ id: string; name: string }[]>([]);
+  const [departmentFilter, setDepartmentFilter] = useState('');
+  useEffect(() => {
+    void getFinanceDepartments()
+      .then((res) => setPipelineDepartments(res.success && Array.isArray(res.data) ? res.data : []))
+      .catch(() => setPipelineDepartments([]));
+  }, []);
 
   // Edit Drawer Form State
   const [editForm, setEditForm] = useState<{
@@ -204,6 +217,7 @@ export default function OpportunitiesKanban() {
     risk_level: string;
     client_id: string;
     client_org_id: string;
+    originating_department_id: string;
   } | null>(null);
 
   // New Note State
@@ -443,6 +457,7 @@ export default function OpportunitiesKanban() {
       if (newDeal.client_org_id) oppPayload.client_org_id = newDeal.client_org_id;
       if (marginVal) oppPayload.expected_margin = marginVal;
       if (newDeal.risk_level) oppPayload.risk_level = newDeal.risk_level;
+      if (newDeal.originating_department_id) oppPayload.originating_department_id = newDeal.originating_department_id;
 
       const res = await createCrmOpportunity(oppPayload);
 
@@ -465,7 +480,8 @@ export default function OpportunitiesKanban() {
           client_id: '',
           client_org_id: '',
           new_contact_name: '',
-          new_contact_email: ''
+          new_contact_email: '',
+          originating_department_id: ''
         });
         setShowNewContactFields(false);
         setIsModalOpen(false);
@@ -497,7 +513,8 @@ export default function OpportunitiesKanban() {
         expected_margin: marginVal,
         risk_level: editForm.risk_level,
         client_id: editForm.client_id || null,
-        client_org_id: editForm.client_org_id || null
+        client_org_id: editForm.client_org_id || null,
+        originating_department_id: editForm.originating_department_id || null
       };
 
       const res = await updateCrmOpportunity(selectedOpportunityId, updatePayload);
@@ -768,7 +785,10 @@ export default function OpportunitiesKanban() {
     // Risk level filter
     const matchesRisk = selectedRisk === 'All' || opp.risk_level === selectedRisk;
 
-    return matchesSearch && matchesMinBudget && matchesRange && matchesRisk;
+    // Department filter
+    const matchesDepartment = !departmentFilter || opp.originating_department_id === departmentFilter;
+
+    return matchesSearch && matchesMinBudget && matchesRange && matchesRisk && matchesDepartment;
   });
 
   // Contacts list is a raw, unjoined SELECT with no uniqueness guard on the
@@ -806,7 +826,8 @@ export default function OpportunitiesKanban() {
         expected_margin: String(selectedOpp.expected_margin || ''),
         risk_level: selectedOpp.risk_level || 'Low',
         client_id: selectedOpp.client_id || '',
-        client_org_id: selectedOpp.client_org_id || ''
+        client_org_id: selectedOpp.client_org_id || '',
+        originating_department_id: selectedOpp.originating_department_id || ''
       });
     } else {
       setEditForm(null);
@@ -1001,14 +1022,25 @@ export default function OpportunitiesKanban() {
             <option value="High">High Risk</option>
           </select>
 
+          {/* Department filter */}
+          <select
+            value={departmentFilter}
+            onChange={e => setDepartmentFilter(e.target.value)}
+            className="bg-black border border-white/10 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none"
+          >
+            <option value="">All Departments</option>
+            {pipelineDepartments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+
           {/* Clear Filters Button */}
-          {(searchQuery || minBudget !== '' || selectedRisk !== 'All' || valueRange !== 'All') && (
+          {(searchQuery || minBudget !== '' || selectedRisk !== 'All' || valueRange !== 'All' || departmentFilter) && (
             <button
               onClick={() => {
                 setSearchQuery('');
                 setMinBudget('');
                 setSelectedRisk('All');
                 setValueRange('All');
+                setDepartmentFilter('');
               }}
               className="text-[9px] font-mono text-[#D4AF37] hover:underline uppercase transition-all px-2 py-1.5"
             >
@@ -1220,6 +1252,18 @@ export default function OpportunitiesKanban() {
                     placeholder="15"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Department</label>
+                <select
+                  value={newDeal.originating_department_id}
+                  onChange={e => setNewDeal({ ...newDeal, originating_department_id: e.target.value })}
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                >
+                  <option value="">Unassigned</option>
+                  {pipelineDepartments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
               </div>
 
               {/* Organization Selection */}
@@ -1481,6 +1525,18 @@ export default function OpportunitiesKanban() {
                         <option value="High">High</option>
                       </select>
                     </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block font-mono text-[8px] text-slate-light uppercase">Department</label>
+                    <select
+                      value={editForm.originating_department_id}
+                      onChange={e => setEditForm({ ...editForm, originating_department_id: e.target.value })}
+                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                    >
+                      <option value="">Unassigned</option>
+                      {pipelineDepartments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
                   </div>
 
                   <div className="grid grid-cols-3 gap-3">

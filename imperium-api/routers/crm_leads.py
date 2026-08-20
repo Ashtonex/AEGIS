@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Dict, Any, List, Optional
+from uuid import UUID
 from pydantic import BaseModel, Field
 
 from core.database import get_db
@@ -70,6 +71,7 @@ MUTABLE_COLUMNS = {
     "opportunity_id",
     "campaign_id",
     "budget_confirmed",
+    "originating_department_id",
 }
 
 """
@@ -181,6 +183,7 @@ async def list_items(
     sector: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
     min_score: Optional[int] = Query(default=None, ge=0, le=100),
+    department_id: Optional[UUID] = Query(default=None),
     user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -229,6 +232,9 @@ async def list_items(
     if min_score is not None:
         query_sql += " AND COALESCE(l.ai_score, 0) >= :min_score"
         params["min_score"] = min_score
+    if department_id:
+        query_sql += " AND l.originating_department_id = :department_id"
+        params["department_id"] = department_id
     query_sql += """
         ORDER BY l.created_at DESC
         LIMIT 100
@@ -752,6 +758,18 @@ async def qualify_lead(
             },
         )
         opportunity_id = insert_opp_res.scalar()
+
+        # 3b. Start the pursuit spine (crm.pursuits) for this Lead -> Opportunity
+        # chain. One row per pursuit; Tender/Award/Loss stages attach their
+        # own FK here later (award_tender, mark_opportunity_won/lost) rather
+        # than creating a second pursuit row.
+        await db.execute(
+            text("""
+                INSERT INTO crm.pursuits (organization_id, lead_id, opportunity_id, status, created_by)
+                VALUES (:org_id, :lead_id, :opportunity_id, 'pursuing', :user_id)
+            """),
+            {"org_id": org_id, "lead_id": lead_id, "opportunity_id": opportunity_id, "user_id": user_id},
+        )
 
         # 4. If activity is provided, create it in crm.activities linked to the contact and opportunity
         if payload.activity:

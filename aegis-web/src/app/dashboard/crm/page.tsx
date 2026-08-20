@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp, ListChecks } from 'lucide-react';
-import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations } from '@/lib/api';
+import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations, getFinanceDepartments } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
 import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
@@ -70,7 +70,13 @@ export default function CRMCommercialEngine() {
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   
   // Forms state
-  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '' });
+  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', originating_department_id: '' });
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    void getFinanceDepartments()
+      .then((res) => setDepartments(res.success && Array.isArray(res.data) ? res.data : []))
+      .catch(() => setDepartments([]));
+  }, []);
   const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '' });
   const [regionAssigning, setRegionAssigning] = useState<string | null>(null);
   const [oppFormErrors, setOppFormErrors] = useState<Record<string, string>>({});
@@ -194,12 +200,13 @@ export default function CRMCommercialEngine() {
         budget: Number(oppForm.budget),
         probability: Number(oppForm.probability),
         ...(oppForm.client_org_id ? { client_org_id: oppForm.client_org_id } : {}),
-        ...(oppForm.region ? { region: oppForm.region } : {})
+        ...(oppForm.region ? { region: oppForm.region } : {}),
+        ...(oppForm.originating_department_id ? { originating_department_id: oppForm.originating_department_id } : {})
       });
       if (!response.success) throw new Error(getApiError(response, 'Opportunity was not created.'));
 
       setIsOppModalOpen(false);
-      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '' });
+      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', originating_department_id: '' });
       await loadData();
     } catch (error) {
       setCreateErrors((current) => ({
@@ -798,6 +805,16 @@ export default function CRMCommercialEngine() {
                   ))}
                 </select>
                 <p className="font-mono text-[9px] text-slate-light/70 pl-1">Feeds the Geographic Intelligence breakdown on the pipeline dashboard.</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Department</label>
+                <select value={oppForm.originating_department_id} onChange={e => setOppForm({...oppForm, originating_department_id: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-signal focus:ring-1 focus:ring-signal/50 outline-none font-sans transition-all">
+                  <option value="">-- Unassigned --</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
               </div>
 
               <div className="pt-6 flex justify-end space-x-3 border-t border-white/5 mt-6">

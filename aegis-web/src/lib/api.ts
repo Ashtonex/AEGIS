@@ -660,11 +660,14 @@ export async function getModulesStatus(accessToken?: string): Promise<ApiRespons
 
 // --- CRM API CALLS --- //
 
-export async function getCrmOpportunities() {
-  return await fetchApi<ApiResponse<any[]>>('/api/v1/crm/opportunities', { cache: 'no-store' });
+export async function getCrmOpportunities(params?: { department_id?: string }) {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set('department_id', params.department_id);
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return await fetchApi<ApiResponse<any[]>>(`/api/v1/crm/opportunities${qs}`, { cache: 'no-store' });
 }
 
-export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string }): Promise<ApiResponse<any>> {
+export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string, originating_department_id?: string }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/opportunities', {
     method: 'POST',
     body: JSON.stringify(data)
@@ -775,8 +778,11 @@ export async function deleteTenderRequirement(tenderId: string, requirementId: s
   });
 }
 
-export async function getCrmLeads(): Promise<ApiResponse<any[]>> {
-  return await fetchApi<ApiResponse<any[]>>('/api/v1/crm-leads/', { cache: 'no-store' });
+export async function getCrmLeads(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set('department_id', params.department_id);
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return await fetchApi<ApiResponse<any[]>>(`/api/v1/crm-leads/${qs}`, { cache: 'no-store' });
 }
 
 export async function updateCrmLeadStatus(leadId: string, status: string): Promise<ApiResponse<any>> {
@@ -842,6 +848,7 @@ export async function createCrmLead(data: {
   labels?: string[];
   budget_confirmed?: boolean;
   required_compliance_types?: string[];
+  originating_department_id?: string;
 }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm-leads/', {
     method: 'POST',
