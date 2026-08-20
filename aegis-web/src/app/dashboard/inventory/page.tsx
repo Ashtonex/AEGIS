@@ -101,7 +101,7 @@ function normalizeActionError(reason: unknown, fallback: string) {
 
 export default function InventoryPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager"]}>
       <InventoryWorkspace />
     </RBACGuard>
   );

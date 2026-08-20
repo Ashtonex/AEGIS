@@ -217,7 +217,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Inventory",
     href: "/dashboard/inventory",
     icon: Package,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager"],
     restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },

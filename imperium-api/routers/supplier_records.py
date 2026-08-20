@@ -53,9 +53,10 @@ async def create_item(
 ):
     payload = await request.json()
 
-    # issue_portal_login isn't a procurement.suppliers column - read it off
-    # the raw body before safe_payload_columns filters it out below.
-    issue_portal_login = bool(payload.get("issue_portal_login"))
+    # issue_portal_login isn't a procurement.suppliers column - safe_payload_columns
+    # only strips RESERVED_MUTATION_COLUMNS (id/org_id/etc.), not unknown
+    # columns, so it must be popped out here or it leaks into the raw INSERT.
+    issue_portal_login = bool(payload.pop("issue_portal_login", False))
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override

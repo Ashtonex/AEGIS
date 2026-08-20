@@ -1773,6 +1773,14 @@ export async function recordGoodsReceived(payload: Record<string, unknown>): Pro
   });
 }
 
+export async function createSupplierRecord(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string; temporary_password?: string }>> {
+  return fetchApi<ApiResponse<{ id: string; temporary_password?: string }>>("/api/v1/supplier-records/", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getProcurementSuppliers(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>("/api/v1/procurement/suppliers", { cache: "no-store", allowFallback: false });
 }

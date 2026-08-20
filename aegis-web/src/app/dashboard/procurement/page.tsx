@@ -40,6 +40,7 @@ import {
   createProcurementRequisition,
   createPurchaseOrderFromRequisition,
   createPurchaseOrderFromRfq,
+  createSupplierRecord,
   decideProcurementRfqResponse,
   decideSupplierInvoicePayment,
   confirmMaterialRequestPrice,
@@ -197,6 +198,8 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [saving, setSaving] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showCreatePR, setShowCreatePR] = useState(false);
+  const [showAddSupplier, setShowAddSupplier] = useState(false);
+  const [issuedSupplierCredentials, setIssuedSupplierCredentials] = useState<{ email: string; temporary_password: string } | null>(null);
   const [selectedPO, setSelectedPO] = useState<Rec | null>(null);
   const [approvingPR, setApprovingPR] = useState<Rec | null>(null);
   const [overridePromptFor, setOverridePromptFor] = useState<{ id: string; action: "submit" | "approve"; message: string; decisionReason?: string } | null>(null);
@@ -499,9 +502,15 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setShowCreatePR(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
-            <Plus className="h-4 w-4" />New Requisition
-          </button>
+          {tab === "suppliers" ? (
+            <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+              <Plus className="h-4 w-4" />New Supplier
+            </button>
+          ) : (
+            <button onClick={() => setShowCreatePR(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+              <Plus className="h-4 w-4" />New Requisition
+            </button>
+          )}
           <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
           </button>
@@ -619,6 +628,20 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
       {/* Modals */}
       {showCreatePR && <CreatePRModal projects={projects} onClose={() => setShowCreatePR(false)} onCreated={() => { setShowCreatePR(false); setNotice("Purchase requisition created."); void load(); }} />}
+      {showAddSupplier && (
+        <AddSupplierModal
+          onClose={() => setShowAddSupplier(false)}
+          onCreated={(temporaryPassword, email) => {
+            setShowAddSupplier(false);
+            setNotice("Supplier registered.");
+            if (temporaryPassword && email) setIssuedSupplierCredentials({ email, temporary_password: temporaryPassword });
+            void load();
+          }}
+        />
+      )}
+      {issuedSupplierCredentials && (
+        <CredentialsIssuedModal credentials={issuedSupplierCredentials} onClose={() => setIssuedSupplierCredentials(null)} />
+      )}
       {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
       {approvingPR && <ApproveModal pr={approvingPR} saving={saving?.startsWith("decide-") ?? false} onDecide={(d, r) => void decidePR(approvingPR.id, d, r)} onClose={() => setApprovingPR(null)} />}
       {overridePromptFor && (
@@ -889,7 +912,7 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
 // ─── Suppliers Table ──────────────────────────────────────────────────────────
 
 function SuppliersTable({ rows }: { rows: Rec[]; }) {
-  if (rows.length === 0) return <EmptyState label="No suppliers registered." sub="Suppliers are registered through the supplier portal or system settings." />;
+  if (rows.length === 0) return <EmptyState label="No suppliers registered." sub="Use New Supplier above to register one, or wait for supplier portal self-registrations." />;
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[960px] text-sm">
@@ -930,6 +953,144 @@ function SuppliersTable({ rows }: { rows: Rec[]; }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreated: (temporaryPassword?: string, email?: string) => void; }) {
+  const [form, setForm] = useState({
+    supplier_name: "",
+    trading_name: "",
+    registration_number: "",
+    tax_number: "",
+    praz_number: "",
+    nssa_number: "",
+    primary_contact_name: "",
+    primary_contact_email: "",
+    primary_contact_phone: "",
+  });
+  const [issuePortalLogin, setIssuePortalLogin] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!form.supplier_name.trim()) { setError("Supplier name is required."); return; }
+    if (issuePortalLogin && !form.primary_contact_email.trim()) { setError("A contact email is required to issue a portal login."); return; }
+    setSaving(true); setError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        supplier_name: form.supplier_name.trim(),
+        trading_name: form.trading_name.trim() || undefined,
+        registration_number: form.registration_number.trim() || undefined,
+        tax_number: form.tax_number.trim() || undefined,
+        praz_number: form.praz_number.trim() || undefined,
+        nssa_number: form.nssa_number.trim() || undefined,
+        primary_contact_name: form.primary_contact_name.trim() || undefined,
+        primary_contact_email: form.primary_contact_email.trim() || undefined,
+        primary_contact_phone: form.primary_contact_phone.trim() || undefined,
+        currency: "USD",
+        status: "pending_approval",
+        compliance_status: "pending",
+        issue_portal_login: issuePortalLogin,
+      };
+      const res = await createSupplierRecord(payload);
+      if (!res?.data?.id) throw new Error("Supplier response did not include an id.");
+      onCreated(res.data.temporary_password, form.primary_contact_email.trim() || undefined);
+    } catch (e) {
+      setError(normalizeActionError(e, "Could not create supplier."));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-lg border border-ink-mid bg-ink p-5 shadow-2xl">
+        <div className="flex items-start justify-between border-b border-ink-mid pb-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Register Supplier</p>
+            <h2 className="mt-1 text-xl font-semibold text-paper">New Supplier</h2>
+          </div>
+          <button onClick={onClose} className="border border-ink-mid p-2 text-slate-light hover:border-signal hover:text-paper"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="space-y-3.5 py-4">
+          {error && <Banner tone="error" message={error} />}
+          <div>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Supplier Name *</label>
+            <input value={form.supplier_name} onChange={(e) => setForm({ ...form, supplier_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Trading Name</label>
+              <input value={form.trading_name} onChange={(e) => setForm({ ...form, trading_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Registration Number</label>
+              <input value={form.registration_number} onChange={(e) => setForm({ ...form, registration_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Tax Number</label>
+              <input value={form.tax_number} onChange={(e) => setForm({ ...form, tax_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">PRAZ Number</label>
+              <input value={form.praz_number} onChange={(e) => setForm({ ...form, praz_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">NSSA Number</label>
+              <input value={form.nssa_number} onChange={(e) => setForm({ ...form, nssa_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+          </div>
+          <div className="border-t border-ink-mid pt-3.5">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-slate">Primary Contact</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Name</label>
+                <input value={form.primary_contact_name} onChange={(e) => setForm({ ...form, primary_contact_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+              <div>
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Phone</label>
+                <input value={form.primary_contact_phone} onChange={(e) => setForm({ ...form, primary_contact_phone: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Email</label>
+                <input type="email" value={form.primary_contact_email} onChange={(e) => setForm({ ...form, primary_contact_email: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+            </div>
+          </div>
+          <label className="flex items-start gap-2 border border-ink-mid p-3 text-xs text-slate-light">
+            <input type="checkbox" checked={issuePortalLogin} onChange={(e) => setIssuePortalLogin(e.target.checked)} className="mt-0.5" />
+            <span>Issue a supplier portal login for this contact now, using the email above. A one-time password is generated for you to hand over directly. Requires elevated (settings) access — if you don&apos;t have it, uncheck this and the supplier is still registered normally.</span>
+          </label>
+        </div>
+        <div className="flex justify-end gap-3 border-t border-ink-mid pt-4">
+          <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+          <button onClick={() => void submit()} disabled={saving} className="inline-flex h-10 items-center gap-2 bg-signal px-5 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Register Supplier
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CredentialsIssuedModal({ credentials, onClose }: { credentials: { email: string; temporary_password: string }; onClose: () => void; }) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md border border-signal/40 bg-ink p-5 shadow-2xl">
+        <h2 className="text-xl font-semibold text-paper">Portal Login Issued</h2>
+        <p className="mt-2 text-xs text-slate-light">Copy this password now and hand it to them directly — it will not be shown again, and they must change it on first login.</p>
+        <div className="mt-4 space-y-2">
+          <div className="border border-ink-mid bg-ink-light p-2">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Sign-in email</p>
+            <p className="mt-1 break-all font-mono text-xs text-paper">{credentials.email}</p>
+          </div>
+          <div className="border border-signal/40 bg-signal/5 p-2">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Temporary password</p>
+            <p className="mt-1 break-all font-mono text-xs text-paper">{credentials.temporary_password}</p>
+          </div>
+        </div>
+        <button onClick={onClose} className="mt-5 h-10 w-full bg-signal font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90">Done</button>
+      </div>
     </div>
   );
 }
