@@ -16,7 +16,7 @@ from app.services.documents.renderers import (
     QuotationExcelExporter,
 )
 from app.services.crm.automation_engine import evaluate_and_run_automations
-from app.services.finance.ccb_monitor import run_budget_overrun_check
+from app.services.finance.ccb_monitor import run_budget_overrun_check, run_requisition_budget_breach_check
 
 
 # 1. Retry Policy Helper
@@ -210,6 +210,30 @@ async def run_ccb_budget_overrun_check_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def run_ccb_requisition_breach_check_job(ctx):
+    """Daily cron (CCB automation Phase 3): catches requisitions that were
+    within budget when submitted/approved but whose project's budget
+    position has since drifted, and resolves findings for requisitions no
+    longer in an open state. The real-time case (a requisition breaching
+    budget right at submit/approve) is handled synchronously by
+    record_requisition_budget_breach in routers/procurement.py - this sweep
+    only needs to run daily, same cadence rationale as the budget-overrun
+    check above.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_requisition_budget_breach_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB requisition budget-breach check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 def time_now():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
@@ -275,10 +299,12 @@ class WorkerSettings:
         compliance_check_reminder_job,
         poll_ticket_sla_triggers_job,
         run_ccb_budget_overrun_check_job,
+        run_ccb_requisition_breach_check_job,
     ]
     cron_jobs = [
         cron(poll_ticket_sla_triggers_job, minute={0, 15, 30, 45}, run_at_startup=False),
         cron(run_ccb_budget_overrun_check_job, hour=3, minute=0, run_at_startup=False),
+        cron(run_ccb_requisition_breach_check_job, hour=3, minute=15, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

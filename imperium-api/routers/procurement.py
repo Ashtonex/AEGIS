@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from core.security import require_permission
 from app.services import inventory_service
+from app.services.finance.ccb_monitor import record_requisition_budget_breach
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 from app.shared.events import emit_notification, emit_role_notification
 
@@ -680,6 +681,15 @@ async def submit_requisition(
                 "budget_available": str(req["budget_available"] or 0),
             },
         )
+        await record_requisition_budget_breach(
+            db,
+            org_id=user["org_id"],
+            project_id=str(req["project_id"]),
+            requisition_id=str(req_id),
+            requisition_number=req["requisition_number"],
+            total_estimated=req["total_estimated"],
+            budget_available=req["budget_available"] or 0,
+        )
     await db.execute(
         text(
             "UPDATE procurement.purchase_requisitions SET status='submitted', submitted_at=NOW(), submitted_by=:user_id, updated_at=NOW() WHERE id=:id"
@@ -755,6 +765,15 @@ async def decide_requisition(
                 "total_estimated": str(req["total_estimated"]),
                 "budget_available": str(req["budget_available"] or 0),
             },
+        )
+        await record_requisition_budget_breach(
+            db,
+            org_id=user["org_id"],
+            project_id=str(req["project_id"]),
+            requisition_id=str(req_id),
+            requisition_number=req["requisition_number"],
+            total_estimated=req["total_estimated"],
+            budget_available=req["budget_available"] or 0,
         )
     await db.execute(
         text("""

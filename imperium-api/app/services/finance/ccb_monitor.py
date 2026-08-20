@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import inventory_service
 from app.services.finance.project_forecast import (
     compute_project_financials,
     derive_forecast_metrics,
@@ -47,7 +48,7 @@ async def _find_budget_overrun_candidates(db: AsyncSession, org_id: Optional[str
                     ON pb.project_id = p.id AND pb.organization_id = p.organization_id
                    AND pb.status = 'approved' AND pb.is_deleted = false
                 WHERE p.is_deleted = false
-                  AND (:org_id::uuid IS NULL OR p.organization_id = :org_id)
+                  AND (CAST(:org_id AS uuid) IS NULL OR p.organization_id = CAST(:org_id AS uuid))
                   AND lower(COALESCE(p.status, '')) = ANY(:active_statuses)
                   AND EXISTS (
                       SELECT 1 FROM finance.boq_line_items b
@@ -134,6 +135,21 @@ async def _upsert_finding(
     return newly_open
 
 
+async def _resolve_finding(db: AsyncSession, *, org_id: str, natural_key: str) -> None:
+    """Auto-clears a finding whose underlying condition is no longer true,
+    rather than leaving a stale alert nobody will ever clear by hand. A
+    no-op if no open/acknowledged finding exists for this key."""
+    await db.execute(
+        text("""
+            UPDATE finance.ccb_monitor_findings
+            SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
+            WHERE organization_id = :org_id AND natural_key = :natural_key
+              AND status IN ('open', 'acknowledged')
+        """),
+        {"org_id": org_id, "natural_key": natural_key},
+    )
+
+
 async def run_budget_overrun_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
     """Compares estimate-at-completion against approved budget + approved
     variations for every eligible project, reusing the exact math
@@ -162,18 +178,9 @@ async def run_budget_overrun_check(db: AsyncSession, org_id: Optional[str] = Non
         natural_key = f"{project_id}:budget_boq_overrun"
 
         if metrics.get("unexplained_overrun_amount", 0) <= 0:
-            # No unexplained overrun right now - if a finding was previously
-            # open for this project, resolve it automatically rather than
-            # leaving a stale alert nobody will ever clear by hand.
-            await db.execute(
-                text("""
-                    UPDATE finance.ccb_monitor_findings
-                    SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
-                    WHERE organization_id = :org_id AND natural_key = :natural_key
-                      AND status IN ('open', 'acknowledged')
-                """),
-                {"org_id": project_org_id, "natural_key": natural_key},
-            )
+            # No unexplained overrun right now - resolve any previously
+            # open finding for this project.
+            await _resolve_finding(db, org_id=project_org_id, natural_key=natural_key)
             continue
 
         findings_open += 1
@@ -219,5 +226,208 @@ async def run_budget_overrun_check(db: AsyncSession, org_id: Optional[str] = Non
     logger.info(
         f"CCB budget overrun check: {checked} project(s) evaluated, "
         f"{findings_open} with an open overrun, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+# ---------------------------------------------------------------------------
+# Requisition budget-breach check (Phase 3) - primarily an event hook fired
+# synchronously at submit/approve time (see record_requisition_budget_breach,
+# called from routers/procurement.py) so a breach is findable immediately,
+# not after waiting for the next daily sweep. The sweep below exists to
+# catch requisitions that were within budget when actioned but whose
+# project's budget position has since drifted (another requisition or cost
+# transaction ate the remaining headroom), and to resolve findings whose
+# requisition is no longer in an open state.
+# ---------------------------------------------------------------------------
+
+_OPEN_REQUISITION_STATUSES = ("submitted", "approved", "ordered")
+
+
+def _requisition_natural_key(project_id: str, requisition_id: str) -> str:
+    return f"{project_id}:requisition_budget_breach:{requisition_id}"
+
+
+async def record_requisition_budget_breach(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    project_id: str,
+    requisition_id: str,
+    requisition_number: str,
+    total_estimated: float,
+    budget_available: float,
+) -> bool:
+    """Call this right where a requisition is actually allowed to proceed
+    over budget (submit or approve, after an authorized override) - it's the
+    real-time counterpart to the daily sweep. No-ops (returns False) if the
+    requisition isn't actually over budget. Returns True if this is a new or
+    reopened finding (i.e. a notification was sent)."""
+    breach_amount = float(total_estimated) - float(budget_available)
+    if breach_amount <= 0:
+        return False
+
+    natural_key = _requisition_natural_key(project_id, requisition_id)
+    severity = _overrun_severity(breach_amount, float(total_estimated))
+    summary = (
+        f"Requisition {requisition_number} (${float(total_estimated):,.2f}) was allowed to proceed "
+        f"${breach_amount:,.2f} over the project's available approved budget "
+        f"(${float(budget_available):,.2f} available) via an authorized override."
+    )
+
+    newly_open = await _upsert_finding(
+        db,
+        org_id=org_id,
+        project_id=project_id,
+        check_type="requisition_budget_breach",
+        natural_key=natural_key,
+        severity=severity,
+        summary=summary,
+        evidence={
+            "requisition_id": requisition_id,
+            "requisition_number": requisition_number,
+            "total_estimated": float(total_estimated),
+            "budget_available": float(budget_available),
+            "breach_amount": breach_amount,
+        },
+    )
+
+    if newly_open:
+        await emit_role_notification(
+            db,
+            org_id=org_id,
+            role_names=COMMERCIAL_ALERT_ROLES,
+            title=f"CCB: requisition {requisition_number} approved over budget",
+            message=summary,
+            notification_type="ccb_requisition_budget_breach",
+            priority="urgent" if severity == "critical" else "high",
+            action_url="/dashboard/procurement?tab=requisitions",
+            metadata={
+                "project_id": project_id,
+                "requisition_id": requisition_id,
+                "check_type": "requisition_budget_breach",
+            },
+        )
+
+    return newly_open
+
+
+async def _resolve_stale_requisition_findings(db: AsyncSession, org_id: Optional[str]) -> None:
+    """Findings whose requisition has since been rejected/cancelled won't be
+    revisited by the sweep loop below (it only selects open-status
+    requisitions), so clear them here based on the requisition_id recorded
+    in evidence at creation time."""
+    await db.execute(
+        text("""
+            UPDATE finance.ccb_monitor_findings f
+            SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
+            FROM procurement.purchase_requisitions r
+            WHERE f.check_type = 'requisition_budget_breach'
+              AND f.status IN ('open', 'acknowledged')
+              AND f.organization_id = r.organization_id
+              AND (f.evidence->>'requisition_id') = r.id::text
+              AND (CAST(:org_id AS uuid) IS NULL OR f.organization_id = CAST(:org_id AS uuid))
+              AND NOT (r.status = ANY(:open_statuses))
+        """),
+        {"org_id": org_id, "open_statuses": list(_OPEN_REQUISITION_STATUSES)},
+    )
+
+
+async def _find_open_requisitions(db: AsyncSession, org_id: Optional[str]):
+    rows = (
+        await db.execute(
+            text("""
+                SELECT id AS requisition_id, organization_id AS org_id, project_id,
+                       requisition_number, total_estimated
+                FROM procurement.purchase_requisitions
+                WHERE is_deleted = false
+                  AND status = ANY(:open_statuses)
+                  AND project_id IS NOT NULL
+                  AND (CAST(:org_id AS uuid) IS NULL OR organization_id = CAST(:org_id AS uuid))
+            """),
+            {"open_statuses": list(_OPEN_REQUISITION_STATUSES), "org_id": org_id},
+        )
+    ).mappings().all()
+    return rows
+
+
+async def run_requisition_budget_breach_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Daily sweep: re-evaluates every submitted/approved/ordered
+    requisition's project budget headroom (the same figure
+    inventory_service.budget_available already computes at submit/approve
+    time) and upserts/resolves the requisition_budget_breach finding to
+    match current reality.
+    """
+    await _resolve_stale_requisition_findings(db, org_id)
+
+    requisitions = await _find_open_requisitions(db, org_id)
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in requisitions:
+        checked += 1
+        req_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        requisition_id = str(row["requisition_id"])
+        natural_key = _requisition_natural_key(project_id, requisition_id)
+
+        available = await inventory_service.budget_available(
+            db, org_id=req_org_id, project_id=row["project_id"]
+        )
+        total_estimated = float(row["total_estimated"] or 0)
+
+        if available is None or total_estimated <= float(available):
+            await _resolve_finding(db, org_id=req_org_id, natural_key=natural_key)
+            continue
+
+        findings_open += 1
+        breach_amount = total_estimated - float(available)
+        severity = _overrun_severity(breach_amount, total_estimated)
+        summary = (
+            f"Requisition {row['requisition_number']} (${total_estimated:,.2f}) now exceeds the "
+            f"project's available approved budget (${float(available):,.2f} available) by "
+            f"${breach_amount:,.2f} - the project's budget position has drifted since this "
+            "requisition was submitted/approved."
+        )
+
+        newly_open = await _upsert_finding(
+            db,
+            org_id=req_org_id,
+            project_id=project_id,
+            check_type="requisition_budget_breach",
+            natural_key=natural_key,
+            severity=severity,
+            summary=summary,
+            evidence={
+                "requisition_id": requisition_id,
+                "requisition_number": row["requisition_number"],
+                "total_estimated": total_estimated,
+                "budget_available": float(available),
+                "breach_amount": breach_amount,
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=req_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: requisition {row['requisition_number']} now over budget",
+                message=summary,
+                notification_type="ccb_requisition_budget_breach",
+                priority="urgent" if severity == "critical" else "high",
+                action_url="/dashboard/procurement?tab=requisitions",
+                metadata={
+                    "project_id": project_id,
+                    "requisition_id": requisition_id,
+                    "check_type": "requisition_budget_breach",
+                },
+            )
+
+    logger.info(
+        f"CCB requisition budget-breach sweep: {checked} requisition(s) evaluated, "
+        f"{findings_open} over budget, {notified} newly notified."
     )
     return {"checked": checked, "findings_open": findings_open, "notified": notified}
