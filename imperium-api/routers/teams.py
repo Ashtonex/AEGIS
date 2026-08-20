@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import require_permission, user_has_permission
 
 router = APIRouter()
 
@@ -25,16 +25,31 @@ async def list_teams(
     user: dict = Depends(require_permission("teams.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    # Baseline teams.read only sees teams the caller belongs to -
+    # teams.read_all (the same admin/lead tier that already held teams.read
+    # before this scoping existed) still sees every team org-wide.
+    scope_clause = ""
+    params: dict = {"org_id": user["org_id"]}
+    if not await user_has_permission(db, user, "teams.read_all"):
+        scope_clause = """
+            AND EXISTS (
+                SELECT 1 FROM core.team_members mine
+                WHERE mine.team_id = t.id AND mine.user_id = :caller_id
+            )
+        """
+        params["caller_id"] = user["user_id"]
+
     result = await db.execute(
-        text("""
+        text(f"""
             SELECT t.id, t.name, t.created_at, COUNT(tm.user_id) AS member_count
             FROM core.teams t
             LEFT JOIN core.team_members tm ON tm.team_id = t.id
             WHERE t.organization_id = :org_id AND t.is_deleted = false
+            {scope_clause}
             GROUP BY t.id, t.name, t.created_at
             ORDER BY t.name
-        """),
-        {"org_id": user["org_id"]},
+        """),  # nosec B608 - scope_clause is a fixed literal, never user input
+        params,
     )
     items = [dict(row._mapping) for row in result]
     return {"success": True, "data": items, "message": "Teams listed.", "meta": {"total": len(items)}}

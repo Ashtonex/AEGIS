@@ -101,6 +101,8 @@ export default function ClientOrganizationsRegistry() {
     parent_org_id: ''
   });
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [issuePortalLogin, setIssuePortalLogin] = useState(false);
+  const [issuedCredentials, setIssuedCredentials] = useState<{ email: string; temporary_password: string } | null>(null);
 
   // Inline forms for Right Detail Panel
   const [isSavingLimits, setIsSavingLimits] = useState(false);
@@ -308,7 +310,8 @@ export default function ClientOrganizationsRegistry() {
     // Validation
     const errors: Record<string, string> = {};
     if (!form.name.trim()) errors.name = 'Organization name is required.';
-    
+    if (issuePortalLogin && !form.email.trim()) errors.email = 'An email is required to issue a portal login.';
+
     setFormErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
@@ -327,7 +330,8 @@ export default function ClientOrganizationsRegistry() {
         credit_limit: Number(form.credit_limit),
         total_contract_value: Number(form.total_contract_value),
         risk_rating: form.risk_rating,
-        parent_org_id: form.parent_org_id || null
+        parent_org_id: form.parent_org_id || null,
+        issue_portal_login: issuePortalLogin
       });
       if (!response?.data?.id) throw new Error("CRM organization response did not include an id.");
 
@@ -341,6 +345,9 @@ export default function ClientOrganizationsRegistry() {
       setOrgs(prev => [newOrg, ...prev]);
       setSelectedOrgId(newOrg.id);
       setIsModalOpen(false);
+      if (response.data.temporary_password) {
+        setIssuedCredentials({ email: form.email.trim(), temporary_password: response.data.temporary_password });
+      }
       showToast("Account successfully registered.");
       setForm({
         name: '',
@@ -357,6 +364,7 @@ export default function ClientOrganizationsRegistry() {
         risk_rating: 'Medium',
         parent_org_id: ''
       });
+      setIssuePortalLogin(false);
     } catch (err) {
       showToast("Client account was not created. Check the CRM service connection and retry.", "error");
     } finally {
@@ -1116,6 +1124,16 @@ export default function ClientOrganizationsRegistry() {
                 />
               </div>
 
+              <label className="flex items-start gap-2 border border-ink-mid p-3 text-xs text-slate-light">
+                <input
+                  type="checkbox"
+                  checked={issuePortalLogin}
+                  onChange={(e) => setIssuePortalLogin(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>Issue a client portal login for this account now, using the email above. A one-time password is generated for you to hand over directly.</span>
+              </label>
+
               <div className="flex justify-end space-x-3 border-t border-ink-mid pt-3 mt-4">
                 <button
                   type="button"
@@ -1134,6 +1152,32 @@ export default function ClientOrganizationsRegistry() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* PORTAL LOGIN ISSUED */}
+      {issuedCredentials && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-ink-light border border-signal/40 w-full max-w-md p-6">
+            <h3 className="font-sans font-black text-lg text-paper uppercase tracking-wider mb-2">Portal Login Issued</h3>
+            <p className="text-xs text-slate-light mb-4">Copy this password now and hand it to them directly - it will not be shown again, and they must change it on first login.</p>
+            <div className="space-y-2">
+              <div className="border border-ink-mid bg-ink p-2">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Sign-in email</p>
+                <p className="mt-1 break-all font-mono text-xs text-paper">{issuedCredentials.email}</p>
+              </div>
+              <div className="border border-signal/40 bg-signal/5 p-2">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Temporary password</p>
+                <p className="mt-1 break-all font-mono text-xs text-paper">{issuedCredentials.temporary_password}</p>
+              </div>
+            </div>
+            <button
+              onClick={() => setIssuedCredentials(null)}
+              className="mt-5 w-full bg-signal hover:bg-signal/90 text-ink font-mono text-xs font-bold py-2"
+            >
+              DONE
+            </button>
           </div>
         </div>
       )}

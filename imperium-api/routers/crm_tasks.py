@@ -7,10 +7,27 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import require_permission, user_has_permission
 from app.shared.events import emit_notification
+from app.shared.task_stacks import ENTITY_DEPARTMENT_CODE, generate_task_stack
 
 router = APIRouter()
+
+DEPARTMENT_ENTITY_TYPES: dict[str, list[str]] = {}
+for _entity_type, _department in ENTITY_DEPARTMENT_CODE.items():
+    DEPARTMENT_ENTITY_TYPES.setdefault(_department, []).append(_entity_type)
+
+# entity_type -> the table/id-column pair backfill-stacks sweeps to generate
+# stacks for every pre-existing record that predates auto-generation on
+# create (738de2a) or predates fleet/machinery being wired up as sources.
+BACKFILL_SOURCES: list[tuple[str, str]] = [
+    ("lead", "crm.leads"),
+    ("opportunity", "crm.opportunities"),
+    ("tender", "crm.tenders"),
+    ("project", "projects.projects"),
+    ("fleet", "fleet.fleet"),
+    ("machinery", "fleet.equipment_assets"),
+]
 
 
 class TaskCreate(BaseModel):
@@ -62,6 +79,7 @@ async def list_tasks(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     entity_type: Optional[str] = None,
     entity_id: Optional[UUID] = None,
+    department: Optional[str] = None,
     user: dict = Depends(require_permission("crm_tasks.read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -86,6 +104,24 @@ async def list_tasks(
     if entity_id:
         query_str += " AND t.entity_id = :entity_id"
         params["entity_id"] = entity_id
+    if department:
+        dept_entity_types = DEPARTMENT_ENTITY_TYPES.get(department.strip().lower())
+        if not dept_entity_types:
+            raise HTTPException(status_code=422, detail=f"Unknown department: {department}")
+        query_str += " AND t.entity_type = ANY(:department_entity_types)"
+        params["department_entity_types"] = dept_entity_types
+
+    # Baseline crm_tasks.read only sees tasks assigned directly to the
+    # caller or belonging to a team they're a member of - crm_tasks.read_all
+    # (the same admin/lead tier that already held crm_tasks.read before this
+    # scoping existed) still sees everything org-wide, unchanged.
+    if not await user_has_permission(db, user, "crm_tasks.read_all"):
+        query_str += """ AND (
+            t.assigned_to_user_id = :caller_id
+            OR t.assigned_to_team_id IN (SELECT team_id FROM core.team_members WHERE user_id = :caller_id)
+        )"""
+        params["caller_id"] = user["user_id"]
+
     query_str += " ORDER BY (t.due_date IS NULL), t.due_date, t.created_at DESC"
 
     result = await db.execute(text(query_str), params)
@@ -158,7 +194,7 @@ async def update_task(
     org_id = user["org_id"]
     current = (
         await db.execute(
-            text("SELECT title, assigned_to_user_id FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            text("SELECT title, assigned_to_user_id, assigned_to_team_id, status FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
             {"id": task_id, "org_id": org_id},
         )
     ).mappings().first()
@@ -184,9 +220,35 @@ async def update_task(
     # both at once.
     clear_team = "assigned_to_user_id" in safe_keys and values["assigned_to_user_id"]
 
+    # Redistributing a task OUT of a team is a lead's call, not any holder of
+    # crm_tasks.update - unless the caller already has org-wide reach via
+    # crm_tasks.read_all (the same admin/lead tier that can assign a whole
+    # stack to a team in the first place via assign-stack).
+    if clear_team and current["assigned_to_team_id"]:
+        is_lead = (
+            await db.execute(
+                text("SELECT 1 FROM core.team_members WHERE team_id = :team_id AND user_id = :user_id AND is_lead = true"),
+                {"team_id": current["assigned_to_team_id"], "user_id": user["user_id"]},
+            )
+        ).first()
+        if not is_lead and not await user_has_permission(db, user, "crm_tasks.read_all"):
+            raise HTTPException(
+                status_code=403,
+                detail="Only that team's lead can redistribute its tasks to individual members.",
+            )
+
     set_clause = ", ".join(f"{column} = :{column}" for column in safe_keys)
     if clear_team:
         set_clause += ", assigned_to_team_id = NULL"
+    # completed_at tracks the moment status actually transitioned to 'done'
+    # (distinct from updated_at, which any field edit touches) - cleared if
+    # a completed task is reopened, so re-marking it done later gets a fresh
+    # timestamp rather than keeping a stale one from a prior completion.
+    if "status" in safe_keys:
+        if values["status"] == "done" and current["status"] != "done":
+            set_clause += ", completed_at = NOW()"
+        elif values["status"] != "done" and current["status"] == "done":
+            set_clause += ", completed_at = NULL"
     params = {k: values[k] for k in safe_keys}
     params["id"] = task_id
     params["org_id"] = org_id
@@ -296,6 +358,39 @@ async def assign_stack_to_team(
         "success": True,
         "data": {"task_count": len(updated_ids)},
         "message": "Task stack assigned to team.",
+        "meta": {},
+    }
+
+
+@router.post("/backfill-stacks")
+async def backfill_task_stacks(
+    user: dict = Depends(require_permission("crm_tasks.templates.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """One-time (safe to re-run) sweep that generates the standard task
+    stack for every existing lead/opportunity/tender/project/fleet-asset/
+    equipment-asset that predates auto-generation firing on create, or
+    predates fleet/machinery being wired up as sources at all.
+    generate_task_stack() already no-ops per record via its own
+    source='template' existence check, so re-running this is always safe."""
+    org_id = user["org_id"]
+    created_by = user["user_id"]
+    created_total = 0
+    records_checked = 0
+    for entity_type, table_name in BACKFILL_SOURCES:
+        rows = await db.execute(
+            text(f"SELECT id FROM {table_name} WHERE organization_id = :org_id AND is_deleted = false"),  # nosec B608 - table_name drawn from a fixed allowlist above, never user input
+            {"org_id": org_id},
+        )
+        for row in rows:
+            records_checked += 1
+            created_total += await generate_task_stack(
+                db, org_id=org_id, entity_type=entity_type, entity_id=row.id, created_by=created_by,
+            )
+    return {
+        "success": True,
+        "data": {"records_checked": records_checked, "tasks_created": created_total},
+        "message": f"Backfill complete: {created_total} task(s) created across {records_checked} record(s).",
         "meta": {},
     }
 

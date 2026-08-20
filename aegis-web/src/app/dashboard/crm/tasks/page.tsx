@@ -11,6 +11,7 @@ import {
   getAssignableUsers,
   getTeams,
   assignTaskStack,
+  backfillCrmTaskStacks,
 } from "@/lib/api";
 
 interface Task {
@@ -64,18 +65,26 @@ function groupKey(task: Task) {
   return task.entity_type && task.entity_id ? `${task.entity_type}:${task.entity_id}` : "unlinked";
 }
 
+const DEPARTMENT_TABS: { value: string; label: string }[] = [
+  { value: "commercial", label: "Commercial" },
+  { value: "construction", label: "Construction" },
+  { value: "plant_equipment", label: "Plant & Equipment" },
+];
+
 export default function CrmTasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [department, setDepartment] = useState<string>(DEPARTMENT_TABS[0].value);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [stackTeamPick, setStackTeamPick] = useState<Record<string, string>>({});
   const [assigningStack, setAssigningStack] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,6 +92,7 @@ export default function CrmTasksPage() {
     try {
       const [tasksRes, usersRes, teamsRes] = await Promise.all([
         getCrmTasks({
+          department,
           status: statusFilter !== "all" ? statusFilter : undefined,
           assigned_to_user_id: assigneeFilter !== "all" ? assigneeFilter : undefined,
         }),
@@ -97,9 +107,23 @@ export default function CrmTasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, assigneeFilter]);
+  }, [department, statusFilter, assigneeFilter]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const handleBackfill = async () => {
+    setBackfilling(true);
+    setError(null);
+    try {
+      const res = await backfillCrmTaskStacks();
+      if (!res.success) throw new Error("Backfill could not run.");
+      await load();
+    } catch (e) {
+      setError(normalizeError(e, "Backfill could not run."));
+    } finally {
+      setBackfilling(false);
+    }
+  };
 
   const groups = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -180,12 +204,36 @@ export default function CrmTasksPage() {
             <h1 className="mt-2 font-display text-2xl font-semibold text-paper">Tasks</h1>
             <p className="mt-1 text-sm text-slate-light">Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people.</p>
           </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 border border-signal bg-signal/10 px-4 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/20"
-          >
-            <Plus className="h-3.5 w-3.5" /> New Task
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void handleBackfill()}
+              disabled={backfilling}
+              title="Generate task stacks for existing records that predate auto-generation"
+              className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
+            >
+              {backfilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />} Backfill Stacks
+            </button>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-1.5 border border-signal bg-signal/10 px-4 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/20"
+            >
+              <Plus className="h-3.5 w-3.5" /> New Task
+            </button>
+          </div>
+        </div>
+
+        <div className="flex overflow-x-auto border-b border-ink-mid">
+          {DEPARTMENT_TABS.map((tab) => (
+            <button
+              key={tab.value}
+              onClick={() => setDepartment(tab.value)}
+              className={`shrink-0 border-b-2 px-4 py-2.5 text-xs uppercase tracking-wider ${
+                department === tab.value ? "border-signal text-signal" : "border-transparent text-slate-light hover:text-paper"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
         <div className="flex flex-wrap gap-2">

@@ -23,6 +23,7 @@ from app.shared.sql import (
     update_tenant_row_sql,
 )
 from app.services.finance.department_transfers import post_department_transfer
+from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
 
@@ -537,6 +538,9 @@ async def create_asset(
         raise HTTPException(
             status_code=409, detail="Asset code or registration already exists"
         ) from exc
+    await generate_task_stack(
+        db, org_id=user["org_id"], entity_type="fleet", entity_id=new_id, created_by=user["sub"],
+    )
     return result({"id": str(new_id)}, "Fleet asset created.")
 
 

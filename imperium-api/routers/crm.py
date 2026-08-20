@@ -24,6 +24,7 @@ from app.services.finance.project_forecast import (
 )
 from app.shared.sql import update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack
+from app.services.auth_provisioning import provision_portal_user
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 router = APIRouter()
@@ -339,6 +340,13 @@ class SubcontractorCreate(CrmPayload):
     contact_phone: Optional[str] = Field(default=None, max_length=50)
     physical_address: Optional[str] = None
     capability_matrix: Optional[List[Dict[str, Any]]] = None
+    # Optional: provision an immediately-active portal login for this
+    # subcontractor's contact in the same call, instead of a separate trip
+    # through Settings > Managed Accounts. Requires settings.update on top
+    # of the base crm.create_subcontractors permission - issuing credentials
+    # is treated as a stricter action than plain record creation, matching
+    # how Managed Accounts already gates this.
+    issue_portal_login: bool = False
 
 
 class SubcontractorUpdate(CrmPayload):
@@ -374,6 +382,7 @@ SUBCONTRACTOR_COLUMNS = (
 
 def _subcontractor_db_values(values: Dict[str, Any]) -> Dict[str, Any]:
     db_values = dict(values)
+    db_values.pop("issue_portal_login", None)
     if "physical_address" in db_values:
         db_values["address"] = db_values.pop("physical_address")
     if "capability_matrix" in db_values:
@@ -2270,6 +2279,14 @@ async def create_subcontractor(
 ):
     org_id = _require_org_id(user)
     user_id = _require_user_id(user)
+    if payload.issue_portal_login:
+        if not await user_has_permission(db, user, "settings.update"):
+            raise HTTPException(
+                status_code=403,
+                detail="Issuing a portal login requires settings.update, in addition to subcontractor-create access.",
+            )
+        if not payload.contact_email:
+            raise HTTPException(status_code=422, detail="A contact email is required to issue a portal login.")
     values = _subcontractor_db_values(payload.model_dump())
     query = text("""
         INSERT INTO crm.subcontractors (
@@ -2316,7 +2333,65 @@ async def create_subcontractor(
                 "user_id": user_id,
             },
         )
+        subcontractor_id = result.scalar()
+
+        # Always bridge into procurement.suppliers, regardless of whether a
+        # portal login is also requested - subcontractors registered here
+        # were previously invisible to the supplier-payment pipeline, which
+        # only reads procurement.suppliers. Mirrors Settings > Managed
+        # Accounts' supplier+subcontractor bridging (settings.py's
+        # _create_supplier_account + the linked_supplier_id UPDATE below).
+        supplier_row = await db.execute(
+            text("""
+                INSERT INTO procurement.suppliers (
+                    organization_id, created_by, supplier_name, primary_contact_name,
+                    primary_contact_email, primary_contact_phone, currency, status, compliance_status
+                )
+                VALUES (
+                    :org_id, :user_id, :supplier_name, :primary_contact_name,
+                    :primary_contact_email, :primary_contact_phone, 'USD', 'pending_approval', :compliance_status
+                )
+                RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "user_id": user_id,
+                "supplier_name": values.get("name"),
+                "primary_contact_name": values.get("contact_name"),
+                "primary_contact_email": values.get("contact_email"),
+                "primary_contact_phone": values.get("contact_phone"),
+                "compliance_status": values.get("compliance_status"),
+            },
+        )
+        supplier_id = supplier_row.scalar()
+        await db.execute(
+            text("UPDATE crm.subcontractors SET linked_supplier_id = :supplier_id, updated_at = NOW() WHERE id = :id AND organization_id = :org_id"),
+            {"supplier_id": supplier_id, "id": subcontractor_id, "org_id": org_id},
+        )
+
+        temp_password = None
+        if payload.issue_portal_login:
+            portal_user_id, temp_password = await provision_portal_user(
+                db,
+                org_id=org_id,
+                email=payload.contact_email,
+                full_name=payload.contact_name or payload.name,
+                account_type="subcontractor",
+            )
+            await db.execute(
+                text("""
+                    INSERT INTO crm.supplier_portal_access (user_id, organization_id, subcontractor_id, is_active)
+                    VALUES (:user_id, :org_id, :subcontractor_id, true)
+                    ON CONFLICT (user_id, organization_id) DO UPDATE SET
+                        subcontractor_id=EXCLUDED.subcontractor_id, is_active=true, updated_at=NOW()
+                """),
+                {"user_id": portal_user_id, "org_id": org_id, "subcontractor_id": subcontractor_id},
+            )
+
         await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
     except (DataError, IntegrityError) as exc:
         await db.rollback()
         raise HTTPException(
@@ -2324,10 +2399,13 @@ async def create_subcontractor(
             detail="Subcontractor payload violates CRM database constraints.",
         ) from exc
 
+    response_data: Dict[str, Any] = {"id": str(subcontractor_id)}
+    if temp_password:
+        response_data["temporary_password"] = temp_password
     return {
         "success": True,
-        "data": {"id": str(result.scalar())},
-        "message": "Subcontractor created successfully.",
+        "data": response_data,
+        "message": "Subcontractor created successfully." if not temp_password else "Subcontractor created and portal login issued.",
         "meta": {},
     }
 

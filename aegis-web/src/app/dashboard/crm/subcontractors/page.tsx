@@ -241,6 +241,8 @@ export default function SubcontractorRegistry() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState('');
+  const [issuePortalLogin, setIssuePortalLogin] = useState(false);
+  const [issuedCredentials, setIssuedCredentials] = useState<{ email: string; temporary_password: string } | null>(null);
 
   useEffect(() => {
     async function fetchSubs() {
@@ -293,7 +295,7 @@ export default function SubcontractorRegistry() {
   const tier1Count = subs.filter(s => s.authorization_tier === 1).length;
 
   const openAddModal = useCallback(() => {
-    setFormData(blankForm()); setIsEditMode(false); setSaveError(null); setTagInput(''); setShowModal(true);
+    setFormData(blankForm()); setIsEditMode(false); setSaveError(null); setTagInput(''); setIssuePortalLogin(false); setShowModal(true);
   }, []);
 
   const openEditModal = useCallback((sub: Subcontractor) => {
@@ -302,6 +304,10 @@ export default function SubcontractorRegistry() {
 
   const handleSave = async () => {
     if (!formData.name.trim()) { setSaveError('Company name is required.'); return; }
+    if (!isEditMode && issuePortalLogin && !formData.contact_email?.trim()) {
+      setSaveError('A contact email is required to issue a portal login.');
+      return;
+    }
     setIsSaving(true); setSaveError(null);
     try {
       const payload: Record<string, unknown> = {
@@ -316,12 +322,16 @@ export default function SubcontractorRegistry() {
         await updateSubcontractor(formData.id, payload);
         setSubs(prev => prev.map(s => s.id === formData.id ? { ...s, ...formData } : s));
       } else {
-        const res = await createSubcontractor(payload);
-        const newId = (res.data as { id?: string } | null)?.id;
+        const res = await createSubcontractor({ ...payload, issue_portal_login: issuePortalLogin });
+        const responseData = res.data as { id?: string; temporary_password?: string } | null;
+        const newId = responseData?.id;
         if (!newId) throw new Error("Subcontractor response did not include an id.");
         const newSub: Subcontractor = { ...formData, id: newId };
         setSubs(prev => [...prev, newSub]);
         setSelectedId(newSub.id);
+        if (responseData?.temporary_password && formData.contact_email) {
+          setIssuedCredentials({ email: formData.contact_email, temporary_password: responseData.temporary_password });
+        }
       }
       setShowModal(false);
     } catch (err) {
@@ -874,6 +884,13 @@ export default function SubcontractorRegistry() {
                   </div>
                 </div>
               </div>
+
+              {!isEditMode && (
+                <label className="flex items-start gap-2 border border-ink-mid p-3 font-sans text-[12px] text-slate-light">
+                  <input type="checkbox" checked={issuePortalLogin} onChange={e => setIssuePortalLogin(e.target.checked)} className="mt-0.5" />
+                  <span>Issue a supplier portal login for this subcontractor&apos;s contact now, using the email above. A one-time password is generated for you to hand over directly.</span>
+                </label>
+              )}
             </div>
 
             <div className="border-t border-ink-mid px-6 py-4 flex items-center justify-end gap-3">
@@ -888,6 +905,29 @@ export default function SubcontractorRegistry() {
                   : <><Save className="w-3.5 h-3.5" />{isEditMode ? 'SAVE CHANGES' : 'REGISTER'}</>}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {issuedCredentials && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="bg-ink-light border border-signal/40 w-full max-w-md p-6">
+            <h3 className="font-display text-headline-md text-paper mb-2">Portal Login Issued</h3>
+            <p className="text-[12px] text-slate-light mb-4">Copy this password now and hand it to them directly - it will not be shown again, and they must change it on first login.</p>
+            <div className="space-y-2">
+              <div className="border border-ink-mid bg-ink p-2">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Sign-in email</p>
+                <p className="mt-1 break-all font-mono text-xs text-paper">{issuedCredentials.email}</p>
+              </div>
+              <div className="border border-signal/40 bg-signal/5 p-2">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Temporary password</p>
+                <p className="mt-1 break-all font-mono text-xs text-paper">{issuedCredentials.temporary_password}</p>
+              </div>
+            </div>
+            <button onClick={() => setIssuedCredentials(null)}
+              className="mt-5 w-full bg-signal hover:bg-yellow-500 text-ink font-mono text-[10px] font-bold py-2 transition-colors">
+              DONE
+            </button>
           </div>
         </div>
       )}

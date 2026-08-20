@@ -9,6 +9,7 @@ from app.shared.sql import (
     safe_payload_columns,
     update_returning_id_sql,
 )
+from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
 
@@ -69,6 +70,9 @@ async def create_item(
         result = await db.execute(query, params)
         await db.commit()
         new_id = str(result.scalar())
+        await generate_task_stack(
+            db, org_id=user["org_id"], entity_type="machinery", entity_id=new_id, created_by=user["sub"],
+        )
         return {
             "success": True,
             "data": {"id": new_id},

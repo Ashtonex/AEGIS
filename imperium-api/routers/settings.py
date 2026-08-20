@@ -280,6 +280,22 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        # Baseline crm_tasks.read/teams.read are granted org-wide to EMPLOYEE
+        # (115_crm_tasks_visibility_and_completion.sql) - list_tasks/
+        # list_teams scope results to "assigned to me or my team" unless the
+        # caller also holds crm_tasks.read_all/teams.read_all.
+        "page": "Tasks",
+        "route": "/dashboard/crm/tasks",
+        "permission": "crm_tasks.read",
+        "module": "Commercial",
+    },
+    {
+        "page": "Teams",
+        "route": "/dashboard/crm/teams",
+        "permission": "teams.read",
+        "module": "Commercial",
+    },
+    {
         "page": "Documents",
         "route": "/dashboard/crm/documents",
         "permission": "documents.read",
@@ -2146,6 +2162,55 @@ async def list_audit_events(
 ):
     rows = await _audit_events(db, user["org_id"], limit)
     return _response(rows, "Settings audit events retrieved.", total=len(rows))
+
+
+@router.get("/task-performance")
+async def task_performance(
+    user: dict = Depends(require_permission("crm_tasks.performance.view")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-user task completion recognition data - completion rate, on-time
+    rate, and average time-to-complete. Internal admin visibility only, not
+    a ranked/public leaderboard: the response is intentionally unordered by
+    any performance metric, left to the caller to sort/present as needed."""
+    rows = await db.execute(
+        text("""
+            SELECT
+                u.id AS user_id,
+                u.full_name,
+                COUNT(t.id) AS assigned_count,
+                COUNT(t.id) FILTER (WHERE t.status = 'done') AS completed_count,
+                COUNT(t.id) FILTER (WHERE t.status = 'done' AND t.due_date IS NOT NULL) AS completed_with_due_date_count,
+                COUNT(t.id) FILTER (
+                    WHERE t.status = 'done' AND t.due_date IS NOT NULL AND t.completed_at::date <= t.due_date
+                ) AS on_time_count,
+                AVG(t.completed_at - t.created_at) FILTER (WHERE t.status = 'done') AS avg_time_to_complete
+            FROM core.users u
+            JOIN crm.tasks t ON t.assigned_to_user_id = u.id AND t.organization_id = u.organization_id AND t.is_deleted = false
+            WHERE u.organization_id = :org_id AND u.is_deleted = false
+            GROUP BY u.id, u.full_name
+            HAVING COUNT(t.id) > 0
+            ORDER BY u.full_name
+        """),
+        {"org_id": user["org_id"]},
+    )
+    items = []
+    for row in rows.mappings():
+        assigned = row["assigned_count"]
+        completed = row["completed_count"]
+        with_due_date = row["completed_with_due_date_count"]
+        on_time = row["on_time_count"]
+        avg_delta = row["avg_time_to_complete"]
+        items.append({
+            "user_id": str(row["user_id"]),
+            "full_name": row["full_name"],
+            "assigned_count": assigned,
+            "completed_count": completed,
+            "completion_rate": round(completed / assigned, 4) if assigned else None,
+            "on_time_rate": round(on_time / with_due_date, 4) if with_due_date else None,
+            "avg_days_to_complete": round(avg_delta.total_seconds() / 86400, 2) if avg_delta else None,
+        })
+    return _response(items, "Task performance retrieved.", total=len(items))
 
 
 class BroadcastFeedPayload(Payload):

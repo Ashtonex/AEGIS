@@ -14,6 +14,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.logging import logger
 
+# Fixed entity_type -> department mapping for the Tasks page's department
+# tabs. Deliberately code-level rather than a department_id column on every
+# source table: leads/tenders have no department column at all today, and
+# the columns that DO exist (crm.opportunities.originating_department_id,
+# projects.projects.department_id) track deal-sourcing/delivery department,
+# which can legitimately diverge from this fixed grouping - this map answers
+# "which tab does this task type belong on", not "who owns this deal."
+ENTITY_DEPARTMENT_CODE: dict[str, str] = {
+    "lead": "commercial",
+    "opportunity": "commercial",
+    "tender": "commercial",
+    "project": "construction",
+    "fleet": "plant_equipment",
+    "machinery": "plant_equipment",
+}
+
 
 async def generate_task_stack(
     db: AsyncSession,

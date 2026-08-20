@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { AlertTriangle, Building2, CheckCircle2, Database, Globe2, History, Image as ImageIcon, KeyRound, Loader2, LockKeyhole, Mail, Plus, PowerOff, RefreshCw, Save, Settings2, ShieldCheck, Trash2, Upload, UserCheck, UserPlus, Users, X } from "lucide-react";
+import { AlertTriangle, Award, Building2, CheckCircle2, Database, Globe2, History, Image as ImageIcon, KeyRound, Loader2, LockKeyhole, Mail, Plus, PowerOff, RefreshCw, Save, Settings2, ShieldCheck, Trash2, Upload, UserCheck, UserPlus, Users, X } from "lucide-react";
 import * as QRCode from "qrcode";
 import {
   ApiError,
@@ -13,6 +13,7 @@ import {
   deleteSettingsUser,
   getSettingsAuditEvents,
   getSettingsOverview,
+  getTaskPerformance,
   inviteSettingsUser,
   removeSettingsUserRole,
   setSettingsRolePermission,
@@ -24,7 +25,7 @@ import {
 } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 
-type SettingsTab = "configuration" | "access" | "accounts" | "website" | "audit";
+type SettingsTab = "configuration" | "access" | "accounts" | "website" | "audit" | "performance";
 type AuditStatus = "success" | "warning" | "blocked" | "unknown";
 
 type Role = { id: string; name: string; description?: string | null; permissions: string[] };
@@ -194,6 +195,7 @@ const TAB_ROUTES: Record<SettingsTab, string> = {
   accounts: "/dashboard/settings/accounts",
   website: "/dashboard/settings/website",
   audit: "/dashboard/settings/audit",
+  performance: "/dashboard/settings/performance",
 };
 
 function normalizeTab(value: string | null | undefined): SettingsTab {
@@ -475,14 +477,59 @@ export default function SettingsPage() {
     {error && <div className="flex gap-2 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle className="h-4 w-4 shrink-0" /> {error}</div>}
     {overview.source_warnings.length > 0 && <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0" /> Partial settings source availability</div><ul className="list-disc space-y-1 pl-5 text-xs">{overview.source_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
     {notice && <div className="flex gap-2 border border-signal/40 bg-signal/10 p-3 text-sm text-paper"><ShieldCheck className="h-4 w-4 shrink-0 text-signal" /> {notice}</div>}
-    <nav className="flex overflow-x-auto border-b border-ink-mid font-mono text-xs">{([ ["configuration", Database, "Configuration"], ["access", Users, "Access control"], ["accounts", Building2, "Account setup"], ["website", Globe2, "Website content"], ["audit", History, "Audit log"] ] as const).map(([value, Icon, label]) => <Link key={value} href={TAB_ROUTES[value]} className={`flex shrink-0 items-center gap-2 border-b-2 px-5 py-3 font-bold uppercase tracking-wider ${tab === value ? "border-signal bg-signal/5 text-signal" : "border-transparent text-slate hover:text-paper"}`}><Icon className="h-4 w-4" /> {label}</Link>)}</nav>
+    <nav className="flex overflow-x-auto border-b border-ink-mid font-mono text-xs">{([ ["configuration", Database, "Configuration"], ["access", Users, "Access control"], ["accounts", Building2, "Account setup"], ["website", Globe2, "Website content"], ["audit", History, "Audit log"], ["performance", Award, "Performance"] ] as const).map(([value, Icon, label]) => <Link key={value} href={TAB_ROUTES[value]} className={`flex shrink-0 items-center gap-2 border-b-2 px-5 py-3 font-bold uppercase tracking-wider ${tab === value ? "border-signal bg-signal/5 text-signal" : "border-transparent text-slate hover:text-paper"}`}><Icon className="h-4 w-4" /> {label}</Link>)}</nav>
 
     {tab === "configuration" && <ConfigurationTab overview={overview} saving={saving} saveSetting={saveSetting} />}
     {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} inviteUser={inviteUser} createRole={createRole} />}
     {tab === "accounts" && <ManagedAccountsTab overview={overview} saving={saving === "managed-account"} createManagedAccount={createManagedAccount} />}
     {tab === "website" && <WebsiteTab items={overview.website_content} saving={saving} saveContent={saveContent} />}
     {tab === "audit" && <AuditTab events={filteredEvents} loading={auditLoading} error={auditError} auditSearch={auditSearch} setAuditSearch={setAuditSearch} auditStatus={auditStatus} setAuditStatus={setAuditStatus} onRefresh={() => void loadAudit(true)} />}
+    {tab === "performance" && <PerformanceTab />}
   </main>;
+}
+
+interface TaskPerformanceRow {
+  user_id: string;
+  full_name: string;
+  assigned_count: number;
+  completed_count: number;
+  completion_rate: number | null;
+  on_time_rate: number | null;
+  avg_days_to_complete: number | null;
+}
+
+function PerformanceTab() {
+  const [rows, setRows] = useState<TaskPerformanceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await getTaskPerformance();
+        if (!cancelled && res.success && Array.isArray(res.data)) setRows(res.data);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : "Task performance data could not be loaded.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const pct = (value: number | null) => value === null ? "—" : `${Math.round(value * 100)}%`;
+
+  return <section className="border border-ink-mid bg-ink p-5">
+    <h2 className="mb-2 flex items-center gap-2 border-b border-ink-mid pb-3 font-mono text-xs font-bold uppercase tracking-widest text-paper"><Award className="h-4 w-4 text-signal" /> Task completion performance</h2>
+    <p className="mb-4 text-xs leading-relaxed text-slate-light">Internal recognition data for admins - who completes their work reliably and on time, so you know who to recognize. Not a ranked leaderboard; this list is not sorted by performance.</p>
+    {error && <div className="mb-4 flex gap-2 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle className="h-4 w-4 shrink-0" /> {error}</div>}
+    {loading ? <div className="flex items-center justify-center py-10 text-slate-light"><Loader2 className="h-5 w-5 animate-spin" /></div>
+      : rows.length === 0 ? <p className="py-8 text-center font-mono text-xs text-slate-light">No task assignment history yet.</p>
+      : <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">Person</th><th className="p-3">Assigned</th><th className="p-3">Completed</th><th className="p-3">Completion rate</th><th className="p-3">On-time rate</th><th className="p-3">Avg days to complete</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{rows.map((row) => <tr key={row.user_id}><td className="p-3 text-paper">{row.full_name}</td><td className="p-3">{row.assigned_count}</td><td className="p-3">{row.completed_count}</td><td className="p-3">{pct(row.completion_rate)}</td><td className="p-3">{pct(row.on_time_rate)}</td><td className="p-3">{row.avg_days_to_complete ?? "—"}</td></tr>)}</tbody></table></div>}
+  </section>;
 }
 
 function ConfigurationTab({ overview, saving, saveSetting }: { overview: SettingsOverview; saving: string | null; saveSetting: (setting: SystemSetting, value: string | number | boolean) => Promise<void> }) {

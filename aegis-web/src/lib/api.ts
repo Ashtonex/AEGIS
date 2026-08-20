@@ -1469,14 +1469,22 @@ export async function setAssignment(entityType: string, entityId: string, target
 
 // ─── CRM Tasks ──────────────────────────────────────────────────────────────
 
-export async function getCrmTasks(params?: { assigned_to_user_id?: string; status?: string; entity_type?: string; entity_id?: string }): Promise<ApiResponse<any[]>> {
+export async function getCrmTasks(params?: { assigned_to_user_id?: string; status?: string; entity_type?: string; entity_id?: string; department?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.assigned_to_user_id) search.set('assigned_to_user_id', params.assigned_to_user_id);
   if (params?.status) search.set('status', params.status);
   if (params?.entity_type) search.set('entity_type', params.entity_type);
   if (params?.entity_id) search.set('entity_id', params.entity_id);
+  if (params?.department) search.set('department', params.department);
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-tasks/${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function backfillCrmTaskStacks(): Promise<ApiResponse<{ records_checked: number; tasks_created: number }>> {
+  return fetchApi<ApiResponse<{ records_checked: number; tasks_created: number }>>('/api/v1/crm-tasks/backfill-stacks', {
+    method: 'POST',
+    allowFallback: false,
+  });
 }
 
 export async function createCrmTask(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
@@ -2501,6 +2509,10 @@ export async function removeSettingsUserRole(userId: string, roleId: string): Pr
     method: 'DELETE',
     allowFallback: false,
   });
+}
+
+export async function getTaskPerformance(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/settings/task-performance', { cache: 'no-store', allowFallback: false });
 }
 
 export async function inviteSettingsUser(payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }): Promise<ApiResponse<any>> {

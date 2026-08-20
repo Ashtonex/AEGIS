@@ -5,8 +5,9 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from core.database import get_db
-from core.security import get_current_user
+from core.security import get_current_user, user_has_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
+from app.services.auth_provisioning import provision_portal_user
 
 router = APIRouter()
 
@@ -42,6 +43,11 @@ class OrganizationPayload(BaseModel):
     total_contract_value: Optional[float] = None
     risk_rating: Optional[str] = Field(default=None, max_length=50)
     parent_org_id: Optional[str] = None
+    # Optional: provision an immediately-active client portal login using
+    # this organization's own email in the same call, instead of a separate
+    # trip through Settings > Managed Accounts. Requires settings.update on
+    # top of plain organization-create access.
+    issue_portal_login: bool = False
 
 
 def _payload_values(payload: OrganizationPayload) -> dict:
@@ -89,6 +95,14 @@ async def create_item(
         raise HTTPException(status_code=400, detail="Empty or invalid payload.")
     if not values.get("name"):
         raise HTTPException(status_code=422, detail="name is required.")
+    if payload.issue_portal_login:
+        if not await user_has_permission(db, user, "settings.update"):
+            raise HTTPException(
+                status_code=403,
+                detail="Issuing a portal login requires settings.update, in addition to organization-create access.",
+            )
+        if not payload.email:
+            raise HTTPException(status_code=422, detail="An email is required to issue a portal login.")
 
     params = {k: values[k] for k in safe_keys}
     params["org_id"] = user["org_id"]
@@ -98,14 +112,56 @@ async def create_item(
 
     try:
         result = await db.execute(query, params)
+        new_id = result.scalar()
+
+        temp_password = None
+        if payload.issue_portal_login:
+            portal_user_id, temp_password = await provision_portal_user(
+                db,
+                org_id=user["org_id"],
+                email=str(payload.email),
+                full_name=payload.name,
+                account_type="client",
+            )
+            contact_row = await db.execute(
+                text("""
+                    INSERT INTO crm.contacts (organization_id, created_by, client_org_id, contact_name, email, phone)
+                    VALUES (:org_id, :user_id, :client_org_id, :contact_name, :email, :phone)
+                    RETURNING id
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "user_id": user["sub"],
+                    "client_org_id": new_id,
+                    "contact_name": payload.name,
+                    "email": str(payload.email),
+                    "phone": payload.phone,
+                },
+            )
+            contact_id = contact_row.scalar()
+            await db.execute(
+                text("""
+                    INSERT INTO crm.client_portal_access (user_id, organization_id, contact_id, is_active)
+                    VALUES (:user_id, :org_id, :contact_id, true)
+                    ON CONFLICT (user_id, organization_id) DO UPDATE SET
+                        contact_id=EXCLUDED.contact_id, is_active=true, updated_at=NOW()
+                """),
+                {"user_id": portal_user_id, "org_id": user["org_id"], "contact_id": contact_id},
+            )
+
         await db.commit()
-        new_id = str(result.scalar())
+        response_data = {"id": str(new_id)}
+        if temp_password:
+            response_data["temporary_password"] = temp_password
         return {
             "success": True,
-            "data": {"id": new_id},
-            "message": "crm_organizations created.",
+            "data": response_data,
+            "message": "crm_organizations created." if not temp_password else "Organization created and portal login issued.",
             "meta": {},
         }
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
