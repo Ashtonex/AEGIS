@@ -17,6 +17,28 @@ DEPARTMENT_ENTITY_TYPES: dict[str, list[str]] = {}
 for _entity_type, _department in ENTITY_DEPARTMENT_CODE.items():
     DEPARTMENT_ENTITY_TYPES.setdefault(_department, []).append(_entity_type)
 
+# finance.departments.name -> the Tasks page's fixed department-tab codes.
+# Only used to re-bucket entity_type='project' tasks onto the project's own
+# real department (see _effective_department) - every other entity type
+# keeps the fixed ENTITY_DEPARTMENT_CODE mapping unchanged, since leads/
+# opportunities/tenders/fleet/machinery don't carry as reliable a per-record
+# department signal for this purpose. Departments with no match here (e.g.
+# "Corporate Control Services", "Risk") fall through to the entity_type
+# default, same as a project with no department set at all.
+DEPARTMENT_NAME_TO_CODE: dict[str, str] = {
+    "commercial": "commercial",
+    "construction": "construction",
+    "plant & equipment": "plant_equipment",
+}
+
+
+def _effective_department(entity_type: Optional[str], project_department_name: Optional[str]) -> Optional[str]:
+    if entity_type == "project" and project_department_name:
+        mapped = DEPARTMENT_NAME_TO_CODE.get(project_department_name.strip().lower())
+        if mapped:
+            return mapped
+    return ENTITY_DEPARTMENT_CODE.get(entity_type) if entity_type else None
+
 # entity_type -> the table/id-column pair backfill-stacks sweeps to generate
 # stacks for every pre-existing record that predates auto-generation on
 # create (738de2a) or predates fleet/machinery being wired up as sources.
@@ -84,11 +106,14 @@ async def list_tasks(
     db: AsyncSession = Depends(get_db),
 ):
     query_str = """
-        SELECT t.*, u.full_name AS assigned_to_name, c.full_name AS created_by_name, tm.name AS assigned_to_team_name
+        SELECT t.*, u.full_name AS assigned_to_name, c.full_name AS created_by_name, tm.name AS assigned_to_team_name,
+               proj_dept.name AS project_department_name
         FROM crm.tasks t
         LEFT JOIN core.users u ON u.id = t.assigned_to_user_id
         LEFT JOIN core.users c ON c.id = t.created_by
         LEFT JOIN core.teams tm ON tm.id = t.assigned_to_team_id
+        LEFT JOIN projects.projects proj ON t.entity_type = 'project' AND proj.id = t.entity_id AND proj.organization_id = t.organization_id
+        LEFT JOIN finance.departments proj_dept ON proj_dept.id = proj.department_id
         WHERE t.organization_id = :org_id AND t.is_deleted = false
     """
     params = {"org_id": user["org_id"]}
@@ -104,12 +129,17 @@ async def list_tasks(
     if entity_id:
         query_str += " AND t.entity_id = :entity_id"
         params["entity_id"] = entity_id
+    department_code: Optional[str] = None
     if department:
-        dept_entity_types = DEPARTMENT_ENTITY_TYPES.get(department.strip().lower())
-        if not dept_entity_types:
+        department_code = department.strip().lower()
+        if department_code not in DEPARTMENT_ENTITY_TYPES:
             raise HTTPException(status_code=422, detail=f"Unknown department: {department}")
-        query_str += " AND t.entity_type = ANY(:department_entity_types)"
-        params["department_entity_types"] = dept_entity_types
+        # Broad SQL pre-filter (still narrows the row count for the common
+        # case); entity_type='project' rows are always included here and
+        # re-filtered precisely in Python below, since a project's real
+        # department can differ from the fixed entity_type default.
+        query_str += " AND (t.entity_type = ANY(:department_entity_types) OR t.entity_type = 'project')"
+        params["department_entity_types"] = DEPARTMENT_ENTITY_TYPES[department_code]
 
     # Baseline crm_tasks.read only sees tasks assigned directly to the
     # caller or belonging to a team they're a member of - crm_tasks.read_all
@@ -126,6 +156,10 @@ async def list_tasks(
 
     result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
+    for item in items:
+        item["department"] = _effective_department(item.get("entity_type"), item.pop("project_department_name", None))
+    if department_code:
+        items = [item for item in items if item["department"] == department_code]
     return {"success": True, "data": items, "message": "Tasks listed.", "meta": {"total": len(items)}}
 
 
