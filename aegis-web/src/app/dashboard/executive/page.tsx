@@ -15,6 +15,8 @@ import {
   getExecutiveRegions,
   getExecutiveStats,
   getGuardAuditHistory,
+  getCcbFindings,
+  updateCcbFinding,
   getCommercialBaselineHistory,
   getModulesStatus,
   ApiError,
@@ -199,6 +201,7 @@ function ExecutiveCommandCentreWorkspace() {
 
     <OperationalControlLedger stats={stats} />
     <CCBCommercialGovernanceWidget />
+    <CCBAutomatedFindingsPanel />
     <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricFields data={selectedCard.key === "safety" ? stats : kpis} />}</Modal>}
@@ -522,6 +525,160 @@ function CCBCommercialGovernanceWidget() {
               <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border ${audit.status === "FLAGGED" ? "border-red-500/40 text-red-300 bg-red-950/20" : "border-emerald-500/40 text-emerald-300"}`}>
                 {audit.status}
               </span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+const CCB_FINDING_CHECK_TYPE_LABELS: Record<string, string> = {
+  budget_boq_overrun: "Budget Overrun",
+  requisition_budget_breach: "Requisition Breach",
+  variance_stale_approval: "Approval Overdue",
+};
+
+const CCB_FINDING_SEVERITY_CLASSES: Record<string, string> = {
+  critical: "border-red-500/40 text-red-300 bg-red-950/20",
+  high: "border-amber-500/40 text-amber-300 bg-amber-950/20",
+  medium: "border-slate/40 text-slate-light bg-ink-light",
+  low: "border-emerald-500/40 text-emerald-300 bg-emerald-950/20",
+};
+
+const CCB_FINDING_STATUS_CLASSES: Record<string, string> = {
+  open: "border-red-500/40 text-red-300",
+  acknowledged: "border-amber-500/40 text-amber-300",
+  resolved: "border-emerald-500/40 text-emerald-300",
+};
+
+function daysAgoLabel(iso: unknown) {
+  if (typeof iso !== "string" || !iso) return "unknown";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "unknown";
+  const days = Math.floor((Date.now() - then) / 86_400_000);
+  if (days <= 0) return "today";
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
+}
+
+// Automated, open/resolved-lifecycle CCB findings from background checks
+// (budget-vs-BOQ overrun, requisition budget breaches, stale variance
+// approvals) - deliberately a separate panel from CCBCommercialGovernanceWidget
+// above, which shows point-in-time audits a person manually triggered.
+// Conflating "a person ran a check" with "the system found this on its own"
+// would lose the exact distinction that makes the automation valuable.
+function CCBAutomatedFindingsPanel() {
+  const [findings, setFindings] = useState<any[]>([]);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const [showResolved, setShowResolved] = useState(false);
+  const [actioningId, setActioningId] = useState<string | null>(null);
+
+  const loadFindings = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await getCcbFindings();
+      if (res.success && Array.isArray(res.data)) setFindings(res.data);
+      const counts = (res.meta as Record<string, unknown> | undefined)?.status_counts;
+      if (counts && typeof counts === "object") setStatusCounts(counts as Record<string, number>);
+    } catch {
+      // Fallback: leave prior findings in place rather than clearing on a transient error.
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadFindings();
+  }, [loadFindings]);
+
+  const visibleFindings = useMemo(
+    () => findings.filter((finding) => showResolved || finding.status !== "resolved"),
+    [findings, showResolved]
+  );
+
+  const handleAction = useCallback(async (id: string, action: "acknowledge" | "resolve") => {
+    setActioningId(id);
+    try {
+      await updateCcbFinding(id, action);
+      await loadFindings();
+    } catch {
+      // Leave the row as-is; the next manual refresh or background sweep will reconcile it.
+    } finally {
+      setActioningId(null);
+    }
+  }, [loadFindings]);
+
+  const openCount = statusCounts.open || 0;
+  const acknowledgedCount = statusCounts.acknowledged || 0;
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4 mt-6">
+      <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">CCB Automated Findings</h2>
+          <p className="text-xs text-slate-light mt-1">Background checks running continuously against live budget, requisition, and approval data - no one had to click Run Audit.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[10px] text-slate">{openCount} OPEN · {acknowledgedCount} ACK</span>
+          <button
+            onClick={() => setShowResolved((value) => !value)}
+            className="font-mono text-[10px] text-signal hover:underline"
+          >
+            {showResolved ? "Hide resolved" : "Show resolved"}
+          </button>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading CCB findings...</div>
+        ) : visibleFindings.length === 0 ? (
+          <p className="text-xs text-slate py-4">No open automated findings. The background checks run daily (and in real time for requisitions) and will surface anything here the moment they detect it.</p>
+        ) : (
+          visibleFindings.map((finding) => (
+            <div key={String(finding.id)} className="border border-ink-mid bg-ink-light p-3 rounded-md">
+              <div className="flex flex-wrap justify-between items-start gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-[10px] uppercase text-signal">
+                      {CCB_FINDING_CHECK_TYPE_LABELS[String(finding.check_type)] || String(finding.check_type)}
+                    </span>
+                    <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${CCB_FINDING_SEVERITY_CLASSES[String(finding.severity)] || CCB_FINDING_SEVERITY_CLASSES.medium}`}>
+                      {String(finding.severity)}
+                    </span>
+                    <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${CCB_FINDING_STATUS_CLASSES[String(finding.status)] || ""}`}>
+                      {String(finding.status)}
+                    </span>
+                  </div>
+                  <p className="font-semibold text-paper text-sm mt-1.5">{String(finding.project_title || "Project")}</p>
+                  <p className="text-slate-light text-xs mt-1 break-words">{String(finding.summary)}</p>
+                  <p className="text-slate text-[10px] mt-1.5 font-mono">
+                    First detected {daysAgoLabel(finding.first_detected_at)} · Last seen {daysAgoLabel(finding.last_seen_at)}
+                    {finding.status === "resolved" && finding.resolved_by_name ? ` · Resolved by ${String(finding.resolved_by_name)}` : ""}
+                  </p>
+                </div>
+                {finding.status !== "resolved" && (
+                  <div className="flex gap-2 shrink-0">
+                    {finding.status === "open" && (
+                      <button
+                        onClick={() => void handleAction(String(finding.id), "acknowledge")}
+                        disabled={actioningId === String(finding.id)}
+                        className="font-mono text-[10px] uppercase border border-ink-mid px-2 py-1 text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
+                      >
+                        Acknowledge
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void handleAction(String(finding.id), "resolve")}
+                      disabled={actioningId === String(finding.id)}
+                      className="font-mono text-[10px] uppercase border border-emerald-500/40 px-2 py-1 text-emerald-300 hover:bg-emerald-950/20 disabled:opacity-50"
+                    >
+                      Resolve
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           ))
         )}

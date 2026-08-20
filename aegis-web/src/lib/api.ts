@@ -3922,6 +3922,26 @@ export async function getGuardAuditHistory(projectId?: string): Promise<ApiRespo
   });
 }
 
+export async function getCcbFindings(params?: { status?: string; check_type?: string; project_id?: string }): Promise<ApiResponse<any[]>> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set('status', params.status);
+  if (params?.check_type) query.set('check_type', params.check_type);
+  if (params?.project_id) query.set('project_id', params.project_id);
+  const qs = query.toString() ? `?${query.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/ccb-findings/${qs}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function updateCcbFinding(id: string, action: 'acknowledge' | 'resolve'): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/ccb-findings/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ action }),
+    allowFallback: false,
+  });
+}
+
 export async function saveCcbOverride(payload: {
   quotation_id: string;
   flag_title: string;
