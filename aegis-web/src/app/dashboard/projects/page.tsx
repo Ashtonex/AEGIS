@@ -188,14 +188,6 @@ function ProjectsWorkspace() {
     setActiveTab(normalizeTab(searchParams?.get("tab")));
   }, [searchParams]);
 
-  // Deep link from Tenders/Opportunities "Project Live" badges (?id=<project id>).
-  useEffect(() => {
-    const targetId = searchParams?.get("id");
-    if (!targetId || projects.length === 0) return;
-    const match = projects.find((p) => p.id === targetId);
-    if (match) void openProject(match);
-  }, [searchParams, projects, openProject]);
-
   const openProject = useCallback(async (project: Project) => {
     setSelected(project); 
     setDetail(null); 
@@ -242,6 +234,14 @@ function ProjectsWorkspace() {
       setDetailLoading(false); 
     }
   }, [normalizeError]);
+
+  // Deep link from Tenders/Opportunities "Project Live" badges (?id=<project id>).
+  useEffect(() => {
+    const targetId = searchParams?.get("id");
+    if (!targetId || projects.length === 0) return;
+    const match = projects.find((p) => p.id === targetId);
+    if (match) void openProject(match);
+  }, [searchParams, projects, openProject]);
 
   const metrics = useMemo(() => {
     const active = projects.filter((project) => activeStatuses.has(text(project.status, "").toLowerCase())).length;
