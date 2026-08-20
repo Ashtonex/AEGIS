@@ -126,7 +126,7 @@ async def require_site_for_project(
 async def stock_levels(
     store_id: Optional[UUID] = None,
     below_reorder: bool = False,
-    user: dict = Depends(require_permission("inventory.item.read")),
+    user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await db.execute(
@@ -169,7 +169,7 @@ async def movements(
     store_id: Optional[UUID] = None,
     movement_type: Optional[str] = None,
     limit: int = Query(default=200, ge=1, le=1000),
-    user: dict = Depends(require_permission("inventory.item.read")),
+    user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await db.execute(
@@ -199,7 +199,7 @@ async def movements(
 @router.get("/stores")
 async def list_stores(
     project_id: Optional[UUID] = None,
-    user: dict = Depends(require_permission("inventory.item.read")),
+    user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await db.execute(
