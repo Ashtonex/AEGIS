@@ -431,3 +431,154 @@ async def run_requisition_budget_breach_check(db: AsyncSession, org_id: Optional
         f"{findings_open} over budget, {notified} newly notified."
     )
     return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+# ---------------------------------------------------------------------------
+# Client variance / document-change staleness check (Phase 4). Flags
+# finance.document_change_logs rows that required MD approval and have gone
+# 3+ days without it. Deliberately does NOT attempt to reconcile this table
+# with finance.variations (the real, FK-backed change-order table the budget
+# math trusts) - document_change_logs has no approval endpoint anywhere in
+# the product (is_approved is never set by anything) and project_id is a
+# bare VARCHAR, not an FK. Both are real, separate architecture gaps that
+# deserve their own scoped review, not a silent fix bundled into a
+# monitoring job - so every finding this check raises says so explicitly,
+# otherwise the first MD who tries to act on it finds nothing to click and
+# it reads as a bug in the monitor instead of the pre-existing gap it is.
+# ---------------------------------------------------------------------------
+
+_STALE_APPROVAL_DAYS = 3
+
+
+def _document_change_natural_key(project_id: str, change_id: str) -> str:
+    return f"{project_id}:variance_stale_approval:{change_id}"
+
+
+def _staleness_severity(days_stale: int) -> str:
+    if days_stale >= 14:
+        return "critical"
+    if days_stale >= 7:
+        return "high"
+    return "medium"
+
+
+async def _resolve_settled_document_change_findings(db: AsyncSession, org_id: Optional[str]) -> None:
+    """Clears a finding once its underlying change log row is approved or
+    gone - covers both "someone eventually recorded approval some other
+    way" and "the log row was deleted" without the sweep needing to revisit
+    every historical change_id explicitly."""
+    await db.execute(
+        text("""
+            UPDATE finance.ccb_monitor_findings f
+            SET status = 'resolved', resolved_at = NOW(), last_seen_at = NOW()
+            WHERE f.check_type = 'variance_stale_approval'
+              AND f.status IN ('open', 'acknowledged')
+              AND (CAST(:org_id AS uuid) IS NULL OR f.organization_id = CAST(:org_id AS uuid))
+              AND NOT EXISTS (
+                  SELECT 1 FROM finance.document_change_logs dcl
+                  WHERE dcl.id::text = (f.evidence->>'change_id')
+                    AND dcl.organization_id = f.organization_id
+                    AND dcl.approval_level_required = 'MD_APPROVAL_REQUIRED'
+                    AND dcl.is_approved = false
+              )
+        """),
+        {"org_id": org_id},
+    )
+
+
+async def _find_stale_document_changes(db: AsyncSession, org_id: Optional[str]):
+    rows = (
+        await db.execute(
+            text("""
+                SELECT dcl.id AS change_id, dcl.organization_id AS org_id,
+                       p.id AS project_id, p.name AS project_title,
+                       dcl.document_name, dcl.revision, dcl.margin_impact_amount,
+                       EXTRACT(DAY FROM NOW() - dcl.created_at)::int AS days_stale
+                FROM finance.document_change_logs dcl
+                JOIN projects.projects p
+                    ON p.id::text = dcl.project_id AND p.organization_id = dcl.organization_id
+                   AND p.is_deleted = false
+                WHERE dcl.approval_level_required = 'MD_APPROVAL_REQUIRED'
+                  AND dcl.is_approved = false
+                  AND dcl.created_at < NOW() - make_interval(days => :threshold_days)
+                  AND (CAST(:org_id AS uuid) IS NULL OR dcl.organization_id = CAST(:org_id AS uuid))
+            """),
+            {"org_id": org_id, "threshold_days": _STALE_APPROVAL_DAYS},
+        )
+    ).mappings().all()
+    return rows
+
+
+async def run_variance_staleness_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Daily cron: flags document/drawing revisions that required MD
+    approval and have sat unapproved for 3+ days. See module docstring
+    above this section for why this is deliberately kept separate from
+    finance.variations.
+    """
+    await _resolve_settled_document_change_findings(db, org_id)
+
+    rows = await _find_stale_document_changes(db, org_id)
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in rows:
+        checked += 1
+        change_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        project_title = row["project_title"] or "Project"
+        change_id = str(row["change_id"])
+        days_stale = int(row["days_stale"])
+        margin_impact = float(row["margin_impact_amount"] or 0)
+
+        natural_key = _document_change_natural_key(project_id, change_id)
+        severity = _staleness_severity(days_stale)
+        summary = (
+            f"{row['document_name']} ({row['revision']}) on {project_title} has required MD approval for "
+            f"{days_stale} day(s) with no approval recorded (margin impact ${margin_impact:,.2f}). "
+            "Note: there is currently no approval action in the product for this workflow - this finding "
+            "surfaces a known gap in the change-review process, not a bug in this monitor. Approval must "
+            "be tracked and actioned manually until a real approval endpoint exists."
+        )
+
+        findings_open += 1
+        newly_open = await _upsert_finding(
+            db,
+            org_id=change_org_id,
+            project_id=project_id,
+            check_type="variance_stale_approval",
+            natural_key=natural_key,
+            severity=severity,
+            summary=summary,
+            evidence={
+                "change_id": change_id,
+                "document_name": row["document_name"],
+                "revision": row["revision"],
+                "margin_impact_amount": margin_impact,
+                "days_stale": days_stale,
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=change_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: MD approval overdue on {project_title}",
+                message=summary,
+                notification_type="ccb_variance_stale_approval",
+                priority="urgent" if severity == "critical" else "high",
+                action_url="/dashboard/quotations/ccb",
+                metadata={
+                    "project_id": project_id,
+                    "change_id": change_id,
+                    "check_type": "variance_stale_approval",
+                },
+            )
+
+    logger.info(
+        f"CCB variance staleness check: {checked} stale change(s) evaluated, "
+        f"{findings_open} open, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
