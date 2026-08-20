@@ -16,6 +16,7 @@ from app.services.documents.renderers import (
     QuotationExcelExporter,
 )
 from app.services.crm.automation_engine import evaluate_and_run_automations
+from app.services.finance.ccb_monitor import run_budget_overrun_check
 
 
 # 1. Retry Policy Helper
@@ -187,6 +188,28 @@ async def poll_ticket_sla_triggers_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def run_ccb_budget_overrun_check_job(ctx):
+    """Daily cron (CCB automation Phase 2): sweeps every organization for
+    projects whose estimate-at-completion has drifted past their approved
+    budget without a matching approved variation. Daily is the right cadence
+    here - a project's cost position doesn't meaningfully swing hour to
+    hour, and over-polling this specific check is pure alert-fatigue risk
+    for no signal gain.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_budget_overrun_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB budget overrun check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 def time_now():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
@@ -251,9 +274,11 @@ class WorkerSettings:
         send_notification_job,
         compliance_check_reminder_job,
         poll_ticket_sla_triggers_job,
+        run_ccb_budget_overrun_check_job,
     ]
     cron_jobs = [
         cron(poll_ticket_sla_triggers_job, minute={0, 15, 30, 45}, run_at_startup=False),
+        cron(run_ccb_budget_overrun_check_job, hour=3, minute=0, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup
