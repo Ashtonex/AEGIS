@@ -10,7 +10,7 @@ from core.security import require_permission, user_has_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 from app.services.crm.automation_engine import fire_trigger
 from app.services.crm.compliance_gap import check_and_alert_lead_compliance_gap
-from app.shared.task_stacks import generate_task_stack
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
 
 router = APIRouter()
 
@@ -495,13 +495,15 @@ async def delete_item(
         RETURNING id
     """)
 
+    org_id = _require_org_id(user)
     result = await db.execute(
-        query, {"item_id": item_id, "org_id": _require_org_id(user)}
+        query, {"item_id": item_id, "org_id": org_id}
     )
     if not result.first():
         raise HTTPException(status_code=404, detail="Item not found")
 
     await db.commit()
+    await cascade_delete_entity_tasks(db, org_id=org_id, entity_type="lead", entity_id=item_id)
     return {
         "success": True,
         "data": None,

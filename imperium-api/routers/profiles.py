@@ -16,7 +16,10 @@ router = APIRouter()
 # (not free text) - module_tours_completed is a JSONB map keyed by these
 # values, and an unbounded key set would let a client write junk keys into
 # it forever.
-MODULE_TOUR_KEYS = {"finance", "crm", "quotations", "supplier_portal", "client_portal"}
+MODULE_TOUR_KEYS = {
+    "finance", "crm", "quotations", "supplier_portal", "client_portal",
+    "quotations_builder", "quotations_ccb", "quotations_drawings", "quotations_intelligence",
+}
 
 
 class ProfileUpdate(BaseModel):

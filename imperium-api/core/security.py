@@ -288,13 +288,13 @@ async def resolve_primary_role(
     """),
         {"user_id": user_id, "org_id": org_id, "superadmin": SUPERADMIN_ROLE},
     )
-    rows = assigned.fetchall()
+    rows = assigned.fetchall() if hasattr(assigned, "fetchall") else list(assigned)
     role_names = [row.name for row in rows]
     if SUPERADMIN_ROLE in role_names:
         row = next(r for r in rows if r.name == SUPERADMIN_ROLE)
-        return SUPERADMIN_ROLE, row.default_landing_path
+        return SUPERADMIN_ROLE, getattr(row, "default_landing_path", None)
     if rows:
-        return rows[0].name, rows[0].default_landing_path
+        return rows[0].name, getattr(rows[0], "default_landing_path", None)
     return fallback_role, None
 
 

@@ -52,6 +52,9 @@ BACKFILL_SOURCES: list[tuple[str, str]] = [
 ]
 
 
+TASK_STATUS_PATTERN = "^(not_started|in_progress|waiting_on_third_party|blocked|under_review|completed|cancelled)$"
+
+
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -62,6 +65,10 @@ class TaskCreate(BaseModel):
     assigned_to_user_id: Optional[UUID] = None
     due_date: Optional[date] = None
     priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")
+    depends_on_task_id: Optional[UUID] = None
+    evidence_required: bool = False
+    approver_user_id: Optional[UUID] = None
+    risk_flag: bool = False
 
 
 class TaskUpdate(BaseModel):
@@ -71,11 +78,22 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = None
     assigned_to_user_id: Optional[UUID] = None
     due_date: Optional[date] = None
-    status: Optional[str] = Field(default=None, pattern="^(open|in_progress|done|cancelled)$")
+    status: Optional[str] = Field(default=None, pattern=TASK_STATUS_PATTERN)
     priority: Optional[str] = Field(default=None, pattern="^(low|normal|high|urgent)$")
+    depends_on_task_id: Optional[UUID] = None
+    evidence_required: Optional[bool] = None
+    evidence_ref: Optional[str] = None
+    approver_user_id: Optional[UUID] = None
+    risk_flag: Optional[bool] = None
+    outcome: Optional[str] = None
+    next_action: Optional[str] = None
 
 
-TASK_UPDATE_COLUMNS = ("title", "description", "assigned_to_user_id", "due_date", "status", "priority")
+TASK_UPDATE_COLUMNS = (
+    "title", "description", "assigned_to_user_id", "due_date", "status", "priority",
+    "depends_on_task_id", "evidence_required", "evidence_ref", "approver_user_id",
+    "risk_flag", "outcome", "next_action",
+)
 
 
 class StackAssignPayload(BaseModel):
@@ -107,13 +125,31 @@ async def list_tasks(
 ):
     query_str = """
         SELECT t.*, u.full_name AS assigned_to_name, c.full_name AS created_by_name, tm.name AS assigned_to_team_name,
+               ap.full_name AS approver_name, dep.title AS depends_on_title, dep.status AS depends_on_status,
+               COALESCE(
+                   (SELECT jsonb_agg(jsonb_build_object('id', u2.id, 'full_name', u2.full_name) ORDER BY u2.full_name)
+                    FROM crm.task_contributors tc JOIN core.users u2 ON u2.id = tc.user_id
+                    WHERE tc.task_id = t.id),
+                   '[]'::jsonb
+               ) AS contributors,
+               COALESCE(
+                   lead.company_name, lead.contact_name, opp.name, tender.tender_name, proj.name,
+                   veh.vehicle_registration, veh.asset_code, eq.asset_name
+               ) AS entity_name,
                proj_dept.name AS project_department_name
         FROM crm.tasks t
         LEFT JOIN core.users u ON u.id = t.assigned_to_user_id
         LEFT JOIN core.users c ON c.id = t.created_by
         LEFT JOIN core.teams tm ON tm.id = t.assigned_to_team_id
+        LEFT JOIN core.users ap ON ap.id = t.approver_user_id
+        LEFT JOIN crm.tasks dep ON dep.id = t.depends_on_task_id
+        LEFT JOIN crm.leads lead ON t.entity_type = 'lead' AND lead.id = t.entity_id AND lead.organization_id = t.organization_id
+        LEFT JOIN crm.opportunities opp ON t.entity_type = 'opportunity' AND opp.id = t.entity_id AND opp.organization_id = t.organization_id
+        LEFT JOIN crm.tenders tender ON t.entity_type = 'tender' AND tender.id = t.entity_id AND tender.organization_id = t.organization_id
         LEFT JOIN projects.projects proj ON t.entity_type = 'project' AND proj.id = t.entity_id AND proj.organization_id = t.organization_id
         LEFT JOIN finance.departments proj_dept ON proj_dept.id = proj.department_id
+        LEFT JOIN fleet.fleet veh ON t.entity_type = 'fleet' AND veh.id = t.entity_id AND veh.organization_id = t.organization_id
+        LEFT JOIN fleet.equipment_assets eq ON t.entity_type = 'machinery' AND eq.id = t.entity_id AND eq.organization_id = t.organization_id
         WHERE t.organization_id = :org_id AND t.is_deleted = false
     """
     params = {"org_id": user["org_id"]}
@@ -183,10 +219,12 @@ async def create_task(
             text("""
                 INSERT INTO crm.tasks (
                     organization_id, title, description, entity_type, entity_id,
-                    assigned_to_user_id, due_date, priority, created_by
+                    assigned_to_user_id, due_date, priority, created_by,
+                    depends_on_task_id, evidence_required, approver_user_id, risk_flag
                 ) VALUES (
                     :org_id, :title, :description, :entity_type, :entity_id,
-                    :assigned_to_user_id, :due_date, :priority, :user_id
+                    :assigned_to_user_id, :due_date, :priority, :user_id,
+                    :depends_on_task_id, :evidence_required, :approver_user_id, :risk_flag
                 ) RETURNING id
             """),
             {
@@ -199,6 +237,10 @@ async def create_task(
                 "due_date": payload.due_date,
                 "priority": payload.priority,
                 "user_id": user["user_id"],
+                "depends_on_task_id": payload.depends_on_task_id,
+                "evidence_required": payload.evidence_required,
+                "approver_user_id": payload.approver_user_id,
+                "risk_flag": payload.risk_flag,
             },
         )
     ).scalar()
@@ -228,7 +270,11 @@ async def update_task(
     org_id = user["org_id"]
     current = (
         await db.execute(
-            text("SELECT title, assigned_to_user_id, assigned_to_team_id, status FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            text("""
+                SELECT title, assigned_to_user_id, assigned_to_team_id, status,
+                       depends_on_task_id, evidence_required, evidence_ref, approver_user_id
+                FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
             {"id": task_id, "org_id": org_id},
         )
     ).mappings().first()
@@ -271,19 +317,62 @@ async def update_task(
                 detail="Only that team's lead can redistribute its tasks to individual members.",
             )
 
+    if "status" in safe_keys and values["status"] in ("in_progress", "completed") and current["depends_on_task_id"]:
+        predecessor = (
+            await db.execute(
+                text("SELECT status FROM crm.tasks WHERE id = :id AND is_deleted = false"),
+                {"id": current["depends_on_task_id"]},
+            )
+        ).mappings().first()
+        if not predecessor or predecessor["status"] != "completed":
+            raise HTTPException(
+                status_code=409,
+                detail="This task's predecessor must be completed first.",
+            )
+
+    # Evidence/approval gate: a task marked evidence_required cannot be
+    # completed by just anyone flipping a status flag. evidence_ref may be
+    # supplied in this same request (an approver attaching proof and
+    # completing in one call) or may already be on the record.
+    verifying = False
+    if "status" in safe_keys and values["status"] == "completed" and current["status"] != "completed":
+        evidence_required = values.get("evidence_required", current["evidence_required"])
+        if evidence_required:
+            effective_evidence_ref = values.get("evidence_ref", current["evidence_ref"])
+            if not effective_evidence_ref:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Evidence must be attached before this task can be completed.",
+                )
+            approver_id = values.get("approver_user_id", current["approver_user_id"])
+            is_approver = approver_id is not None and str(approver_id) == user["user_id"]
+            if not is_approver and not await user_has_permission(db, user, "crm_tasks.read_all"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only this task's approver can verify and complete it.",
+                )
+            verifying = True
+
     set_clause = ", ".join(f"{column} = :{column}" for column in safe_keys)
     if clear_team:
         set_clause += ", assigned_to_team_id = NULL"
-    # completed_at tracks the moment status actually transitioned to 'done'
-    # (distinct from updated_at, which any field edit touches) - cleared if
-    # a completed task is reopened, so re-marking it done later gets a fresh
-    # timestamp rather than keeping a stale one from a prior completion.
+    # completed_at tracks the moment status actually transitioned to
+    # 'completed' (distinct from updated_at, which any field edit touches) -
+    # cleared if a completed task is reopened, so re-marking it done later
+    # gets a fresh timestamp rather than keeping a stale one from a prior
+    # completion. verified_by/verified_at follow the same reopen-clears rule,
+    # only ever set via the evidence/approval gate above, never by a plain
+    # status PATCH from someone who isn't the approver.
     if "status" in safe_keys:
-        if values["status"] == "done" and current["status"] != "done":
+        if values["status"] == "completed" and current["status"] != "completed":
             set_clause += ", completed_at = NOW()"
-        elif values["status"] != "done" and current["status"] == "done":
-            set_clause += ", completed_at = NULL"
+            if verifying:
+                set_clause += ", verified_by_user_id = :verifier_id, verified_at = NOW()"
+        elif values["status"] != "completed" and current["status"] == "completed":
+            set_clause += ", completed_at = NULL, verified_by_user_id = NULL, verified_at = NULL"
     params = {k: values[k] for k in safe_keys}
+    if verifying:
+        params["verifier_id"] = user["user_id"]
     params["id"] = task_id
     params["org_id"] = org_id
     await db.execute(
@@ -334,6 +423,58 @@ async def delete_task(
     return {"success": True, "data": {"id": str(task_id)}, "message": "Task deleted.", "meta": {}}
 
 
+class ContributorAdd(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    user_id: UUID
+
+
+@router.post("/{task_id}/contributors")
+async def add_task_contributor(
+    task_id: UUID,
+    payload: ContributorAdd,
+    user: dict = Depends(require_permission("crm_tasks.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    task_check = await db.execute(
+        text("SELECT 1 FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": task_id, "org_id": user["org_id"]},
+    )
+    if not task_check.first():
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    user_check = await db.execute(
+        text("SELECT 1 FROM core.users WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": payload.user_id, "org_id": user["org_id"]},
+    )
+    if not user_check.first():
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    await db.execute(
+        text("""
+            INSERT INTO crm.task_contributors (task_id, user_id) VALUES (:task_id, :user_id)
+            ON CONFLICT (task_id, user_id) DO NOTHING
+        """),
+        {"task_id": task_id, "user_id": payload.user_id},
+    )
+    await db.commit()
+    return {"success": True, "data": None, "message": "Contributor added.", "meta": {}}
+
+
+@router.delete("/{task_id}/contributors/{contributor_user_id}")
+async def remove_task_contributor(
+    task_id: UUID,
+    contributor_user_id: UUID,
+    user: dict = Depends(require_permission("crm_tasks.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    await db.execute(
+        text("DELETE FROM crm.task_contributors WHERE task_id = :task_id AND user_id = :user_id"),
+        {"task_id": task_id, "user_id": contributor_user_id},
+    )
+    await db.commit()
+    return {"success": True, "data": None, "message": "Contributor removed.", "meta": {}}
+
+
 @router.post("/assign-stack")
 async def assign_stack_to_team(
     payload: StackAssignPayload,
@@ -357,7 +498,7 @@ async def assign_stack_to_team(
             UPDATE crm.tasks
             SET assigned_to_team_id = :team_id, assigned_to_user_id = NULL, updated_at = NOW()
             WHERE organization_id = :org_id AND entity_type = :entity_type AND entity_id = :entity_id
-              AND is_deleted = false AND status NOT IN ('done', 'cancelled')
+              AND is_deleted = false AND status NOT IN ('completed', 'cancelled')
             RETURNING id
         """),
         {

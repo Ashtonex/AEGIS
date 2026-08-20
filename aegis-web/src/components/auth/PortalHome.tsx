@@ -13,6 +13,9 @@ import { ClientPortalHome } from "@/components/auth/ClientPortalHome";
 
 type ExternalPortal = "client" | "supplier" | "foreman";
 
+// ClientPortalHome owns createClientPortalMessage after this admission gate
+// verifies access against the server-side portal tables.
+
 function PortalLoading() {
   return (
     <main className="min-h-screen bg-ink text-paper">

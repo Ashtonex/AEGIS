@@ -10,11 +10,14 @@ from core.database import get_db
 from core.security import require_permission
 
 router = APIRouter()
+ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 def _org_id(user: dict) -> str:
     org_id = user.get("org_id")
     if not org_id:
         raise HTTPException(status_code=403, detail="Organization context required.")
+    if str(org_id) == ZERO_UUID:
+        raise HTTPException(status_code=403, detail="Valid organization context required.")
     return str(org_id)
 
 def _user_id(user: dict) -> str:

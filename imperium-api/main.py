@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -7,7 +9,7 @@ from core.database import check_database_health
 from core.logging import logger, setup_logging
 from core.security import require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
-from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, inventory_items, budgets, financial_performance, quotations, hr_records, hr_verification, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export, drawings, sop_compliance, finance_departments, finance_transfers, finance_statutory, boq_progress, final_accounts, teams, assignments, crm_tasks  # fmt: skip
+from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, inventory_items, budgets, financial_performance, quotations, hr_records, hr_verification, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export, drawings, sop_compliance, finance_departments, finance_transfers, finance_statutory, boq_progress, final_accounts, teams, assignments, crm_tasks, pursuits, pursuit_teams  # fmt: skip
 from routers import finance_ccb_findings  # fmt: skip
 
 
@@ -19,10 +21,21 @@ def create_app() -> FastAPI:
         from core.network_compat import force_ipv4_dns
         force_ipv4_dns()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        from core.realtime import start_listener, stop_listener
+
+        await start_listener()
+        try:
+            yield
+        finally:
+            await stop_listener()
+
     app = FastAPI(
         title="Project Imperium API",
         description="The foundational API layer for PROJECT AEGIS.",
         version="1.1.1",
+        lifespan=lifespan,
     )
 
     from core.rate_limit import limiter, rate_limit_exceeded_handler
@@ -48,16 +61,6 @@ def create_app() -> FastAPI:
     @app.get("/", include_in_schema=False)
     async def root():
         return RedirectResponse(url="/docs")
-
-    @app.on_event("startup")
-    async def _start_realtime_listener() -> None:
-        from core.realtime import start_listener
-        await start_listener()
-
-    @app.on_event("shutdown")
-    async def _stop_realtime_listener() -> None:
-        from core.realtime import stop_listener
-        await stop_listener()
 
     @app.get("/health", tags=["System"])
     async def health_check():
@@ -136,6 +139,8 @@ def create_app() -> FastAPI:
     app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
     app.include_router(assignments.router, prefix="/api/v1/assignments", tags=["Assignments"])
     app.include_router(crm_tasks.router, prefix="/api/v1/crm-tasks", tags=["CRM Tasks"])
+    app.include_router(pursuits.router, prefix="/api/v1/pursuits", tags=["Pursuits"])
+    app.include_router(pursuit_teams.router, prefix="/api/v1/pursuit-teams", tags=["Pursuit Teams"])
     app.include_router(
         public_intake.router, prefix="/api/v1/public/intake", tags=["Public Intake"]
     )

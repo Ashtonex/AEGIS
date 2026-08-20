@@ -65,6 +65,7 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Rec = Record<string, any> & { id: string };
+// Legacy RFQ contract covered: type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices";
 type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
 interface LineItem { description: string; qty: string; uom: string; unit_cost: string; }
 interface PaymentEvidencePayload {

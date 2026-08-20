@@ -28,12 +28,14 @@ import {
   Plus,
   Info as InfoIcon,
   Building2,
-  Calendar
+  Calendar,
+  Trash2
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import {
   ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject,
   submitProjectRegistration, decideProjectRegistration, setProjectBudget, confirmProjectDeposit, createInternalProject,
+  deleteInternalProject, updateProjectIntake, commitProjectIntake,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -420,6 +422,7 @@ function ProjectsWorkspace() {
           error={detailError}
           onClose={() => setSelected(null)}
           onRefresh={() => openProject(selected)}
+          onDeleted={() => { setSelected(null); void load(); }}
         />
       ) : null}
     </div>
@@ -538,6 +541,7 @@ function CreateProjectModal({
     name: "", project_code: "", project_type: "", client_name: "",
     contract_value: "", start_date: "", planned_completion_date: "", department_id: "",
   });
+  const [initiatedBy, setInitiatedBy] = useState<"client" | "company">("client");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -550,11 +554,12 @@ function CreateProjectModal({
         name: form.name.trim(),
         project_code: form.project_code || undefined,
         project_type: form.project_type || undefined,
-        client_name: form.client_name || undefined,
-        contract_value: form.contract_value ? Number(form.contract_value) : undefined,
+        client_name: initiatedBy === "client" ? (form.client_name || undefined) : undefined,
+        contract_value: initiatedBy === "client" && form.contract_value ? Number(form.contract_value) : undefined,
         start_date: form.start_date || undefined,
         planned_completion_date: form.planned_completion_date || undefined,
         department_id: form.department_id || undefined,
+        initiated_by: initiatedBy,
       });
       onCreated();
     } catch (e) {
@@ -574,12 +579,39 @@ function CreateProjectModal({
         <p className="mb-4 text-xs text-slate-light">
           Manual entry, for projects that didn&apos;t come through a won tender or opportunity. Those flows already create their project automatically.
         </p>
+
+        <div className="mb-4 flex gap-2 border border-ink-mid bg-ink-light p-1">
+          <button
+            type="button"
+            onClick={() => setInitiatedBy("client")}
+            className={`flex-1 py-2 font-mono text-[11px] uppercase tracking-wider ${initiatedBy === "client" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+          >
+            Client-commissioned
+          </button>
+          <button
+            type="button"
+            onClick={() => setInitiatedBy("company")}
+            className={`flex-1 py-2 font-mono text-[11px] uppercase tracking-wider ${initiatedBy === "company" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+          >
+            Company-initiated production
+          </button>
+        </div>
+        {initiatedBy === "company" && (
+          <p className="mb-4 border border-signal/30 bg-signal/5 p-3 text-xs text-slate-light">
+            A project SNC initiates itself to produce something to sell (internal or external) - no client, no contract value. It stays dormant with no tasks until you complete its intake (category, investment, funding) and commit it from the project detail view.
+          </p>
+        )}
+
         <div className="grid gap-3 sm:grid-cols-2">
           <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Project name *" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper sm:col-span-2" />
-          <input value={form.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Client name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          {initiatedBy === "client" && (
+            <>
+              <input value={form.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Client name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              <input value={form.contract_value} onChange={(e) => set("contract_value", e.target.value)} type="number" placeholder="Contract value ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </>
+          )}
           <input value={form.project_code} onChange={(e) => set("project_code", e.target.value)} placeholder="Project code" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           <input value={form.project_type} onChange={(e) => set("project_type", e.target.value)} placeholder="Project type" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-          <input value={form.contract_value} onChange={(e) => set("contract_value", e.target.value)} type="number" placeholder="Contract value ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           <div>
             <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Start date</label>
             <input value={form.start_date} onChange={(e) => set("start_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
@@ -645,6 +677,115 @@ function Info({ label, value }: { label: string; value: string }) {
       <p className="mt-1 text-sm text-paper font-medium">{value}</p>
     </div>
   ); 
+}
+
+const PROJECT_CATEGORY_LABELS: Record<string, string> = {
+  construction: "Construction",
+  plant: "Plant",
+  commercial: "Commercial",
+};
+
+function ProductionIntakePanel({ project, onRefresh }: { project: Record<string, unknown>; onRefresh: () => void }) {
+  const projectId = String(project.id ?? "");
+  const [category, setCategory] = useState(text(project.project_category as string | undefined, ""));
+  const [investment, setInvestment] = useState(project.investment_required != null ? String(project.investment_required) : "");
+  const [fundingInternal, setFundingInternal] = useState(project.funding_internal != null ? String(project.funding_internal) : "");
+  const [fundingExternal, setFundingExternal] = useState(project.funding_external != null ? String(project.funding_external) : "");
+  const [saving, setSaving] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const investmentNum = number(investment);
+  const totalFunding = (number(fundingInternal) ?? 0) + (number(fundingExternal) ?? 0);
+  const gap = investmentNum != null ? investmentNum - totalFunding : null;
+  const coveragePct = investmentNum ? (totalFunding / investmentNum) * 100 : null;
+
+  const save = async () => {
+    setSaving(true); setMsg(null);
+    try {
+      await updateProjectIntake(projectId, {
+        project_category: category || undefined,
+        investment_required: investment ? Number(investment) : undefined,
+        funding_internal: fundingInternal ? Number(fundingInternal) : undefined,
+        funding_external: fundingExternal ? Number(fundingExternal) : undefined,
+      });
+      setMsg("Saved.");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to save intake.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const commit = async () => {
+    if (!category || investmentNum == null) { setMsg("Set the project category and required investment before committing."); return; }
+    if (!window.confirm("Commit this intake? Tasks will be generated and the questionnaire will lock.")) return;
+    setCommitting(true); setMsg(null);
+    try {
+      const res = await commitProjectIntake(projectId);
+      setMsg(`Committed - ${res.data?.tasks_created ?? 0} tasks generated.`);
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to commit intake.");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  return (
+    <div className="border border-signal/30 bg-signal/5 p-4 rounded-sm space-y-4">
+      <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-signal">Production Project Intake</h3>
+      <p className="text-xs text-slate-light">
+        This is a Company-initiated project - not commissioned by a client. Structure it here: classify it, size the investment, and account for its funding. Nothing gets assigned to anyone until you commit.
+      </p>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {(["construction", "plant", "commercial"] as const).map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setCategory(value)}
+            className={`h-10 border font-mono text-xs uppercase tracking-wider ${category === value ? "border-signal bg-signal/20 text-signal" : "border-ink-mid bg-ink-light text-slate-light hover:text-paper"}`}
+          >
+            {PROJECT_CATEGORY_LABELS[value]}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Investment required ($)</label>
+          <input value={investment} onChange={(e) => setInvestment(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Internal funding ($)</label>
+          <input value={fundingInternal} onChange={(e) => setFundingInternal(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">External funding ($)</label>
+          <input value={fundingExternal} onChange={(e) => setFundingExternal(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+        </div>
+      </div>
+
+      <div className="grid gap-3 border-t border-ink-mid/50 pt-3 sm:grid-cols-3">
+        <Info label="Total funding" value={formatCurrency(totalFunding)} />
+        <Info label="Funding gap" value={gap != null ? formatCurrency(gap) : "—"} />
+        <Info label="Coverage" value={coveragePct != null ? `${coveragePct.toFixed(0)}%` : "—"} />
+      </div>
+
+      <div className="flex justify-end gap-2 border-t border-ink-mid/50 pt-3">
+        <button onClick={() => void save()} disabled={saving} className="h-10 border border-ink-mid bg-ink-light px-4 font-mono text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-50">
+          {saving ? "Saving..." : "Save Progress"}
+        </button>
+        <button onClick={() => void commit()} disabled={committing || !category || investmentNum == null} className="h-10 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+          {committing ? "Committing..." : "Commit - Generate Tasks"}
+        </button>
+      </div>
+
+      {msg && <p className="text-xs text-slate-light">{msg}</p>}
+    </div>
+  );
 }
 
 function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<string, unknown>; isFinance: boolean; onRefresh: () => void }) {
@@ -823,6 +964,7 @@ function ProjectDetail({
   departments,
   onDepartmentChange,
   onRefresh,
+  onDeleted,
 }: {
   project: Project;
   detail: Detail | null;
@@ -832,9 +974,34 @@ function ProjectDetail({
   departments: Department[];
   onDepartmentChange: (departmentId: string) => void;
   onRefresh: () => void;
+  onDeleted: () => void;
 }) {
   const { role } = useAuth();
   const source = detail?.project ?? project;
+
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDelete = useCallback(async () => {
+    if (!window.confirm(`Delete "${title(project)}"? If it has no linked activity anywhere it will be permanently wiped; otherwise it will be archived instead.`)) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await deleteInternalProject(project.id);
+      if (!res.success) throw new Error("Project could not be deleted.");
+      if (res.data?.wiped) {
+        window.alert(`"${title(project)}" was permanently deleted.`);
+      } else {
+        const blockers = (res.data?.blocked_by ?? []).map((b) => `${b.table} (${b.count})`).join(", ");
+        window.alert(`"${title(project)}" has linked records - archived instead of deleted.${blockers ? `\n\nLinked: ${blockers}` : ""}`);
+      }
+      onDeleted();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Project could not be deleted.");
+    } finally {
+      setDeleting(false);
+    }
+  }, [project, onDeleted]);
 
   const [departmentSaving, setDepartmentSaving] = useState(false);
   const [departmentError, setDepartmentError] = useState<string | null>(null);
@@ -1188,13 +1355,23 @@ function ProjectDetail({
             </div>
           </div>
           <button
+            onClick={() => void handleDelete()}
+            disabled={deleting}
+            className="border border-red-500/30 bg-red-950/20 p-2 text-red-300 hover:border-red-400 hover:bg-red-950/40 disabled:opacity-40"
+            aria-label="Delete project"
+            title="Delete project"
+          >
+            {deleting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Trash2 className="h-5 w-5" />}
+          </button>
+          <button
             onClick={onClose}
-            className="border border-ink-mid bg-ink-light p-2 text-slate-light hover:border-signal hover:text-paper" 
+            className="border border-ink-mid bg-ink-light p-2 text-slate-light hover:border-signal hover:text-paper"
             aria-label="Close project detail"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
+        {deleteError && <p className="mt-2 text-xs text-red-300">{deleteError}</p>}
 
         {/* Tab Navigation */}
         <nav className="my-4 flex border-b border-ink-mid">
@@ -1278,10 +1455,33 @@ function ProjectDetail({
               <div className="space-y-6 animate-fade-in">
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <Info label="Status" value={text(source.status)} />
-                  <Info label="Contract Value" value={formatCurrency(contractVal)} />
+                  {text(viability?.initiated_by as string | undefined ?? (source as Record<string, unknown>).initiated_by, "client") === "company" ? (
+                    <Info
+                      label="Project Category"
+                      value={
+                        PROJECT_CATEGORY_LABELS[String(viability?.project_category ?? (source as Record<string, unknown>).project_category ?? "")]
+                        ?? "Production (uncategorized)"
+                      }
+                    />
+                  ) : (
+                    <Info label="Contract Value" value={formatCurrency(contractVal)} />
+                  )}
                   <Info label="Project Manager" value={text(viability?.delivery_manager ?? source.project_manager ?? source.manager)} />
                   <Info label="Programme End" value={formatDate(text(viability?.planned_end_date ?? source.end_date, ""))} />
                 </div>
+
+                {text(viability?.initiated_by as string | undefined ?? (source as Project & { initiated_by?: string }).initiated_by, "client") === "company" && !(viability?.intake_completed_at ?? (source as Record<string, unknown>).intake_completed_at) && (
+                  <ProductionIntakePanel
+                    project={{
+                      id: project.id,
+                      project_category: viability?.project_category ?? (source as Record<string, unknown>).project_category,
+                      investment_required: viability?.investment_required ?? (source as Record<string, unknown>).investment_required,
+                      funding_internal: viability?.funding_internal ?? (source as Record<string, unknown>).funding_internal,
+                      funding_external: viability?.funding_external ?? (source as Record<string, unknown>).funding_external,
+                    }}
+                    onRefresh={onRefresh}
+                  />
+                )}
 
                 {(source.status === "field_intake" || source.status === "pending_deposit" || FINANCE_SIGNOFF_ROLES.has(role ?? "")) && (
                   <FieldIntakePanel

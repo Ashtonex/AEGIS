@@ -60,7 +60,7 @@ export function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-9 z-50 w-[360px] border border-ink-mid bg-ink-light shadow-2xl">
+        <div className="absolute right-0 top-9 z-50 w-[min(360px,calc(100vw-1rem))] border border-ink-mid bg-ink-light shadow-2xl">
           <div className="p-4 border-b border-ink-mid flex items-center justify-between">
             <div>
               <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Live notifications</p>

@@ -1466,6 +1466,67 @@ export async function removeTeamMember(teamId: string, userId: string): Promise<
   });
 }
 
+// ─── Pursuits (Lead → Opportunity → Tender → Award/Loss spine) ────────────
+
+export async function getPursuits(params?: { status?: string }): Promise<ApiResponse<any[]>> {
+  const qs = params?.status ? `?status=${encodeURIComponent(params.status)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/pursuits/${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getPursuit(id: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/pursuits/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function updatePursuit(id: string, payload: Record<string, any>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/pursuits/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+// ─── Pursuit Teams (temporary, pursuit-scoped teams — not core.teams) ─────
+
+export async function getPursuitTeams(pursuitId?: string): Promise<ApiResponse<any[]>> {
+  const qs = pursuitId ? `?pursuit_id=${encodeURIComponent(pursuitId)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/pursuit-teams/${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createPursuitTeam(payload: { pursuit_id: string; name: string; objective?: string; team_lead_user_id?: string }): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/pursuit-teams/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updatePursuitTeam(id: string, payload: Record<string, any>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/pursuit-teams/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getPursuitTeamMembers(teamId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/pursuit-teams/${teamId}/members`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function addPursuitTeamMember(teamId: string, payload: { user_id: string; department_id?: string; role_label?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/pursuit-teams/${teamId}/members`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function removePursuitTeamMember(teamId: string, userId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/pursuit-teams/${teamId}/members/${userId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
 // ─── Assignment (lead/opportunity/tender/project/fleet/machinery → person or team) ─
 
 export async function getAssignment(entityType: string, entityId: string): Promise<ApiResponse<{ assigned_to_user_id: string | null; assigned_to_team_id: string | null; assigned_user_name: string | null; assigned_team_name: string | null }>> {
@@ -1521,6 +1582,21 @@ export async function updateCrmTask(id: string, payload: Record<string, unknown>
 
 export async function deleteCrmTask(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${id}`, { method: 'DELETE', allowFallback: false });
+}
+
+export async function addCrmTaskContributor(taskId: string, userId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${taskId}/contributors`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId }),
+    allowFallback: false,
+  });
+}
+
+export async function removeCrmTaskContributor(taskId: string, userId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${taskId}/contributors/${userId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
 }
 
 /** Assigns every open task linked to one entity to a team in one call. */
@@ -1880,6 +1956,36 @@ export async function updateInternalProject(projectId: string, payload: Record<s
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/**
+ * Deletes a project. If it has any real linked activity anywhere in the
+ * system (finance, procurement, HR, compliance, etc.) the backend refuses
+ * the wipe and archives it instead - check `data.wiped` to tell which
+ * happened, and `data.blocked_by` for what's still linked.
+ */
+export async function deleteInternalProject(projectId: string): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
+  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+/** Saves whichever production-project intake questions have been answered so far (category, investment, funding). Callable repeatedly before commit. */
+export async function updateProjectIntake(projectId: string, payload: { project_category?: string; investment_required?: number; funding_internal?: number; funding_external?: number }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/intake`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Finalizes a company-initiated project's intake and generates its task stack. */
+export async function commitProjectIntake(projectId: string): Promise<ApiResponse<{ tasks_created: number }>> {
+  return fetchApi<ApiResponse<{ tasks_created: number }>>(`/api/v1/projects/${projectId}/commit-intake`, {
+    method: 'POST',
     allowFallback: false,
   });
 }

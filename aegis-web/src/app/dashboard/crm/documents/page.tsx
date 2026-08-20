@@ -474,7 +474,11 @@ export default function CRMDocumentsPage() {
 
     setScanPhase("scanning");
     const fileExt = file.name.split(".").pop();
-    const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ""}`;
+    const uploadId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${encodeURIComponent(file.name).slice(0, 48)}`;
+    const storedName = `${uploadId}${fileExt ? `.${fileExt}` : ""}`;
     const filePath = `documents/${storedName}`;
 
     // Animate 0 -> 85% alongside the real upload request

@@ -130,6 +130,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       },
       { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck },
       { name: "Teams", href: "/dashboard/crm/teams", icon: Users },
+      { name: "Pursuit Teams", href: "/dashboard/crm/pursuit-teams", icon: Users, requiredPermission: "pursuit_teams.read" },
     ],
   },
   {
@@ -210,6 +211,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "RFQs", href: "/dashboard/procurement/rfqs", icon: Search },
       { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart },
       { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package },
+      { name: "Pricing", href: "/dashboard/procurement/pricing", icon: DollarSign },
       { name: "Invoices", href: "/dashboard/procurement/invoices", icon: DollarSign },
     ],
   },
@@ -349,6 +351,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { session, role, isLoading, signOut } = useAuth();
+  const isPortalRoute = pathname?.startsWith("/portal") ?? false;
   const [time, setTime] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [tourOpen, setTourOpen] = useState(false);
@@ -462,9 +465,30 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     return () => clearInterval(interval);
   }, []);
 
+  const portalHome = useMemo(() => {
+    if (pathname?.startsWith("/portal/client")) return { name: "Client Portal", href: "/portal/client", icon: LockKeyhole };
+    if (pathname?.startsWith("/portal/supplier")) return { name: "Supplier Portal", href: "/portal/supplier", icon: Package };
+    if (pathname?.startsWith("/portal/foreman")) return { name: "Foreman Portal", href: "/portal/foreman", icon: HardHat };
+    return { name: "Portal", href: "/portal/client", icon: LockKeyhole };
+  }, [pathname]);
+
+  const portalGroups = useMemo<ModuleGroup[]>(
+    () => [
+      {
+        name: portalHome.name,
+        href: portalHome.href,
+        icon: portalHome.icon,
+        subItems: [{ name: "Workspace", href: portalHome.href, icon: portalHome.icon }],
+      },
+    ],
+    [portalHome]
+  );
+
   const visibleGroups = useMemo(
     () =>
-      MODULE_GROUPS.filter(
+      isPortalRoute
+        ? portalGroups
+        : MODULE_GROUPS.filter(
         (group) =>
           (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
           !isRoleRestricted(userRole, group.restrictedRoles) &&
@@ -480,7 +504,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           ),
         }))
         .filter((group) => group.subItems.length > 0),
-    [userRole, hasPermission]
+    [userRole, hasPermission, isPortalRoute, portalGroups]
   );
 
   const activeGroup = useMemo(
@@ -575,15 +599,15 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           <div key={group.name} className="mb-1">
             <button
               onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
+              className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
                 isCurrent ? "text-signal bg-signal/5" : "text-slate-light hover:text-paper hover:bg-ink-light"
               }`}
             >
-              <div className="flex items-center space-x-3">
-                <group.icon className={`w-4 h-4 ${isCurrent ? "text-signal" : "text-slate"}`} />
-                <span>{group.name}</span>
+              <div className="flex min-w-0 items-center space-x-3">
+                <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? "text-signal" : "text-slate"}`} />
+                <span className="truncate">{group.name}</span>
               </div>
-              {isOpen ? <ChevronDown className="w-4 h-4 text-slate" /> : <ChevronRight className="w-4 h-4 text-slate" />}
+              {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-slate" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate" />}
             </button>
 
             {isOpen && (
@@ -594,14 +618,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                     <Link
                       key={sub.name}
                       href={sub.href}
-                      className={`flex items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
+                      className={`flex min-w-0 items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
                         isSubCurrent
                           ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
                           : "text-slate hover:text-paper hover:bg-ink-light/50"
                       }`}
                     >
-                      <sub.icon className={`w-3.5 h-3.5 ${isSubCurrent ? "text-signal" : "text-slate-light"}`} />
-                      <span>{sub.name}</span>
+                      <sub.icon className={`h-3.5 w-3.5 shrink-0 ${isSubCurrent ? "text-signal" : "text-slate-light"}`} />
+                      <span className="truncate">{sub.name}</span>
                     </Link>
                   );
                 })}
@@ -628,51 +652,32 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   return (
     <div className="h-dvh bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink overflow-hidden">
 
-      {/* Thin always-present strip at the very top of the viewport so hovering
-          there can bring the top bar back even while it's hidden - the bar
-          itself isn't there to hover over once translated out of view. */}
-      <div
-        className="fixed top-0 inset-x-0 h-2 z-40"
-        onMouseEnter={revealTopBar}
-      />
-
       {/* GLOBAL TOP NAVIGATION BAR - fixed/overlaid, not in normal flow, so
           hiding or showing it never shifts the page content beneath it. */}
       <header
         onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
         onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}
-        className={`fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between px-6 z-50 shrink-0 transition-transform duration-300 ease-out ${
-          // Mobile has no persistent sidebar - this bar (and the hamburger
-          // inside it) is the only way to reach navigation there, so it must
-          // never actually hide on mobile regardless of the desktop-only
-          // auto-hide timer's state. scheduleTopBarHide() already skips
-          // scheduling a hide on mobile, but that alone doesn't cover the
-          // case where the bar was auto-hidden at desktop width and the
-          // viewport is then narrowed below the breakpoint - this render-time
-          // guard is the single source of truth so there's no state-timing
-          // window where mobile navigation is unreachable.
-          (topBarVisible || !isDesktop) ? "translate-y-0" : "-translate-y-full"
-        }`}
+        className="fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0"
       >
-        <div className="flex items-center space-x-4 md:space-x-8">
+        <div className="flex min-w-0 items-center space-x-3 md:space-x-8">
           <button
             type="button"
-            className="md:hidden text-slate hover:text-paper transition-colors p-1 -ml-1"
+            className="md:hidden text-slate hover:text-paper transition-colors p-2 -ml-2"
             onClick={() => setMobileMenuOpen((prev) => !prev)}
             aria-label={mobileMenuOpen ? "Close menu" : "Open menu"}
             aria-expanded={mobileMenuOpen}
           >
             {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
-          <Link href="/dashboard/executive" className="flex items-center space-x-3" aria-label="SNC Imperium dashboard">
+          <Link href={isPortalRoute ? portalHome.href : "/dashboard/executive"} className="flex min-w-0 items-center space-x-2 sm:space-x-3" aria-label="SNC Imperium dashboard">
             <Image
               src="/logo.png"
               alt="SNC Logo"
               width={72}
               height={48}
-              className="h-11 w-auto object-contain"
+              className="h-9 w-auto shrink-0 object-contain sm:h-11"
             />
-            <span className="font-display text-lg tracking-tight text-paper">IMPERIUM</span>
+            <span className="hidden font-display text-lg tracking-tight text-paper sm:inline">IMPERIUM</span>
           </Link>
           
           <div className="relative group hidden md:block" data-tour="dashboard-search">
@@ -685,13 +690,15 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           </div>
         </div>
 
-        <div className="flex items-center space-x-3 md:space-x-6">
+        <div className="flex min-w-0 items-center space-x-2 sm:space-x-3 md:space-x-6">
           <div className="hidden lg:flex items-center space-x-2 border-r border-ink-mid pr-6">
             <span className="w-2 h-2 rounded-full bg-signal animate-pulse-signal"></span>
             <span className="text-data-sm font-mono text-slate-light tracking-widest uppercase">Six Nine Construction</span>
           </div>
 
-          <CalendarDropdown />
+          <div className="hidden sm:block">
+            <CalendarDropdown />
+          </div>
           <NotificationBell />
           <div className="hidden md:block">
             <PwaPushButton />
@@ -715,11 +722,11 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <button
               type="button"
               onClick={() => setUserMenuOpen((prev) => !prev)}
-              className="flex items-center space-x-3 border-l border-ink-mid pl-6 cursor-pointer group focus:outline-none"
+              className="flex min-w-0 items-center space-x-2 border-l border-ink-mid pl-2 sm:pl-4 lg:pl-6 cursor-pointer group focus:outline-none"
               aria-expanded={userMenuOpen}
               aria-haspopup="true"
             >
-              <div className="text-right">
+              <div className="hidden min-w-0 text-right sm:block">
                 <p className="text-sm font-medium text-paper group-hover:text-signal transition-colors">{displayName}</p>
                 <p className="text-[10px] font-mono tracking-widest text-slate uppercase">{userRole}</p>
               </div>
@@ -790,7 +797,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       </header>
 
       {/* BODY CONFIGURATION */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="box-border flex h-full min-h-0 overflow-hidden pt-14">
         
         {/* FIXED LEFT SIDEBAR (desktop) */}
         <aside className="hidden md:flex md:flex-col w-56 flex-shrink-0 border-r border-ink-mid bg-ink z-20">
@@ -800,20 +807,29 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </aside>
 
         {/* MAIN CONTENT AREA */}
-        <main ref={mainScrollRef} className="flex-1 overflow-auto bg-ink relative">
+        <main ref={mainScrollRef} className="relative min-w-0 flex-1 overflow-auto bg-ink">
           {children}
         </main>
       </div>
 
       {/* MOBILE NAV DRAWER */}
       {mobileMenuOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
+        <div className="fixed inset-0 z-[60] md:hidden">
           <div
             className="absolute inset-0 bg-black/60"
             onClick={() => setMobileMenuOpen(false)}
           />
-          <aside className="absolute inset-y-0 left-0 w-72 max-w-[85vw] border-r border-ink-mid bg-ink flex flex-col">
-            <nav className="flex-1 py-4 overflow-y-auto no-scrollbar flex flex-col px-3 pt-16">
+          <aside className="absolute inset-y-0 left-0 flex w-[min(20rem,88vw)] flex-col border-r border-ink-mid bg-ink shadow-2xl">
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-ink-mid px-3">
+              <Link href={isPortalRoute ? portalHome.href : "/dashboard/executive"} className="flex min-w-0 items-center gap-2" onClick={() => setMobileMenuOpen(false)}>
+                <Image src="/logo.png" alt="SNC Logo" width={56} height={36} className="h-9 w-auto shrink-0 object-contain" />
+                <span className="truncate font-display text-base tracking-tight text-paper">IMPERIUM</span>
+              </Link>
+              <button type="button" onClick={() => setMobileMenuOpen(false)} className="p-2 text-slate hover:text-paper" aria-label="Close menu">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 py-4">
               {renderNavGroups()}
             </nav>
           </aside>

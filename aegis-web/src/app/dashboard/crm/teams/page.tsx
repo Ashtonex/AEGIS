@@ -12,7 +12,9 @@ import {
   removeTeamMember,
   setTeamMemberLead,
   getAssignableUsers,
+  getCrmTasks,
 } from "@/lib/api";
+import { initials, avatarTone } from "@/lib/avatar";
 
 interface Team {
   id: string;
@@ -36,9 +38,15 @@ function normalizeError(reason: unknown, fallback: string) {
   return message || fallback;
 }
 
+interface WorkloadEntry {
+  open: number;
+  overdue: number;
+}
+
 export default function TeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [workload, setWorkload] = useState<Record<string, WorkloadEntry>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newTeamName, setNewTeamName] = useState("");
@@ -49,9 +57,21 @@ export default function TeamsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [teamsRes, usersRes] = await Promise.all([getTeams(), getAssignableUsers()]);
+      const [teamsRes, usersRes, tasksRes] = await Promise.all([getTeams(), getAssignableUsers(), getCrmTasks({})]);
       if (teamsRes.success && Array.isArray(teamsRes.data)) setTeams(teamsRes.data);
       if (usersRes.success && Array.isArray(usersRes.data)) setUsers(usersRes.data);
+      if (tasksRes.success && Array.isArray(tasksRes.data)) {
+        const today = new Date(new Date().toDateString());
+        const byUser: Record<string, WorkloadEntry> = {};
+        for (const task of tasksRes.data) {
+          if (!task.assigned_to_user_id || task.status === "completed" || task.status === "cancelled") continue;
+          const entry = byUser[task.assigned_to_user_id] ?? { open: 0, overdue: 0 };
+          entry.open += 1;
+          if (task.due_date && new Date(task.due_date) < today) entry.overdue += 1;
+          byUser[task.assigned_to_user_id] = entry;
+        }
+        setWorkload(byUser);
+      }
     } catch (e) {
       setError(normalizeError(e, "Teams did not load."));
     } finally {
@@ -152,6 +172,7 @@ export default function TeamsPage() {
         <TeamMembersModal
           team={managingTeam}
           allUsers={users}
+          workload={workload}
           onClose={() => { setManagingTeam(null); void load(); }}
         />
       )}
@@ -159,7 +180,7 @@ export default function TeamsPage() {
   );
 }
 
-function TeamMembersModal({ team, allUsers, onClose }: { team: Team; allUsers: AssignableUser[]; onClose: () => void }) {
+function TeamMembersModal({ team, allUsers, workload, onClose }: { team: Team; allUsers: AssignableUser[]; workload: Record<string, WorkloadEntry>; onClose: () => void }) {
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [addUserId, setAddUserId] = useState("");
@@ -250,14 +271,27 @@ function TeamMembersModal({ team, allUsers, onClose }: { team: Team; allUsers: A
             <p className="py-3 text-center text-xs text-slate-light">No members yet.</p>
           ) : (
             <ul className="divide-y divide-ink-mid border border-ink-mid">
-              {members.map((m) => (
+              {members.map((m) => {
+                const w = workload[m.id];
+                return (
                 <li key={m.id} className="flex items-center justify-between p-2.5">
                   <div className="flex items-center gap-2">
-                    {m.is_lead && <Crown className="h-3.5 w-3.5 text-signal" aria-label="Team lead" />}
+                    <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-bold ${avatarTone(m.id)}`}>
+                      {initials(m.full_name)}
+                    </span>
+                    {m.is_lead && <Crown className="h-3.5 w-3.5 shrink-0 text-signal" aria-label="Team lead" />}
                     <div>
                       <p className="text-sm text-paper">{m.full_name}</p>
                       <p className="text-[11px] text-slate-light">{m.email}</p>
                     </div>
+                    {w && w.open > 0 && (
+                      <span
+                        title={`${w.open} open task${w.open === 1 ? "" : "s"}${w.overdue ? `, ${w.overdue} overdue` : ""}`}
+                        className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${w.overdue > 0 ? "bg-red-500/20 text-red-300" : "bg-ink-mid text-slate-light"}`}
+                      >
+                        {w.overdue > 0 ? `${w.overdue} late` : w.open}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -273,7 +307,8 @@ function TeamMembersModal({ team, allUsers, onClose }: { team: Team; allUsers: A
                     </button>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>

@@ -23,11 +23,13 @@ from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
 )
 from app.shared.sql import update_tenant_row_sql
-from app.shared.task_stacks import generate_task_stack
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.pursuits import get_or_create_pursuit
 from app.services.auth_provisioning import provision_portal_user
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 router = APIRouter()
+ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 
 class OpportunityStage(str, Enum):
@@ -85,6 +87,11 @@ def _require_org_id(user: dict) -> Any:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CRM routes require an organization context.",
+        )
+    if str(org_id) == ZERO_UUID:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Valid organization context required.",
         )
     return org_id
 
@@ -1648,6 +1655,7 @@ async def delete_opportunity(
     if not result.first():
         raise HTTPException(status_code=404, detail="Opportunity not found")
     await db.commit()
+    await cascade_delete_entity_tasks(db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id)
     return {"success": True, "data": None, "message": "Opportunity deleted (soft delete).", "meta": {}}
 
 
@@ -1675,6 +1683,8 @@ async def merge_opportunities(
     )
     merged_ids = [str(row.id) for row in result]
     await db.commit()
+    for merged_id in merged_ids:
+        await cascade_delete_entity_tasks(db, org_id=org_id, entity_type="opportunity", entity_id=merged_id)
     return {
         "success": True,
         "data": {"id": opportunity_id, "merged_ids": merged_ids},
@@ -2014,13 +2024,15 @@ async def mark_opportunity_won(
                                     margin_alert_raised = await check_and_alert_margin_threat(
                                         db, org_id, str(project_id), forecast_metrics,
                                     )
-                    except Exception:
-                        budget_id = None
-                        forecast_metrics = None
-                        budget_pending_reason = (
-                            "Budget could not be seeded automatically - confirm via "
-                            "Quotations > Decision instead."
-                        )
+                    except Exception as exc:
+                        await db.rollback()
+                        raise HTTPException(
+                            status_code=500,
+                            detail=(
+                                "Budget could not be seeded automatically - confirm via "
+                                "Quotations > Decision instead."
+                            ),
+                        ) from exc
 
         # Commercial-sourced referral credit: fires only if a matching
         # finance.department_transfer_rules row is configured - no rule
@@ -2090,8 +2102,19 @@ async def mark_opportunity_won(
                                         "contract_value": str(contract_value),
                                     },
                                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail="Referral credit could not be posted for the won opportunity.",
+                ) from exc
+
+        # Award Task Pack: resolve (or create, if this Opportunity never
+        # went through Lead qualification) the pursuit spine row and mark it
+        # won, in the same transaction as everything else above.
+        pursuit_id = await get_or_create_pursuit(
+            db, org_id=org_id, opportunity_id=str(opportunity_id), status="won", created_by=user_id,
+        )
 
         await db.commit()
     except (DataError, IntegrityError) as exc:
@@ -2099,6 +2122,7 @@ async def mark_opportunity_won(
         raise HTTPException(status_code=400, detail="Won handoff payload violates CRM constraints.") from exc
 
     await fire_trigger(db, org_id, user_id, "quote_accepted", {"opportunity_id": str(opportunity_id), "id": str(opportunity_id)})
+    await generate_task_stack(db, org_id=org_id, entity_type="award", entity_id=pursuit_id, created_by=user_id)
 
     return {
         "success": True,
@@ -2126,6 +2150,7 @@ async def mark_opportunity_lost(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org_id(user)
+    user_id = _require_user_id(user)
     current_stage_row = await _single_row(
         db,
         """
@@ -2173,7 +2198,14 @@ async def mark_opportunity_lost(
             """),
             {"quote_id": row.quote_id, "org_id": org_id},
         )
+
+    pursuit_id = await get_or_create_pursuit(
+        db, org_id=org_id, opportunity_id=str(opportunity_id), status="lost", created_by=user_id,
+    )
     await db.commit()
+
+    await generate_task_stack(db, org_id=org_id, entity_type="loss", entity_id=pursuit_id, created_by=user_id)
+
     return {
         "success": True,
         "data": {"id": str(opportunity_id)},

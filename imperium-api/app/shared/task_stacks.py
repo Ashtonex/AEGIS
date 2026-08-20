@@ -28,6 +28,13 @@ ENTITY_DEPARTMENT_CODE: dict[str, str] = {
     "project": "construction",
     "fleet": "plant_equipment",
     "machinery": "plant_equipment",
+    # Pursuit-lifecycle packs (crm.pursuits.id as entity_id) - Award and
+    # Handover / Loss Review / Clarification and Negotiation teams are all
+    # chaired out of Commercial per the pursuit operating model, even though
+    # individual tasks within an Award pack fan out to Construction/Plant.
+    "award": "commercial",
+    "loss": "commercial",
+    "clarification": "commercial",
 }
 
 
@@ -98,6 +105,45 @@ async def generate_task_stack(
     except Exception:
         logger.exception(
             "task_stack.generation_failed",
+            org_id=org_id,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+        )
+        await db.rollback()
+        return 0
+
+
+async def cascade_delete_entity_tasks(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    entity_type: str,
+    entity_id: UUID | str,
+) -> int:
+    """Soft-deletes any crm.tasks stack linked to this record. Call as a
+    best-effort side effect right after the parent record itself is
+    soft-deleted (mirrors generate_task_stack's on-create side effect) -
+    without this, a deleted lead/opportunity/tender/project leaves its task
+    stack behind pointing at a now-nonexistent record, which is exactly the
+    orphaned-reference case the Tasks page group headers can't resolve a
+    name for. Never allowed to fail the parent delete. Returns the number of
+    tasks soft-deleted."""
+    try:
+        result = await db.execute(
+            text("""
+                UPDATE crm.tasks SET is_deleted = true, updated_at = NOW()
+                WHERE organization_id = :org_id AND entity_type = :entity_type AND entity_id = :entity_id
+                  AND is_deleted = false
+                RETURNING id
+            """),
+            {"org_id": org_id, "entity_type": entity_type, "entity_id": entity_id},
+        )
+        deleted = result.fetchall()
+        await db.commit()
+        return len(deleted)
+    except Exception:
+        logger.exception(
+            "task_stack.cascade_delete_failed",
             org_id=org_id,
             entity_type=entity_type,
             entity_id=str(entity_id),

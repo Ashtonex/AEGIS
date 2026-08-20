@@ -16,7 +16,11 @@ from app.services.documents.renderers import (
     QuotationPDFRenderer,
 )
 from app.services.quotations.boq_importer import BOQImporter
-from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
+from app.services.quotations.calculator import (
+    QuotationCalculator,
+    build_calc_input_from_metadata,
+    sum_buildup_by_type,
+)
 from app.services.quotations.intelligence_engine import (
     QuotationBrain,
     AssemblyLibrary,
@@ -58,6 +62,10 @@ logger = logging.getLogger(__name__)
 # emit_role_notification matches role names exactly, so those strings resolve
 # to zero recipients.
 COMMERCIAL_ALERT_ROLES = ["Executive (Admin)", "Finance Manager", SUPERADMIN_ROLE]
+
+# Backwards-compatible export for tests and callers that still import the
+# helper from this router. The implementation lives in the calculator service.
+_sum_buildup_by_type = sum_buildup_by_type
 
 """
 Module: quotations

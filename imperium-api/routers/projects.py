@@ -15,7 +15,8 @@ from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
-from app.shared.task_stacks import generate_task_stack
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.project_delete import find_project_blockers, hard_delete_project
 
 router = APIRouter()
 
@@ -35,6 +36,13 @@ class ProjectCreate(BaseModel):
     start_date: Optional[date] = None
     planned_completion_date: Optional[date] = None
     department_id: Optional[UUID] = None
+    # 'company' marks a project the Company itself initiates to produce
+    # something to sell (internal or external) rather than one commissioned
+    # by a client - e.g. RMC's ready-mix concrete plant. Its task stack does
+    # NOT generate at creation like a normal project; it waits until the
+    # structured intake (category, investment, funding) is committed via
+    # POST /{project_id}/commit-intake.
+    initiated_by: str = Field(default="client", pattern="^(client|company)$")
 
 
 class ProjectUpdate(BaseModel):
@@ -83,6 +91,17 @@ class ProjectBudgetSet(BaseModel):
 class ProjectDepositConfirm(BaseModel):
     deposit_reference: Optional[str] = Field(default=None, max_length=255)
     notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ProjectIntakeUpdate(BaseModel):
+    """Structured intake for a company-initiated production project (see
+    ProjectCreate.initiated_by) - saved incrementally as each question is
+    answered, ahead of the final commit that generates its task stack."""
+
+    project_category: Optional[str] = Field(default=None, pattern="^(construction|plant|commercial)$")
+    investment_required: Optional[Decimal] = Field(default=None, ge=0)
+    funding_internal: Optional[Decimal] = Field(default=None, ge=0)
+    funding_external: Optional[Decimal] = Field(default=None, ge=0)
 
 
 class MilestonePayload(BaseModel):
@@ -138,7 +157,9 @@ async def _project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> No
 async def _project_ref_or_404(db: AsyncSession, project_ref: str, org_id: str) -> dict:
     result = await db.execute(
         text("""
-        SELECT p.*, pp.region, pp.latitude, pp.longitude
+        SELECT p.*, pp.region, pp.latitude, pp.longitude,
+               pp.initiated_by, pp.project_category, pp.investment_required,
+               pp.funding_internal, pp.funding_external, pp.intake_completed_at
         FROM projects.projects p
         LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
         WHERE p.organization_id = :org_id
@@ -179,6 +200,8 @@ async def list_projects(
     rows = await db.execute(
         text("""
         SELECT p.*, pp.viability_status, pp.budget_amount, pp.forecast_cost,
+               pp.initiated_by, pp.project_category, pp.investment_required,
+               pp.funding_internal, pp.funding_external, pp.intake_completed_at,
                COUNT(m.id) FILTER (WHERE m.status = 'blocked') AS blocked_milestones,
                COUNT(r.id) FILTER (WHERE r.status IN ('open', 'mitigating')) AS open_risks
         FROM projects.projects p
@@ -202,6 +225,8 @@ async def create_project(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.create")),
 ):
+    fields = payload.model_dump()
+    initiated_by = fields.pop("initiated_by")
     try:
         row = (
             await db.execute(
@@ -211,22 +236,116 @@ async def create_project(
             RETURNING id
         """),
                 {
-                    **payload.model_dump(),
+                    **fields,
                     "org_id": user["org_id"],
                     "user_id": user["user_id"],
                 },
             )
         ).first()
+        if initiated_by == "company":
+            await db.execute(
+                text("""
+                    INSERT INTO projects.project_profiles (project_id, organization_id, initiated_by)
+                    VALUES (:project_id, :org_id, 'company')
+                    ON CONFLICT (project_id) DO UPDATE SET initiated_by = 'company'
+                """),
+                {"project_id": row.id, "org_id": user["org_id"]},
+            )
         await db.commit()
-        await generate_task_stack(
-            db, org_id=user["org_id"], entity_type="project", entity_id=row.id, created_by=user["user_id"],
-        )
+        if initiated_by == "client":
+            # Company-initiated projects defer task generation until their
+            # structured intake is committed (see commit_project_intake).
+            await generate_task_stack(
+                db, org_id=user["org_id"], entity_type="project", entity_id=row.id, created_by=user["user_id"],
+            )
         return _result({"id": str(row.id)}, "Project created.")
     except Exception as exc:
         await db.rollback()
         raise HTTPException(
             status_code=409, detail="Project code already exists for this organization."
         ) from exc
+
+
+@router.patch("/{project_id}/intake")
+async def update_project_intake(
+    project_id: UUID,
+    payload: ProjectIntakeUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Saves whichever intake questions have been answered so far - callable
+    repeatedly before commit-intake finalizes it. Values already on file are
+    preserved for fields left out of this payload."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if project.get("intake_completed_at"):
+        raise HTTPException(status_code=409, detail="Intake already committed for this project.")
+
+    fields = payload.model_dump(exclude_none=True)
+    row = (
+        await db.execute(
+            text("""
+                INSERT INTO projects.project_profiles (project_id, organization_id, project_category, investment_required, funding_internal, funding_external)
+                VALUES (:project_id, :org_id, :project_category, :investment_required, :funding_internal, :funding_external)
+                ON CONFLICT (project_id) DO UPDATE SET
+                    project_category = COALESCE(:project_category, projects.project_profiles.project_category),
+                    investment_required = COALESCE(:investment_required, projects.project_profiles.investment_required),
+                    funding_internal = COALESCE(:funding_internal, projects.project_profiles.funding_internal),
+                    funding_external = COALESCE(:funding_external, projects.project_profiles.funding_external)
+                RETURNING project_category, investment_required, funding_internal, funding_external
+            """),
+            {
+                "project_id": project_id,
+                "org_id": user["org_id"],
+                "project_category": fields.get("project_category"),
+                "investment_required": fields.get("investment_required"),
+                "funding_internal": fields.get("funding_internal"),
+                "funding_external": fields.get("funding_external"),
+            },
+        )
+    ).mappings().first()
+    await db.commit()
+
+    total = (row["funding_internal"] or 0) + (row["funding_external"] or 0)
+    required = row["investment_required"]
+    return _result(
+        {
+            **dict(row),
+            "funding_total": total,
+            "funding_gap": (required - total) if required is not None else None,
+            "funding_coverage_pct": (float(total) / float(required) * 100) if required else None,
+        },
+        "Intake updated.",
+    )
+
+
+@router.post("/{project_id}/commit-intake", status_code=201)
+async def commit_project_intake(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Finalizes a company-initiated project's intake and generates its task
+    stack - the trigger the normal client-project flow gets for free at
+    creation (see create_project)."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if project.get("initiated_by") != "company":
+        raise HTTPException(status_code=409, detail="Only company-initiated projects have an intake to commit.")
+    if project.get("intake_completed_at"):
+        raise HTTPException(status_code=409, detail="Intake already committed for this project.")
+    if not project.get("project_category") or project.get("investment_required") is None:
+        raise HTTPException(status_code=422, detail="Project category and required investment must be set before committing.")
+
+    await db.execute(
+        text("UPDATE projects.project_profiles SET intake_completed_at = NOW() WHERE project_id = :project_id AND organization_id = :org_id"),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    created = await generate_task_stack(
+        db, org_id=user["org_id"], entity_type="project", entity_id=project_id, created_by=user["user_id"],
+    )
+    return _result({"tasks_created": created}, "Intake committed - task stack generated.")
 
 
 @router.get("/{project_id}/lifecycle")
@@ -743,18 +862,31 @@ async def update_project(
 
 
 @router.delete("/{project_id}")
-async def archive_project(
+async def delete_project(
     project_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.delete")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
-    await db.execute(
-        text(
-            "UPDATE projects.projects SET is_deleted=true, updated_at=NOW() WHERE id=:project_id AND organization_id=:org_id"
-        ),
-        {"project_id": project_id, "org_id": user["org_id"]},
-    )
-    await db.commit()
-    return _result(None, "Project archived.")
+
+    blockers = await find_project_blockers(db, project_id)
+    if blockers:
+        # Real activity exists somewhere - refuse the wipe and fall back to
+        # the same soft-delete/archive this endpoint always did, so the
+        # action still does *something* rather than a bare refusal.
+        await db.execute(
+            text(
+                "UPDATE projects.projects SET is_deleted=true, updated_at=NOW() WHERE id=:project_id AND organization_id=:org_id"
+            ),
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )
+        await db.commit()
+        await cascade_delete_entity_tasks(db, org_id=user["org_id"], entity_type="project", entity_id=project_id)
+        return _result(
+            {"wiped": False, "archived": True, "blocked_by": blockers},
+            "Project has linked records - archived instead of permanently deleted.",
+        )
+
+    await hard_delete_project(db, org_id=user["org_id"], project_id=project_id)
+    return _result({"wiped": True, "archived": False, "blocked_by": []}, "Project permanently deleted.")

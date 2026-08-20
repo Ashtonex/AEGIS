@@ -5,7 +5,8 @@ import Link from "next/link";
 import {
   Brain, ShieldAlert, Cpu, Calculator, TrendingUp, Calendar, AlertTriangle,
   CheckCircle2, XCircle, FileSearch, ArrowRight, RefreshCw, Scale, Layers,
-  DollarSign, Users, HardHat, FileText, Zap, ChevronRight, Lock, UserCheck, Search
+  DollarSign, Users, HardHat, FileText, Zap, ChevronRight, Lock, UserCheck, Search,
+  CircleHelp
 } from "lucide-react";
 import {
   evaluateQuotationIntelligence,
@@ -17,9 +18,50 @@ import {
   watchDocumentRevision,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useModuleTour } from "@/hooks/useModuleTour";
+import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+
+const INTELLIGENCE_TOUR_STEPS: ModuleTourStep[] = [
+  {
+    title: "A sandbox, not a live audit",
+    body: "This page runs the same commercial-guard and rate-benchmarking rules as Commercial Control Brain, but against typed test inputs - not a real, selected quotation. Use it to explore how the rules behave before trusting a real quote to CCB.",
+    placement: "center",
+  },
+  {
+    title: "Seven test tools, one tab bar",
+    body: "Project Worthiness, Assembly Recipes, Rate Intelligence, Spend Forecast, Commercial Guard, Document Watcher, and Forensic Evidence Packs - each runs one piece of the commercial-guard logic in isolation.",
+    target: "intelligence-tabs",
+    placement: "bottom",
+  },
+  {
+    title: "Project Worthiness verdict",
+    body: "Set Project Title, Built Area, Duration, and Profit % - the worthiness score and protected margin below react live. The scope itself is a fixed sample (foundations, brickwork, roofing), so this is for testing sensitivity to those four inputs.",
+    target: "intelligence-brain",
+    placement: "right",
+  },
+  {
+    title: "Governance approval gate",
+    body: "This list is computed live from the current verdict - it shows which roles would actually need to sign off on a real quote scoring this way. Worth checking before you're surprised by an approval requirement on a real quote later.",
+    target: "intelligence-governance",
+    placement: "left",
+  },
+  {
+    title: "Rate Intelligence - test only",
+    body: "Runs the same outlier check CCB's Rate Intelligence tab does, against seeded item codes. To actually manage custom rate benchmarks for real, go to Commercial Control Brain instead - that management panel doesn't exist here.",
+    target: "intelligence-rates",
+    placement: "right",
+  },
+  {
+    title: "Commercial Guard - Audit Request Simulator",
+    body: "Same over-request-vs-earned-progress check as CCB's Site Commercial Guard, but with typed test values instead of a live site request queue.",
+    target: "intelligence-guard",
+    placement: "left",
+  },
+];
 
 export default function QuotationIntelligencePage() {
   const { session } = useAuth();
+  const intelligenceTour = useModuleTour("quotations_intelligence");
   const [activeTab, setActiveTab] = useState<
     "brain" | "assemblies" | "rates" | "spend" | "guard" | "documents" | "investigations"
   >("brain");
@@ -246,6 +288,14 @@ export default function QuotationIntelligencePage() {
                 <span className="text-xs font-mono px-2 py-0.5 rounded bg-signal/20 text-signal border border-signal/40 uppercase">
                   Commercial Control Brain
                 </span>
+                <button
+                  onClick={intelligenceTour.openTour}
+                  className="text-slate hover:text-paper transition-colors"
+                  title="Replay Intelligence Engine tour"
+                  aria-label="Replay Intelligence Engine tour"
+                >
+                  <CircleHelp className="w-5 h-5" />
+                </button>
               </h1>
               <p className="text-xs text-slate mt-1">
                 Deterministic QS calculation core with automated document watching, rate benchmarking, spend forecasting, and BS anomaly detection.
@@ -280,7 +330,7 @@ export default function QuotationIntelligencePage() {
       )}
 
       {/* Primary Navigation Tabs */}
-      <div className="flex flex-wrap border-b border-ink-mid gap-1">
+      <div data-tour="intelligence-tabs" className="flex flex-wrap border-b border-ink-mid gap-1">
         <button
           onClick={() => setActiveTab("brain")}
           className={`flex items-center space-x-2 px-4 py-3 text-xs font-medium border-b-2 transition-colors ${
@@ -374,7 +424,7 @@ export default function QuotationIntelligencePage() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
             {/* Input Controls */}
-            <div className="bg-ink-light border border-ink-mid rounded-lg p-6 space-y-4">
+            <div data-tour="intelligence-brain" className="bg-ink-light border border-ink-mid rounded-lg p-6 space-y-4">
               <h2 className="text-sm font-semibold text-white flex items-center gap-2 font-display">
                 <Cpu className="w-4 h-4 text-signal" />
                 Project Evaluation Controls
@@ -498,7 +548,7 @@ export default function QuotationIntelligencePage() {
                     <p className="text-slate">{brainResult.recommendation}</p>
                   </div>
 
-                  <div className="p-4 bg-ink/60 border border-ink-mid rounded text-xs space-y-2">
+                  <div data-tour="intelligence-governance" className="p-4 bg-ink/60 border border-ink-mid rounded text-xs space-y-2">
                     <p className="font-semibold text-white flex items-center gap-1.5">
                       <Lock className="w-4 h-4 text-amber-400" />
                       Mandatory Governance Approval Gate
@@ -710,7 +760,7 @@ export default function QuotationIntelligencePage() {
       {/* ========================================================================= */}
       {activeTab === "rates" && (
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid rounded-lg p-6 space-y-6">
+          <div data-tour="intelligence-rates" className="bg-ink-light border border-ink-mid rounded-lg p-6 space-y-6">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <h2 className="text-base font-bold font-display text-white flex items-center gap-2">
@@ -893,7 +943,7 @@ export default function QuotationIntelligencePage() {
       {/* ========================================================================= */}
       {activeTab === "guard" && (
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid rounded-lg p-6 space-y-6">
+          <div data-tour="intelligence-guard" className="bg-ink-light border border-ink-mid rounded-lg p-6 space-y-6">
             <div>
               <h2 className="text-base font-bold font-display text-white flex items-center gap-2">
                 <ShieldAlert className="w-5 h-5 text-signal" />
@@ -1211,6 +1261,12 @@ export default function QuotationIntelligencePage() {
         </div>
       )}
 
+      <ModuleTour
+        steps={INTELLIGENCE_TOUR_STEPS}
+        open={intelligenceTour.open}
+        onClose={intelligenceTour.closeTour}
+        onComplete={intelligenceTour.completeTour}
+      />
     </div>
   );
 }

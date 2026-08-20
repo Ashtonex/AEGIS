@@ -21,6 +21,8 @@ from app.services.finance.project_forecast import (
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.shared.events import emit_event
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.pursuits import get_or_create_pursuit
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -208,6 +210,7 @@ async def delete_item(
         raise HTTPException(status_code=404, detail="Item not found")
 
     await db.commit()
+    await cascade_delete_entity_tasks(db, org_id=user["org_id"], entity_type="tender", entity_id=item_id)
     return {
         "success": True,
         "data": None,
@@ -457,6 +460,19 @@ async def award_tender(
             except Exception:
                 pass
 
+        # Award Task Pack: resolve (or create, if this Tender never went
+        # through Lead qualification) the pursuit spine row and mark it won,
+        # in the same transaction as everything else above.
+        pursuit_id = await get_or_create_pursuit(
+            db,
+            org_id=org_id,
+            lead_id=str(tender.get("lead_id")) if tender.get("lead_id") else None,
+            opportunity_id=str(tender.get("opportunity_id")) if tender.get("opportunity_id") else None,
+            tender_id=str(tender_id),
+            status="won",
+            created_by=user_id,
+        )
+
         await db.commit()
     except (DataError, IntegrityError) as exc:
         await db.rollback()
@@ -472,6 +488,8 @@ async def award_tender(
         event_data={"tender_id": str(tender_id)},
     )
     await db.commit()
+
+    await generate_task_stack(db, org_id=org_id, entity_type="award", entity_id=pursuit_id, created_by=user_id)
 
     return {
         "success": True,

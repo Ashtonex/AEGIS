@@ -8,7 +8,8 @@ import { Footer } from './Footer';
 export const NavigationWrapper = ({ children }: { children: React.ReactNode }) => {
   const pathname = usePathname();
 
-  const isDashboardOrLogin = pathname?.startsWith('/dashboard') || pathname === '/login';
+  const isDashboardOrLogin =
+    pathname?.startsWith('/dashboard') || pathname?.startsWith('/portal') || pathname === '/login';
   const shouldHideNavAndFooter = isDashboardOrLogin;
 
   return (

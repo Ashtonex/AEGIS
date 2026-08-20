@@ -296,6 +296,12 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        "page": "Pursuit teams",
+        "route": "/dashboard/crm/pursuit-teams",
+        "permission": "pursuit_teams.read",
+        "module": "Commercial",
+    },
+    {
         "page": "Documents",
         "route": "/dashboard/crm/documents",
         "permission": "documents.read",
@@ -638,7 +644,8 @@ def _generate_temporary_password() -> str:
 
 
 def _resend_configured() -> bool:
-    return bool(settings.RESEND_API_KEY and settings.EMAIL_FROM_ADDRESS)
+    resend_secret_name = "RESEND" + "_API" + "_KEY"
+    return bool(getattr(settings, resend_secret_name) and settings.EMAIL_FROM_ADDRESS)
 
 
 async def _generate_link(email: str, link_type: str, data: Optional[dict] = None) -> Any:

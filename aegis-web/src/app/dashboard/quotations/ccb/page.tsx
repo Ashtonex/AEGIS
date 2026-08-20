@@ -8,6 +8,7 @@ import {
   Building2,
   BrainCircuit,
   CheckCircle2,
+  CircleHelp,
   ClipboardList,
   Download,
   FileText,
@@ -52,6 +53,46 @@ import {
   watchDocumentRevision,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useModuleTour } from "@/hooks/useModuleTour";
+import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+
+const CCB_TOUR_STEPS: ModuleTourStep[] = [
+  {
+    title: "The commercial guard behind every quote",
+    body: "Commercial Control Brain checks a real, selected quotation against justified cost - matching BOQ lines to construction assemblies, catching outlier rates, and flagging site material requests that run ahead of earned progress.",
+    placement: "center",
+  },
+  {
+    title: "Pick the baseline it evaluates",
+    body: "Everything on this page runs against whichever quotation you select here, plus Planned Duration and Built Area - both of which feed straight into the spend forecast and the $/sqm scoring. Recalculate Baseline re-runs the evaluation on demand.",
+    target: "ccb-baseline",
+    placement: "right",
+  },
+  {
+    title: "The verdict",
+    body: "Worthiness Score, protected Margin %, and matched BOQ lines - this is the CCB's live recommendation for the baseline you picked, not a static report.",
+    target: "ccb-summary",
+    placement: "bottom",
+  },
+  {
+    title: "Site Commercial Guard",
+    body: "Enter a Requester, Item, Requested Qty, and Earned Qty to audit a real site material request against justified progress - over-requests get flagged as a risk-scored anomaly here.",
+    target: "ccb-guard",
+    placement: "left",
+  },
+  {
+    title: "MD Override - what the label doesn't tell you",
+    body: "This button says \"MD Override\", but the system records it under your own real role, not literally the MD - the actual gate is a permission you hold. One gotcha: an approved override is tied to the baseline it was approved against. Recalculating the baseline afterward marks it Stale, needing re-approval.",
+    target: "ccb-override",
+    placement: "top",
+  },
+  {
+    title: "Rate Intelligence - usable despite the label",
+    body: "The Org Rate Benchmark Library below is labeled \"(Admin)\" in the UI, but it's gated by a permission you hold - you can add and delete custom rate benchmarks here, which override the seeded defaults used by the outlier detector above it.",
+    target: "ccb-rates",
+    placement: "right",
+  },
+];
 
 type Severity = "critical" | "high" | "medium" | "low";
 type AutonomousSourceType = "project" | "lead" | "opportunity" | "tender" | "manual";
@@ -330,6 +371,7 @@ function severityClass(severity: Severity): string {
 
 export default function CommercialControlBrainPage() {
   const { session } = useAuth();
+  const ccbTour = useModuleTour("quotations_ccb");
   const [quotations, setQuotations] = useState<QuotationRecord[]>([]);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [assemblies, setAssemblies] = useState<BackendAssembly[]>([]);
@@ -868,10 +910,20 @@ export default function CommercialControlBrainPage() {
             Quotations
           </Link>
           <div>
-            <h1 className="flex items-center gap-3 font-display text-2xl font-bold tracking-tight text-white">
-              <BrainCircuit className="h-7 w-7 text-signal" />
-              Commercial Control Brain (CCB Enterprise)
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="flex items-center gap-3 font-display text-2xl font-bold tracking-tight text-white">
+                <BrainCircuit className="h-7 w-7 text-signal" />
+                Commercial Control Brain (CCB Enterprise)
+              </h1>
+              <button
+                onClick={ccbTour.openTour}
+                className="text-slate hover:text-paper transition-colors"
+                title="Replay CCB tour"
+                aria-label="Replay CCB tour"
+              >
+                <CircleHelp className="h-5 w-5" />
+              </button>
+            </div>
             <p className="mt-1 max-w-3xl text-sm text-slate">
               Deterministic calculation core, AI semantic classification, what-if scenario simulator, macro inflation forecaster, vendor matchmaker, site BS-detector, and MD governance.
             </p>
@@ -981,7 +1033,7 @@ export default function CommercialControlBrainPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[340px_1fr]">
         {/* SIDEBAR */}
         <aside className="space-y-4">
-          <div className="border border-ink-mid bg-ink-light p-5">
+          <div data-tour="ccb-baseline" className="border border-ink-mid bg-ink-light p-5">
             <label className="font-mono text-[10px] uppercase tracking-widest text-slate">Quotation Baseline</label>
             <select
               value={selectedQuote?.id || ""}
@@ -1258,7 +1310,7 @@ export default function CommercialControlBrainPage() {
               ) : (
                 <>
                   {/* DECISION SUMMARY BANNER */}
-                  <section className={`border p-5 ${decisionClass}`}>
+                  <section data-tour="ccb-summary" className={`border p-5 ${decisionClass}`}>
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                       <div>
                         <p className="font-mono text-[10px] uppercase tracking-widest opacity-80">CCB Decision & Risk Evaluation</p>
@@ -1442,7 +1494,7 @@ export default function CommercialControlBrainPage() {
                       </div>
                     </Panel>
 
-                    <Panel title="Interactive MD/Admin Enforcement Queue" icon={ShieldAlert}>
+                    <Panel title="Interactive MD/Admin Enforcement Queue" icon={ShieldAlert} tourTarget="ccb-override">
                       <div className="space-y-3">
                         {activeEnforcementQueue.length === 0 && overrides.length === 0 ? (
                           <p className="text-sm text-slate">No blocking actions required by current baseline.</p>
@@ -1651,7 +1703,7 @@ export default function CommercialControlBrainPage() {
                 </div>
               </Panel>
 
-              <Panel title="Org Rate Benchmark Library (Admin)" icon={Scale}>
+              <Panel title="Org Rate Benchmark Library (Admin)" icon={Scale} tourTarget="ccb-rates">
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <p className="text-sm text-slate">
@@ -1785,7 +1837,7 @@ export default function CommercialControlBrainPage() {
           {/* TAB 5: SITE COMMERCIAL GUARD */}
           {activeTab === "guard" && (
             <div className="space-y-6">
-              <Panel title="Site Commercial Guard & BS Detector Audit" icon={ShieldAlert}>
+              <Panel title="Site Commercial Guard & BS Detector Audit" icon={ShieldAlert} tourTarget="ccb-guard">
                 <div className="space-y-4">
                   <p className="text-sm text-slate">
                     Intercepts material over-requests and site claims by auditing requested quantities against earned site progress.
@@ -1948,6 +2000,13 @@ export default function CommercialControlBrainPage() {
           )}
         </main>
       </div>
+
+      <ModuleTour
+        steps={CCB_TOUR_STEPS}
+        open={ccbTour.open}
+        onClose={ccbTour.closeTour}
+        onComplete={ccbTour.completeTour}
+      />
     </div>
   );
 }
@@ -1971,9 +2030,9 @@ function Kpi({ icon: Icon, label, value }: { icon: React.ComponentType<{ classNa
   );
 }
 
-function Panel({ title, icon: Icon, children }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode }) {
+function Panel({ title, icon: Icon, children, tourTarget }: { title: string; icon: React.ComponentType<{ className?: string }>; children: React.ReactNode; tourTarget?: string }) {
   return (
-    <section className="border border-ink-mid bg-ink-light p-5">
+    <section data-tour={tourTarget} className="border border-ink-mid bg-ink-light p-5">
       <h2 className="mb-4 flex items-center gap-2 font-display text-lg font-semibold text-white">
         <Icon className="h-5 w-5 text-signal" />
         {title}

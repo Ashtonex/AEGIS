@@ -3,11 +3,11 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
-import { 
+import {
   FileText, Plus, Trash2, Printer, CheckCircle,
   AlertCircle, Loader2, Sliders, ArrowLeft, Download,
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
-  Sparkles, X
+  Sparkles, X, CircleHelp
 } from "lucide-react";
 import {
   getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation,
@@ -18,6 +18,46 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
+import { useModuleTour } from "@/hooks/useModuleTour";
+import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+
+const BUILDER_TOUR_STEPS: ModuleTourStep[] = [
+  {
+    title: "The real rate-buildup tool",
+    body: "This is where a cost estimate actually gets built line by line - and if this quote is later marked Won, this exact cost breakdown becomes the project's real execution budget in Finance.",
+    placement: "center",
+  },
+  {
+    title: "Every estimate needs one source",
+    body: "Client & Project Info also picks the single Project, Tender, Opportunity, or Lead this estimate belongs to - deliberate, so the same piece of work never fragments into duplicate, orphaned estimates.",
+    target: "builder-metadata",
+    placement: "right",
+  },
+  {
+    title: "Bill of Quantities",
+    body: "Add lines manually, or click the small Rate Builder icon on any row to open a full component costing breakdown (material/labour/equipment/subcontractor/transport/waste) that computes the unit rate for you - including a built-in \"Ruthless Estimator\" shortcut that fills typical rates for common task types.",
+    target: "builder-boq",
+    placement: "left",
+  },
+  {
+    title: "Markups, allowances, and VAT",
+    body: "Preliminaries, overhead, contingency, and profit stack onto direct costs - but profit is calculated on Direct Costs + Preliminaries only, it does not compound on overhead or contingency. VAT is fetched live from Finance > Statutory > Rate Tables, not hardcoded; if no rate is configured it falls back to 15% with a visible notice.",
+    target: "builder-markups",
+    placement: "right",
+  },
+  {
+    title: "The number that becomes the real budget",
+    body: "This live roll-up is the actual grand total - and nothing is saved until you click Save Cost Estimate. Two warnings can appear here automatically: overhead running above the corporate threshold, and a $/m2 benchmark check once Built Area is filled in.",
+    target: "builder-summary",
+    placement: "left",
+  },
+  {
+    title: "Already have a BOQ elsewhere?",
+    body: "Paste a BOQ straight from a CSV, or upload an Excel/CSV file - either one populates the line-item table above instead of typing it in by hand. A file upload also auto-attaches the source file to this quote as a document.",
+    target: "builder-import",
+    placement: "bottom",
+  },
+];
 
 interface LineItem {
   description: string;
@@ -35,6 +75,7 @@ interface LineItem {
 
 export default function QuotationBuilder() {
   const { session } = useAuth();
+  const builderTour = useModuleTour("quotations_builder");
   const searchParams = useSearchParams();
   const router = useRouter();
   const editId = searchParams ? searchParams.get("edit") : null;
@@ -774,15 +815,25 @@ export default function QuotationBuilder() {
               <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
             </Link>
           </div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-white mt-2 flex items-center gap-3">
-            <Sliders className="w-6 h-6 text-signal" />
-            {editId ? "Edit Estimating Cost Proposal" : "Interactive Cost Proposal Builder"}
-          </h1>
+          <div className="flex items-center gap-2 mt-2">
+            <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-3">
+              <Sliders className="w-6 h-6 text-signal" />
+              {editId ? "Edit Estimating Cost Proposal" : "Interactive Cost Proposal Builder"}
+            </h1>
+            <button
+              onClick={builderTour.openTour}
+              className="text-slate hover:text-paper transition-colors"
+              title="Replay Builder tour"
+              aria-label="Replay Builder tour"
+            >
+              <CircleHelp className="w-5 h-5" />
+            </button>
+          </div>
           <p className="text-xs text-slate mt-1">
             Formulate complex construction rate-buildups, manage corporate overhead allocations, and monitor margin risks.
           </p>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-3" data-tour="builder-import">
           <button
             type="button"
             onClick={() => setShowImporter(!showImporter)}
@@ -885,7 +936,7 @@ export default function QuotationBuilder() {
           <div className="space-y-6">
             
             {/* Metadata Card */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
+            <div data-tour="builder-metadata" className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
                 <Info className="w-4 h-4 text-signal" /> Client &amp; Project Info
               </h2>
@@ -1057,7 +1108,7 @@ export default function QuotationBuilder() {
             </div>
 
             {/* Calculations Markups */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
+            <div data-tour="builder-markups" className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2 flex items-center gap-2">
                 <Coins className="w-4 h-4 text-signal" /> Markups &amp; Allowances
               </h2>
@@ -1201,7 +1252,7 @@ export default function QuotationBuilder() {
           <div className="xl:col-span-2 space-y-6">
             
             {/* BOQ Items table card */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
+            <div data-tour="builder-boq" className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <div className="flex justify-between items-center border-b border-ink-mid pb-2">
                 <h2 className="font-display font-semibold text-sm text-white">Bill of Quantities (BOQ)</h2>
                 <button
@@ -1299,7 +1350,7 @@ export default function QuotationBuilder() {
             </div>
 
             {/* Calculations buildup display card */}
-            <div className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
+            <div data-tour="builder-summary" className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <h2 className="font-display font-semibold text-sm text-white border-b border-ink-mid pb-2">
                 Cost Buildup Calculation Summary
               </h2>
@@ -2023,6 +2074,12 @@ export default function QuotationBuilder() {
         </div>
       )}
 
+      <ModuleTour
+        steps={BUILDER_TOUR_STEPS}
+        open={builderTour.open}
+        onClose={builderTour.closeTour}
+        onComplete={builderTour.completeTour}
+      />
     </div>
   );
 }
