@@ -1,5 +1,5 @@
 -- ============================================================================
--- AEGIS MIGRATION 125 — PURSUIT OPERATING SYSTEM (PHASE 2: TASK ENGINE HARDENING)
+-- AEGIS MIGRATION 130 — PURSUIT OPERATING SYSTEM (PHASE 2: TASK ENGINE HARDENING)
 -- ============================================================================
 -- crm.tasks (106) is flat CRUD today: one owner, 4 statuses, "done" is a
 -- single-actor toggle with no verification. The pursuit model requires a
