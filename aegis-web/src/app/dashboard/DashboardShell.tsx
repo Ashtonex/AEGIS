@@ -183,7 +183,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Fleet",
     href: "/dashboard/fleet",
     icon: Truck,
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor"],
+    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "fleet.read",
     subItems: [{ name: "Overview", href: "/dashboard/fleet", icon: Truck }],
@@ -201,7 +201,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Procurement",
     href: "/dashboard/procurement",
     icon: ShoppingCart,
-    allowedRoles: ["Executive (Admin)", "Procurement Manager", "Project Manager", "Finance Manager", "Site Agent"],
+    allowedRoles: ["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "procurement.requisition.read",
     subItems: [

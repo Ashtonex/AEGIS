@@ -137,7 +137,7 @@ function StatusPill({ record }: { record: FleetRecord }) {
 }
 
 export default function FleetTrackerPage() {
-  return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor"]}><FleetTrackerDashboard /></RBACGuard>;
+  return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk"]}><FleetTrackerDashboard /></RBACGuard>;
 }
 
 function FleetTrackerDashboard() {
