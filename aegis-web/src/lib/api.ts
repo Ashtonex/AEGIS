@@ -748,6 +748,15 @@ export async function updateCrmTender(id: string, data: Record<string, any>) {
   });
 }
 
+/** Award a tender: creates/links a real project and seeds its budget from any linked quotation. */
+export async function awardCrmTender(tenderId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/award`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function deleteCrmTender(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${id}`, {
     method: 'DELETE'
@@ -1870,6 +1879,15 @@ export async function createInternalProject(payload: Record<string, unknown>): P
 export async function updateInternalProject(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}`, {
     method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Finance sign-off that a project's deposit has been received - flips it from 'pending_deposit' to 'active'. */
+export async function confirmProjectDeposit(projectId: string, payload: { deposit_reference?: string; notes?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/confirm-deposit`, {
+    method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,
   });

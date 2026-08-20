@@ -15,6 +15,8 @@ import {
   createCrmTender,
   updateCrmTender,
   deleteCrmTender,
+  awardCrmTender,
+  getFinanceDepartments,
   getTenderRequirements,
   createTenderRequirement,
   toggleTenderRequirement,
@@ -27,14 +29,20 @@ import {
 import { supabase } from '@/lib/supabase';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 
-// Stages definition
+// Stages definition. 'Awarded' and 'Lost' used to be a single combined
+// 'Awarded/Lost' stage with no conversion logic - now moving into 'Awarded'
+// triggers the award handoff (creates/links a real project), while 'Lost'
+// stays a plain stage move.
 const STAGES = [
   'Tender Identified',
   'Bid Prep',
   'Submitted',
   'Adjudication',
-  'Awarded/Lost'
+  'Awarded',
+  'Lost'
 ];
+
+const RESOLVED_STAGES = ['Awarded', 'Lost', 'Awarded/Lost'];
 
 const CATEGORIES = [
   'Civil Works',
@@ -52,6 +60,7 @@ interface Tender {
   category?: string;
   bid_amount: number | string | null;
   stage: string;
+  project_id?: string | null;
   submission_deadline?: string;
   bid_bond_secured: boolean;
   jv_partners?: string;
@@ -82,6 +91,15 @@ export default function TendersCommand() {
   const [isDeleteTenderModalOpen, setIsDeleteTenderModalOpen] = useState(false);
   const [isDeletingTender, setIsDeletingTender] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Award modal state - moving a tender into 'Awarded' creates/links a real
+  // project, so it's gated behind this modal instead of a plain stage move.
+  const [isAwardModalOpen, setIsAwardModalOpen] = useState(false);
+  const [awardTenderId, setAwardTenderId] = useState<string | null>(null);
+  const [awardDepartmentOptions, setAwardDepartmentOptions] = useState<any[]>([]);
+  const [selectedAwardDepartmentId, setSelectedAwardDepartmentId] = useState('');
+  const [selectedAwardOriginatingDepartmentId, setSelectedAwardOriginatingDepartmentId] = useState('');
+  const [isAwarding, setIsAwarding] = useState(false);
 
   // Requirements checklist state
   const [requirements, setRequirements] = useState<TenderRequirement[]>([]);
@@ -184,6 +202,11 @@ export default function TendersCommand() {
     if (!tender) return;
     if (tender.stage === targetStage) return;
 
+    if (targetStage === 'Awarded' && !tender.project_id) {
+      handleOpenAward(tenderId);
+      return;
+    }
+
     // Optimistically update local state
     setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: targetStage } : t));
 
@@ -200,6 +223,50 @@ export default function TendersCommand() {
         "The stage move didn't save. Check the CRM service connection and retry."
       ));
       loadData();
+    }
+  };
+
+  const handleOpenAward = async (tenderId: string) => {
+    setAwardTenderId(tenderId);
+    setSelectedAwardDepartmentId('');
+    setSelectedAwardOriginatingDepartmentId('');
+    setIsAwardModalOpen(true);
+    try {
+      const res = await getFinanceDepartments();
+      if (res.success && Array.isArray(res.data)) setAwardDepartmentOptions(res.data);
+    } catch {
+      setAwardDepartmentOptions([]);
+    }
+  };
+
+  const handleConfirmAward = async () => {
+    if (!awardTenderId) return;
+    setIsAwarding(true);
+    try {
+      const result = await awardCrmTender(awardTenderId, {
+        create_project: true,
+        department_id: selectedAwardDepartmentId || undefined,
+        originating_department_id: selectedAwardOriginatingDepartmentId || undefined,
+      });
+      setIsAwardModalOpen(false);
+      const budgetPendingReason = result?.data?.budget_pending_reason;
+      if (budgetPendingReason) {
+        // The award itself always goes through - this only flags that the
+        // project's execution budget wasn't auto-seeded (segregation of
+        // duties, or an unpriced BOQ) and still needs a second person to
+        // confirm it via Quotations > Decision.
+        alert(`Tender awarded. Budget not yet seeded: ${budgetPendingReason}`);
+      }
+      await loadData();
+    } catch (err) {
+      console.error('Failed to award tender:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to award this tender - awarding creates a real project commitment, so it needs sign-off from a manager or exec.",
+        "Tender was not awarded. Check the CRM service connection and retry."
+      ));
+    } finally {
+      setIsAwarding(false);
     }
   };
 
@@ -258,6 +325,12 @@ export default function TendersCommand() {
     
     if (nextIndex === currentIndex) return;
     const nextStage = STAGES[nextIndex];
+
+    const tender = tenders.find(t => t.id === tenderId);
+    if (nextStage === 'Awarded' && !tender?.project_id) {
+      handleOpenAward(tenderId);
+      return;
+    }
 
     // Optimistically update state
     setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: nextStage } : t));
@@ -633,9 +706,9 @@ export default function TendersCommand() {
   // Analytics helper values
   const totalBidAmount = tenders.reduce((sum, t) => sum + (Number(t.bid_amount) || 0), 0);
   
-  // Outstanding liabilities is only active if bid bond is secured AND tender stage is not "Awarded/Lost" (unreleased risk)
+  // Outstanding liabilities is only active if bid bond is secured AND tender stage is not yet resolved (unreleased risk)
   const totalLiabilities = tenders
-    .filter(t => t.bid_bond_secured && t.stage !== 'Awarded/Lost')
+    .filter(t => t.bid_bond_secured && !RESOLVED_STAGES.includes(t.stage))
     .reduce((sum, t) => sum + (Number(t.bond_amount) || 0), 0);
 
   const activeBondsCount = tenders.filter(t => t.bid_bond_secured).length;
@@ -829,7 +902,7 @@ export default function TendersCommand() {
                   const countdown = getCountdown(t.submission_deadline);
                   const progress = getChecklistCount(t);
                   const bondVal = Number(t.bond_amount) || 0;
-                  const isLiabilityOutstanding = t.bid_bond_secured && t.stage !== 'Awarded/Lost';
+                  const isLiabilityOutstanding = t.bid_bond_secured && !RESOLVED_STAGES.includes(t.stage);
 
                   return (
                     <div 
@@ -854,6 +927,16 @@ export default function TendersCommand() {
                       <h4 className="text-xs font-bold text-paper line-clamp-2 pr-2 group-hover:text-[#D4AF37] transition-colors mb-2">
                         {t.tender_name}
                       </h4>
+
+                      {t.project_id && (
+                        <Link
+                          href={`/dashboard/projects?id=${t.project_id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex items-center gap-1 mb-2 px-1.5 py-0.5 rounded-sm text-[8px] font-mono uppercase tracking-widest bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all"
+                        >
+                          <Briefcase className="w-2.5 h-2.5" /> Project Live
+                        </Link>
+                      )}
 
                       {/* Display Bid details */}
                       <div className="space-y-1.5 my-3 text-[10px] text-slate-light font-mono">
@@ -922,15 +1005,15 @@ export default function TendersCommand() {
 
                         {/* Quick stage controllers */}
                         <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
-                          <button 
-                            disabled={STAGES.indexOf(stage) === 0}
+                          <button
+                            disabled={STAGES.indexOf(stage) === 0 || RESOLVED_STAGES.includes(stage)}
                             onClick={() => handleStageMove(t.id, stage, 'prev')}
                             className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 disabled:opacity-30 disabled:pointer-events-none rounded-sm flex items-center justify-center transition-all text-slate-light"
                           >
                             <ChevronLeft className="w-3 h-3" />
                           </button>
-                          <button 
-                            disabled={STAGES.indexOf(stage) === STAGES.length - 1}
+                          <button
+                            disabled={RESOLVED_STAGES.includes(stage)}
                             onClick={() => handleStageMove(t.id, stage, 'next')}
                             className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 disabled:opacity-30 disabled:pointer-events-none rounded-sm flex items-center justify-center transition-all text-slate-light"
                           >
@@ -1212,13 +1295,27 @@ export default function TendersCommand() {
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Bidding Stage</label>
-                      <select 
-                        value={editForm.stage} 
+                      {/* 'Awarded' is deliberately not a plain option here - it
+                          creates a real project, so it only happens via the
+                          gated Award action (drag to the Awarded column, or
+                          the button below), never a bare stage save. */}
+                      <select
+                        value={editForm.stage}
                         onChange={e => setEditForm({ ...editForm, stage: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                        disabled={editForm.stage === 'Awarded'}
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
+                        {STAGES.filter(s => s !== 'Awarded' || editForm.stage === 'Awarded').map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
+                      {editForm.stage !== 'Awarded' && editForm.stage !== 'Lost' && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenAward(editForm.id)}
+                          className="mt-1 flex items-center gap-1 text-[9px] font-mono text-emerald-400 hover:text-emerald-300 uppercase tracking-wider"
+                        >
+                          <Briefcase className="w-2.5 h-2.5" /> Award & Create Project
+                        </button>
+                      )}
                     </div>
 
                     <div className="space-y-1">
@@ -1491,6 +1588,52 @@ export default function TendersCommand() {
       </div>
 
       {/* DELETE TENDER MODAL */}
+      {isAwardModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsAwardModalOpen(false)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-emerald-400 uppercase font-bold tracking-wider mb-2">Award Tender</h3>
+            <p className="text-xs text-slate-light mb-4">
+              Creates the AEGIS project for this contract and seeds its execution budget from any linked quotation. The project starts pending a deposit confirmation before it goes financially live.
+            </p>
+            <div className="space-y-4 text-xs">
+              {awardDepartmentOptions.length > 0 && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Delivered by</label>
+                    <select
+                      value={selectedAwardDepartmentId}
+                      onChange={(e) => setSelectedAwardDepartmentId(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                    >
+                      <option value="">Unassigned</option>
+                      {awardDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Sourced by</label>
+                    <select
+                      value={selectedAwardOriginatingDepartmentId}
+                      onChange={(e) => setSelectedAwardOriginatingDepartmentId(e.target.value)}
+                      className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
+                    >
+                      <option value="">Unassigned</option>
+                      {awardDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setIsAwardModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+                <button onClick={handleConfirmAward} disabled={isAwarding} className="px-3 py-1.5 bg-emerald-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
+                  {isAwarding ? 'Awarding...' : 'Confirm Award & Release Project'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isDeleteTenderModalOpen && selectedTender && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsDeleteTenderModalOpen(false)} />

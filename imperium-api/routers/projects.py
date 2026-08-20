@@ -80,6 +80,11 @@ class ProjectBudgetSet(BaseModel):
     notes: Optional[str] = None
 
 
+class ProjectDepositConfirm(BaseModel):
+    deposit_reference: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
 class MilestonePayload(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     status: Literal[
@@ -575,6 +580,54 @@ async def decide_project_registration(
         )
     await db.commit()
     return _result({"id": str(project_id), "decision": payload.decision}, "Registration decision recorded.")
+
+
+@router.post("/{project_id}/confirm-deposit")
+async def confirm_project_deposit(
+    project_id: UUID,
+    payload: ProjectDepositConfirm,
+    user: dict = Depends(require_permission("projects.deposit.confirm")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Finance sign-off that a project's deposit has been received - the
+    checkpoint between a won deal (status 'pending_deposit', set by
+    crm.py's mark_opportunity_won / tender_bids.py's award_tender) and it
+    being treated as financially live (status 'active')."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if project.get("status") != "pending_deposit":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project is '{project.get('status')}', not pending deposit confirmation.",
+        )
+
+    await db.execute(
+        text("""
+            UPDATE projects.projects
+            SET status = 'active',
+                deposit_confirmed_at = NOW(),
+                deposit_confirmed_by = :user_id,
+                deposit_reference = :deposit_reference,
+                updated_at = NOW()
+            WHERE id = :project_id AND organization_id = :org_id
+        """),
+        {
+            "project_id": project_id,
+            "org_id": user["org_id"],
+            "user_id": user["user_id"],
+            "deposit_reference": payload.deposit_reference,
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="project.deposit_confirmed.v1",
+        aggregate_type="project",
+        aggregate_id=project_id,
+        project_id=project_id,
+        event_data={"deposit_reference": payload.deposit_reference, "notes": payload.notes},
+    )
+    await db.commit()
+    return _result({"id": str(project_id), "status": "active"}, "Deposit confirmed. Project is now active.")
 
 
 @router.post("/{project_id}/budget", status_code=201)

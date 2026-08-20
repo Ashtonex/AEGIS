@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { 
   AlertTriangle, 
@@ -33,7 +33,7 @@ import {
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import {
   ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject,
-  submitProjectRegistration, decideProjectRegistration, setProjectBudget,
+  submitProjectRegistration, decideProjectRegistration, setProjectBudget, confirmProjectDeposit, createInternalProject,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -145,6 +145,8 @@ function ProjectsWorkspace() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [viewMode, setViewMode] = useState<"list" | "kanban">("list");
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
 
   useEffect(() => {
     getFinanceDepartments()
@@ -185,6 +187,14 @@ function ProjectsWorkspace() {
   useEffect(() => {
     setActiveTab(normalizeTab(searchParams?.get("tab")));
   }, [searchParams]);
+
+  // Deep link from Tenders/Opportunities "Project Live" badges (?id=<project id>).
+  useEffect(() => {
+    const targetId = searchParams?.get("id");
+    if (!targetId || projects.length === 0) return;
+    const match = projects.find((p) => p.id === targetId);
+    if (match) void openProject(match);
+  }, [searchParams, projects, openProject]);
 
   const openProject = useCallback(async (project: Project) => {
     setSelected(project); 
@@ -267,13 +277,35 @@ function ProjectsWorkspace() {
           <h1 className="font-display text-3xl font-bold">Projects Command</h1>
           <p className="mt-1 text-sm text-slate-light">Live project register and delivery evidence across the ERP.</p>
         </div>
-        <button 
-          onClick={() => void load()} 
-          disabled={loading} 
-          className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <div className="flex h-10 border border-ink-mid bg-ink-light">
+            <button
+              onClick={() => setViewMode("list")}
+              className={`px-3 font-mono text-xs uppercase tracking-wider ${viewMode === "list" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+            >
+              List
+            </button>
+            <button
+              onClick={() => setViewMode("kanban")}
+              className={`px-3 font-mono text-xs uppercase tracking-wider ${viewMode === "kanban" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+            >
+              Pipeline
+            </button>
+          </div>
+          <button
+            onClick={() => setIsCreateOpen(true)}
+            className="inline-flex h-10 items-center gap-2 border border-signal bg-signal/10 px-3 font-mono text-xs uppercase tracking-wider text-signal hover:bg-signal hover:text-ink"
+          >
+            <Plus className="h-4 w-4" />New Project
+          </button>
+          <button
+            onClick={() => void load()}
+            disabled={loading}
+            className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
+          </button>
+        </div>
       </header>
 
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -289,6 +321,17 @@ function ProjectsWorkspace() {
         </section>
       ) : null}
 
+      {viewMode === "kanban" ? (
+        <ProjectPipeline
+          projects={filtered}
+          loading={loading}
+          onSelect={(project) => void openProject(project)}
+          onStatusChange={(project, nextStatus) => {
+            setProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, status: nextStatus } : p)));
+            void updateInternalProject(project.id, { status: nextStatus }).catch(() => void load());
+          }}
+        />
+      ) : (
       <section className="border border-ink-mid bg-ink">
         <div className="flex flex-col gap-3 border-b border-ink-mid p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -351,6 +394,18 @@ function ProjectsWorkspace() {
           </div>
         )}
       </section>
+      )}
+
+      {isCreateOpen && (
+        <CreateProjectModal
+          departments={departments}
+          onClose={() => setIsCreateOpen(false)}
+          onCreated={() => {
+            setIsCreateOpen(false);
+            void load();
+          }}
+        />
+      )}
 
       {selected ? (
         <ProjectDetail
@@ -371,7 +426,186 @@ function ProjectsWorkspace() {
   );
 }
 
-function Metric({ label, value, detail, tone = "text-paper" }: { label: string; value: string; detail: string; tone?: string }) { 
+const PIPELINE_STAGES = ["planning", "pending_deposit", "active", "on_hold", "completed", "cancelled"];
+
+const PIPELINE_STAGE_LABELS: Record<string, string> = {
+  planning: "Planning",
+  pending_deposit: "Pending Deposit",
+  active: "Active",
+  on_hold: "On Hold",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+function ProjectPipeline({
+  projects,
+  loading,
+  onSelect,
+  onStatusChange,
+}: {
+  projects: Project[];
+  loading: boolean;
+  onSelect: (project: Project) => void;
+  onStatusChange: (project: Project, nextStatus: string) => void;
+}) {
+  const [draggedOverStage, setDraggedOverStage] = useState<string | null>(null);
+
+  // Projects with a status outside the known pipeline (legacy/free-text
+  // values) still need a home, so they fall into 'planning' rather than
+  // vanishing from the board.
+  const stageOf = (project: Project) => {
+    const s = text(project.status, "planning").toLowerCase();
+    return PIPELINE_STAGES.includes(s) ? s : "planning";
+  };
+
+  const handleDrop = (e: DragEvent, stage: string) => {
+    e.preventDefault();
+    setDraggedOverStage(null);
+    const projectId = e.dataTransfer.getData("text/plain");
+    const project = projects.find((p) => p.id === projectId);
+    if (!project || stageOf(project) === stage) return;
+    onStatusChange(project, stage);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex h-48 items-center justify-center gap-3 border border-ink-mid bg-ink text-sm text-slate-light">
+        <Loader2 className="h-5 w-5 animate-spin text-signal" />Loading project register
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-4">
+      {PIPELINE_STAGES.map((stage) => {
+        const stageProjects = projects.filter((p) => stageOf(p) === stage);
+        const stageValue = stageProjects.reduce((sum, p) => sum + (number(p.contract_value ?? p.budget ?? p.budget_value) ?? 0), 0);
+        return (
+          <div
+            key={stage}
+            onDragOver={(e) => e.preventDefault()}
+            onDragEnter={(e) => { e.preventDefault(); setDraggedOverStage(stage); }}
+            onDragLeave={() => setDraggedOverStage(null)}
+            onDrop={(e) => handleDrop(e, stage)}
+            className={`min-w-[270px] max-w-[300px] flex-1 border p-3 transition-colors ${draggedOverStage === stage ? "border-signal bg-ink-light/40" : "border-ink-mid bg-ink"}`}
+          >
+            <div className="mb-3 flex items-center justify-between border-b border-ink-mid pb-2">
+              <div>
+                <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">{PIPELINE_STAGE_LABELS[stage] ?? stage}</h3>
+                <span className="mt-0.5 block font-mono text-[9px] text-signal">{formatCurrency(stageValue)}</span>
+              </div>
+              <span className="rounded-full bg-ink-light px-2 py-0.5 font-mono text-[10px] text-slate">{stageProjects.length}</span>
+            </div>
+            <div className="space-y-2">
+              {stageProjects.map((project) => (
+                <div
+                  key={project.id}
+                  draggable
+                  onDragStart={(e) => { e.dataTransfer.setData("text/plain", project.id); e.dataTransfer.effectAllowed = "move"; }}
+                  onClick={() => onSelect(project)}
+                  className="cursor-grab border border-ink-mid bg-ink-light/30 p-3 text-left transition-colors hover:border-signal active:cursor-grabbing"
+                >
+                  <p className="text-xs font-semibold text-paper">{title(project)}</p>
+                  <p className="mt-1 text-[10px] text-slate-light">{text(project.client_name ?? project.client)}</p>
+                  <p className="mt-2 font-mono text-[10px] text-signal">
+                    {formatCurrency(number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0)}
+                  </p>
+                </div>
+              ))}
+              {stageProjects.length === 0 && (
+                <div className="flex h-20 items-center justify-center border border-dashed border-ink-mid text-[10px] uppercase text-slate">
+                  No projects
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CreateProjectModal({
+  departments,
+  onClose,
+  onCreated,
+}: {
+  departments: Department[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [form, setForm] = useState({
+    name: "", project_code: "", project_type: "", client_name: "",
+    contract_value: "", start_date: "", planned_completion_date: "", department_id: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    if (!form.name.trim()) { setError("Project name is required."); return; }
+    setBusy(true); setError(null);
+    try {
+      await createInternalProject({
+        name: form.name.trim(),
+        project_code: form.project_code || undefined,
+        project_type: form.project_type || undefined,
+        client_name: form.client_name || undefined,
+        contract_value: form.contract_value ? Number(form.contract_value) : undefined,
+        start_date: form.start_date || undefined,
+        planned_completion_date: form.planned_completion_date || undefined,
+        department_id: form.department_id || undefined,
+      });
+      onCreated();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create project.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="w-full max-w-lg border border-ink-mid bg-ink p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-paper">New Project</h3>
+          <button onClick={onClose} className="text-slate hover:text-paper"><X className="h-4 w-4" /></button>
+        </div>
+        <p className="mb-4 text-xs text-slate-light">
+          Manual entry, for projects that didn&apos;t come through a won tender or opportunity. Those flows already create their project automatically.
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Project name *" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper sm:col-span-2" />
+          <input value={form.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Client name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={form.project_code} onChange={(e) => set("project_code", e.target.value)} placeholder="Project code" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={form.project_type} onChange={(e) => set("project_type", e.target.value)} placeholder="Project type" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={form.contract_value} onChange={(e) => set("contract_value", e.target.value)} type="number" placeholder="Contract value ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <div>
+            <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Start date</label>
+            <input value={form.start_date} onChange={(e) => set("start_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Planned completion</label>
+            <input value={form.planned_completion_date} onChange={(e) => set("planned_completion_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
+          <select value={form.department_id} onChange={(e) => set("department_id", e.target.value)} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper sm:col-span-2">
+            <option value="">Department (optional)</option>
+            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </div>
+        {error && <p className="mt-3 text-xs text-red-300">{error}</p>}
+        <div className="mt-5 flex justify-end gap-2">
+          <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+          <button onClick={submit} disabled={busy} className="h-10 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+            {busy ? "Creating..." : "Create Project"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value, detail, tone = "text-paper" }: { label: string; value: string; detail: string; tone?: string }) {
   return (
     <div className="border border-ink-mid bg-ink p-4">
       <p className="font-mono text-[10px] uppercase tracking-wider text-slate">{label}</p>
@@ -415,14 +649,30 @@ function Info({ label, value }: { label: string; value: string }) {
 
 function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<string, unknown>; isFinance: boolean; onRefresh: () => void }) {
   const isFieldIntake = project.status === "field_intake";
+  const isPendingDeposit = project.status === "pending_deposit";
   const [form, setForm] = useState({ client_name: "", contract_value: "", start_date: "", project_code: "", initial_percent_complete: "", initial_costs_incurred: "" });
   const [budgetAmount, setBudgetAmount] = useState("");
+  const [depositReference, setDepositReference] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const projectId = String(project.id ?? "");
+
+  const confirmDeposit = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      await confirmProjectDeposit(projectId, { deposit_reference: depositReference || undefined });
+      setMsg("Deposit confirmed. Project is now active.");
+      setDepositReference("");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to confirm deposit.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async () => {
     setBusy(true); setMsg(null);
@@ -474,7 +724,9 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
 
   return (
     <div className="border border-signal/30 bg-signal/5 p-4 rounded-sm space-y-4">
-      <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-signal">Field Intake Registration</h3>
+      <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-signal">
+        {isPendingDeposit ? "Deposit Confirmation" : "Field Intake Registration"}
+      </h3>
 
       {isFieldIntake && !submitted && (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -510,7 +762,28 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
         </div>
       )}
 
-      {!isFieldIntake && isFinance && (
+      {isPendingDeposit && (
+        <div className="border-t border-ink-mid/50 pt-3">
+          <p className="mb-2 text-xs text-slate-light">
+            This project was created from a won deal and is pending deposit confirmation - it stays visible but Finance must confirm the deposit before it&apos;s treated as financially active.
+          </p>
+          {isFinance ? (
+            <div className="flex items-end gap-3">
+              <div className="flex-1">
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Deposit Reference (EFT/receipt number)</label>
+                <input value={depositReference} onChange={(e) => setDepositReference(e.target.value)} placeholder="Optional reference" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+              <button onClick={confirmDeposit} disabled={busy} className="h-10 bg-emerald-500 px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                Confirm Deposit Received
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-amber-300">Awaiting Finance deposit confirmation.</p>
+          )}
+        </div>
+      )}
+
+      {!isFieldIntake && !isPendingDeposit && isFinance && (
         <div className="flex items-end gap-3 border-t border-ink-mid/50 pt-3">
           <div className="flex-1">
             <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Set Execution Budget ($)</label>
@@ -1010,7 +1283,7 @@ function ProjectDetail({
                   <Info label="Programme End" value={formatDate(text(viability?.planned_end_date ?? source.end_date, ""))} />
                 </div>
 
-                {(source.status === "field_intake" || FINANCE_SIGNOFF_ROLES.has(role ?? "")) && (
+                {(source.status === "field_intake" || source.status === "pending_deposit" || FINANCE_SIGNOFF_ROLES.has(role ?? "")) && (
                   <FieldIntakePanel
                     project={source}
                     isFinance={FINANCE_SIGNOFF_ROLES.has(role ?? "")}

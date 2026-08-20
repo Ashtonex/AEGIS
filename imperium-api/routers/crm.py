@@ -1869,17 +1869,26 @@ async def mark_opportunity_won(
     budget_pending_reason = None
     try:
         if not project_id and payload.create_project:
+            # status starts 'pending_deposit' rather than 'planning' whenever
+            # there's a real contract value - the project exists and its
+            # budget/BOQ get seeded below, but it isn't Finance-confirmed as
+            # financially live until someone confirms the deposit via
+            # POST /projects/{id}/confirm-deposit (see projects.py).
+            contract_value = opportunity.get("quote_amount") or opportunity.get("deal_value") or opportunity.get("budget")
+            initial_status = "pending_deposit" if contract_value and contract_value > 0 else "planning"
             project_row = await db.execute(
                 text("""
                     INSERT INTO projects.projects (
                         organization_id, created_by, name, status, project_code, project_type,
                         client_name, contract_value, start_date, planned_completion_date,
-                        client_org_id, opportunity_id, quotation_id, department_id, originating_department_id
+                        client_org_id, opportunity_id, quotation_id, department_id, originating_department_id,
+                        contract_signed_at, contract_signed_by
                     )
                     VALUES (
-                        :org_id, :user_id, :name, 'planning', :project_code, :project_type,
+                        :org_id, :user_id, :name, :status, :project_code, :project_type,
                         :client_name, :contract_value, :start_date, :planned_completion_date,
-                        :client_org_id, :opportunity_id, :quotation_id, :department_id, :originating_department_id
+                        :client_org_id, :opportunity_id, :quotation_id, :department_id, :originating_department_id,
+                        NOW(), :user_id
                     )
                     RETURNING id
                 """),
@@ -1887,10 +1896,11 @@ async def mark_opportunity_won(
                     "org_id": org_id,
                     "user_id": user_id,
                     "name": opportunity.get("name"),
+                    "status": initial_status,
                     "project_code": payload.project_code,
                     "project_type": payload.project_type,
                     "client_name": opportunity.get("organization_name") or opportunity.get("contact_name"),
-                    "contract_value": opportunity.get("quote_amount") or opportunity.get("deal_value") or opportunity.get("budget"),
+                    "contract_value": contract_value,
                     "start_date": payload.start_date,
                     "planned_completion_date": payload.planned_completion_date,
                     "client_org_id": opportunity.get("client_org_id"),
