@@ -9,6 +9,8 @@ jobs:
     steps:
       - name: SSH and update .env
         uses: appleboy/ssh-action@v1
+        env:
+          CCB_REDIS_URL: ${{ secrets.CCB_REDIS_URL }}
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
