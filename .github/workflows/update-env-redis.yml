@@ -1,0 +1,22 @@
+name: One-off - Verify imperium-worker is running
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  verify-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and check worker
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/aegis
+            echo "--- container status ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env ps
+            echo "--- imperium-worker logs (last 60 lines) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env logs --tail=60 imperium-worker
