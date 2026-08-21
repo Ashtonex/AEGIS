@@ -1609,6 +1609,31 @@ async def create_cash_account(
         raise HTTPException(status_code=409, detail="Cash account code already exists.")
 
 
+@router.delete("/cash-accounts/{cash_account_id}")
+async def delete_cash_account(
+    cash_account_id: UUID,
+    user: dict = Depends(require_permission("finance.cash.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-deletes a cash account - it drops out of listings and out of the
+    auto-picked account for new transactions, but existing cashbook_transactions
+    rows keep referencing it (the FK is ON DELETE RESTRICT, so this never
+    hard-deletes rather than risk orphaning real financial history)."""
+    result = await db.execute(
+        text("""
+            UPDATE finance.cash_accounts SET is_deleted = true, is_active = false, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """),
+        {"id": cash_account_id, "org_id": user["org_id"]},
+    )
+    if not result.first():
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Cash account not found.")
+    await db.commit()
+    return ok({"id": str(cash_account_id)}, "Cash account deleted.")
+
+
 @router.get("/cashbook")
 async def get_cashbook(
     cash_account_id: Optional[UUID] = None,

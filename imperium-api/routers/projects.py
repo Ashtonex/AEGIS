@@ -4,7 +4,7 @@ import json
 from datetime import date
 from decimal import Decimal
 from typing import Literal, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -43,6 +43,9 @@ class ProjectCreate(BaseModel):
     # structured intake (category, investment, funding) is committed via
     # POST /{project_id}/commit-intake.
     initiated_by: str = Field(default="client", pattern="^(client|company)$")
+    # Company-initiated projects have no client deadline - what matters is
+    # how long setup takes before production/sale can begin.
+    setup_duration_weeks: Optional[int] = Field(default=None, gt=0)
 
 
 class ProjectUpdate(BaseModel):
@@ -102,6 +105,21 @@ class ProjectIntakeUpdate(BaseModel):
     investment_required: Optional[Decimal] = Field(default=None, ge=0)
     funding_internal: Optional[Decimal] = Field(default=None, ge=0)
     funding_external: Optional[Decimal] = Field(default=None, ge=0)
+    setup_duration_weeks: Optional[int] = Field(default=None, gt=0)
+
+
+class ProductionExpenseCreate(BaseModel):
+    cost_category: str = Field(pattern=r"^(labour|equipment|materials|subcontract|overhead|other)$")
+    description: str = Field(min_length=1, max_length=500)
+    amount: Decimal = Field(gt=0)
+    transaction_date: Optional[date] = None
+    paid: bool = True
+
+
+class ProductionRevenueCreate(BaseModel):
+    amount: Decimal = Field(gt=0)
+    description: Optional[str] = Field(default=None, max_length=500)
+    transaction_date: Optional[date] = None
 
 
 class MilestonePayload(BaseModel):
@@ -109,6 +127,19 @@ class MilestonePayload(BaseModel):
     status: Literal[
         "not_started", "in_progress", "complete", "blocked", "cancelled"
     ] = "not_started"
+    baseline_date: Optional[date] = None
+    forecast_date: Optional[date] = None
+    actual_date: Optional[date] = None
+    weight: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    owner_id: Optional[UUID] = None
+    notes: Optional[str] = None
+
+
+class MilestoneUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    status: Optional[Literal[
+        "not_started", "in_progress", "complete", "blocked", "cancelled"
+    ]] = None
     baseline_date: Optional[date] = None
     forecast_date: Optional[date] = None
     actual_date: Optional[date] = None
@@ -159,7 +190,8 @@ async def _project_ref_or_404(db: AsyncSession, project_ref: str, org_id: str) -
         text("""
         SELECT p.*, pp.region, pp.latitude, pp.longitude,
                pp.initiated_by, pp.project_category, pp.investment_required,
-               pp.funding_internal, pp.funding_external, pp.intake_completed_at
+               pp.funding_internal, pp.funding_external, pp.intake_completed_at,
+               pp.setup_duration_weeks
         FROM projects.projects p
         LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
         WHERE p.organization_id = :org_id
@@ -202,6 +234,7 @@ async def list_projects(
         SELECT p.*, pp.viability_status, pp.budget_amount, pp.forecast_cost,
                pp.initiated_by, pp.project_category, pp.investment_required,
                pp.funding_internal, pp.funding_external, pp.intake_completed_at,
+               pp.setup_duration_weeks,
                COUNT(m.id) FILTER (WHERE m.status = 'blocked') AS blocked_milestones,
                COUNT(r.id) FILTER (WHERE r.status IN ('open', 'mitigating')) AS open_risks
         FROM projects.projects p
@@ -227,6 +260,7 @@ async def create_project(
 ):
     fields = payload.model_dump()
     initiated_by = fields.pop("initiated_by")
+    setup_duration_weeks = fields.pop("setup_duration_weeks")
     try:
         row = (
             await db.execute(
@@ -245,11 +279,11 @@ async def create_project(
         if initiated_by == "company":
             await db.execute(
                 text("""
-                    INSERT INTO projects.project_profiles (project_id, organization_id, initiated_by)
-                    VALUES (:project_id, :org_id, 'company')
-                    ON CONFLICT (project_id) DO UPDATE SET initiated_by = 'company'
+                    INSERT INTO projects.project_profiles (project_id, organization_id, initiated_by, setup_duration_weeks)
+                    VALUES (:project_id, :org_id, 'company', :setup_duration_weeks)
+                    ON CONFLICT (project_id) DO UPDATE SET initiated_by = 'company', setup_duration_weeks = COALESCE(:setup_duration_weeks, projects.project_profiles.setup_duration_weeks)
                 """),
-                {"project_id": row.id, "org_id": user["org_id"]},
+                {"project_id": row.id, "org_id": user["org_id"], "setup_duration_weeks": setup_duration_weeks},
             )
         await db.commit()
         if initiated_by == "client":
@@ -285,14 +319,15 @@ async def update_project_intake(
     row = (
         await db.execute(
             text("""
-                INSERT INTO projects.project_profiles (project_id, organization_id, project_category, investment_required, funding_internal, funding_external)
-                VALUES (:project_id, :org_id, :project_category, :investment_required, :funding_internal, :funding_external)
+                INSERT INTO projects.project_profiles (project_id, organization_id, project_category, investment_required, funding_internal, funding_external, setup_duration_weeks)
+                VALUES (:project_id, :org_id, :project_category, :investment_required, :funding_internal, :funding_external, :setup_duration_weeks)
                 ON CONFLICT (project_id) DO UPDATE SET
                     project_category = COALESCE(:project_category, projects.project_profiles.project_category),
                     investment_required = COALESCE(:investment_required, projects.project_profiles.investment_required),
                     funding_internal = COALESCE(:funding_internal, projects.project_profiles.funding_internal),
-                    funding_external = COALESCE(:funding_external, projects.project_profiles.funding_external)
-                RETURNING project_category, investment_required, funding_internal, funding_external
+                    funding_external = COALESCE(:funding_external, projects.project_profiles.funding_external),
+                    setup_duration_weeks = COALESCE(:setup_duration_weeks, projects.project_profiles.setup_duration_weeks)
+                RETURNING project_category, investment_required, funding_internal, funding_external, setup_duration_weeks
             """),
             {
                 "project_id": project_id,
@@ -301,6 +336,7 @@ async def update_project_intake(
                 "investment_required": fields.get("investment_required"),
                 "funding_internal": fields.get("funding_internal"),
                 "funding_external": fields.get("funding_external"),
+                "setup_duration_weeks": fields.get("setup_duration_weeks"),
             },
         )
     ).mappings().first()
@@ -348,6 +384,186 @@ async def commit_project_intake(
     return _result({"tasks_created": created}, "Intake committed - task stack generated.")
 
 
+async def _company_project_or_409(db: AsyncSession, project_id: UUID, org_id: str) -> dict:
+    project = await _project_ref_or_404(db, str(project_id), org_id)
+    if project.get("initiated_by") != "company":
+        raise HTTPException(status_code=409, detail="Only company-initiated projects track setup expenses/revenue.")
+    return project
+
+
+async def _pick_production_cash_account(db: AsyncSession, org_id: str, currency: str = "USD") -> str:
+    account_id = (
+        await db.execute(
+            text("""
+                SELECT id FROM finance.cash_accounts
+                WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+                ORDER BY (currency = :currency) DESC, created_at ASC
+                LIMIT 1
+            """),
+            {"org_id": org_id, "currency": currency},
+        )
+    ).scalar()
+    if not account_id:
+        raise HTTPException(status_code=422, detail="No active cash account is configured.")
+    return str(account_id)
+
+
+@router.get("/{project_id}/production-expenses")
+async def list_production_expenses(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
+):
+    await _company_project_or_409(db, project_id, user["org_id"])
+    rows = await db.execute(
+        text("""
+            SELECT id, cost_category, description, amount, transaction_date, status, posted_at
+            FROM finance.cost_transactions
+            WHERE organization_id = :org_id AND project_id = :project_id AND source_type = 'project_setup_expense'
+            ORDER BY transaction_date DESC, posted_at DESC
+        """),
+        {"org_id": user["org_id"], "project_id": project_id},
+    )
+    items = [dict(r._mapping) for r in rows]
+    total = sum((item["amount"] or 0) for item in items)
+    return _result({"items": items, "total": total}, "Production setup expenses listed.")
+
+
+@router.post("/{project_id}/production-expenses", status_code=201)
+async def add_production_expense(
+    project_id: UUID,
+    payload: ProductionExpenseCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Records a setup-phase (or ongoing) spend against a company-initiated
+    project - posts into finance.cost_transactions, the same table every
+    live cost writer uses, so it flows into actual-cost project summaries
+    automatically. When paid, also posts a matching cashbook outflow so it
+    affects cash position, not just project cost."""
+    project = await _company_project_or_409(db, project_id, user["org_id"])
+    org_id = user["org_id"]
+    txn_date = payload.transaction_date or date.today()
+    source_id = uuid4()
+
+    await db.execute(
+        text("""
+            INSERT INTO finance.cost_transactions (
+                organization_id, project_id, source_type, source_id, cost_category,
+                description, quantity, unit_cost, amount, transaction_date, status, posted_by
+            ) VALUES (
+                :org_id, :project_id, 'project_setup_expense', :source_id, :cost_category,
+                :description, 1, :amount, :amount, :transaction_date, 'posted', :user_id
+            )
+        """),
+        {
+            "org_id": org_id, "project_id": project_id, "source_id": source_id,
+            "cost_category": payload.cost_category, "description": payload.description,
+            "amount": payload.amount, "transaction_date": txn_date, "user_id": user["user_id"],
+        },
+    )
+
+    cashbook_id = None
+    if payload.paid:
+        cash_account_id = await _pick_production_cash_account(db, org_id)
+        tx_number = f"SETUP-{str(source_id)[:8].upper()}"
+        cashbook_row = await db.execute(
+            text("""
+                INSERT INTO finance.cashbook_transactions (
+                    organization_id, cash_account_id, transaction_number, transaction_date,
+                    transaction_type, direction, source_type, source_id, project_id,
+                    counterparty_type, counterparty_name, payment_method, description, amount, currency, posted_by
+                ) VALUES (
+                    :org_id, :cash_account_id, :tx_number, :transaction_date,
+                    'payment', 'outflow', 'project_setup_expense', :source_id, :project_id,
+                    'supplier', :counterparty_name, 'bank_transfer', :description, :amount, 'USD', :user_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id, "cash_account_id": cash_account_id, "tx_number": tx_number,
+                "transaction_date": txn_date, "source_id": source_id, "project_id": project_id,
+                "counterparty_name": payload.description, "description": payload.description,
+                "amount": payload.amount, "user_id": user["user_id"],
+            },
+        )
+        cashbook_id = str(cashbook_row.scalar())
+
+    await db.commit()
+    return _result({"id": str(source_id), "cashbook_transaction_id": cashbook_id}, "Setup expense recorded.")
+
+
+@router.get("/{project_id}/production-revenue")
+async def list_production_revenue(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
+):
+    await _company_project_or_409(db, project_id, user["org_id"])
+    rows = await db.execute(
+        text("""
+            SELECT id, description, amount, transaction_date, posted_at
+            FROM finance.cashbook_transactions
+            WHERE organization_id = :org_id AND project_id = :project_id AND source_type = 'production_revenue' AND is_deleted = false
+            ORDER BY transaction_date DESC, posted_at DESC
+        """),
+        {"org_id": user["org_id"], "project_id": project_id},
+    )
+    items = [dict(r._mapping) for r in rows]
+    total = sum((item["amount"] or 0) for item in items)
+    return _result({"items": items, "total": total}, "Production revenue listed.")
+
+
+@router.post("/{project_id}/production-revenue", status_code=201)
+async def add_production_revenue(
+    project_id: UUID,
+    payload: ProductionRevenueCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Records revenue from what a company-initiated project actually sells
+    once it's live - there's no client/contract behind it, so this posts
+    straight into the cashbook rather than driving a progress-claim
+    lifecycle (that's the client-billing model, see
+    financial_performance.create_historical_revenue)."""
+    project = await _company_project_or_409(db, project_id, user["org_id"])
+    if str(project.get("status") or "planning").lower() != "active":
+        raise HTTPException(status_code=409, detail="This project must be active before revenue can be recorded.")
+
+    org_id = user["org_id"]
+    txn_date = payload.transaction_date or date.today()
+    description = payload.description or "Production revenue"
+    cash_account_id = await _pick_production_cash_account(db, org_id)
+    source_id = uuid4()
+    tx_number = f"PRODREV-{str(source_id)[:8].upper()}"
+
+    row = await db.execute(
+        text("""
+            INSERT INTO finance.cashbook_transactions (
+                organization_id, cash_account_id, transaction_number, transaction_date,
+                transaction_type, direction, source_type, source_id, project_id,
+                counterparty_type, counterparty_name, payment_method, description, amount, currency, posted_by
+            ) VALUES (
+                :org_id, :cash_account_id, :tx_number, :transaction_date,
+                'receipt', 'inflow', 'production_revenue', :source_id, :project_id,
+                'customer', :counterparty_name, 'bank_transfer', :description, :amount, 'USD', :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": org_id, "cash_account_id": cash_account_id, "tx_number": tx_number,
+            "transaction_date": txn_date, "source_id": source_id, "project_id": project_id,
+            "counterparty_name": description, "description": description,
+            "amount": payload.amount, "user_id": user["user_id"],
+        },
+    )
+    cashbook_id = row.scalar()
+    await db.commit()
+    return _result({"id": str(cashbook_id)}, "Production revenue recorded.")
+
+
 @router.get("/{project_id}/lifecycle")
 async def project_lifecycle(
     project_id: UUID,
@@ -373,7 +589,11 @@ async def project_lifecycle(
         {
             "project": dict(project._mapping),
             "milestones": await rows(
-                "SELECT * FROM projects.project_milestones WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY baseline_date NULLS LAST, created_at"
+                """SELECT m.*, owner.full_name AS owner_name
+                   FROM projects.project_milestones m
+                   LEFT JOIN core.users owner ON owner.id = m.owner_id
+                   WHERE m.project_id=:project_id AND m.organization_id=:org_id AND m.is_deleted=false
+                   ORDER BY m.baseline_date NULLS LAST, m.created_at"""
             ),
             "changes": await rows(
                 "SELECT * FROM projects.project_changes WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY created_at DESC"
@@ -410,6 +630,61 @@ async def add_milestone(
     ).first()
     await db.commit()
     return _result({"id": str(row.id)}, "Milestone created.")
+
+
+@router.patch("/{project_id}/milestones/{milestone_id}")
+async def update_milestone(
+    project_id: UUID,
+    milestone_id: UUID,
+    payload: MilestoneUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Progresses a milestone after creation - mark it in-progress/complete,
+    record its actual_date, reassign its owner, etc. Fields left out of the
+    payload keep their existing value (same COALESCE pattern as
+    update_project_intake)."""
+    await _project_or_404(db, project_id, user["org_id"])
+    fields = payload.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.project_milestones SET
+                    name = COALESCE(:name, name),
+                    status = COALESCE(:status, status),
+                    baseline_date = COALESCE(:baseline_date, baseline_date),
+                    forecast_date = COALESCE(:forecast_date, forecast_date),
+                    actual_date = COALESCE(:actual_date, actual_date),
+                    weight = COALESCE(:weight, weight),
+                    owner_id = COALESCE(:owner_id, owner_id),
+                    notes = COALESCE(:notes, notes),
+                    updated_at = NOW()
+                WHERE id = :milestone_id AND project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+                RETURNING id
+            """),
+            {
+                "milestone_id": milestone_id,
+                "project_id": project_id,
+                "org_id": user["org_id"],
+                "name": fields.get("name"),
+                "status": fields.get("status"),
+                "baseline_date": fields.get("baseline_date"),
+                "forecast_date": fields.get("forecast_date"),
+                "actual_date": fields.get("actual_date"),
+                "weight": fields.get("weight"),
+                "owner_id": fields.get("owner_id"),
+                "notes": fields.get("notes"),
+            },
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Milestone not found.")
+    await db.commit()
+    return _result({"id": str(row.id)}, "Milestone updated.")
 
 
 @router.post("/{project_id}/changes", status_code=201)

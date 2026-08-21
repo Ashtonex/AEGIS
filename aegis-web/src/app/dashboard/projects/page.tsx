@@ -35,7 +35,9 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import {
   ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject,
   submitProjectRegistration, decideProjectRegistration, setProjectBudget, confirmProjectDeposit, createInternalProject,
-  deleteInternalProject, updateProjectIntake, commitProjectIntake,
+  deleteInternalProject, updateProjectIntake, commitProjectIntake, getProjectLifecycle, addProjectMilestone,
+  updateProjectMilestone, getAssignableUsers, getAssignment, getProductionExpenses, addProductionExpense,
+  getProductionRevenue, addProductionRevenue,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -542,24 +544,33 @@ function CreateProjectModal({
     contract_value: "", start_date: "", planned_completion_date: "", department_id: "",
   });
   const [initiatedBy, setInitiatedBy] = useState<"client" | "company">("client");
+  const [durationValue, setDurationValue] = useState("");
+  const [durationUnit, setDurationUnit] = useState<"weeks" | "months">("weeks");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const submit = async () => {
     if (!form.name.trim()) { setError("Project name is required."); return; }
+    if (initiatedBy === "company" && durationValue && Number(durationValue) <= 0) {
+      setError("Setup duration must be greater than zero."); return;
+    }
     setBusy(true); setError(null);
     try {
+      const setupDurationWeeks = initiatedBy === "company" && durationValue
+        ? Math.round(Number(durationValue) * (durationUnit === "months" ? 4.345 : 1))
+        : undefined;
       await createInternalProject({
         name: form.name.trim(),
         project_code: form.project_code || undefined,
         project_type: form.project_type || undefined,
         client_name: initiatedBy === "client" ? (form.client_name || undefined) : undefined,
         contract_value: initiatedBy === "client" && form.contract_value ? Number(form.contract_value) : undefined,
-        start_date: form.start_date || undefined,
-        planned_completion_date: form.planned_completion_date || undefined,
+        start_date: initiatedBy === "client" ? (form.start_date || undefined) : undefined,
+        planned_completion_date: initiatedBy === "client" ? (form.planned_completion_date || undefined) : undefined,
         department_id: form.department_id || undefined,
         initiated_by: initiatedBy,
+        setup_duration_weeks: setupDurationWeeks,
       });
       onCreated();
     } catch (e) {
@@ -598,7 +609,7 @@ function CreateProjectModal({
         </div>
         {initiatedBy === "company" && (
           <p className="mb-4 border border-signal/30 bg-signal/5 p-3 text-xs text-slate-light">
-            A project SNC initiates itself to produce something to sell (internal or external) - no client, no contract value. It stays dormant with no tasks until you complete its intake (category, investment, funding) and commit it from the project detail view.
+            A project SNC initiates itself to produce something to sell (internal or external) - no client, no contract deadline. It stays dormant with no tasks until you complete its intake (category, investment, funding) and commit it from the project detail view - that&apos;s also where you&apos;ll track setup expenses and, once it&apos;s active, the revenue it brings in.
           </p>
         )}
 
@@ -612,14 +623,29 @@ function CreateProjectModal({
           )}
           <input value={form.project_code} onChange={(e) => set("project_code", e.target.value)} placeholder="Project code" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           <input value={form.project_type} onChange={(e) => set("project_type", e.target.value)} placeholder="Project type" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-          <div>
-            <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Start date</label>
-            <input value={form.start_date} onChange={(e) => set("start_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-          </div>
-          <div>
-            <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Planned completion</label>
-            <input value={form.planned_completion_date} onChange={(e) => set("planned_completion_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-          </div>
+          {initiatedBy === "client" ? (
+            <>
+              <div>
+                <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Start date</label>
+                <input value={form.start_date} onChange={(e) => set("start_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+              <div>
+                <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Planned completion</label>
+                <input value={form.planned_completion_date} onChange={(e) => set("planned_completion_date", e.target.value)} type="date" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+            </>
+          ) : (
+            <div className="sm:col-span-2">
+              <label className="mb-1 block font-mono text-[9px] uppercase text-slate">How long will it take to set up and begin production?</label>
+              <div className="flex gap-2">
+                <input value={durationValue} onChange={(e) => setDurationValue(e.target.value)} type="number" min="1" placeholder="e.g. 6" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+                <select value={durationUnit} onChange={(e) => setDurationUnit(e.target.value as "weeks" | "months")} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
+                  <option value="weeks">Weeks</option>
+                  <option value="months">Months</option>
+                </select>
+              </div>
+            </div>
+          )}
           <select value={form.department_id} onChange={(e) => set("department_id", e.target.value)} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper sm:col-span-2">
             <option value="">Department (optional)</option>
             {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
@@ -685,12 +711,18 @@ const PROJECT_CATEGORY_LABELS: Record<string, string> = {
   commercial: "Commercial",
 };
 
+const COST_CATEGORY_OPTIONS = ["labour", "equipment", "materials", "subcontract", "overhead", "other"] as const;
+
 function ProductionIntakePanel({ project, onRefresh }: { project: Record<string, unknown>; onRefresh: () => void }) {
   const projectId = String(project.id ?? "");
+  const committed = Boolean(project.intake_completed_at);
+  const isActive = text(project.status as string | undefined, "").toLowerCase() === "active";
+
   const [category, setCategory] = useState(text(project.project_category as string | undefined, ""));
   const [investment, setInvestment] = useState(project.investment_required != null ? String(project.investment_required) : "");
   const [fundingInternal, setFundingInternal] = useState(project.funding_internal != null ? String(project.funding_internal) : "");
   const [fundingExternal, setFundingExternal] = useState(project.funding_external != null ? String(project.funding_external) : "");
+  const [durationValue, setDurationValue] = useState(project.setup_duration_weeks != null ? String(project.setup_duration_weeks) : "");
   const [saving, setSaving] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -699,6 +731,17 @@ function ProductionIntakePanel({ project, onRefresh }: { project: Record<string,
   const totalFunding = (number(fundingInternal) ?? 0) + (number(fundingExternal) ?? 0);
   const gap = investmentNum != null ? investmentNum - totalFunding : null;
   const coveragePct = investmentNum ? (totalFunding / investmentNum) * 100 : null;
+  const durationWeeks = number(durationValue);
+
+  const targetProductionStart = useMemo(() => {
+    const startRaw = project.start_date as string | undefined;
+    if (!startRaw || !durationWeeks) return null;
+    const start = new Date(startRaw);
+    if (Number.isNaN(start.getTime())) return null;
+    const target = new Date(start);
+    target.setDate(target.getDate() + durationWeeks * 7);
+    return target;
+  }, [project.start_date, durationWeeks]);
 
   const save = async () => {
     setSaving(true); setMsg(null);
@@ -708,6 +751,7 @@ function ProductionIntakePanel({ project, onRefresh }: { project: Record<string,
         investment_required: investment ? Number(investment) : undefined,
         funding_internal: fundingInternal ? Number(fundingInternal) : undefined,
         funding_external: fundingExternal ? Number(fundingExternal) : undefined,
+        setup_duration_weeks: durationValue ? Number(durationValue) : undefined,
       });
       setMsg("Saved.");
       onRefresh();
@@ -735,55 +779,253 @@ function ProductionIntakePanel({ project, onRefresh }: { project: Record<string,
 
   return (
     <div className="border border-signal/30 bg-signal/5 p-4 rounded-sm space-y-4">
-      <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-signal">Production Project Intake</h3>
+      <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-signal">Production Project Setup</h3>
       <p className="text-xs text-slate-light">
-        This is a Company-initiated project - not commissioned by a client. Structure it here: classify it, size the investment, and account for its funding. Nothing gets assigned to anyone until you commit.
+        This is a Company-initiated project - not commissioned by a client. Classify it, size the investment, and say how long setup will take. Nothing gets assigned to anyone until you commit - after that, this is also where you log setup spend and, once active, the revenue it brings in.
       </p>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        {(["construction", "plant", "commercial"] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setCategory(value)}
-            className={`h-10 border font-mono text-xs uppercase tracking-wider ${category === value ? "border-signal bg-signal/20 text-signal" : "border-ink-mid bg-ink-light text-slate-light hover:text-paper"}`}
-          >
-            {PROJECT_CATEGORY_LABELS[value]}
-          </button>
-        ))}
-      </div>
+      <fieldset disabled={committed} className="space-y-4 disabled:opacity-70">
+        <div className="grid gap-3 sm:grid-cols-3">
+          {(["construction", "plant", "commercial"] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setCategory(value)}
+              className={`h-10 border font-mono text-xs uppercase tracking-wider ${category === value ? "border-signal bg-signal/20 text-signal" : "border-ink-mid bg-ink-light text-slate-light hover:text-paper"}`}
+            >
+              {PROJECT_CATEGORY_LABELS[value]}
+            </button>
+          ))}
+        </div>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div>
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Investment required ($)</label>
-          <input value={investment} onChange={(e) => setInvestment(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Investment required ($)</label>
+            <input value={investment} onChange={(e) => setInvestment(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Internal funding ($)</label>
+            <input value={fundingInternal} onChange={(e) => setFundingInternal(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">External funding ($)</label>
+            <input value={fundingExternal} onChange={(e) => setFundingExternal(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          </div>
         </div>
-        <div>
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Internal funding ($)</label>
-          <input value={fundingInternal} onChange={(e) => setFundingInternal(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-        </div>
-        <div>
-          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">External funding ($)</label>
-          <input value={fundingExternal} onChange={(e) => setFundingExternal(e.target.value)} type="number" min="0" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
-        </div>
-      </div>
 
-      <div className="grid gap-3 border-t border-ink-mid/50 pt-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate">Setup duration (weeks) - how long to stand this up and begin production</label>
+          <input value={durationValue} onChange={(e) => setDurationValue(e.target.value)} type="number" min="1" className="h-10 w-full max-w-[200px] border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+        </div>
+      </fieldset>
+
+      <div className="grid gap-3 border-t border-ink-mid/50 pt-3 sm:grid-cols-4">
         <Info label="Total funding" value={formatCurrency(totalFunding)} />
         <Info label="Funding gap" value={gap != null ? formatCurrency(gap) : "—"} />
         <Info label="Coverage" value={coveragePct != null ? `${coveragePct.toFixed(0)}%` : "—"} />
+        <Info label="Target production start" value={targetProductionStart ? formatDate(targetProductionStart.toISOString()) : "—"} />
       </div>
 
-      <div className="flex justify-end gap-2 border-t border-ink-mid/50 pt-3">
-        <button onClick={() => void save()} disabled={saving} className="h-10 border border-ink-mid bg-ink-light px-4 font-mono text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-50">
-          {saving ? "Saving..." : "Save Progress"}
-        </button>
-        <button onClick={() => void commit()} disabled={committing || !category || investmentNum == null} className="h-10 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
-          {committing ? "Committing..." : "Commit - Generate Tasks"}
-        </button>
-      </div>
+      {!committed && (
+        <div className="flex justify-end gap-2 border-t border-ink-mid/50 pt-3">
+          <button onClick={() => void save()} disabled={saving} className="h-10 border border-ink-mid bg-ink-light px-4 font-mono text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-50">
+            {saving ? "Saving..." : "Save Progress"}
+          </button>
+          <button onClick={() => void commit()} disabled={committing || !category || investmentNum == null} className="h-10 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+            {committing ? "Committing..." : "Commit - Generate Tasks"}
+          </button>
+        </div>
+      )}
 
       {msg && <p className="text-xs text-slate-light">{msg}</p>}
+
+      <div className="border-t border-ink-mid/50 pt-4">
+        <ProductionExpensesSection projectId={projectId} />
+      </div>
+
+      <div className="border-t border-ink-mid/50 pt-4">
+        <ProductionRevenueSection projectId={projectId} isActive={isActive} />
+      </div>
+    </div>
+  );
+}
+
+function ProductionExpensesSection({ projectId }: { projectId: string }) {
+  const [items, setItems] = useState<Record<string, unknown>[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ cost_category: "materials", description: "", amount: "", transaction_date: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await getProductionExpenses(projectId);
+      setItems(res.data?.items ?? []);
+      setTotal(number(res.data?.total) ?? 0);
+    } catch {
+      // Non-fatal - panel still usable for recording new spend.
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const submit = async () => {
+    if (!form.description.trim() || !form.amount) { setError("Description and amount are required."); return; }
+    setBusy(true); setError(null);
+    try {
+      await addProductionExpense(projectId, {
+        cost_category: form.cost_category,
+        description: form.description.trim(),
+        amount: Number(form.amount),
+        transaction_date: form.transaction_date || undefined,
+      });
+      setForm({ cost_category: "materials", description: "", amount: "", transaction_date: "" });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to record expense.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Setup Expenses</h4>
+        <span className="font-mono text-xs text-amber-300">{formatCurrency(total)} spent</span>
+      </div>
+      <p className="text-xs text-slate-light">Spend incurred standing this project up - posts straight into Finance.</p>
+
+      {loading ? (
+        <p className="text-xs text-slate-light">Loading...</p>
+      ) : items.length ? (
+        <div className="max-h-40 overflow-y-auto border border-ink-mid/50">
+          <table className="w-full text-xs">
+            <tbody className="divide-y divide-ink-mid/40">
+              {items.map((item, i) => (
+                <tr key={String(item.id ?? i)}>
+                  <td className="p-2 text-slate-light">{formatDate(text(item.transaction_date as string, ""))}</td>
+                  <td className="p-2 text-paper">{text(item.description as string)}</td>
+                  <td className="p-2 text-slate-light">{text(item.cost_category as string)}</td>
+                  <td className="p-2 text-right text-amber-300">{formatCurrency(number(item.amount) ?? 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="text-xs text-slate">No setup expenses recorded yet.</p>
+      )}
+
+      <div className="grid gap-2 sm:grid-cols-4">
+        <select value={form.cost_category} onChange={(e) => setForm((f) => ({ ...f, cost_category: e.target.value }))} className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper">
+          {COST_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Description" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper sm:col-span-2" />
+        <input value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} type="number" min="0" placeholder="Amount ($)" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+      </div>
+      <div className="flex items-center gap-2">
+        <input value={form.transaction_date} onChange={(e) => setForm((f) => ({ ...f, transaction_date: e.target.value }))} type="date" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+        <button onClick={() => void submit()} disabled={busy} className="h-9 border border-ink-mid bg-ink-light px-3 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-50">
+          {busy ? "Recording..." : "Record Expense"}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-300">{error}</p>}
+    </div>
+  );
+}
+
+function ProductionRevenueSection({ projectId, isActive }: { projectId: string; isActive: boolean }) {
+  const [items, setItems] = useState<Record<string, unknown>[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ description: "", amount: "", transaction_date: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!isActive) { setLoading(false); return; }
+    setLoading(true);
+    try {
+      const res = await getProductionRevenue(projectId);
+      setItems(res.data?.items ?? []);
+      setTotal(number(res.data?.total) ?? 0);
+    } catch {
+      // Non-fatal.
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, isActive]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const submit = async () => {
+    if (!form.amount) { setError("Amount is required."); return; }
+    setBusy(true); setError(null);
+    try {
+      await addProductionRevenue(projectId, {
+        amount: Number(form.amount),
+        description: form.description.trim() || undefined,
+        transaction_date: form.transaction_date || undefined,
+      });
+      setForm({ description: "", amount: "", transaction_date: "" });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to record revenue.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Production Revenue</h4>
+        {isActive && <span className="font-mono text-xs text-emerald-300">{formatCurrency(total)} earned</span>}
+      </div>
+
+      {!isActive ? (
+        <p className="border border-ink-mid/50 bg-ink-light/20 p-3 text-xs text-slate-light">
+          Revenue recording unlocks once this project is active - move it to &quot;Active&quot; on the project pipeline.
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-slate-light">What this project sells, as it sells it - no client or contract behind it, straight into the cashbook.</p>
+          {loading ? (
+            <p className="text-xs text-slate-light">Loading...</p>
+          ) : items.length ? (
+            <div className="max-h-40 overflow-y-auto border border-ink-mid/50">
+              <table className="w-full text-xs">
+                <tbody className="divide-y divide-ink-mid/40">
+                  {items.map((item, i) => (
+                    <tr key={String(item.id ?? i)}>
+                      <td className="p-2 text-slate-light">{formatDate(text(item.transaction_date as string, ""))}</td>
+                      <td className="p-2 text-paper">{text(item.description as string)}</td>
+                      <td className="p-2 text-right text-emerald-300">{formatCurrency(number(item.amount) ?? 0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="text-xs text-slate">No revenue recorded yet.</p>
+          )}
+
+          <div className="grid gap-2 sm:grid-cols-3">
+            <input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Description (optional)" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+            <input value={form.amount} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} type="number" min="0" placeholder="Amount ($)" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+            <input value={form.transaction_date} onChange={(e) => setForm((f) => ({ ...f, transaction_date: e.target.value }))} type="date" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+          </div>
+          <button onClick={() => void submit()} disabled={busy} className="h-9 border border-emerald-500/40 bg-emerald-500/10 px-3 font-mono text-[10px] uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50">
+            {busy ? "Recording..." : "Record Revenue"}
+          </button>
+          {error && <p className="text-xs text-red-300">{error}</p>}
+        </>
+      )}
     </div>
   );
 }
@@ -944,15 +1186,98 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
 interface GanttMilestone {
   id: string;
   name: string;
-  status: 'not_started' | 'in_progress' | 'complete' | 'blocked';
-  weight: number;
-  owner: string;
-  baselineStart: number; // 1-16 weeks
-  baselineDuration: number; // weeks
-  forecastStart: number;
-  forecastDuration: number;
-  actualStart: number;
-  actualDuration: number;
+  status: 'not_started' | 'in_progress' | 'complete' | 'blocked' | 'cancelled';
+  weight: number | null;
+  ownerName: string | null;
+  baselineWeek: number | null; // weeks since project start_date, 1-indexed
+  forecastWeek: number | null;
+  actualWeek: number | null;
+}
+
+/** A point marker for a single milestone date on the 16-week Gantt axis - a
+ * milestone is a date, not a duration, so it's plotted as a dot, not a bar.
+ * `row` stacks multiple dots vertically within a row (comparison mode). */
+function MilestoneMarker({ week, colorClass, label, row }: { week: number | null; colorClass: string; label: string; row?: number }) {
+  if (!week) return null;
+  const clamped = Math.min(Math.max(week, 1), 16);
+  const leftPct = ((clamped - 0.5) / 16) * 100;
+  const topStyle = row == null ? { top: "50%" } : { top: `${8 + row * 12}px` };
+  return (
+    <div
+      className={`absolute z-10 h-2.5 w-2.5 cursor-help rounded-full border-2 group ${colorClass}`}
+      style={{ left: `${leftPct}%`, ...topStyle, transform: "translate(-50%, -50%)" }}
+      title={label}
+    >
+      <span className="pointer-events-none absolute -top-6 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded-sm bg-ink/90 px-1.5 py-0.5 font-mono text-[8px] text-paper opacity-0 transition-opacity group-hover:opacity-100">
+        {label}
+      </span>
+    </div>
+  );
+}
+
+function AddMilestoneForm({ projectId, onClose, onAdded }: { projectId: string; onClose: () => void; onAdded: () => void }) {
+  const [users, setUsers] = useState<{ id: string; full_name: string; email: string }[]>([]);
+  const [form, setForm] = useState({ name: "", status: "not_started", baseline_date: "", forecast_date: "", weight: "", owner_id: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getAssignableUsers().then((res) => setUsers(res.data ?? [])).catch(() => setUsers([]));
+  }, []);
+
+  const submit = async () => {
+    if (!form.name.trim()) { setError("Milestone name is required."); return; }
+    setBusy(true); setError(null);
+    try {
+      await addProjectMilestone(projectId, {
+        name: form.name.trim(),
+        status: form.status,
+        baseline_date: form.baseline_date || undefined,
+        forecast_date: form.forecast_date || undefined,
+        weight: form.weight ? Number(form.weight) : undefined,
+        owner_id: form.owner_id || undefined,
+      });
+      onAdded();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to add milestone.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="border border-signal/30 bg-signal/5 p-4 space-y-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Milestone name *" className="h-9 border border-ink-mid bg-ink-light px-3 text-xs text-paper sm:col-span-2" />
+        <div>
+          <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Baseline date</label>
+          <input value={form.baseline_date} onChange={(e) => setForm((f) => ({ ...f, baseline_date: e.target.value }))} type="date" className="h-9 w-full border border-ink-mid bg-ink-light px-3 text-xs text-paper" />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Forecast date</label>
+          <input value={form.forecast_date} onChange={(e) => setForm((f) => ({ ...f, forecast_date: e.target.value }))} type="date" className="h-9 w-full border border-ink-mid bg-ink-light px-3 text-xs text-paper" />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Weight (% of programme)</label>
+          <input value={form.weight} onChange={(e) => setForm((f) => ({ ...f, weight: e.target.value }))} type="number" min="0" max="100" className="h-9 w-full border border-ink-mid bg-ink-light px-3 text-xs text-paper" />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[9px] uppercase text-slate">Owner</label>
+          <select value={form.owner_id} onChange={(e) => setForm((f) => ({ ...f, owner_id: e.target.value }))} className="h-9 w-full border border-ink-mid bg-ink-light px-3 text-xs text-paper">
+            <option value="">Unassigned</option>
+            {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+          </select>
+        </div>
+      </div>
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button onClick={onClose} className="h-9 border border-ink-mid px-3 font-mono text-[10px] uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button onClick={() => void submit()} disabled={busy} className="h-9 bg-signal px-3 font-mono text-[10px] font-bold uppercase text-ink disabled:opacity-50">
+          {busy ? "Adding..." : "Add Milestone"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ProjectDetail({
@@ -1082,16 +1407,6 @@ function ProjectDetail({
 
   const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials" | "documents" | "assign">("overview");
 
-  // Stable seed is used only for visual schedule placeholders, not financial figures.
-  const seed = useMemo(() => {
-    if (!project.id) return 42;
-    let hash = 0;
-    for (let i = 0; i < project.id.length; i++) {
-      hash = project.id.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return Math.abs(hash);
-  }, [project.id]);
-
   // Source-backed financial parameters. Missing finance fields must not be replaced with generated values.
   const contractVal = useMemo(() => {
     const apiVal = number(source.contract_value ?? source.budget ?? source.budget_value);
@@ -1149,89 +1464,54 @@ function ProjectDetail({
   const [scheduleTimelineFilter, setScheduleTimelineFilter] = useState<"comparison" | "baseline" | "forecast" | "actual">("comparison");
   const [scheduleStatusFilter, setScheduleStatusFilter] = useState<"all" | "complete" | "in_progress" | "blocked" | "not_started">("all");
 
-  const milestones: GanttMilestone[] = useMemo(() => {
-    const isAtRisk = riskStatuses.has(text(source.health ?? source.status, "").toLowerCase());
-    return [
-      {
-        id: "m1",
-        name: "Site Mobilization & Fencing",
-        status: "complete",
-        weight: 5,
-        owner: "A. Mercer",
-        baselineStart: 1,
-        baselineDuration: 2,
-        forecastStart: 1,
-        forecastDuration: 2,
-        actualStart: 1,
-        actualDuration: 2,
-      },
-      {
-        id: "m2",
-        name: "Bulk Excavation & Foundations",
-        status: isAtRisk ? "blocked" : "complete",
-        weight: 15,
-        owner: "T. Shumba",
-        baselineStart: 2,
-        baselineDuration: 3,
-        forecastStart: 2,
-        forecastDuration: 4.5,
-        actualStart: 2,
-        actualDuration: isAtRisk ? 3 : 4,
-      },
-      {
-        id: "m3",
-        name: "Reinforced Concrete Foundation Pour",
-        status: isAtRisk ? "blocked" : "complete",
-        weight: 25,
-        owner: "M. Vance",
-        baselineStart: 4.5,
-        baselineDuration: 4,
-        forecastStart: 5.5,
-        forecastDuration: 4,
-        actualStart: 5.5,
-        actualDuration: isAtRisk ? 2.5 : 4,
-      },
-      {
-        id: "m4",
-        name: "Structural Steel Frame Erection",
-        status: isAtRisk ? "in_progress" : "in_progress",
-        weight: 25,
-        owner: "D. Prince",
-        baselineStart: 8,
-        baselineDuration: 4.5,
-        forecastStart: 9,
-        forecastDuration: 5,
-        actualStart: 9,
-        actualDuration: 2.5, // partly complete
-      },
-      {
-        id: "m5",
-        name: "Roofing, Cladding & Building Envelope",
-        status: "not_started",
-        weight: 15,
-        owner: "B. Wayne",
-        baselineStart: 11.5,
-        baselineDuration: 3,
-        forecastStart: 13.5,
-        forecastDuration: 3,
-        actualStart: 0,
-        actualDuration: 0,
-      },
-      {
-        id: "m6",
-        name: "Internal MEP Fit-out & Final Sign-off",
-        status: "not_started",
-        weight: 15,
-        owner: "C. Kent",
-        baselineStart: 13.5,
-        baselineDuration: 3.5,
-        forecastStart: 15.5,
-        forecastDuration: 3.5,
-        actualStart: 0,
-        actualDuration: 0,
-      }
-    ];
+  // Real milestones, fetched from the lifecycle endpoint - no fabricated
+  // schedule data or placeholder owners. Empty until someone actually logs one.
+  const [rawMilestones, setRawMilestones] = useState<Record<string, unknown>[]>([]);
+  const [milestonesLoading, setMilestonesLoading] = useState(true);
+
+  const loadMilestones = useCallback(async () => {
+    if (!project.id) return;
+    setMilestonesLoading(true);
+    try {
+      const res = await getProjectLifecycle(project.id);
+      setRawMilestones(res.data?.milestones ?? []);
+    } catch {
+      setRawMilestones([]);
+    } finally {
+      setMilestonesLoading(false);
+    }
+  }, [project.id]);
+
+  useEffect(() => { void loadMilestones(); }, [loadMilestones]);
+
+  const startDateMs = useMemo(() => {
+    const raw = (source as Record<string, unknown>).start_date as string | undefined;
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d.getTime();
   }, [source]);
+
+  const dateToWeek = useCallback((value: unknown): number | null => {
+    if (!value || !startDateMs) return null;
+    const d = new Date(String(value));
+    if (Number.isNaN(d.getTime())) return null;
+    return Math.max(1, Math.floor((d.getTime() - startDateMs) / (7 * 24 * 3600 * 1000)) + 1);
+  }, [startDateMs]);
+
+  const milestones: GanttMilestone[] = useMemo(() => {
+    return rawMilestones.map((m) => ({
+      id: String(m.id),
+      name: text(m.name as string | undefined, "Untitled milestone"),
+      status: (["not_started", "in_progress", "complete", "blocked", "cancelled"].includes(String(m.status))
+        ? m.status
+        : "not_started") as GanttMilestone["status"],
+      weight: number(m.weight),
+      ownerName: text(m.owner_name as string | undefined, "") || null,
+      baselineWeek: dateToWeek(m.baseline_date),
+      forecastWeek: dateToWeek(m.forecast_date),
+      actualWeek: dateToWeek(m.actual_date),
+    }));
+  }, [rawMilestones, dateToWeek]);
 
   const filteredMilestones = useMemo(() => {
     return milestones.filter(m => {
@@ -1239,6 +1519,38 @@ function ProjectDetail({
       return m.status === scheduleStatusFilter;
     });
   }, [milestones, scheduleStatusFilter]);
+
+  const [showAddMilestone, setShowAddMilestone] = useState(false);
+
+  const NEXT_MILESTONE_STATUS: Record<GanttMilestone["status"], GanttMilestone["status"]> = {
+    not_started: "in_progress",
+    in_progress: "complete",
+    complete: "not_started",
+    blocked: "in_progress",
+    cancelled: "not_started",
+  };
+
+  const progressMilestone = useCallback(async (m: GanttMilestone) => {
+    const nextStatus = NEXT_MILESTONE_STATUS[m.status];
+    try {
+      await updateProjectMilestone(project.id, m.id, {
+        status: nextStatus,
+        actual_date: nextStatus === "complete" ? new Date().toISOString().slice(0, 10) : undefined,
+      });
+      await loadMilestones();
+    } catch {
+      // Non-fatal - the row simply keeps its current status on failure.
+    }
+  }, [project.id, loadMilestones]);
+
+  // Read-only "who's responsible" summary on Overview - full editing lives on
+  // the Assigned To tab (AssignmentPanel), this just makes it visible without
+  // switching tabs.
+  const [projectAssignment, setProjectAssignment] = useState<{ assigned_to_user_id: string | null; assigned_to_team_id: string | null; assigned_user_name: string | null; assigned_team_name: string | null } | null>(null);
+  useEffect(() => {
+    if (!project.id) return;
+    getAssignment("project", project.id).then((res) => setProjectAssignment(res.data ?? null)).catch(() => setProjectAssignment(null));
+  }, [project.id]);
 
   // ----------------------------------------------------
   // SOURCE-BACKED MATERIAL CONSUMPTION
@@ -1470,14 +1782,29 @@ function ProjectDetail({
                   <Info label="Programme End" value={formatDate(text(viability?.planned_end_date ?? source.end_date, ""))} />
                 </div>
 
-                {text(viability?.initiated_by as string | undefined ?? (source as Project & { initiated_by?: string }).initiated_by, "client") === "company" && !(viability?.intake_completed_at ?? (source as Record<string, unknown>).intake_completed_at) && (
+                <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">
+                  Responsible: {projectAssignment && (projectAssignment.assigned_team_name || projectAssignment.assigned_user_name) ? (
+                    <>
+                      <span className="text-paper">{projectAssignment.assigned_team_name || projectAssignment.assigned_user_name}</span>
+                      {projectAssignment.assigned_to_team_id ? " (team)" : ""}
+                    </>
+                  ) : (
+                    <span className="text-slate">Unassigned - see the Assigned To tab</span>
+                  )}
+                </p>
+
+                {text(viability?.initiated_by as string | undefined ?? (source as Project & { initiated_by?: string }).initiated_by, "client") === "company" && (
                   <ProductionIntakePanel
                     project={{
                       id: project.id,
+                      status: source.status,
+                      start_date: (source as Record<string, unknown>).start_date,
                       project_category: viability?.project_category ?? (source as Record<string, unknown>).project_category,
                       investment_required: viability?.investment_required ?? (source as Record<string, unknown>).investment_required,
                       funding_internal: viability?.funding_internal ?? (source as Record<string, unknown>).funding_internal,
                       funding_external: viability?.funding_external ?? (source as Record<string, unknown>).funding_external,
+                      setup_duration_weeks: viability?.setup_duration_weeks ?? (source as Record<string, unknown>).setup_duration_weeks,
+                      intake_completed_at: viability?.intake_completed_at ?? (source as Record<string, unknown>).intake_completed_at,
                     }}
                     onRefresh={onRefresh}
                   />
@@ -1585,144 +1912,121 @@ function ProjectDetail({
                       <option value="blocked">Blocked / Delayed</option>
                       <option value="not_started">Not Started</option>
                     </select>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddMilestone((v) => !v)}
+                      className="flex items-center gap-1 border border-signal/40 bg-signal/10 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-signal hover:bg-signal/20"
+                    >
+                      <Plus className="h-3 w-3" />Add Milestone
+                    </button>
                   </div>
                 </div>
 
-                {/* Timeline Axis Labels */}
-                <div className="border border-ink-mid bg-ink-light/20 overflow-x-auto">
-                  <div className="min-w-[800px]">
-                    <div 
-                      className="grid border-b border-ink-mid py-2 font-mono text-[10px] font-semibold text-slate uppercase bg-ink-light/40"
-                      style={{ display: "grid", gridTemplateColumns: "260px repeat(16, minmax(0, 1fr))" }}
-                    >
-                      <div className="pl-4">Project Milestones</div>
-                      {Array.from({ length: 16 }, (_, i) => (
-                        <div key={i} className="text-center border-l border-ink-mid/30">W{i + 1}</div>
-                      ))}
-                    </div>
+                {showAddMilestone && (
+                  <AddMilestoneForm
+                    projectId={project.id}
+                    onClose={() => setShowAddMilestone(false)}
+                    onAdded={() => { setShowAddMilestone(false); void loadMilestones(); }}
+                  />
+                )}
 
-                    {/* Gantt Rows */}
-                    <div className="divide-y divide-ink-mid/60">
-                      {filteredMilestones.map((m) => (
-                        <div 
-                          key={m.id}
-                          className="grid py-3 hover:bg-ink-light/10 transition-colors items-center"
+                {milestonesLoading ? (
+                  <div className="flex h-32 items-center justify-center gap-3 border border-ink-mid bg-ink-light/20 text-sm text-slate-light">
+                    <Loader2 className="h-4 w-4 animate-spin text-signal" />Loading milestones
+                  </div>
+                ) : filteredMilestones.length === 0 ? (
+                  <div className="flex h-32 flex-col items-center justify-center gap-1 border border-dashed border-ink-mid bg-ink-light/10 text-center">
+                    <p className="text-sm text-slate-light">No milestones logged yet.</p>
+                    <p className="text-xs text-slate">Use &quot;Add Milestone&quot; above to record real schedule dates and a real owner.</p>
+                  </div>
+                ) : (
+                  <>
+                    {!startDateMs && (
+                      <p className="border border-amber-500/30 bg-amber-950/10 p-2 text-xs text-amber-200">
+                        This project has no start date set, so milestones are listed below without a week position on the timeline.
+                      </p>
+                    )}
+                    {/* Timeline Axis Labels */}
+                    <div className="border border-ink-mid bg-ink-light/20 overflow-x-auto">
+                      <div className="min-w-[800px]">
+                        <div
+                          className="grid border-b border-ink-mid py-2 font-mono text-[10px] font-semibold text-slate uppercase bg-ink-light/40"
                           style={{ display: "grid", gridTemplateColumns: "260px repeat(16, minmax(0, 1fr))" }}
                         >
-                          {/* Milestone Information */}
-                          <div className="pl-4 pr-3">
-                            <p className="text-xs font-semibold text-paper leading-tight">{m.name}</p>
-                            <div className="mt-1 flex items-center gap-2 font-mono text-[9px]">
-                              <span className={`px-1 py-0.5 border ${
-                                m.status === 'complete' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300' :
-                                m.status === 'in_progress' ? 'border-sky-500/30 bg-sky-950/20 text-sky-300' :
-                                m.status === 'blocked' ? 'border-red-500/40 bg-red-950/30 text-red-300' :
-                                'border-slate/40 bg-slate-950/10 text-slate-400'
-                              }`}>
-                                {m.status.replace('_', ' ')}
-                              </span>
-                              <span className="text-slate">{m.weight}% weight</span>
-                              <span className="text-slate-light">• {m.owner}</span>
-                            </div>
-                          </div>
+                          <div className="pl-4">Project Milestones</div>
+                          {Array.from({ length: 16 }, (_, i) => (
+                            <div key={i} className="text-center border-l border-ink-mid/30">W{i + 1}</div>
+                          ))}
+                        </div>
 
-                          {/* Timeline Gantt Grid Row */}
-                          <div className="col-span-16 grid grid-cols-16 h-10 relative items-center">
-                            {/* Grid vertical gridlines */}
-                            {Array.from({ length: 16 }, (_, i) => (
-                              <div key={i} className="h-full border-l border-ink-mid/10 absolute top-0" style={{ left: `${(i / 16) * 100}%` }} />
-                            ))}
-
-                            {/* Timeline Bars */}
-                            {scheduleTimelineFilter === "baseline" && (
-                              <div 
-                                className="h-4 bg-slate/40 border border-slate/30 rounded-sm relative group cursor-help transition-all hover:brightness-110"
-                                style={{ 
-                                  gridColumnStart: Math.floor(m.baselineStart), 
-                                  gridColumnEnd: Math.ceil(m.baselineStart + m.baselineDuration) 
-                                }}
-                              >
-                                <span className="absolute inset-0 flex items-center justify-center font-mono text-[8px] text-slate-light opacity-0 group-hover:opacity-100 transition-opacity bg-ink/80">
-                                  W{m.baselineStart} - W{m.baselineStart + m.baselineDuration}
-                                </span>
+                        {/* Gantt Rows - real milestones plotted as point markers (a milestone is a date, not a duration) */}
+                        <div className="divide-y divide-ink-mid/60">
+                          {filteredMilestones.map((m) => (
+                            <div
+                              key={m.id}
+                              className="grid py-3 hover:bg-ink-light/10 transition-colors items-center"
+                              style={{ display: "grid", gridTemplateColumns: "260px repeat(16, minmax(0, 1fr))" }}
+                            >
+                              {/* Milestone Information */}
+                              <div className="pl-4 pr-3">
+                                <p className="text-xs font-semibold text-paper leading-tight">{m.name}</p>
+                                <div className="mt-1 flex items-center gap-2 font-mono text-[9px]">
+                                  <button
+                                    type="button"
+                                    onClick={() => void progressMilestone(m)}
+                                    title="Click to progress status"
+                                    className={`border px-1 py-0.5 hover:brightness-110 ${
+                                    m.status === 'complete' ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300' :
+                                    m.status === 'in_progress' ? 'border-sky-500/30 bg-sky-950/20 text-sky-300' :
+                                    m.status === 'blocked' ? 'border-red-500/40 bg-red-950/30 text-red-300' :
+                                    'border-slate/40 bg-slate-950/10 text-slate-400'
+                                  }`}>
+                                    {m.status.replace('_', ' ')}
+                                  </button>
+                                  {m.weight != null && <span className="text-slate">{m.weight}% weight</span>}
+                                  <span className="text-slate-light">• {m.ownerName ?? "Unassigned"}</span>
+                                </div>
                               </div>
-                            )}
 
-                            {scheduleTimelineFilter === "forecast" && (
-                              <div 
-                                className="h-4 bg-signal/30 border border-signal/50 rounded-sm relative group cursor-help transition-all hover:brightness-110"
-                                style={{ 
-                                  gridColumnStart: Math.floor(m.forecastStart), 
-                                  gridColumnEnd: Math.ceil(m.forecastStart + m.forecastDuration) 
-                                }}
-                              >
-                                <span className="absolute inset-0 flex items-center justify-center font-mono text-[8px] text-signal opacity-0 group-hover:opacity-100 transition-opacity bg-ink/80">
-                                  Forecast: W{m.forecastStart} - W{m.forecastStart + m.forecastDuration}
-                                </span>
-                              </div>
-                            )}
+                              {/* Timeline Grid Row */}
+                              <div className="col-span-16 grid grid-cols-16 h-10 relative items-center">
+                                {Array.from({ length: 16 }, (_, i) => (
+                                  <div key={i} className="h-full border-l border-ink-mid/10 absolute top-0" style={{ left: `${(i / 16) * 100}%` }} />
+                                ))}
 
-                            {scheduleTimelineFilter === "actual" && m.actualStart > 0 && (
-                              <div 
-                                className={`h-4 border rounded-sm relative group cursor-help transition-all hover:brightness-110 ${
-                                  m.status === 'blocked' 
-                                    ? 'bg-red-500/20 border-red-500/40 animate-pulse' 
-                                    : 'bg-emerald-600/30 border-emerald-500/50'
-                                }`}
-                                style={{ 
-                                  gridColumnStart: Math.floor(m.actualStart), 
-                                  gridColumnEnd: Math.ceil(m.actualStart + m.actualDuration) 
-                                }}
-                              >
-                                <span className="absolute inset-0 flex items-center justify-center font-mono text-[8px] text-paper opacity-0 group-hover:opacity-100 transition-opacity bg-ink/90">
-                                  Actual: W{m.actualStart} - W{m.actualStart + m.actualDuration}
-                                </span>
-                              </div>
-                            )}
-
-                            {scheduleTimelineFilter === "comparison" && (
-                              <div className="flex flex-col gap-0.5 w-full">
-                                {/* Baseline Bar */}
-                                <div 
-                                  className="h-2.5 bg-slate/30 border border-slate/40 rounded-sm"
-                                  style={{ 
-                                    gridColumnStart: Math.floor(m.baselineStart), 
-                                    gridColumnEnd: Math.ceil(m.baselineStart + m.baselineDuration) 
-                                  }}
-                                  title={`Baseline: Week ${m.baselineStart} - ${m.baselineStart + m.baselineDuration}`}
-                                />
-                                {/* Forecast Bar */}
-                                <div 
-                                  className="h-2.5 bg-signal/25 border border-signal/40 rounded-sm"
-                                  style={{ 
-                                    gridColumnStart: Math.floor(m.forecastStart), 
-                                    gridColumnEnd: Math.ceil(m.forecastStart + m.forecastDuration) 
-                                  }}
-                                  title={`Forecast: Week ${m.forecastStart} - ${m.forecastStart + m.forecastDuration}`}
-                                />
-                                {/* Actual Bar */}
-                                {m.actualStart > 0 && (
-                                  <div 
-                                    className={`h-2.5 border rounded-sm ${
-                                      m.status === 'blocked' 
-                                        ? 'bg-red-500/30 border-red-500/50' 
-                                        : 'bg-emerald-600/25 border-emerald-500/40'
-                                    }`}
-                                    style={{ 
-                                      gridColumnStart: Math.floor(m.actualStart), 
-                                      gridColumnEnd: Math.ceil(m.actualStart + m.actualDuration) 
-                                    }}
-                                    title={`Actual: Week ${m.actualStart} - ${m.actualStart + m.actualDuration}`}
+                                {scheduleTimelineFilter === "baseline" && (
+                                  <MilestoneMarker week={m.baselineWeek} colorClass="bg-slate-400 border-slate-300" label={m.baselineWeek ? `Baseline: W${m.baselineWeek}` : "No baseline date"} />
+                                )}
+                                {scheduleTimelineFilter === "forecast" && (
+                                  <MilestoneMarker week={m.forecastWeek} colorClass="bg-signal border-signal" label={m.forecastWeek ? `Forecast: W${m.forecastWeek}` : "No forecast date"} />
+                                )}
+                                {scheduleTimelineFilter === "actual" && (
+                                  <MilestoneMarker
+                                    week={m.actualWeek}
+                                    colorClass={m.status === 'blocked' ? "bg-red-500 border-red-400 animate-pulse" : "bg-emerald-500 border-emerald-400"}
+                                    label={m.actualWeek ? `Actual: W${m.actualWeek}` : "Not yet actualized"}
                                   />
                                 )}
+                                {scheduleTimelineFilter === "comparison" && (
+                                  <>
+                                    <MilestoneMarker week={m.baselineWeek} colorClass="bg-slate-400 border-slate-300" label={m.baselineWeek ? `Baseline: W${m.baselineWeek}` : "No baseline date"} row={0} />
+                                    <MilestoneMarker week={m.forecastWeek} colorClass="bg-signal border-signal" label={m.forecastWeek ? `Forecast: W${m.forecastWeek}` : "No forecast date"} row={1} />
+                                    <MilestoneMarker
+                                      week={m.actualWeek}
+                                      colorClass={m.status === 'blocked' ? "bg-red-500 border-red-400" : "bg-emerald-500 border-emerald-400"}
+                                      label={m.actualWeek ? `Actual: W${m.actualWeek}` : "Not yet actualized"}
+                                      row={2}
+                                    />
+                                  </>
+                                )}
                               </div>
-                            )}
-                          </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  </>
+                )}
 
                 {/* Gantt Legend */}
                 <div className="flex gap-6 font-mono text-[9px] text-slate-light border-t border-ink-mid pt-3 justify-end">
