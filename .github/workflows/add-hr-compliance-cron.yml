@@ -1,0 +1,36 @@
+name: One-off - Add HR/Compliance/HSE alert cron jobs
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  add-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and update crontab
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            CRON_FILE=/etc/cron.d/aegis-automation
+            cp "$CRON_FILE" "$CRON_FILE.bak.$(date +%s)"
+
+            add_line_if_missing() {
+              local line="$1"
+              if ! grep -qF "$line" "$CRON_FILE"; then
+                echo "$line" >> "$CRON_FILE"
+                echo "added: $line"
+              else
+                echo "already present: $line"
+              fi
+            }
+
+            add_line_if_missing '0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hr_workforce_alerts.py >> /var/log/aegis-cron.log 2>&1'
+            add_line_if_missing '0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_compliance_alerts.py >> /var/log/aegis-cron.log 2>&1'
+            add_line_if_missing '0 * * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hse_escalation.py >> /var/log/aegis-cron.log 2>&1'
+
+            echo "--- final crontab ---"
+            cat "$CRON_FILE"
