@@ -15,6 +15,7 @@ import {
   createComplianceObligation,
   getComplianceEmployeeCredentials,
   getComplianceEquipmentCredentials,
+  createComplianceEquipmentCredential,
   getComplianceCorrectiveActions,
   createComplianceCorrectiveAction,
   getComplianceScore,
@@ -24,7 +25,9 @@ import {
   getComplianceDeploymentGateChecks,
   overrideComplianceDeploymentGateCheck,
   getHseIncidents,
-  getInternalProjects
+  createHseIncident,
+  getInternalProjects,
+  getFleet
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
@@ -108,6 +111,7 @@ function ComplianceWorkspace() {
   const [correctiveActions, setCorrectiveActions] = useState<RecordData[]>([]);
   const [incidents, setIncidents] = useState<RecordData[]>([]);
   const [projects, setProjects] = useState<RecordData[]>([]);
+  const [fleetAssets, setFleetAssets] = useState<RecordData[]>([]);
   const [score, setScore] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(true);
@@ -120,12 +124,15 @@ function ComplianceWorkspace() {
   const [showObligationModal, setShowObligationModal] = useState(false);
   const [showActionModal, setShowActionModal] = useState(false);
   const [showIncidentModal, setShowIncidentModal] = useState(false);
+  const [showCredentialModal, setShowCredentialModal] = useState(false);
   const [showRequirementModal, setShowRequirementModal] = useState(false);
   const [overrideTarget, setOverrideTarget] = useState<RecordData | null>(null);
 
   // Form Fields
   const [obligationForm, setObligationForm] = useState({ title: "", authority: "ZIMRA", category: "tax", due_date: "", responsible_person: "", notes: "" });
   const [actionForm, setActionForm] = useState({ finding_trigger: "", responsible_person: "", due_date: "", priority: "high", status: "open", notes: "" });
+  const [incidentForm, setIncidentForm] = useState({ title: "", incident_date: "", severity: "medium", location: "", description: "" });
+  const [credentialForm, setCredentialForm] = useState({ fleet_id: "", credential_name: "", issuing_authority: "", certificate_number: "", issued_on: "", expires_on: "" });
   const [requirementForm, setRequirementForm] = useState({
     requirement_scope: "equipment_assignment",
     certification_name: "",
@@ -141,7 +148,7 @@ function ComplianceWorkspace() {
     setLoading(true);
     setError(null);
     try {
-      const [obRes, empCredRes, eqCredRes, reqRes, gateRes, actionsRes, incRes, scoreRes, projRes] = await Promise.allSettled([
+      const [obRes, empCredRes, eqCredRes, reqRes, gateRes, actionsRes, incRes, scoreRes, projRes, fleetRes] = await Promise.allSettled([
         getComplianceObligations(),
         getComplianceEmployeeCredentials(),
         getComplianceEquipmentCredentials(),
@@ -150,7 +157,8 @@ function ComplianceWorkspace() {
         getComplianceCorrectiveActions(),
         getHseIncidents(),
         getComplianceScore(),
-        getInternalProjects()
+        getInternalProjects(),
+        getFleet()
       ]);
       const warnings: string[] = [];
       if (obRes.status === "fulfilled") setObligations(obRes.value.data || []);
@@ -171,6 +179,8 @@ function ComplianceWorkspace() {
       else warnings.push("Compliance score could not be loaded.");
       if (projRes.status === "fulfilled") setProjects(projRes.value.data || []);
       else warnings.push("Project register could not be loaded.");
+      if (fleetRes.status === "fulfilled") setFleetAssets(fleetRes.value.data || []);
+      else warnings.push("Fleet register could not be loaded.");
       setSourceWarnings(warnings);
       if (obRes.status === "rejected") {
         throw new Error(loadFailureMessage(obRes.reason));
@@ -217,6 +227,38 @@ function ComplianceWorkspace() {
       await loadData();
     } catch (err) {
       setNotice(normalizeActionError(err, "Failed to record corrective action."));
+    }
+  };
+
+  const handleCreateIncident = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!incidentForm.title || !incidentForm.incident_date) return;
+    try {
+      await createHseIncident(incidentForm);
+      setNotice("HSE incident logged.");
+      setShowIncidentModal(false);
+      setIncidentForm({ title: "", incident_date: "", severity: "medium", location: "", description: "" });
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to log HSE incident."));
+    }
+  };
+
+  const handleCreateCredential = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!credentialForm.fleet_id || !credentialForm.credential_name) return;
+    try {
+      await createComplianceEquipmentCredential({
+        ...credentialForm,
+        issued_on: credentialForm.issued_on || null,
+        expires_on: credentialForm.expires_on || null,
+      });
+      setNotice("Equipment credential recorded.");
+      setShowCredentialModal(false);
+      setCredentialForm({ fleet_id: "", credential_name: "", issuing_authority: "", certificate_number: "", issued_on: "", expires_on: "" });
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to record equipment credential."));
     }
   };
 
@@ -354,6 +396,24 @@ function ComplianceWorkspace() {
             >
               <Plus className="h-4 w-4" />
               <span>Add Gate Requirement</span>
+            </button>
+          )}
+          {activeTab === "equipment" && (
+            <button
+              onClick={() => setShowCredentialModal(true)}
+              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Record Credential</span>
+            </button>
+          )}
+          {activeTab === "incidents" && (
+            <button
+              onClick={() => setShowIncidentModal(true)}
+              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Log Incident</span>
             </button>
           )}
         </div>
@@ -717,31 +777,33 @@ function ComplianceWorkspace() {
               <thead>
                 <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
                   <th className="p-4">Incident Date</th>
+                  <th className="p-4">Title</th>
                   <th className="p-4">Severity</th>
+                  <th className="p-4">Location</th>
                   <th className="p-4">Description</th>
-                  <th className="p-4">Logged By</th>
                   <th className="p-4">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-mid">
                 {incidents.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="p-4 text-center text-slate">No safety incidents on record.</td>
+                    <td colSpan={6} className="p-4 text-center text-slate">No safety incidents on record.</td>
                   </tr>
                 ) : (
                   incidents.map((i) => (
                     <tr key={i.id} className="hover:bg-ink-mid/10">
                       <td className="p-4 text-paper">{dateValue(i.incident_date)}</td>
+                      <td className="p-4 font-semibold text-paper">{i.title || "Untitled"}</td>
                       <td className="p-4">
                         <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(i.severity)}`}>
                           {i.severity}
                         </span>
                       </td>
-                      <td className="p-4 text-paper max-w-xs truncate">{i.description || i.daily_report}</td>
-                      <td className="p-4 text-slate-light">Logged by System</td>
+                      <td className="p-4 text-slate-light">{i.location || "—"}</td>
+                      <td className="p-4 text-paper max-w-xs truncate">{i.description || "—"}</td>
                       <td className="p-4">
-                        <span className="px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border border-emerald-500/30 bg-emerald-950/20 text-emerald-300">
-                          Closed
+                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(i.status || "open")}`}>
+                          {i.status || "open"}
                         </span>
                       </td>
                     </tr>
@@ -1082,6 +1144,194 @@ function ComplianceWorkspace() {
                   className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
                 >
                   Issue Action
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* HSE Incident Modal */}
+      {showIncidentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
+            <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+              <span className="text-base font-semibold text-paper">Log HSE Incident</span>
+              <button onClick={() => setShowIncidentModal(false)} className="text-slate hover:text-paper">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateIncident} className="space-y-4">
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Incident Title</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Fall from scaffolding, Bay 3"
+                  value={incidentForm.title}
+                  onChange={(e) => setIncidentForm({ ...incidentForm, title: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Incident Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={incidentForm.incident_date}
+                    onChange={(e) => setIncidentForm({ ...incidentForm, incident_date: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Severity</label>
+                  <select
+                    value={incidentForm.severity}
+                    onChange={(e) => setIncidentForm({ ...incidentForm, severity: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Location</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Site A, Bay 3"
+                  value={incidentForm.location}
+                  onChange={(e) => setIncidentForm({ ...incidentForm, location: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Description</label>
+                <textarea
+                  placeholder="What happened, who was involved, immediate response taken..."
+                  value={incidentForm.description}
+                  onChange={(e) => setIncidentForm({ ...incidentForm, description: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50 h-20"
+                />
+              </div>
+              {(incidentForm.severity === "critical" || incidentForm.severity === "high") && (
+                <div className="rounded border border-red-500/30 bg-red-950/10 p-3 text-xs leading-relaxed text-red-100">
+                  HSE / Safety Officers and Compliance Officers will be notified immediately (email + in-app) on submission.
+                </div>
+              )}
+              <div className="flex justify-end space-x-3 pt-3 border-t border-ink-mid">
+                <button
+                  type="button"
+                  onClick={() => setShowIncidentModal(false)}
+                  className="px-4 py-2 border border-ink-mid text-paper rounded text-sm hover:bg-ink-mid/30"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
+                >
+                  Log Incident
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Equipment Credential Modal */}
+      {showCredentialModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
+          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
+            <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+              <span className="text-base font-semibold text-paper">Record Equipment Credential</span>
+              <button onClick={() => setShowCredentialModal(false)} className="text-slate hover:text-paper">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleCreateCredential} className="space-y-4">
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Fleet Asset</label>
+                <select
+                  required
+                  value={credentialForm.fleet_id}
+                  onChange={(e) => setCredentialForm({ ...credentialForm, fleet_id: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                >
+                  <option value="">Select asset...</option>
+                  {fleetAssets.map((f) => (
+                    <option key={f.id} value={f.id}>{f.asset_code || f.vehicle_registration || `${f.make || ""} ${f.model || ""}`.trim() || f.id}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate mb-1">Credential / Licence</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Certificate of Fitness"
+                  value={credentialForm.credential_name}
+                  onChange={(e) => setCredentialForm({ ...credentialForm, credential_name: e.target.value })}
+                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Issuing Authority</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. VID"
+                    value={credentialForm.issuing_authority}
+                    onChange={(e) => setCredentialForm({ ...credentialForm, issuing_authority: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Certificate Number</label>
+                  <input
+                    type="text"
+                    value={credentialForm.certificate_number}
+                    onChange={(e) => setCredentialForm({ ...credentialForm, certificate_number: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Issued On</label>
+                  <input
+                    type="date"
+                    value={credentialForm.issued_on}
+                    onChange={(e) => setCredentialForm({ ...credentialForm, issued_on: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate mb-1">Expires On</label>
+                  <input
+                    type="date"
+                    value={credentialForm.expires_on}
+                    onChange={(e) => setCredentialForm({ ...credentialForm, expires_on: e.target.value })}
+                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end space-x-3 pt-3 border-t border-ink-mid">
+                <button
+                  type="button"
+                  onClick={() => setShowCredentialModal(false)}
+                  className="px-4 py-2 border border-ink-mid text-paper rounded text-sm hover:bg-ink-mid/30"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
+                >
+                  Record Credential
                 </button>
               </div>
             </form>

@@ -13,6 +13,7 @@ from core.database import get_db
 from core.security import require_permission, get_current_user
 from app.shared.pagination import ok
 from app.shared.sql import safe_payload_columns, update_tenant_row_sql
+from app.shared.events import emit_notification, emit_role_notification
 
 router = APIRouter()
 
@@ -74,6 +75,16 @@ class DeploymentRequirementUpdate(Payload):
 class DeploymentGateOverridePayload(Payload):
     reason: str = Field(min_length=12, max_length=2000)
     override_reference: Optional[str] = Field(default=None, max_length=160)
+
+
+class EquipmentCredentialCreate(Payload):
+    fleet_id: UUID
+    credential_name: str = Field(min_length=1, max_length=200)
+    issuing_authority: Optional[str] = Field(default=None, max_length=200)
+    certificate_number: Optional[str] = Field(default=None, max_length=160)
+    issued_on: Optional[str] = None  # YYYY-MM-DD
+    expires_on: Optional[str] = None  # YYYY-MM-DD
+    verification_status: Literal["pending", "verified", "expired", "rejected"] = "pending"
 
 
 async def emit_compliance_event(
@@ -232,38 +243,80 @@ async def list_equipment_credentials(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("compliance_items.read")),
 ):
-    """Fetch equipment compliance inspections from the controlled fleet register."""
+    """Fetch recorded equipment credentials (licences, inspection certificates)."""
     rows = await db.execute(
         text("""
         SELECT
-            i.id,
+            ec.id,
+            ec.credential_name AS licence_type,
+            ec.certificate_number,
+            ec.issuing_authority,
+            ec.issued_on,
+            ec.expires_on,
+            ec.verification_status AS status,
             f.asset_code,
-            COALESCE(f.asset_code, f.vehicle_registration, f.make || ' ' || f.model, f.id::text) AS asset_name,
-            i.inspection_type AS licence_type,
-            NULL::text AS certificate_number,
-            i.inspected_at::date AS issued_on,
-            NULL::date AS expires_on,
-            CASE
-                WHEN i.outcome = 'pass' THEN 'compliant'
-                WHEN i.outcome = 'conditional' THEN 'pending'
-                WHEN i.outcome = 'fail' THEN 'expired'
-                ELSE COALESCE(i.outcome, 'pending')
-            END AS status
-        FROM fleet.fleet_inspections i
+            COALESCE(f.asset_code, f.vehicle_registration, f.make || ' ' || f.model, f.id::text) AS asset_name
+        FROM compliance.equipment_credentials ec
         JOIN fleet.fleet f
-          ON f.id = i.fleet_id
-         AND f.organization_id = i.organization_id
+          ON f.id = ec.fleet_id
+         AND f.organization_id = ec.organization_id
          AND f.is_deleted = false
-        WHERE i.organization_id = :org_id
-          AND i.is_deleted = false
-          AND i.inspection_type = 'compliance'
-        ORDER BY i.inspected_at DESC
+        WHERE ec.organization_id = :org_id AND ec.is_deleted = false
+        ORDER BY ec.expires_on ASC NULLS LAST
         LIMIT 500
     """),
         {"org_id": user["org_id"]},
     )
     data = [dict(row._mapping) for row in rows]
     return ok(data, "Equipment credentials listed.")
+
+
+@router.post("/equipment-credentials", status_code=status.HTTP_201_CREATED)
+async def create_equipment_credential(
+    payload: EquipmentCredentialCreate,
+    user: dict = Depends(require_permission("compliance_items.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    exists = (
+        await db.execute(
+            text("""
+        SELECT 1 FROM fleet.fleet
+        WHERE id=:fleet_id AND organization_id=:org_id AND is_deleted=false
+    """),
+            {"fleet_id": payload.fleet_id, "org_id": user["org_id"]},
+        )
+    ).scalar()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Fleet asset not found.")
+    try:
+        credential_id = (
+            await db.execute(
+                text("""
+            INSERT INTO compliance.equipment_credentials (
+                organization_id, fleet_id, credential_name, issuing_authority,
+                certificate_number, issued_on, expires_on, verification_status, created_by
+            ) VALUES (
+                :org_id, :fleet_id, :credential_name, :issuing_authority,
+                :certificate_number, CAST(:issued_on AS date), CAST(:expires_on AS date),
+                :verification_status, :user_id
+            )
+            RETURNING id
+        """),
+                {
+                    **payload.model_dump(),
+                    "org_id": user["org_id"],
+                    "user_id": user["user_id"],
+                },
+            )
+        ).scalar()
+        await db.commit()
+        return ok({"id": str(credential_id)}, "Equipment credential recorded.")
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="This credential already exists for this asset.",
+        ) from exc
 
 
 @router.get("/corrective-actions")
@@ -319,6 +372,17 @@ async def create_corrective_action(
         aggregate_type="corrective_action",
         aggregate_id=action_id,
         payload={**payload.model_dump(), "corrective_action_id": str(action_id)},
+    )
+    await emit_role_notification(
+        db,
+        org_id=user["org_id"],
+        role_names=["Compliance Officer"],
+        title="New corrective action",
+        message=f"{payload.finding_trigger} — assigned to {payload.responsible_person}, due {payload.due_date}.",
+        notification_type="compliance_corrective_action",
+        priority="urgent" if payload.priority == "critical" else "normal",
+        action_url="/dashboard/compliance",
+        metadata={"corrective_action_id": str(action_id)},
     )
     await db.commit()
     return ok({"id": str(action_id)}, "Corrective action generated.")
@@ -703,6 +767,16 @@ async def get_compliance_score(
             FROM hr.employee_certifications
             WHERE organization_id = :org_id AND is_deleted = false
         ),
+        equipment_credentials AS (
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (
+                    WHERE expires_on < CURRENT_DATE
+                       OR verification_status NOT IN ('verified')
+                ) AS failed
+            FROM compliance.equipment_credentials
+            WHERE organization_id = :org_id AND is_deleted = false
+        ),
         deployment_gates AS (
             SELECT
                 COUNT(*) AS total,
@@ -719,9 +793,9 @@ async def get_compliance_score(
         ),
         totals AS (
             SELECT
-                (o.total + e.total + g.total + c.total) AS total,
-                (o.failed + e.failed + g.failed + c.failed) AS failed
-            FROM obligations o, employee_credentials e, deployment_gates g, corrective_actions c
+                (o.total + e.total + eq.total + g.total + c.total) AS total,
+                (o.failed + e.failed + eq.failed + g.failed + c.failed) AS failed
+            FROM obligations o, employee_credentials e, equipment_credentials eq, deployment_gates g, corrective_actions c
         )
         SELECT
             CASE

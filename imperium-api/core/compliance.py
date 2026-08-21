@@ -11,6 +11,8 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.shared.events import emit_role_notification
+
 
 async def emit_domain_event(
     db: AsyncSession,
@@ -250,6 +252,18 @@ async def validate_employee_deployment(
     )
 
     if missing:
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=["Compliance Officer", "HSE / Safety Officer"],
+            title="Deployment blocked by compliance gate",
+            message=f"{employee['employee_name']} was blocked from {gate_type.replace('_', ' ')}: "
+            + ", ".join(m.get("certification_name", m.get("requirement", "requirement")) for m in missing),
+            notification_type="compliance_deployment_blocked",
+            priority="urgent",
+            action_url="/dashboard/compliance",
+            metadata={"gate_check_id": str(check_id), "employee_id": str(employee_id)},
+        )
         await db.commit()
         raise HTTPException(
             status_code=409,

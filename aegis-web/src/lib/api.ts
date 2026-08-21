@@ -351,6 +351,30 @@ function extractApiErrorMessage(parsed: unknown): string | undefined {
     return payload.detail;
   }
 
+  // Compliance deployment-gate blocks (core.compliance.validate_employee_deployment)
+  // return a structured 409 detail object rather than a plain string, so the
+  // missing licence/training/paperwork requirements would otherwise be
+  // silently dropped in favour of a generic "could not be loaded" message.
+  if (payload.detail && typeof payload.detail === "object") {
+    const detail = payload.detail as {
+      message?: unknown;
+      missing_requirements?: unknown;
+    };
+    if (typeof detail.message === "string") {
+      const missing = Array.isArray(detail.missing_requirements) ? detail.missing_requirements : [];
+      const reasons = missing
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const entry = item as { certification_name?: unknown; requirement?: unknown; reason?: unknown };
+          const label = typeof entry.certification_name === "string" ? entry.certification_name : (typeof entry.requirement === "string" ? entry.requirement : null);
+          const reason = typeof entry.reason === "string" ? entry.reason : null;
+          return label ? (reason ? `${label} (${reason})` : label) : reason;
+        })
+        .filter((value): value is string => Boolean(value));
+      return reasons.length ? `${detail.message} Missing: ${reasons.join(", ")}.` : detail.message;
+    }
+  }
+
   if (typeof payload.message === "string") {
     return payload.message;
   }
@@ -1973,8 +1997,8 @@ export async function deleteInternalProject(projectId: string): Promise<ApiRespo
   });
 }
 
-/** Saves whichever production-project intake questions have been answered so far (category, investment, funding). Callable repeatedly before commit. */
-export async function updateProjectIntake(projectId: string, payload: { project_category?: string; investment_required?: number; funding_internal?: number; funding_external?: number }): Promise<ApiResponse<any>> {
+/** Saves whichever production-project intake questions have been answered so far (category, investment, funding, setup duration). Callable repeatedly before commit. */
+export async function updateProjectIntake(projectId: string, payload: { project_category?: string; investment_required?: number; funding_internal?: number; funding_external?: number; setup_duration_weeks?: number }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/intake`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
@@ -1986,6 +2010,66 @@ export async function updateProjectIntake(projectId: string, payload: { project_
 export async function commitProjectIntake(projectId: string): Promise<ApiResponse<{ tasks_created: number }>> {
   return fetchApi<ApiResponse<{ tasks_created: number }>>(`/api/v1/projects/${projectId}/commit-intake`, {
     method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Real schedule milestones, changes, and risks for a project - no fabricated data. */
+export async function getProjectLifecycle(projectId: string): Promise<ApiResponse<{ project: Record<string, unknown>; milestones: Record<string, unknown>[]; changes: Record<string, unknown>[]; risks: Record<string, unknown>[] }>> {
+  return fetchApi<ApiResponse<{ project: Record<string, unknown>; milestones: Record<string, unknown>[]; changes: Record<string, unknown>[]; risks: Record<string, unknown>[] }>>(`/api/v1/projects/${projectId}/lifecycle`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Adds a real schedule milestone to a project (real owner_id, not a placeholder name). */
+export async function addProjectMilestone(projectId: string, payload: { name: string; status?: string; baseline_date?: string; forecast_date?: string; actual_date?: string; weight?: number; owner_id?: string; notes?: string }): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Progresses an existing milestone (status, actual date, owner, etc). */
+export async function updateProjectMilestone(projectId: string, milestoneId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones/${milestoneId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Lists setup-phase (and ongoing) expenses recorded against a company-initiated project. */
+export async function getProductionExpenses(projectId: string): Promise<ApiResponse<{ items: Record<string, unknown>[]; total: number }>> {
+  return fetchApi<ApiResponse<{ items: Record<string, unknown>[]; total: number }>>(`/api/v1/projects/${projectId}/production-expenses`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Records a setup-phase expense against a company-initiated project - posts into real Finance cost/cashbook ledgers. */
+export async function addProductionExpense(projectId: string, payload: { cost_category: string; description: string; amount: number; transaction_date?: string; paid?: boolean }): Promise<ApiResponse<{ id: string; cashbook_transaction_id: string | null }>> {
+  return fetchApi<ApiResponse<{ id: string; cashbook_transaction_id: string | null }>>(`/api/v1/projects/${projectId}/production-expenses`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Lists production revenue recorded against an active company-initiated project. */
+export async function getProductionRevenue(projectId: string): Promise<ApiResponse<{ items: Record<string, unknown>[]; total: number }>> {
+  return fetchApi<ApiResponse<{ items: Record<string, unknown>[]; total: number }>>(`/api/v1/projects/${projectId}/production-revenue`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Records revenue from what an active company-initiated project sells - posts straight into the cashbook (no client/contract behind it). */
+export async function addProductionRevenue(projectId: string, payload: { amount: number; description?: string; transaction_date?: string }): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/production-revenue`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
     allowFallback: false,
   });
 }
@@ -2515,6 +2599,22 @@ export async function getHseIncidents(): Promise<ApiResponse<any[]>> {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/hse-incidents/', { cache: 'no-store' });
 }
 
+export async function createHseIncident(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/hse-incidents/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateHseIncident(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/hse-incidents/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 /** Daily site report vertical slice. These endpoints are server-authorized and have no mock fallback. */
 export async function getSiteOperationSites(projectId?: string): Promise<ApiResponse<any[]>> {
   const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
@@ -2798,6 +2898,70 @@ export async function recordAssetDefect(assetId: string, payload: Record<string,
     allowFallback: false,
   });
 }
+
+/** Register a new asset in the fleet register (routers/fleet.py AssetPayload). Fleet
+ * and Equipment are two dashboard views over the same fleet.fleet table, distinguished
+ * by vehicle_type/asset_code, not separate registers - so this single endpoint backs
+ * both createFleetAsset and createEquipmentAsset below. */
+export async function createFleetAsset(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function updateFleetAsset(assetId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/fleet/${assetId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export const createEquipmentAsset = createFleetAsset;
+export const updateEquipmentAsset = updateFleetAsset;
+
+/** Deploy an asset: assign a project, operator/driver, dispatch window, and route.
+ * The backend runs the operator through validate_employee_deployment (license,
+ * training, medical, employment-status checks) when status is dispatched/active and
+ * returns 409 with the missing requirements if the operator isn't cleared - see
+ * extractApiErrorMessage above for how that surfaces to the UI. */
+export async function createFleetAssignment(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/assignments', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export const createEquipmentAssignment = createFleetAssignment;
+
+export async function getFleetAssignments(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/fleet/assignments', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createFleetWorkOrder(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/work-orders', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function decideFleetWorkOrder(workOrderId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/fleet/work-orders/${workOrderId}/decision`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export const createEquipmentWorkOrder = createFleetWorkOrder;
+export const decideEquipmentWorkOrder = decideFleetWorkOrder;
 
 // --- SYSTEM HEALTH PING --- //
 export async function pingEndpoint(route: string): Promise<boolean> {
@@ -3422,6 +3586,14 @@ export async function createFinanceCashAccount(payload: Record<string, unknown>)
   });
 }
 
+/** Soft-deletes a cash account - drops out of listings/auto-pick, existing transaction history is untouched. */
+export async function deleteFinanceCashAccount(cashAccountId: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/financial-performance/cash-accounts/${cashAccountId}`, {
+    method: "DELETE",
+    allowFallback: false,
+  });
+}
+
 export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.cash_account_id) search.set("cash_account_id", params.cash_account_id);
@@ -3600,6 +3772,14 @@ export async function getComplianceEquipmentCredentials(params?: { status?: stri
   if (params?.status) search.set('status', params.status);
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/compliance-items/equipment-credentials${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createComplianceEquipmentCredential(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/compliance-items/equipment-credentials', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
 }
 
 export async function getComplianceCorrectiveActions(params?: { status?: string }): Promise<ApiResponse<any[]>> {

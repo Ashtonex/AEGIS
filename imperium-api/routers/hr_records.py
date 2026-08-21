@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from core.database import get_db
 from core.security import require_permission, get_current_user
 from app.shared.pagination import ok
+from app.shared.events import emit_notification, emit_role_notification
 
 router = APIRouter()
 
@@ -68,13 +69,15 @@ async def create_leave_request(
     Create a new leave request in hr.leave_requests.
     """
     # Verify employee
-    emp = await db.execute(
-        text(
-            "SELECT 1 FROM hr.employees WHERE id = :id AND organization_id = :org_id AND is_deleted = false"
-        ),
-        {"id": payload.employee_id, "org_id": user["org_id"]},
-    )
-    if not emp.first():
+    emp = (
+        await db.execute(
+            text(
+                "SELECT employee_name FROM hr.employees WHERE id = :id AND organization_id = :org_id AND is_deleted = false"
+            ),
+            {"id": payload.employee_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if not emp:
         raise HTTPException(status_code=404, detail="Employee not found.")
 
     try:
@@ -101,6 +104,16 @@ async def create_leave_request(
                 },
             )
         ).scalar()
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=["HR Manager", "HR Officer"],
+            title="New leave request",
+            message=f"{emp.employee_name} requested {payload.days_requested} day(s) of {payload.leave_type} leave ({payload.start_date} to {payload.end_date}).",
+            notification_type="hr_leave_request",
+            action_url="/dashboard/hr",
+            metadata={"leave_id": str(leave_id), "employee_id": str(payload.employee_id)},
+        )
         await db.commit()
         return ok({"id": str(leave_id)}, "Leave request submitted.")
     except Exception as e:
@@ -118,27 +131,43 @@ async def decide_leave_request(
     """
     Approve or reject a leave request.
     """
-    result = await db.execute(
-        text("""
-        UPDATE hr.leave_requests
+    result = (
+        await db.execute(
+            text("""
+        UPDATE hr.leave_requests lr
         SET status = :decision,
             approved_by = CASE WHEN :decision = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
             approved_at = CASE WHEN :decision = 'approved' THEN NOW() ELSE approved_at END,
             rejection_reason = CASE WHEN :decision = 'rejected' THEN :reason ELSE NULL END,
             updated_at = NOW()
-        WHERE id = :id AND organization_id = :org_id AND is_deleted = false
-        RETURNING id
+        FROM hr.employees e
+        WHERE lr.id = :id AND lr.organization_id = :org_id AND lr.is_deleted = false
+          AND e.id = lr.employee_id
+        RETURNING lr.id, e.employee_name, e.linked_user_id
     """),
-        {
-            "id": leave_id,
-            "decision": payload.decision,
-            "reason": payload.reason,
-            "user_id": user["user_id"],
-            "org_id": user["org_id"],
-        },
-    )
-    if not result.first():
+            {
+                "id": leave_id,
+                "decision": payload.decision,
+                "reason": payload.reason,
+                "user_id": user["user_id"],
+                "org_id": user["org_id"],
+            },
+        )
+    ).first()
+    if not result:
         await db.rollback()
         raise HTTPException(status_code=404, detail="Leave request not found.")
+    if result.linked_user_id:
+        await emit_notification(
+            db,
+            org_id=user["org_id"],
+            user_id=str(result.linked_user_id),
+            title=f"Leave request {payload.decision}",
+            message=f"Your leave request has been {payload.decision}."
+            + (f" Reason: {payload.reason}" if payload.decision == "rejected" and payload.reason else ""),
+            notification_type="hr_leave_decision",
+            action_url="/dashboard/hr",
+            metadata={"leave_id": str(leave_id)},
+        )
     await db.commit()
     return ok({"id": str(leave_id)}, f"Leave request {payload.decision}.")

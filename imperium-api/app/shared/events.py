@@ -15,6 +15,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.pwa import dispatch_user_pushes
+from core.config import settings
+from core.email import send_email
 
 
 async def emit_event(
@@ -137,6 +139,38 @@ async def emit_notification(
                 "metadata": metadata or {},
             },
         )
+        if priority == "urgent":
+            await _email_escalate(db, user_id=user_id, title=title, message=message, action_url=action_url)
+
+
+async def _email_escalate(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    title: str,
+    message: str,
+    action_url: Optional[str],
+) -> None:
+    """Best-effort email for urgent notifications. Never raises - a failed
+    or unconfigured email send must not block the in-app notification that
+    already landed."""
+    recipient = (
+        await db.execute(
+            text("SELECT email, full_name FROM core.users WHERE id = :user_id"),
+            {"user_id": user_id},
+        )
+    ).first()
+    if not recipient or not recipient.email:
+        return
+    origins = settings.cors_origins
+    full_url = f"{origins[0]}{action_url}" if action_url and origins else None
+    link_html = f'<p><a href="{full_url}">View details</a></p>' if full_url else ""
+    await send_email(
+        to=recipient.email,
+        subject=f"[AEGIS] {title}",
+        html=f"<p>Hi {recipient.full_name or ''},</p><p>{message}</p>{link_html}",
+        text=message,
+    )
 
 
 async def emit_role_notification(

@@ -1,21 +1,45 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Literal, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
-from app.shared.sql import (
-    insert_returning_id_sql,
-    safe_payload_columns,
-    update_returning_id_sql,
-)
+from app.shared.pagination import ok
+from app.shared.events import emit_notification, emit_role_notification
 
 router = APIRouter()
 
 """
 Module: hse_incidents
-Description: Auto-generated CRUD endpoints for projects.hse_incidents.
+Description: HSE incident register with a status lifecycle (open ->
+investigating -> resolved) so unresolved incidents can be tracked and
+escalated.
 """
+
+
+class Payload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class HseIncidentCreate(Payload):
+    incident_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    severity: Literal["low", "medium", "high", "critical"]
+    title: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+    location: Optional[str] = Field(default=None, max_length=255)
+    project_id: Optional[UUID] = None
+
+
+class HseIncidentUpdate(Payload):
+    status: Optional[Literal["open", "investigating", "resolved"]] = None
+    severity: Optional[Literal["low", "medium", "high", "critical"]] = None
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    location: Optional[str] = Field(default=None, max_length=255)
 
 
 @router.get("/")
@@ -24,7 +48,6 @@ async def list_items(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("hse_incidents.read")),
 ):
-    # Fetch active records scoped to the user's organization
     query = text("""
         SELECT *
         FROM projects.hse_incidents
@@ -34,47 +57,53 @@ async def list_items(
     """)
     result = await db.execute(query, {"org_id": user["org_id"]})
     items = [dict(row._mapping) for row in result]
-
-    return {
-        "success": True,
-        "data": items,
-        "message": "hse_incidents listed.",
-        "meta": {"total": len(items)},
-    }
+    return ok(items, "hse_incidents listed.")
 
 
 @router.post("/")
 async def create_item(
-    request: Request,
+    payload: HseIncidentCreate,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("hse_incidents.create")),
 ):
-    payload = await request.json()
-
-    # Extract keys and values from JSON payload dynamically
-    # Exclude reserved keys to prevent override
-    safe_keys = safe_payload_columns(payload.keys())
-
-    if not safe_keys:
-        raise HTTPException(status_code=400, detail="Empty or invalid payload.")
-
-    params = {k: payload[k] for k in safe_keys}
-    params["org_id"] = user["org_id"]
-    params["user_id"] = user["sub"]
-
-    query = insert_returning_id_sql("projects.hse_incidents", safe_keys, safe_keys)
-
     try:
-        result = await db.execute(query, params)
+        new_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO projects.hse_incidents (
+                        organization_id, created_by, incident_date, severity,
+                        title, description, location, project_id, reported_by, status
+                    ) VALUES (
+                        :org_id, :user_id, CAST(:incident_date AS date), :severity,
+                        :title, :description, :location, :project_id, :user_id, 'open'
+                    )
+                    RETURNING id
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "user_id": user["user_id"],
+                    **payload.model_dump(),
+                },
+            )
+        ).scalar()
+
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=["HSE / Safety Officer", "Compliance Officer"],
+            title=f"HSE incident reported: {payload.title}",
+            message=f"{payload.severity.title()} severity incident logged"
+            + (f" at {payload.location}" if payload.location else "")
+            + f" on {payload.incident_date}.",
+            notification_type="hse_incident_reported",
+            priority="urgent" if payload.severity in ("critical", "high") else "normal",
+            action_url="/dashboard/compliance/incidents",
+            metadata={"incident_id": str(new_id)},
+        )
+
         await db.commit()
-        new_id = str(result.scalar())
-        return {
-            "success": True,
-            "data": {"id": new_id},
-            "message": "hse_incidents created.",
-            "meta": {},
-        }
+        return ok({"id": str(new_id)}, "hse_incidents created.")
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
@@ -94,59 +123,63 @@ async def get_item(
     """)
     result = await db.execute(query, {"item_id": item_id, "org_id": user["org_id"]})
     item = result.first()
-
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-
-    return {
-        "success": True,
-        "data": dict(item._mapping),
-        "message": "hse_incidents retrieved.",
-        "meta": {},
-    }
+    return ok(dict(item._mapping), "hse_incidents retrieved.")
 
 
 @router.put("/{item_id}")
 async def update_item(
     item_id: str,
-    request: Request,
+    payload: HseIncidentUpdate,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("hse_incidents.update")),
 ):
-    payload = await request.json()
-    safe_keys = safe_payload_columns(payload.keys())
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return ok({"id": item_id}, "No fields to update.")
 
-    if not safe_keys:
-        return {
-            "success": True,
-            "data": {"id": item_id},
-            "message": "No fields to update.",
-        }
+    resolving = values.get("status") == "resolved"
+    set_clauses = [f"{key} = :{key}" for key in values]
+    if resolving:
+        set_clauses += ["resolved_at = NOW()", "resolved_by = :actor_id"]
+    set_clauses.append("updated_at = NOW()")
 
-    params = {k: payload[k] for k in safe_keys}
-    params["item_id"] = item_id
-    params["org_id"] = user["org_id"]
-
-    query = update_returning_id_sql("projects.hse_incidents", safe_keys, safe_keys)
-
-    try:
-        result = await db.execute(query, params)
-        if not result.first():
-            raise HTTPException(status_code=404, detail="Item not found")
-
-        await db.commit()
-        return {
-            "success": True,
-            "data": {"id": item_id},
-            "message": "hse_incidents updated.",
-            "meta": {},
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
+    result = (
+        await db.execute(
+            text(f"""
+                UPDATE projects.hse_incidents
+                SET {", ".join(set_clauses)}
+                WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+                RETURNING id, title, reported_by
+            """),
+            {
+                **values,
+                "item_id": item_id,
+                "org_id": user["org_id"],
+                "actor_id": user["user_id"],
+            },
+        )
+    ).first()
+    if not result:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    if resolving and result.reported_by:
+        await emit_notification(
+            db,
+            org_id=user["org_id"],
+            user_id=str(result.reported_by),
+            title="HSE incident resolved",
+            message=f"The incident you reported ({result.title}) has been marked resolved.",
+            notification_type="hse_incident_resolved",
+            action_url="/dashboard/compliance/incidents",
+            metadata={"incident_id": item_id},
+        )
+
+    await db.commit()
+    return ok({"id": item_id}, "hse_incidents updated.")
 
 
 @router.delete("/{item_id}")
@@ -162,15 +195,8 @@ async def delete_item(
         WHERE id = :item_id AND organization_id = :org_id
         RETURNING id
     """)
-
     result = await db.execute(query, {"item_id": item_id, "org_id": user["org_id"]})
     if not result.first():
         raise HTTPException(status_code=404, detail="Item not found")
-
     await db.commit()
-    return {
-        "success": True,
-        "data": None,
-        "message": "hse_incidents deleted (soft delete).",
-        "meta": {},
-    }
+    return ok(None, "hse_incidents deleted (soft delete).")

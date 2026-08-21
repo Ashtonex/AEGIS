@@ -18,7 +18,21 @@ system cron, calling the backend container directly:
 0 8 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_stale_quote_check.py >> /var/log/aegis-cron.log 2>&1
 0 6 * * 1   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_weekly_digest.py >> /var/log/aegis-cron.log 2>&1
 */15 * * * * root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_activity_reminders.py >> /var/log/aegis-cron.log 2>&1
+0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hr_workforce_alerts.py >> /var/log/aegis-cron.log 2>&1
+0 7 * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_compliance_alerts.py >> /var/log/aegis-cron.log 2>&1
+0 * * * *   root  cd /opt/aegis/deploy/digitalocean && docker compose exec -T imperium-api python3 scripts/run_hse_escalation.py >> /var/log/aegis-cron.log 2>&1
 ```
+
+`run_hr_workforce_alerts.py`, `run_compliance_alerts.py`, and `run_hse_escalation.py`
+follow the same direct-`emit_notification`/`emit_role_notification` pattern
+as `run_activity_reminders.py` (see below), for the same reason: an
+expiring certification, an overdue corrective action, or an unresolved
+safety incident needs to reach the relevant role unconditionally, not
+depend on an org having configured a matching automation rule. Each script
+dedups against `core.notifications.metadata->>'source_id'` so a daily (or
+hourly, for HSE) cron run doesn't re-notify about the same item every time
+it fires - see each script's `DEDUP_HOURS`/`_already_alerted` for the
+window.
 
 (06:00 UTC Monday = 08:00 CAT, the org's local timezone.)
 
