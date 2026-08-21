@@ -34,6 +34,7 @@ import {
   adjustStock,
   createInternalProject,
   createSiteOperationSite,
+  createSupplierRecord,
   getInventoryCatalogue,
   getInventoryStockLevels,
   getInventoryStores,
@@ -630,6 +631,9 @@ function InventoryWorkspace() {
           suppliers={suppliers}
           saving={saving}
           onClose={() => setShowReceive(false)}
+          onItemCreated={(item) => setCatalogue((prev) => [item, ...prev])}
+          onSupplierCreated={(supplier) => setSuppliers((prev) => [supplier, ...prev])}
+          onFlash={flash}
           onSubmit={async (payload) => {
             setSaving(true);
             try {
@@ -844,20 +848,35 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
   );
 }
 
-function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onSubmit }: {
+function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onItemCreated, onSupplierCreated, onFlash, onSubmit }: {
   catalogue: Rec[]; stores: Rec[]; suppliers: Rec[]; saving: boolean;
-  onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
+  onClose: () => void; onItemCreated: (item: Rec) => void; onSupplierCreated: (supplier: Rec) => void;
+  onFlash: (msg: string) => void;
+  onSubmit: (p: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({ item_id: "", store_id: "", supplier_id: "", quantity: "", unit_cost: "", reference: "", notes: "" });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const [showAddItem, setShowAddItem] = useState(false);
+  const [showAddSupplier, setShowAddSupplier] = useState(false);
+  const [creatingItem, setCreatingItem] = useState(false);
+  const [creatingSupplier, setCreatingSupplier] = useState(false);
   return (
     <ModalShell title="Receive Stock" onClose={onClose}>
       <div className="grid gap-3">
         <FieldGroup label="Item">
-          <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field">
-            <option value="">Select item</option>
-            {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} \u2014 {tx(i.item_name ?? i.name)}</option>)}
-          </select>
+          <div className="flex gap-2">
+            <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field flex-1">
+              <option value="">Select item</option>
+              {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} \u2014 {tx(i.item_name ?? i.name)}</option>)}
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowAddItem(true)}
+              className="inline-flex h-10 shrink-0 items-center gap-1 border border-ink-mid px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
+            >
+              <Plus className="h-3.5 w-3.5" /> New Item
+            </button>
+          </div>
         </FieldGroup>
         <FieldGroup label="Store">
           <select value={form.store_id} onChange={(e) => set("store_id", e.target.value)} className="field">
@@ -866,10 +885,19 @@ function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onSu
           </select>
         </FieldGroup>
         <FieldGroup label="Supplier (optional)">
-          <select value={form.supplier_id} onChange={(e) => set("supplier_id", e.target.value)} className="field">
-            <option value="">Not linked to a supplier</option>
-            {suppliers.map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
-          </select>
+          <div className="flex gap-2">
+            <select value={form.supplier_id} onChange={(e) => set("supplier_id", e.target.value)} className="field flex-1">
+              <option value="">Not linked to a supplier</option>
+              {suppliers.map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowAddSupplier(true)}
+              className="inline-flex h-10 shrink-0 items-center gap-1 border border-ink-mid px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
+            >
+              <Plus className="h-3.5 w-3.5" /> New Supplier
+            </button>
+          </div>
           <p className="mt-1 text-[11px] text-slate-light">Tagging who this came from builds up that supplier&apos;s product catalog over time.</p>
         </FieldGroup>
         <div className="grid grid-cols-2 gap-3">
@@ -887,6 +915,56 @@ function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onSu
           <input value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Optional notes" className="field" />
         </FieldGroup>
       </div>
+      {showAddItem && (
+        <AddItemModal
+          saving={creatingItem}
+          onClose={() => setShowAddItem(false)}
+          onSubmit={async (payload) => {
+            setCreatingItem(true);
+            try {
+              const res = await addInventoryItem(payload);
+              const id = (res.data as Rec | undefined)?.id;
+              if (!id) throw new Error("Item was not created.");
+              const created = { ...payload, id } as Rec;
+              onItemCreated(created);
+              set("item_id", String(id));
+              setShowAddItem(false);
+            } catch (e) {
+              onFlash(normalizeActionError(e, "Failed to add item."));
+            } finally {
+              setCreatingItem(false);
+            }
+          }}
+        />
+      )}
+      {showAddSupplier && (
+        <QuickAddSupplierModal
+          saving={creatingSupplier}
+          onClose={() => setShowAddSupplier(false)}
+          onSubmit={async (supplierName) => {
+            setCreatingSupplier(true);
+            try {
+              const res = await createSupplierRecord({
+                supplier_name: supplierName,
+                currency: "USD",
+                status: "pending_approval",
+                compliance_status: "pending",
+                issue_portal_login: false,
+              });
+              const id = (res.data as Rec | undefined)?.id;
+              if (!id) throw new Error("Supplier was not created.");
+              const created = { id, supplier_name: supplierName } as Rec;
+              onSupplierCreated(created);
+              set("supplier_id", String(id));
+              setShowAddSupplier(false);
+            } catch (e) {
+              onFlash(normalizeActionError(e, "Failed to add supplier."));
+            } finally {
+              setCreatingSupplier(false);
+            }
+          }}
+        />
+      )}
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
@@ -896,6 +974,32 @@ function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onSu
         >
           {saving && <Loader2 className="h-4 w-4 animate-spin" />}
           <PackagePlus className="h-4 w-4" /> Receive Stock
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Minimal supplier creation for use inline from Receive Stock, when the
+// supplier doesn't exist yet - full registration (tax numbers, portal
+// login, etc.) still happens on the Procurement > Suppliers page.
+function QuickAddSupplierModal({ saving, onClose, onSubmit }: { saving: boolean; onClose: () => void; onSubmit: (supplierName: string) => void }) {
+  const [name, setName] = useState("");
+  return (
+    <ModalShell title="New Supplier" onClose={onClose}>
+      <FieldGroup label="Supplier Name">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Corrugated Roofing Co." className="field" />
+      </FieldGroup>
+      <p className="mt-2 text-[11px] text-slate-light">Registers a bare supplier record so you can tag this receipt. Add tax/PRAZ numbers and a portal login later from Procurement &gt; Suppliers.</p>
+      <div className="mt-6 flex justify-end gap-3">
+        <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button
+          onClick={() => onSubmit(name.trim())}
+          disabled={saving || !name.trim()}
+          className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
+        >
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+          <Plus className="h-4 w-4" /> Add Supplier
         </button>
       </div>
     </ModalShell>
