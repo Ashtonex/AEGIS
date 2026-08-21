@@ -128,7 +128,15 @@ export function CalendarDropdown() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-9 z-50 w-[min(520px,calc(100vw-2rem))] border border-ink-mid bg-ink-light shadow-2xl">
+        // Below md, this renders as a full-height bottom sheet over a
+        // backdrop instead of the absolute-anchored dropdown - anchoring a
+        // 520px panel to a small header icon doesn't work once the icon
+        // sits near the edge of a phone-width screen.
+        <div className="fixed inset-0 z-50 bg-black/60 md:absolute md:inset-auto md:right-0 md:top-9 md:bg-transparent" onClick={() => setOpen(false)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto border-t border-ink-mid bg-ink-light shadow-2xl md:static md:inset-auto md:w-[min(520px,calc(100vw-2rem))] md:max-h-none md:overflow-visible md:border md:border-ink-mid"
+          >
           <div className="flex items-center justify-between border-b border-ink-mid p-4">
             <div>
               <p className="font-mono text-[10px] uppercase tracking-widest text-signal">CRM schedule</p>
@@ -255,6 +263,7 @@ export function CalendarDropdown() {
           >
             Open full CRM calendar
           </Link>
+          </div>
         </div>
       )}
     </div>

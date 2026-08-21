@@ -82,6 +82,7 @@ export default function QuotationBuilder() {
   const fromDrawingId = searchParams ? searchParams.get("from_drawing") : null;
   const paramSourceType = searchParams ? searchParams.get("source_type") : null;
   const paramSourceId = searchParams ? searchParams.get("source_id") : null;
+  const paramTaskId = searchParams ? searchParams.get("task_id") : null;
 
   // Project selector list
   const [projectsList, setProjectsList] = useState<any[]>([]);
@@ -670,6 +671,12 @@ export default function QuotationBuilder() {
       payload.opportunity_id = sourceId;
     } else if (sourceType === "lead" && sourceId) {
       payload.lead_id = sourceId;
+    }
+
+    // Reached via a task's "Build Quotation" action - link this quotation
+    // back to that task so it stops looking abandoned once pricing exists.
+    if (paramTaskId) {
+      payload.task_id = paramTaskId;
     }
 
     try {

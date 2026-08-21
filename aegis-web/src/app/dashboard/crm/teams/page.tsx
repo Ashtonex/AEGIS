@@ -47,6 +47,7 @@ export default function TeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [workload, setWorkload] = useState<Record<string, WorkloadEntry>>({});
+  const [teamWorkload, setTeamWorkload] = useState<Record<string, WorkloadEntry>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newTeamName, setNewTeamName] = useState("");
@@ -63,14 +64,31 @@ export default function TeamsPage() {
       if (tasksRes.success && Array.isArray(tasksRes.data)) {
         const today = new Date(new Date().toDateString());
         const byUser: Record<string, WorkloadEntry> = {};
+        const byTeam: Record<string, WorkloadEntry> = {};
         for (const task of tasksRes.data) {
-          if (!task.assigned_to_user_id || task.status === "completed" || task.status === "cancelled") continue;
-          const entry = byUser[task.assigned_to_user_id] ?? { open: 0, overdue: 0 };
-          entry.open += 1;
-          if (task.due_date && new Date(task.due_date) < today) entry.overdue += 1;
-          byUser[task.assigned_to_user_id] = entry;
+          if (task.status === "completed" || task.status === "cancelled") continue;
+          const overdue = !!task.due_date && new Date(task.due_date) < today;
+          if (task.assigned_to_user_id) {
+            const entry = byUser[task.assigned_to_user_id] ?? { open: 0, overdue: 0 };
+            entry.open += 1;
+            if (overdue) entry.overdue += 1;
+            byUser[task.assigned_to_user_id] = entry;
+          }
+          // A task keeps its assigned_to_team_id even after being
+          // distributed to a person on that team (see crm_tasks.py's
+          // update_task clear_team logic - only an explicit reassignment OUT
+          // clears it), so this only double-counts a task that's still
+          // sitting undistributed at the team level, which is exactly what
+          // a team card should surface.
+          if (task.assigned_to_team_id && !task.assigned_to_user_id) {
+            const entry = byTeam[task.assigned_to_team_id] ?? { open: 0, overdue: 0 };
+            entry.open += 1;
+            if (overdue) entry.overdue += 1;
+            byTeam[task.assigned_to_team_id] = entry;
+          }
         }
         setWorkload(byUser);
+        setTeamWorkload(byTeam);
       }
     } catch (e) {
       setError(normalizeError(e, "Teams did not load."));
@@ -150,20 +168,31 @@ export default function TeamsPage() {
           <p className="py-8 text-center text-sm text-slate-light">No teams yet. Create one above.</p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
-            {teams.map((team) => (
-              <div key={team.id} className="flex items-center justify-between border border-ink-mid bg-ink-light p-4">
-                <button type="button" onClick={() => setManagingTeam(team)} className="flex min-w-0 items-center gap-2.5 text-left">
-                  <Users className="h-4 w-4 shrink-0 text-signal" />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-paper">{team.name}</p>
-                    <p className="text-[11px] text-slate-light">{team.member_count} member{team.member_count === 1 ? "" : "s"}</p>
-                  </div>
-                </button>
-                <button type="button" onClick={() => void handleDelete(team)} className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            ))}
+            {teams.map((team) => {
+              const w = teamWorkload[team.id];
+              return (
+                <div key={team.id} className="flex items-center justify-between border border-ink-mid bg-ink-light p-4">
+                  <button type="button" onClick={() => setManagingTeam(team)} className="flex min-w-0 items-center gap-2.5 text-left">
+                    <Users className="h-4 w-4 shrink-0 text-signal" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-paper">{team.name}</p>
+                      <p className="text-[11px] text-slate-light">{team.member_count} member{team.member_count === 1 ? "" : "s"}</p>
+                    </div>
+                    {w && w.open > 0 && (
+                      <span
+                        title={`${w.open} task${w.open === 1 ? "" : "s"} still waiting to be distributed to a person${w.overdue ? `, ${w.overdue} overdue` : ""}`}
+                        className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${w.overdue > 0 ? "bg-red-500/20 text-red-300" : "bg-ink-mid text-slate-light"}`}
+                      >
+                        {w.overdue > 0 ? `${w.overdue} late` : `${w.open} to dispatch`}
+                      </span>
+                    )}
+                  </button>
+                  <button type="button" onClick={() => void handleDelete(team)} className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -199,6 +199,94 @@ async def list_tasks(
     return {"success": True, "data": items, "message": "Tasks listed.", "meta": {"total": len(items)}}
 
 
+@router.get("/progress-summary")
+async def get_progress_summary(
+    user: dict = Depends(require_permission("crm_tasks.read_all")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Org-wide task rollup for the Team Progress panel - gated on
+    crm_tasks.read_all itself (the same admin/lead tier already used to scope
+    list_tasks above) rather than the caller's own assignments, since this is
+    specifically the "who is doing what, how far along" view for
+    SUPERADMIN/ADMIN/Executive, not a personal task list."""
+    org_id = user["org_id"]
+
+    per_user = (
+        await db.execute(
+            text("""
+                SELECT u.id, u.full_name,
+                       COUNT(*) FILTER (WHERE t.status NOT IN ('completed', 'cancelled')) AS open,
+                       COUNT(*) FILTER (WHERE t.status = 'completed') AS completed,
+                       COUNT(*) FILTER (
+                           WHERE t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE
+                             AND t.status NOT IN ('completed', 'cancelled')
+                       ) AS overdue,
+                       COUNT(*) AS total
+                FROM crm.tasks t
+                JOIN core.users u ON u.id = t.assigned_to_user_id
+                WHERE t.organization_id = :org_id AND t.is_deleted = false
+                GROUP BY u.id, u.full_name
+                ORDER BY open DESC, total DESC
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+
+    per_team = (
+        await db.execute(
+            text("""
+                SELECT tm.id, tm.name,
+                       COUNT(*) FILTER (WHERE t.status NOT IN ('completed', 'cancelled')) AS open,
+                       COUNT(*) FILTER (WHERE t.status = 'completed') AS completed,
+                       COUNT(*) FILTER (
+                           WHERE t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE
+                             AND t.status NOT IN ('completed', 'cancelled')
+                       ) AS overdue,
+                       COUNT(*) AS total
+                FROM crm.tasks t
+                JOIN core.teams tm ON tm.id = t.assigned_to_team_id
+                WHERE t.organization_id = :org_id AND t.is_deleted = false
+                GROUP BY tm.id, tm.name
+                ORDER BY open DESC, total DESC
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+
+    overall = (
+        await db.execute(
+            text("""
+                SELECT COUNT(*) FILTER (WHERE status NOT IN ('completed', 'cancelled')) AS open,
+                       COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+                       COUNT(*) FILTER (
+                           WHERE due_date IS NOT NULL AND due_date < CURRENT_DATE
+                             AND status NOT IN ('completed', 'cancelled')
+                       ) AS overdue,
+                       COUNT(*) AS total
+                FROM crm.tasks
+                WHERE organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().first()
+
+    def _with_pct(row: dict) -> dict:
+        total = row["total"] or 0
+        pct = round((row["completed"] / total) * 100) if total else 0
+        return {**row, "pct_complete": pct}
+
+    return {
+        "success": True,
+        "data": {
+            "users": [_with_pct(dict(row)) for row in per_user],
+            "teams": [_with_pct(dict(row)) for row in per_team],
+            "overall": _with_pct(dict(overall)) if overall else {"open": 0, "completed": 0, "overdue": 0, "total": 0, "pct_complete": 0},
+        },
+        "message": "Task progress summary.",
+        "meta": {},
+    }
+
+
 @router.post("/")
 async def create_task(
     payload: TaskCreate,
@@ -379,6 +467,21 @@ async def update_task(
         text(f"UPDATE crm.tasks SET {set_clause}, updated_at = NOW() WHERE id = :id AND organization_id = :org_id"),  # nosec B608 - safe_keys drawn from a fixed allowlist above, never user input
         params,
     )
+
+    # A task converted from a tender requirement (migration 137) drives that
+    # requirement's checkbox from here on - same "satisfied by an external
+    # signal, not a manual tick" shape as the document auto-match in
+    # documents.py's _auto_match_tender_requirements, just sourced from task
+    # completion instead of a filename match. Reopening the task un-ticks it.
+    if "status" in safe_keys and (values["status"] == "completed") != (current["status"] == "completed"):
+        await db.execute(
+            text("""
+                UPDATE crm.tender_requirements
+                SET is_satisfied = :is_satisfied, updated_at = NOW()
+                WHERE linked_task_id = :task_id AND organization_id = :org_id
+            """),
+            {"is_satisfied": values["status"] == "completed", "task_id": task_id, "org_id": org_id},
+        )
 
     reassigned_to = values.get("assigned_to_user_id")
     previous_assignee = str(current["assigned_to_user_id"]) if current["assigned_to_user_id"] else None

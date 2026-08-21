@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, Circle, Layers, Link2, Loader2, Lock, Plus, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, ChevronDown, Circle, FileSpreadsheet, Layers, Link2, Loader2, Lock, Plus, ShieldCheck, Trash2, TrendingUp, Users, X } from "lucide-react";
 import {
   getCrmTasks,
   createCrmTask,
@@ -14,6 +14,8 @@ import {
   backfillCrmTaskStacks,
   addCrmTaskContributor,
   removeCrmTaskContributor,
+  getCrmTaskProgressSummary,
+  TaskProgressRow,
 } from "@/lib/api";
 import { initials, avatarTone } from "@/lib/avatar";
 
@@ -48,7 +50,13 @@ interface Task {
   outcome: string | null;
   next_action: string | null;
   contributors: { id: string; full_name: string }[];
+  quotation_id: string | null;
 }
+
+// entity_type values the quotation builder's source picker supports (see
+// _SOURCE_LINK_COLUMNS in quotations.py) - "project" quotations are sourced
+// differently and aren't offered a "Build Quotation" shortcut from here.
+const QUOTABLE_ENTITY_TYPES = new Set(["tender", "opportunity", "lead"]);
 
 interface AssignableUser {
   id: string;
@@ -121,12 +129,20 @@ export default function CrmTasksPage() {
   const [stackTeamPick, setStackTeamPick] = useState<Record<string, string>>({});
   const [assigningStack, setAssigningStack] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
+  const [progress, setProgress] = useState<{
+    users: TaskProgressRow[];
+    teams: TaskProgressRow[];
+    overall: { open: number; completed: number; overdue: number; total: number; pct_complete: number };
+  } | null>(null);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "board">("list");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [tasksRes, usersRes, teamsRes] = await Promise.all([
+      const [tasksRes, usersRes, teamsRes, progressRes] = await Promise.all([
         getCrmTasks({
           department,
           status: statusFilter !== "all" ? statusFilter : undefined,
@@ -134,10 +150,15 @@ export default function CrmTasksPage() {
         }),
         getAssignableUsers(),
         getTeams(),
+        // Caught independently: a 403 here (no crm_tasks.read_all) is the
+        // permission gate doing its job, not an error - it must not fail
+        // the Promise.all and blank out tasks/users/teams for everyone else.
+        getCrmTaskProgressSummary().catch(() => null),
       ]);
       if (tasksRes.success && Array.isArray(tasksRes.data)) setTasks(tasksRes.data);
       if (usersRes.success && Array.isArray(usersRes.data)) setUsers(usersRes.data);
       if (teamsRes.success && Array.isArray(teamsRes.data)) setTeams(teamsRes.data);
+      if (progressRes?.success && progressRes.data) setProgress(progressRes.data);
     } catch (e) {
       setError(normalizeError(e, "Tasks did not load."));
     } finally {
@@ -291,6 +312,26 @@ export default function CrmTasksPage() {
     }
   };
 
+  const handleBoardStatusChange = async (task: Task, newStatus: TaskStatus) => {
+    if (task.status === newStatus) return;
+    setBusyId(task.id);
+    setError(null);
+    try {
+      // The backend still enforces the predecessor-dependency gate and the
+      // evidence/approver gate on completion (see crm_tasks.py's
+      // update_task) - a drop that violates either comes back as an error
+      // here rather than silently moving the card, and load() below
+      // re-syncs the board to whatever the server actually accepted.
+      const res = await updateCrmTask(task.id, { status: newStatus });
+      if (!res.success) throw new Error("Task status could not be updated.");
+      await load();
+    } catch (e) {
+      setError(normalizeError(e, "Task status could not be updated."));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleAssignStack = async (key: string, entityType: string, entityId: string) => {
     const teamId = stackTeamPick[key];
     if (!teamId) return;
@@ -336,6 +377,31 @@ export default function CrmTasksPage() {
           </div>
         </div>
 
+        {progress && (
+          <div className="border border-ink-mid bg-ink-light/30">
+            <button
+              type="button"
+              onClick={() => setProgressOpen((current) => !current)}
+              className="flex w-full items-center justify-between gap-3 p-3 text-left"
+            >
+              <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-slate">
+                <TrendingUp className="h-3.5 w-3.5 text-signal" /> Team Progress
+                <span className="text-slate-light">
+                  {progress.overall.completed}/{progress.overall.total} complete ({progress.overall.pct_complete}%)
+                  {progress.overall.overdue > 0 ? ` · ${progress.overall.overdue} overdue` : ""}
+                </span>
+              </span>
+              <ChevronDown className={`h-3.5 w-3.5 text-slate-light transition-transform ${progressOpen ? "rotate-180" : ""}`} />
+            </button>
+            {progressOpen && (
+              <div className="grid gap-4 border-t border-ink-mid p-3 sm:grid-cols-2">
+                <ProgressColumn title="By person" rows={progress.users} labelKey="full_name" />
+                <ProgressColumn title="By team" rows={progress.teams} labelKey="name" />
+              </div>
+            )}
+          </div>
+        )}
+
         {workload.length > 0 && (
           <div className="flex flex-wrap gap-2 border border-ink-mid bg-ink-light/30 p-3">
             <span className="mr-1 flex items-center font-mono text-[10px] uppercase tracking-wider text-slate">Who&apos;s carrying what</span>
@@ -375,7 +441,7 @@ export default function CrmTasksPage() {
           ))}
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper">
             <option value="all">All statuses</option>
             {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -384,6 +450,25 @@ export default function CrmTasksPage() {
             <option value="all">All assignees</option>
             {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
           </select>
+          <label className="flex items-center gap-1.5 border border-ink-mid px-3 py-1.5 text-xs text-slate-light">
+            <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} /> Show completed
+          </label>
+          <div className="ml-auto flex border border-ink-mid">
+            <button
+              type="button"
+              onClick={() => setViewMode("list")}
+              className={`px-3 py-1.5 text-xs uppercase tracking-wider ${viewMode === "list" ? "bg-signal/10 text-signal" : "text-slate-light hover:text-paper"}`}
+            >
+              List
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("board")}
+              className={`border-l border-ink-mid px-3 py-1.5 text-xs uppercase tracking-wider ${viewMode === "board" ? "bg-signal/10 text-signal" : "text-slate-light hover:text-paper"}`}
+            >
+              Board
+            </button>
+          </div>
         </div>
 
         {error && <p className="text-sm text-red-300">{error}</p>}
@@ -394,11 +479,15 @@ export default function CrmTasksPage() {
           </div>
         ) : tasks.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-light">No tasks match these filters.</p>
+        ) : viewMode === "board" ? (
+          <TaskBoard tasks={tasks} busyId={busyId} onStatusChange={handleBoardStatusChange} />
         ) : (
           <div className="space-y-6">
             {groups.map(([key, groupTasks]) => {
               const [entityType, entityId] = key === "unlinked" ? [null, null] : key.split(":");
               const doneCount = groupTasks.filter((t) => t.status === "completed").length;
+              const visibleTasks = showCompleted ? groupTasks : groupTasks.filter((t) => t.status !== "completed");
+              if (visibleTasks.length === 0) return null;
               return (
                 <div key={key} className="border border-ink-mid">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
@@ -438,8 +527,17 @@ export default function CrmTasksPage() {
                       </div>
                     )}
                   </div>
+                  {!showCompleted && doneCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowCompleted(true)}
+                      className="flex w-full items-center gap-1.5 border-b border-ink-mid bg-ink-light/20 px-4 py-1.5 text-[10px] uppercase tracking-wider text-slate-light hover:text-paper"
+                    >
+                      <CheckCircle2 className="h-3 w-3 text-emerald-400" /> {doneCount} completed hidden
+                    </button>
+                  )}
                   <ul className="divide-y divide-ink-mid">
-                    {groupTasks.map((task) => {
+                    {visibleTasks.map((task) => {
                       const blockedByPredecessor = !!task.depends_on_task_id && task.depends_on_status !== "completed";
                       const availableContributors = users.filter((u) => !task.contributors.some((c) => c.id === u.id));
                       return (
@@ -498,6 +596,21 @@ export default function CrmTasksPage() {
                                   <ShieldCheck className="h-3 w-3" /> Evidence required{task.approver_name ? ` · Approver: ${task.approver_name}` : ""}
                                 </span>
                               )}
+                              {task.quotation_id ? (
+                                <Link
+                                  href={`/dashboard/quotations/builder?edit=${task.quotation_id}`}
+                                  className="flex items-center gap-1 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-400 hover:bg-emerald-950/20"
+                                >
+                                  <FileSpreadsheet className="h-3 w-3" /> Quotation
+                                </Link>
+                              ) : task.entity_type && QUOTABLE_ENTITY_TYPES.has(task.entity_type) && task.entity_id ? (
+                                <Link
+                                  href={`/dashboard/quotations/builder?source_type=${task.entity_type}&source_id=${task.entity_id}&task_id=${task.id}`}
+                                  className="flex items-center gap-1 border border-dashed border-ink-mid px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-signal"
+                                >
+                                  <FileSpreadsheet className="h-3 w-3" /> Build Quotation
+                                </Link>
+                              ) : null}
                             </div>
                             <div className="mt-1.5 flex flex-wrap items-center gap-2">
                               {task.assigned_to_team_name && !task.assigned_to_user_id && (
@@ -564,6 +677,111 @@ export default function CrmTasksPage() {
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); void load(); }}
         />
+      )}
+    </div>
+  );
+}
+
+// Native HTML5 drag-and-drop (draggable/onDragStart/onDragOver/onDrop) -
+// same mechanism already used by the opportunities Kanban board
+// (crm/opportunities/page.tsx's OpportunitiesKanban), so no drag-and-drop
+// library gets added to the project just for this view.
+const BOARD_COLUMNS: { key: string; label: string; statuses: TaskStatus[]; dropStatus: TaskStatus }[] = [
+  { key: "not_started", label: "Not Started", statuses: ["not_started"], dropStatus: "not_started" },
+  { key: "in_progress", label: "In Progress", statuses: ["in_progress", "waiting_on_third_party"], dropStatus: "in_progress" },
+  { key: "under_review", label: "Under Review", statuses: ["under_review"], dropStatus: "under_review" },
+  { key: "completed", label: "Completed", statuses: ["completed"], dropStatus: "completed" },
+  { key: "blocked", label: "Blocked / Cancelled", statuses: ["blocked", "cancelled"], dropStatus: "blocked" },
+];
+
+function TaskBoard({ tasks, busyId, onStatusChange }: { tasks: Task[]; busyId: string | null; onStatusChange: (task: Task, status: TaskStatus) => void }) {
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-2">
+      {BOARD_COLUMNS.map((column) => {
+        const columnTasks = tasks.filter((t) => column.statuses.includes(t.status));
+        return (
+          <div
+            key={column.key}
+            onDragOver={(e) => { e.preventDefault(); }}
+            onDragEnter={(e) => { e.preventDefault(); setDragOverColumn(column.key); }}
+            onDragLeave={() => setDragOverColumn((current) => (current === column.key ? null : current))}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOverColumn(null);
+              const taskId = e.dataTransfer.getData("text/plain");
+              const task = tasks.find((t) => t.id === taskId);
+              if (task) onStatusChange(task, column.dropStatus);
+            }}
+            className={`min-h-[300px] w-64 shrink-0 border p-2 transition-colors ${
+              dragOverColumn === column.key ? "border-signal bg-signal/5" : "border-ink-mid bg-ink-light/20"
+            }`}
+          >
+            <div className="mb-2 flex items-center justify-between px-1">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">{column.label}</span>
+              <span className="rounded-full bg-ink-mid px-1.5 py-0.5 font-mono text-[10px] text-slate-light">{columnTasks.length}</span>
+            </div>
+            <div className="space-y-2">
+              {columnTasks.map((task) => (
+                <div
+                  key={task.id}
+                  draggable={busyId !== task.id}
+                  onDragStart={(e) => { e.dataTransfer.setData("text/plain", task.id); e.dataTransfer.effectAllowed = "move"; }}
+                  className={`border-l-2 border border-ink-mid bg-ink p-2.5 ${PRIORITY_BORDER[task.priority]} ${busyId === task.id ? "opacity-40" : "cursor-grab active:cursor-grabbing"}`}
+                >
+                  <p className={`text-xs font-medium ${task.status === "completed" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
+                  {task.entity_name && (
+                    <p className="mt-0.5 truncate text-[10px] text-slate-light">{task.entity_type} · {task.entity_name}</p>
+                  )}
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    {task.assigned_to_name && (
+                      <span className={`flex h-5 w-5 items-center justify-center rounded-full border font-mono text-[9px] font-bold ${avatarTone(task.assigned_to_user_id ?? task.id)}`} title={task.assigned_to_name}>
+                        {initials(task.assigned_to_name)}
+                      </span>
+                    )}
+                    {isOverdue(task) && (
+                      <span className="border border-red-500/30 px-1 py-0.5 text-[9px] uppercase tracking-wider text-red-300">Overdue</span>
+                    )}
+                    {task.due_date && (
+                      <span className="font-mono text-[10px] text-slate-light">{new Date(task.due_date).toLocaleDateString()}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProgressColumn({ title, rows, labelKey }: { title: string; rows: TaskProgressRow[]; labelKey: "full_name" | "name" }) {
+  return (
+    <div className="space-y-2">
+      <p className="font-mono text-[9px] uppercase tracking-wider text-slate">{title}</p>
+      {rows.length === 0 ? (
+        <p className="text-[11px] text-slate-light">Nothing assigned yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row) => (
+            <div key={row.id} className="space-y-1">
+              <div className="flex items-center justify-between font-mono text-[10px]">
+                <span className="truncate text-paper">{row[labelKey] ?? "—"}</span>
+                <span className="shrink-0 text-slate-light">
+                  {row.completed}/{row.total}{row.overdue > 0 ? ` · ${row.overdue} late` : ""}
+                </span>
+              </div>
+              <div className="h-1 overflow-hidden rounded-full border border-ink-mid bg-ink-light">
+                <div
+                  className={`h-full transition-all duration-500 ${row.overdue > 0 ? "bg-red-400" : "bg-signal"}`}
+                  style={{ width: `${row.pct_complete}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

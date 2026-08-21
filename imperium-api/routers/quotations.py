@@ -1472,6 +1472,23 @@ async def list_items(
     }
 
 
+async def _link_task_to_quotation(db: AsyncSession, *, org_id: str, task_id: str, quotation_id: str) -> None:
+    """Best-effort write-back for the "Build Quotation" action on a CRM task
+    (see crm_tasks.py's Task.entity_type/entity_id and migration 138) - never
+    allowed to fail the quotation save itself, since a stale/deleted task_id
+    shouldn't block someone from saving real pricing work."""
+    try:
+        await db.execute(
+            text("""
+                UPDATE crm.tasks SET quotation_id = :quotation_id, updated_at = NOW()
+                WHERE id = :task_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"quotation_id": quotation_id, "task_id": task_id, "org_id": org_id},
+        )
+    except Exception:
+        logger.exception("quotation.task_link_failed task_id=%s quotation_id=%s", task_id, quotation_id)
+
+
 @router.post("/")
 async def create_item(
     request: Request,
@@ -1488,6 +1505,12 @@ async def create_item(
         )
         if cached is not None:
             return cached
+
+    # task_id links this quotation back to the task that spawned it (see
+    # _link_task_to_quotation) - it is never a finance.quotations column, so
+    # it's popped out here before the payload reaches the generic column
+    # writer below.
+    task_id = payload.pop("task_id", None)
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -1514,6 +1537,9 @@ async def create_item(
         result = await db.execute(query, params)
         await db.commit()
         new_id = str(result.scalar())
+        if task_id:
+            await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=new_id)
+            await db.commit()
         response = {
             "success": True,
             "data": {"id": new_id},
@@ -1629,9 +1655,13 @@ async def update_item(
     db: AsyncSession = Depends(get_db),
 ):
     payload = await request.json()
+    task_id = payload.pop("task_id", None)
     safe_keys = safe_payload_columns(payload.keys())
 
     if not safe_keys:
+        if task_id:
+            await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=item_id)
+            await db.commit()
         return {
             "success": True,
             "data": {"id": item_id},
@@ -1652,6 +1682,9 @@ async def update_item(
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
+
+        if task_id:
+            await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=item_id)
 
         await db.commit()
         return {

@@ -723,9 +723,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <span className="text-data-sm font-mono text-slate-light tracking-widest uppercase">Six Nine Construction</span>
           </div>
 
-          <div className="hidden sm:block">
-            <CalendarDropdown />
-          </div>
+          <CalendarDropdown />
           <NotificationBell />
           <div className="hidden md:block">
             <PwaPushButton />

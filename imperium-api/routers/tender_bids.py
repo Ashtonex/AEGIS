@@ -20,13 +20,12 @@ from app.services.finance.project_forecast import (
     seed_project_budget_from_quotation,
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
-from app.shared.events import emit_event
+from app.shared.events import emit_event, emit_notification
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
-    tenant_child_rows_by_parent_sql,
     tenant_reference_sql,
     update_returning_id_sql,
 )
@@ -531,14 +530,20 @@ async def list_requirements(
 ):
     await _require_tender(db, tender_id, user["org_id"])
 
-    query = tenant_child_rows_by_parent_sql(
-        "crm.tender_requirements",
-        "tender_id",
-        "sort_order",
-        allowed_tables={"crm.tender_requirements"},
-        allowed_parent_columns={"tender_id"},
-        allowed_order_columns={"sort_order"},
-    )
+    # Left-joined onto crm.tasks so a converted requirement (see
+    # convert_requirement_to_task below) carries its task's live
+    # assignee/status/due_date straight through to the checklist panel,
+    # without the frontend needing a second round-trip to the Tasks API.
+    query = text("""
+        SELECT r.*, t.assigned_to_user_id AS task_assigned_to_user_id,
+               u.full_name AS task_assigned_to_name, t.status AS task_status,
+               t.due_date AS task_due_date
+        FROM crm.tender_requirements r
+        LEFT JOIN crm.tasks t ON t.id = r.linked_task_id
+        LEFT JOIN core.users u ON u.id = t.assigned_to_user_id
+        WHERE r.tender_id = :parent_id AND r.organization_id = :org_id AND r.is_deleted = false
+        ORDER BY r.sort_order
+    """)
     result = await db.execute(query, {"parent_id": tender_id, "org_id": user["org_id"]})
     items = [dict(row._mapping) for row in result]
 
@@ -580,6 +585,98 @@ async def create_requirement(
         "success": True,
         "data": {"id": str(result.scalar())},
         "message": "Requirement added.",
+        "meta": {},
+    }
+
+
+@router.post("/{tender_id}/requirements/{requirement_id}/convert-to-task")
+async def convert_requirement_to_task(
+    tender_id: str,
+    requirement_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("tender_bids.update")),
+):
+    """Turns one checklist line into a real, assignable crm.tasks row (see
+    migration 137) so it gets an owner, a due date, and shows up grouped
+    under this tender on the Tasks page - deliberately a manual, per-item
+    action rather than automatic, since not every requirement needs a person
+    chasing it (some are satisfied by a document upload alone)."""
+    payload = await request.json()
+    org_id = user["org_id"]
+
+    requirement = await _single_row(
+        db,
+        """
+        SELECT id, label, linked_task_id FROM crm.tender_requirements
+        WHERE id = :id AND tender_id = :tender_id AND organization_id = :org_id AND is_deleted = false
+        """,
+        {"id": requirement_id, "tender_id": tender_id, "org_id": org_id},
+    )
+    if not requirement:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    if requirement["linked_task_id"]:
+        raise HTTPException(status_code=409, detail="This requirement already has a task.")
+
+    assigned_to_user_id = payload.get("assigned_to_user_id") or None
+    due_date = payload.get("due_date") or None
+    priority = str(payload.get("priority") or "normal")
+    if priority not in ("low", "normal", "high", "urgent"):
+        raise HTTPException(status_code=400, detail="Invalid priority.")
+
+    if assigned_to_user_id:
+        assignee_check = await db.execute(
+            text("SELECT 1 FROM core.users WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": assigned_to_user_id, "org_id": org_id},
+        )
+        if not assignee_check.first():
+            raise HTTPException(status_code=404, detail="Assignee not found.")
+
+    task_id = (
+        await db.execute(
+            text("""
+                INSERT INTO crm.tasks (
+                    organization_id, title, entity_type, entity_id,
+                    assigned_to_user_id, due_date, priority, created_by
+                ) VALUES (
+                    :org_id, :title, 'tender', :entity_id,
+                    :assigned_to_user_id, :due_date, :priority, :user_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "title": requirement["label"],
+                "entity_id": tender_id,
+                "assigned_to_user_id": assigned_to_user_id,
+                "due_date": due_date,
+                "priority": priority,
+                "user_id": user["sub"],
+            },
+        )
+    ).scalar()
+
+    await db.execute(
+        text("UPDATE crm.tender_requirements SET linked_task_id = :task_id, updated_at = NOW() WHERE id = :id"),
+        {"task_id": task_id, "id": requirement_id},
+    )
+
+    if assigned_to_user_id and str(assigned_to_user_id) != user["sub"]:
+        await emit_notification(
+            db,
+            org_id=org_id,
+            user_id=str(assigned_to_user_id),
+            title="New task assigned to you",
+            message=f'"{requirement["label"]}" was assigned to you.',
+            notification_type="task",
+            action_url="/dashboard/crm/tasks",
+        )
+
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"task_id": str(task_id)},
+        "message": "Requirement converted to a task.",
         "meta": {},
     }
 

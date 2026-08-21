@@ -811,6 +811,17 @@ export async function deleteTenderRequirement(tenderId: string, requirementId: s
   });
 }
 
+export async function convertTenderRequirementToTask(
+  tenderId: string,
+  requirementId: string,
+  payload: { assigned_to_user_id?: string; due_date?: string; priority?: string }
+): Promise<ApiResponse<{ task_id: string }>> {
+  return await fetchApi<ApiResponse<{ task_id: string }>>(`/api/v1/tender-bids/${tenderId}/requirements/${requirementId}/convert-to-task`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
 export async function getCrmLeads(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.department_id) search.set('department_id', params.department_id);
@@ -1579,6 +1590,25 @@ export async function getCrmTasks(params?: { assigned_to_user_id?: string; statu
   if (params?.department) search.set('department', params.department);
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-tasks/${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export interface TaskProgressRow {
+  id: string;
+  full_name?: string;
+  name?: string;
+  open: number;
+  completed: number;
+  overdue: number;
+  total: number;
+  pct_complete: number;
+}
+
+export async function getCrmTaskProgressSummary(): Promise<ApiResponse<{
+  users: TaskProgressRow[];
+  teams: TaskProgressRow[];
+  overall: { open: number; completed: number; overdue: number; total: number; pct_complete: number };
+}>> {
+  return fetchApi('/api/v1/crm-tasks/progress-summary', { cache: 'no-store', allowFallback: false });
 }
 
 export async function backfillCrmTaskStacks(): Promise<ApiResponse<{ records_checked: number; tasks_created: number }>> {
