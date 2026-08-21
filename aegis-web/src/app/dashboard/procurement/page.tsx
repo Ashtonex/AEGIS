@@ -1316,7 +1316,6 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
         ...form,
         project_id: form.project_id || null,
         line_items: lines.map((l) => ({ ...l, qty: num(l.qty), unit_cost: num(l.unit_cost) })),
-        total_estimated: estimatedTotal,
       });
       onCreated();
     } catch (e) { setError(normalizeActionError(e, "Could not create requisition.")); setSaving(false); }
