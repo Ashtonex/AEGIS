@@ -660,12 +660,31 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   return (
     <div className="h-dvh bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink overflow-hidden">
 
+      {/* Thin always-present strip at the very top of the viewport so hovering
+          there can bring the top bar back even while it's hidden - the bar
+          itself isn't there to hover over once translated out of view. */}
+      <div
+        className="fixed top-0 inset-x-0 h-2 z-40"
+        onMouseEnter={revealTopBar}
+      />
+
       {/* GLOBAL TOP NAVIGATION BAR - fixed/overlaid, not in normal flow, so
           hiding or showing it never shifts the page content beneath it. */}
       <header
         onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
         onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}
-        className="fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0"
+        className={`fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0 transition-transform duration-300 ease-out ${
+          // Mobile has no persistent sidebar - this bar (and the hamburger
+          // inside it) is the only way to reach navigation there, so it must
+          // never actually hide on mobile regardless of the desktop-only
+          // auto-hide timer's state. scheduleTopBarHide() already skips
+          // scheduling a hide on mobile, but that alone doesn't cover the
+          // case where the bar was auto-hidden at desktop width and the
+          // viewport is then narrowed below the breakpoint - this render-time
+          // guard is the single source of truth so there's no state-timing
+          // window where mobile navigation is unreachable.
+          (topBarVisible || !isDesktop) ? "translate-y-0" : "-translate-y-full"
+        }`}
       >
         <div className="flex min-w-0 items-center space-x-3 md:space-x-8">
           <button
