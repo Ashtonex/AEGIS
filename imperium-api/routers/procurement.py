@@ -1618,6 +1618,49 @@ async def suppliers(
     return ok(data, "Suppliers listed.", len(data))
 
 
+@router.get("/suppliers/{supplier_id}/catalogue")
+async def supplier_catalogue(
+    supplier_id: UUID,
+    user: dict = Depends(require_permission("procurement.supplier.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """A supplier's product catalog, derived live from every receipt ever
+    tagged with them - no separate catalogue table to keep in sync. Covers
+    both the quick manual Receive Stock action and formal PO/GRN receiving,
+    since both paths write into procurement.stock_ledger with supplier_id
+    set (see inventory_service.receive_stock)."""
+    supplier = (
+        await db.execute(
+            text(
+                "SELECT 1 FROM procurement.suppliers WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+            ),
+            {"id": supplier_id, "org_id": user["org_id"]},
+        )
+    ).scalar()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    rows = await db.execute(
+        text("""
+        SELECT i.id AS item_id, i.item_code, i.item_name, i.category, i.unit_of_measure,
+               COUNT(*) AS receipt_count,
+               SUM(sl.quantity) AS total_quantity_received,
+               MAX(sl.movement_at) AS last_received_at,
+               (ARRAY_AGG(sl.unit_cost ORDER BY sl.movement_at DESC))[1] AS last_unit_cost
+        FROM procurement.stock_ledger sl
+        JOIN procurement.inventory_items i ON i.id = sl.item_id AND i.organization_id = sl.organization_id
+        WHERE sl.organization_id = :org_id
+          AND sl.supplier_id = :supplier_id
+          AND sl.movement_type = 'receipt'
+        GROUP BY i.id, i.item_code, i.item_name, i.category, i.unit_of_measure
+        ORDER BY MAX(sl.movement_at) DESC
+    """),
+        {"org_id": user["org_id"], "supplier_id": supplier_id},
+    )
+    data = [dict(r._mapping) for r in rows]
+    return ok(data, "Supplier catalogue listed.", len(data))
+
+
 @router.get("/invoices")
 async def invoices(
     match_status: Optional[str] = None,
@@ -1774,6 +1817,7 @@ async def receive_goods(
                 source_type="goods_received_note",
                 source_id=grn_line_id,
                 reference=grn_no,
+                supplier_id=po["supplier_id"],
             )
     await db.execute(
         text("""

@@ -38,6 +38,7 @@ import {
   getInventoryStockLevels,
   getInventoryStores,
   getInternalProjects,
+  getProcurementSuppliers,
   getSiteOperationSites,
   getStockMovements,
   issueStock,
@@ -115,6 +116,7 @@ function InventoryWorkspace() {
   const [stores, setStores] = useState<Rec[]>([]);
   const [movements, setMovements] = useState<Rec[]>([]);
   const [projects, setProjects] = useState<Rec[]>([]);
+  const [suppliers, setSuppliers] = useState<Rec[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -143,12 +145,13 @@ function InventoryWorkspace() {
     setLoading(true);
     setError(null);
     try {
-      const [stockRes, catRes, storeRes, movRes, projRes] = await Promise.allSettled([
+      const [stockRes, catRes, storeRes, movRes, projRes, supRes] = await Promise.allSettled([
         getInventoryStockLevels(),
         getInventoryCatalogue(),
         getInventoryStores(),
         getStockMovements({ limit: 200 }),
         getInternalProjects(),
+        getProcurementSuppliers(),
       ]);
       const warnings: string[] = [];
       if (stockRes.status === "fulfilled") setStockLevels(Array.isArray(stockRes.value.data) ? stockRes.value.data : []);
@@ -161,6 +164,10 @@ function InventoryWorkspace() {
       else warnings.push("Movement history could not be loaded.");
       if (projRes.status === "fulfilled") setProjects(Array.isArray(projRes.value.data) ? projRes.value.data : []);
       else warnings.push("Project register could not be loaded.");
+      // Suppliers are optional context for Receive Stock (linking a receipt to
+      // who it came from) - a role without procurement.supplier.read just sees
+      // an empty supplier picker rather than the whole page failing.
+      if (supRes.status === "fulfilled") setSuppliers(Array.isArray(supRes.value.data) ? supRes.value.data : []);
       setSourceWarnings(warnings);
       if (stockRes.status === "rejected") {
         throw new Error(loadFailureMessage(stockRes.reason));
@@ -620,6 +627,7 @@ function InventoryWorkspace() {
         <ReceiveStockModal
           catalogue={catalogue}
           stores={stores}
+          suppliers={suppliers}
           saving={saving}
           onClose={() => setShowReceive(false)}
           onSubmit={async (payload) => {
@@ -836,11 +844,11 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
   );
 }
 
-function ReceiveStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
-  catalogue: Rec[]; stores: Rec[]; saving: boolean;
+function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onSubmit }: {
+  catalogue: Rec[]; stores: Rec[]; suppliers: Rec[]; saving: boolean;
   onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
 }) {
-  const [form, setForm] = useState({ item_id: "", store_id: "", quantity: "", unit_cost: "", reference: "", notes: "" });
+  const [form, setForm] = useState({ item_id: "", store_id: "", supplier_id: "", quantity: "", unit_cost: "", reference: "", notes: "" });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   return (
     <ModalShell title="Receive Stock" onClose={onClose}>
@@ -856,6 +864,13 @@ function ReceiveStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
             <option value="">Select store</option>
             {stores.map((s) => <option key={s.id} value={s.id}>{tx(s.name ?? s.store_name)} ({tx(s.store_code)})</option>)}
           </select>
+        </FieldGroup>
+        <FieldGroup label="Supplier (optional)">
+          <select value={form.supplier_id} onChange={(e) => set("supplier_id", e.target.value)} className="field">
+            <option value="">Not linked to a supplier</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
+          </select>
+          <p className="mt-1 text-[11px] text-slate-light">Tagging who this came from builds up that supplier&apos;s product catalog over time.</p>
         </FieldGroup>
         <div className="grid grid-cols-2 gap-3">
           <FieldGroup label="Quantity">
@@ -875,7 +890,7 @@ function ReceiveStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity), unit_cost: Number(form.unit_cost) })}
+          onClick={() => onSubmit({ ...form, supplier_id: form.supplier_id || undefined, quantity: Number(form.quantity), unit_cost: Number(form.unit_cost) })}
           disabled={saving || !form.item_id || !form.store_id || !form.quantity}
           className="inline-flex h-10 items-center gap-2 border border-emerald-500/50 bg-emerald-950/30 px-4 font-mono text-xs font-bold uppercase text-emerald-300 disabled:opacity-50 hover:bg-emerald-950/50"
         >

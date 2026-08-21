@@ -53,6 +53,7 @@ import {
   getProcurementRequisitions,
   getProcurementRfqs,
   getProcurementSuppliers,
+  getSupplierCatalogue,
   issuePurchaseOrder,
   linkProcurementDocument,
   matchSupplierInvoice,
@@ -200,6 +201,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [notice, setNotice] = useState<string | null>(null);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [showAddSupplier, setShowAddSupplier] = useState(false);
+  const [viewingSupplierCatalogue, setViewingSupplierCatalogue] = useState<Rec | null>(null);
   const [issuedSupplierCredentials, setIssuedSupplierCredentials] = useState<{ email: string; temporary_password: string } | null>(null);
   const [selectedPO, setSelectedPO] = useState<Rec | null>(null);
   const [approvingPR, setApprovingPR] = useState<Rec | null>(null);
@@ -621,7 +623,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} /> :
           tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
-          tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} /> :
+          tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} onView={setViewingSupplierCatalogue} /> :
           tab === "pricing" ? <PendingPricingTable rows={filteredPricing} saving={saving} onConfirm={confirmPricing} /> :
           <InvoicesTab rows={filteredInvoices} unmatchedCount={unmatchedCount} saving={saving} onMatch={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} />
         }
@@ -642,6 +644,9 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       )}
       {issuedSupplierCredentials && (
         <CredentialsIssuedModal credentials={issuedSupplierCredentials} onClose={() => setIssuedSupplierCredentials(null)} />
+      )}
+      {viewingSupplierCatalogue && (
+        <SupplierCatalogueModal supplier={viewingSupplierCatalogue} onClose={() => setViewingSupplierCatalogue(null)} />
       )}
       {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
       {approvingPR && <ApproveModal pr={approvingPR} saving={saving?.startsWith("decide-") ?? false} onDecide={(d, r) => void decidePR(approvingPR.id, d, r)} onClose={() => setApprovingPR(null)} />}
@@ -912,7 +917,7 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
 
 // ─── Suppliers Table ──────────────────────────────────────────────────────────
 
-function SuppliersTable({ rows }: { rows: Rec[]; }) {
+function SuppliersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void; }) {
   if (rows.length === 0) return <EmptyState label="No suppliers registered." sub="Use New Supplier above to register one, or wait for supplier portal self-registrations." />;
   return (
     <div className="overflow-x-auto">
@@ -930,7 +935,7 @@ function SuppliersTable({ rows }: { rows: Rec[]; }) {
             const stars = Math.round(Math.min(score, 5));
             const otd = num(row.on_time_delivery_pct);
             return (
-              <tr key={row.id} className="hover:bg-ink-light/40">
+              <tr key={row.id} onClick={() => onView(row)} className="cursor-pointer hover:bg-ink-light/40" title="View product catalogue">
                 <td className="px-4 py-3 font-semibold text-paper">{tx(row.name ?? row.supplier_name)}</td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-light">{tx(row.code ?? row.supplier_code)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${supplierStatusClass(row.status)}`}>{tx(row.status, "active")}</span></td>
@@ -954,6 +959,79 @@ function SuppliersTable({ rows }: { rows: Rec[]; }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Derived from every stock receipt ever tagged with this supplier (quick
+// manual receipts and formal PO/GRN receiving alike) - not a maintained
+// list, so it's always exactly what's actually been received from them.
+function SupplierCatalogueModal({ supplier, onClose }: { supplier: Rec; onClose: () => void; }) {
+  const [items, setItems] = useState<Rec[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getSupplierCatalogue(supplier.id)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.success && Array.isArray(res.data)) setItems(res.data);
+        else setError("Catalogue could not be loaded.");
+      })
+      .catch(() => { if (!cancelled) setError("Catalogue could not be loaded."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [supplier.id]);
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-2xl border border-ink-mid bg-ink shadow-2xl">
+        <header className="flex items-center justify-between border-b border-ink-mid p-4">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Product Catalogue</p>
+            <h2 className="mt-1 text-lg font-semibold text-paper">{tx(supplier.name ?? supplier.supplier_name)}</h2>
+            <p className="mt-1 text-xs text-slate-light">Every item ever received against this supplier, built up automatically from receiving activity.</p>
+          </div>
+          <button onClick={onClose} className="border border-ink-mid p-2 text-slate-light hover:border-signal hover:text-paper"><X className="h-5 w-5" /></button>
+        </header>
+        <div className="max-h-[70vh] overflow-y-auto p-4">
+          {loading ? (
+            <LoadingState label="Loading catalogue…" />
+          ) : error ? (
+            <Banner tone="error" message={error} />
+          ) : items.length === 0 ? (
+            <EmptyState label="No products received from this supplier yet." sub="Items appear here as soon as a stock receipt (manual or via a Goods Received Note) is tagged with this supplier." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-sm">
+                <thead>
+                  <tr className="border-b border-ink-mid bg-ink-light/50 text-left">
+                    {["Item", "Category", "UoM", "Receipts", "Total Qty Received", "Last Unit Cost", "Last Received"].map((h) => (
+                      <th key={h} className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink-mid">
+                  {items.map((item) => (
+                    <tr key={item.item_id}>
+                      <td className="px-3 py-2 text-paper">{tx(item.item_code)} — {tx(item.item_name)}</td>
+                      <td className="px-3 py-2 text-xs text-slate-light">{tx(item.category)}</td>
+                      <td className="px-3 py-2 text-xs text-slate-light">{tx(item.unit_of_measure)}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-paper">{num(item.receipt_count)}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-paper">{num(item.total_quantity_received)}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-paper">{money(item.last_unit_cost ?? 0)}</td>
+                      <td className="px-3 py-2 text-xs text-slate-light">{item.last_received_at ? new Date(item.last_received_at).toLocaleDateString() : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

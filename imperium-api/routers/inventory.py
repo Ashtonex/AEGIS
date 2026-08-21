@@ -28,6 +28,7 @@ class StockMovementPayload(Payload):
     item_id: UUID
     store_id: Optional[UUID] = None
     project_id: Optional[UUID] = None
+    supplier_id: Optional[UUID] = None
     quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
     unit_cost: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=15, decimal_places=4
@@ -90,6 +91,7 @@ async def require_ref(
         "procurement.inventory_items",
         "procurement.stores",
         "projects.projects",
+        "procurement.suppliers",
     }
     if table not in allowed:
         raise HTTPException(status_code=500, detail="Unsupported reference validation")
@@ -283,6 +285,9 @@ async def receive_stock(
     await require_ref(
         db, "projects.projects", payload.project_id, user["org_id"], "Project"
     )
+    await require_ref(
+        db, "procurement.suppliers", payload.supplier_id, user["org_id"], "Supplier"
+    )
     movement_id = await inventory_service.receive_stock(
         db,
         user,
@@ -296,6 +301,7 @@ async def receive_stock(
         reference=payload.reference
         or f"RECEIPT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         notes=payload.notes,
+        supplier_id=payload.supplier_id,
     )
     await db.commit()
     return ok({"id": str(movement_id)}, "Stock receipt recorded.")

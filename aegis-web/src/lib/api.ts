@@ -1931,6 +1931,11 @@ export async function getProcurementSuppliers(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>("/api/v1/procurement/suppliers", { cache: "no-store", allowFallback: false });
 }
 
+/** A supplier's product catalog, derived from every stock receipt ever tagged with them. */
+export async function getSupplierCatalogue(supplierId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/procurement/suppliers/${encodeURIComponent(supplierId)}/catalogue`, { cache: "no-store", allowFallback: false });
+}
+
 export async function getProcurementInvoices(params?: { status?: string; match_status?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.status && params.status !== "all") search.set("status", params.status);

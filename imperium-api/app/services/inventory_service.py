@@ -163,6 +163,7 @@ async def record_stock_movement(
     source_id: UUID,
     reference: Optional[str] = None,
     notes: Optional[str] = None,
+    supplier_id: Optional[UUID] = None,
 ) -> UUID:
     """Lowest-level primitive: one signed insert into procurement.stock_ledger,
     idempotent on (organization_id, source_type, source_id, item_id, movement_type).
@@ -172,11 +173,13 @@ async def record_stock_movement(
         text("""
         INSERT INTO procurement.stock_ledger (
             organization_id, item_id, store_id, project_id, movement_type, quantity,
-            unit_cost, total_cost, source_type, source_id, reference, notes, recorded_by
+            unit_cost, total_cost, source_type, source_id, reference, notes, recorded_by,
+            supplier_id
         ) VALUES (
             :org_id, :item_id, :store_id, :project_id, :movement_type, :quantity,
             :unit_cost, ROUND(ABS(CAST(:quantity AS numeric)) * CAST(:unit_cost AS numeric), 2),
-            :source_type, :source_id, :reference, :notes, :user_id
+            :source_type, :source_id, :reference, :notes, :user_id,
+            :supplier_id
         ) ON CONFLICT (organization_id, source_type, source_id, item_id, movement_type) DO NOTHING
         RETURNING id
     """),
@@ -193,6 +196,7 @@ async def record_stock_movement(
             "reference": reference,
             "notes": notes,
             "user_id": user["user_id"],
+            "supplier_id": supplier_id,
         },
     )
     movement_id = row.scalar()
@@ -258,6 +262,7 @@ async def receive_stock(
     source_id: UUID,
     reference: Optional[str] = None,
     notes: Optional[str] = None,
+    supplier_id: Optional[UUID] = None,
 ) -> UUID:
     """Stock arriving into a store. Asset only - never posts a Finance cost."""
     movement_id = await record_stock_movement(
@@ -273,6 +278,7 @@ async def receive_stock(
         source_id=source_id,
         reference=reference,
         notes=notes,
+        supplier_id=supplier_id,
     )
     await emit_event(
         db,
