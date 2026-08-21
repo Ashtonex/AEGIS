@@ -563,13 +563,13 @@ async def list_attendance(
     """
     params = {"org_id": user["org_id"]}
     if date_filter:
-        query_str += " AND ar.work_date = :date"
+        query_str += " AND ar.attendance_date = :date"
         params["date"] = date_filter
     if project_id:
         query_str += " AND ar.project_id = :project_id"
         params["project_id"] = project_id
 
-    query_str += " ORDER BY ar.work_date DESC, e.employee_name"
+    query_str += " ORDER BY ar.attendance_date DESC, e.employee_name"
 
     rows = await db.execute(text(query_str), params)
     data = [dict(row._mapping) for row in rows]
