@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
+import { RegisterAssetModal, AssignmentModal, WorkOrderModal } from "@/components/fleet/AssetOperationsModals";
 import {
   Activity,
   AlertTriangle,
@@ -35,8 +36,10 @@ import {
   Gauge,
   Loader2,
   MoreHorizontal,
+  Plus,
   RefreshCw,
   Search,
+  Send,
   ShieldAlert,
   UserCog,
   Wrench,
@@ -49,7 +52,7 @@ import {
 type AssetRecord = Record<string, unknown> & { id: string };
 type InspectionRecord = Record<string, unknown> & { id: string };
 
-type ModalKind = "inspection" | "defect" | "meter" | null;
+type ModalKind = "inspection" | "defect" | "meter" | "register" | "edit" | "deploy" | "work-order" | null;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1248,6 +1251,21 @@ function DetailPanel({
       <div className="border-t border-ink-mid p-4">
         <div className="grid grid-cols-3 gap-2">
           <ActionBtn
+            icon={<Send size={13} />}
+            label="Deploy"
+            onClick={() => onAction("deploy")}
+          />
+          <ActionBtn
+            icon={<Wrench size={13} />}
+            label="Work Order"
+            onClick={() => onAction("work-order")}
+          />
+          <ActionBtn
+            icon={<MoreHorizontal size={13} />}
+            label="Edit"
+            onClick={() => onAction("edit")}
+          />
+          <ActionBtn
             icon={<ClipboardCheck size={13} />}
             label="Inspection"
             onClick={() => onAction("inspection")}
@@ -1519,7 +1537,15 @@ function EquipmentDashboard() {
       ? "Inspection recorded"
       : modal === "defect"
         ? "Defect logged"
-        : "Meter reading saved";
+        : modal === "meter"
+          ? "Meter reading saved"
+          : modal === "register"
+            ? "Equipment registered"
+            : modal === "edit"
+              ? "Equipment updated"
+              : modal === "deploy"
+                ? "Deployment created"
+                : "Work order created";
     setToast(`${label} successfully.`);
     void loadAssets();
   }
@@ -1557,6 +1583,14 @@ function EquipmentDashboard() {
               >
                 <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
                 Refresh
+              </button>
+              <button
+                type="button"
+                onClick={() => handleAction("register")}
+                className="inline-flex items-center gap-2 bg-signal px-3 py-2 text-xs font-semibold text-ink hover:bg-signal/90"
+              >
+                <Plus size={13} />
+                Register Equipment
               </button>
             </div>
           </div>
@@ -1946,6 +1980,37 @@ function EquipmentDashboard() {
       )}
       {modal === "meter" && selected && (
         <MeterModal
+          assetId={selected.id}
+          assetLabel={assetLabel(selected)}
+          onClose={() => setModal(null)}
+          onSuccess={handleModalSuccess}
+        />
+      )}
+      {modal === "register" && (
+        <RegisterAssetModal
+          assetNoun="Equipment"
+          onClose={() => setModal(null)}
+          onSuccess={handleModalSuccess}
+        />
+      )}
+      {modal === "edit" && selected && (
+        <RegisterAssetModal
+          assetNoun="Equipment"
+          editingAsset={selected}
+          onClose={() => setModal(null)}
+          onSuccess={handleModalSuccess}
+        />
+      )}
+      {modal === "deploy" && selected && (
+        <AssignmentModal
+          assetId={selected.id}
+          assetLabel={assetLabel(selected)}
+          onClose={() => setModal(null)}
+          onSuccess={handleModalSuccess}
+        />
+      )}
+      {modal === "work-order" && selected && (
+        <WorkOrderModal
           assetId={selected.id}
           assetLabel={assetLabel(selected)}
           onClose={() => setModal(null)}

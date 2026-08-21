@@ -56,6 +56,21 @@ class AssetPayload(Payload):
     retired_on: Optional[date] = None
     notes: Optional[str] = None
     owning_department_id: Optional[UUID] = None
+    # Rate card - the columns exist on fleet.fleet (024_equipment_finance_integration.sql)
+    # and record_utilization already reads them off the asset row, but until now
+    # nothing exposed them for the caller to actually set.
+    hourly_charge_rate: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=15, decimal_places=4
+    )
+    hourly_operating_cost: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=15, decimal_places=4
+    )
+    idle_hour_cost: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=15, decimal_places=4
+    )
+    monthly_ownership_cost: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=15, decimal_places=2
+    )
 
     @model_validator(mode="after")
     def valid_dates(self):
@@ -523,8 +538,8 @@ async def create_asset(
     try:
         new_id = (
             await db.execute(
-                text("""INSERT INTO fleet.fleet (organization_id,created_by,vehicle_registration,vehicle_type,asset_code,ownership_type,operational_status,make,model,model_year,vin,odometer_km,engine_hours,capacity_description,home_location,acquired_on,retired_on,notes,owning_department_id)
-           VALUES (:org_id,:user_id,:vehicle_registration,:vehicle_type,:asset_code,:ownership_type,:operational_status,:make,:model,:model_year,:vin,:odometer_km,:engine_hours,:capacity_description,:home_location,:acquired_on,:retired_on,:notes,:owning_department_id) RETURNING id"""),
+                text("""INSERT INTO fleet.fleet (organization_id,created_by,vehicle_registration,vehicle_type,asset_code,ownership_type,operational_status,make,model,model_year,vin,odometer_km,engine_hours,capacity_description,home_location,acquired_on,retired_on,notes,owning_department_id,hourly_charge_rate,hourly_operating_cost,idle_hour_cost,monthly_ownership_cost)
+           VALUES (:org_id,:user_id,:vehicle_registration,:vehicle_type,:asset_code,:ownership_type,:operational_status,:make,:model,:model_year,:vin,:odometer_km,:engine_hours,:capacity_description,:home_location,:acquired_on,:retired_on,:notes,:owning_department_id,:hourly_charge_rate,:hourly_operating_cost,:idle_hour_cost,:monthly_ownership_cost) RETURNING id"""),
                 {
                     **payload.model_dump(),
                     "org_id": user["org_id"],
