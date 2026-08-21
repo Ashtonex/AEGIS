@@ -3312,6 +3312,13 @@ export async function decideHrVendorVerification(subcontractorId: string, decisi
   });
 }
 
+export async function runHrVendorSystemCheck(subcontractorId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${subcontractorId}/run-system-check`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
 export async function getFinanceVendorPaymentRequests(status?: string): Promise<ApiResponse<any[]>> {
   const query = status ? `?status=${status}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/payments/vendor-requests${query}`, {

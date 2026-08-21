@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RefreshCw, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
+import { Loader2, RefreshCw, ScanSearch, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
 
-import { decideHrVendorVerification, getHrVendorVerificationQueue } from "@/lib/api";
+import { decideHrVendorVerification, getHrVendorVerificationQueue, runHrVendorSystemCheck } from "@/lib/api";
 
 type RecordData = Record<string, any>;
 
@@ -28,7 +28,7 @@ export function VendorVerificationPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getHrVendorVerificationQueue("system_verified");
+      const res = await getHrVendorVerificationQueue();
       setQueue(res.data ?? []);
     } catch {
       setNotice("Vendor verification queue could not be loaded.");
@@ -40,6 +40,25 @@ export function VendorVerificationPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function runSystemCheck(id: string) {
+    setBusyId(id);
+    setNotice(null);
+    try {
+      const res = await runHrVendorSystemCheck(id);
+      const stage = res.data?.verification_stage;
+      setNotice(
+        stage === "system_verified"
+          ? "Passed automated checks - ready for HR review."
+          : "Still incomplete - see the notes below for what's missing."
+      );
+      await load();
+    } catch {
+      setNotice("Could not run the system check for this vendor.");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function approve(id: string) {
     setBusyId(id);
@@ -82,7 +101,8 @@ export function VendorVerificationPanel() {
           <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Vendor onboarding</p>
           <h2 className="mt-1 text-xl font-semibold">Verification queue</h2>
           <p className="mt-1 text-sm text-slate-light">
-            Suppliers and subcontractors that passed automated profile/document checks and are awaiting HR review.
+            Every supplier/subcontractor not yet fully verified - including ones added directly by staff, which start
+            here and need a system check before HR can approve them.
           </p>
         </div>
         <button
@@ -108,7 +128,10 @@ export function VendorVerificationPanel() {
         </div>
       ) : (
         <div className="divide-y divide-ink-mid border border-ink-mid bg-ink-light">
-          {queue.map((row) => (
+          {queue.map((row) => {
+            const stage = row.verification_stage as string | undefined;
+            const readyForDecision = stage === "system_verified";
+            return (
             <div key={row.id} className="p-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -117,30 +140,50 @@ export function VendorVerificationPanel() {
                     <span className="border border-ink-mid px-2 py-0.5 font-mono text-[10px] uppercase text-slate-light">
                       {textValue(row.account_type, "vendor")}
                     </span>
+                    <span className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${readyForDecision ? "border border-emerald-500/30 bg-emerald-950/20 text-emerald-300" : "border border-amber-500/30 bg-amber-950/20 text-amber-300"}`}>
+                      {textValue(stage, "incomplete").replace("_", " ")}
+                    </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-light">
                     Reg. {textValue(row.registration_number)} · Tax {textValue(row.tax_clearance_number)} · Verified by system {dateValue(row.system_verified_at)}
                   </p>
                   <p className="mt-1 text-xs text-slate-light">{textValue(row.contact_email)} · {textValue(row.contact_phone)}</p>
+                  {!readyForDecision && row.system_verification_notes && (
+                    <p className="mt-1 text-xs text-amber-300">{row.system_verification_notes}</p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void approve(row.id)}
-                    disabled={busyId === row.id}
-                    className="inline-flex h-9 items-center gap-2 bg-emerald-600 px-3 font-mono text-xs uppercase tracking-widest text-white disabled:opacity-50"
-                  >
-                    {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRejectingId(rejectingId === row.id ? null : row.id)}
-                    className="inline-flex h-9 items-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300 hover:bg-red-950/20"
-                  >
-                    <XCircle className="h-4 w-4" />
-                    Reject
-                  </button>
+                  {readyForDecision ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void approve(row.id)}
+                        disabled={busyId === row.id}
+                        className="inline-flex h-9 items-center gap-2 bg-emerald-600 px-3 font-mono text-xs uppercase tracking-widest text-white disabled:opacity-50"
+                      >
+                        {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRejectingId(rejectingId === row.id ? null : row.id)}
+                        className="inline-flex h-9 items-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300 hover:bg-red-950/20"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        Reject
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void runSystemCheck(row.id)}
+                      disabled={busyId === row.id}
+                      className="inline-flex h-9 items-center gap-2 border border-signal/40 px-3 font-mono text-xs uppercase tracking-widest text-signal hover:bg-signal/10 disabled:opacity-50"
+                    >
+                      {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
+                      Run System Check
+                    </button>
+                  )}
                 </div>
               </div>
               {rejectingId === row.id && (
@@ -163,7 +206,8 @@ export function VendorVerificationPanel() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

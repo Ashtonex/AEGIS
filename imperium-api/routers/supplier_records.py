@@ -10,6 +10,8 @@ from app.shared.sql import (
     update_returning_id_sql,
 )
 from app.services.auth_provisioning import provision_portal_user
+from app.shared.vendor_verification import run_system_verification_check
+from core.logging import logger
 
 router = APIRouter()
 
@@ -83,35 +85,44 @@ async def create_item(
         result = await db.execute(query, params)
         new_id = result.scalar()
 
+        # Always bridge into crm.subcontractors, regardless of whether a
+        # portal login is also requested - suppliers registered here were
+        # previously invisible to the HR vendor-verification queue, which
+        # only reads crm.subcontractors. Mirrors crm.py's create_subcontractor,
+        # which already bridges unconditionally the other direction.
+        subcontractor_row = await db.execute(
+            text("""
+                INSERT INTO crm.subcontractors (
+                    organization_id, created_by, name, contact_name, contact_email, contact_phone,
+                    compliance_status, linked_supplier_id
+                )
+                VALUES (:org_id, :user_id, :name, :contact_name, :contact_email, :contact_phone, :compliance_status, :supplier_id)
+                RETURNING id
+            """),
+            {
+                "org_id": user["org_id"],
+                "user_id": user["sub"],
+                "name": payload.get("supplier_name") or payload.get("primary_contact_name"),
+                "contact_name": payload.get("primary_contact_name"),
+                "contact_email": payload.get("primary_contact_email"),
+                "contact_phone": payload.get("primary_contact_phone"),
+                "compliance_status": payload.get("compliance_status"),
+                "supplier_id": new_id,
+            },
+        )
+        subcontractor_id = subcontractor_row.scalar()
+        try:
+            await run_system_verification_check(
+                db, org_id=user["org_id"], subcontractor_id=str(subcontractor_id)
+            )
+        except Exception:
+            logger.exception(
+                "System verification check failed for newly created subcontractor",
+                subcontractor_id=str(subcontractor_id),
+            )
+
         temp_password = None
         if issue_portal_login:
-            # Portal access is keyed to crm.subcontractors, not
-            # procurement.suppliers directly - bridge a subcontractor
-            # profile the same way Settings > Managed Accounts and the CRM
-            # Subcontractors page do, so this supplier is reachable through
-            # the one portal-access mechanism regardless of entry point.
-            subcontractor_row = await db.execute(
-                text("""
-                    INSERT INTO crm.subcontractors (
-                        organization_id, created_by, name, contact_name, contact_email, contact_phone,
-                        compliance_status, linked_supplier_id
-                    )
-                    VALUES (:org_id, :user_id, :name, :contact_name, :contact_email, :contact_phone, :compliance_status, :supplier_id)
-                    RETURNING id
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "user_id": user["sub"],
-                    "name": payload.get("supplier_name") or payload.get("primary_contact_name"),
-                    "contact_name": payload.get("primary_contact_name"),
-                    "contact_email": payload.get("primary_contact_email"),
-                    "contact_phone": payload.get("primary_contact_phone"),
-                    "compliance_status": payload.get("compliance_status"),
-                    "supplier_id": new_id,
-                },
-            )
-            subcontractor_id = subcontractor_row.scalar()
-
             portal_user_id, temp_password = await provision_portal_user(
                 db,
                 org_id=user["org_id"],

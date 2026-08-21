@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_notification
 from app.shared.pagination import ok
+from app.shared.vendor_verification import run_system_verification_check
 from core.database import get_db
 from core.security import get_current_user, require_permission
 
@@ -35,16 +36,23 @@ class VendorVerificationDecision(BaseModel):
 
 @router.get("/queue", summary="List supplier/subcontractor profiles awaiting HR verification")
 async def list_vendor_verification_queue(
-    stage: Optional[str] = Query(default="system_verified"),
+    stage: Optional[str] = Query(default=None),
     user: dict = Depends(require_permission("hr.vendor_verification.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    """Defaults to every non-terminal stage (incomplete, system_pending,
+    system_verified) - not just system_verified - so vendors created
+    directly by staff (which start at 'incomplete' and have no other
+    trigger to move forward) are visible here instead of invisibly stuck.
+    Pass an explicit stage to narrow to just one."""
     org_id = user["org_id"]
     filters = ["s.organization_id = :org_id", "s.is_deleted = false"]
     params: dict = {"org_id": org_id}
     if stage:
         filters.append("s.verification_stage = :stage")
         params["stage"] = stage
+    else:
+        filters.append("s.verification_stage IN ('incomplete', 'system_pending', 'system_verified')")
     where = " AND ".join(filters)
 
     rows = await db.execute(
@@ -64,6 +72,30 @@ async def list_vendor_verification_queue(
         params,
     )
     return ok([dict(r._mapping) for r in rows], "Vendor verification queue loaded.")
+
+
+@router.post(
+    "/{subcontractor_id}/run-system-check",
+    summary="Run the deterministic profile/document check for a vendor that hasn't gone through the supplier portal",
+)
+async def run_vendor_system_check(
+    subcontractor_id: UUID,
+    user: dict = Depends(require_permission("hr.vendor_verification.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Vendors created directly by staff (crm.py, supplier_records.py) start
+    at verification_stage='incomplete' with no other way to reach
+    'system_verified' since the automated check otherwise only runs from
+    the vendor's own portal self-service action. This lets HR run it
+    on-demand instead."""
+    try:
+        outcome = await run_system_verification_check(
+            db, org_id=user["org_id"], subcontractor_id=str(subcontractor_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    return ok(outcome, "System verification check complete.")
 
 
 @router.post("/{subcontractor_id}/decision", summary="Approve or reject a system-verified vendor profile")

@@ -24,6 +24,7 @@ from core.config import settings
 from core.email import send_email
 from core.security import require_permission
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql
+from app.shared.vendor_verification import run_system_verification_check
 
 logger = structlog.get_logger()
 
@@ -2006,6 +2007,15 @@ async def create_managed_account(
                     "org_id": org_id,
                 },
             )
+            try:
+                await run_system_verification_check(
+                    db, org_id=org_id, subcontractor_id=str(subcontractor_id)
+                )
+            except Exception:
+                logger.exception(
+                    "System verification check failed for newly created subcontractor",
+                    subcontractor_id=str(subcontractor_id),
+                )
             account_id = subcontractor_id
 
         portal_role_name = PORTAL_ROLE_BY_ACCOUNT_TYPE[payload.account_type]

@@ -25,6 +25,8 @@ from app.services.finance.project_forecast import (
 from app.shared.sql import update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
 from app.shared.pursuits import get_or_create_pursuit
+from app.shared.vendor_verification import run_system_verification_check
+from core.logging import logger
 from app.services.auth_provisioning import provision_portal_user
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -2428,6 +2430,23 @@ async def create_subcontractor(
                         subcontractor_id=EXCLUDED.subcontractor_id, is_active=true, updated_at=NOW()
                 """),
                 {"user_id": portal_user_id, "org_id": org_id, "subcontractor_id": subcontractor_id},
+            )
+
+        # Run the same deterministic profile/document check the supplier
+        # portal's self-service "submit for review" runs, since a
+        # staff-created subcontractor otherwise has no path off the
+        # 'incomplete' default and never surfaces in the HR verification
+        # queue. Best-effort: creation must still succeed even if this
+        # fails for some reason (e.g. the vendor has no compliance
+        # documents linked yet - it'll just land at 'system_pending').
+        try:
+            await run_system_verification_check(
+                db, org_id=org_id, subcontractor_id=str(subcontractor_id)
+            )
+        except Exception:
+            logger.exception(
+                "System verification check failed for newly created subcontractor",
+                subcontractor_id=str(subcontractor_id),
             )
 
         await db.commit()

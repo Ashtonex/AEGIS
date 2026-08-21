@@ -12,16 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_role_notification
+from app.shared.vendor_verification import run_system_verification_check
 from core.database import get_db
 from core.security import get_current_user, resolve_primary_role
 
 router = APIRouter()
-
-REQUIRED_VENDOR_PROFILE_FIELDS = (
-    "registration_number", "tax_clearance_number", "nssa_number",
-    "contact_name", "contact_email", "contact_phone", "address",
-)
-REQUIRED_COMPLIANCE_CATEGORIES = ("registration_certificate", "tax_clearance")
 
 _PORTALS = {
     "executive": "/dashboard/executive",
@@ -773,81 +768,20 @@ async def submit_supplier_profile_for_review(
     vendor = await _get_supplier_portal_context(user, db)
     subcontractor_id = vendor["subcontractor_id"]
 
-    profile_row = (
-        await db.execute(
-            text("""
-            SELECT registration_number, tax_clearance_number, nssa_number,
-                   contact_name, contact_email, contact_phone, address
-            FROM crm.subcontractors WHERE id = :id AND organization_id = :org_id
-        """),
-            {"id": subcontractor_id, "org_id": user["org_id"]},
-        )
-    ).first()
-
-    missing = [f for f in REQUIRED_VENDOR_PROFILE_FIELDS if not getattr(profile_row, f, None)]
-
-    doc_rows = await db.execute(
-        text("""
-        SELECT d.category, d.expiry_date
-        FROM core.document_links dl
-        JOIN core.documents d ON d.id = dl.document_id AND d.organization_id = dl.organization_id AND d.is_deleted = false
-        WHERE dl.organization_id = :org_id AND dl.entity_type = 'subcontractor' AND dl.entity_id = :id
-          AND dl.link_role = 'compliance' AND dl.is_deleted = false
-    """),
-        {"org_id": user["org_id"], "id": subcontractor_id},
+    outcome = await run_system_verification_check(
+        db, org_id=user["org_id"], subcontractor_id=subcontractor_id
     )
-    docs = [dict(r._mapping) for r in doc_rows]
-    present_categories = {d["category"] for d in docs if d["category"]}
-    missing_categories = [c for c in REQUIRED_COMPLIANCE_CATEGORIES if c not in present_categories]
-    expired = [d["category"] for d in docs if d["expiry_date"] and d["expiry_date"] < date.today()]
-
-    problems = []
-    if missing:
-        problems.append("Missing profile fields: " + ", ".join(missing))
-    if missing_categories:
-        problems.append("Missing compliance documents: " + ", ".join(missing_categories))
-    if expired:
-        problems.append("Expired compliance documents: " + ", ".join(expired))
-
-    if problems:
-        await db.execute(
-            text("""
-            UPDATE crm.subcontractors
-            SET verification_stage = 'system_pending', system_verification_notes = :notes, updated_at = NOW()
-            WHERE id = :id AND organization_id = :org_id
-        """),
-            {"notes": " | ".join(problems), "id": subcontractor_id, "org_id": user["org_id"]},
-        )
-        await db.commit()
+    await db.commit()
+    if outcome["problems"]:
         return {
             "success": True,
-            "data": {"verification_stage": "system_pending", "problems": problems},
+            "data": outcome,
             "message": "Profile is not yet complete for verification.",
             "meta": {},
         }
-
-    await db.execute(
-        text("""
-        UPDATE crm.subcontractors
-        SET verification_stage = 'system_verified', system_verified_at = NOW(),
-            system_verification_notes = NULL, updated_at = NOW()
-        WHERE id = :id AND organization_id = :org_id
-    """),
-        {"id": subcontractor_id, "org_id": user["org_id"]},
-    )
-    await emit_role_notification(
-        db,
-        org_id=user["org_id"],
-        role_names=["HR Manager", "HR Officer"],
-        title="Vendor profile ready for verification",
-        message=f"{vendor['name']} passed automated checks and is awaiting HR verification.",
-        notification_type="vendor_verification",
-        action_url="/dashboard/hr/vendor-verification",
-    )
-    await db.commit()
     return {
         "success": True,
-        "data": {"verification_stage": "system_verified"},
+        "data": outcome,
         "message": "Profile passed automated checks and has been sent to HR for verification.",
         "meta": {},
     }
