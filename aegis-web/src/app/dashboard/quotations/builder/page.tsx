@@ -295,7 +295,7 @@ export default function QuotationBuilder() {
   // Resolves a tender/opportunity/lead/project source and, if a quotation
   // already exists for it, resumes that draft instead of letting the user
   // start a duplicate one - the actual anti-duplication mechanism.
-  const handleSourceSelect = async (type: "project" | "tender" | "opportunity" | "lead", id: string) => {
+  const handleSourceSelect = useCallback(async (type: "project" | "tender" | "opportunity" | "lead", id: string) => {
     setSourceType(type);
     setSourceId(id);
     setSourceNotice("");
@@ -309,13 +309,13 @@ export default function QuotationBuilder() {
     } catch {
       // Non-blocking: if the lookup fails, let the user continue with a fresh draft.
     }
-  };
+  }, [editId, router]);
 
   // Auto-select the source when arriving from the "Needs BOQ" queue.
   useEffect(() => {
     if (editId || !paramSourceType || !paramSourceId) return;
     void handleSourceSelect(paramSourceType as any, paramSourceId);
-  }, [editId, paramSourceType, paramSourceId]);
+  }, [editId, handleSourceSelect, paramSourceType, paramSourceId]);
 
   // Mathematics buildup - MUST mirror QuotationCalculator.calculate() in
   // imperium-api/app/services/quotations/calculator.py exactly, or this live
@@ -426,7 +426,11 @@ export default function QuotationBuilder() {
     setErrorMsg("");
     setSuccessMsg("");
     try {
-      const res = await importBoqFile(file);
+      const res = await importBoqFile(file, {
+        source_type: sourceType,
+        source_id: sourceId || selectedProjectId || paramSourceId,
+        task_id: paramTaskId,
+      });
       const items = res.data?.items || [];
       if (items.length > 0) {
         setBoqPreview({

@@ -16,6 +16,7 @@ from core.database import get_db
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
 from app.shared.sql import safe_payload_columns, update_tenant_row_sql
+from app.shared.hr_self_service import resolve_own_employee_id
 
 router = APIRouter()
 
@@ -646,4 +647,28 @@ async def record_attendance(
         },
     )
     await db.commit()
+    return result({"id": str(row.scalar())}, "Attendance event recorded.")
+
+
+@router.get("/me/attendance")
+async def list_my_attendance(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Self-service: the caller's own attendance history. No require_permission -
+    scoped entirely by resolve_own_employee_id, never a client-supplied
+    employee_id, so nobody can read anyone else's attendance through this."""
+    employee_id = await resolve_own_employee_id(db, org_id=user["org_id"], user_id=user["user_id"])
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
+    rows = await db.execute(
+        text("""
+            SELECT * FROM hr.attendance_records
+            WHERE organization_id = :org_id AND employee_id = :employee_id AND is_deleted = false
+            ORDER BY attendance_date DESC
+        """),
+        {"org_id": user["org_id"], "employee_id": employee_id},
+    )
+    data = [dict(row._mapping) for row in rows]
+    return result(data, "Attendance records listed.", len(data))
     return result({"id": str(row.scalar())}, "Attendance event recorded.")

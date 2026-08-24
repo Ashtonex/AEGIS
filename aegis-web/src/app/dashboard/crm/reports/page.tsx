@@ -260,7 +260,7 @@ function ReportsWorkspace() {
 
 export default function CrmReportsPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "SUPERADMIN"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Tender / Bid Manager", "Executive Read Only", "SUPERADMIN"]}>
       <ReportsWorkspace />
     </RBACGuard>
   );

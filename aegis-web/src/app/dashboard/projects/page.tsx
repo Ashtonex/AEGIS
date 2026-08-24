@@ -29,6 +29,7 @@ import {
   Info as InfoIcon,
   Building2,
   Calendar,
+  ClipboardCheck,
   Trash2
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
@@ -38,6 +39,8 @@ import {
   deleteInternalProject, updateProjectIntake, commitProjectIntake, getProjectLifecycle, addProjectMilestone,
   updateProjectMilestone, getAssignableUsers, getAssignment, getProductionExpenses, addProductionExpense,
   getProductionRevenue, addProductionRevenue,
+  updateProjectPreMobilisationCheck, approveProjectPreMobilisation,
+  getProjectCommercialReadiness, updateProjectCommercialReadiness, clearProjectCommercialReadiness,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -46,6 +49,7 @@ import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPane
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 
 const FINANCE_SIGNOFF_ROLES = new Set(["Finance Manager", "Executive (Admin)", "SUPERADMIN"]);
+const COMMERCIAL_READINESS_ROLES = new Set(["Commercial Manager", "Contracts Manager", "Quantity Surveyor", "Executive (Admin)", "SUPERADMIN"]);
 
 type Project = Record<string, unknown> & {
   id: string;
@@ -82,7 +86,46 @@ type Detail = Record<string, unknown> & {
   quotations?: Record<string, unknown>[]; 
   procurement_orders?: Record<string, unknown>[]; 
   tenders?: Record<string, unknown>[]; 
-  subcontractors?: Record<string, unknown>[] 
+  subcontractors?: Record<string, unknown>[];
+  pre_mobilisation?: PreMobilisationReadiness;
+  commercial_readiness?: CommercialReadiness;
+};
+
+type PreMobilisationCheck = Record<string, unknown> & {
+  id: string;
+  check_name?: string;
+  status?: string;
+  evidence_reference?: string;
+  mandatory_evidence?: string;
+};
+
+type PreMobilisationReadiness = {
+  checks: PreMobilisationCheck[];
+  total: number;
+  ready_count: number;
+  missing: string[];
+  evidence_missing: string[];
+  ready: boolean;
+};
+
+type CommercialReadinessControl = {
+  key: string;
+  label: string;
+  complete: boolean;
+};
+
+type CommercialReadiness = {
+  status?: string;
+  pack?: Record<string, unknown>;
+  controls?: CommercialReadinessControl[];
+  authority_status?: string;
+  blockers?: string[];
+  ready_count?: number;
+  total?: number;
+  ready?: boolean;
+  clearance_statement?: Record<string, unknown>;
+  cleared_at?: string;
+  cleared_by?: string;
 };
 
 type ProjectTab = "overview" | "schedule" | "financials" | "materials";
@@ -130,7 +173,7 @@ function projectDetailRefs(project: Project): string[] {
 
 export default function ProjectsDashboard() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Contracts Manager", "Commercial Manager", "Executive Read Only", "External Auditor"]}>
       <ProjectsWorkspace />
     </RBACGuard>
   );
@@ -199,11 +242,24 @@ function ProjectsWorkspace() {
     setDetailLoading(true);
     const refs = projectDetailRefs(project);
     let lastError: unknown = null;
+    const mergeLifecycle = async (base: Detail, ref: string): Promise<Detail> => {
+      try {
+        const lifecycle = await getProjectLifecycle(ref);
+        const lifecycleData = (lifecycle.data ?? {}) as Detail;
+        return {
+          ...base,
+          ...lifecycleData,
+          project: (lifecycleData.project as Project | undefined) ?? base.project,
+        };
+      } catch {
+        return base;
+      }
+    };
     try { 
       for (const ref of refs) {
         try {
           const response = await getExecutiveProjectDetail(ref);
-          setDetail(response.data);
+          setDetail(await mergeLifecycle(response.data as Detail, ref));
           return;
         } catch (err) {
           lastError = err;
@@ -214,7 +270,7 @@ function ProjectsWorkspace() {
           const response = await getProject(ref);
           if (response.success && response.data) {
             const fallbackProject = response.data as unknown as Project;
-            setDetail({
+            setDetail(await mergeLifecycle({
               project: fallbackProject,
               viability: [],
               tests_and_checks: [],
@@ -224,7 +280,7 @@ function ProjectsWorkspace() {
               procurement_orders: [],
               tenders: [],
               subcontractors: []
-            });
+            }, ref));
             return;
           }
         } catch (err) {
@@ -419,6 +475,10 @@ function ProjectsWorkspace() {
             setSelected((prev) => (prev ? { ...prev, department_id: deptId } : prev));
             setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, department_id: deptId } : p)));
           }}
+          onProjectUpdated={(patch) => {
+            setSelected((prev) => (prev ? { ...prev, ...patch } : prev));
+            setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, ...patch } : p)));
+          }}
           detail={detail}
           loading={detailLoading}
           error={detailError}
@@ -431,11 +491,12 @@ function ProjectsWorkspace() {
   );
 }
 
-const PIPELINE_STAGES = ["planning", "pending_deposit", "active", "on_hold", "completed", "cancelled"];
+const PIPELINE_STAGES = ["planning", "pending_deposit", "pre_mobilisation", "active", "on_hold", "completed", "cancelled"];
 
 const PIPELINE_STAGE_LABELS: Record<string, string> = {
   planning: "Planning",
   pending_deposit: "Pending Deposit",
+  pre_mobilisation: "Pre-Mobilisation",
   active: "Active",
   on_hold: "On Hold",
   completed: "Completed",
@@ -1047,7 +1108,7 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
     setBusy(true); setMsg(null);
     try {
       await confirmProjectDeposit(projectId, { deposit_reference: depositReference || undefined });
-      setMsg("Deposit confirmed. Project is now active.");
+      setMsg("Deposit confirmed. Pre-mobilisation gate opened.");
       setDepositReference("");
       onRefresh();
     } catch (e) {
@@ -1148,7 +1209,7 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
       {isPendingDeposit && (
         <div className="border-t border-ink-mid/50 pt-3">
           <p className="mb-2 text-xs text-slate-light">
-            This project was created from a won deal and is pending deposit confirmation - it stays visible but Finance must confirm the deposit before it&apos;s treated as financially active.
+            This project was created from a won deal and is pending deposit confirmation. Once Finance confirms receipt, it moves into the pre-mobilisation readiness gate before active delivery.
           </p>
           {isFinance ? (
             <div className="flex items-end gap-3">
@@ -1183,6 +1244,351 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
   );
 }
 
+function CommercialReadinessPanel({
+  project,
+  readiness,
+  canManage,
+  onRefresh,
+}: {
+  project: Project;
+  readiness?: CommercialReadiness;
+  canManage: boolean;
+  onRefresh: () => void;
+}) {
+  const projectId = String(project.id ?? "");
+  const [current, setCurrent] = useState<CommercialReadiness | undefined>(readiness);
+  const [controls, setControls] = useState<Record<string, boolean>>({});
+  const [authorityStatus, setAuthorityStatus] = useState("");
+  const [statement, setStatement] = useState({
+    authority_relied_upon: "",
+    approved_contract_value: "",
+    approved_commercial_baseline: "",
+    expected_margin: "",
+    mobilisation_budget: "",
+    peak_working_capital_requirement: "",
+    payment_and_retention_conditions: "",
+    major_commercial_risks: "",
+    outstanding_conditions: "",
+    temporary_controls: "",
+    named_risk_owners: "",
+  });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setCurrent(readiness);
+  }, [readiness]);
+
+  useEffect(() => {
+    const next: Record<string, boolean> = {};
+    for (const control of current?.controls ?? []) {
+      next[control.key] = Boolean(control.complete);
+    }
+    setControls(next);
+    setAuthorityStatus(String(current?.authority_status ?? current?.pack?.authority_status ?? ""));
+  }, [current]);
+
+  const refreshCommercial = async () => {
+    if (!projectId) return;
+    try {
+      const res = await getProjectCommercialReadiness(projectId);
+      setCurrent(res.data as CommercialReadiness);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Commercial readiness is unavailable.");
+    }
+  };
+
+  const save = async () => {
+    setBusy("save"); setMsg(null);
+    try {
+      const res = await updateProjectCommercialReadiness(projectId, {
+        readiness_pack: controls,
+        authority_status: authorityStatus || undefined,
+      });
+      setCurrent(res.data as CommercialReadiness);
+      setMsg("Commercial readiness saved.");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to save Commercial readiness.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const lines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean);
+  const numberOrUndefined = (value: string) => value ? Number(value) : undefined;
+
+  const clear = async () => {
+    if (!statement.authority_relied_upon.trim()) {
+      setMsg("Authority relied upon is required.");
+      return;
+    }
+    setBusy("clear"); setMsg(null);
+    try {
+      const res = await clearProjectCommercialReadiness(projectId, {
+        authority_relied_upon: statement.authority_relied_upon,
+        approved_contract_value: numberOrUndefined(statement.approved_contract_value),
+        approved_commercial_baseline: statement.approved_commercial_baseline || undefined,
+        expected_margin: numberOrUndefined(statement.expected_margin),
+        mobilisation_budget: numberOrUndefined(statement.mobilisation_budget),
+        peak_working_capital_requirement: numberOrUndefined(statement.peak_working_capital_requirement),
+        payment_and_retention_conditions: statement.payment_and_retention_conditions || undefined,
+        major_commercial_risks: lines(statement.major_commercial_risks),
+        outstanding_conditions: lines(statement.outstanding_conditions),
+        temporary_controls: lines(statement.temporary_controls),
+        named_risk_owners: lines(statement.named_risk_owners),
+      });
+      setCurrent(res.data as CommercialReadiness);
+      setMsg("Commercial readiness cleared.");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to clear Commercial readiness.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const controlsList = current?.controls ?? [];
+  const blockers = current?.blockers ?? [];
+  const clearedAt = text(current?.cleared_at, "");
+
+  return (
+    <section className="border border-cyan-500/30 bg-cyan-950/10 p-4">
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-cyan-300">
+            <BriefcaseBusiness className="h-4 w-4" />Commercial Readiness Pack
+          </h3>
+          <p className="mt-1 text-xs text-slate-light">
+            Contract, baseline, cash-flow, valuation, variation and claims controls must be cleared before mobilisation.
+          </p>
+        </div>
+        <button onClick={() => void refreshCommercial()} disabled={busy === "load"} className="h-8 border border-cyan-500/40 px-2 font-mono text-[10px] uppercase tracking-wider text-cyan-300 disabled:opacity-50">
+          Refresh
+        </button>
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        <span className={`border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${current?.status === "cleared" ? "border-emerald-500/40 text-emerald-300" : blockers.length ? "border-red-500/40 text-red-300" : "border-cyan-500/40 text-cyan-300"}`}>
+          {current?.status ?? "not_started"}
+        </span>
+        <span className="border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-slate-light">
+          {current?.ready_count ?? 0}/{current?.total ?? controlsList.length} controls ready
+        </span>
+        {clearedAt ? <span className="border border-emerald-500/40 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-emerald-300">Cleared {formatDate(clearedAt)}</span> : null}
+      </div>
+
+      {blockers.length ? (
+        <div className="mb-4 border border-red-500/30 bg-red-950/20 p-3">
+          <p className="mb-2 flex items-center gap-2 text-xs font-semibold text-red-200"><AlertCircle className="h-4 w-4" />Mobilisation blockers</p>
+          <ul className="space-y-1 text-xs text-red-100">
+            {blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        {controlsList.map((control) => (
+          <label key={control.key} className="flex items-start gap-3 border border-ink-mid bg-ink/60 p-3 text-sm text-paper">
+            <input
+              type="checkbox"
+              checked={Boolean(controls[control.key])}
+              disabled={!canManage || current?.status === "cleared"}
+              onChange={(e) => setControls((prev) => ({ ...prev, [control.key]: e.target.checked }))}
+              className="mt-1 h-4 w-4 accent-cyan-400"
+            />
+            <span>
+              <span className="block font-medium">{control.label}</span>
+              <span className="mt-1 block text-xs text-slate-light">{controls[control.key] ? "Complete" : "Open"}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      {canManage && current?.status !== "cleared" ? (
+        <div className="mt-4 grid gap-3 border-t border-ink-mid/60 pt-4 md:grid-cols-2">
+          <select value={authorityStatus} onChange={(e) => setAuthorityStatus(e.target.value)} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
+            <option value="">Authority status</option>
+            <option value="fully_executed">Fully executed contract</option>
+            <option value="awarded_subject_to_conditions">Awarded subject to conditions</option>
+            <option value="letter_of_intent_only">Letter of intent only</option>
+            <option value="purchase_order_only">Purchase order only</option>
+            <option value="verbal_instruction">Verbal instruction</option>
+            <option value="commercially_unacceptable">Commercially unacceptable</option>
+          </select>
+          <button onClick={() => void save()} disabled={busy === "save"} className="h-10 border border-cyan-500/40 px-3 font-mono text-xs font-bold uppercase text-cyan-300 disabled:opacity-50">
+            {busy === "save" ? "Saving..." : "Save Commercial Pack"}
+          </button>
+          <input value={statement.authority_relied_upon} onChange={(e) => setStatement((prev) => ({ ...prev, authority_relied_upon: e.target.value }))} placeholder="Authority relied upon" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper md:col-span-2" />
+          <input value={statement.approved_contract_value} onChange={(e) => setStatement((prev) => ({ ...prev, approved_contract_value: e.target.value }))} type="number" min="0" placeholder="Approved contract value" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={statement.approved_commercial_baseline} onChange={(e) => setStatement((prev) => ({ ...prev, approved_commercial_baseline: e.target.value }))} placeholder="Approved baseline reference" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={statement.expected_margin} onChange={(e) => setStatement((prev) => ({ ...prev, expected_margin: e.target.value }))} type="number" placeholder="Expected margin %" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={statement.mobilisation_budget} onChange={(e) => setStatement((prev) => ({ ...prev, mobilisation_budget: e.target.value }))} type="number" min="0" placeholder="Mobilisation budget" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input value={statement.peak_working_capital_requirement} onChange={(e) => setStatement((prev) => ({ ...prev, peak_working_capital_requirement: e.target.value }))} type="number" placeholder="Peak working capital requirement" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper md:col-span-2" />
+          <textarea value={statement.payment_and_retention_conditions} onChange={(e) => setStatement((prev) => ({ ...prev, payment_and_retention_conditions: e.target.value }))} placeholder="Payment and retention conditions" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper md:col-span-2" />
+          <textarea value={statement.major_commercial_risks} onChange={(e) => setStatement((prev) => ({ ...prev, major_commercial_risks: e.target.value }))} placeholder="Major commercial risks, one per line" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper" />
+          <textarea value={statement.outstanding_conditions} onChange={(e) => setStatement((prev) => ({ ...prev, outstanding_conditions: e.target.value }))} placeholder="Outstanding conditions, one per line" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper" />
+          <textarea value={statement.temporary_controls} onChange={(e) => setStatement((prev) => ({ ...prev, temporary_controls: e.target.value }))} placeholder="Temporary controls, one per line" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper" />
+          <textarea value={statement.named_risk_owners} onChange={(e) => setStatement((prev) => ({ ...prev, named_risk_owners: e.target.value }))} placeholder="Named risk owners, one per line" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper" />
+          <button onClick={() => void clear()} disabled={busy === "clear" || !current?.ready} className="h-10 bg-emerald-500 px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50 md:col-span-2">
+            {busy === "clear" ? "Clearing..." : "Clear Commercial Readiness"}
+          </button>
+        </div>
+      ) : null}
+
+      {!canManage && current?.status !== "cleared" ? (
+        <p className="mt-3 text-xs text-slate-light">Commercial clearance is waiting on Commercial, Contracts or Quantity Surveying.</p>
+      ) : null}
+      {msg ? <p className="mt-3 text-xs text-slate-light">{msg}</p> : null}
+    </section>
+  );
+}
+
+function PreMobilisationPanel({
+  project,
+  readiness,
+  isApprover,
+  onRefresh,
+}: {
+  project: Project;
+  readiness?: PreMobilisationReadiness;
+  isApprover: boolean;
+  onRefresh: () => void;
+}) {
+  const checks = useMemo(() => readiness?.checks ?? [], [readiness?.checks]);
+  const [formById, setFormById] = useState<Record<string, { status: string; evidence_reference: string }>>({});
+  const [approval, setApproval] = useState({ mobilisation_date: "", mobilisation_budget: "", conditions: "", residual_risk_notes: "" });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const approvedAt = text(project.mobilisation_approved_at as string | undefined, "");
+  const projectId = String(project.id ?? "");
+
+  useEffect(() => {
+    const next: Record<string, { status: string; evidence_reference: string }> = {};
+    for (const check of checks) {
+      next[String(check.id)] = {
+        status: text(check.status, "incomplete"),
+        evidence_reference: text(check.evidence_reference, ""),
+      };
+    }
+    setFormById(next);
+  }, [checks]);
+
+  const updateCheck = async (checkId: string) => {
+    const form = formById[checkId];
+    if (!form) return;
+    setBusy(checkId); setMsg(null);
+    try {
+      await updateProjectPreMobilisationCheck(projectId, checkId, {
+        status: form.status,
+        evidence_reference: form.evidence_reference || undefined,
+      });
+      setMsg("Readiness check updated.");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to update readiness check.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const approve = async () => {
+    if (!approval.mobilisation_date) {
+      setMsg("Approved mobilisation date is required.");
+      return;
+    }
+    setBusy("approve"); setMsg(null);
+    try {
+      await approveProjectPreMobilisation(projectId, {
+        mobilisation_date: approval.mobilisation_date,
+        mobilisation_budget: approval.mobilisation_budget ? Number(approval.mobilisation_budget) : undefined,
+        conditions: approval.conditions || undefined,
+        residual_risk_notes: approval.residual_risk_notes || undefined,
+      });
+      setMsg("Mobilisation authorised. Project is now active.");
+      onRefresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Failed to authorise mobilisation.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="border border-amber-500/30 bg-amber-950/10 p-4">
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-amber-300">
+            <ClipboardCheck className="h-4 w-4" />Pre-Mobilisation Readiness Gate
+          </h3>
+          <p className="mt-1 text-xs text-slate-light">
+            Mobilisation is blocked until all required gates have evidence and the final authorisation is issued.
+          </p>
+        </div>
+        <span className={`w-fit border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${readiness?.ready ? "border-emerald-500/40 text-emerald-300" : "border-amber-500/40 text-amber-300"}`}>
+          {readiness?.ready ? "Ready for approval" : `${readiness?.ready_count ?? 0}/${readiness?.total ?? 0} ready`}
+        </span>
+      </div>
+
+      {approvedAt ? (
+        <div className="mb-4 border border-emerald-500/30 bg-emerald-950/20 p-3 text-xs text-emerald-200">
+          Authorised {formatDate(approvedAt)} under {text(project.mobilisation_authorisation_number as string | undefined, "mobilisation order")}.
+        </div>
+      ) : null}
+
+      <div className="space-y-3">
+        {checks.length === 0 ? (
+          <p className="text-xs text-slate-light">No readiness checks have been opened yet. Confirm the project deposit or refresh the lifecycle record.</p>
+        ) : checks.map((check) => {
+          const checkId = String(check.id);
+          const form = formById[checkId] ?? { status: text(check.status, "incomplete"), evidence_reference: text(check.evidence_reference, "") };
+          return (
+            <div key={checkId} className="grid gap-3 border border-ink-mid bg-ink/60 p-3 lg:grid-cols-[minmax(0,1.4fr)_180px_minmax(0,1.4fr)_auto] lg:items-center">
+              <div>
+                <p className="text-sm font-medium text-paper">{text(check.check_name, "Readiness check")}</p>
+                <p className="mt-1 text-xs text-slate-light">{text(check.mandatory_evidence, "Evidence required")}</p>
+              </div>
+              <select
+                value={form.status}
+                onChange={(e) => setFormById((prev) => ({ ...prev, [checkId]: { ...form, status: e.target.value } }))}
+                className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper"
+              >
+                <option value="incomplete">Incomplete</option>
+                <option value="complete">Complete</option>
+                <option value="complete_with_conditions">Complete with conditions</option>
+                <option value="not_applicable">Not applicable</option>
+              </select>
+              <input
+                value={form.evidence_reference}
+                onChange={(e) => setFormById((prev) => ({ ...prev, [checkId]: { ...form, evidence_reference: e.target.value } }))}
+                placeholder="Document, register or approval reference"
+                className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper"
+              />
+              <button onClick={() => void updateCheck(checkId)} disabled={busy === checkId} className="h-9 border border-signal/40 px-3 font-mono text-[10px] uppercase tracking-wider text-signal disabled:opacity-50">
+                {busy === checkId ? "Saving" : "Save"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {isApprover && !approvedAt ? (
+        <div className="mt-4 grid gap-3 border-t border-ink-mid/60 pt-4 md:grid-cols-2">
+          <input type="date" value={approval.mobilisation_date} onChange={(e) => setApproval((prev) => ({ ...prev, mobilisation_date: e.target.value }))} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <input type="number" min="0" value={approval.mobilisation_budget} onChange={(e) => setApproval((prev) => ({ ...prev, mobilisation_budget: e.target.value }))} placeholder="Mobilisation budget (optional)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+          <textarea value={approval.conditions} onChange={(e) => setApproval((prev) => ({ ...prev, conditions: e.target.value }))} placeholder="Conditions to close after mobilisation" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper md:col-span-2" />
+          <textarea value={approval.residual_risk_notes} onChange={(e) => setApproval((prev) => ({ ...prev, residual_risk_notes: e.target.value }))} placeholder="Residual risk accepted by executive" className="min-h-20 border border-ink-mid bg-ink-light p-3 text-sm text-paper md:col-span-2" />
+          <button onClick={() => void approve()} disabled={busy === "approve" || !readiness?.ready} className="h-10 bg-emerald-500 px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50 md:col-span-2">
+            {busy === "approve" ? "Authorising..." : "Authorise Mobilisation"}
+          </button>
+        </div>
+      ) : null}
+
+      {msg ? <p className="mt-3 text-xs text-slate-light">{msg}</p> : null}
+    </section>
+  );
+}
+
 interface GanttMilestone {
   id: string;
   name: string;
@@ -1193,6 +1599,14 @@ interface GanttMilestone {
   forecastWeek: number | null;
   actualWeek: number | null;
 }
+
+const NEXT_MILESTONE_STATUS: Record<GanttMilestone["status"], GanttMilestone["status"]> = {
+  not_started: "in_progress",
+  in_progress: "complete",
+  complete: "not_started",
+  blocked: "in_progress",
+  cancelled: "not_started",
+};
 
 /** A point marker for a single milestone date on the 16-week Gantt axis - a
  * milestone is a date, not a duration, so it's plotted as a dot, not a bar.
@@ -1288,6 +1702,7 @@ function ProjectDetail({
   onClose,
   departments,
   onDepartmentChange,
+  onProjectUpdated,
   onRefresh,
   onDeleted,
 }: {
@@ -1298,6 +1713,7 @@ function ProjectDetail({
   onClose: () => void;
   departments: Department[];
   onDepartmentChange: (departmentId: string) => void;
+  onProjectUpdated: (patch: Partial<Project>) => void;
   onRefresh: () => void;
   onDeleted: () => void;
 }) {
@@ -1362,14 +1778,16 @@ function ProjectDetail({
     setRegionSaving(true);
     setRegionError(null);
     try {
-      await updateInternalProject(project.id, { region: region || null });
+      const response = await updateInternalProject(project.id, { region: region || null });
+      const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
       setRegionOverride(region);
+      onProjectUpdated({ region: (saved.region as string | undefined) ?? region });
     } catch (err) {
       setRegionError("Failed to update region.");
     } finally {
       setRegionSaving(false);
     }
-  }, [project.id]);
+  }, [project.id, onProjectUpdated]);
 
   const [coords, setCoords] = useState({ latitude: "", longitude: "" });
   const [coordsSaving, setCoordsSaving] = useState(false);
@@ -1396,14 +1814,19 @@ function ProjectDetail({
     setCoordsSaving(true);
     setCoordsError(null);
     try {
-      await updateInternalProject(project.id, { latitude: latNum, longitude: longNum });
+      const response = await updateInternalProject(project.id, { latitude: latNum, longitude: longNum });
+      const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
+      onProjectUpdated({
+        latitude: saved.latitude ?? latNum ?? undefined,
+        longitude: saved.longitude ?? longNum ?? undefined,
+      });
       setCoordsDirty(false);
     } catch (err) {
       setCoordsError("Failed to update coordinates.");
     } finally {
       setCoordsSaving(false);
     }
-  }, [coords, project.id]);
+  }, [coords, project.id, onProjectUpdated]);
 
   const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials" | "documents" | "assign">("overview");
 
@@ -1521,14 +1944,6 @@ function ProjectDetail({
   }, [milestones, scheduleStatusFilter]);
 
   const [showAddMilestone, setShowAddMilestone] = useState(false);
-
-  const NEXT_MILESTONE_STATUS: Record<GanttMilestone["status"], GanttMilestone["status"]> = {
-    not_started: "in_progress",
-    in_progress: "complete",
-    complete: "not_started",
-    blocked: "in_progress",
-    cancelled: "not_started",
-  };
 
   const progressMilestone = useCallback(async (m: GanttMilestone) => {
     const nextStatus = NEXT_MILESTONE_STATUS[m.status];
@@ -1817,6 +2232,24 @@ function ProjectDetail({
                     onRefresh={onRefresh}
                   />
                 )}
+
+                {(source.status === "pending_deposit" || source.status === "pre_mobilisation" || detail?.commercial_readiness || source.commercial_cleared_at) ? (
+                  <CommercialReadinessPanel
+                    project={source}
+                    readiness={detail?.commercial_readiness}
+                    canManage={COMMERCIAL_READINESS_ROLES.has(role ?? "")}
+                    onRefresh={onRefresh}
+                  />
+                ) : null}
+
+                {(source.status === "pre_mobilisation" || detail?.pre_mobilisation?.checks?.length || source.mobilisation_approved_at) ? (
+                  <PreMobilisationPanel
+                    project={source}
+                    readiness={detail?.pre_mobilisation}
+                    isApprover={FINANCE_SIGNOFF_ROLES.has(role ?? "")}
+                    onRefresh={onRefresh}
+                  />
+                ) : null}
 
                 <section>
                   <h3 className="mb-3 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-signal">

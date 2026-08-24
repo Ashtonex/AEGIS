@@ -147,7 +147,7 @@ function statusClass(status: string) {
 
 export default function FinanceDashboard() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Contracts Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
       <FinanceWorkspace />
     </RBACGuard>
   );

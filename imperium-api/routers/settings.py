@@ -1125,9 +1125,14 @@ async def _create_employee_record(
     db: AsyncSession,
     org_id: str,
     created_by: str,
-    employee: ManagedAccountEmployeePayload,
+    full_name: str,
+    job_title: Optional[str],
     user_id: UUID,
 ) -> UUID:
+    """Bridges a core.users login to an hr.employees workforce record via
+    linked_user_id. Idempotent - ON CONFLICT DO NOTHING then look up the
+    existing row - so it's safe to call more than once for the same user
+    (e.g. if invite_user retries)."""
     row = await db.execute(
         text("""
         INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, linked_user_id, employment_status)
@@ -1138,8 +1143,8 @@ async def _create_employee_record(
         {
             "org_id": org_id,
             "user_id": created_by,
-            "employee_name": employee.full_name,
-            "job_title": employee.job_title,
+            "employee_name": full_name,
+            "job_title": job_title,
             "linked_user_id": user_id,
         },
     )
@@ -1623,6 +1628,19 @@ async def invite_user(
         )
         if payload.role_ids:
             await _assign_roles(db, org_id, invited_user_id, payload.role_ids)
+        # Bridges the login into the HR workforce register so Employee
+        # Register/Attendance/Leave/Payroll (all keyed off hr.employees) work
+        # for this person from day one - best-effort, since a hiccup here
+        # must never block account creation itself.
+        try:
+            await _create_employee_record(
+                db, org_id, user["user_id"], payload.full_name, None, invited_user_id
+            )
+        except Exception:
+            logger.exception(
+                "Failed to auto-create hr.employees record for invited user",
+                invited_user_id=str(invited_user_id),
+            )
         await _write_audit(
             db,
             user,
@@ -2061,7 +2079,7 @@ async def create_managed_account(
                     )
             else:
                 employee_id = await _create_employee_record(
-                    db, org_id, user["user_id"], employee, invited_user_id
+                    db, org_id, user["user_id"], employee.full_name, employee.job_title, invited_user_id
                 )
                 if employee.portal_access and subcontractor_id:
                     await db.execute(

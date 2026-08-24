@@ -355,6 +355,197 @@ async def create_communication(
     return _response({"id": str(communication_id)}, "CRM communication logged.")
 
 
+@router.get("/portal-inbox")
+async def list_portal_inbox(
+    limit: int = Query(default=100, ge=1, le=300),
+    user: dict = Depends(require_permission("crm_communications.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Staff-facing read model for portal-originated work."""
+    rows = (
+        await db.execute(
+            text("""
+            WITH portal_items AS (
+              SELECT
+                ce.id,
+                'client_message'::text AS item_type,
+                'Client message'::text AS item_label,
+                COALESCE(ce.subject, 'Client portal message') AS title,
+                ce.body AS detail,
+                COALESCE(c.company_name, org.name, c.contact_name, ce.from_address) AS party_name,
+                NULL::text AS project_name,
+                ce.status,
+                ce.started_at AS occurred_at,
+                0::integer AS document_count,
+                '/dashboard/messages'::text AS action_url,
+                'Message received from the client portal.'::text AS control_note
+              FROM crm.communication_events ce
+              LEFT JOIN crm.contacts c ON c.id = ce.contact_id AND c.organization_id = ce.organization_id
+              LEFT JOIN crm.organizations org ON org.id = c.client_org_id AND org.organization_id = ce.organization_id
+              WHERE ce.organization_id = :org_id
+                AND ce.is_deleted = false
+                AND ce.channel = 'portal_message'
+
+              UNION ALL
+
+              SELECT
+                t.id,
+                CASE WHEN t.category = 'additional_request' THEN 'client_request' ELSE 'client_issue' END,
+                CASE WHEN t.category = 'additional_request' THEN 'Client request' ELSE 'Client issue' END,
+                COALESCE(t.subject, 'Client portal ticket'),
+                t.description,
+                COALESCE(c.company_name, org.name, c.contact_name),
+                p.name,
+                t.status,
+                t.created_at,
+                COALESCE((
+                  SELECT COUNT(*)::integer
+                  FROM core.document_links dl
+                  WHERE dl.organization_id = t.organization_id
+                    AND dl.entity_type = 'support_ticket'
+                    AND dl.entity_id = t.id
+                    AND dl.is_deleted = false
+                ), 0),
+                '/dashboard/crm/tickets',
+                'Handle the ticket in CRM. Client-visible replies should be posted from the ticket thread.'
+              FROM crm.support_tickets t
+              LEFT JOIN crm.contacts c ON c.id = t.contact_id AND c.organization_id = t.organization_id
+              LEFT JOIN crm.organizations org ON org.id = c.client_org_id AND org.organization_id = t.organization_id
+              LEFT JOIN projects.projects p ON p.id = t.project_id AND p.organization_id = t.organization_id
+              WHERE t.organization_id = :org_id
+                AND t.is_deleted = false
+                AND t.created_by IN (
+                  SELECT user_id FROM crm.client_portal_access
+                  WHERE organization_id = :org_id AND is_active = true
+                )
+
+              UNION ALL
+
+              SELECT
+                v.id,
+                'client_variation',
+                'Client variation',
+                COALESCE(v.variation_number || ' - ' || v.title, v.title),
+                v.description,
+                COALESCE(org.name, c.company_name),
+                p.name,
+                v.status,
+                COALESCE(v.submitted_at, v.created_at),
+                COALESCE((
+                  SELECT COUNT(*)::integer
+                  FROM core.document_links dl
+                  WHERE dl.organization_id = v.organization_id
+                    AND dl.entity_type = 'variation'
+                    AND dl.entity_id = v.id
+                    AND dl.is_deleted = false
+                ), 0),
+                '/dashboard/finance?tab=variations',
+                'Approvals stay in Finance. Client-required variations must be client-approved before internal approval changes project figures.'
+              FROM finance.variations v
+              JOIN projects.projects p ON p.id = v.project_id AND p.organization_id = v.organization_id
+              LEFT JOIN crm.organizations org ON org.id = p.client_org_id AND org.organization_id = p.organization_id
+              LEFT JOIN crm.contacts c ON c.client_org_id = p.client_org_id AND c.organization_id = p.organization_id
+              WHERE v.organization_id = :org_id
+                AND v.is_deleted = false
+                AND v.initiated_by = 'client'
+
+              UNION ALL
+
+              SELECT
+                rr.id,
+                'supplier_rfq_response',
+                'Supplier RFQ response',
+                COALESCE(rfq.rfq_number || ' - ' || rfq.title, rfq.title),
+                concat_ws(' · ', 'Reference ' || COALESCE(rr.reference, rr.id::text), 'Total ' || COALESCE(rr.total_amount::text, '0')),
+                s.supplier_name,
+                p.name,
+                rr.status,
+                rr.received_at,
+                COALESCE((
+                  SELECT COUNT(*)::integer
+                  FROM core.document_links dl
+                  WHERE dl.organization_id = rr.organization_id
+                    AND dl.entity_type = 'rfq_response'
+                    AND dl.entity_id = rr.id
+                    AND dl.is_deleted = false
+                ), 0),
+                '/dashboard/procurement?tab=rfqs',
+                'Select, reject, or convert the quote from Procurement so PO controls remain intact.'
+              FROM procurement.rfq_responses rr
+              JOIN procurement.rfqs rfq ON rfq.id = rr.rfq_id AND rfq.organization_id = rr.organization_id
+              JOIN procurement.suppliers s ON s.id = rr.supplier_id AND s.organization_id = rr.organization_id
+              LEFT JOIN projects.projects p ON p.id = rfq.project_id AND p.organization_id = rfq.organization_id
+              WHERE rr.organization_id = :org_id
+                AND rr.is_deleted = false
+
+              UNION ALL
+
+              SELECT
+                vpr.id,
+                'vendor_payment_request',
+                'Vendor payment request',
+                vpr.reference_description,
+                'Amount ' || vpr.currency || ' ' || COALESCE(vpr.amount::text, '0'),
+                sc.name,
+                p.name,
+                vpr.status,
+                vpr.submitted_at,
+                COALESCE((
+                  SELECT COUNT(*)::integer
+                  FROM core.document_links dl
+                  WHERE dl.organization_id = vpr.organization_id
+                    AND dl.entity_type = 'vendor_payment_request'
+                    AND dl.entity_id = vpr.id
+                    AND dl.is_deleted = false
+                ), 0),
+                '/dashboard/finance/vendor-payments',
+                'Finance reconciliation remains in Vendor Payments and requires receipt evidence before clearing.'
+              FROM finance.vendor_payment_requests vpr
+              JOIN crm.subcontractors sc ON sc.id = vpr.subcontractor_id AND sc.organization_id = vpr.organization_id
+              LEFT JOIN projects.projects p ON p.id = vpr.project_id AND p.organization_id = vpr.organization_id
+              WHERE vpr.organization_id = :org_id
+                AND vpr.is_deleted = false
+
+              UNION ALL
+
+              SELECT
+                cpr.id,
+                'client_payment_request',
+                'Client payment update',
+                cpr.title,
+                'Amount ' || cpr.currency || ' ' || COALESCE(cpr.amount::text, '0'),
+                COALESCE(org.name, 'Client'),
+                p.name,
+                cpr.status,
+                cpr.created_at,
+                COALESCE((
+                  SELECT COUNT(*)::integer
+                  FROM core.document_links dl
+                  WHERE dl.organization_id = cpr.organization_id
+                    AND dl.entity_type = 'client_payment_request'
+                    AND dl.entity_id = cpr.id
+                    AND dl.is_deleted = false
+                ), 0),
+                '/dashboard/finance/client-payments',
+                'Finance confirms/reconciles client receipts from Client Payments.'
+              FROM finance.client_payment_requests cpr
+              JOIN projects.projects p ON p.id = cpr.project_id AND p.organization_id = cpr.organization_id
+              LEFT JOIN crm.organizations org ON org.id = p.client_org_id AND org.organization_id = p.organization_id
+              WHERE cpr.organization_id = :org_id
+                AND cpr.is_deleted = false
+            )
+            SELECT *
+            FROM portal_items
+            ORDER BY occurred_at DESC NULLS LAST
+            LIMIT :limit
+        """),
+            {"org_id": user["org_id"], "limit": limit},
+        )
+    ).mappings().all()
+    data = [dict(row) for row in rows]
+    return _response(data, "Portal inbox retrieved.", len(data))
+
+
 @router.patch("/{communication_id}")
 async def update_communication(
     communication_id: UUID,

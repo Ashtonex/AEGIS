@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+  <title id="title">SNC Target Operating Organogram</title>
+  <desc id="desc">Organogram showing the CEO or Managing Director, four operating departments, independent risk oversight, and department functions.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 34px Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 400 18px Arial, sans-serif; fill: #4b5563; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 10; }
+      .box-strong { fill: #101828; stroke: #101828; stroke-width: 2; rx: 10; }
+      .box-risk { fill: #fff7ed; stroke: #f97316; stroke-width: 2.5; rx: 10; }
+      .box-control { fill: #eef6ff; stroke: #2563eb; stroke-width: 2; rx: 10; }
+      .box-commercial { fill: #effdf5; stroke: #16a34a; stroke-width: 2; rx: 10; }
+      .box-construction { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 2; rx: 10; }
+      .box-plant { fill: #fefce8; stroke: #ca8a04; stroke-width: 2; rx: 10; }
+      .label { font: 700 18px Arial, sans-serif; fill: #111827; }
+      .label-light { font: 700 20px Arial, sans-serif; fill: #ffffff; }
+      .small { font: 400 14px Arial, sans-serif; fill: #374151; }
+      .small-light { font: 400 14px Arial, sans-serif; fill: #e5e7eb; }
+      .line { fill: none; stroke: #64748b; stroke-width: 2.5; }
+      .risk-line { fill: none; stroke: #f97316; stroke-width: 2.5; stroke-dasharray: 8 7; }
+      .note { font: 600 15px Arial, sans-serif; fill: #9a3412; }
+      .footer { font: 400 14px Arial, sans-serif; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1050"/>
+  <text class="title" x="80" y="70">SNC Target Operating Organogram</text>
+  <text class="subtitle" x="80" y="103">How the business should be organised, governed, and enforced through AEGIS</text>
+
+  <!-- CEO -->
+  <rect class="box-strong" x="620" y="135" width="360" height="92" rx="10"/>
+  <text class="label-light" x="800" y="174" text-anchor="middle">CEO / Managing Director</text>
+  <text class="small-light" x="800" y="202" text-anchor="middle">Strategy, major approvals, executive accountability</text>
+
+  <!-- Department row -->
+  <rect class="box-control" x="85" y="335" width="300" height="95" rx="10"/>
+  <text class="label" x="235" y="373" text-anchor="middle">Corporate Control Services</text>
+  <text class="small" x="235" y="401" text-anchor="middle">Finance, HR, legal, compliance, ICT</text>
+
+  <rect class="box-commercial" x="455" y="335" width="300" height="95" rx="10"/>
+  <text class="label" x="605" y="373" text-anchor="middle">Commercial Department</text>
+  <text class="small" x="605" y="401" text-anchor="middle">Market, price, contract, and manage clients</text>
+
+  <rect class="box-construction" x="825" y="335" width="300" height="95" rx="10"/>
+  <text class="label" x="975" y="373" text-anchor="middle">Construction Department</text>
+  <text class="small" x="975" y="401" text-anchor="middle">Mobilise, execute, control, and close projects</text>
+
+  <rect class="box-plant" x="1195" y="335" width="300" height="95" rx="10"/>
+  <text class="label" x="1345" y="373" text-anchor="middle">Plant and Equipment Department</text>
+  <text class="small" x="1345" y="401" text-anchor="middle">Fleet, machinery, operators, maintenance</text>
+
+  <!-- Risk -->
+  <rect class="box-risk" x="1120" y="135" width="340" height="92" rx="10"/>
+  <text class="label" x="1290" y="174" text-anchor="middle">Risk Department</text>
+  <text class="small" x="1290" y="202" text-anchor="middle">Independent oversight and upward reporting</text>
+
+  <!-- Org lines -->
+  <path class="line" d="M800 227 L800 285 L235 285 L235 335"/>
+  <path class="line" d="M800 285 L605 285 L605 335"/>
+  <path class="line" d="M800 285 L975 285 L975 335"/>
+  <path class="line" d="M800 285 L1345 285 L1345 335"/>
+  <path class="risk-line" d="M1120 181 L980 181"/>
+  <path class="risk-line" d="M1290 227 L1290 302 L235 302 L235 335"/>
+  <path class="risk-line" d="M1290 302 L605 302 L605 335"/>
+  <path class="risk-line" d="M1290 302 L975 302 L975 335"/>
+  <path class="risk-line" d="M1290 302 L1345 302 L1345 335"/>
+  <text class="note" x="1188" y="263">dotted lines = oversight, not daily command</text>
+
+  <!-- Function cards -->
+  <g>
+    <rect class="box" x="85" y="500" width="300" height="56" rx="8"/>
+    <text class="small" x="235" y="534" text-anchor="middle">Finance and budgets</text>
+    <rect class="box" x="85" y="572" width="300" height="56" rx="8"/>
+    <text class="small" x="235" y="606" text-anchor="middle">HR records and payroll</text>
+    <rect class="box" x="85" y="644" width="300" height="56" rx="8"/>
+    <text class="small" x="235" y="678" text-anchor="middle">Legal, compliance, and ICT</text>
+    <rect class="box" x="85" y="716" width="300" height="56" rx="8"/>
+    <text class="small" x="235" y="750" text-anchor="middle">Executive administration</text>
+  </g>
+
+  <g>
+    <rect class="box" x="455" y="500" width="300" height="56" rx="8"/>
+    <text class="small" x="605" y="534" text-anchor="middle">Marketing and CRM</text>
+    <rect class="box" x="455" y="572" width="300" height="56" rx="8"/>
+    <text class="small" x="605" y="606" text-anchor="middle">Leads and opportunities</text>
+    <rect class="box" x="455" y="644" width="300" height="56" rx="8"/>
+    <text class="small" x="605" y="678" text-anchor="middle">Tenders, estimating, and QS</text>
+    <rect class="box" x="455" y="716" width="300" height="56" rx="8"/>
+    <text class="small" x="605" y="750" text-anchor="middle">Contracts and client relationships</text>
+  </g>
+
+  <g>
+    <rect class="box" x="825" y="500" width="300" height="56" rx="8"/>
+    <text class="small" x="975" y="534" text-anchor="middle">Project mobilisation</text>
+    <rect class="box" x="825" y="572" width="300" height="56" rx="8"/>
+    <text class="small" x="975" y="606" text-anchor="middle">Site execution and daily reports</text>
+    <rect class="box" x="825" y="644" width="300" height="56" rx="8"/>
+    <text class="small" x="975" y="678" text-anchor="middle">Quality, programme control, and HSE</text>
+    <rect class="box" x="825" y="716" width="300" height="56" rx="8"/>
+    <text class="small" x="975" y="750" text-anchor="middle">Project closeout</text>
+  </g>
+
+  <g>
+    <rect class="box" x="1195" y="500" width="300" height="56" rx="8"/>
+    <text class="small" x="1345" y="534" text-anchor="middle">Fleet and machinery</text>
+    <rect class="box" x="1195" y="572" width="300" height="56" rx="8"/>
+    <text class="small" x="1345" y="606" text-anchor="middle">Operators and plant allocation</text>
+    <rect class="box" x="1195" y="644" width="300" height="56" rx="8"/>
+    <text class="small" x="1345" y="678" text-anchor="middle">Maintenance and fuel control</text>
+    <rect class="box" x="1195" y="716" width="300" height="56" rx="8"/>
+    <text class="small" x="1345" y="750" text-anchor="middle">Plant hire and asset utilisation</text>
+  </g>
+
+  <!-- Function connection lines -->
+  <path class="line" d="M235 430 L235 500"/>
+  <path class="line" d="M605 430 L605 500"/>
+  <path class="line" d="M975 430 L975 500"/>
+  <path class="line" d="M1345 430 L1345 500"/>
+
+  <!-- Enforcement band -->
+  <rect class="box-strong" x="85" y="850" width="1410" height="92" rx="10"/>
+  <text class="label-light" x="790" y="884" text-anchor="middle">AEGIS System Enforcement</text>
+  <text class="small-light" x="790" y="913" text-anchor="middle">Permissions, approval limits, evidence requirements, audit trails, and segregation of duties</text>
+
+  <text class="footer" x="80" y="982">Governance principle: AEGIS should institutionalise SNC by separating requesting from approving, purchasing from receiving, and recording from reconciling.</text>
+  <text class="footer" x="80" y="1010">It must also separate site execution from commercial measurement, asset use from maintenance authorisation, and operations from risk oversight.</text>
+</svg>

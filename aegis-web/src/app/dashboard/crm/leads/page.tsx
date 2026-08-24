@@ -1059,7 +1059,7 @@ export default function CRMLeadsApp() {
                     onChange={(e) => setManualForm(prev => ({ ...prev, budget_confirmed: e.target.checked }))}
                     className="rounded border-[#1E293B] bg-[#0A0D14]"
                   />
-                  Client confirmed this figure (leave unchecked if it's an estimate)
+                  Client confirmed this figure (leave unchecked if it&apos;s an estimate)
                 </label>
               </div>
               {complianceTypes.length > 0 && (
@@ -1078,7 +1078,7 @@ export default function CRMLeadsApp() {
                       </label>
                     ))}
                   </div>
-                  <p className="text-[10px] text-slate-500 mt-1">Checking one we don't currently hold on file emails an Executive with the revenue at risk.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">Checking one we don&apos;t currently hold on file emails an Executive with the revenue at risk.</p>
                 </div>
               )}
               {!editingLead && (
@@ -1087,7 +1087,7 @@ export default function CRMLeadsApp() {
                   <textarea
                     value={manualForm.initial_notes}
                     onChange={(e) => setManualForm(prev => ({ ...prev, initial_notes: e.target.value }))}
-                    placeholder="What's the context on this lead so far?"
+                    placeholder="What&apos;s the context on this lead so far?"
                     rows={3}
                     className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
                   />

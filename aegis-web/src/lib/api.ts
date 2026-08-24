@@ -691,7 +691,7 @@ export async function getCrmOpportunities(params?: { department_id?: string }) {
   return await fetchApi<ApiResponse<any[]>>(`/api/v1/crm/opportunities${qs}`, { cache: 'no-store' });
 }
 
-export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string, originating_department_id?: string }): Promise<ApiResponse<any>> {
+export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string, latitude?: number, longitude?: number, originating_department_id?: string }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/opportunities', {
     method: 'POST',
     body: JSON.stringify(data)
@@ -700,6 +700,13 @@ export async function createCrmOpportunity(data: { name: string, stage: string, 
 
 export async function getCrmTenders() {
   return await fetchApi<ApiResponse<any[]>>('/api/v1/crm/tenders', { cache: 'no-store' });
+}
+
+export async function getCommercialMorningBriefing(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm/commercial-briefing', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
 }
 
 export async function getCrmTenderSignals(params?: {
@@ -725,7 +732,7 @@ export async function getCrmTenderSignals(params?: {
   );
 }
 
-export async function createCrmTender(data: { tender_name: string, stage: string, bid_amount?: number, region?: string }): Promise<ApiResponse<any>> {
+export async function createCrmTender(data: { tender_name: string, stage: string, bid_amount?: number, region?: string, latitude?: number, longitude?: number }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/tenders', {
     method: 'POST',
     body: JSON.stringify(data)
@@ -1144,6 +1151,28 @@ export async function getCrmCommunications(params?: {
   if (params?.limit) search.set("limit", String(params.limit));
   const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-communications/${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export interface PortalInboxItem {
+  id: string;
+  item_type: string;
+  item_label: string;
+  title: string;
+  detail?: string;
+  party_name?: string;
+  project_name?: string;
+  status?: string;
+  occurred_at?: string;
+  document_count?: number;
+  action_url: string;
+  control_note?: string;
+}
+
+export async function getPortalInbox(limit = 100): Promise<ApiResponse<PortalInboxItem[]>> {
+  return fetchApi<ApiResponse<PortalInboxItem[]>>(`/api/v1/crm-communications/portal-inbox?limit=${limit}`, {
     cache: 'no-store',
     allowFallback: false,
   });
@@ -1626,6 +1655,14 @@ export async function createCrmTask(payload: Record<string, unknown>): Promise<A
   });
 }
 
+export async function findCrmTaskDuplicates(payload: Record<string, unknown>): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-tasks/duplicates', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function updateCrmTask(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/crm-tasks/${id}`, {
     method: 'PATCH',
@@ -1911,6 +1948,14 @@ export async function issuePurchaseOrder(id: string): Promise<ApiResponse<any>> 
   });
 }
 
+export async function approvePurchaseOrder(id: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/purchase-orders/${id}/decision`, {
+    method: "POST",
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
 export async function recordGoodsReceived(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>("/api/v1/procurement/goods-received", {
     method: "POST",
@@ -2050,8 +2095,8 @@ export async function commitProjectIntake(projectId: string): Promise<ApiRespons
 }
 
 /** Real schedule milestones, changes, and risks for a project - no fabricated data. */
-export async function getProjectLifecycle(projectId: string): Promise<ApiResponse<{ project: Record<string, unknown>; milestones: Record<string, unknown>[]; changes: Record<string, unknown>[]; risks: Record<string, unknown>[] }>> {
-  return fetchApi<ApiResponse<{ project: Record<string, unknown>; milestones: Record<string, unknown>[]; changes: Record<string, unknown>[]; risks: Record<string, unknown>[] }>>(`/api/v1/projects/${projectId}/lifecycle`, {
+export async function getProjectLifecycle(projectId: string): Promise<ApiResponse<{ project: Record<string, unknown>; milestones: Record<string, unknown>[]; changes: Record<string, unknown>[]; risks: Record<string, unknown>[]; pre_mobilisation?: Record<string, unknown>; commercial_readiness?: Record<string, unknown> }>> {
+  return fetchApi<ApiResponse<{ project: Record<string, unknown>; milestones: Record<string, unknown>[]; changes: Record<string, unknown>[]; risks: Record<string, unknown>[]; pre_mobilisation?: Record<string, unknown>; commercial_readiness?: Record<string, unknown> }>>(`/api/v1/projects/${projectId}/lifecycle`, {
     cache: 'no-store',
     allowFallback: false,
   });
@@ -2109,9 +2154,53 @@ export async function addProductionRevenue(projectId: string, payload: { amount:
   });
 }
 
-/** Finance sign-off that a project's deposit has been received - flips it from 'pending_deposit' to 'active'. */
+/** Finance sign-off that a project's deposit has been received - opens the pre-mobilisation readiness gate. */
 export async function confirmProjectDeposit(projectId: string, payload: { deposit_reference?: string; notes?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/confirm-deposit`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Updates one pre-mobilisation readiness gate item with its status/evidence. */
+export async function updateProjectPreMobilisationCheck(projectId: string, checkId: string, payload: { status: string; evidence_reference?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/pre-mobilisation/${checkId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Retrieves the Commercial pre-mobilisation readiness pack. */
+export async function getProjectCommercialReadiness(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/commercial-readiness`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Updates the Commercial readiness controls and authority status. */
+export async function updateProjectCommercialReadiness(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/commercial-readiness`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Commercial clearance required before mobilisation can be authorised. */
+export async function clearProjectCommercialReadiness(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/commercial-readiness/clear`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Executive approval that releases a project from pre-mobilisation into active delivery. */
+export async function approveProjectPreMobilisation(projectId: string, payload: { mobilisation_date: string; mobilisation_budget?: number; conditions?: string; residual_risk_notes?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/pre-mobilisation/approve`, {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,
@@ -2153,7 +2242,9 @@ export async function getExecutiveExceptions(accessToken?: string): Promise<ApiR
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/exceptions`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
-export async function getPortalAccess(portal: "executive" | "employee" | "foreman" | "client" | "supplier", accessToken?: string): Promise<ApiResponse<{ portal: string; destination: string }>> {
+export type PortalAccessKey = "foreman" | "site-engineer" | "client" | "executive" | "employee" | "site-agent" | "qs" | "supplier";
+
+export async function getPortalAccess(portal: PortalAccessKey, accessToken?: string): Promise<ApiResponse<{ portal: string; destination: string }>> {
   return fetchApi<ApiResponse<{ portal: string; destination: string }>>(`/api/v1/portals/access/${portal}`, {
     cache: 'no-store',
     allowFallback: false,
@@ -2239,7 +2330,11 @@ export interface ClientPortalWorkspace {
     email?: string;
     phone?: string;
     job_title?: string;
+    whatsapp_preference?: boolean;
     company_name?: string;
+    company_email?: string;
+    company_phone?: string;
+    company_address?: string;
   };
   tickets: ClientPortalTicket[];
   messages?: PortalCommunicationMessage[];
@@ -2249,6 +2344,14 @@ export interface ClientPortalWorkspace {
 export async function getClientPortalWorkspace(): Promise<ApiResponse<ClientPortalWorkspace>> {
   return fetchApi<ApiResponse<ClientPortalWorkspace>>(`/api/v1/portals/client/workspace`, {
     cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function updateClientPortalProfile(payload: Partial<ClientPortalWorkspace["client"]>): Promise<ApiResponse<{ contact_id: string }>> {
+  return fetchApi<ApiResponse<{ contact_id: string }>>(`/api/v1/portals/client/profile`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
     allowFallback: false,
   });
 }
@@ -2295,6 +2398,12 @@ export interface SupplierPortalVendor {
   contact_phone?: string;
   address?: string;
   coverage_provinces?: string[];
+  preferred_contact_method?: string;
+  alternate_contact_name?: string;
+  alternate_contact_email?: string;
+  alternate_contact_phone?: string;
+  accounts_contact_email?: string;
+  accounts_contact_phone?: string;
   compliance_status?: string;
   review_status?: string;
   verification_stage: VendorVerificationStage;
@@ -2354,6 +2463,42 @@ export interface VendorRateItem {
   created_at: string;
 }
 
+export interface SupplierPortalRfqLine {
+  id?: string;
+  description: string;
+  qty?: number;
+  uom?: string;
+  work_package?: string;
+  notes?: string;
+  unit_price?: number;
+}
+
+export interface SupplierPortalRfqResponse {
+  id: string;
+  reference?: string;
+  total_amount: number;
+  delivery_days?: number;
+  validity_days?: number;
+  notes?: string;
+  line_items?: SupplierPortalRfqLine[];
+  status: "received" | "evaluated" | "selected" | "rejected";
+  received_at: string;
+  documents?: VendorDocument[];
+}
+
+export interface SupplierPortalRfq {
+  id: string;
+  rfq_number: string;
+  title: string;
+  description?: string;
+  closing_date?: string;
+  status: "issued";
+  issued_at?: string;
+  project_name?: string;
+  requested_items: SupplierPortalRfqLine[];
+  response?: SupplierPortalRfqResponse | null;
+}
+
 export async function getSupplierPortalWorkspace(): Promise<ApiResponse<SupplierPortalWorkspace>> {
   return fetchApi<ApiResponse<SupplierPortalWorkspace>>(`/api/v1/portals/supplier/workspace`, {
     cache: 'no-store',
@@ -2411,6 +2556,29 @@ export async function createSupplierPortalRateItem(payload: {
   route_to?: string;
 }): Promise<ApiResponse<VendorRateItem>> {
   return fetchApi<ApiResponse<VendorRateItem>>(`/api/v1/portals/supplier/rate-items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getSupplierPortalRfqs(): Promise<ApiResponse<SupplierPortalRfq[]>> {
+  return fetchApi<ApiResponse<SupplierPortalRfq[]>>(`/api/v1/portals/supplier/rfqs`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function submitSupplierPortalRfqResponse(rfqId: string, payload: {
+  reference?: string;
+  total_amount?: number;
+  delivery_days?: number;
+  validity_days?: number;
+  notes?: string;
+  line_items?: Array<{ description: string; qty?: number; uom?: string; unit_price: number; notes?: string }>;
+  quote_document_id?: string;
+}): Promise<ApiResponse<{ id: string; total_amount: number }>> {
+  return fetchApi<ApiResponse<{ id: string; total_amount: number }>>(`/api/v1/portals/supplier/rfqs/${rfqId}/responses`, {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,
@@ -2511,7 +2679,7 @@ export async function getClientPortalProjectDetail(projectId: string): Promise<A
   });
 }
 
-export async function createClientPortalIssue(payload: { project_id: string; subject: string; description: string }): Promise<ApiResponse<any>> {
+export async function createClientPortalIssue(payload: { project_id: string; subject: string; description: string; evidence_document_ids?: string[] }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/portals/client/issues`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -2519,7 +2687,7 @@ export async function createClientPortalIssue(payload: { project_id: string; sub
   });
 }
 
-export async function createClientPortalAdditionalRequest(payload: { project_id: string; subject: string; description: string }): Promise<ApiResponse<any>> {
+export async function createClientPortalAdditionalRequest(payload: { project_id: string; subject: string; description: string; evidence_document_ids?: string[] }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/portals/client/additional-requests`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -2542,6 +2710,7 @@ export async function createClientPortalVariation(payload: {
   scope_impact?: string;
   cost_impact?: number;
   time_impact_days?: number;
+  evidence_document_ids?: string[];
 }): Promise<ApiResponse<ClientProjectVariation>> {
   return fetchApi<ApiResponse<ClientProjectVariation>>(`/api/v1/portals/client/variations`, {
     method: 'POST',
@@ -2695,6 +2864,98 @@ export async function requestSiteMaterial(payload: Record<string, unknown>): Pro
   });
 }
 
+export async function getSiteMaterialRequests(params?: { projectId?: string; engineerStatus?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.projectId) search.set('project_id', params.projectId);
+  if (params?.engineerStatus && params.engineerStatus !== 'all') search.set('engineer_status', params.engineerStatus);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/material-requests${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function decideSiteMaterialRequestEngineer(id: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/material-requests/${id}/engineer-decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
+export async function getWeeklySiteBudgets(params?: { projectId?: string; status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.projectId) search.set('project_id', params.projectId);
+  if (params?.status && params.status !== 'all') search.set('status', params.status);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/weekly-budgets${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getExecutionBudget(projectId: string): Promise<ApiResponse<{ budget: any; line_items: any[] }>> {
+  return fetchApi<ApiResponse<{ budget: any; line_items: any[] }>>(`/api/v1/site-operations/projects/${projectId}/execution-budget`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createWeeklySiteBudget(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/site-operations/weekly-budgets', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getWeeklySiteBudgetItems(budgetId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/weekly-budgets/${budgetId}/items`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getSiteVariances(params?: { projectId?: string; status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.projectId) search.set('project_id', params.projectId);
+  if (params?.status && params.status !== 'all') search.set('status', params.status);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/variances${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function reviewSiteVarianceQs(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/variances/${id}/qs-review`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function decideSiteVarianceClient(id: string, decision: "approved" | "rejected", notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/variances/${id}/client-decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, notes }),
+    allowFallback: false,
+  });
+}
+
+export async function decideWeeklySiteBudget(id: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/weekly-budgets/${id}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
+export async function getSiteGrns(params?: { projectId?: string; engineerStatus?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.projectId) search.set('project_id', params.projectId);
+  if (params?.engineerStatus && params.engineerStatus !== 'all') search.set('engineer_status', params.engineerStatus);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/grns${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getSiteEngineerWorkspace(): Promise<ApiResponse<{ projects: any[] }>> {
+  return fetchApi<ApiResponse<{ projects: any[] }>>('/api/v1/site-operations/engineer/workspace', { cache: 'no-store', allowFallback: false });
+}
+
+export async function decideSiteGrnEngineer(id: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/grns/${id}/engineer-decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
 export async function createDailySiteReport(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/site-operations/daily-reports', {
     method: 'POST',
@@ -2744,6 +3005,14 @@ export async function submitDailySiteReport(reportId: string): Promise<ApiRespon
 
 export async function decideDailySiteReport(reportId: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
+export async function decideDailySiteReportEngineer(reportId: string, decision: "approved" | "rejected", reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/engineer-decision`, {
     method: 'POST',
     body: JSON.stringify({ decision, reason }),
     allowFallback: false,
@@ -2976,6 +3245,88 @@ export const createEquipmentAssignment = createFleetAssignment;
 
 export async function getFleetAssignments(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>('/api/v1/fleet/assignments', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getPlantLifecycleSummary(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/fleet/plant/summary', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getPlantRequests(params?: { status?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.status && params.status !== "all") search.set("status_filter", params.status);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/fleet/plant/requests${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createPlantRequest(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string; request_number: string }>> {
+  return fetchApi<ApiResponse<{ id: string; request_number: string }>>('/api/v1/fleet/plant/requests', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function updatePlantRequestStatus(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/fleet/plant/requests/${plantRequestId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function reservePlantAsset(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/reserve`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function dispatchPlantAsset(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/dispatch`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function recordPlantIncident(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/incidents`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function createPlantOffHire(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/off-hire`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function createPlantReturnInspection(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/return-inspections`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function closePlantFinancials(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/financial-close`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
 }
 
 export async function createFleetWorkOrder(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
@@ -4020,9 +4371,17 @@ export async function getAnalyticsWorkforce(): Promise<ApiResponse<any[]>> {
 
 // --- QUOTATIONS --- //
 
-export async function importBoqFile(file: File): Promise<ApiResponse<{ items: any[]; warnings: string[]; summary: Record<string, unknown> }>> {
+export async function importBoqFile(
+  file: File,
+  context?: { source_type?: string | null; source_id?: string | null; task_id?: string | null; document_id?: string | null }
+): Promise<ApiResponse<{ items: any[]; warnings: string[]; summary: Record<string, unknown>; linked?: Record<string, unknown> }>> {
   const formData = new FormData();
   formData.append("file", file);
+  if (context) {
+    Object.entries(context).forEach(([key, value]) => {
+      if (value) formData.append(key, value);
+    });
+  }
   const url = resolveApiUrl("/api/v1/quotations/boq/import");
   const headers = await getApiHeaders();
   headers.delete("Content-Type"); // let the browser set the multipart boundary

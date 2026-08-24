@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
-import { ApiError, getComplianceDeploymentGateChecks, getFleet } from "@/lib/api";
+import { ApiError, createPlantRequest, getComplianceDeploymentGateChecks, getFleet, getPlantLifecycleSummary, getPlantRequests } from "@/lib/api";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  FilePlus2,
   ShieldCheck,
   ShieldAlert,
   Truck,
@@ -129,6 +130,37 @@ function readinessItems(record: FleetRecord) {
   ];
 }
 
+const PLANT_READINESS_CONTROLS = [
+  { key: "technical_specification", label: "Technical specification", detail: "Class, capacity, terrain, attachments and operating requirements approved." },
+  { key: "source_decision", label: "Source decision", detail: "Internal allocation, external hire, purchase or subcontract route selected." },
+  { key: "budget_approval", label: "Budget approval", detail: "Rates, transport, fuel, operator, maintenance and recovery costs approved." },
+  { key: "asset_identified", label: "Asset identified", detail: "Asset number, hire unit or subcontracted plant resource named." },
+  { key: "availability_no_overlap", label: "No allocation clash", detail: "Reservation and active allocation conflicts checked." },
+  { key: "inspection_fit", label: "Inspection fit", detail: "Condition inspection complete and critical defects cleared." },
+  { key: "compliance_documents", label: "Compliance documents", detail: "Insurance, licences, permits, certificates and service records current." },
+  { key: "operator_verified", label: "Operator verified", detail: "Competent operator or technician assigned and verified." },
+  { key: "site_readiness", label: "Site readiness", detail: "Access, unloading, ground, parking, security and work zones confirmed." },
+  { key: "transport_approved", label: "Transport approved", detail: "Transporter, route, permits, loading and dispatch documents approved." },
+  { key: "fuel_controls", label: "Fuel controls", detail: "Fuel allocation, custodian, register, limits and delivery plan set." },
+  { key: "maintenance_controls", label: "Maintenance controls", detail: "Pre-start, weekly inspection, service and breakdown controls set." },
+  { key: "plant_manager_declaration", label: "Plant Manager declaration", detail: "Plant Manager has declared the asset ready to mobilise." },
+] as const;
+
+function plantReadinessPack(record: FleetRecord): Record<string, unknown> {
+  return record.readiness_pack && typeof record.readiness_pack === "object" && !Array.isArray(record.readiness_pack)
+    ? record.readiness_pack as Record<string, unknown>
+    : {};
+}
+
+function plantReadinessCount(record: FleetRecord) {
+  const pack = plantReadinessPack(record);
+  return PLANT_READINESS_CONTROLS.filter(item => Boolean(pack[item.key])).length;
+}
+
+function plantBlockers(record: FleetRecord): string[] {
+  return Array.isArray(record.readiness_blockers) ? record.readiness_blockers.map(String) : [];
+}
+
 function StatusPill({ record }: { record: FleetRecord }) {
   const status = normalizedStatus(record);
   const style = ACTIVE_STATUSES.has(status)
@@ -140,10 +172,10 @@ function StatusPill({ record }: { record: FleetRecord }) {
 }
 
 export default function FleetTrackerPage() {
-  return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk"]}><FleetTrackerDashboard /></RBACGuard>;
+  return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"]}><FleetTrackerDashboard /></RBACGuard>;
 }
 
-type FleetModalKind = "register" | "edit" | "deploy" | "work-order" | null;
+type FleetModalKind = "register" | "edit" | "deploy" | "work-order" | "plant-request" | null;
 
 function FleetTrackerDashboard() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -157,9 +189,11 @@ function FleetTrackerDashboard() {
     {
       fleet: () => getFleet(),
       gates: () => getComplianceDeploymentGateChecks({ limit: 50 }),
+      plantSummary: () => getPlantLifecycleSummary(),
+      plantRequests: () => getPlantRequests(),
     },
     [],
-    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks" } }
+    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests" } }
   );
 
   const assets = useMemo(
@@ -170,14 +204,21 @@ function FleetTrackerDashboard() {
     () => (Array.isArray(data.gates?.data) ? data.gates.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.gates]
   );
+  const plantRequests = useMemo(
+    () => (Array.isArray(data.plantRequests?.data) ? data.plantRequests.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.plantRequests]
+  );
+  const plantSummary = (data.plantSummary?.data && typeof data.plantSummary.data === "object" ? data.plantSummary.data : {}) as Record<string, unknown>;
   const errorMessage = error
     ? error instanceof ApiError && error.status === 403
       ? "You do not have permission to read the fleet register."
       : normalizeLoadError(error, "Fleet records could not be loaded. Verify the API connection and try again.")
     : null;
   const gateWarning = warnings[0] ?? null;
+  const plantWarning = warnings.find(warning => /plant/i.test(warning)) ?? null;
 
   useLiveTable("fleet.fleet", () => void loadFleet());
+  useLiveTable("fleet.plant_requests", () => void loadFleet());
 
   useEffect(() => {
     setSelectedId(current => assets.some(asset => asset.id === current) ? current : (assets[0]?.id ?? null));
@@ -230,6 +271,7 @@ function FleetTrackerDashboard() {
           <div className="flex items-center gap-3">
             {lastUpdated && <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Read {lastUpdated.toLocaleTimeString()}</span>}
             <button type="button" onClick={() => void loadFleet()} disabled={loading} className="inline-flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs font-medium text-paper hover:border-slate disabled:opacity-50"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh</button>
+            <button type="button" onClick={() => setModal("plant-request")} className="inline-flex items-center gap-2 border border-signal/60 bg-signal/10 px-3 py-2 text-xs font-semibold text-signal hover:bg-signal/15"><FilePlus2 size={14} /> New Plant Request</button>
             <button type="button" onClick={() => setModal("register")} className="inline-flex items-center gap-2 bg-signal px-3 py-2 text-xs font-semibold text-ink hover:bg-signal/90"><Plus size={14} /> Register Vehicle</button>
           </div>
         </header>
@@ -237,6 +279,7 @@ function FleetTrackerDashboard() {
         {notice && <div className="mb-5 flex items-start gap-3 border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-100"><CheckCircle2 size={18} className="mt-0.5 shrink-0" /><p>{notice}</p></div>}
         {errorMessage && <div className="mb-5 flex items-start gap-3 border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-100"><ShieldAlert size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Fleet register unavailable</p><p className="mt-1 text-red-100/80">{errorMessage}</p></div></div>}
         {gateWarning && <div className="mb-5 flex items-start gap-3 border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Deployment gate history unavailable</p><p className="mt-1 text-amber-100/80">{gateWarning}</p></div></div>}
+        {plantWarning && <div className="mb-5 flex items-start gap-3 border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100"><AlertTriangle size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Plant lifecycle records unavailable</p><p className="mt-1 text-amber-100/80">{plantWarning}</p></div></div>}
 
         {loading && !data.fleet ? <div className="flex min-h-80 items-center justify-center border border-ink-mid bg-ink"><Loader2 className="animate-spin text-slate-light" size={26} /></div> : !errorMessage && assets.length === 0 ? (
           <SharedEmptyState
@@ -252,6 +295,67 @@ function FleetTrackerDashboard() {
             <Metric icon={<ClipboardCheck size={17} />} label="Inspection evidence" value={metrics.inspections} detail="assets with recorded inspection" />
             <Metric icon={<AlertTriangle size={17} />} label="Overdue controls" value={metrics.overdue} tone={metrics.overdue ? "text-red-300" : "text-slate-light"} />
             <Metric icon={<ShieldCheck size={17} />} label="Blocked deployments" value={metrics.blockedGates} tone={metrics.blockedGates ? "text-red-300" : "text-slate-light"} />
+          </section>
+
+          <section className="mb-6 border border-ink-mid bg-ink">
+            <div className="flex flex-col gap-3 border-b border-ink-mid p-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-sm font-semibold">Plant & Equipment lifecycle control</h2>
+                <p className="mt-1 text-xs text-slate-light">Request, validation, reservation, dispatch, daily evidence, return and financial closure pipeline.</p>
+              </div>
+              <span className="font-mono text-[10px] uppercase tracking-wider text-slate">No request without a record</span>
+            </div>
+            <div className="grid gap-px bg-ink-mid sm:grid-cols-2 lg:grid-cols-6">
+              <Metric icon={<FilePlus2 size={17} />} label="Open requests" value={Number(plantSummary.open_requests ?? 0)} />
+              <Metric icon={<ClipboardCheck size={17} />} label="Validation queue" value={Number(plantSummary.validation_queue ?? 0)} />
+              <Metric icon={<ShieldCheck size={17} />} label="Approval queue" value={Number(plantSummary.approval_queue ?? 0)} />
+              <Metric icon={<Send size={17} />} label="Dispatch queue" value={Number(plantSummary.dispatch_queue ?? 0)} />
+              <Metric icon={<Truck size={17} />} label="Active plant jobs" value={Number(plantSummary.active_deployments ?? 0)} />
+              <Metric icon={<AlertTriangle size={17} />} label="Serious incidents" value={Number(plantSummary.serious_incidents ?? 0)} tone={Number(plantSummary.serious_incidents ?? 0) ? "text-red-300" : "text-slate-light"} />
+            </div>
+            {plantRequests.length === 0 ? (
+              <div className="p-5 text-sm text-slate-light">No controlled Plant Requests have been raised yet.</div>
+            ) : (
+              <OperationalTable className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Request</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Asset Need</TableHead>
+                    <TableHead>Location</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Pre-mobilisation</TableHead>
+                    <TableHead>Risk</TableHead>
+                    <TableHead>Closure</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <tbody>
+                  {plantRequests.slice(0, 8).map((request) => {
+                    const risk = text(request, "risk_level") || "normal";
+                    const blockers = plantBlockers(request);
+                    const readinessStatus = text(request, "readiness_status") || "not_started";
+                    const readinessCount = plantReadinessCount(request);
+                    return (
+                      <TableRow key={request.id}>
+                        <TableCell><p className="font-medium text-paper">{text(request, "request_number") || request.id.slice(0, 8)}</p><p className="mt-1 text-[11px] text-slate-light">{text(request, "project_name", "client_display_name") || "No project/client linked"}</p></TableCell>
+                        <TableCell>{text(request, "request_type").replaceAll("_", " ") || "Not recorded"}</TableCell>
+                        <TableCell>{text(request, "required_asset_type")} x {String(request.quantity ?? 1)}</TableCell>
+                        <TableCell>{text(request, "work_location") || "Not recorded"}</TableCell>
+                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{text(request, "status").replaceAll("_", " ")}</span></TableCell>
+                        <TableCell>
+                          <span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${readinessStatus === "ready" ? "border-green-500/30 bg-green-500/10 text-green-200" : blockers.length ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-amber-500/40 bg-amber-500/10 text-amber-200"}`}>
+                            {readinessStatus.replaceAll("_", " ")} {readinessCount}/{PLANT_READINESS_CONTROLS.length}
+                          </span>
+                          {blockers.length > 0 && <p className="mt-1 max-w-56 truncate text-[11px] text-slate-light">{blockers[0]}</p>}
+                        </TableCell>
+                        <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${risk === "critical" || risk === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-green-500/30 bg-green-500/10 text-green-200"}`}>{risk}</span></TableCell>
+                        <TableCell>{text(request, "closure_status").replaceAll("_", " ") || "not started"}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </tbody>
+              </OperationalTable>
+            )}
           </section>
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.9fr)]">
@@ -349,6 +453,12 @@ function FleetTrackerDashboard() {
         </>}
       </div>
 
+      {modal === "plant-request" && (
+        <PlantRequestModal
+          onClose={() => setModal(null)}
+          onSuccess={(reference) => { setModal(null); setNotice(`Plant request ${reference} created.`); void loadFleet(); }}
+        />
+      )}
       {modal === "register" && (
         <RegisterAssetModal
           assetNoun="Vehicle"
@@ -390,6 +500,133 @@ function Metric({ icon, label, value, detail, tone = "text-paper" }: { icon: Rea
 
 function RecordField({ label, value }: { label: string; value: string }) {
   return <div className="p-4"><p className="font-mono text-[10px] uppercase tracking-wider text-slate">{label}</p><p className="mt-2 text-sm text-paper">{value}</p></div>;
+}
+
+function PlantRequestModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (reference: string) => void }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({
+    request_type: "internal_project",
+    required_asset_type: "",
+    quantity: "1",
+    work_location: "",
+    start_date: today,
+    end_date: "",
+    operating_hours_mode: "normal",
+    operator_required: false,
+    fuel_responsibility: "snc",
+    transport_requirement: "drive",
+    work_description: "",
+    cost_centre: "",
+    priority: "routine",
+    expected_revenue: "0",
+    estimated_cost: "0",
+    risk_level: "normal",
+  });
+  const [readiness, setReadiness] = useState<Record<string, boolean>>(
+    Object.fromEntries(PLANT_READINESS_CONTROLS.map(item => [item.key, false]))
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fieldClass = "w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper outline-none placeholder:text-slate focus:border-signal";
+
+  const patch = (key: keyof typeof form, value: string | boolean) => setForm(current => ({ ...current, [key]: value }));
+  const patchReadiness = (key: string, value: boolean) => setReadiness(current => ({ ...current, [key]: value }));
+
+  async function submit() {
+    setError(null);
+    if (!form.required_asset_type.trim() || !form.work_location.trim() || !form.work_description.trim()) {
+      setError("Asset need, work location and work description are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await createPlantRequest({
+        request_type: form.request_type,
+        required_asset_type: form.required_asset_type.trim(),
+        quantity: Number(form.quantity) || 1,
+        work_location: form.work_location.trim(),
+        start_date: form.start_date,
+        end_date: form.end_date || undefined,
+        operating_hours_mode: form.operating_hours_mode,
+        operator_required: form.operator_required,
+        fuel_responsibility: form.fuel_responsibility,
+        transport_requirement: form.transport_requirement,
+        work_description: form.work_description.trim(),
+        cost_centre: form.cost_centre.trim() || undefined,
+        priority: form.priority,
+        expected_revenue: Number(form.expected_revenue) || 0,
+        estimated_cost: Number(form.estimated_cost) || 0,
+        risk_level: form.risk_level,
+        commercial_terms: {},
+        risk_assessment: {},
+        readiness_pack: readiness,
+      });
+      onSuccess(response.data?.request_number || response.data?.id || "created");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Plant request could not be created.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto border border-ink-mid bg-ink shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-5">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate">Plant & Equipment control</p>
+            <h2 className="mt-1 text-lg font-semibold text-paper">New Plant Request</h2>
+          </div>
+          <button type="button" onClick={onClose} className="border border-ink-mid px-3 py-1.5 text-xs text-slate-light hover:border-slate hover:text-paper">Close</button>
+        </div>
+        {error && <div className="m-5 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-100">{error}</div>}
+        <div className="grid gap-4 p-5 md:grid-cols-2">
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Request type</span><select value={form.request_type} onChange={event => patch("request_type", event.target.value)} className={fieldClass}><option value="internal_project">Internal project</option><option value="external_hire">External hire</option><option value="maintenance">Maintenance</option><option value="emergency">Emergency</option><option value="mobilisation">Mobilisation</option><option value="department_transfer">Department transfer</option><option value="tender_capacity">Tender capacity</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Priority</span><select value={form.priority} onChange={event => patch("priority", event.target.value)} className={fieldClass}><option value="routine">Routine</option><option value="urgent">Urgent</option><option value="emergency">Emergency</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Required asset</span><input value={form.required_asset_type} onChange={event => patch("required_asset_type", event.target.value)} placeholder="Excavator, tipper, generator" className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Quantity</span><input type="number" min="1" value={form.quantity} onChange={event => patch("quantity", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Work location</span><input value={form.work_location} onChange={event => patch("work_location", event.target.value)} placeholder="Exact site or yard" className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Cost centre</span><input value={form.cost_centre} onChange={event => patch("cost_centre", event.target.value)} placeholder="Project or department code" className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Start date</span><input type="date" value={form.start_date} onChange={event => patch("start_date", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Expected off-hire</span><input type="date" value={form.end_date} onChange={event => patch("end_date", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Operating hours</span><select value={form.operating_hours_mode} onChange={event => patch("operating_hours_mode", event.target.value)} className={fieldClass}><option value="normal">Normal</option><option value="extended">Extended</option><option value="continuous">Continuous</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Fuel responsibility</span><select value={form.fuel_responsibility} onChange={event => patch("fuel_responsibility", event.target.value)} className={fieldClass}><option value="snc">SNC</option><option value="project">Project</option><option value="client">Client</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Transport</span><select value={form.transport_requirement} onChange={event => patch("transport_requirement", event.target.value)} className={fieldClass}><option value="drive">Drive</option><option value="low_bed">Low-bed</option><option value="tow">Tow</option><option value="collection">Collection</option><option value="none">None</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Risk level</span><select value={form.risk_level} onChange={event => patch("risk_level", event.target.value)} className={fieldClass}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+          <label className="flex items-center gap-3 border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper"><input type="checkbox" checked={form.operator_required} onChange={event => patch("operator_required", event.target.checked)} /> Operator required</label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Expected revenue</span><input type="number" min="0" value={form.expected_revenue} onChange={event => patch("expected_revenue", event.target.value)} className={fieldClass} /></label>
+            <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Estimated cost</span><input type="number" min="0" value={form.estimated_cost} onChange={event => patch("estimated_cost", event.target.value)} className={fieldClass} /></label>
+          </div>
+          <label className="space-y-1 md:col-span-2"><span className="font-mono text-[10px] uppercase text-slate">Work description</span><textarea value={form.work_description} onChange={event => patch("work_description", event.target.value)} rows={4} placeholder="Intended activity and site instructions" className={fieldClass} /></label>
+          <section className="border border-ink-mid bg-ink-light p-4 md:col-span-2">
+            <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate">Pre-mobilisation readiness pack</p>
+                <h3 className="mt-1 text-sm font-semibold text-paper">Plant Manager mobilisation controls</h3>
+              </div>
+              <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">{Object.values(readiness).filter(Boolean).length}/{PLANT_READINESS_CONTROLS.length} complete</span>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {PLANT_READINESS_CONTROLS.map(item => (
+                <label key={item.key} className="flex items-start gap-3 border border-ink-mid bg-ink p-3 text-sm text-paper">
+                  <input type="checkbox" checked={Boolean(readiness[item.key])} onChange={event => patchReadiness(item.key, event.target.checked)} className="mt-1" />
+                  <span>
+                    <span className="block text-xs font-semibold">{item.label}</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-light">{item.detail}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </section>
+        </div>
+        <div className="flex justify-end gap-3 border-t border-ink-mid p-5">
+          <button type="button" onClick={onClose} className="border border-ink-mid px-4 py-2 text-sm text-slate-light hover:border-slate hover:text-paper">Cancel</button>
+          <button type="button" onClick={() => void submit()} disabled={saving} className="inline-flex items-center gap-2 bg-signal px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{saving && <Loader2 size={14} className="animate-spin" />} Create Request</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AssetDetail({

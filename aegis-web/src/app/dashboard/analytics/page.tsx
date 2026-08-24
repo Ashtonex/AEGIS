@@ -78,7 +78,7 @@ function normalizeActionError(reason: unknown, fallback: string) {
 
 export default function AnalyticsDashboard() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Commercial Manager", "Executive Read Only"]}>
       <AnalyticsWorkspace />
     </RBACGuard>
   );

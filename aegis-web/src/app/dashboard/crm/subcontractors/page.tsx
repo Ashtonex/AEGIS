@@ -53,6 +53,12 @@ interface Subcontractor {
   contact_email?: string;
   contact_phone?: string;
   physical_address?: string;
+  preferred_contact_method?: string;
+  alternate_contact_name?: string;
+  alternate_contact_email?: string;
+  alternate_contact_phone?: string;
+  accounts_contact_email?: string;
+  accounts_contact_phone?: string;
   capability_matrix?: CapabilityDomain[];
   audit_log?: AuditEntry[];
   active_projects?: ActiveProject[];
@@ -80,6 +86,12 @@ function blankForm(): Subcontractor {
     contact_email: '',
     contact_phone: '',
     physical_address: '',
+    preferred_contact_method: 'email',
+    alternate_contact_name: '',
+    alternate_contact_email: '',
+    alternate_contact_phone: '',
+    accounts_contact_email: '',
+    accounts_contact_phone: '',
     performance_history: [],
     capability_matrix: DEFAULT_CAP_MATRIX.map(c => ({ ...c })),
     audit_log: [],
@@ -317,6 +329,12 @@ export default function SubcontractorRegistry() {
         authorization_tier: formData.authorization_tier, contact_name: formData.contact_name,
         contact_email: formData.contact_email, contact_phone: formData.contact_phone,
         physical_address: formData.physical_address, capability_matrix: formData.capability_matrix,
+        preferred_contact_method: formData.preferred_contact_method,
+        alternate_contact_name: formData.alternate_contact_name,
+        alternate_contact_email: formData.alternate_contact_email,
+        alternate_contact_phone: formData.alternate_contact_phone,
+        accounts_contact_email: formData.accounts_contact_email,
+        accounts_contact_phone: formData.accounts_contact_phone,
       };
       if (isEditMode && formData.id) {
         await updateSubcontractor(formData.id, payload);
@@ -580,6 +598,14 @@ export default function SubcontractorRegistry() {
                             <div className="flex items-center gap-2">
                               <Phone className="w-3 h-3 text-slate flex-shrink-0" />
                               <span className="font-mono text-[11px] text-paper">{selectedSub.contact_phone || '--'}</span>
+                            </div>
+                            <div>
+                              <div className="font-mono text-[9px] text-slate mb-0.5">PREFERRED</div>
+                              <div className="font-mono text-[11px] text-paper uppercase">{selectedSub.preferred_contact_method || '--'}</div>
+                            </div>
+                            <div>
+                              <div className="font-mono text-[9px] text-slate mb-0.5">ACCOUNTS</div>
+                              <div className="font-mono text-[11px] text-paper">{selectedSub.accounts_contact_email || selectedSub.accounts_contact_phone || '--'}</div>
                             </div>
                           </div>
                         </div>
@@ -880,6 +906,41 @@ export default function SubcontractorRegistry() {
                   <div>
                     <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">PHYSICAL ADDRESS</label>
                     <input type="text" value={formData.physical_address || ''} onChange={e => setFormData(f => ({ ...f, physical_address: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[12px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">PREFERRED CONTACT</label>
+                    <select value={formData.preferred_contact_method || 'email'} onChange={e => setFormData(f => ({ ...f, preferred_contact_method: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal">
+                      <option value="email">EMAIL</option>
+                      <option value="phone">PHONE CALL</option>
+                      <option value="whatsapp">WHATSAPP</option>
+                      <option value="sms">SMS</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">ALTERNATE CONTACT</label>
+                    <input type="text" value={formData.alternate_contact_name || ''} onChange={e => setFormData(f => ({ ...f, alternate_contact_name: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[12px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">ALTERNATE EMAIL</label>
+                    <input type="email" value={formData.alternate_contact_email || ''} onChange={e => setFormData(f => ({ ...f, alternate_contact_email: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[12px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">ALTERNATE PHONE</label>
+                    <input type="tel" value={formData.alternate_contact_phone || ''} onChange={e => setFormData(f => ({ ...f, alternate_contact_phone: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[12px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">ACCOUNTS EMAIL</label>
+                    <input type="email" value={formData.accounts_contact_email || ''} onChange={e => setFormData(f => ({ ...f, accounts_contact_email: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[12px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[9px] text-slate tracking-widest uppercase block mb-1">ACCOUNTS PHONE</label>
+                    <input type="tel" value={formData.accounts_contact_phone || ''} onChange={e => setFormData(f => ({ ...f, accounts_contact_phone: e.target.value }))}
                       className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[12px] text-paper focus:outline-none focus:border-signal transition-colors" />
                   </div>
                 </div>

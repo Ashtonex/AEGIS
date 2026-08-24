@@ -94,7 +94,7 @@ function normalizeActionError(reason: unknown, fallback: string) {
 
 export default function ComplianceDashboard() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
       <ComplianceWorkspace />
     </RBACGuard>
   );

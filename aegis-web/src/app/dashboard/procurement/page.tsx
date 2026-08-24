@@ -35,6 +35,7 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
+  approvePurchaseOrder,
   approveProcurementRequisition,
   createProcurementRfq,
   createProcurementRequisition,
@@ -172,7 +173,7 @@ export default function ProcurementPage() {
       : "requisitions";
 
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
       <ProcurementWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
@@ -376,6 +377,17 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       setSelectedPO(null);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Purchase order issue failed.")); }
+    finally { setSaving(null); }
+  };
+
+  const approvePO = async (po: Rec) => {
+    setSaving(`approve-po-${po.id}`);
+    try {
+      await approvePurchaseOrder(po.id, "approved");
+      setNotice("Purchase order approved for issue.");
+      setSelectedPO(null);
+      await load();
+    } catch (e) { setNotice(normalizeActionError(e, "Purchase order approval failed.")); }
     finally { setSaving(null); }
   };
 
@@ -648,7 +660,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {viewingSupplierCatalogue && (
         <SupplierCatalogueModal supplier={viewingSupplierCatalogue} onClose={() => setViewingSupplierCatalogue(null)} />
       )}
-      {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
+      {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onApprove={approvePO} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
       {approvingPR && <ApproveModal pr={approvingPR} saving={saving?.startsWith("decide-") ?? false} onDecide={(d, r) => void decidePR(approvingPR.id, d, r)} onClose={() => setApprovingPR(null)} />}
       {overridePromptFor && (
         <OverrideReasonModal
@@ -1711,7 +1723,7 @@ function SupplierInvoiceModal({ po, saving, onSubmit, onClose }: { po: Rec; savi
 
 // ─── PO Detail Drawer ─────────────────────────────────────────────────────────
 
-function PODetailDrawer({ po, saving, onIssue, onReceive, onInvoice, onMatchInvoice, onApprovePayment, onClose }: { po: Rec; saving: string | null; onIssue: (po: Rec) => void; onReceive: (po: Rec) => void; onInvoice: (po: Rec) => void; onMatchInvoice: (invoice: Rec) => void; onApprovePayment: (invoice: Rec) => void; onClose: () => void; }) {
+function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onInvoice, onMatchInvoice, onApprovePayment, onClose }: { po: Rec; saving: string | null; onApprove: (po: Rec) => void; onIssue: (po: Rec) => void; onReceive: (po: Rec) => void; onInvoice: (po: Rec) => void; onMatchInvoice: (invoice: Rec) => void; onApprovePayment: (invoice: Rec) => void; onClose: () => void; }) {
   const lines: Rec[] = Array.isArray(po.lines) ? po.lines : Array.isArray(po.line_items) ? po.line_items : [];
   const grns: Rec[] = Array.isArray(po.grns) ? po.grns : Array.isArray(po.goods_receipts) ? po.goods_receipts : [];
   const invLines: Rec[] = Array.isArray(po.invoices) ? po.invoices : [];
@@ -1769,6 +1781,12 @@ function PODetailDrawer({ po, saving, onIssue, onReceive, onInvoice, onMatchInvo
             </div>
           </section>
           <div className="flex flex-wrap gap-2 border border-ink-mid bg-ink-light/30 p-3">
+            {status === "draft" && (
+              <button onClick={() => onApprove(po)} disabled={saving === `approve-po-${po.id}`}
+                className="inline-flex h-9 items-center gap-2 border border-emerald-500/40 px-3 font-mono text-xs uppercase text-emerald-300 hover:bg-emerald-950/30 disabled:opacity-40">
+                {saving === `approve-po-${po.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}Approve PO
+              </button>
+            )}
             {["draft", "approved"].includes(status) && (
               <button onClick={() => onIssue(po)} disabled={saving === `issue-po-${po.id}`}
                 className="inline-flex h-9 items-center gap-2 border border-purple-500/40 px-3 font-mono text-xs uppercase text-purple-300 hover:bg-purple-950/30 disabled:opacity-40">

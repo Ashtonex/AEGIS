@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp, ListChecks } from 'lucide-react';
-import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations, getFinanceDepartments } from '@/lib/api';
+import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations, getFinanceDepartments, getCommercialMorningBriefing } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
 import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
@@ -52,6 +52,34 @@ const getErrorMessage = (error: unknown, fallback: string) => {
 
 const getApiError = (_response: any, fallback: string) => fallback;
 
+const REGION_COORDINATES: Record<string, { latitude: number; longitude: number }> = {
+  Harare: { latitude: -17.8252, longitude: 31.0335 },
+  Bulawayo: { latitude: -20.1457, longitude: 28.5873 },
+  Manicaland: { latitude: -18.9216, longitude: 32.1746 },
+  "Mashonaland Central": { latitude: -16.7644, longitude: 31.0794 },
+  "Mashonaland East": { latitude: -18.5872, longitude: 31.2626 },
+  "Mashonaland West": { latitude: -17.4851, longitude: 29.7889 },
+  Masvingo: { latitude: -20.6242, longitude: 31.2626 },
+  "Matabeleland North": { latitude: -18.5332, longitude: 27.5496 },
+  "Matabeleland South": { latitude: -21.0523, longitude: 29.0450 },
+  Midlands: { latitude: -19.0552, longitude: 29.6035 },
+};
+
+function coordinatePayload(region: string, latitude?: string | number, longitude?: string | number) {
+  const lat = latitude !== undefined && latitude !== "" ? Number(latitude) : REGION_COORDINATES[region]?.latitude;
+  const long = longitude !== undefined && longitude !== "" ? Number(longitude) : REGION_COORDINATES[region]?.longitude;
+  return Number.isFinite(lat) && Number.isFinite(long) ? { latitude: lat, longitude: long } : {};
+}
+
+function BriefingMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="border border-white/10 bg-black/20 p-1 text-center">
+      <p className="font-display text-sm leading-none text-paper">{value}</p>
+      <p className="mt-0.5 font-mono text-[7px] uppercase tracking-wider text-slate-light">{label}</p>
+    </div>
+  );
+}
+
 export default function CRMCommercialEngine() {
   const { session } = useAuth();
   const crmTour = useModuleTour("crm");
@@ -63,6 +91,7 @@ export default function CRMCommercialEngine() {
   const [tenders, setTenders] = useState<any[]>([]);
   const [riskMatrices, setRiskMatrices] = useState<any>(null);
   const [organizations, setOrganizations] = useState<any[]>([]);
+  const [briefing, setBriefing] = useState<any>(null);
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
 
   // Modals state
@@ -70,14 +99,14 @@ export default function CRMCommercialEngine() {
   const [isTenderModalOpen, setIsTenderModalOpen] = useState(false);
   
   // Forms state
-  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', originating_department_id: '' });
+  const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', latitude: '', longitude: '', originating_department_id: '' });
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   useEffect(() => {
     void getFinanceDepartments()
       .then((res) => setDepartments(res.success && Array.isArray(res.data) ? res.data : []))
       .catch(() => setDepartments([]));
   }, []);
-  const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '' });
+  const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '', latitude: '', longitude: '' });
   const [regionAssigning, setRegionAssigning] = useState<string | null>(null);
   const [oppFormErrors, setOppFormErrors] = useState<Record<string, string>>({});
   const [tenderFormErrors, setTenderFormErrors] = useState<Record<string, string>>({});
@@ -88,7 +117,8 @@ export default function CRMCommercialEngine() {
     accountability: 'Accountability metrics',
     opportunities: 'Opportunities',
     tenders: 'Tenders',
-    risk: 'Risk matrices'
+    risk: 'Risk matrices',
+    briefing: 'Morning briefing'
   };
 
   const formatCurrency = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 0 });
@@ -104,12 +134,13 @@ export default function CRMCommercialEngine() {
     setIsLoading(true);
     setLoadErrors({});
     try {
-      const [accRes, oppsRes, tendersRes, riskRes, orgsRes] = await Promise.allSettled([
+      const [accRes, oppsRes, tendersRes, riskRes, orgsRes, briefingRes] = await Promise.allSettled([
         getAccountabilityMetrics(),
         getCrmOpportunities(),
         getCrmTenders(),
         getRiskMatrices(),
-        getCrmOrganizations()
+        getCrmOrganizations(),
+        getCommercialMorningBriefing()
       ]);
       const nextErrors: Record<string, string> = {};
 
@@ -149,10 +180,18 @@ export default function CRMCommercialEngine() {
         setOrganizations(orgsRes.value.data);
       }
 
+      if (briefingRes.status === 'fulfilled' && briefingRes.value.success && briefingRes.value.data) {
+        setBriefing(briefingRes.value.data);
+      } else {
+        nextErrors.briefing = briefingRes.status === 'rejected'
+          ? getErrorMessage(briefingRes.reason, 'Morning briefing did not load.')
+          : getApiError(briefingRes.value, 'Morning briefing did not load.');
+      }
+
       setLoadErrors(nextErrors);
     } catch (error) {
       const message = getErrorMessage(error, 'CRM data did not load.');
-      setLoadErrors({ accountability: message, opportunities: message, tenders: message, risk: message });
+      setLoadErrors({ accountability: message, opportunities: message, tenders: message, risk: message, briefing: message });
     } finally {
       setIsLoading(false);
     }
@@ -170,6 +209,7 @@ export default function CRMCommercialEngine() {
     if (!oppForm.name.trim()) errors.name = 'Deal name is required.';
     if (!Number.isFinite(budget) || budget <= 0) errors.budget = 'Expected value must be greater than 0.';
     if (!Number.isFinite(probability) || probability < 0 || probability > 100) errors.probability = 'Win probability must be between 0 and 100.';
+    if ((oppForm.latitude || oppForm.longitude) && Object.keys(coordinatePayload(oppForm.region, oppForm.latitude, oppForm.longitude)).length === 0) errors.coordinates = 'Latitude/longitude must be valid numbers.';
 
     return errors;
   };
@@ -180,6 +220,7 @@ export default function CRMCommercialEngine() {
 
     if (!tenderForm.tender_name.trim()) errors.tender_name = 'Tender name or reference is required.';
     if (!Number.isFinite(bidAmount) || bidAmount <= 0) errors.bid_amount = 'Bid amount must be greater than 0.';
+    if ((tenderForm.latitude || tenderForm.longitude) && Object.keys(coordinatePayload(tenderForm.region, tenderForm.latitude, tenderForm.longitude)).length === 0) errors.coordinates = 'Latitude/longitude must be valid numbers.';
 
     return errors;
   };
@@ -201,12 +242,13 @@ export default function CRMCommercialEngine() {
         probability: Number(oppForm.probability),
         ...(oppForm.client_org_id ? { client_org_id: oppForm.client_org_id } : {}),
         ...(oppForm.region ? { region: oppForm.region } : {}),
+        ...(oppForm.region || oppForm.latitude || oppForm.longitude ? coordinatePayload(oppForm.region, oppForm.latitude, oppForm.longitude) : {}),
         ...(oppForm.originating_department_id ? { originating_department_id: oppForm.originating_department_id } : {})
       });
       if (!response.success) throw new Error(getApiError(response, 'Opportunity was not created.'));
 
       setIsOppModalOpen(false);
-      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', originating_department_id: '' });
+      setOppForm({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', latitude: '', longitude: '', originating_department_id: '' });
       await loadData();
     } catch (error) {
       setCreateErrors((current) => ({
@@ -232,12 +274,13 @@ export default function CRMCommercialEngine() {
         tender_name: tenderForm.tender_name.trim(),
         stage: tenderForm.stage,
         bid_amount: Number(tenderForm.bid_amount),
-        ...(tenderForm.region ? { region: tenderForm.region } : {})
+        ...(tenderForm.region ? { region: tenderForm.region } : {}),
+        ...(tenderForm.region || tenderForm.latitude || tenderForm.longitude ? coordinatePayload(tenderForm.region, tenderForm.latitude, tenderForm.longitude) : {})
       });
       if (!response.success) throw new Error(getApiError(response, 'Tender was not created.'));
 
       setIsTenderModalOpen(false);
-      setTenderForm({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '' });
+      setTenderForm({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '', latitude: '', longitude: '' });
       await loadData();
     } catch (error) {
       setCreateErrors((current) => ({
@@ -251,12 +294,13 @@ export default function CRMCommercialEngine() {
   const handleAssignRegion = async (kind: 'opportunity' | 'tender', id: string, region: string) => {
     setRegionAssigning(id);
     try {
-      const response = kind === 'opportunity' ? await updateCrmOpportunity(id, { region }) : await updateCrmTender(id, { region });
+      const coords = coordinatePayload(region);
+      const response = kind === 'opportunity' ? await updateCrmOpportunity(id, { region, ...coords }) : await updateCrmTender(id, { region, ...coords });
       if (!response.success) throw new Error(getApiError(response, 'Region was not saved.'));
       if (kind === 'opportunity') {
-        setOpportunities((current) => current.map((o) => (o.id === id ? { ...o, region } : o)));
+        setOpportunities((current) => current.map((o) => (o.id === id ? { ...o, region, ...coords } : o)));
       } else {
-        setTenders((current) => current.map((t) => (t.id === id ? { ...t, region } : t)));
+        setTenders((current) => current.map((t) => (t.id === id ? { ...t, region, ...coords } : t)));
       }
     } catch {
       // Silent: the select reverts to the last known value on next render since
@@ -308,6 +352,66 @@ export default function CRMCommercialEngine() {
     }, 0);
 
     return { value: oppValue + tenderValue, missingProbabilityCount };
+  };
+
+  const briefingItems = useMemo(() => {
+    const tendersDue = Array.isArray(briefing?.tenders_due) ? briefing.tenders_due : [];
+    const taskActivity = Array.isArray(briefing?.task_activity) ? briefing.task_activity : [];
+    const paperworkGaps = Array.isArray(briefing?.paperwork_gaps) ? briefing.paperwork_gaps : [];
+    const staleItems = Array.isArray(briefing?.stale_items) ? briefing.stale_items : [];
+
+    return [
+      ...tendersDue.map((item: any) => ({
+        id: `tender-${item.id}`,
+        tone: Number(item.days_left) <= 3 ? 'critical' : 'warning',
+        label: 'Tender deadline',
+        title: item.title,
+        detail: `${Number(item.days_left ?? 0)} day${Number(item.days_left ?? 0) === 1 ? '' : 's'} left${Number(item.open_requirement_count ?? 0) ? ` · ${item.open_requirement_count} open requirement${Number(item.open_requirement_count) === 1 ? '' : 's'}` : ''}`,
+        href: '/dashboard/crm/tenders',
+      })),
+      ...taskActivity.map((item: any) => {
+        const statusLabel = item.briefing_status === 'ready_for_verification'
+          ? 'Needs verification'
+          : item.briefing_status === 'completed'
+            ? 'Completed task'
+            : item.briefing_status === 'started'
+              ? 'Started task'
+              : item.briefing_status === 'overdue'
+                ? 'Overdue task'
+                : 'Open task';
+        return {
+          id: `task-${item.id}`,
+          tone: item.briefing_status === 'overdue' || item.briefing_status === 'ready_for_verification' ? 'critical' : item.briefing_status === 'completed' ? 'good' : 'info',
+          label: statusLabel,
+          title: item.title,
+          detail: item.assignee_name ? `Owner: ${item.assignee_name}` : 'No assignee recorded',
+          href: '/dashboard/crm/tasks',
+        };
+      }),
+      ...paperworkGaps.map((item: any) => ({
+        id: `paperwork-${item.gap_type}-${item.id}`,
+        tone: item.severity === 'critical' ? 'critical' : 'warning',
+        label: 'Missing paperwork',
+        title: item.title,
+        detail: item.entity_title ? `Linked to ${item.entity_title}` : 'Evidence is not on file',
+        href: item.entity_type === 'tender' ? '/dashboard/crm/tenders' : '/dashboard/crm/opportunities',
+      })),
+      ...staleItems.map((item: any) => ({
+        id: `stale-${item.id}`,
+        tone: 'warning',
+        label: 'Follow-up overdue',
+        title: item.title,
+        detail: item.next_activity_due_at ? `Due ${new Date(item.next_activity_due_at).toLocaleDateString()}` : 'No next activity recorded',
+        href: '/dashboard/crm/opportunities',
+      })),
+    ].slice(0, 18);
+  }, [briefing]);
+
+  const briefingToneClass = (tone: string) => {
+    if (tone === 'critical') return 'border-red-500/30 bg-red-500/10 text-red-200';
+    if (tone === 'warning') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+    if (tone === 'good') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200';
+    return 'border-blue-500/30 bg-blue-500/10 text-blue-200';
   };
   // UI Row 1: KPI Cards
   const renderKpiCards = () => (
@@ -466,14 +570,53 @@ export default function CRMCommercialEngine() {
       <div className="w-[30%] min-w-[280px] shrink-0 flex flex-col gap-2 min-h-0">
         {/* Morning Briefing Terminal */}
         <div className="bg-ink/40 backdrop-blur-xl border border-white/10 p-2.5 rounded-sm shadow-2xl relative overflow-hidden flex flex-col flex-1 min-h-0 animate-in fade-in duration-300">
-          <div className="flex items-center space-x-2 mb-1.5 border-b border-white/10 pb-1 shrink-0">
-            <Terminal className="w-3.5 h-3.5 text-signal animate-pulse-slow" />
-            <h2 className="font-mono text-[10px] text-paper tracking-widest uppercase">Morning Briefing Matrix</h2>
+          <div className="flex items-center justify-between gap-2 mb-1.5 border-b border-white/10 pb-1 shrink-0">
+            <div className="flex items-center space-x-2">
+              <Terminal className="w-3.5 h-3.5 text-signal animate-pulse-slow" />
+              <h2 className="font-mono text-[10px] text-paper tracking-widest uppercase">Morning Briefing Matrix</h2>
+            </div>
+            <button
+              onClick={() => void loadData()}
+              disabled={isLoading}
+              className="border border-white/10 px-2 py-0.5 font-mono text-[8px] uppercase tracking-wider text-slate-light hover:border-signal/40 hover:text-signal disabled:opacity-50"
+            >
+              Refresh
+            </button>
           </div>
-          <div className="flex-1 flex flex-col items-center justify-center text-center gap-1 font-mono text-[9px] text-slate-light">
-            <p>No briefing alerts configured.</p>
-            <p className="text-slate-dark">Tender deadlines, relationship decay, and stalled deals will appear here once tracked.</p>
-          </div>
+          {loadErrors.briefing ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center gap-1 font-mono text-[9px] text-amber-300">
+              <p>Briefing feed unavailable.</p>
+              <p className="text-slate-light">{loadErrors.briefing}</p>
+            </div>
+          ) : briefingItems.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center gap-1 font-mono text-[9px] text-slate-light">
+              <p>No survival alerts right now.</p>
+              <p className="text-slate-dark">AEGIS is watching deadlines, task movement, missing paperwork and stale follow-ups.</p>
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-1.5 pr-0.5">
+              <div className="grid grid-cols-4 gap-1">
+                <BriefingMetric label="Tenders" value={briefing?.summary?.urgent_tenders ?? 0} />
+                <BriefingMetric label="Review" value={briefing?.summary?.tasks_needing_review ?? 0} />
+                <BriefingMetric label="Paper" value={briefing?.summary?.paperwork_gaps ?? 0} />
+                <BriefingMetric label="Stale" value={briefing?.summary?.stale_items ?? 0} />
+              </div>
+              {briefingItems.map((item) => (
+                <Link
+                  href={item.href}
+                  key={item.id}
+                  className={`block border p-2 transition-colors hover:border-signal/50 ${briefingToneClass(item.tone)}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-mono text-[8px] uppercase tracking-wider opacity-80">{item.label}</span>
+                    <ChevronRight className="h-3 w-3 shrink-0 opacity-70" />
+                  </div>
+                  <p className="mt-0.5 line-clamp-2 text-[10px] font-semibold text-paper">{item.title}</p>
+                  <p className="mt-0.5 line-clamp-2 font-mono text-[8px] opacity-80">{item.detail}</p>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Geographic Intelligence Radar Map */}
@@ -806,6 +949,17 @@ export default function CRMCommercialEngine() {
                 </select>
                 <p className="font-mono text-[9px] text-slate-light/70 pl-1">Feeds the Geographic Intelligence breakdown on the pipeline dashboard.</p>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Latitude</label>
+                  <input type="number" step="0.000001" value={oppForm.latitude} onChange={e => setOppForm({...oppForm, latitude: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-signal focus:ring-1 focus:ring-signal/50 outline-none font-mono transition-all" placeholder={oppForm.region ? String(REGION_COORDINATES[oppForm.region]?.latitude ?? '') : '-17.825200'} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Longitude</label>
+                  <input type="number" step="0.000001" value={oppForm.longitude} onChange={e => setOppForm({...oppForm, longitude: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-signal focus:ring-1 focus:ring-signal/50 outline-none font-mono transition-all" placeholder={oppForm.region ? String(REGION_COORDINATES[oppForm.region]?.longitude ?? '') : '31.033500'} />
+                </div>
+              </div>
+              {renderFieldError(oppFormErrors.coordinates)}
 
               <div className="space-y-1.5">
                 <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Department</label>
@@ -887,6 +1041,17 @@ export default function CRMCommercialEngine() {
                 </select>
                 <p className="font-mono text-[9px] text-slate-light/70 pl-1">Feeds the Geographic Intelligence breakdown on the pipeline dashboard.</p>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Latitude</label>
+                  <input type="number" step="0.000001" value={tenderForm.latitude} onChange={e => setTenderForm({...tenderForm, latitude: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none font-mono transition-all" placeholder={tenderForm.region ? String(REGION_COORDINATES[tenderForm.region]?.latitude ?? '') : '-17.825200'} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block font-mono text-[10px] text-slate-light uppercase tracking-widest pl-1">Longitude</label>
+                  <input type="number" step="0.000001" value={tenderForm.longitude} onChange={e => setTenderForm({...tenderForm, longitude: e.target.value})} className="w-full bg-black/50 border border-white/10 rounded-sm px-4 py-3 text-sm text-paper focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none font-mono transition-all" placeholder={tenderForm.region ? String(REGION_COORDINATES[tenderForm.region]?.longitude ?? '') : '31.033500'} />
+                </div>
+              </div>
+              {renderFieldError(tenderFormErrors.coordinates)}
 
               <div className="pt-6 flex justify-end space-x-3 border-t border-white/5 mt-6">
                 <button type="button" onClick={() => setIsTenderModalOpen(false)} className="px-6 py-3 font-mono text-xs text-slate-light hover:text-paper hover:bg-white/5 rounded-sm transition-colors">CANCEL</button>

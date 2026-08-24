@@ -4,11 +4,13 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react
 import {
   AlertTriangle,
   Banknote,
+  Building2,
   CheckCircle2,
   ClipboardList,
   FolderKanban,
   Loader2,
   MessageSquare,
+  Save,
   ShieldCheck,
 } from "lucide-react";
 
@@ -31,10 +33,18 @@ import {
   getClientPortalProjects,
   getClientPortalWorkspace,
   registerClientPortalDocument,
+  updateClientPortalProfile,
 } from "@/lib/api";
 import { PortalDocumentUpload, type UploadedDocumentResult } from "@/components/portal/PortalDocumentUpload";
 import { usePortalTour } from "@/hooks/usePortalTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+
+type EvidenceDocument = {
+  id: string;
+  title: string;
+  category: string;
+  created_at: string;
+};
 
 const CLIENT_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -109,6 +119,20 @@ export function ClientPortalHome() {
   const [issueForm, setIssueForm] = useState({ subject: "", description: "" });
   const [requestForm, setRequestForm] = useState({ subject: "", description: "" });
   const [variationForm, setVariationForm] = useState({ title: "", description: "", cost_impact: "", time_impact_days: "" });
+  const [issueEvidence, setIssueEvidence] = useState<EvidenceDocument[]>([]);
+  const [requestEvidence, setRequestEvidence] = useState<EvidenceDocument[]>([]);
+  const [variationEvidence, setVariationEvidence] = useState<EvidenceDocument[]>([]);
+  const [profileForm, setProfileForm] = useState({
+    company_name: "",
+    company_email: "",
+    company_phone: "",
+    company_address: "",
+    contact_name: "",
+    email: "",
+    phone: "",
+    job_title: "",
+    whatsapp_preference: false,
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -116,9 +140,21 @@ export function ClientPortalHome() {
     try {
       const [wsRes, projectRes] = await Promise.allSettled([getClientPortalWorkspace(), getClientPortalProjects()]);
       if (wsRes.status === "fulfilled" && wsRes.value.data) {
-        setWorkspace(wsRes.value.data);
-        setTickets(wsRes.value.data.tickets ?? []);
-        setMessages(wsRes.value.data.messages ?? []);
+        const data = wsRes.value.data;
+        setWorkspace(data);
+        setTickets(data.tickets ?? []);
+        setMessages(data.messages ?? []);
+        setProfileForm({
+          company_name: data.client.company_name ?? "",
+          company_email: data.client.company_email ?? "",
+          company_phone: data.client.company_phone ?? "",
+          company_address: data.client.company_address ?? "",
+          contact_name: data.client.contact_name ?? "",
+          email: data.client.email ?? "",
+          phone: data.client.phone ?? "",
+          job_title: data.client.job_title ?? "",
+          whatsapp_preference: Boolean(data.client.whatsapp_preference),
+        });
       } else {
         setError("The client portal workspace could not be loaded.");
       }
@@ -188,6 +224,45 @@ export function ClientPortalHome() {
     }
   }
 
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!profileForm.company_name.trim() || !profileForm.contact_name.trim()) {
+      setError("Company name and primary contact are required.");
+      return;
+    }
+    setSaving("profile");
+    setError(null);
+    setNotice(null);
+    try {
+      await updateClientPortalProfile(profileForm);
+      setNotice("Company and contact details saved.");
+      await load();
+    } catch (err) {
+      setError(actionMessage(err, "Company details could not be saved."));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function uploadEvidence(result: UploadedDocumentResult, target: "issue" | "request" | "variation") {
+    setSaving(`evidence-${target}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await registerClientPortalDocument({ ...result, category: "evidence" });
+      if (!response.data?.id) throw new Error("The evidence file could not be registered.");
+      const document = response.data as EvidenceDocument;
+      if (target === "issue") setIssueEvidence((current) => [...current, document]);
+      if (target === "request") setRequestEvidence((current) => [...current, document]);
+      if (target === "variation") setVariationEvidence((current) => [...current, document]);
+      setNotice("Evidence uploaded.");
+    } catch (err) {
+      setError(actionMessage(err, "Evidence could not be uploaded."));
+    } finally {
+      setSaving(null);
+    }
+  }
+
   async function submitGeneralTicket(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const cleaned = requestForm.description.trim();
@@ -220,9 +295,15 @@ export function ClientPortalHome() {
     setError(null);
     setNotice(null);
     try {
-      await createClientPortalIssue({ project_id: selectedProjectId, subject: issueForm.subject || "Project issue", description: issueForm.description });
+      await createClientPortalIssue({
+        project_id: selectedProjectId,
+        subject: issueForm.subject || "Project issue",
+        description: issueForm.description,
+        evidence_document_ids: issueEvidence.map((doc) => doc.id),
+      });
       setNotice("Issue raised.");
       setIssueForm({ subject: "", description: "" });
+      setIssueEvidence([]);
       await loadProjectDetail(selectedProjectId);
     } catch (err) {
       setError(actionMessage(err, "The issue could not be raised."));
@@ -241,9 +322,15 @@ export function ClientPortalHome() {
     setError(null);
     setNotice(null);
     try {
-      await createClientPortalAdditionalRequest({ project_id: selectedProjectId, subject: requestForm.subject || "Additional request", description: requestForm.description });
+      await createClientPortalAdditionalRequest({
+        project_id: selectedProjectId,
+        subject: requestForm.subject || "Additional request",
+        description: requestForm.description,
+        evidence_document_ids: requestEvidence.map((doc) => doc.id),
+      });
       setNotice("Request submitted.");
       setRequestForm({ subject: "", description: "" });
+      setRequestEvidence([]);
       await loadProjectDetail(selectedProjectId);
     } catch (err) {
       setError(actionMessage(err, "The request could not be submitted."));
@@ -268,9 +355,11 @@ export function ClientPortalHome() {
         description: variationForm.description || undefined,
         cost_impact: variationForm.cost_impact ? Number(variationForm.cost_impact) : undefined,
         time_impact_days: variationForm.time_impact_days ? Number(variationForm.time_impact_days) : undefined,
+        evidence_document_ids: variationEvidence.map((doc) => doc.id),
       });
       setNotice("Variation submitted for review.");
       setVariationForm({ title: "", description: "", cost_impact: "", time_impact_days: "" });
+      setVariationEvidence([]);
       await loadProjectDetail(selectedProjectId);
     } catch (err) {
       setError(actionMessage(err, "The variation could not be submitted."));
@@ -445,6 +534,23 @@ export function ClientPortalHome() {
                       <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Description</span>
                       <textarea rows={3} value={variationForm.description} onChange={(e) => setVariationForm((c) => ({ ...c, description: e.target.value }))} className="mt-2 w-full resize-none border border-ink-mid bg-ink p-3 text-sm text-paper outline-none focus:border-signal" />
                     </label>
+                    <div className="md:col-span-2">
+                      <PortalDocumentUpload
+                        label="Attach supporting image or PDF"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        onUploaded={(result) => uploadEvidence(result, "variation")}
+                        disabled={saving === "evidence-variation"}
+                      />
+                      {variationEvidence.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {variationEvidence.map((doc) => (
+                            <span key={doc.id} className="border border-ink-mid bg-ink px-2 py-1 font-mono text-[10px] uppercase text-slate-light">
+                              {doc.title}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <label className="block">
                       <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Estimated cost impact</span>
                       <input type="number" step="0.01" value={variationForm.cost_impact} onChange={(e) => setVariationForm((c) => ({ ...c, cost_impact: e.target.value }))} className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
@@ -475,7 +581,7 @@ export function ClientPortalHome() {
                             {v.time_impact_days ? ` · ${v.time_impact_days}d` : ""}
                           </p>
                           {v.status === "rejected" && v.rejection_reason && (
-                            <p className="mt-2 text-xs italic text-red-300">"{v.rejection_reason}"</p>
+                            <p className="mt-2 text-xs italic text-red-300">&quot;{v.rejection_reason}&quot;</p>
                           )}
                         </div>
                       ))}
@@ -492,6 +598,21 @@ export function ClientPortalHome() {
                     <div className="space-y-3 p-4">
                       <input value={issueForm.subject} onChange={(e) => setIssueForm((c) => ({ ...c, subject: e.target.value }))} placeholder="Subject" className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
                       <textarea rows={4} value={issueForm.description} onChange={(e) => setIssueForm((c) => ({ ...c, description: e.target.value }))} placeholder="Describe the issue..." className="w-full resize-none border border-ink-mid bg-ink p-3 text-sm text-paper outline-none focus:border-signal" />
+                      <PortalDocumentUpload
+                        label="Attach photo or PDF evidence"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        onUploaded={(result) => uploadEvidence(result, "issue")}
+                        disabled={saving === "evidence-issue"}
+                      />
+                      {issueEvidence.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {issueEvidence.map((doc) => (
+                            <span key={doc.id} className="border border-ink-mid bg-ink px-2 py-1 font-mono text-[10px] uppercase text-slate-light">
+                              {doc.title}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <button type="submit" disabled={saving === "issue"} className="inline-flex h-10 w-full items-center justify-center gap-2 border border-ink-mid px-4 font-mono text-xs uppercase tracking-widest hover:border-signal disabled:opacity-50">
                         {saving === "issue" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Raise issue"}
                       </button>
@@ -506,6 +627,21 @@ export function ClientPortalHome() {
                     <div className="space-y-3 p-4">
                       <input value={requestForm.subject} onChange={(e) => setRequestForm((c) => ({ ...c, subject: e.target.value }))} placeholder="Subject" className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
                       <textarea rows={4} value={requestForm.description} onChange={(e) => setRequestForm((c) => ({ ...c, description: e.target.value }))} placeholder="Describe the request..." className="w-full resize-none border border-ink-mid bg-ink p-3 text-sm text-paper outline-none focus:border-signal" />
+                      <PortalDocumentUpload
+                        label="Attach supporting image or PDF"
+                        accept=".pdf,.png,.jpg,.jpeg"
+                        onUploaded={(result) => uploadEvidence(result, "request")}
+                        disabled={saving === "evidence-request"}
+                      />
+                      {requestEvidence.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {requestEvidence.map((doc) => (
+                            <span key={doc.id} className="border border-ink-mid bg-ink px-2 py-1 font-mono text-[10px] uppercase text-slate-light">
+                              {doc.title}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <button type="submit" disabled={saving === "additional-request"} className="inline-flex h-10 w-full items-center justify-center gap-2 border border-ink-mid px-4 font-mono text-xs uppercase tracking-widest hover:border-signal disabled:opacity-50">
                         {saving === "additional-request" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Submit request"}
                       </button>
@@ -517,20 +653,59 @@ export function ClientPortalHome() {
           </div>
 
           <aside className="space-y-6">
-            <div className="border border-ink-mid bg-ink-light p-5">
-              <p className="font-mono text-[10px] tracking-widest text-signal uppercase">Provisioned identity</p>
-              <h2 className="mt-2 text-xl font-semibold">{workspace?.client.contact_name ?? "Client contact"}</h2>
-              <div className="mt-5 space-y-3 text-sm">
-                <p className="flex justify-between gap-4 border-b border-ink-mid pb-2">
-                  <span className="text-slate-light">Company</span>
-                  <span className="text-right">{workspace?.client.company_name ?? "Not linked"}</span>
-                </p>
-                <p className="flex justify-between gap-4">
-                  <span className="text-slate-light">Email</span>
-                  <span className="text-right">{workspace?.client.email ?? "Not recorded"}</span>
-                </p>
+            <form onSubmit={saveProfile} className="border border-ink-mid bg-ink-light">
+              <div className="flex items-center justify-between border-b border-ink-mid p-4">
+                <div>
+                  <p className="font-mono text-[10px] tracking-widest text-signal uppercase">Company details</p>
+                  <h2 className="mt-1 text-xl font-semibold">Your profile</h2>
+                </div>
+                <Building2 className="h-5 w-5 text-slate-light" />
               </div>
-            </div>
+              <div className="grid gap-3 p-4">
+                {([
+                  ["company_name", "Company name"],
+                  ["company_email", "Company email"],
+                  ["company_phone", "Company phone"],
+                  ["contact_name", "Primary contact"],
+                  ["job_title", "Role / title"],
+                  ["email", "Contact email"],
+                  ["phone", "Contact phone"],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="block">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">{label}</span>
+                    <input
+                      value={profileForm[key]}
+                      onChange={(e) => setProfileForm((c) => ({ ...c, [key]: e.target.value }))}
+                      className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                    />
+                  </label>
+                ))}
+                <label className="block">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Company address</span>
+                  <textarea
+                    rows={2}
+                    value={profileForm.company_address}
+                    onChange={(e) => setProfileForm((c) => ({ ...c, company_address: e.target.value }))}
+                    className="mt-2 w-full resize-none border border-ink-mid bg-ink p-3 text-sm text-paper outline-none focus:border-signal"
+                  />
+                </label>
+                <label className="flex items-start gap-2 border border-ink-mid bg-ink p-3 text-sm text-slate-light">
+                  <input
+                    type="checkbox"
+                    checked={profileForm.whatsapp_preference}
+                    onChange={(e) => setProfileForm((c) => ({ ...c, whatsapp_preference: e.target.checked }))}
+                    className="mt-1"
+                  />
+                  <span>Prefer WhatsApp or phone follow-up when AEGIS needs a quick response.</span>
+                </label>
+              </div>
+              <div className="border-t border-ink-mid p-4">
+                <button type="submit" disabled={saving === "profile"} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs uppercase tracking-widest text-ink disabled:opacity-50">
+                  {saving === "profile" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Save details
+                </button>
+              </div>
+            </form>
 
             <div className="border border-ink-mid bg-ink-light" data-tour="client-messages">
               <div className="flex items-center justify-between border-b border-ink-mid p-4">

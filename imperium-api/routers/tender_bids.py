@@ -472,6 +472,24 @@ async def award_tender(
             created_by=user_id,
         )
 
+        if project_id:
+            await db.execute(
+                text("""
+                    INSERT INTO projects.project_profiles (
+                        project_id, organization_id, commercial_readiness_status
+                    )
+                    VALUES (:project_id, :org_id, 'in_progress')
+                    ON CONFLICT (project_id) DO UPDATE SET
+                        commercial_readiness_status = CASE
+                            WHEN projects.project_profiles.commercial_readiness_status = 'not_started'
+                            THEN 'in_progress'
+                            ELSE projects.project_profiles.commercial_readiness_status
+                        END,
+                        updated_at = NOW()
+                """),
+                {"project_id": project_id, "org_id": org_id},
+            )
+
         await db.commit()
     except (DataError, IntegrityError) as exc:
         await db.rollback()
@@ -489,6 +507,14 @@ async def award_tender(
     await db.commit()
 
     await generate_task_stack(db, org_id=org_id, entity_type="award", entity_id=pursuit_id, created_by=user_id)
+    if project_id:
+        await generate_task_stack(
+            db,
+            org_id=org_id,
+            entity_type="commercial_readiness",
+            entity_id=project_id,
+            created_by=user_id,
+        )
 
     return {
         "success": True,

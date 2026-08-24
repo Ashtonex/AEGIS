@@ -36,6 +36,8 @@ import {
   getInternalProjects,
   getSiteOperationInventoryItems,
   getSiteOperationStores,
+  getWeeklySiteBudgetItems,
+  getWeeklySiteBudgets,
   getWorkforce,
   requestSiteMaterial,
   submitDailySiteReport,
@@ -114,6 +116,7 @@ function SiteOperationsWorkspace() {
   const [fleet, setFleet] = useState<ApiRecord[]>([]);
   const [inventoryItems, setInventoryItems] = useState<ApiRecord[]>([]);
   const [stores, setStores] = useState<ApiRecord[]>([]);
+  const [weeklyItems, setWeeklyItems] = useState<ApiRecord[]>([]);
   const [selected, setSelected] = useState<ApiRecord | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -125,11 +128,20 @@ function SiteOperationsWorkspace() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [projectId, setProjectId] = useState("");
-  const [draft, setDraft] = useState({ report_date: new Date().toISOString().slice(0, 10), shift: "day", planned_work: "", actual_work: "", cost_exposure: "0" });
+  const [draft, setDraft] = useState({
+    report_date: new Date().toISOString().slice(0, 10),
+    shift: "day",
+    planned_work: "",
+    actual_work: "",
+    cost_exposure: "0",
+    labour_count_completed: false,
+    toolbox_talk_completed: false,
+    ppe_check_completed: false,
+  });
   const [labour, setLabour] = useState({ employee_id: "", role_on_site: "", regular_hours: "8", overtime_hours: "0", cost_rate: "0", notes: "" });
   const [equipment, setEquipment] = useState({ fleet_id: "", operator_employee_id: "", operating_hours: "0", idle_hours: "0", fuel_litres: "0", cost_rate: "0", notes: "" });
   const [material, setMaterial] = useState({ item_id: "", store_id: "", quantity_used: "0", unit_cost: "0", wastage_quantity: "0", work_package: "", notes: "" });
-  const [materialRequest, setMaterialRequest] = useState({ item_id: "", store_id: "", quantity: "1", unit_cost: "0", required_by_date: new Date().toISOString().slice(0, 10), priority: "normal", work_package: "", justification: "" });
+  const [materialRequest, setMaterialRequest] = useState({ item_id: "", store_id: "", quantity: "1", unit_cost: "0", required_by_date: new Date().toISOString().slice(0, 10), priority: "normal", work_package: "", justification: "", weekly_budget_item_id: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -156,6 +168,23 @@ function SiteOperationsWorkspace() {
       else warnings.push("Inventory catalogue could not be loaded.");
       if (storeResult.status === "fulfilled") setStores(Array.isArray(storeResult.value.data) ? storeResult.value.data : []);
       else warnings.push("Store register could not be loaded.");
+      if (projectId) {
+        try {
+          const budgetResult = await getWeeklySiteBudgets({ projectId, status: "all" });
+          const activeBudget = (Array.isArray(budgetResult.data) ? budgetResult.data : []).find((budget) => ["approved", "submitted"].includes(text(budget.status).toLowerCase()));
+          if (activeBudget?.id) {
+            const itemResult = await getWeeklySiteBudgetItems(activeBudget.id);
+            setWeeklyItems(Array.isArray(itemResult.data) ? itemResult.data : []);
+          } else {
+            setWeeklyItems([]);
+          }
+        } catch {
+          setWeeklyItems([]);
+          warnings.push("Weekly execution lines could not be loaded.");
+        }
+      } else {
+        setWeeklyItems([]);
+      }
       setSourceWarnings(warnings);
       if (reportResult.status === "rejected") {
         throw new Error(loadFailureMessage(reportResult.reason));
@@ -165,7 +194,7 @@ function SiteOperationsWorkspace() {
     } finally {
       setLoading(false);
     }
-  }, [status]);
+  }, [projectId, status]);
 
   useEffect(() => { void load(); }, [load]);
   useLiveTable("projects.daily_site_reports", () => void load());
@@ -268,6 +297,7 @@ function SiteOperationsWorkspace() {
         priority: materialRequest.priority,
         work_package: materialRequest.work_package || null,
         justification: materialRequest.justification || null,
+        weekly_budget_item_id: materialRequest.weekly_budget_item_id || null,
         auto_submit_requisition: true,
       });
       const data = response.data ?? {};
@@ -329,6 +359,9 @@ function SiteOperationsWorkspace() {
             <input value={draft.cost_exposure} onChange={(event) => setDraft({ ...draft, cost_exposure: event.target.value })} placeholder="Cost exposure" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             <textarea value={draft.planned_work} onChange={(event) => setDraft({ ...draft, planned_work: event.target.value })} placeholder="Planned work" className="min-h-24 border border-ink-mid bg-ink-light p-3 text-sm text-paper md:col-span-2" />
             <textarea value={draft.actual_work} onChange={(event) => setDraft({ ...draft, actual_work: event.target.value })} placeholder="Actual work completed" className="min-h-24 border border-ink-mid bg-ink-light p-3 text-sm text-paper md:col-span-2" />
+            <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"><input type="checkbox" checked={draft.labour_count_completed} onChange={(event) => setDraft({ ...draft, labour_count_completed: event.target.checked })} /> Labour count done</label>
+            <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"><input type="checkbox" checked={draft.toolbox_talk_completed} onChange={(event) => setDraft({ ...draft, toolbox_talk_completed: event.target.checked })} /> Toolbox talk done</label>
+            <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"><input type="checkbox" checked={draft.ppe_check_completed} onChange={(event) => setDraft({ ...draft, ppe_check_completed: event.target.checked })} /> PPE check done</label>
           </div>
           <button onClick={() => void createReport()} disabled={saving === "create"} className="mt-4 inline-flex items-center gap-2 bg-signal px-4 py-2 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"><Plus className="h-4 w-4" />Create report</button>
         </div>
@@ -371,6 +404,14 @@ function SiteOperationsWorkspace() {
             <option value="low">Low</option>
           </select>
           <input value={materialRequest.work_package} onChange={(event) => setMaterialRequest({ ...materialRequest, work_package: event.target.value })} placeholder="Work package" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper md:col-span-2" />
+          <select value={materialRequest.weekly_budget_item_id} onChange={(event) => setMaterialRequest({ ...materialRequest, weekly_budget_item_id: event.target.value })} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper md:col-span-2 xl:col-span-3">
+            <option value="">Weekly execution line</option>
+            {weeklyItems.map((line) => (
+              <option key={line.id} value={line.id}>
+                {text(line.description)} · planned {text(line.planned_qty)} {text(line.unit)}
+              </option>
+            ))}
+          </select>
           <input value={materialRequest.justification} onChange={(event) => setMaterialRequest({ ...materialRequest, justification: event.target.value })} placeholder="Justification" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper md:col-span-2 xl:col-span-3" />
           <button onClick={() => void submitMaterialRequest()} disabled={saving === "material-request"} className="inline-flex h-10 items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
             {saving === "material-request" ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackageCheck className="h-4 w-4" />}Request material

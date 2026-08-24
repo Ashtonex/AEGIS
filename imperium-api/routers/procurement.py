@@ -148,6 +148,11 @@ class PaymentDecisionPayload(Payload):
     approval_document_id: Optional[UUID] = None
 
 
+class PurchaseOrderDecisionPayload(Payload):
+    decision: Literal["approved", "rejected"]
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
 class ProcurementDocumentLinkPayload(Payload):
     entity_type: Literal["purchase_order", "goods_received_note", "supplier_invoice"]
     entity_id: UUID
@@ -168,6 +173,10 @@ def ok(data: Any, message: str, total: Optional[int] = None):
         "message": message,
         "meta": {} if total is None else {"total": total},
     }
+
+
+def is_procurement_manager(user: dict) -> bool:
+    return str(user.get("role") or "").strip().lower() == "procurement manager"
 
 
 async def emit_event(
@@ -348,6 +357,39 @@ async def has_document_link(
         },
     )
     return bool(row.scalar())
+
+
+async def ensure_current_weekly_budget(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    project_id: Optional[UUID],
+    site_id: Optional[UUID] = None,
+) -> Optional[UUID]:
+    if project_id is None:
+        return None
+    row = await db.execute(
+        text("""
+        SELECT id
+        FROM projects.weekly_budgets
+        WHERE organization_id=:org_id
+          AND project_id=:project_id
+          AND (CAST(:site_id AS uuid) IS NULL OR site_id=CAST(:site_id AS uuid) OR site_id IS NULL)
+          AND week_start <= CURRENT_DATE
+          AND week_start + 6 >= CURRENT_DATE
+          AND status IN ('submitted', 'approved')
+          AND is_deleted=false
+        LIMIT 1
+    """),
+        {"org_id": org_id, "project_id": project_id, "site_id": site_id},
+    )
+    budget_id = row.scalar()
+    if not budget_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Submit this week's project/site budget before creating requisitions or RFQs.",
+        )
+    return budget_id
 
 
 @router.get("/requisitions")
@@ -540,6 +582,9 @@ async def create_requisition(
     db: AsyncSession = Depends(get_db),
 ):
     await project_exists(db, payload.project_id, user["org_id"])
+    weekly_budget_id = await ensure_current_weekly_budget(
+        db, org_id=user["org_id"], project_id=payload.project_id, site_id=payload.site_id
+    )
     total = sum(
         (line.qty * line.unit_cost for line in payload.line_items), Decimal("0")
     )
@@ -553,11 +598,11 @@ async def create_requisition(
         INSERT INTO procurement.purchase_requisitions (
             organization_id, requisition_number, project_id, site_id, cost_code_id,
             requested_by, required_by_date, priority, justification, total_estimated,
-            budget_checked, budget_available, created_by
+            budget_checked, budget_available, weekly_budget_id, created_by
         ) VALUES (
             :org_id, :number, :project_id, :site_id, :cost_code_id,
             :user_id, :required_by_date, :priority, :justification, :total,
-            :budget_checked, :available, :user_id
+            :budget_checked, :available, :weekly_budget_id, :user_id
         ) RETURNING id
     """),
             {
@@ -573,6 +618,7 @@ async def create_requisition(
                 "total": total,
                 "budget_checked": available is not None,
                 "available": available,
+                "weekly_budget_id": weekly_budget_id,
             },
         )
     ).scalar()
@@ -647,6 +693,9 @@ async def submit_requisition(
     db: AsyncSession = Depends(get_db),
 ):
     req = await requisition_or_404(db, req_id, user["org_id"])
+    await ensure_current_weekly_budget(
+        db, org_id=user["org_id"], project_id=req["project_id"], site_id=req.get("site_id")
+    )
     if req["status"] != "draft":
         raise HTTPException(
             status_code=409, detail="Only draft requisitions can be submitted."
@@ -734,6 +783,11 @@ async def decide_requisition(
         )
     if str(req["requested_by"]) == user["user_id"]:
         raise HTTPException(status_code=409, detail="Self-approval is not permitted.")
+    if payload.decision == "approved" and is_procurement_manager(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Procurement Manager can review or reject incomplete requisitions, but independent approval is required before Procurement acts.",
+        )
     over_budget = (
         payload.decision == "approved"
         and req["budget_checked"]
@@ -920,6 +974,9 @@ async def create_rfq(
     db: AsyncSession = Depends(get_db),
 ):
     req = await requisition_or_404(db, payload.requisition_id, user["org_id"])
+    weekly_budget_id = await ensure_current_weekly_budget(
+        db, org_id=user["org_id"], project_id=req["project_id"], site_id=req.get("site_id")
+    )
     if req["status"] != "approved":
         raise HTTPException(
             status_code=409, detail="RFQ requires an approved requisition."
@@ -930,10 +987,10 @@ async def create_rfq(
         await db.execute(
             text("""
         INSERT INTO procurement.rfqs (
-            organization_id, rfq_number, requisition_id, project_id, title, description,
+            organization_id, rfq_number, requisition_id, project_id, weekly_budget_id, title, description,
             closing_date, status, issued_by, issued_at, created_by
         ) VALUES (
-            :org_id, :rfq_number, :requisition_id, :project_id, :title, :description,
+            :org_id, :rfq_number, :requisition_id, :project_id, :weekly_budget_id, :title, :description,
             CAST(:closing_date AS timestamptz), CAST(:status AS varchar),
             CASE WHEN CAST(:status AS varchar)='issued' THEN CAST(:user_id AS uuid) ELSE NULL END,
             CASE WHEN CAST(:status AS varchar)='issued' THEN NOW() ELSE NULL END,
@@ -945,6 +1002,7 @@ async def create_rfq(
                 "rfq_number": rfq_no,
                 "requisition_id": payload.requisition_id,
                 "project_id": req["project_id"],
+                "weekly_budget_id": weekly_budget_id,
                 "title": payload.title or req["requisition_number"],
                 "description": payload.description or req["justification"],
                 "closing_date": payload.closing_date,
@@ -1556,6 +1614,17 @@ async def issue_purchase_order(
             status_code=409,
             detail="Only draft or approved purchase orders can be issued.",
         )
+    if is_procurement_manager(user):
+        if po["status"] != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail="Procurement Manager can prepare purchase orders, but independent approval is required before issue.",
+            )
+        if po["approved_by"] and str(po["approved_by"]) == user["user_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Self-approved purchase orders cannot be issued.",
+            )
     await db.execute(
         text(
             "UPDATE procurement.purchase_orders SET status='issued', issued_by=:user_id, issued_at=NOW(), updated_at=NOW() WHERE id=:id"
@@ -1600,6 +1669,82 @@ async def issue_purchase_order(
     return ok(
         {"id": str(po_id), "status": "issued"},
         "Purchase order issued and commitment created.",
+    )
+
+
+@router.post("/purchase-orders/{po_id}/decision")
+async def decide_purchase_order(
+    po_id: UUID,
+    payload: PurchaseOrderDecisionPayload,
+    user: dict = Depends(require_permission("procurement.po.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    po = (
+        (
+            await db.execute(
+                text(
+                    "SELECT * FROM procurement.purchase_orders WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                ),
+                {"id": po_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    if po["status"] != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail="Only draft purchase orders can be approved or rejected.",
+        )
+    if str(po["created_by"]) == user["user_id"]:
+        raise HTTPException(status_code=409, detail="Self-approval is not permitted.")
+    if payload.decision == "approved" and is_procurement_manager(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Procurement Manager can prepare purchase orders, but approval must be independent.",
+        )
+
+    await db.execute(
+        text("""
+        UPDATE procurement.purchase_orders
+        SET status=CAST(:status_value AS varchar),
+            approved_by=CASE WHEN CAST(:status_value AS varchar)='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
+            approved_at=CASE WHEN CAST(:status_value AS varchar)='approved' THEN NOW() ELSE approved_at END,
+            notes=CASE
+              WHEN CAST(:status_value AS varchar)='rejected' AND :reason IS NOT NULL
+              THEN CONCAT(COALESCE(notes, ''), CASE WHEN notes IS NULL OR notes='' THEN '' ELSE E'\n' END, 'Rejection reason: ', :reason)
+              ELSE notes
+            END,
+            updated_at=NOW()
+        WHERE id=:id AND organization_id=:org_id
+    """),
+        {
+            "id": po_id,
+            "org_id": user["org_id"],
+            "status_value": payload.decision,
+            "reason": payload.reason,
+            "user_id": user["user_id"],
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type=(
+            "procurement.purchase_order.approved.v1"
+            if payload.decision == "approved"
+            else "procurement.purchase_order.rejected.v1"
+        ),
+        aggregate_type="purchase_order",
+        aggregate_id=po_id,
+        project_id=po["project_id"],
+        payload=payload.model_dump(mode="json"),
+    )
+    await db.commit()
+    return ok(
+        {"id": str(po_id), "status": payload.decision},
+        f"Purchase order {payload.decision}.",
     )
 
 
@@ -2030,6 +2175,11 @@ async def payment_decision(
     )
     if not inv:
         raise HTTPException(status_code=404, detail="Supplier invoice not found")
+    if payload.decision == "approved" and is_procurement_manager(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Finance controls supplier payment approval; Procurement Manager cannot release payments.",
+        )
     if payload.decision == "approved" and inv["match_status"] != "matched":
         raise HTTPException(
             status_code=409,

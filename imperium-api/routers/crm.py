@@ -159,6 +159,8 @@ class OpportunityCreate(CrmPayload):
     risk_level: Optional[str] = Field(default=None, max_length=50)
     originating_department_id: Optional[UUID] = None
     region: Optional[str] = Field(default=None, max_length=120)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -199,6 +201,8 @@ class OpportunityUpdate(CrmPayload):
     competitor: Optional[str] = Field(default=None, max_length=255)
     originating_department_id: Optional[UUID] = None
     region: Optional[str] = Field(default=None, max_length=120)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
     margin_approval_required: Optional[bool] = None
     risk_approval_required: Optional[bool] = None
     approval_status: Optional[str] = Field(default=None, max_length=40)
@@ -230,6 +234,8 @@ OPPORTUNITY_UPDATE_COLUMNS = (
     "approval_status",
     "originating_department_id",
     "region",
+    "latitude",
+    "longitude",
 )
 
 
@@ -329,6 +335,8 @@ class TenderCreate(CrmPayload):
         decimal_places=2,
     )
     region: Optional[str] = Field(default=None, max_length=120)
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -348,6 +356,12 @@ class SubcontractorCreate(CrmPayload):
     contact_email: Optional[str] = Field(default=None, max_length=255)
     contact_phone: Optional[str] = Field(default=None, max_length=50)
     physical_address: Optional[str] = None
+    preferred_contact_method: Optional[str] = Field(default=None, max_length=40)
+    alternate_contact_name: Optional[str] = Field(default=None, max_length=255)
+    alternate_contact_email: Optional[str] = Field(default=None, max_length=255)
+    alternate_contact_phone: Optional[str] = Field(default=None, max_length=50)
+    accounts_contact_email: Optional[str] = Field(default=None, max_length=255)
+    accounts_contact_phone: Optional[str] = Field(default=None, max_length=50)
     capability_matrix: Optional[List[Dict[str, Any]]] = None
     # Optional: provision an immediately-active portal login for this
     # subcontractor's contact in the same call, instead of a separate trip
@@ -370,6 +384,12 @@ class SubcontractorUpdate(CrmPayload):
     contact_email: Optional[str] = Field(default=None, max_length=255)
     contact_phone: Optional[str] = Field(default=None, max_length=50)
     physical_address: Optional[str] = None
+    preferred_contact_method: Optional[str] = Field(default=None, max_length=40)
+    alternate_contact_name: Optional[str] = Field(default=None, max_length=255)
+    alternate_contact_email: Optional[str] = Field(default=None, max_length=255)
+    alternate_contact_phone: Optional[str] = Field(default=None, max_length=50)
+    accounts_contact_email: Optional[str] = Field(default=None, max_length=255)
+    accounts_contact_phone: Optional[str] = Field(default=None, max_length=50)
     capability_matrix: Optional[List[Dict[str, Any]]] = None
 
 
@@ -394,11 +414,23 @@ def _subcontractor_db_values(values: Dict[str, Any]) -> Dict[str, Any]:
     db_values.pop("issue_portal_login", None)
     if "physical_address" in db_values:
         db_values["address"] = db_values.pop("physical_address")
+    metadata_fields = (
+        "preferred_contact_method",
+        "alternate_contact_name",
+        "alternate_contact_email",
+        "alternate_contact_phone",
+        "accounts_contact_email",
+        "accounts_contact_phone",
+    )
+    submission_data: Dict[str, Any] = {}
+    for field in metadata_fields:
+        if field in db_values:
+            submission_data[field] = db_values.pop(field)
     if "capability_matrix" in db_values:
         capability_matrix = db_values.pop("capability_matrix")
-        db_values["submission_data"] = json.dumps(
-            {"capability_matrix": capability_matrix}
-        )
+        submission_data["capability_matrix"] = capability_matrix
+    if submission_data:
+        db_values["submission_data"] = json.dumps(submission_data)
     return db_values
 
 
@@ -1328,6 +1360,220 @@ async def executive_crm_report(
     }
 
 
+@router.get("/commercial-briefing")
+async def commercial_morning_briefing(
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Live Commercial Command briefing.
+
+    This is intentionally computed from current operational records each time
+    the CRM home screen loads: tender deadlines, task movement, open tender
+    requirement gaps, missing BOQ/authority paperwork, and stale pursuit work.
+    """
+    org_id = _require_org_id(user)
+    tenders_due = await _rows(
+        db,
+        """
+        SELECT
+            t.id,
+            t.tender_name AS title,
+            t.stage,
+            t.bid_amount AS value,
+            t.submission_deadline AS due_date,
+            GREATEST(0, CEIL(EXTRACT(EPOCH FROM (t.submission_deadline::timestamp - NOW())) / 86400.0))::int AS days_left,
+            COALESCE(open_requirements.open_count, 0) AS open_requirement_count,
+            COALESCE(document_counts.document_count, 0) AS document_count
+        FROM crm.tenders t
+        LEFT JOIN (
+            SELECT tender_id, COUNT(*) AS open_count
+            FROM crm.tender_requirements
+            WHERE organization_id = :org_id AND is_deleted = false AND is_satisfied = false
+            GROUP BY tender_id
+        ) open_requirements ON open_requirements.tender_id = t.id
+        LEFT JOIN (
+            SELECT entity_id AS tender_id, COUNT(*) AS document_count
+            FROM core.document_links
+            WHERE organization_id = :org_id AND is_deleted = false AND entity_type = 'tender'
+            GROUP BY entity_id
+        ) document_counts ON document_counts.tender_id = t.id
+        WHERE t.organization_id = :org_id
+          AND t.is_deleted = false
+          AND t.submission_deadline IS NOT NULL
+          AND t.submission_deadline::timestamp >= NOW() - INTERVAL '1 day'
+          AND t.submission_deadline::timestamp <= NOW() + INTERVAL '14 days'
+          AND lower(COALESCE(t.stage, '')) NOT IN ('awarded/lost', 'lost', 'withdrawn', 'cancelled')
+        ORDER BY t.submission_deadline ASC
+        LIMIT 10
+        """,
+        {"org_id": org_id},
+    )
+    task_activity = await _rows(
+        db,
+        """
+        SELECT
+            t.id,
+            t.title,
+            t.status,
+            t.priority,
+            t.entity_type,
+            t.entity_id,
+            t.due_date,
+            t.updated_at,
+            t.completed_at,
+            t.review_submitted_at,
+            u.full_name AS assignee_name,
+            CASE
+                WHEN t.status = 'completed' THEN 'completed'
+                WHEN t.status = 'under_review' THEN 'ready_for_verification'
+                WHEN t.status = 'in_progress' THEN 'started'
+                WHEN t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE AND t.status NOT IN ('completed','cancelled','superseded','not_applicable') THEN 'overdue'
+                ELSE 'open'
+            END AS briefing_status
+        FROM crm.tasks t
+        LEFT JOIN core.users u ON u.id = t.assigned_to_user_id AND u.organization_id = t.organization_id
+        WHERE t.organization_id = :org_id
+          AND t.is_deleted = false
+          AND (
+            (t.status IN ('completed', 'under_review', 'in_progress') AND COALESCE(t.updated_at, t.created_at) >= NOW() - INTERVAL '7 days')
+            OR (
+                t.due_date IS NOT NULL
+                AND t.due_date <= CURRENT_DATE + INTERVAL '7 days'
+                AND t.status NOT IN ('completed','cancelled','superseded','not_applicable')
+            )
+          )
+        ORDER BY
+            CASE
+                WHEN t.status = 'under_review' THEN 1
+                WHEN t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE THEN 2
+                WHEN t.status = 'completed' THEN 3
+                WHEN t.status = 'in_progress' THEN 4
+                ELSE 5
+            END,
+            COALESCE(t.due_date, CURRENT_DATE) ASC,
+            COALESCE(t.updated_at, t.created_at) DESC
+        LIMIT 12
+        """,
+        {"org_id": org_id},
+    )
+    paperwork_gaps = await _rows(
+        db,
+        """
+        SELECT
+            'tender_requirement' AS gap_type,
+            tr.id,
+            tr.tender_id AS entity_id,
+            'tender' AS entity_type,
+            t.tender_name AS entity_title,
+            tr.label AS title,
+            t.submission_deadline AS due_date,
+            CASE
+                WHEN t.submission_deadline IS NOT NULL AND t.submission_deadline <= CURRENT_DATE + INTERVAL '3 days' THEN 'critical'
+                ELSE 'warning'
+            END AS severity
+        FROM crm.tender_requirements tr
+        JOIN crm.tenders t ON t.id = tr.tender_id AND t.organization_id = tr.organization_id AND t.is_deleted = false
+        WHERE tr.organization_id = :org_id
+          AND tr.is_deleted = false
+          AND tr.is_satisfied = false
+
+        UNION ALL
+
+        SELECT
+            'missing_tender_document' AS gap_type,
+            t.id,
+            t.id AS entity_id,
+            'tender' AS entity_type,
+            t.tender_name AS entity_title,
+            'No tender paperwork linked' AS title,
+            t.submission_deadline AS due_date,
+            CASE
+                WHEN t.submission_deadline IS NOT NULL AND t.submission_deadline <= CURRENT_DATE + INTERVAL '3 days' THEN 'critical'
+                ELSE 'warning'
+            END AS severity
+        FROM crm.tenders t
+        WHERE t.organization_id = :org_id
+          AND t.is_deleted = false
+          AND lower(COALESCE(t.stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled')
+          AND NOT EXISTS (
+              SELECT 1 FROM core.document_links dl
+              WHERE dl.organization_id = t.organization_id
+                AND dl.entity_type = 'tender'
+                AND dl.entity_id = t.id
+                AND dl.is_deleted = false
+          )
+
+        UNION ALL
+
+        SELECT
+            'missing_opportunity_document' AS gap_type,
+            o.id,
+            o.id AS entity_id,
+            'opportunity' AS entity_type,
+            o.name AS entity_title,
+            'No opportunity authority or scope document linked' AS title,
+            o.expected_close_date AS due_date,
+            'warning' AS severity
+        FROM crm.opportunities o
+        WHERE o.organization_id = :org_id
+          AND o.is_deleted = false
+          AND o.win_loss_status IS NULL
+          AND o.stage IN ('Quotation', 'Negotiation', 'Contract')
+          AND NOT EXISTS (
+              SELECT 1 FROM core.document_links dl
+              WHERE dl.organization_id = o.organization_id
+                AND dl.entity_type = 'opportunity'
+                AND dl.entity_id = o.id
+                AND dl.is_deleted = false
+          )
+        ORDER BY due_date NULLS LAST, severity
+        LIMIT 14
+        """,
+        {"org_id": org_id},
+    )
+    stale_items = await _rows(
+        db,
+        """
+        SELECT
+            id,
+            name AS title,
+            stage,
+            COALESCE(deal_value, budget) AS value,
+            next_activity_due_at,
+            updated_at
+        FROM crm.opportunities
+        WHERE organization_id = :org_id
+          AND is_deleted = false
+          AND win_loss_status IS NULL
+          AND (
+            next_activity_due_at < NOW()
+            OR (next_activity_due_at IS NULL AND updated_at < NOW() - INTERVAL '10 days')
+          )
+        ORDER BY COALESCE(next_activity_due_at, updated_at) ASC
+        LIMIT 8
+        """,
+        {"org_id": org_id},
+    )
+    return {
+        "success": True,
+        "data": {
+            "generated_at": date.today().isoformat(),
+            "tenders_due": tenders_due,
+            "task_activity": task_activity,
+            "paperwork_gaps": paperwork_gaps,
+            "stale_items": stale_items,
+            "summary": {
+                "urgent_tenders": len([item for item in tenders_due if (item.get("days_left") or 99) <= 3]),
+                "tasks_needing_review": len([item for item in task_activity if item.get("briefing_status") == "ready_for_verification"]),
+                "paperwork_gaps": len(paperwork_gaps),
+                "stale_items": len(stale_items),
+            },
+        },
+        "message": "Commercial morning briefing generated.",
+        "meta": {},
+    }
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     limit: Optional[int] = Query(default=None, ge=1, le=500),
@@ -1344,6 +1590,7 @@ async def list_opportunities(
             o.deal_value, COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS weighted_value,
             o.next_activity_due_at, o.quote_id, o.project_id, o.win_loss_status, o.win_loss_reason,
             o.competitor, o.margin_approval_required, o.risk_approval_required, o.approval_status,
+            o.region, o.latitude::float AS latitude, o.longitude::float AS longitude,
             c.contact_name as client_name,
             co.name as organization_name,
             q.status AS quote_status,
@@ -1396,7 +1643,8 @@ async def list_tenders(
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
     query = text("""
-        SELECT id, tender_name, bid_amount, stage, submission_deadline, bid_bond_secured
+        SELECT id, tender_name, bid_amount, stage, submission_deadline, bid_bond_secured, region,
+               latitude::float AS latitude, longitude::float AS longitude
         FROM crm.tenders
         WHERE organization_id = :org_id AND is_deleted = false
         ORDER BY created_at DESC
@@ -1472,12 +1720,14 @@ async def create_opportunity(
         INSERT INTO crm.opportunities (
             name, stage, budget, probability, client_id, contact_id, client_org_id,
             sales_owner_id, owner_user_id, expected_close_date, deal_value, weighted_value,
-            expected_margin, risk_level, originating_department_id, region, organization_id, created_by
+            expected_margin, risk_level, originating_department_id, region, latitude, longitude,
+            organization_id, created_by
         )
         VALUES (
             :name, :stage, :budget, :probability, :client_id, :client_id, :client_org_id,
             :sales_owner_id, :sales_owner_id, :expected_close_date, :deal_value, :weighted_value,
-            :expected_margin, :risk_level, :originating_department_id, :region, :org_id, :user_id
+            :expected_margin, :risk_level, :originating_department_id, :region, :latitude, :longitude,
+            :org_id, :user_id
         )
         RETURNING id
     """)
@@ -1499,6 +1749,8 @@ async def create_opportunity(
                 "risk_level": payload.risk_level,
                 "originating_department_id": payload.originating_department_id,
                 "region": payload.region,
+                "latitude": payload.latitude,
+                "longitude": payload.longitude,
                 "org_id": org_id,
                 "user_id": user_id,
             },
@@ -2279,8 +2531,10 @@ async def create_tender(
         )
 
     query = text("""
-        INSERT INTO crm.tenders (tender_name, stage, bid_amount, region, organization_id)
-        VALUES (:name, :stage, :amount, :region, :org_id)
+        INSERT INTO crm.tenders (
+            tender_name, stage, bid_amount, region, latitude, longitude, organization_id
+        )
+        VALUES (:name, :stage, :amount, :region, :latitude, :longitude, :org_id)
         RETURNING id
     """)
     try:
@@ -2291,6 +2545,8 @@ async def create_tender(
                 "stage": payload.stage.value,
                 "amount": payload.bid_amount,
                 "region": payload.region,
+                "latitude": payload.latitude,
+                "longitude": payload.longitude,
                 "org_id": org_id,
             },
         )
@@ -2448,6 +2704,10 @@ async def create_subcontractor(
                 "System verification check failed for newly created subcontractor",
                 subcontractor_id=str(subcontractor_id),
             )
+            raise HTTPException(
+                status_code=500,
+                detail="Subcontractor verification could not be completed.",
+            )
 
         await db.commit()
     except HTTPException:
@@ -2492,14 +2752,32 @@ async def update_subcontractor(
             "meta": {},
         }
 
-    query = update_tenant_row_sql(
-        "crm.subcontractors",
-        safe_keys,
-        SUBCONTRACTOR_COLUMNS,
-        id_param="subcontractor_id",
-        returning_id=True,
-        casts={"capability_tags": "text[]", "submission_data": "jsonb"},
-    )
+    if "submission_data" in safe_keys:
+        set_sql = []
+        for column in safe_keys:
+            if column == "capability_tags":
+                set_sql.append("capability_tags = CAST(:capability_tags AS text[])")
+            elif column == "submission_data":
+                set_sql.append("submission_data = COALESCE(submission_data, '{}'::jsonb) || CAST(:submission_data AS jsonb)")
+            else:
+                set_sql.append(f"{column} = :{column}")
+        query = text(f"""
+            UPDATE crm.subcontractors
+            SET {', '.join(set_sql)}, updated_at = NOW()
+            WHERE id = :subcontractor_id
+              AND organization_id = :org_id
+              AND is_deleted = false
+            RETURNING id
+        """)
+    else:
+        query = update_tenant_row_sql(
+            "crm.subcontractors",
+            safe_keys,
+            SUBCONTRACTOR_COLUMNS,
+            id_param="subcontractor_id",
+            returning_id=True,
+            casts={"capability_tags": "text[]"},
+        )
 
     try:
         result = await db.execute(
@@ -2549,6 +2827,12 @@ async def list_subcontractors(
             contact_email,
             contact_phone,
             address AS physical_address,
+            submission_data ->> 'preferred_contact_method' AS preferred_contact_method,
+            submission_data ->> 'alternate_contact_name' AS alternate_contact_name,
+            submission_data ->> 'alternate_contact_email' AS alternate_contact_email,
+            submission_data ->> 'alternate_contact_phone' AS alternate_contact_phone,
+            submission_data ->> 'accounts_contact_email' AS accounts_contact_email,
+            submission_data ->> 'accounts_contact_phone' AS accounts_contact_phone,
             submission_data -> 'capability_matrix' AS capability_matrix
         FROM crm.subcontractors
         WHERE organization_id = :org_id AND is_deleted = false

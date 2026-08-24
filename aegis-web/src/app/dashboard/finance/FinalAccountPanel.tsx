@@ -206,7 +206,7 @@ export function FinalAccountPanel() {
           {current.status === "closed" && (
             <div className="border border-emerald-500/30 bg-emerald-950/10 rounded-lg p-4 flex items-center gap-2 text-emerald-300 text-sm">
               <Lock className="h-4 w-4" />
-              Closed {current.closed_at ? new Date(current.closed_at).toLocaleDateString() : ""} — project's commercial position is locked.
+              Closed {current.closed_at ? new Date(current.closed_at).toLocaleDateString() : ""} — project&apos;s commercial position is locked.
             </div>
           )}
         </div>

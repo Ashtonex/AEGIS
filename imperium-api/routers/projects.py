@@ -25,6 +25,49 @@ router = APIRouter()
 # to the right table based on this set.
 PROFILE_COLUMNS = {"region", "latitude", "longitude"}
 
+PRE_MOBILISATION_GATE_TYPE = "pre_mobilisation"
+PRE_MOBILISATION_READY_STATUSES = {"complete", "complete_with_conditions", "not_applicable"}
+PRE_MOBILISATION_GATES = [
+    ("Contract authority", "Signed contract, PO or notice to proceed"),
+    ("Site access", "Written possession/access confirmation"),
+    ("Scope", "Controlled drawings, specifications and scope"),
+    ("Budget", "Approved commercial baseline"),
+    ("Programme", "Approved baseline or pre-start programme"),
+    ("Cash", "Confirmed mobilisation funding"),
+    ("Procurement", "Approved initial procurement plan"),
+    ("Plant", "Approved plant deployment plan"),
+    ("Workforce", "Confirmed personnel and employment records"),
+    ("HSE", "Approved HSE plan and risk assessment"),
+    ("Insurance", "Valid project-specific cover"),
+    ("Governance", "Named team and approval matrix"),
+    ("Risk", "Reviewed risk register and treatment actions"),
+]
+COMMERCIAL_READINESS_CONTROLS: dict[str, str] = {
+    "contract_authority_verified": "Reliable written authority to start has not been verified",
+    "contract_review_completed": "Formal contract review is not complete",
+    "tender_handover_completed": "Tender-to-project commercial handover is not complete",
+    "award_reconciled": "Award has not been reconciled against the tender",
+    "commercial_baseline_approved": "Approved commercial baseline is missing",
+    "cash_flow_forecast_approved": "Project cash-flow forecast and funding logic are not approved",
+    "procurement_plan_ready": "Procurement commercial plan is not ready",
+    "subcontract_plan_ready": "Subcontract package plan is not ready",
+    "valuation_system_ready": "Measurement and valuation system is not configured",
+    "variation_control_ready": "Variation control procedure is not configured",
+    "claims_notice_ready": "Claims and notice controls are not configured",
+    "commercial_registers_ready": "Commercial registers are not configured",
+    "reporting_ready": "Commercial reporting and CVR structure are not configured",
+    "readiness_review_completed": "Commercial readiness review is not complete",
+}
+COMMERCIAL_AUTHORITY_STATUSES = {
+    "fully_executed",
+    "awarded_subject_to_conditions",
+    "letter_of_intent_only",
+    "purchase_order_only",
+    "verbal_instruction",
+    "commercially_unacceptable",
+}
+COMMERCIAL_BLOCKING_AUTHORITY_STATUSES = {"verbal_instruction", "commercially_unacceptable"}
+
 
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -94,6 +137,47 @@ class ProjectBudgetSet(BaseModel):
 class ProjectDepositConfirm(BaseModel):
     deposit_reference: Optional[str] = Field(default=None, max_length=255)
     notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class PreMobilisationCheckUpdate(BaseModel):
+    status: Literal["complete", "complete_with_conditions", "incomplete", "not_applicable"]
+    evidence_reference: Optional[str] = Field(default=None, max_length=2000)
+
+
+class PreMobilisationApproval(BaseModel):
+    mobilisation_date: date
+    mobilisation_budget: Optional[Decimal] = Field(default=None, ge=0)
+    conditions: Optional[str] = Field(default=None, max_length=4000)
+    residual_risk_notes: Optional[str] = Field(default=None, max_length=4000)
+
+
+class CommercialReadinessUpdate(BaseModel):
+    readiness_pack: dict = Field(default_factory=dict)
+    authority_status: Optional[Literal[
+        "fully_executed",
+        "awarded_subject_to_conditions",
+        "letter_of_intent_only",
+        "purchase_order_only",
+        "verbal_instruction",
+        "commercially_unacceptable",
+    ]] = None
+    clearance_statement: dict = Field(default_factory=dict)
+    manual_blockers: list[str] = Field(default_factory=list, max_length=50)
+
+
+class CommercialClearancePayload(BaseModel):
+    authority_relied_upon: str = Field(min_length=1, max_length=500)
+    approved_contract_value: Optional[Decimal] = Field(default=None, ge=0)
+    approved_commercial_baseline: Optional[str] = Field(default=None, max_length=500)
+    expected_margin: Optional[Decimal] = None
+    mobilisation_budget: Optional[Decimal] = Field(default=None, ge=0)
+    peak_working_capital_requirement: Optional[Decimal] = None
+    payment_and_retention_conditions: Optional[str] = Field(default=None, max_length=2000)
+    major_commercial_risks: list[str] = Field(default_factory=list, max_length=50)
+    outstanding_conditions: list[str] = Field(default_factory=list, max_length=50)
+    temporary_controls: list[str] = Field(default_factory=list, max_length=50)
+    named_risk_owners: list[str] = Field(default_factory=list, max_length=50)
+    executive_exceptions_accepted: list[str] = Field(default_factory=list, max_length=50)
 
 
 class ProjectIntakeUpdate(BaseModel):
@@ -188,10 +272,16 @@ async def _project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> No
 async def _project_ref_or_404(db: AsyncSession, project_ref: str, org_id: str) -> dict:
     result = await db.execute(
         text("""
-        SELECT p.*, pp.region, pp.latitude, pp.longitude,
+        SELECT p.*, pp.region, pp.latitude::float AS latitude, pp.longitude::float AS longitude,
                pp.initiated_by, pp.project_category, pp.investment_required,
                pp.funding_internal, pp.funding_external, pp.intake_completed_at,
-               pp.setup_duration_weeks
+               pp.setup_duration_weeks, pp.mobilisation_approved_at,
+               pp.mobilisation_approved_by, pp.mobilisation_authorisation_number,
+               pp.approved_mobilisation_date, pp.mobilisation_budget,
+               pp.mobilisation_conditions, pp.residual_risk_notes,
+               pp.commercial_readiness_status, pp.commercial_readiness_pack,
+               pp.commercial_readiness_blockers, pp.commercial_clearance_statement,
+               pp.commercial_cleared_at, pp.commercial_cleared_by
         FROM projects.projects p
         LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
         WHERE p.organization_id = :org_id
@@ -223,6 +313,214 @@ def _result(data, message: str, total: Optional[int] = None):
     }
 
 
+async def _seed_pre_mobilisation_checks(db: AsyncSession, *, org_id: str, project_id: UUID, user_id: str) -> int:
+    created = 0
+    for sort_order, (gate, evidence) in enumerate(PRE_MOBILISATION_GATES, start=1):
+        row = await db.execute(
+            text("""
+                INSERT INTO projects.project_checks (
+                    project_id, organization_id, check_name, check_type, status
+                )
+                SELECT :project_id, :org_id, :check_name, :check_type, 'incomplete'
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM projects.project_checks
+                    WHERE project_id = :project_id
+                      AND organization_id = :org_id
+                      AND check_type = :check_type
+                      AND check_name = :check_name
+                )
+                RETURNING id
+            """),
+            {
+                "project_id": project_id,
+                "org_id": org_id,
+                "check_name": gate,
+                "check_type": PRE_MOBILISATION_GATE_TYPE,
+                "sort_order": sort_order,
+                "user_id": user_id,
+            },
+        )
+        if row.first():
+            created += 1
+    return created
+
+
+async def _pre_mobilisation_readiness(db: AsyncSession, *, org_id: str, project_id: UUID) -> dict:
+    rows = (
+        await db.execute(
+            text("""
+                SELECT id, check_name, check_type, status, completed_at, evidence_reference, created_at
+                FROM projects.project_checks
+                WHERE project_id = :project_id
+                  AND organization_id = :org_id
+                  AND check_type = :check_type
+                ORDER BY created_at, check_name
+            """),
+            {"project_id": project_id, "org_id": org_id, "check_type": PRE_MOBILISATION_GATE_TYPE},
+        )
+    ).mappings().all()
+    required_evidence = dict(PRE_MOBILISATION_GATES)
+    checks = [
+        {**dict(row), "mandatory_evidence": required_evidence.get(row["check_name"], "Evidence required")}
+        for row in rows
+    ]
+    missing = [
+        check["check_name"]
+        for check in checks
+        if str(check.get("status") or "").lower() not in PRE_MOBILISATION_READY_STATUSES
+    ]
+    evidence_missing = [
+        check["check_name"]
+        for check in checks
+        if str(check.get("status") or "").lower() != "not_applicable"
+        and not str(check.get("evidence_reference") or "").strip()
+    ]
+    return {
+        "checks": checks,
+        "total": len(checks),
+        "ready_count": len(checks) - len(missing),
+        "missing": missing,
+        "evidence_missing": evidence_missing,
+        "ready": bool(checks) and not missing and not evidence_missing,
+    }
+
+
+def _normalize_commercial_readiness_pack(raw: dict | None) -> dict:
+    source = raw if isinstance(raw, dict) else {}
+    pack = {key: bool(source.get(key)) for key in COMMERCIAL_READINESS_CONTROLS}
+    authority_status = source.get("authority_status")
+    if authority_status in COMMERCIAL_AUTHORITY_STATUSES:
+        pack["authority_status"] = authority_status
+    elif isinstance(authority_status, str) and authority_status.strip():
+        pack["authority_status"] = authority_status.strip().lower().replace(" ", "_")
+    return pack
+
+
+def _commercial_readiness_blockers(pack: dict, manual_blockers: list[str] | None = None) -> list[str]:
+    blockers = [label for key, label in COMMERCIAL_READINESS_CONTROLS.items() if not pack.get(key)]
+    authority_status = str(pack.get("authority_status") or "").lower()
+    if not authority_status:
+        blockers.append("Contract authority status has not been recorded")
+    elif authority_status in COMMERCIAL_BLOCKING_AUTHORITY_STATUSES:
+        blockers.append("Contract authority is commercially unacceptable or only verbal")
+    for blocker in manual_blockers or []:
+        if isinstance(blocker, str) and blocker.strip():
+            blockers.append(blocker.strip())
+    return list(dict.fromkeys(blockers))
+
+
+def _commercial_readiness_status(pack: dict, blockers: list[str], current_status: str | None = None) -> str:
+    if current_status == "cleared":
+        return "cleared"
+    if blockers:
+        return "blocked" if any(pack.values()) else "not_started"
+    return "ready"
+
+
+async def _ensure_commercial_readiness_pack(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    project_id: UUID,
+) -> dict:
+    await db.execute(
+        text("""
+            INSERT INTO projects.project_profiles (
+                project_id, organization_id, commercial_readiness_status
+            )
+            VALUES (:project_id, :org_id, 'in_progress')
+            ON CONFLICT (project_id) DO UPDATE SET
+                commercial_readiness_status = CASE
+                    WHEN projects.project_profiles.commercial_readiness_status = 'not_started'
+                    THEN 'in_progress'
+                    ELSE projects.project_profiles.commercial_readiness_status
+                END,
+                updated_at = NOW()
+        """),
+        {"project_id": project_id, "org_id": org_id},
+    )
+    row = (
+        await db.execute(
+            text("""
+                SELECT commercial_readiness_status, commercial_readiness_pack,
+                       commercial_readiness_blockers, commercial_clearance_statement,
+                       commercial_cleared_at, commercial_cleared_by
+                FROM projects.project_profiles
+                WHERE project_id = :project_id AND organization_id = :org_id
+            """),
+            {"project_id": project_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    return dict(row or {})
+
+
+async def _open_commercial_readiness_pack(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    project_id: UUID,
+) -> None:
+    await _ensure_commercial_readiness_pack(db, org_id=org_id, project_id=project_id)
+
+
+async def _commercial_readiness_summary(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    project_id: UUID,
+) -> dict:
+    row = (
+        await db.execute(
+            text("""
+                SELECT commercial_readiness_status, commercial_readiness_pack,
+                       commercial_readiness_blockers, commercial_clearance_statement,
+                       commercial_cleared_at, commercial_cleared_by
+                FROM projects.project_profiles
+                WHERE project_id = :project_id AND organization_id = :org_id
+            """),
+            {"project_id": project_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    data = dict(row or {})
+    pack = _normalize_commercial_readiness_pack(data.get("commercial_readiness_pack"))
+    blockers = list(data.get("commercial_readiness_blockers") or _commercial_readiness_blockers(pack))
+    complete_count = sum(1 for key in COMMERCIAL_READINESS_CONTROLS if pack.get(key))
+    return {
+        "status": data.get("commercial_readiness_status") or "not_started",
+        "pack": pack,
+        "controls": [
+            {"key": key, "label": label, "complete": bool(pack.get(key))}
+            for key, label in COMMERCIAL_READINESS_CONTROLS.items()
+        ],
+        "authority_status": pack.get("authority_status"),
+        "blockers": blockers,
+        "clearance_statement": data.get("commercial_clearance_statement") or {},
+        "cleared_at": data.get("commercial_cleared_at"),
+        "cleared_by": data.get("commercial_cleared_by"),
+        "total": len(COMMERCIAL_READINESS_CONTROLS),
+        "ready_count": complete_count,
+        "ready": (data.get("commercial_readiness_status") == "cleared") or (complete_count == len(COMMERCIAL_READINESS_CONTROLS) and not blockers),
+    }
+
+
+async def _ensure_project_can_activate(db: AsyncSession, *, org_id: str, project_id: UUID) -> None:
+    approved_at = (
+        await db.execute(
+            text("""
+                SELECT mobilisation_approved_at
+                FROM projects.project_profiles
+                WHERE project_id = :project_id AND organization_id = :org_id
+            """),
+            {"project_id": project_id, "org_id": org_id},
+        )
+    ).scalar()
+    if not approved_at:
+        raise HTTPException(
+            status_code=409,
+            detail="Project cannot become active until the pre-mobilisation readiness gate is approved.",
+        )
+
+
 @router.get("/")
 async def list_projects(
     user: dict = Depends(get_current_user),
@@ -232,9 +530,16 @@ async def list_projects(
     rows = await db.execute(
         text("""
         SELECT p.*, pp.viability_status, pp.budget_amount, pp.forecast_cost,
+               pp.region, pp.latitude::float AS latitude, pp.longitude::float AS longitude,
                pp.initiated_by, pp.project_category, pp.investment_required,
                pp.funding_internal, pp.funding_external, pp.intake_completed_at,
-               pp.setup_duration_weeks,
+               pp.setup_duration_weeks, pp.mobilisation_approved_at,
+               pp.mobilisation_approved_by, pp.mobilisation_authorisation_number,
+               pp.approved_mobilisation_date, pp.mobilisation_budget,
+               pp.mobilisation_conditions, pp.residual_risk_notes,
+               pp.commercial_readiness_status, pp.commercial_readiness_pack,
+               pp.commercial_readiness_blockers, pp.commercial_clearance_statement,
+               pp.commercial_cleared_at, pp.commercial_cleared_by,
                COUNT(m.id) FILTER (WHERE m.status = 'blocked') AS blocked_milestones,
                COUNT(r.id) FILTER (WHERE r.status IN ('open', 'mitigating')) AS open_risks
         FROM projects.projects p
@@ -601,6 +906,8 @@ async def project_lifecycle(
             "risks": await rows(
                 "SELECT *, CASE WHEN likelihood IS NOT NULL AND impact IS NOT NULL THEN likelihood * impact END AS exposure FROM projects.project_risks WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY (likelihood * impact) DESC NULLS LAST, created_at DESC"
             ),
+            "pre_mobilisation": await _pre_mobilisation_readiness(db, org_id=user["org_id"], project_id=project_id),
+            "commercial_readiness": await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id),
         },
         "Project lifecycle retrieved.",
     )
@@ -983,10 +1290,9 @@ async def confirm_project_deposit(
     user: dict = Depends(require_permission("projects.deposit.confirm")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Finance sign-off that a project's deposit has been received - the
-    checkpoint between a won deal (status 'pending_deposit', set by
-    crm.py's mark_opportunity_won / tender_bids.py's award_tender) and it
-    being treated as financially live (status 'active')."""
+    """Finance sign-off that a project's deposit has been received. The
+    project moves into pre-mobilisation readiness, not active delivery; the
+    readiness gate must be approved before mobilisation can start."""
     project = await _project_ref_or_404(db, str(project_id), user["org_id"])
     if project.get("status") != "pending_deposit":
         raise HTTPException(
@@ -997,7 +1303,7 @@ async def confirm_project_deposit(
     await db.execute(
         text("""
             UPDATE projects.projects
-            SET status = 'active',
+            SET status = 'pre_mobilisation',
                 deposit_confirmed_at = NOW(),
                 deposit_confirmed_by = :user_id,
                 deposit_reference = :deposit_reference,
@@ -1011,17 +1317,336 @@ async def confirm_project_deposit(
             "deposit_reference": payload.deposit_reference,
         },
     )
+    await _seed_pre_mobilisation_checks(
+        db,
+        org_id=user["org_id"],
+        project_id=project_id,
+        user_id=user["user_id"],
+    )
+    await _open_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
     await emit_event(
         db,
         user=user,
-        event_type="project.deposit_confirmed.v1",
+        event_type="project.pre_mobilisation_opened.v1",
         aggregate_type="project",
         aggregate_id=project_id,
         project_id=project_id,
         event_data={"deposit_reference": payload.deposit_reference, "notes": payload.notes},
     )
     await db.commit()
-    return _result({"id": str(project_id), "status": "active"}, "Deposit confirmed. Project is now active.")
+    tasks_created = await generate_task_stack(
+        db,
+        org_id=user["org_id"],
+        entity_type="project",
+        entity_id=project_id,
+        created_by=user["user_id"],
+    )
+    commercial_tasks_created = await generate_task_stack(
+        db,
+        org_id=user["org_id"],
+        entity_type="commercial_readiness",
+        entity_id=project_id,
+        created_by=user["user_id"],
+    )
+    return _result(
+        {
+            "id": str(project_id),
+            "status": "pre_mobilisation",
+            "tasks_created": tasks_created,
+            "commercial_tasks_created": commercial_tasks_created,
+        },
+        "Deposit confirmed. Pre-mobilisation gate opened.",
+    )
+
+
+@router.get("/{project_id}/pre-mobilisation")
+async def get_pre_mobilisation_readiness(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
+):
+    await _project_or_404(db, project_id, user["org_id"])
+    await _seed_pre_mobilisation_checks(
+        db,
+        org_id=user["org_id"],
+        project_id=project_id,
+        user_id=user["user_id"],
+    )
+    await db.commit()
+    return _result(
+        await _pre_mobilisation_readiness(db, org_id=user["org_id"], project_id=project_id),
+        "Pre-mobilisation readiness retrieved.",
+    )
+
+
+@router.patch("/{project_id}/pre-mobilisation/{check_id}")
+async def update_pre_mobilisation_check(
+    project_id: UUID,
+    check_id: UUID,
+    payload: PreMobilisationCheckUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    await _project_or_404(db, project_id, user["org_id"])
+    completed_at_sql = "NOW()" if payload.status in {"complete", "complete_with_conditions", "not_applicable"} else "NULL"
+    row = (
+        await db.execute(
+            text(f"""
+                UPDATE projects.project_checks
+                SET status = :status,
+                    evidence_reference = COALESCE(:evidence_reference, evidence_reference),
+                    completed_at = {completed_at_sql}
+                WHERE id = :check_id
+                  AND project_id = :project_id
+                  AND organization_id = :org_id
+                  AND check_type = :check_type
+                RETURNING id
+            """),
+            {
+                "check_id": check_id,
+                "project_id": project_id,
+                "org_id": user["org_id"],
+                "check_type": PRE_MOBILISATION_GATE_TYPE,
+                "status": payload.status,
+                "evidence_reference": payload.evidence_reference,
+            },
+        )
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Pre-mobilisation check not found.")
+    await db.commit()
+    return _result({"id": str(check_id)}, "Pre-mobilisation check updated.")
+
+
+@router.get("/{project_id}/commercial-readiness")
+async def get_commercial_readiness(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.commercial_readiness.read")),
+):
+    await _project_or_404(db, project_id, user["org_id"])
+    await _ensure_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
+    await db.commit()
+    tasks_created = await generate_task_stack(
+        db,
+        org_id=user["org_id"],
+        entity_type="commercial_readiness",
+        entity_id=project_id,
+        created_by=user["user_id"],
+    )
+    summary = await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id)
+    summary["tasks_created"] = tasks_created
+    return _result(summary, "Commercial readiness retrieved.")
+
+
+@router.patch("/{project_id}/commercial-readiness")
+async def update_commercial_readiness(
+    project_id: UUID,
+    payload: CommercialReadinessUpdate,
+    user: dict = Depends(require_permission("projects.commercial_readiness.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    await _project_or_404(db, project_id, user["org_id"])
+    current = await _ensure_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
+    pack = _normalize_commercial_readiness_pack(current.get("commercial_readiness_pack"))
+    for key, value in payload.readiness_pack.items():
+        if key in COMMERCIAL_READINESS_CONTROLS:
+            pack[key] = bool(value)
+        else:
+            pack[key] = value
+    if payload.authority_status:
+        pack["authority_status"] = payload.authority_status
+    blockers = _commercial_readiness_blockers(pack, payload.manual_blockers)
+    status = _commercial_readiness_status(pack, blockers, current.get("commercial_readiness_status"))
+    if status == "cleared" and blockers:
+        status = "blocked"
+
+    await db.execute(
+        text("""
+            UPDATE projects.project_profiles
+            SET commercial_readiness_status = :status,
+                commercial_readiness_pack = CAST(:pack AS jsonb),
+                commercial_readiness_blockers = CAST(:blockers AS jsonb),
+                commercial_clearance_statement = CAST(:clearance_statement AS jsonb),
+                commercial_cleared_at = CASE WHEN :status = 'cleared' THEN commercial_cleared_at ELSE NULL END,
+                commercial_cleared_by = CASE WHEN :status = 'cleared' THEN commercial_cleared_by ELSE NULL END,
+                updated_at = NOW()
+            WHERE project_id = :project_id AND organization_id = :org_id
+        """),
+        {
+            "project_id": project_id,
+            "org_id": user["org_id"],
+            "status": status,
+            "pack": json.dumps(pack, default=str),
+            "blockers": json.dumps(blockers, default=str),
+            "clearance_statement": json.dumps(payload.clearance_statement, default=str),
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="project.commercial_readiness_updated.v1",
+        aggregate_type="project",
+        aggregate_id=project_id,
+        project_id=project_id,
+        event_data={"status": status, "blockers": blockers},
+    )
+    await db.commit()
+    return _result(
+        await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id),
+        "Commercial readiness updated.",
+    )
+
+
+@router.post("/{project_id}/commercial-readiness/clear")
+async def clear_commercial_readiness(
+    project_id: UUID,
+    payload: CommercialClearancePayload,
+    user: dict = Depends(require_permission("projects.commercial_readiness.clear")),
+    db: AsyncSession = Depends(get_db),
+):
+    await _project_or_404(db, project_id, user["org_id"])
+    current = await _ensure_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
+    pack = _normalize_commercial_readiness_pack(current.get("commercial_readiness_pack"))
+    blockers = list(current.get("commercial_readiness_blockers") or _commercial_readiness_blockers(pack))
+    if blockers:
+        raise HTTPException(status_code=409, detail=f"Commercial readiness is blocked: {', '.join(blockers)}")
+
+    incomplete = [label for key, label in COMMERCIAL_READINESS_CONTROLS.items() if not pack.get(key)]
+    if incomplete:
+        raise HTTPException(status_code=409, detail=f"Commercial readiness is incomplete: {', '.join(incomplete)}")
+
+    statement = payload.model_dump(mode="json")
+    await db.execute(
+        text("""
+            UPDATE projects.project_profiles
+            SET commercial_readiness_status = 'cleared',
+                commercial_readiness_blockers = '[]'::jsonb,
+                commercial_clearance_statement = CAST(:statement AS jsonb),
+                commercial_cleared_at = NOW(),
+                commercial_cleared_by = :user_id,
+                updated_at = NOW()
+            WHERE project_id = :project_id AND organization_id = :org_id
+        """),
+        {
+            "project_id": project_id,
+            "org_id": user["org_id"],
+            "user_id": user["user_id"],
+            "statement": json.dumps(statement, default=str),
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="project.commercial_readiness_cleared.v1",
+        aggregate_type="project",
+        aggregate_id=project_id,
+        project_id=project_id,
+        event_data=statement,
+    )
+    await db.commit()
+    return _result(
+        await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id),
+        "Commercial readiness cleared.",
+    )
+
+
+@router.post("/{project_id}/pre-mobilisation/approve")
+async def approve_pre_mobilisation(
+    project_id: UUID,
+    payload: PreMobilisationApproval,
+    user: dict = Depends(require_permission("projects.registration.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if str(project.get("status") or "").lower() not in {"pre_mobilisation", "planning", "pending_deposit"}:
+        raise HTTPException(status_code=409, detail="Only a project in pre-mobilisation or planning can be authorised for mobilisation.")
+
+    await _seed_pre_mobilisation_checks(
+        db,
+        org_id=user["org_id"],
+        project_id=project_id,
+        user_id=user["user_id"],
+    )
+    readiness = await _pre_mobilisation_readiness(db, org_id=user["org_id"], project_id=project_id)
+    if not readiness["ready"]:
+        blocked_by = readiness["missing"] + readiness["evidence_missing"]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Pre-mobilisation gate is not ready: {', '.join(dict.fromkeys(blocked_by))}",
+        )
+    commercial = await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id)
+    if commercial["status"] != "cleared":
+        blocked_by = commercial["blockers"] or [
+            item["label"] for item in commercial["controls"] if not item["complete"]
+        ]
+        raise HTTPException(
+            status_code=409,
+            detail=f"Commercial readiness must be cleared before mobilisation: {', '.join(dict.fromkeys(blocked_by))}",
+        )
+
+    auth_number = f"MOB-{date.today().strftime('%Y%m%d')}-{str(project_id)[:8].upper()}"
+    await db.execute(
+        text("""
+            INSERT INTO projects.project_profiles (
+                project_id, organization_id, mobilisation_approved_at, mobilisation_approved_by,
+                mobilisation_authorisation_number, approved_mobilisation_date, mobilisation_budget,
+                mobilisation_conditions, residual_risk_notes
+            )
+            VALUES (
+                :project_id, :org_id, NOW(), :user_id, :auth_number, :mobilisation_date,
+                :mobilisation_budget, :conditions, :residual_risk_notes
+            )
+            ON CONFLICT (project_id) DO UPDATE SET
+                mobilisation_approved_at = NOW(),
+                mobilisation_approved_by = :user_id,
+                mobilisation_authorisation_number = :auth_number,
+                approved_mobilisation_date = :mobilisation_date,
+                mobilisation_budget = :mobilisation_budget,
+                mobilisation_conditions = :conditions,
+                residual_risk_notes = :residual_risk_notes,
+                updated_at = NOW()
+        """),
+        {
+            "project_id": project_id,
+            "org_id": user["org_id"],
+            "user_id": user["user_id"],
+            "auth_number": auth_number,
+            "mobilisation_date": payload.mobilisation_date,
+            "mobilisation_budget": payload.mobilisation_budget,
+            "conditions": payload.conditions,
+            "residual_risk_notes": payload.residual_risk_notes,
+        },
+    )
+    await db.execute(
+        text("""
+            UPDATE projects.projects
+            SET status = 'active', start_date = COALESCE(start_date, :mobilisation_date), updated_at = NOW()
+            WHERE id = :project_id AND organization_id = :org_id
+        """),
+        {"project_id": project_id, "org_id": user["org_id"], "mobilisation_date": payload.mobilisation_date},
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="project.mobilisation_authorised.v1",
+        aggregate_type="project",
+        aggregate_id=project_id,
+        project_id=project_id,
+        event_data={
+            "authorisation_number": auth_number,
+            "mobilisation_date": str(payload.mobilisation_date),
+            "mobilisation_budget": str(payload.mobilisation_budget) if payload.mobilisation_budget is not None else None,
+        },
+    )
+    await db.commit()
+    return _result(
+        {"id": str(project_id), "status": "active", "mobilisation_authorisation_number": auth_number},
+        "Mobilisation authorised. Project is now active.",
+    )
 
 
 @router.post("/{project_id}/budget", status_code=201)
@@ -1087,10 +1712,15 @@ async def update_project(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.update")),
 ):
-    await _project_or_404(db, project_id, user["org_id"])
+    current_project = await _project_ref_or_404(db, str(project_id), user["org_id"])
     values = payload.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(status_code=400, detail="No project changes were supplied.")
+    if (
+        str(values.get("status") or "").lower() == "active"
+        and str(current_project.get("status") or "").lower() != "active"
+    ):
+        await _ensure_project_can_activate(db, org_id=user["org_id"], project_id=project_id)
 
     project_values = {key: val for key, val in values.items() if key not in PROFILE_COLUMNS}
     profile_values = {key: val for key, val in values.items() if key in PROFILE_COLUMNS}
@@ -1133,7 +1763,8 @@ async def update_project(
         raise HTTPException(
             status_code=409, detail="Project code already exists for this organization."
         ) from exc
-    return _result({"id": str(project_id)}, "Project updated.")
+    updated_project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    return _result(updated_project, "Project updated.")
 
 
 @router.delete("/{project_id}")

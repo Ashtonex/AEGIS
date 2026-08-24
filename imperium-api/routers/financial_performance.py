@@ -799,7 +799,9 @@ async def decide_variation(
     row = (
         await db.execute(
             text("""
-            SELECT id, status FROM finance.variations
+            SELECT id, status, qs_review_status, client_approval_required,
+                   client_approval_status, source_type
+            FROM finance.variations
             WHERE id = :id AND organization_id = :org_id AND is_deleted = false
         """),
             {"id": variation_id, "org_id": user["org_id"]},
@@ -811,13 +813,20 @@ async def decide_variation(
         raise HTTPException(status_code=409, detail=f"Cannot decide a variation in '{row.status}' state.")
     if payload.decision == "reject" and not payload.rejection_reason:
         raise HTTPException(status_code=422, detail="A rejection reason is required.")
+    if payload.decision == "approve":
+        if getattr(row, "source_type", None) == "weekly_budget_item" and getattr(row, "qs_review_status", None) != "reviewed":
+            raise HTTPException(status_code=409, detail="QS review is required before approving this site-originated variance.")
+        if getattr(row, "client_approval_required", False) and getattr(row, "client_approval_status", None) != "approved":
+            raise HTTPException(status_code=409, detail="Client approval is required before approving this variation.")
 
     new_status = "approved" if payload.decision == "approve" else "rejected"
     await db.execute(
         text("""
         UPDATE finance.variations
         SET status = :status, approved_by = :user_id, approved_at = NOW(),
-            rejection_reason = :rejection_reason, updated_at = NOW()
+            rejection_reason = :rejection_reason,
+            execution_blocked = CASE WHEN :status='approved' THEN false ELSE execution_blocked END,
+            updated_at = NOW()
         WHERE id = :id AND organization_id = :org_id
     """),
         {

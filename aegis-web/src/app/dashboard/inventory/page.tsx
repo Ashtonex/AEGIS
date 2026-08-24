@@ -79,6 +79,20 @@ function dateShort(v: unknown) {
   return Number.isNaN(d.getTime()) ? String(v) : new Intl.DateTimeFormat("en-ZW", { dateStyle: "medium", timeStyle: "short" }).format(d);
 }
 
+const UNASSIGNED_CLIENT_KEY = "__unassigned_client__";
+
+function keyFromName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || UNASSIGNED_CLIENT_KEY;
+}
+
+function projectName(project: Rec) {
+  return tx(project.name ?? project.project_name ?? project.project_code, project.id);
+}
+
+function clientName(project: Rec | undefined, fallback = "Unassigned / Company Stores") {
+  return tx(project?.client_name ?? project?.client ?? project?.organization_name ?? project?.organisation_name, fallback);
+}
+
 function loadFailureMessage(reason: unknown) {
   const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
   const normalizedMessage = rawMessage.toLowerCase();
@@ -103,7 +117,7 @@ function normalizeActionError(reason: unknown, fallback: string) {
 
 export default function InventoryPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager", "Inventory Controller", "Executive Read Only"]}>
       <InventoryWorkspace />
     </RBACGuard>
   );
@@ -133,6 +147,8 @@ function InventoryWorkspace() {
   const [movDateTo, setMovDateTo] = useState("");
   const [movTypeFilter, setMovTypeFilter] = useState("");
   const [movStoreFilter, setMovStoreFilter] = useState("");
+  const [selectedClientKey, setSelectedClientKey] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
 
   const [showIssue, setShowIssue] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
@@ -208,17 +224,101 @@ function InventoryWorkspace() {
     };
   }, [stockLevels, catalogue, stores, movements]);
 
+  const projectById = useMemo(() => {
+    const byId = new Map<string, Rec>();
+    projects.forEach((project) => byId.set(String(project.id), project));
+    return byId;
+  }, [projects]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    const project = projectById.get(selectedProjectId);
+    if (selectedClientKey && project && keyFromName(clientName(project)) !== selectedClientKey) {
+      setSelectedProjectId("");
+    }
+  }, [projectById, selectedClientKey, selectedProjectId]);
+
+  const storeById = useMemo(() => {
+    const byId = new Map<string, Rec>();
+    stores.forEach((store) => byId.set(String(store.id), store));
+    return byId;
+  }, [stores]);
+
+  const storeClientKey = useCallback((store: Rec) => {
+    const project = store.project_id ? projectById.get(String(store.project_id)) : undefined;
+    return keyFromName(tx(store.client_name ?? clientName(project)));
+  }, [projectById]);
+
+  const rowClientKey = useCallback((row: Rec) => {
+    const store = row.store_id ? storeById.get(String(row.store_id)) : undefined;
+    const project = row.project_id ? projectById.get(String(row.project_id)) : store?.project_id ? projectById.get(String(store.project_id)) : undefined;
+    return keyFromName(tx(row.client_name ?? store?.client_name ?? clientName(project)));
+  }, [projectById, storeById]);
+
+  const rowProjectId = useCallback((row: Rec) => {
+    const store = row.store_id ? storeById.get(String(row.store_id)) : undefined;
+    return tx(row.project_id ?? store?.project_id, "");
+  }, [storeById]);
+
+  const clientGroups = useMemo(() => {
+    const groups = new Map<string, { key: string; name: string; projects: Rec[]; stores: Rec[]; stockValue: number; itemCount: number }>();
+    const ensure = (key: string, name: string) => {
+      const existing = groups.get(key);
+      if (existing) return existing;
+      const group = { key, name, projects: [] as Rec[], stores: [] as Rec[], stockValue: 0, itemCount: 0 };
+      groups.set(key, group);
+      return group;
+    };
+    projects.forEach((project) => {
+      const name = clientName(project);
+      ensure(keyFromName(name), name).projects.push(project);
+    });
+    stores.forEach((store) => {
+      const project = store.project_id ? projectById.get(String(store.project_id)) : undefined;
+      const name = tx(store.client_name ?? clientName(project));
+      ensure(keyFromName(name), name).stores.push(store);
+    });
+    stockLevels.forEach((row) => {
+      const group = ensure(rowClientKey(row), tx(row.client_name ?? "Unassigned / Company Stores"));
+      const q = num(row.available_qty ?? row.quantity ?? row.stock_quantity);
+      const c = num(row.standard_cost ?? row.unit_cost);
+      group.stockValue += q * c;
+      if (q !== 0) group.itemCount += 1;
+    });
+    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [projects, stores, stockLevels, projectById, rowClientKey]);
+
+  const selectedClient = useMemo(
+    () => clientGroups.find((group) => group.key === selectedClientKey) ?? null,
+    [clientGroups, selectedClientKey]
+  );
+
+  const contextualProjects = useMemo(() => {
+    if (!selectedClientKey) return projects;
+    return projects.filter((project) => keyFromName(clientName(project)) === selectedClientKey);
+  }, [projects, selectedClientKey]);
+
+  const contextualStores = useMemo(() => {
+    return stores.filter((store) => {
+      if (selectedClientKey && storeClientKey(store) !== selectedClientKey) return false;
+      if (selectedProjectId && tx(store.project_id, "") !== selectedProjectId) return false;
+      return true;
+    });
+  }, [stores, selectedClientKey, selectedProjectId, storeClientKey]);
+
   const filteredStock = useMemo(() => {
     return stockLevels.filter((r) => {
       const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
       const reorder = num(r.reorder_level ?? r.reorder_point);
       if (belowReorder && q > reorder) return false;
+      if (selectedClientKey && rowClientKey(r) !== selectedClientKey) return false;
+      if (selectedProjectId && rowProjectId(r) !== selectedProjectId) return false;
       if (storeFilter && tx(r.store_id) !== storeFilter && tx(r.store_name) !== storeFilter) return false;
       if (categoryFilter && tx(r.category).toLowerCase() !== categoryFilter.toLowerCase()) return false;
-      const hay = `${tx(r.item_code)} ${tx(r.item_name)} ${tx(r.category)} ${tx(r.store_name)}`.toLowerCase();
+      const hay = `${tx(r.item_code)} ${tx(r.item_name)} ${tx(r.category)} ${tx(r.store_name)} ${tx(r.project_name)} ${tx(r.client_name)}`.toLowerCase();
       return hay.includes(stockSearch.toLowerCase());
     });
-  }, [stockLevels, belowReorder, storeFilter, categoryFilter, stockSearch]);
+  }, [stockLevels, belowReorder, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId, storeFilter, categoryFilter, stockSearch]);
 
   const filteredCatalogue = useMemo(() => {
     const q = catSearch.toLowerCase();
@@ -228,13 +328,15 @@ function InventoryWorkspace() {
   const filteredMovements = useMemo(() => {
     return movements.filter((m) => {
       if (movTypeFilter && tx(m.movement_type).toLowerCase() !== movTypeFilter.toLowerCase()) return false;
+      if (selectedClientKey && rowClientKey(m) !== selectedClientKey) return false;
+      if (selectedProjectId && rowProjectId(m) !== selectedProjectId) return false;
       if (movStoreFilter && tx(m.store_id) !== movStoreFilter && tx(m.store_name) !== movStoreFilter) return false;
       const date = new Date(m.created_at ?? m.movement_date ?? 0);
       if (movDateFrom && date < new Date(movDateFrom)) return false;
       if (movDateTo && date > new Date(movDateTo + "T23:59:59")) return false;
       return true;
     });
-  }, [movements, movTypeFilter, movStoreFilter, movDateFrom, movDateTo]);
+  }, [movements, movTypeFilter, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId, movStoreFilter, movDateFrom, movDateTo]);
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
@@ -319,6 +421,86 @@ function InventoryWorkspace() {
       )}
       {notice && <Banner tone="info" message={notice} />}
 
+      <section className="mb-6 border border-ink-mid bg-ink">
+        <div className="border-b border-ink-mid px-4 py-3">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Workspace Scope</p>
+          <h2 className="mt-1 text-base font-semibold text-paper">Clients, projects and stores</h2>
+        </div>
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(15rem,22rem)_1fr]">
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => { setSelectedClientKey(""); setSelectedProjectId(""); }}
+              className={`w-full border px-3 py-2 text-left ${!selectedClientKey ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/30 hover:border-signal/40"}`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-mono text-xs uppercase text-paper">All Clients</span>
+                <span className="font-mono text-[10px] text-slate-light">{stores.length} stores</span>
+              </div>
+            </button>
+            {clientGroups.map((group) => (
+              <button
+                key={group.key}
+                type="button"
+                onClick={() => { setSelectedClientKey(group.key); setSelectedProjectId(""); }}
+                className={`w-full border px-3 py-2 text-left ${selectedClientKey === group.key ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/30 hover:border-signal/40"}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-sm font-semibold text-paper">{group.name}</span>
+                  <ChevronRight className={`h-4 w-4 shrink-0 text-slate ${selectedClientKey === group.key ? "text-signal" : ""}`} />
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] uppercase text-slate-light">
+                  <span>{group.projects.length} projects</span>
+                  <span>{group.stores.length} stores</span>
+                  <span>{money(group.stockValue)}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+          <div className="min-w-0">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Selected workspace</p>
+                <p className="mt-0.5 text-sm font-semibold text-paper">{selectedClient ? selectedClient.name : "All clients and organisation stores"}</p>
+              </div>
+              {(selectedClientKey || selectedProjectId) && (
+                <button
+                  type="button"
+                  onClick={() => { setSelectedClientKey(""); setSelectedProjectId(""); }}
+                  className="inline-flex h-8 items-center gap-1 border border-ink-mid px-2 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper"
+                >
+                  <X className="h-3.5 w-3.5" /> Clear
+                </button>
+              )}
+            </div>
+            <div className="mb-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedProjectId("")}
+                className={`h-8 border px-3 font-mono text-[10px] uppercase ${!selectedProjectId ? "border-signal bg-signal/10 text-signal" : "border-ink-mid text-slate-light hover:border-signal hover:text-paper"}`}
+              >
+                All Projects
+              </button>
+              {contextualProjects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => setSelectedProjectId(String(project.id))}
+                  className={`h-8 max-w-full truncate border px-3 font-mono text-[10px] uppercase ${selectedProjectId === String(project.id) ? "border-signal bg-signal/10 text-signal" : "border-ink-mid text-slate-light hover:border-signal hover:text-paper"}`}
+                >
+                  {projectName(project)}
+                </button>
+              ))}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <InfoCard label="Visible Stores" value={String(contextualStores.length)} />
+              <InfoCard label="Visible Stock Rows" value={String(filteredStock.length)} />
+              <InfoCard label="Visible Movements" value={String(filteredMovements.length)} />
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div className="mb-0 flex border-b border-ink-mid">
         {(["stock", "catalogue", "stores", "movements"] as ActiveTab[]).map((t) => {
           const labels: Record<ActiveTab, string> = { stock: "Stock Levels", catalogue: "Item Catalogue", stores: "Stores", movements: "Stock Movements" };
@@ -346,7 +528,7 @@ function InventoryWorkspace() {
             </label>
             <select value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
               <option value="">All Stores</option>
-              {stores.map((s) => <option key={s.id} value={tx(s.store_code ?? s.id)}>{tx(s.name ?? s.store_name, s.id)} ({tx(s.store_code, "")})</option>)}
+              {contextualStores.map((s) => <option key={s.id} value={tx(s.id)}>{tx(s.name ?? s.store_name, s.id)} ({tx(s.store_code, "")})</option>)}
             </select>
             <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
               <option value="">All Categories</option>
@@ -484,11 +666,11 @@ function InventoryWorkspace() {
           </div>
           {loading && stores.length === 0 ? (
             <Loading label="Loading stores" />
-          ) : stores.length === 0 ? (
+          ) : contextualStores.length === 0 ? (
             <Empty label="No stores registered." sub="Add a warehouse, site store, or yard to begin tracking stock." />
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {stores.map((s) => {
+              {contextualStores.map((s) => {
                 const storeItems = stockLevels.filter((r) => tx(r.store_id) === s.id || tx(r.store_name) === tx(s.name));
                 const storeValue = storeItems.reduce((sum, r) => {
                   const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
@@ -512,8 +694,8 @@ function InventoryWorkspace() {
                         {typeIcon} {typeLabel}
                       </span>
                     </div>
-                    {(s.project_name || s.site_name) ? (
-                      <p className="mb-3 text-xs text-slate-light"><Building2 className="mr-1 inline h-3 w-3" />{tx(s.project_name ?? s.site_name)}</p>
+                    {(s.project_name || s.site_name || s.client_name) ? (
+                      <p className="mb-3 text-xs text-slate-light"><Building2 className="mr-1 inline h-3 w-3" />{tx(s.client_name, "No client")} / {tx(s.project_name ?? s.site_name)}</p>
                     ) : null}
                     <div className="grid grid-cols-2 gap-2">
                       <div className="border border-ink-mid/60 bg-ink p-2 text-center">
@@ -548,7 +730,7 @@ function InventoryWorkspace() {
             </select>
             <select value={movStoreFilter} onChange={(e) => setMovStoreFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
               <option value="">All Stores</option>
-              {stores.map((s) => <option key={s.id} value={tx(s.store_code ?? s.id)}>{tx(s.name ?? s.store_name, s.id)}</option>)}
+              {contextualStores.map((s) => <option key={s.id} value={tx(s.id)}>{tx(s.name ?? s.store_name, s.id)}</option>)}
             </select>
             {(movDateFrom || movDateTo || movTypeFilter || movStoreFilter) && (
               <button onClick={() => { setMovDateFrom(""); setMovDateTo(""); setMovTypeFilter(""); setMovStoreFilter(""); }} className="h-9 border border-ink-mid px-3 font-mono text-xs text-slate-light hover:text-paper">
@@ -605,8 +787,8 @@ function InventoryWorkspace() {
       {showIssue && (
         <IssueStockModal
           catalogue={catalogue}
-          stores={stores}
-          projects={projects}
+          stores={contextualStores}
+          projects={contextualProjects}
           saving={saving}
           onClose={() => setShowIssue(false)}
           onSubmit={async (payload) => {
@@ -627,7 +809,7 @@ function InventoryWorkspace() {
       {showReceive && (
         <ReceiveStockModal
           catalogue={catalogue}
-          stores={stores}
+          stores={contextualStores}
           suppliers={suppliers}
           saving={saving}
           onClose={() => setShowReceive(false)}
@@ -652,7 +834,7 @@ function InventoryWorkspace() {
       {showTransfer && (
         <TransferStockModal
           catalogue={catalogue}
-          stores={stores}
+          stores={contextualStores}
           saving={saving}
           onClose={() => setShowTransfer(false)}
           onSubmit={async (payload) => {
@@ -673,7 +855,7 @@ function InventoryWorkspace() {
       {showAdjust && (
         <AdjustStockModal
           catalogue={catalogue}
-          stores={stores}
+          stores={contextualStores}
           saving={saving}
           onClose={() => setShowAdjust(false)}
           onSubmit={async (payload) => {
@@ -713,7 +895,7 @@ function InventoryWorkspace() {
       {showAddStore && (
         <AddStoreModal
           saving={saving}
-          projects={projects}
+          projects={contextualProjects}
           onClose={() => setShowAddStore(false)}
           onProjectCreated={(project) => setProjects((prev) => [project, ...prev])}
           onSubmit={async (payload) => {

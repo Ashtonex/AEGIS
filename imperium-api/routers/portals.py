@@ -22,6 +22,9 @@ _PORTALS = {
     "executive": "/dashboard/executive",
     "employee": "/dashboard/executive",
     "foreman": "/portal/foreman",
+    "site-engineer": "/portal/site-engineer",
+    "site-agent": "/portal/site-agent",
+    "qs": "/portal/qs",
     "client": "/portal/client",
     "supplier": "/portal/supplier",
 }
@@ -36,11 +39,16 @@ async def _get_client_portal_context(
             text("""
             SELECT
                 cpa.contact_id,
+                c.client_org_id,
                 c.contact_name,
                 c.email,
                 c.phone,
                 c.job_title,
-                co.name AS company_name
+                c.whatsapp_preference,
+                co.name AS company_name,
+                co.email AS company_email,
+                co.phone AS company_phone,
+                co.address AS company_address
             FROM crm.client_portal_access cpa
             JOIN crm.contacts c ON c.id = cpa.contact_id
              AND c.organization_id = cpa.organization_id
@@ -63,6 +71,20 @@ async def _get_client_portal_context(
         )
 
     return dict(context._mapping)
+
+
+class ClientProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    company_name: Optional[str] = Field(default=None, max_length=255)
+    company_email: Optional[str] = Field(default=None, max_length=255)
+    company_phone: Optional[str] = Field(default=None, max_length=50)
+    company_address: Optional[str] = None
+    contact_name: Optional[str] = Field(default=None, max_length=255)
+    email: Optional[str] = Field(default=None, max_length=255)
+    phone: Optional[str] = Field(default=None, max_length=50)
+    job_title: Optional[str] = Field(default=None, max_length=100)
+    whatsapp_preference: Optional[bool] = None
 
 
 async def _needs_password_setup(user: dict, db: AsyncSession) -> bool:
@@ -124,8 +146,35 @@ async def resolve_portal_access(
             "meta": {},
         }
 
-    # 2. Foreman / site-team check
-    if {"FOREMAN", "SITE AGENT", "SITE CLERK", "STOREKEEPER"} & role_names:
+    # 2. Site Engineer gets the technical control portal.
+    if "SITE ENGINEER" in role_names:
+        return {
+            "success": True,
+            "data": {"portal": "site-engineer", "destination": "/portal/site-engineer"},
+            "message": "Site Engineer portal access confirmed.",
+            "meta": {},
+        }
+
+    # 3. Site Agent gets the weekly execution and programme control portal.
+    if "SITE AGENT" in role_names:
+        return {
+            "success": True,
+            "data": {"portal": "site-agent", "destination": "/portal/site-agent"},
+            "message": "Site Agent portal access confirmed.",
+            "meta": {},
+        }
+
+    # 4. Quantity Surveyor gets the commercial entitlement portal.
+    if "QUANTITY SURVEYOR" in role_names:
+        return {
+            "success": True,
+            "data": {"portal": "qs", "destination": "/portal/qs"},
+            "message": "QS portal access confirmed.",
+            "meta": {},
+        }
+
+    # 5. Foreman / site-team check
+    if {"FOREMAN", "SITE CLERK", "STOREKEEPER"} & role_names:
         return {
             "success": True,
             "data": {"portal": "foreman", "destination": "/portal/foreman"},
@@ -133,7 +182,7 @@ async def resolve_portal_access(
             "meta": {},
         }
 
-    # 4. Client check - external accounts are confined to the client portal,
+    # 6. Client check - external accounts are confined to the client portal,
     # never falling through to the internal dashboard below.
     if "CLIENT" in role_names:
         client_access = (
@@ -157,7 +206,7 @@ async def resolve_portal_access(
             detail="This account is not provisioned for the client portal.",
         )
 
-    # 5. Supplier check - same confinement as clients.
+    # 7. Supplier check - same confinement as clients.
     if "SUPPLIER" in role_names:
         supplier_access = (
             await db.execute(
@@ -180,7 +229,7 @@ async def resolve_portal_access(
             detail="This account is not provisioned for the supplier portal.",
         )
 
-    # 6. Any other internal role (Executive (Admin), Finance Manager, Project
+    # 8. Any other internal role (Executive (Admin), Finance Manager, Project
     # Manager, and the rest of the functional/management role catalog) lands
     # on that role's own working page - core.roles.default_landing_path,
     # resolved via the same primary-role precedence get_current_user uses
@@ -287,6 +336,18 @@ async def get_portal_access(
         allowed = user.get("role") == "SUPERADMIN" or bool(
             {"SUPERADMIN", "FOREMAN", "SITE AGENT", "SITE CLERK", "STOREKEEPER", "PROJECT MANAGER"} & role_names
         )
+    elif portal == "site-engineer":
+        allowed = user.get("role") == "SUPERADMIN" or bool(
+            {"SUPERADMIN", "SITE ENGINEER", "PROJECT MANAGER"} & role_names
+        )
+    elif portal == "site-agent":
+        allowed = user.get("role") == "SUPERADMIN" or bool(
+            {"SUPERADMIN", "SITE AGENT", "PROJECT MANAGER"} & role_names
+        )
+    elif portal == "qs":
+        allowed = user.get("role") == "SUPERADMIN" or bool(
+            {"SUPERADMIN", "QUANTITY SURVEYOR", "COMMERCIAL MANAGER", "PROJECT MANAGER"} & role_names
+        )
     elif portal == "client":
         allowed = "CLIENT" in role_names and bool(
             (
@@ -388,6 +449,102 @@ async def get_client_workspace(
         "message": "Client portal workspace loaded.",
         "meta": {"total_tickets": len(tickets), "total_messages": len(messages)},
     }
+
+
+@router.patch("/client/profile")
+async def update_client_profile(
+    payload: ClientProfileUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=422, detail="No profile fields supplied.")
+
+    contact_fields = {key: updates[key] for key in ("contact_name", "email", "phone", "job_title", "whatsapp_preference") if key in updates}
+    if contact_fields:
+        set_clauses = [f"{field} = :{field}" for field in contact_fields]
+        set_clauses.append("updated_at = NOW()")
+        await db.execute(
+            text(f"""
+            UPDATE crm.contacts
+            SET {', '.join(set_clauses)}
+            WHERE id = :contact_id
+              AND organization_id = :org_id
+              AND is_deleted = false
+        """),
+            {
+                **contact_fields,
+                "contact_id": client["contact_id"],
+                "org_id": user["org_id"],
+            },
+        )
+
+    company_fields = {
+        key.replace("company_", ""): updates[key]
+        for key in ("company_name", "company_email", "company_phone", "company_address")
+        if key in updates
+    }
+    if company_fields:
+        org_id = client.get("client_org_id")
+        if not org_id:
+            created = (
+                await db.execute(
+                    text("""
+                    INSERT INTO crm.organizations (
+                        organization_id, created_by, name, email, phone, address
+                    )
+                    VALUES (
+                        :org_id, :user_id, :name, :email, :phone, :address
+                    )
+                    RETURNING id
+                """),
+                    {
+                        "org_id": user["org_id"],
+                        "user_id": user["user_id"],
+                        "name": company_fields.get("name") or client.get("company_name") or "Client company",
+                        "email": company_fields.get("email"),
+                        "phone": company_fields.get("phone"),
+                        "address": company_fields.get("address"),
+                    },
+                )
+            ).scalar()
+            org_id = str(created)
+            await db.execute(
+                text("""
+                UPDATE crm.contacts
+                SET client_org_id = :client_org_id, updated_at = NOW()
+                WHERE id = :contact_id
+                  AND organization_id = :org_id
+                  AND is_deleted = false
+            """),
+                {
+                    "client_org_id": org_id,
+                    "contact_id": client["contact_id"],
+                    "org_id": user["org_id"],
+                },
+            )
+        else:
+            set_clauses = [f"{field} = :company_{field}" for field in company_fields]
+            set_clauses.append("updated_at = NOW()")
+            await db.execute(
+                text(f"""
+                UPDATE crm.organizations
+                SET {', '.join(set_clauses)}
+                WHERE id = :client_org_id
+                  AND organization_id = :org_id
+                  AND is_deleted = false
+            """),
+                {
+                    **{f"company_{key}": value for key, value in company_fields.items()},
+                    "client_org_id": org_id,
+                    "org_id": user["org_id"],
+                },
+            )
+
+    await db.commit()
+    return {"success": True, "data": {"contact_id": client["contact_id"]}, "message": "Client profile updated.", "meta": {}}
 
 
 @router.post("/client/tickets")
@@ -564,7 +721,13 @@ async def _get_supplier_portal_context(user: dict, db: AsyncSession) -> dict:
                 s.system_verified_at, s.system_verification_notes,
                 s.hr_verified_at, s.hr_verification_notes,
                 s.linked_supplier_id,
-                s.submission_data->>'account_type' AS account_type
+                s.submission_data->>'account_type' AS account_type,
+                s.submission_data->>'preferred_contact_method' AS preferred_contact_method,
+                s.submission_data->>'alternate_contact_name' AS alternate_contact_name,
+                s.submission_data->>'alternate_contact_email' AS alternate_contact_email,
+                s.submission_data->>'alternate_contact_phone' AS alternate_contact_phone,
+                s.submission_data->>'accounts_contact_email' AS accounts_contact_email,
+                s.submission_data->>'accounts_contact_phone' AS accounts_contact_phone
             FROM crm.supplier_portal_access spa
             JOIN crm.subcontractors s ON s.id = spa.subcontractor_id
              AND s.organization_id = spa.organization_id
@@ -619,6 +782,12 @@ class SupplierProfileUpdate(BaseModel):
     contact_phone: Optional[str] = Field(default=None, max_length=50)
     address: Optional[str] = None
     coverage_provinces: Optional[list[str]] = None
+    preferred_contact_method: Optional[str] = Field(default=None, max_length=40)
+    alternate_contact_name: Optional[str] = Field(default=None, max_length=255)
+    alternate_contact_email: Optional[str] = Field(default=None, max_length=255)
+    alternate_contact_phone: Optional[str] = Field(default=None, max_length=50)
+    accounts_contact_email: Optional[str] = Field(default=None, max_length=255)
+    accounts_contact_phone: Optional[str] = Field(default=None, max_length=50)
 
 
 class SupplierDocumentRegister(BaseModel):
@@ -645,6 +814,28 @@ class VendorRateItemCreate(BaseModel):
     lead_time_days: Optional[int] = None
     route_from: Optional[str] = Field(default=None, max_length=255)
     route_to: Optional[str] = Field(default=None, max_length=255)
+
+
+class SupplierRfqLineItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    description: str = Field(min_length=1, max_length=500)
+    qty: Optional[float] = Field(default=None, gt=0)
+    uom: Optional[str] = Field(default=None, max_length=40)
+    unit_price: float = Field(ge=0)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class SupplierRfqResponseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reference: Optional[str] = Field(default=None, max_length=160)
+    total_amount: Optional[float] = Field(default=None, ge=0)
+    delivery_days: Optional[int] = Field(default=None, gt=0, le=3650)
+    validity_days: int = Field(default=30, gt=0, le=3650)
+    notes: Optional[str] = None
+    line_items: list[SupplierRfqLineItem] = Field(default_factory=list)
+    quote_document_id: Optional[UUID] = None
 
 
 class VendorPaymentRequestCreate(BaseModel):
@@ -737,6 +928,15 @@ async def update_supplier_profile(
     if not updates:
         raise HTTPException(status_code=422, detail="No profile fields supplied.")
 
+    metadata_fields = (
+        "preferred_contact_method",
+        "alternate_contact_name",
+        "alternate_contact_email",
+        "alternate_contact_phone",
+        "accounts_contact_email",
+        "accounts_contact_phone",
+    )
+    metadata_updates = {field: updates.pop(field) for field in metadata_fields if field in updates}
     set_clauses = []
     params: dict = {"id": vendor["subcontractor_id"], "org_id": user["org_id"]}
     for field, value in updates.items():
@@ -745,6 +945,11 @@ async def update_supplier_profile(
         else:
             set_clauses.append(f"{field} = :{field}")
         params[field] = value
+    if metadata_updates:
+        set_clauses.append(
+            "submission_data = COALESCE(submission_data, '{}'::jsonb) || CAST(:submission_data_patch AS jsonb)"
+        )
+        params["submission_data_patch"] = json.dumps(metadata_updates)
 
     # Any profile edit invalidates a prior verification pass - re-review required.
     set_clauses.append("verification_stage = 'incomplete'")
@@ -825,11 +1030,9 @@ async def register_supplier_document(
         )
     ).first()
 
-    # Receipts are registered here too (so the same upload widget can be
-    # reused for "attach a receipt when clearing a payment request"), but
-    # they link to the payment request itself at clear-time, not to the
-    # vendor's compliance record - only skip the compliance link for those.
-    if payload.category != "receipt":
+    # Receipts and RFQ quote files are linked to their target workflow at the
+    # point of use. Compliance uploads still attach to the vendor profile here.
+    if payload.category not in {"receipt", "rfq_quote"}:
         await db.execute(
             text("""
             INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
@@ -936,6 +1139,195 @@ async def create_supplier_rate_item(
     return {"success": True, "data": dict(row._mapping), "message": "Rate item added.", "meta": {}}
 
 
+@router.get("/supplier/rfqs")
+async def list_supplier_rfqs(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    supplier_id = vendor.get("linked_supplier_id")
+    if not supplier_id:
+        return {"success": True, "data": [], "message": "No linked supplier account is available for RFQs.", "meta": {}}
+
+    rows = await db.execute(
+        text("""
+        SELECT
+            rfq.id,
+            rfq.rfq_number,
+            rfq.title,
+            rfq.description,
+            rfq.closing_date,
+            rfq.status,
+            rfq.issued_at,
+            p.name AS project_name,
+            COALESCE(
+              (
+                SELECT jsonb_agg(
+                  jsonb_build_object(
+                    'id', rl.id,
+                    'description', rl.description,
+                    'qty', rl.qty,
+                    'uom', rl.uom,
+                    'work_package', rl.work_package,
+                    'notes', rl.notes
+                  )
+                  ORDER BY rl.created_at ASC
+                )
+                FROM procurement.requisition_lines rl
+                WHERE rl.organization_id = rfq.organization_id
+                  AND rl.requisition_id = rfq.requisition_id
+                  AND rl.is_deleted = false
+              ),
+              '[]'::jsonb
+            ) AS requested_items,
+            (
+              SELECT jsonb_build_object(
+                'id', rr.id,
+                'reference', rr.reference,
+                'total_amount', rr.total_amount,
+                'delivery_days', rr.delivery_days,
+                'validity_days', rr.validity_days,
+                'notes', rr.notes,
+                'line_items', rr.line_items,
+                'status', rr.status,
+                'received_at', rr.received_at,
+                'documents', COALESCE((
+                  SELECT jsonb_agg(
+                    jsonb_build_object(
+                      'id', d.id,
+                      'title', d.title,
+                      'category', d.category,
+                      'created_at', d.created_at
+                    )
+                    ORDER BY d.created_at DESC
+                  )
+                  FROM core.document_links dl
+                  JOIN core.documents d ON d.id = dl.document_id
+                   AND d.organization_id = dl.organization_id
+                   AND d.is_deleted = false
+                  WHERE dl.organization_id = rr.organization_id
+                    AND dl.entity_type = 'rfq_response'
+                    AND dl.entity_id = rr.id
+                    AND dl.is_deleted = false
+                ), '[]'::jsonb)
+              )
+              FROM procurement.rfq_responses rr
+              WHERE rr.organization_id = rfq.organization_id
+                AND rr.rfq_id = rfq.id
+                AND rr.supplier_id = :supplier_id
+                AND rr.is_deleted = false
+              LIMIT 1
+            ) AS response
+        FROM procurement.rfqs rfq
+        LEFT JOIN projects.projects p ON p.id = rfq.project_id
+         AND p.organization_id = rfq.organization_id
+        WHERE rfq.organization_id = :org_id
+          AND rfq.status = 'issued'
+          AND rfq.is_deleted = false
+        ORDER BY rfq.closing_date ASC NULLS LAST, rfq.issued_at DESC NULLS LAST, rfq.created_at DESC
+        LIMIT 100
+    """),
+        {"org_id": user["org_id"], "supplier_id": supplier_id},
+    )
+    data = [dict(row._mapping) for row in rows]
+    return {"success": True, "data": data, "message": "Open RFQs loaded.", "meta": {"total": len(data)}}
+
+
+@router.post("/supplier/rfqs/{rfq_id}/responses", status_code=status.HTTP_201_CREATED)
+async def submit_supplier_rfq_response(
+    rfq_id: UUID,
+    payload: SupplierRfqResponseCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    supplier_id = vendor.get("linked_supplier_id")
+    if not supplier_id:
+        raise HTTPException(status_code=422, detail="This portal account is not linked to a procurement supplier record.")
+    rfq = (
+        await db.execute(
+            text("""
+            SELECT id, project_id, status, title
+            FROM procurement.rfqs
+            WHERE id = :id
+              AND organization_id = :org_id
+              AND is_deleted = false
+        """),
+            {"id": str(rfq_id), "org_id": user["org_id"]},
+        )
+    ).first()
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found.")
+    if rfq.status != "issued":
+        raise HTTPException(status_code=409, detail="This RFQ is not open for supplier responses.")
+    if not payload.line_items and payload.quote_document_id is None:
+        raise HTTPException(status_code=422, detail="Add line rates or upload a formal quotation before submitting.")
+
+    line_items = [item.model_dump() for item in payload.line_items]
+    total_amount = payload.total_amount
+    if total_amount is None:
+        total_amount = sum((item.get("qty") or 1) * item["unit_price"] for item in line_items)
+
+    response_id = (
+        await db.execute(
+            text("""
+            INSERT INTO procurement.rfq_responses (
+                organization_id, rfq_id, supplier_id, reference, total_amount,
+                delivery_days, validity_days, notes, line_items, created_by
+            ) VALUES (
+                :org_id, :rfq_id, :supplier_id, :reference, :total_amount,
+                :delivery_days, :validity_days, :notes, CAST(:line_items AS jsonb), :user_id
+            ) ON CONFLICT (organization_id, rfq_id, supplier_id)
+              DO UPDATE SET
+                reference = EXCLUDED.reference,
+                total_amount = EXCLUDED.total_amount,
+                delivery_days = EXCLUDED.delivery_days,
+                validity_days = EXCLUDED.validity_days,
+                notes = EXCLUDED.notes,
+                line_items = EXCLUDED.line_items,
+                status = 'received',
+                updated_at = NOW()
+            RETURNING id
+        """),
+            {
+                "org_id": user["org_id"],
+                "rfq_id": str(rfq_id),
+                "supplier_id": supplier_id,
+                "reference": payload.reference,
+                "total_amount": total_amount,
+                "delivery_days": payload.delivery_days,
+                "validity_days": payload.validity_days,
+                "notes": payload.notes,
+                "line_items": json.dumps(line_items),
+                "user_id": user["user_id"],
+            },
+        )
+    ).scalar()
+
+    if payload.quote_document_id:
+        await _link_documents(
+            db,
+            org_id=user["org_id"],
+            user_id=user["user_id"],
+            document_ids=[payload.quote_document_id],
+            entity_type="rfq_response",
+            entity_id=str(response_id),
+            link_role="supplier_quote",
+        )
+
+    await emit_role_notification(
+        db,
+        org_id=user["org_id"],
+        role_names=["Procurement Manager", "Finance Manager", "Executive (Admin)"],
+        title="Supplier RFQ response received",
+        message=f"{vendor['name']} responded to {rfq.title}.",
+        notification_type="rfq_response",
+        action_url="/dashboard/procurement?tab=rfqs",
+    )
+    await db.commit()
+    return {"success": True, "data": {"id": str(response_id), "total_amount": total_amount}, "message": "RFQ response submitted.", "meta": {}}
+
+
 @router.get("/supplier/payment-requests")
 async def list_supplier_payment_requests(
     user: dict = Depends(get_current_user),
@@ -986,7 +1378,6 @@ async def create_supplier_payment_request(
             },
         )
     ).first()
-
     await emit_role_notification(
         db, org_id=user["org_id"], role_names=["Finance Manager"],
         title="New vendor payment request",
@@ -1096,6 +1487,7 @@ class ClientProjectRequestCreate(BaseModel):
     project_id: UUID
     subject: str = Field(min_length=3, max_length=255)
     description: str = Field(min_length=10)
+    evidence_document_ids: list[UUID] = Field(default_factory=list)
 
 
 class ClientVariationCreate(BaseModel):
@@ -1107,6 +1499,7 @@ class ClientVariationCreate(BaseModel):
     scope_impact: Optional[str] = None
     cost_impact: Optional[float] = None
     time_impact_days: Optional[int] = None
+    evidence_document_ids: list[UUID] = Field(default_factory=list)
 
 
 class ClientPaymentRequestClear(BaseModel):
@@ -1114,6 +1507,55 @@ class ClientPaymentRequestClear(BaseModel):
 
     receipt_document_id: UUID
     notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+async def _link_documents(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    user_id: str,
+    document_ids: list[UUID],
+    entity_type: str,
+    entity_id: str,
+    link_role: str,
+) -> None:
+    if not document_ids:
+        return
+    unique_ids = [str(doc_id) for doc_id in dict.fromkeys(document_ids)]
+    rows = (
+        await db.execute(
+            text("""
+            SELECT id
+            FROM core.documents
+            WHERE organization_id = :org_id
+              AND id = ANY(CAST(:document_ids AS uuid[]))
+              AND is_deleted = false
+        """),
+            {"org_id": org_id, "document_ids": unique_ids},
+        )
+    ).scalars().all()
+    found_ids = {str(row) for row in rows}
+    missing = sorted(set(unique_ids) - found_ids)
+    if missing:
+        raise HTTPException(status_code=404, detail="One or more uploaded documents could not be found.")
+    for document_id in unique_ids:
+        await db.execute(
+            text("""
+            INSERT INTO core.document_links (
+                organization_id, document_id, entity_type, entity_id, link_role, linked_by
+            )
+            VALUES (:org_id, :document_id, :entity_type, :entity_id, :link_role, :user_id)
+            ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+        """),
+            {
+                "org_id": org_id,
+                "document_id": document_id,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "link_role": link_role,
+                "user_id": user_id,
+            },
+        )
 
 
 async def _client_org_id(user: dict, client: dict, db: AsyncSession) -> Optional[str]:
@@ -1214,6 +1656,22 @@ async def get_client_project_detail(
 
 async def _create_client_project_ticket(category: str, payload: ClientProjectRequestCreate, user: dict, db: AsyncSession):
     client = await _get_client_portal_context(user, db)
+    client_org_id = await _client_org_id(user, client, db)
+    project = (
+        await db.execute(
+            text("""
+            SELECT 1
+            FROM projects.projects
+            WHERE id = :project_id
+              AND organization_id = :org_id
+              AND client_org_id = :client_org_id
+              AND is_deleted = false
+        """),
+            {"project_id": str(payload.project_id), "org_id": user["org_id"], "client_org_id": client_org_id},
+        )
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
     result = await db.execute(
         text("""
         INSERT INTO crm.support_tickets (organization_id, created_by, contact_id, project_id, subject, description, category)
@@ -1227,6 +1685,16 @@ async def _create_client_project_ticket(category: str, payload: ClientProjectReq
         },
     )
     ticket = result.first()
+    if ticket:
+        await _link_documents(
+            db,
+            org_id=user["org_id"],
+            user_id=user["user_id"],
+            document_ids=payload.evidence_document_ids,
+            entity_type="support_ticket",
+            entity_id=str(ticket.id),
+            link_role="evidence",
+        )
     await emit_role_notification(
         db, org_id=user["org_id"], role_names=["Project Manager", "Executive (Admin)"],
         title=f"Client {category.replace('_', ' ')}",

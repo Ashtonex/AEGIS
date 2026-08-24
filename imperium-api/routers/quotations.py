@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,7 @@ from app.shared.sql import (
     safe_payload_columns,
     update_returning_id_sql,
 )
+from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -284,7 +285,12 @@ async def calculate_quotation(
 @router.post("/boq/import")
 async def import_boq(
     file: UploadFile = File(...),
+    source_type: Optional[str] = Form(default=None),
+    source_id: Optional[str] = Form(default=None),
+    task_id: Optional[str] = Form(default=None),
+    document_id: Optional[str] = Form(default=None),
     user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     extension = Path(file.filename or "").suffix.lower()
     if extension not in {".xlsx", ".xls", ".csv"}:
@@ -316,9 +322,69 @@ async def import_boq(
             "meta": {"user_id": user["user_id"], "filename": file.filename},
         }
 
+    linked: dict[str, Any] = {}
+    if source_type and source_id:
+        normalized_source_type = source_type.strip().lower()
+        if normalized_source_type not in {"lead", "opportunity", "tender", "project"}:
+            raise HTTPException(status_code=400, detail="source_type must be lead, opportunity, tender, or project.")
+        await _load_autonomous_quote_source(db, user["org_id"], normalized_source_type, source_id)
+        linked["source_type"] = normalized_source_type
+        linked["source_id"] = source_id
+        existing_quotation_id = await _find_existing_quotation_id(db, user["org_id"], normalized_source_type, source_id)
+        if existing_quotation_id:
+            linked["quotation_id"] = existing_quotation_id
+            if task_id:
+                await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=existing_quotation_id)
+        if document_id:
+            entity_links = [(normalized_source_type, source_id, "boq_source")]
+            if existing_quotation_id:
+                entity_links.append(("quotation", existing_quotation_id, "boq_source"))
+            for entity_type, entity_id, link_role in entity_links:
+                await db.execute(
+                    text("""
+                        INSERT INTO core.document_links (
+                            organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                        ) VALUES (
+                            :org_id, CAST(:document_id AS uuid), :entity_type, CAST(:entity_id AS uuid), :link_role, :user_id
+                        ) ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role)
+                          DO UPDATE SET is_deleted=false, linked_at=NOW(), linked_by=EXCLUDED.linked_by
+                    """),
+                    {
+                        "org_id": user["org_id"],
+                        "document_id": document_id,
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "link_role": link_role,
+                        "user_id": user["user_id"],
+                    },
+                )
+            linked["document_id"] = document_id
+        if task_id:
+            await db.execute(
+                text("""
+                    UPDATE crm.tasks
+                    SET evidence_ref = COALESCE(:document_ref, :file_name),
+                        boq_document_id = COALESCE(CAST(:document_id AS uuid), boq_document_id),
+                        boq_imported_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = CAST(:task_id AS uuid)
+                      AND organization_id = :org_id
+                      AND is_deleted = false
+                """),
+                {
+                    "document_ref": document_id,
+                    "document_id": document_id,
+                    "file_name": file.filename,
+                    "task_id": task_id,
+                    "org_id": user["org_id"],
+                },
+            )
+            linked["task_id"] = task_id
+        await db.commit()
+
     return {
         "success": bool(result.items),
-        "data": jsonable_encoder(result.to_dict()),
+        "data": jsonable_encoder({**result.to_dict(), "linked": linked}),
         "message": "BOQ import completed.",
         "meta": {"user_id": user["user_id"], "filename": file.filename},
     }
@@ -1308,6 +1374,7 @@ _SOURCE_LINK_COLUMNS = {
     "tender": "tender_id",
     "opportunity": "opportunity_id",
     "lead": "lead_id",
+    "project": "project_id",
 }
 
 
@@ -1826,6 +1893,22 @@ async def decide_quotation(
                 alert_raised = await check_and_alert_margin_threat(
                     db, user["org_id"], str(quotation["project_id"]), forecast_metrics,
                 )
+            await db.execute(
+                text("""
+                    INSERT INTO projects.project_profiles (
+                        project_id, organization_id, commercial_readiness_status
+                    )
+                    VALUES (:project_id, :org_id, 'in_progress')
+                    ON CONFLICT (project_id) DO UPDATE SET
+                        commercial_readiness_status = CASE
+                            WHEN projects.project_profiles.commercial_readiness_status = 'not_started'
+                            THEN 'in_progress'
+                            ELSE projects.project_profiles.commercial_readiness_status
+                        END,
+                        updated_at = NOW()
+                """),
+                {"project_id": quotation["project_id"], "org_id": user["org_id"]},
+            )
 
         await db.commit()
     except HTTPException:
@@ -1859,5 +1942,13 @@ async def decide_quotation(
         await complete_idempotent_request(
             db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint,
             response_status=200, response_body=response,
+        )
+    if decision == "won" and quotation.get("project_id"):
+        await generate_task_stack(
+            db,
+            org_id=user["org_id"],
+            entity_type="commercial_readiness",
+            entity_id=quotation["project_id"],
+            created_by=user["sub"],
         )
     return response

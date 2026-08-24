@@ -9,12 +9,21 @@ from core.database import get_db
 from core.security import require_permission, get_current_user
 from app.shared.pagination import ok
 from app.shared.events import emit_notification, emit_role_notification
+from app.shared.hr_self_service import resolve_own_employee_id
 
 router = APIRouter()
 
 
 class LeaveRequestCreate(BaseModel):
     employee_id: UUID
+    leave_type: str = Field(min_length=1, max_length=40)
+    start_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    end_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    days_requested: float = 1.0
+    reason: Optional[str] = None
+
+
+class MyLeaveRequestCreate(BaseModel):
     leave_type: str = Field(min_length=1, max_length=40)
     start_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
     end_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
@@ -171,3 +180,136 @@ async def decide_leave_request(
         )
     await db.commit()
     return ok({"id": str(leave_id)}, f"Leave request {payload.decision}.")
+
+
+# --- Self-service ("me") endpoints ---
+#
+# No require_permission on any of these - every authenticated user gets
+# their own HR record, leave history, balance and leave application,
+# regardless of role. Scoped entirely by resolve_own_employee_id (linked_
+# user_id), never by a client-supplied employee_id, so nobody can read or
+# submit on another employee's behalf through these routes.
+
+
+@router.get("/me")
+async def get_my_employee_record(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    row = (
+        await db.execute(
+            text("""
+                SELECT id, employee_name, job_title, department, employment_status,
+                       employment_type, start_date, work_location, annual_leave_days
+                FROM hr.employees
+                WHERE organization_id = :org_id AND linked_user_id = :user_id AND is_deleted = false
+            """),
+            {"org_id": user["org_id"], "user_id": user["user_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
+    return ok(dict(row), "Employee record fetched.")
+
+
+@router.get("/me/leave")
+async def list_my_leave_requests(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    employee_id = await resolve_own_employee_id(db, org_id=user["org_id"], user_id=user["user_id"])
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
+    rows = await db.execute(
+        text("""
+            SELECT * FROM hr.leave_requests
+            WHERE organization_id = :org_id AND employee_id = :employee_id AND is_deleted = false
+            ORDER BY created_at DESC
+        """),
+        {"org_id": user["org_id"], "employee_id": employee_id},
+    )
+    return ok([dict(row._mapping) for row in rows], "Leave requests listed.")
+
+
+@router.get("/me/leave-balance")
+async def get_my_leave_balance(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    employee_id = await resolve_own_employee_id(db, org_id=user["org_id"], user_id=user["user_id"])
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
+    row = (
+        await db.execute(
+            text("""
+                SELECT
+                    e.annual_leave_days,
+                    COALESCE(SUM(lr.days_requested) FILTER (
+                        WHERE lr.status = 'approved' AND lr.leave_type = 'annual'
+                          AND lr.start_date >= date_trunc('year', CURRENT_DATE)
+                    ), 0) AS days_taken
+                FROM hr.employees e
+                LEFT JOIN hr.leave_requests lr
+                    ON lr.employee_id = e.id AND lr.organization_id = e.organization_id AND lr.is_deleted = false
+                WHERE e.id = :employee_id AND e.organization_id = :org_id
+                GROUP BY e.annual_leave_days
+            """),
+            {"employee_id": employee_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    entitlement = row["annual_leave_days"]
+    taken = float(row["days_taken"])
+    return ok(
+        {"annual_leave_days": entitlement, "days_taken": taken, "days_remaining": float(entitlement) - taken},
+        "Leave balance fetched.",
+    )
+
+
+@router.post("/me/leave", status_code=status.HTTP_201_CREATED)
+async def create_my_leave_request(
+    payload: MyLeaveRequestCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    employee_id = await resolve_own_employee_id(db, org_id=user["org_id"], user_id=user["user_id"])
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
+    try:
+        leave_id = (
+            await db.execute(
+                text("""
+            INSERT INTO hr.leave_requests (
+                organization_id, employee_id, leave_type, start_date, end_date,
+                days_requested, reason, status, created_by
+            ) VALUES (
+                :org_id, :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
+                :days_requested, :reason, 'pending', :user_id
+            ) RETURNING id
+        """),
+                {
+                    "org_id": user["org_id"],
+                    "employee_id": employee_id,
+                    "leave_type": payload.leave_type,
+                    "start_date": payload.start_date,
+                    "end_date": payload.end_date,
+                    "days_requested": payload.days_requested,
+                    "reason": payload.reason,
+                    "user_id": user["user_id"],
+                },
+            )
+        ).scalar()
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=["HR Manager", "HR Officer"],
+            title="New leave request",
+            message=f"{user['email']} requested {payload.days_requested} day(s) of {payload.leave_type} leave ({payload.start_date} to {payload.end_date}).",
+            notification_type="hr_leave_request",
+            action_url="/dashboard/hr",
+            metadata={"leave_id": str(leave_id), "employee_id": str(employee_id)},
+        )
+        await db.commit()
+        return ok({"id": str(leave_id)}, "Leave request submitted.")
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))

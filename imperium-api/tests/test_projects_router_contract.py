@@ -12,6 +12,9 @@ WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(
 PROJECTS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "page.tsx"
 ).read_text(encoding="utf-8")
+EXECUTIVE_PAGE = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "executive" / "page.tsx"
+).read_text(encoding="utf-8")
 PROJECT_DETAIL_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "projects" / "[slug]" / "page.tsx"
 ).read_text(encoding="utf-8")
@@ -90,6 +93,29 @@ class ProjectsRouterContractTests(unittest.TestCase):
         self.assertNotIn("simulate API roundtrip", PROJECTS_PAGE)
         self.assertNotIn("Log accepted and recalculated.", PROJECTS_PAGE)
         self.assertNotIn("blockchain hashes", PROJECTS_PAGE)
+
+    def test_pre_mobilisation_gate_blocks_active_delivery_until_approved(self):
+        self.assertIn("PRE_MOBILISATION_GATES", PROJECTS_ROUTER)
+        self.assertIn("Project cannot become active until the pre-mobilisation readiness gate is approved.", PROJECTS_ROUTER)
+        self.assertIn("SET status = 'pre_mobilisation'", PROJECTS_ROUTER)
+        self.assertIn("project.pre_mobilisation_opened.v1", PROJECTS_ROUTER)
+        self.assertIn("project.mobilisation_authorised.v1", PROJECTS_ROUTER)
+        self.assertIn("mobilisation_authorisation_number", PROJECTS_ROUTER)
+        self.assertIn('"mandatory_evidence"', PROJECTS_ROUTER)
+        self.assertIn("pre-mobilisation", WEB_API)
+        self.assertIn("PreMobilisationPanel", PROJECTS_PAGE)
+        self.assertIn("Authorise Mobilisation", PROJECTS_PAGE)
+        self.assertIn("Mobilisation is blocked until all required gates have evidence", PROJECTS_PAGE)
+
+    def test_project_coordinates_persist_to_profile_and_feed_executive_map(self):
+        self.assertIn("PROFILE_COLUMNS = {\"region\", \"latitude\", \"longitude\"}", PROJECTS_ROUTER)
+        self.assertIn("pp.region, pp.latitude::float AS latitude, pp.longitude::float AS longitude", PROJECTS_ROUTER)
+        self.assertIn("tenant_upsert_sql(", PROJECTS_ROUTER)
+        self.assertIn("updated_project = await _project_ref_or_404", PROJECTS_ROUTER)
+        self.assertIn("pp.latitude::float AS latitude", EXECUTIVE_ROUTER)
+        self.assertIn("coordinateValue", EXECUTIVE_PAGE)
+        self.assertIn("onProjectUpdated", PROJECTS_PAGE)
+        self.assertIn("updateInternalProject(project.id, { latitude: latNum, longitude: longNum })", PROJECTS_PAGE)
 
 
 if __name__ == "__main__":

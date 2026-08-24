@@ -23,6 +23,8 @@ import {
   getSiteOperationInventoryItems,
   getSiteOperationSites,
   getSiteOperationStores,
+  getWeeklySiteBudgetItems,
+  getWeeklySiteBudgets,
   requestSiteMaterial,
   submitDailySiteReport,
 } from "@/lib/api";
@@ -76,6 +78,7 @@ export function ForemanPortalHome() {
   const [reports, setReports] = useState<RecordData[]>([]);
   const [items, setItems] = useState<RecordData[]>([]);
   const [stores, setStores] = useState<RecordData[]>([]);
+  const [weeklyItems, setWeeklyItems] = useState<RecordData[]>([]);
   const [gateChecks, setGateChecks] = useState<RecordData[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -92,6 +95,9 @@ export function ForemanPortalHome() {
     delays: "",
     safety_notes: "",
     cost_exposure: "0",
+    labour_count_completed: false,
+    toolbox_talk_completed: false,
+    ppe_check_completed: false,
   });
   const [materialForm, setMaterialForm] = useState({
     site_id: "",
@@ -103,6 +109,7 @@ export function ForemanPortalHome() {
     priority: "normal",
     work_package: "",
     justification: "",
+    weekly_budget_item_id: "",
   });
 
   const selectedProjectName = useMemo(() => {
@@ -139,6 +146,23 @@ export function ForemanPortalHome() {
       else nextWarnings.push("Store register could not be loaded.");
       if (gateResult.status === "fulfilled") setGateChecks(Array.isArray(gateResult.value.data) ? gateResult.value.data : []);
       else nextWarnings.push("Compliance gate checks could not be loaded.");
+      if (selectedProjectId) {
+        try {
+          const budgetResult = await getWeeklySiteBudgets({ projectId: selectedProjectId, status: "all" });
+          const activeBudget = (Array.isArray(budgetResult.data) ? budgetResult.data : []).find((budget) => ["approved", "submitted"].includes(text(budget.status).toLowerCase()));
+          if (activeBudget?.id) {
+            const itemResult = await getWeeklySiteBudgetItems(activeBudget.id);
+            setWeeklyItems(Array.isArray(itemResult.data) ? itemResult.data : []);
+          } else {
+            setWeeklyItems([]);
+          }
+        } catch {
+          setWeeklyItems([]);
+          nextWarnings.push("Weekly execution lines could not be loaded.");
+        }
+      } else {
+        setWeeklyItems([]);
+      }
       setWarnings(nextWarnings);
       if (reportResult.status === "rejected" || projectResult.status === "rejected") {
         setError("Foreman portal data could not be loaded.");
@@ -186,6 +210,9 @@ export function ForemanPortalHome() {
         delays: reportForm.delays || null,
         safety_notes: reportForm.safety_notes || null,
         cost_exposure: numberValue(reportForm.cost_exposure),
+        labour_count_completed: reportForm.labour_count_completed,
+        toolbox_talk_completed: reportForm.toolbox_talk_completed,
+        ppe_check_completed: reportForm.ppe_check_completed,
       });
       setNotice("Daily site report created from foreman portal.");
       setReportForm((current) => ({ ...current, actual_work: "", delays: "", safety_notes: "", cost_exposure: "0" }));
@@ -223,11 +250,12 @@ export function ForemanPortalHome() {
         priority: materialForm.priority,
         work_package: materialForm.work_package || null,
         justification: materialForm.justification || null,
+        weekly_budget_item_id: materialForm.weekly_budget_item_id || null,
         auto_submit_requisition: true,
       });
       const requestNumber = response.data?.request_number ? ` ${response.data.request_number}` : "";
       setNotice(`Material request${requestNumber} recorded.`);
-      setMaterialForm((current) => ({ ...current, item_id: "", quantity: "1", justification: "" }));
+      setMaterialForm((current) => ({ ...current, item_id: "", quantity: "1", justification: "", weekly_budget_item_id: "" }));
       await load();
     } catch (requestError) {
       setError(actionMessage(requestError, "Material request could not be recorded."));
@@ -370,6 +398,18 @@ export function ForemanPortalHome() {
                   <FieldLabel>Cost Exposure</FieldLabel>
                   <input type="number" min="0" value={reportForm.cost_exposure} onChange={(event) => patchReport("cost_exposure", event.target.value)} className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
                 </label>
+                <label className="flex items-center gap-2 border border-ink-mid bg-ink px-3 py-2 text-xs text-paper">
+                  <input type="checkbox" checked={reportForm.labour_count_completed} onChange={(event) => setReportForm((current) => ({ ...current, labour_count_completed: event.target.checked }))} />
+                  Labour count done
+                </label>
+                <label className="flex items-center gap-2 border border-ink-mid bg-ink px-3 py-2 text-xs text-paper">
+                  <input type="checkbox" checked={reportForm.toolbox_talk_completed} onChange={(event) => setReportForm((current) => ({ ...current, toolbox_talk_completed: event.target.checked }))} />
+                  Toolbox talk done
+                </label>
+                <label className="flex items-center gap-2 border border-ink-mid bg-ink px-3 py-2 text-xs text-paper">
+                  <input type="checkbox" checked={reportForm.ppe_check_completed} onChange={(event) => setReportForm((current) => ({ ...current, ppe_check_completed: event.target.checked }))} />
+                  PPE check done
+                </label>
                 <label className="block md:col-span-2">
                   <FieldLabel>Planned work</FieldLabel>
                   <textarea rows={3} value={reportForm.planned_work} onChange={(event) => patchReport("planned_work", event.target.value)} className="mt-2 w-full resize-none border border-ink-mid bg-ink p-3 text-sm text-paper outline-none focus:border-signal" />
@@ -460,6 +500,18 @@ export function ForemanPortalHome() {
                     <option value="">Auto route</option>
                     {stores.map((store) => <option key={store.id} value={store.id}>{text(store.name ?? store.store_code)}</option>)}
                   </select>
+                </label>
+                <label className="block">
+                  <FieldLabel>Weekly execution line</FieldLabel>
+                  <select value={materialForm.weekly_budget_item_id} onChange={(event) => patchMaterial("weekly_budget_item_id", event.target.value)} className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal">
+                    <option value="">Select released line</option>
+                    {weeklyItems.map((line) => (
+                      <option key={line.id} value={line.id}>
+                        {text(line.description)} · planned {text(line.planned_qty)} {text(line.unit)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs text-slate-light">Requests outside released allowance stay blocked until QS/client approval or proceed-at-risk control is complete.</p>
                 </label>
                 <div className="grid grid-cols-2 gap-3">
                   <label className="block">

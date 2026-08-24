@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +40,57 @@ def _effective_department(entity_type: Optional[str], project_department_name: O
             return mapped
     return ENTITY_DEPARTMENT_CODE.get(entity_type) if entity_type else None
 
+
+async def _is_task_verifier(db: AsyncSession, user: dict, task: dict) -> bool:
+    """A task verifier is the team's lead, the explicit approver, or an
+    org-wide task lead/admin. This keeps final completion independent from
+    the assignee's self-submission."""
+    if await user_has_permission(db, user, "crm_tasks.read_all"):
+        return True
+    if task.get("approver_user_id") and str(task["approver_user_id"]) == user["user_id"]:
+        return True
+    if task.get("assigned_to_team_id"):
+        lead = (
+            await db.execute(
+                text("""
+                    SELECT 1 FROM core.team_members
+                    WHERE team_id = :team_id AND user_id = :user_id AND is_lead = true
+                """),
+                {"team_id": task["assigned_to_team_id"], "user_id": user["user_id"]},
+            )
+        ).first()
+        if lead:
+            return True
+    return False
+
+
+async def _notify_task_reviewers(db: AsyncSession, *, org_id: str, task_id: UUID, task: dict) -> None:
+    reviewer_ids: set[str] = set()
+    if task.get("assigned_to_team_id"):
+        rows = await db.execute(
+            text("""
+                SELECT user_id FROM core.team_members
+                WHERE team_id = :team_id AND is_lead = true
+            """),
+            {"team_id": task["assigned_to_team_id"]},
+        )
+        reviewer_ids.update(str(row.user_id) for row in rows)
+    if task.get("approver_user_id"):
+        reviewer_ids.add(str(task["approver_user_id"]))
+    reviewer_ids.discard(str(task.get("assigned_to_user_id") or ""))
+
+    for reviewer_id in reviewer_ids:
+        await emit_notification(
+            db,
+            org_id=org_id,
+            user_id=reviewer_id,
+            title="Task ready for verification",
+            message=f'"{task["title"]}" was submitted with proof and needs your review.',
+            notification_type="task",
+            action_url="/dashboard/crm/tasks",
+            metadata={"task_id": str(task_id), "status": "under_review"},
+        )
+
 # entity_type -> the table/id-column pair backfill-stacks sweeps to generate
 # stacks for every pre-existing record that predates auto-generation on
 # create (738de2a) or predates fleet/machinery being wired up as sources.
@@ -52,7 +104,17 @@ BACKFILL_SOURCES: list[tuple[str, str]] = [
 ]
 
 
-TASK_STATUS_PATTERN = "^(not_started|in_progress|waiting_on_third_party|blocked|under_review|completed|cancelled)$"
+TASK_STATUS_PATTERN = "^(planned|not_started|ready|in_progress|waiting_on_third_party|blocked|under_review|completed|rejected|not_applicable|cancelled|superseded)$"
+
+
+def _requirement_code(title: str, explicit: Optional[str] = None) -> str:
+    if explicit:
+        return explicit.strip().upper()
+    return "".join(character if character.isalnum() else "_" for character in title.upper()).strip("_")
+
+
+def _dedupe_key(entity_type: str, entity_id: UUID, requirement_code: str, version: int = 1) -> str:
+    return f"{entity_type.upper()}:{entity_id}|{requirement_code}|MAIN|V{version}"
 
 
 class TaskCreate(BaseModel):
@@ -62,6 +124,22 @@ class TaskCreate(BaseModel):
     description: Optional[str] = None
     entity_type: Optional[str] = Field(default=None, max_length=40)
     entity_id: Optional[UUID] = None
+    primary_entity_type: Optional[str] = Field(default=None, max_length=60)
+    primary_entity_id: Optional[UUID] = None
+    related_entities: list[dict] = Field(default_factory=list)
+    source_event: Optional[str] = Field(default="manual_task_created", max_length=160)
+    expected_outcome: Optional[str] = None
+    task_type: str = Field(default="control", pattern="^(control|personal_action|reminder)$")
+    requirement_code: Optional[str] = Field(default=None, max_length=160)
+    criticality: str = Field(default="medium", pattern="^(critical|high|medium|low)$")
+    weight: int = Field(default=5, ge=1, le=10)
+    gate_effect: str = Field(default="non_blocking", pattern="^(blocking|non_blocking)$")
+    completion_criteria: dict = Field(default_factory=dict)
+    required_evidence: list = Field(default_factory=list)
+    responsible_role: Optional[str] = Field(default=None, max_length=120)
+    accountable_role: Optional[str] = Field(default=None, max_length=120)
+    reviewer_role: Optional[str] = Field(default=None, max_length=120)
+    approver_role: Optional[str] = Field(default=None, max_length=120)
     assigned_to_user_id: Optional[UUID] = None
     due_date: Optional[date] = None
     priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")
@@ -87,12 +165,17 @@ class TaskUpdate(BaseModel):
     risk_flag: Optional[bool] = None
     outcome: Optional[str] = None
     next_action: Optional[str] = None
+    applicability_result: Optional[str] = Field(default=None, pattern="^(required|conditionally_required|optional|not_applicable|already_satisfied)$")
+    applicability_reason: Optional[str] = None
+    evidence_status: Optional[str] = Field(default=None, pattern="^(not_required|not_submitted|submitted|accepted|rejected|outdated)$")
+    review_status: Optional[str] = Field(default=None, pattern="^(not_required|not_submitted|submitted|accepted|rejected)$")
 
 
 TASK_UPDATE_COLUMNS = (
     "title", "description", "assigned_to_user_id", "due_date", "status", "priority",
     "depends_on_task_id", "evidence_required", "evidence_ref", "approver_user_id",
-    "risk_flag", "outcome", "next_action",
+    "risk_flag", "outcome", "next_action", "applicability_result",
+    "applicability_reason", "evidence_status", "review_status",
 )
 
 
@@ -111,6 +194,17 @@ class TaskTemplateCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: Optional[str] = None
     sort_order: int = 0
+
+
+class DuplicateSearchPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    title: str = Field(min_length=1, max_length=255)
+    primary_entity_type: str = Field(min_length=1, max_length=60)
+    primary_entity_id: UUID
+    requirement_code: Optional[str] = Field(default=None, max_length=160)
+    related_entities: list[dict] = Field(default_factory=list)
+    due_date: Optional[date] = None
 
 
 @router.get("/")
@@ -287,6 +381,91 @@ async def get_progress_summary(
     }
 
 
+@router.post("/duplicates")
+async def find_possible_duplicates(
+    payload: DuplicateSearchPayload,
+    user: dict = Depends(require_permission("crm_tasks.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    entity_type = payload.primary_entity_type.strip().lower()
+    requirement_code = _requirement_code(payload.title, payload.requirement_code)
+    deduplication_key = _dedupe_key(entity_type, payload.primary_entity_id, requirement_code)
+    related_pairs = [
+        (str(item.get("entity_type", "")).strip().lower(), str(item.get("entity_id", "")).strip())
+        for item in payload.related_entities
+        if item.get("entity_type") and item.get("entity_id")
+    ]
+    rows = await db.execute(
+        text("""
+            SELECT t.id, t.title, t.status, t.priority, t.due_date,
+                   t.primary_entity_type, t.primary_entity_id, t.requirement_code,
+                   CASE
+                       WHEN t.deduplication_key = :deduplication_key THEN 100
+                       WHEN t.primary_entity_type = :entity_type
+                        AND t.primary_entity_id = :entity_id
+                        AND t.requirement_code = :requirement_code THEN 90
+                       WHEN t.primary_entity_type = :entity_type
+                        AND t.primary_entity_id = :entity_id
+                        AND (
+                            lower(t.title) LIKE '%' || lower(:title) || '%'
+                            OR lower(:title) LIKE '%' || lower(t.title) || '%'
+                        ) THEN 70
+                       WHEN t.requirement_code = :requirement_code THEN 50
+                       ELSE 25
+                   END AS match_score
+            FROM crm.tasks t
+            WHERE t.organization_id = :org_id
+              AND t.is_deleted = false
+              AND t.status NOT IN ('cancelled','superseded')
+              AND (
+                  t.deduplication_key = :deduplication_key
+                  OR (t.primary_entity_type = :entity_type AND t.primary_entity_id = :entity_id)
+                  OR t.requirement_code = :requirement_code
+                  OR lower(t.title) LIKE '%' || lower(:title) || '%'
+                  OR lower(:title) LIKE '%' || lower(t.title) || '%'
+              )
+            ORDER BY match_score DESC, t.created_at DESC
+            LIMIT 10
+        """),
+        {
+            "org_id": user["org_id"],
+            "deduplication_key": deduplication_key,
+            "entity_type": entity_type,
+            "entity_id": payload.primary_entity_id,
+            "requirement_code": requirement_code,
+            "title": payload.title,
+        },
+    )
+    matches = [dict(row._mapping) for row in rows]
+    seen = {match["id"] for match in matches}
+    for related_type, related_id in related_pairs[:5]:
+        related_rows = await db.execute(
+            text("""
+                SELECT DISTINCT t.id, t.title, t.status, t.priority, t.due_date,
+                       t.primary_entity_type, t.primary_entity_id, t.requirement_code,
+                       65 AS match_score
+                FROM crm.task_related_entities tre
+                JOIN crm.tasks t ON t.id = tre.task_id
+                WHERE t.organization_id = :org_id
+                  AND t.is_deleted = false
+                  AND t.status NOT IN ('cancelled','superseded')
+                  AND tre.entity_type = :related_type
+                  AND tre.entity_id = CAST(:related_id AS uuid)
+                LIMIT 10
+            """),
+            {
+                "org_id": user["org_id"],
+                "related_type": related_type,
+                "related_id": related_id,
+            },
+        )
+        for row in related_rows:
+            if row.id not in seen:
+                matches.append(dict(row._mapping))
+                seen.add(row.id)
+    return {"success": True, "data": matches[:10], "message": "Possible duplicate tasks listed.", "meta": {"total": len(matches[:10])}}
+
+
 @router.post("/")
 async def create_task(
     payload: TaskCreate,
@@ -294,6 +473,13 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = user["org_id"]
+    primary_entity_type = (payload.primary_entity_type or payload.entity_type or "").strip().lower()
+    primary_entity_id = payload.primary_entity_id or payload.entity_id
+    if payload.task_type == "control" and (not primary_entity_type or not primary_entity_id):
+        raise HTTPException(
+            status_code=422,
+            detail="Control tasks need a primary entity. Use a personal action/reminder for unlinked notes.",
+        )
     if payload.assigned_to_user_id:
         target_check = await db.execute(
             text("SELECT 1 FROM core.users WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
@@ -301,6 +487,37 @@ async def create_task(
         )
         if not target_check.first():
             raise HTTPException(status_code=404, detail="Assignee not found.")
+    requirement_code = _requirement_code(payload.title, payload.requirement_code)
+    deduplication_key = (
+        _dedupe_key(primary_entity_type, primary_entity_id, requirement_code)
+        if primary_entity_type and primary_entity_id
+        else f"PERSONAL:{user['user_id']}|{requirement_code}|MAIN|V1"
+    )
+    duplicate = (
+        await db.execute(
+            text("""
+                SELECT id, title, status FROM crm.tasks
+                WHERE organization_id = :org_id
+                  AND deduplication_key = :deduplication_key
+                  AND is_deleted = false
+                  AND status NOT IN ('cancelled','superseded')
+                LIMIT 1
+            """),
+            {"org_id": org_id, "deduplication_key": deduplication_key},
+        )
+    ).mappings().first()
+    if duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A related task already exists.",
+                "existing_task": {
+                    "id": str(duplicate["id"]),
+                    "title": duplicate["title"],
+                    "status": duplicate["status"],
+                },
+            },
+        )
 
     task_id = (
         await db.execute(
@@ -308,19 +525,38 @@ async def create_task(
                 INSERT INTO crm.tasks (
                     organization_id, title, description, entity_type, entity_id,
                     assigned_to_user_id, due_date, priority, created_by,
-                    depends_on_task_id, evidence_required, approver_user_id, risk_flag
+                    depends_on_task_id, evidence_required, approver_user_id, risk_flag,
+                    task_type, requirement_code, primary_entity_type,
+                    primary_entity_id, related_entities, source_event,
+                    source_history, expected_outcome, deduplication_key,
+                    criticality, weight, gate_effect, completion_criteria,
+                    required_evidence, responsible_role, accountable_role,
+                    reviewer_role, approver_role, evidence_status, review_status
                 ) VALUES (
                     :org_id, :title, :description, :entity_type, :entity_id,
                     :assigned_to_user_id, :due_date, :priority, :user_id,
-                    :depends_on_task_id, :evidence_required, :approver_user_id, :risk_flag
+                    :depends_on_task_id, :evidence_required, :approver_user_id, :risk_flag,
+                    :task_type, :requirement_code, :primary_entity_type,
+                    :primary_entity_id, CAST(:related_entities AS jsonb),
+                    :source_event,
+                    jsonb_build_array(jsonb_build_object(
+                        'event', :source_event,
+                        'generated_at', NOW(),
+                        'initiated_by', :user_id
+                    )),
+                    :expected_outcome, :deduplication_key, :criticality,
+                    :weight, :gate_effect, CAST(:completion_criteria AS jsonb),
+                    CAST(:required_evidence AS jsonb), :responsible_role,
+                    :accountable_role, :reviewer_role, :approver_role,
+                    :evidence_status, :review_status
                 ) RETURNING id
             """),
             {
                 "org_id": org_id,
                 "title": payload.title,
                 "description": payload.description,
-                "entity_type": payload.entity_type.strip().lower() if payload.entity_type else None,
-                "entity_id": payload.entity_id,
+                "entity_type": primary_entity_type or None,
+                "entity_id": primary_entity_id,
                 "assigned_to_user_id": payload.assigned_to_user_id,
                 "due_date": payload.due_date,
                 "priority": payload.priority,
@@ -329,9 +565,44 @@ async def create_task(
                 "evidence_required": payload.evidence_required,
                 "approver_user_id": payload.approver_user_id,
                 "risk_flag": payload.risk_flag,
+                "task_type": payload.task_type,
+                "requirement_code": requirement_code,
+                "primary_entity_type": primary_entity_type or None,
+                "primary_entity_id": primary_entity_id,
+                "related_entities": json.dumps(payload.related_entities),
+                "source_event": payload.source_event or "manual_task_created",
+                "expected_outcome": payload.expected_outcome,
+                "deduplication_key": deduplication_key,
+                "criticality": payload.criticality,
+                "weight": payload.weight,
+                "gate_effect": payload.gate_effect,
+                "completion_criteria": json.dumps(payload.completion_criteria),
+                "required_evidence": json.dumps(payload.required_evidence),
+                "responsible_role": payload.responsible_role,
+                "accountable_role": payload.accountable_role,
+                "reviewer_role": payload.reviewer_role,
+                "approver_role": payload.approver_role,
+                "evidence_status": "not_submitted" if payload.evidence_required or payload.required_evidence else "not_required",
+                "review_status": "not_submitted" if payload.approver_user_id else "not_required",
             },
         )
     ).scalar()
+    for related in payload.related_entities:
+        if not related.get("entity_type") or not related.get("entity_id"):
+            continue
+        await db.execute(
+            text("""
+                INSERT INTO crm.task_related_entities (task_id, entity_type, entity_id, relationship)
+                VALUES (:task_id, :entity_type, CAST(:entity_id AS uuid), :relationship)
+                ON CONFLICT DO NOTHING
+            """),
+            {
+                "task_id": task_id,
+                "entity_type": str(related["entity_type"]).strip().lower(),
+                "entity_id": related["entity_id"],
+                "relationship": related.get("relationship") or "related",
+            },
+        )
 
     if payload.assigned_to_user_id and str(payload.assigned_to_user_id) != user["user_id"]:
         await emit_notification(
@@ -360,7 +631,9 @@ async def update_task(
         await db.execute(
             text("""
                 SELECT title, assigned_to_user_id, assigned_to_team_id, status,
-                       depends_on_task_id, evidence_required, evidence_ref, approver_user_id
+                       depends_on_task_id, evidence_required, evidence_ref, approver_user_id,
+                       review_submitted_at, review_submitted_by_user_id,
+                       gate_effect, applicability_result
                 FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             """),
             {"id": task_id, "org_id": org_id},
@@ -382,17 +655,13 @@ async def update_task(
         if not target_check.first():
             raise HTTPException(status_code=404, detail="Assignee not found.")
 
-    # Reassigning a task to a specific person (a lead "distributing" one
-    # item out of a team-assigned stack) implicitly clears any team
-    # assignment - a task is either on a team's plate or one person's, not
-    # both at once.
-    clear_team = "assigned_to_user_id" in safe_keys and values["assigned_to_user_id"]
-
-    # Redistributing a task OUT of a team is a lead's call, not any holder of
+    # Distributing a task inside a team is a lead's call, not any holder of
     # crm_tasks.update - unless the caller already has org-wide reach via
     # crm_tasks.read_all (the same admin/lead tier that can assign a whole
-    # stack to a team in the first place via assign-stack).
-    if clear_team and current["assigned_to_team_id"]:
+    # stack to a team in the first place via assign-stack). The team link is
+    # deliberately retained when a person is assigned so the team lead can
+    # still see and verify that member's work.
+    if "assigned_to_user_id" in safe_keys and values["assigned_to_user_id"] and current["assigned_to_team_id"]:
         is_lead = (
             await db.execute(
                 text("SELECT 1 FROM core.team_members WHERE team_id = :team_id AND user_id = :user_id AND is_lead = true"),
@@ -417,50 +686,60 @@ async def update_task(
                 status_code=409,
                 detail="This task's predecessor must be completed first.",
             )
+    if (
+        "applicability_result" in safe_keys
+        and values["applicability_result"] == "not_applicable"
+        and not values.get("applicability_reason")
+        and current["gate_effect"] == "blocking"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Blocking requirements can only be marked not applicable with a recorded reason.",
+        )
 
-    # Evidence/approval gate: a task marked evidence_required cannot be
-    # completed by just anyone flipping a status flag. evidence_ref may be
-    # supplied in this same request (an approver attaching proof and
-    # completing in one call) or may already be on the record.
+    # Completion is a two-step workflow. The assignee submits proof and the
+    # task goes under_review; the team lead / configured approver performs
+    # the final verification that moves it to completed.
     verifying = False
-    if "status" in safe_keys and values["status"] == "completed" and current["status"] != "completed":
-        evidence_required = values.get("evidence_required", current["evidence_required"])
-        if evidence_required:
-            effective_evidence_ref = values.get("evidence_ref", current["evidence_ref"])
-            if not effective_evidence_ref:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Evidence must be attached before this task can be completed.",
-                )
-            approver_id = values.get("approver_user_id", current["approver_user_id"])
-            is_approver = approver_id is not None and str(approver_id) == user["user_id"]
-            if not is_approver and not await user_has_permission(db, user, "crm_tasks.read_all"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Only this task's approver can verify and complete it.",
-                )
+    submitting_for_review = False
+    reviewer_alert_needed = False
+    if "status" in safe_keys and values["status"] in ("under_review", "completed") and current["status"] != "completed":
+        effective_evidence_ref = values.get("evidence_ref", current["evidence_ref"])
+        if not effective_evidence_ref:
+            raise HTTPException(
+                status_code=400,
+                detail="Proof must be attached before this task can be submitted for completion.",
+            )
+        can_verify = await _is_task_verifier(db, user, dict(current))
+        if values["status"] == "completed" and can_verify:
             verifying = True
+        elif values["status"] == "completed" and current["status"] == "under_review":
+            raise HTTPException(
+                status_code=403,
+                detail="Only the team lead or assigned approver can verify and complete this task.",
+            )
+        else:
+            values["status"] = "under_review"
+            submitting_for_review = current["status"] != "under_review"
+            reviewer_alert_needed = submitting_for_review
 
     set_clause = ", ".join(f"{column} = :{column}" for column in safe_keys)
-    if clear_team:
-        set_clause += ", assigned_to_team_id = NULL"
-    # completed_at tracks the moment status actually transitioned to
-    # 'completed' (distinct from updated_at, which any field edit touches) -
-    # cleared if a completed task is reopened, so re-marking it done later
-    # gets a fresh timestamp rather than keeping a stale one from a prior
-    # completion. verified_by/verified_at follow the same reopen-clears rule,
-    # only ever set via the evidence/approval gate above, never by a plain
-    # status PATCH from someone who isn't the approver.
+    # completed_at tracks the verified completion moment. review_submitted_*
+    # tracks the assignee's proof submission that precedes team-lead review.
     if "status" in safe_keys:
         if values["status"] == "completed" and current["status"] != "completed":
-            set_clause += ", completed_at = NOW()"
-            if verifying:
-                set_clause += ", verified_by_user_id = :verifier_id, verified_at = NOW()"
+            set_clause += ", completed_at = NOW(), verified_by_user_id = :verifier_id, verified_at = NOW(), evidence_status = 'accepted', review_status = 'accepted', contribution_percent = weight"
         elif values["status"] != "completed" and current["status"] == "completed":
-            set_clause += ", completed_at = NULL, verified_by_user_id = NULL, verified_at = NULL"
+            set_clause += ", completed_at = NULL, verified_by_user_id = NULL, verified_at = NULL, evidence_status = CASE WHEN evidence_required THEN 'not_submitted' ELSE 'not_required' END, review_status = CASE WHEN approver_user_id IS NOT NULL THEN 'not_submitted' ELSE 'not_required' END, contribution_percent = 0"
+        if values["status"] == "under_review":
+            set_clause += ", review_submitted_at = NOW(), review_submitted_by_user_id = :review_submitter_id, evidence_status = 'submitted', review_status = 'submitted'"
+        elif values["status"] not in ("under_review", "completed"):
+            set_clause += ", review_submitted_at = NULL, review_submitted_by_user_id = NULL"
     params = {k: values[k] for k in safe_keys}
     if verifying:
         params["verifier_id"] = user["user_id"]
+    if submitting_for_review or ("status" in safe_keys and values["status"] == "under_review"):
+        params["review_submitter_id"] = user["user_id"]
     params["id"] = task_id
     params["org_id"] = org_id
     await db.execute(
@@ -482,6 +761,9 @@ async def update_task(
             """),
             {"is_satisfied": values["status"] == "completed", "task_id": task_id, "org_id": org_id},
         )
+
+    if reviewer_alert_needed:
+        await _notify_task_reviewers(db, org_id=org_id, task_id=task_id, task={**dict(current), **values})
 
     reassigned_to = values.get("assigned_to_user_id")
     previous_assignee = str(current["assigned_to_user_id"]) if current["assigned_to_user_id"] else None
@@ -513,11 +795,16 @@ async def delete_task(
 ):
     result = await db.execute(
         text("""
-            UPDATE crm.tasks SET is_deleted = true, updated_at = NOW()
+            UPDATE crm.tasks
+            SET status = 'cancelled',
+                cancellation_reason = COALESCE(cancellation_reason, 'Cancelled from task page'),
+                cancellation_authorized_by = CAST(:user_id AS uuid),
+                updated_at = NOW()
             WHERE id = :id AND organization_id = :org_id
+              AND status NOT IN ('completed','cancelled','superseded')
             RETURNING id
         """),
-        {"id": task_id, "org_id": user["org_id"]},
+        {"id": task_id, "org_id": user["org_id"], "user_id": user["user_id"]},
     )
     if not result.first():
         await db.rollback()

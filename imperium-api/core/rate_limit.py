@@ -3,11 +3,16 @@
 All public-facing and auth endpoints must use the limiter instance
 defined here to ensure consistent brute-force protection.
 """
+import inspect
+
+import slowapi.extension as slowapi_extension
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+slowapi_extension.asyncio.iscoroutinefunction = inspect.iscoroutinefunction
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[])
 

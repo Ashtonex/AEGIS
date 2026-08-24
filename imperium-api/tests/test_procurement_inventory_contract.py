@@ -36,6 +36,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             '@router.post("/rfqs/{rfq_id}/responses/{response_id}/decision"',
             '@router.post("/purchase-orders/from-rfq"',
             '@router.post("/purchase-orders"',
+            '@router.post("/purchase-orders/{po_id}/decision"',
             '@router.post("/purchase-orders/{po_id}/issue"',
             '@router.post("/goods-received"',
             '@router.post("/invoices"',
@@ -47,6 +48,8 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("organization_id=:org_id", PROC)
         self.assertIn('require_permission("procurement.requisition.create")', PROC)
         self.assertIn("Self-approval is not permitted", PROC)
+        self.assertIn("Procurement Manager can prepare purchase orders, but approval must be independent.", PROC)
+        self.assertIn("Finance controls supplier payment approval; Procurement Manager cannot release payments.", PROC)
         self.assertIn("Payment approval requires a matched PO, GRN and invoice", PROC)
         self.assertIn('require_permission("documents.link")', PROC)
         self.assertIn('require_permission("procurement.rfq.create")', PROC)
@@ -60,6 +63,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "procurement.quotation.received.v1",
             "procurement.quotation.selected.v1",
             "procurement.purchase_order.issued.v1",
+            "procurement.purchase_order.approved.v1",
             "finance.commitment_created.v1",
             "inventory.goods_received.v1",
             "procurement.invoice_matched.v1",
@@ -155,6 +159,8 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "Payment gate cleared",
             "onMatchInvoice",
             "onApprovePayment",
+            "onApprove={approvePO}",
+            "Approve PO",
         ]:
             self.assertIn(marker, page)
 
@@ -173,6 +179,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         # shared inventory_service, called from here rather than duplicated.
         self.assertIn("inventory_service.receive_stock", INV)
         self.assertIn("inventory_service.issue_stock", INV)
+        self.assertIn("p.client_name", INV)
         self.assertIn("inventory.receipt_recorded.v1", INV_SERVICE)
         self.assertIn("inventory.issue_recorded.v1", INV_SERVICE)
 

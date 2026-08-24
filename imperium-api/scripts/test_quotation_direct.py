@@ -1,5 +1,7 @@
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 # Ensure core and app can be imported
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -7,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from app.services.quotations.calculator import QuotationCalculator
 from app.services.documents.renderers import QuotationPDFRenderer, QuotationExcelExporter
 
-def test_quotation_engine():
+def test_quotation_engine(tmp_path=None):
     quotation_payload = {
         "quotation_id": "TEST-QT-999",
         "revision_number": 1,
@@ -40,8 +42,9 @@ def test_quotation_engine():
     calc_data = dict(quotation_payload)
     calc_data.update(calc_result.model_dump(mode="json"))
 
-    pdf_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "test_arq_output.pdf"))
-    excel_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "test_arq_output.xlsx"))
+    output_dir = Path(tmp_path) if tmp_path is not None else Path(tempfile.mkdtemp())
+    pdf_path = str(output_dir / "test_arq_output.pdf")
+    excel_path = str(output_dir / "test_arq_output.xlsx")
 
     print(f"Generating PDF at {pdf_path}...")
     pdf_renderer = QuotationPDFRenderer()

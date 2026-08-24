@@ -168,7 +168,9 @@ async def get_regional_footprint(
     projects = await _rows(
         db,
         """
-        SELECT p.id, p.name, p.status, pp.latitude, pp.longitude,
+        SELECT p.id, p.name, p.status,
+               pp.latitude::float AS latitude, pp.longitude::float AS longitude,
+               'project' AS source_type,
                COALESCE(NULLIF(pp.region, ''), NULLIF(pp.province, ''), NULLIF(pp.site_location, ''),
                         NULLIF(to_jsonb(p)->>'region', ''), NULLIF(to_jsonb(p)->>'province', ''),
                         NULLIF(to_jsonb(p)->>'location', ''), NULLIF(to_jsonb(p)->>'site_location', ''),
@@ -181,22 +183,59 @@ async def get_regional_footprint(
         source="regional_projects",
         source_errors=source_errors,
     )
+    opportunities = await _rows(
+        db,
+        """
+        SELECT o.id, o.name, o.stage AS status,
+               o.latitude::float AS latitude, o.longitude::float AS longitude,
+               'opportunity' AS source_type,
+               COALESCE(NULLIF(o.region, ''), 'Unassigned') AS region
+        FROM crm.opportunities o
+        WHERE o.organization_id = :org_id AND o.is_deleted = false
+          AND (o.region IS NOT NULL OR (o.latitude IS NOT NULL AND o.longitude IS NOT NULL))
+    """,
+        {"org_id": org_id},
+        source="regional_crm_opportunities",
+        source_errors=source_errors,
+    )
+    tenders = await _rows(
+        db,
+        """
+        SELECT t.id, t.tender_name AS name, t.stage AS status,
+               t.latitude::float AS latitude, t.longitude::float AS longitude,
+               'tender' AS source_type,
+               COALESCE(NULLIF(t.region, ''), 'Unassigned') AS region
+        FROM crm.tenders t
+        WHERE t.organization_id = :org_id AND t.is_deleted = false
+          AND (t.region IS NOT NULL OR (t.latitude IS NOT NULL AND t.longitude IS NOT NULL))
+    """,
+        {"org_id": org_id},
+        source="regional_crm_tenders",
+        source_errors=source_errors,
+    )
 
     grouped: Dict[str, Dict[str, Any]] = {}
-    for project in projects:
-        region = project.pop("region") or "Unassigned"
+    for record in [*projects, *opportunities, *tenders]:
+        region = record.pop("region") or "Unassigned"
         bucket = grouped.setdefault(
             region,
             {
                 "name": region,
                 "projects": [],
+                "crm_records": [],
                 "active_projects": 0,
-                "latitude": project.get("latitude"),
-                "longitude": project.get("longitude"),
+                "latitude": None,
+                "longitude": None,
             },
         )
-        bucket["projects"].append(project)
-        if str(project.get("status", "")).lower() in {
+        if bucket["latitude"] is None and record.get("latitude") is not None:
+            bucket["latitude"] = record.get("latitude")
+            bucket["longitude"] = record.get("longitude")
+        if record.get("source_type") == "project":
+            bucket["projects"].append(record)
+        else:
+            bucket["crm_records"].append(record)
+        if record.get("source_type") == "project" and str(record.get("status", "")).lower() in {
             "active",
             "in progress",
             "ongoing",
@@ -495,6 +534,49 @@ async def get_executive_stats(
         await db.rollback()
         recent_activity_last_7_days = 0
 
+    # 9. Plant & Equipment lifecycle control spine
+    try:
+        plant_query = text(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status NOT IN ('closed','cancelled','rejected')) AS open_requests,
+                COUNT(*) FILTER (WHERE status IN ('approved','reserved','ready_for_dispatch')) AS dispatch_queue,
+                COUNT(*) FILTER (WHERE status IN ('dispatched','active')) AS active_deployments,
+                COUNT(*) FILTER (WHERE status IN ('off_hire_requested','returned','under_reconciliation')) AS closure_queue,
+                COALESCE(SUM(contribution_margin) FILTER (WHERE status NOT IN ('cancelled','rejected')), 0) AS contribution_margin
+            FROM fleet.plant_requests
+            WHERE organization_id = :org_id AND is_deleted = false
+            """
+        )
+        plant_res = (await db.execute(plant_query, {"org_id": org_id})).one()
+        plant_open_requests = plant_res.open_requests or 0
+        plant_dispatch_queue = plant_res.dispatch_queue or 0
+        plant_active_deployments = plant_res.active_deployments or 0
+        plant_closure_queue = plant_res.closure_queue or 0
+        plant_contribution_margin = float(plant_res.contribution_margin or 0)
+    except Exception:
+        await db.rollback()
+        plant_open_requests = 0
+        plant_dispatch_queue = 0
+        plant_active_deployments = 0
+        plant_closure_queue = 0
+        plant_contribution_margin = 0.0
+
+    try:
+        plant_incident_query = text(
+            """
+            SELECT COUNT(*) FROM fleet.plant_incidents
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND status NOT IN ('closed','cancelled')
+              AND severity IN ('high','critical')
+            """
+        )
+        plant_incident_res = await db.execute(plant_incident_query, {"org_id": org_id})
+        plant_serious_incidents = plant_incident_res.scalar() or 0
+    except Exception:
+        await db.rollback()
+        plant_serious_incidents = 0
+
     return {
         "success": True,
         "data": {
@@ -508,6 +590,12 @@ async def get_executive_stats(
             "open_pipeline_value": f"${open_pipeline_value:,.2f}",
             "open_leads": open_leads_count,
             "recent_activity_last_7_days": recent_activity_last_7_days,
+            "plant_open_requests": plant_open_requests,
+            "plant_dispatch_queue": plant_dispatch_queue,
+            "plant_active_deployments": plant_active_deployments,
+            "plant_closure_queue": plant_closure_queue,
+            "plant_serious_incidents": plant_serious_incidents,
+            "plant_contribution_margin": f"${plant_contribution_margin:,.2f}",
         },
         "message": "Executive stats fetched.",
         "meta": {},
@@ -710,6 +798,80 @@ async def get_executive_exceptions(
         source="exceptions.equipment_utilisation",
         source_errors=source_errors,
     )
+    plant_request_risk = await _rows(
+        db,
+        """
+        SELECT pr.id,
+               pr.request_number || ' - ' || pr.required_asset_type AS title,
+               CASE WHEN pr.risk_level='critical' OR pr.priority='emergency' THEN 'critical' ELSE 'warning' END AS severity,
+               'Plant request control' AS category,
+               CASE
+                 WHEN pr.status IN ('submitted','under_validation','returned_for_correction') THEN 'Validate Plant request before any asset leaves the yard'
+                 WHEN pr.status IN ('availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval') THEN 'Complete availability, cost, risk and approval controls'
+                 WHEN pr.status IN ('off_hire_requested','returned','under_reconciliation') THEN 'Complete off-hire return and financial reconciliation'
+                 ELSE 'Review Plant request control state'
+               END AS action,
+               pr.start_date AS evidence_date,
+               jsonb_build_object(
+                 'status', pr.status,
+                 'request_type', pr.request_type,
+                 'priority', pr.priority,
+                 'risk_level', pr.risk_level,
+                 'work_location', pr.work_location,
+                 'expected_revenue', pr.expected_revenue,
+                 'estimated_cost', pr.estimated_cost,
+                 'contribution_margin', pr.contribution_margin
+               ) AS evidence
+        FROM fleet.plant_requests pr
+        WHERE pr.organization_id=:org_id AND pr.is_deleted=false
+          AND pr.status NOT IN ('closed','cancelled','rejected')
+          AND (
+            pr.priority IN ('urgent','emergency')
+            OR pr.risk_level IN ('high','critical')
+            OR pr.status IN ('off_hire_requested','returned','under_reconciliation')
+          )
+        ORDER BY
+          CASE WHEN pr.risk_level='critical' OR pr.priority='emergency' THEN 0 ELSE 1 END,
+          pr.updated_at DESC
+        LIMIT 20
+    """,
+        params,
+        source="exceptions.plant_requests",
+        source_errors=source_errors,
+    )
+    plant_incident_risk = await _rows(
+        db,
+        """
+        SELECT pi.id,
+               COALESCE(f.asset_code, f.vehicle_registration, pi.fleet_id::text) AS title,
+               CASE WHEN pi.severity='critical' THEN 'critical' ELSE 'warning' END AS severity,
+               'Plant incident' AS category,
+               CASE
+                 WHEN pi.work_order_id IS NULL AND pi.incident_type='breakdown' THEN 'Open and track maintenance work order for plant breakdown'
+                 WHEN pi.escalation_required THEN 'Escalate Plant incident to Risk/HSE/executive review'
+                 ELSE 'Review open Plant incident'
+               END AS action,
+               pi.occurred_at AS evidence_date,
+               jsonb_build_object(
+                 'incident_type', pi.incident_type,
+                 'severity', pi.severity,
+                 'status', pi.status,
+                 'plant_request_id', pi.plant_request_id,
+                 'work_order_id', pi.work_order_id,
+                 'location', pi.location
+               ) AS evidence
+        FROM fleet.plant_incidents pi
+        JOIN fleet.fleet f ON f.id=pi.fleet_id AND f.organization_id=pi.organization_id
+        WHERE pi.organization_id=:org_id AND pi.is_deleted=false
+          AND pi.status NOT IN ('closed','cancelled')
+          AND (pi.severity IN ('high','critical') OR pi.escalation_required=true)
+        ORDER BY pi.occurred_at DESC
+        LIMIT 20
+    """,
+        params,
+        source="exceptions.plant_incidents",
+        source_errors=source_errors,
+    )
     site_report_risk = await _rows(
         db,
         """
@@ -763,6 +925,85 @@ async def get_executive_exceptions(
         source="exceptions.site_reports",
         source_errors=source_errors,
     )
+    site_variance_risk = await _rows(
+        db,
+        """
+        SELECT v.id,
+               v.project_id,
+               COALESCE(v.variation_number || ' - ' || v.title, v.id::text) AS title,
+               CASE
+                 WHEN v.proceed_at_risk THEN 'critical'
+                 WHEN v.execution_blocked THEN 'warning'
+                 ELSE 'info'
+               END AS severity,
+               'Site variance gate' AS category,
+               CASE
+                 WHEN v.proceed_at_risk THEN 'Monitor proceed-at-risk work until formal written authority is attached'
+                 WHEN v.execution_blocked THEN 'Clear QS/client/internal approval before released execution or procurement'
+                 WHEN v.qs_review_status != 'reviewed' THEN 'Complete QS entitlement and pricing review'
+                 ELSE 'Review unresolved site-originated variance'
+               END AS action,
+               COALESCE(v.formal_approval_deadline, v.submitted_at::date, v.created_at::date) AS evidence_date,
+               jsonb_build_object(
+                 'variation_number', v.variation_number,
+                 'classification', v.variance_classification,
+                 'approval_route', v.approval_route,
+                 'qs_review_status', v.qs_review_status,
+                 'client_approval_status', v.client_approval_status,
+                 'proceed_at_risk', v.proceed_at_risk,
+                 'execution_blocked', v.execution_blocked,
+                 'formal_approval_deadline', v.formal_approval_deadline,
+                 'cost_impact', v.cost_impact,
+                 'time_impact_days', v.time_impact_days
+               ) AS evidence
+        FROM finance.variations v
+        WHERE v.organization_id=:org_id
+          AND v.is_deleted=false
+          AND v.source_type='weekly_budget_item'
+          AND (
+            v.status NOT IN ('approved','rejected','cancelled')
+            OR v.proceed_at_risk=true
+            OR v.execution_blocked=true
+          )
+        ORDER BY
+          CASE WHEN v.proceed_at_risk THEN 0 WHEN v.execution_blocked THEN 1 ELSE 2 END,
+          v.updated_at DESC NULLS LAST
+        LIMIT 30
+    """,
+        params,
+        source="exceptions.site_variance_gates",
+        source_errors=source_errors,
+    )
+    blocked_material_risk = await _rows(
+        db,
+        """
+        SELECT mr.id,
+               mr.project_id,
+               mr.request_number || ' - ' || COALESCE(i.item_name, i.item_code, mr.item_id::text) AS title,
+               'warning' AS severity,
+               'Blocked execution item' AS category,
+               'Resolve weekly allowance, variance approval, or proceed-at-risk override before stock/procurement action' AS action,
+               mr.required_by_date AS evidence_date,
+               jsonb_build_object(
+                 'request_number', mr.request_number,
+                 'requested_quantity', mr.requested_quantity,
+                 'execution_gate_status', mr.execution_gate_status,
+                 'engineer_review_status', mr.engineer_review_status,
+                 'weekly_budget_item_id', mr.weekly_budget_item_id,
+                 'variance_id', mr.variance_id
+               ) AS evidence
+        FROM procurement.material_requests mr
+        LEFT JOIN procurement.inventory_items i ON i.id=mr.item_id AND i.organization_id=mr.organization_id
+        WHERE mr.organization_id=:org_id
+          AND mr.is_deleted=false
+          AND mr.execution_gate_status='blocked'
+        ORDER BY mr.required_by_date ASC NULLS LAST, mr.updated_at DESC NULLS LAST
+        LIMIT 30
+    """,
+        params,
+        source="exceptions.blocked_material_requests",
+        source_errors=source_errors,
+    )
     return {
         "success": True,
         "data": [
@@ -772,7 +1013,11 @@ async def get_executive_exceptions(
             *finance_risk,
             *supplier_risk,
             *equipment_risk,
+            *plant_request_risk,
+            *plant_incident_risk,
             *site_report_risk,
+            *site_variance_risk,
+            *blocked_material_risk,
         ],
         "message": "Executive exceptions fetched.",
         "meta": {
@@ -782,7 +1027,11 @@ async def get_executive_exceptions(
             + len(finance_risk)
             + len(supplier_risk)
             + len(equipment_risk)
-            + len(site_report_risk),
+            + len(plant_request_risk)
+            + len(plant_incident_risk)
+            + len(site_report_risk)
+            + len(site_variance_risk)
+            + len(blocked_material_risk),
             "source_errors": source_errors,
         },
     }

@@ -19,7 +19,7 @@ import {
 } from "@/lib/api";
 import { initials, avatarTone } from "@/lib/avatar";
 
-type TaskStatus = "not_started" | "in_progress" | "waiting_on_third_party" | "blocked" | "under_review" | "completed" | "cancelled";
+type TaskStatus = "planned" | "not_started" | "ready" | "in_progress" | "waiting_on_third_party" | "blocked" | "under_review" | "completed" | "rejected" | "not_applicable" | "cancelled" | "superseded";
 
 interface Task {
   id: string;
@@ -46,17 +46,28 @@ interface Task {
   approver_name: string | null;
   verified_by_user_id: string | null;
   verified_at: string | null;
+  review_submitted_at: string | null;
+  review_submitted_by_user_id: string | null;
   risk_flag: boolean;
   outcome: string | null;
   next_action: string | null;
   contributors: { id: string; full_name: string }[];
   quotation_id: string | null;
+  boq_document_id: string | null;
+  boq_imported_at: string | null;
+  requirement_code: string | null;
+  primary_entity_type: string | null;
+  primary_entity_id: string | null;
+  expected_outcome: string | null;
+  criticality: "critical" | "high" | "medium" | "low";
+  weight: number;
+  gate_effect: "blocking" | "non_blocking";
+  contribution_percent: number;
 }
 
 // entity_type values the quotation builder's source picker supports (see
-// _SOURCE_LINK_COLUMNS in quotations.py) - "project" quotations are sourced
-// differently and aren't offered a "Build Quotation" shortcut from here.
-const QUOTABLE_ENTITY_TYPES = new Set(["tender", "opportunity", "lead"]);
+// _SOURCE_LINK_COLUMNS in quotations.py).
+const QUOTABLE_ENTITY_TYPES = new Set(["tender", "opportunity", "lead", "project"]);
 
 interface AssignableUser {
   id: string;
@@ -70,20 +81,27 @@ interface Team {
 }
 
 const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
+  { value: "planned", label: "Planned" },
   { value: "not_started", label: "Not Started" },
+  { value: "ready", label: "Ready" },
   { value: "in_progress", label: "In Progress" },
   { value: "waiting_on_third_party", label: "Waiting on Third Party" },
   { value: "blocked", label: "Blocked" },
   { value: "under_review", label: "Under Review" },
   { value: "completed", label: "Completed" },
+  { value: "rejected", label: "Rejected" },
+  { value: "not_applicable", label: "Not Applicable" },
   { value: "cancelled", label: "Cancelled" },
+  { value: "superseded", label: "Superseded" },
 ];
+
+const CLOSED_STATUSES = new Set<TaskStatus>(["completed", "cancelled", "superseded", "not_applicable"]);
 
 function isOverdue(task: Task) {
   // Overdue is deliberately derived, not a stored status - a task can be
   // simultaneously overdue AND blocked, which a single enum value can't
   // represent (see migration 125's rationale).
-  return !!task.due_date && task.status !== "completed" && task.status !== "cancelled" && new Date(task.due_date) < new Date(new Date().toDateString());
+  return !!task.due_date && !CLOSED_STATUSES.has(task.status) && new Date(task.due_date) < new Date(new Date().toDateString());
 }
 
 const PRIORITY_TONE: Record<Task["priority"], string> = {
@@ -208,10 +226,8 @@ export default function CrmTasksPage() {
   }, [tasks]);
 
   const handleToggleDone = async (task: Task) => {
-    // Reopening is always unrestricted (the gate below only guards the
-    // not-completed -> completed transition), and a task blocked on an
-    // unfinished predecessor doesn't even reach here - its toggle is
-    // disabled in the JSX below.
+    // Reopening is always unrestricted. Completing is two-step: the assignee
+    // submits proof, then a team lead / approver verifies the work.
     if (task.status === "completed") {
       setBusyId(task.id);
       setTasks((current) => current.map((t) => (t.id === task.id ? { ...t, status: "not_started" } : t)));
@@ -227,32 +243,27 @@ export default function CrmTasksPage() {
       return;
     }
 
-    let evidenceRef: string | undefined;
-    if (task.evidence_required) {
-      // Evidence-gated completion: the backend rejects this unless the
-      // caller is the task's approver (or holds crm_tasks.read_all) and
-      // evidence_ref is set - prompt for it here rather than silently
-      // failing the PATCH.
-      const entered = window.prompt(
-        `"${task.title}" requires evidence to complete. Paste a document link or reference:`,
-        task.evidence_ref ?? "",
-      );
-      if (entered === null) return;
-      if (!entered.trim()) {
-        setError("Evidence is required to complete this task.");
-        return;
-      }
-      evidenceRef = entered.trim();
+    const entered = window.prompt(
+      task.status === "under_review"
+        ? `"${task.title}" is under review. Verify it with the proof/reference below:`
+        : `"${task.title}" needs proof before it can be submitted as complete. Paste a document link or reference:`,
+      task.evidence_ref ?? "",
+    );
+    if (entered === null) return;
+    if (!entered.trim()) {
+      setError("Proof is required before this task can be submitted for completion.");
+      return;
     }
+    const evidenceRef = entered.trim();
 
     setBusyId(task.id);
     setError(null);
     try {
-      const res = await updateCrmTask(task.id, { status: "completed", ...(evidenceRef ? { evidence_ref: evidenceRef } : {}) });
-      if (!res.success) throw new Error("Task could not be completed.");
+      const res = await updateCrmTask(task.id, { status: "completed", evidence_ref: evidenceRef });
+      if (!res.success) throw new Error("Task could not be submitted or verified.");
       await load();
     } catch (e) {
-      setError(normalizeError(e, "Task could not be completed."));
+      setError(normalizeError(e, "Task could not be submitted or verified."));
     } finally {
       setBusyId(null);
     }
@@ -314,15 +325,25 @@ export default function CrmTasksPage() {
 
   const handleBoardStatusChange = async (task: Task, newStatus: TaskStatus) => {
     if (task.status === newStatus) return;
+    let evidenceRef: string | undefined;
+    if (newStatus === "completed" || newStatus === "under_review") {
+      const entered = window.prompt(
+        newStatus === "completed"
+          ? `"${task.title}" needs proof before completion/verification. Paste a document link or reference:`
+          : `"${task.title}" needs proof before review. Paste a document link or reference:`,
+        task.evidence_ref ?? "",
+      );
+      if (entered === null) return;
+      if (!entered.trim()) {
+        setError("Proof is required before this task can be submitted for completion.");
+        return;
+      }
+      evidenceRef = entered.trim();
+    }
     setBusyId(task.id);
     setError(null);
     try {
-      // The backend still enforces the predecessor-dependency gate and the
-      // evidence/approver gate on completion (see crm_tasks.py's
-      // update_task) - a drop that violates either comes back as an error
-      // here rather than silently moving the card, and load() below
-      // re-syncs the board to whatever the server actually accepted.
-      const res = await updateCrmTask(task.id, { status: newStatus });
+      const res = await updateCrmTask(task.id, { status: newStatus, ...(evidenceRef ? { evidence_ref: evidenceRef } : {}) });
       if (!res.success) throw new Error("Task status could not be updated.");
       await load();
     } catch (e) {
@@ -486,7 +507,7 @@ export default function CrmTasksPage() {
             {groups.map(([key, groupTasks]) => {
               const [entityType, entityId] = key === "unlinked" ? [null, null] : key.split(":");
               const doneCount = groupTasks.filter((t) => t.status === "completed").length;
-              const visibleTasks = showCompleted ? groupTasks : groupTasks.filter((t) => t.status !== "completed");
+              const visibleTasks = showCompleted ? groupTasks : groupTasks.filter((t) => !CLOSED_STATUSES.has(t.status));
               if (visibleTasks.length === 0) return null;
               return (
                 <div key={key} className="border border-ink-mid">
@@ -545,7 +566,13 @@ export default function CrmTasksPage() {
                           <button
                             type="button"
                             disabled={busyId === task.id || blockedByPredecessor}
-                            title={blockedByPredecessor ? `Blocked until "${task.depends_on_title}" is completed` : task.evidence_required ? "Requires evidence to complete" : undefined}
+                            title={
+                              blockedByPredecessor
+                                ? `Blocked until "${task.depends_on_title}" is completed`
+                                : task.status === "under_review"
+                                  ? "Verify submitted work"
+                                  : "Submit proof for completion"
+                            }
                             onClick={() => void handleToggleDone(task)}
                             className="mt-0.5 shrink-0 disabled:opacity-40"
                           >
@@ -553,6 +580,8 @@ export default function CrmTasksPage() {
                               <Lock className="h-4.5 w-4.5 text-slate-light" />
                             ) : task.status === "completed" ? (
                               <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
+                            ) : task.status === "under_review" ? (
+                              <ShieldCheck className="h-4.5 w-4.5 text-amber-300" />
                             ) : (
                               <Circle className="h-4.5 w-4.5 text-slate-light" />
                             )}
@@ -568,6 +597,12 @@ export default function CrmTasksPage() {
                                 <span className="border border-ink-mid px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-light">
                                   {STATUS_OPTIONS.find((s) => s.value === task.status)?.label}
                                 </span>
+                              )}
+                              {task.gate_effect === "blocking" && (
+                                <span className="border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-red-200">Blocking</span>
+                              )}
+                              {task.requirement_code && (
+                                <span className="border border-ink-mid px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-light">{task.requirement_code}</span>
                               )}
                               {task.risk_flag && (
                                 <span title="Risk flagged" className="flex items-center gap-1 border border-amber-500/30 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-amber-300">
@@ -591,9 +626,12 @@ export default function CrmTasksPage() {
                               {task.depends_on_title && (
                                 <span className="flex items-center gap-1"><Link2 className="h-3 w-3" /> After: {task.depends_on_title}</span>
                               )}
-                              {task.evidence_required && (
-                                <span className="flex items-center gap-1">
-                                  <ShieldCheck className="h-3 w-3" /> Evidence required{task.approver_name ? ` · Approver: ${task.approver_name}` : ""}
+                              <span className="flex items-center gap-1">
+                                <ShieldCheck className="h-3 w-3" /> Proof required{task.approver_name ? ` · Approver: ${task.approver_name}` : ""}
+                              </span>
+                              {task.evidence_ref && (
+                                <span className="flex items-center gap-1 text-emerald-300">
+                                  <Link2 className="h-3 w-3" /> Proof attached
                                 </span>
                               )}
                               {task.quotation_id ? (
@@ -611,9 +649,14 @@ export default function CrmTasksPage() {
                                   <FileSpreadsheet className="h-3 w-3" /> Build Quotation
                                 </Link>
                               ) : null}
+                              {task.boq_imported_at && (
+                                <span className="flex items-center gap-1 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-300">
+                                  <FileSpreadsheet className="h-3 w-3" /> BOQ imported
+                                </span>
+                              )}
                             </div>
                             <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                              {task.assigned_to_team_name && !task.assigned_to_user_id && (
+                              {task.assigned_to_team_name && (
                                 <span className="text-[11px] text-slate-light">Team: <span className="text-paper">{task.assigned_to_team_name}</span> ·</span>
                               )}
                               {task.assigned_to_user_id && task.assigned_to_name && (
@@ -687,11 +730,12 @@ export default function CrmTasksPage() {
 // (crm/opportunities/page.tsx's OpportunitiesKanban), so no drag-and-drop
 // library gets added to the project just for this view.
 const BOARD_COLUMNS: { key: string; label: string; statuses: TaskStatus[]; dropStatus: TaskStatus }[] = [
-  { key: "not_started", label: "Not Started", statuses: ["not_started"], dropStatus: "not_started" },
+  { key: "not_started", label: "Planned / Ready", statuses: ["planned", "not_started", "ready"], dropStatus: "ready" },
   { key: "in_progress", label: "In Progress", statuses: ["in_progress", "waiting_on_third_party"], dropStatus: "in_progress" },
   { key: "under_review", label: "Under Review", statuses: ["under_review"], dropStatus: "under_review" },
   { key: "completed", label: "Completed", statuses: ["completed"], dropStatus: "completed" },
-  { key: "blocked", label: "Blocked / Cancelled", statuses: ["blocked", "cancelled"], dropStatus: "blocked" },
+  { key: "blocked", label: "Blocked / Rejected", statuses: ["blocked", "rejected"], dropStatus: "blocked" },
+  { key: "closed", label: "Closed", statuses: ["not_applicable", "cancelled", "superseded"], dropStatus: "cancelled" },
 ];
 
 function TaskBoard({ tasks, busyId, onStatusChange }: { tasks: Task[]; busyId: string | null; onStatusChange: (task: Task, status: TaskStatus) => void }) {
@@ -811,6 +855,7 @@ function CreateTaskModal({ users, onClose, onCreated }: { users: AssignableUser[
         assigned_to_user_id: assignedTo || undefined,
         due_date: dueDate || undefined,
         priority,
+        task_type: "personal_action",
         evidence_required: evidenceRequired,
         approver_user_id: evidenceRequired && approverId ? approverId : undefined,
         risk_flag: riskFlag,
@@ -868,7 +913,7 @@ function CreateTaskModal({ users, onClose, onCreated }: { users: AssignableUser[
               <input type="checkbox" checked={riskFlag} onChange={(e) => setRiskFlag(e.target.checked)} /> Flag as risk exposure
             </label>
             <label className="flex items-center gap-2 text-xs text-slate-light">
-              <input type="checkbox" checked={evidenceRequired} onChange={(e) => setEvidenceRequired(e.target.checked)} /> Requires evidence + approver sign-off to complete
+              <input type="checkbox" checked={evidenceRequired} onChange={(e) => setEvidenceRequired(e.target.checked)} /> Needs named approver as well as team-lead verification
             </label>
             {evidenceRequired && (
               <select value={approverId} onChange={(e) => setApproverId(e.target.value)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">

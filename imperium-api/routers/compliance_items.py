@@ -784,6 +784,13 @@ async def get_compliance_score(
             FROM compliance.deployment_gate_checks
             WHERE organization_id = :org_id AND is_deleted = false
         ),
+        fleet_inspections AS (
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE outcome IN ('fail', 'conditional')) AS failed
+            FROM fleet.fleet_inspections
+            WHERE organization_id = :org_id AND is_deleted = false
+        ),
         corrective_actions AS (
             SELECT
                 COUNT(*) AS total,
@@ -793,9 +800,9 @@ async def get_compliance_score(
         ),
         totals AS (
             SELECT
-                (o.total + e.total + eq.total + g.total + c.total) AS total,
-                (o.failed + e.failed + eq.failed + g.failed + c.failed) AS failed
-            FROM obligations o, employee_credentials e, equipment_credentials eq, deployment_gates g, corrective_actions c
+                (o.total + e.total + eq.total + g.total + fi.total + c.total) AS total,
+                (o.failed + e.failed + eq.failed + g.failed + fi.failed + c.failed) AS failed
+            FROM obligations o, employee_credentials e, equipment_credentials eq, deployment_gates g, fleet_inspections fi, corrective_actions c
         )
         SELECT
             CASE

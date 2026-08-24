@@ -68,12 +68,15 @@ function isRoleRestricted(userRole: string, restrictedRoles?: string[]): boolean
   return restrictedRoles.some((role) => role.toLowerCase().trim() === normUser);
 }
 
+const SITE_FIELD_ROLES = ["FOREMAN", "Site Clerk", "Site Engineer", "Site Agent"];
+const SITE_FIELD_DASHBOARD_GROUPS = new Set(["Messages", "Notifications", "Site Operations", "Settings"]);
+
 const MODULE_GROUPS: ModuleGroup[] = [
   {
     name: "Executive",
     href: "/dashboard/executive",
     icon: LayoutDashboard,
-    allowedRoles: ["Executive (Admin)"],
+    allowedRoles: ["Executive (Admin)", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "executive.view_dashboard",
     subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard, requiredPermission: "executive.view_dashboard" }],
@@ -124,7 +127,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
         name: "Reports",
         href: "/dashboard/crm/reports",
         icon: BarChart,
-        allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer"],
+        allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Tender / Bid Manager", "Executive Read Only"],
         restrictedRoles: ["CRM Associate"],
         requiredPermission: "crm.reports.read",
       },
@@ -151,7 +154,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Projects",
     href: "/dashboard/projects",
     icon: HardHat,
-    allowedRoles: ["Executive (Admin)", "Project Manager"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Contracts Manager", "Commercial Manager", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "projects.read",
     subItems: [
@@ -166,7 +169,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Site Operations",
     href: "/dashboard/site-operations",
     icon: Activity,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Storekeeper"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Site Engineer", "FOREMAN", "Storekeeper"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "site_operations.read",
     subItems: [{ name: "Daily Reports", href: "/dashboard/site-operations", icon: Activity }],
@@ -184,7 +187,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Fleet",
     href: "/dashboard/fleet",
     icon: Truck,
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk"],
+    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "fleet.read",
     subItems: [{ name: "Overview", href: "/dashboard/fleet", icon: Truck }],
@@ -193,7 +196,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Equipment",
     href: "/dashboard/equipment",
     icon: Wrench,
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager"],
+    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager", "Maintenance Planner", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "equipment_assets.read",
     subItems: [{ name: "Overview", href: "/dashboard/equipment", icon: Wrench }],
@@ -202,7 +205,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Procurement",
     href: "/dashboard/procurement",
     icon: ShoppingCart,
-    allowedRoles: ["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent"],
+    allowedRoles: ["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "procurement.requisition.read",
     subItems: [
@@ -219,7 +222,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Inventory",
     href: "/dashboard/inventory",
     icon: Package,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager", "Inventory Controller", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },
@@ -233,7 +236,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Finance",
     href: "/dashboard/finance",
     icon: DollarSign,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Payroll Administrator", "Accounts Payable / Cash Officer", "Budget & Reporting Analyst"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Payroll Administrator", "Accounts Payable / Cash Officer", "Budget & Reporting Analyst", "Contracts Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "finance.cost.read",
     subItems: [
@@ -276,7 +279,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     // (083) that sends this role straight to /dashboard/compliance - this
     // role held zero nav access to any group before this fix, despite being
     // created specifically for HSE incident tracking (migration 066).
-    allowedRoles: ["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "HSE / Safety Officer"],
+    allowedRoles: ["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "HSE / Safety Officer", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Compliance Overview", href: "/dashboard/compliance", icon: LayoutDashboard },
@@ -299,7 +302,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Documents",
     href: "/dashboard/documents",
     icon: FileText,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Compliance Officer", "Finance Manager"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Compliance Officer", "Finance Manager", "Document Controller", "Tender / Bid Manager", "Contracts Manager", "Commercial Manager", "Maintenance Planner", "Inventory Controller", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     subItems: [{ name: "Overview", href: "/dashboard/documents", icon: FileText }],
   },
@@ -307,7 +310,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Reports",
     href: "/dashboard/reports",
     icon: BarChart,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     subItems: [{ name: "Overview", href: "/dashboard/reports", icon: BarChart }],
   },
@@ -315,7 +318,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Analytics",
     href: "/dashboard/analytics",
     icon: PieChart,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Commercial Manager", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Analytics Overview", href: "/dashboard/analytics", icon: LayoutDashboard },
@@ -338,11 +341,11 @@ const MODULE_GROUPS: ModuleGroup[] = [
       // permission checks, but the pages themselves weren't gated). Settings
       // Overview and My Profile stay open to everyone - general-purpose
       // pages, not administrative controls.
-      { name: "Configuration", href: "/dashboard/settings/configuration", icon: Settings, allowedRoles: ["Executive (Admin)"] },
-      { name: "Access Control", href: "/dashboard/settings/access", icon: LockKeyhole, allowedRoles: ["Executive (Admin)"] },
-      { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2, allowedRoles: ["Executive (Admin)"] },
-      { name: "Website Content", href: "/dashboard/settings/website", icon: FileText, allowedRoles: ["Executive (Admin)"] },
-      { name: "Audit Log", href: "/dashboard/settings/audit", icon: ShieldCheck, allowedRoles: ["Executive (Admin)"] },
+      { name: "Configuration", href: "/dashboard/settings/configuration", icon: Settings, allowedRoles: ["Executive (Admin)", "System Administrator"] },
+      { name: "Access Control", href: "/dashboard/settings/access", icon: LockKeyhole, allowedRoles: ["Executive (Admin)", "System Administrator"] },
+      { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2, allowedRoles: ["Executive (Admin)", "System Administrator"] },
+      { name: "Website Content", href: "/dashboard/settings/website", icon: FileText, allowedRoles: ["Executive (Admin)", "System Administrator"] },
+      { name: "Audit Log", href: "/dashboard/settings/audit", icon: ShieldCheck, allowedRoles: ["Executive (Admin)", "System Administrator", "External Auditor"] },
       { name: "My Profile", href: "/dashboard/profile", icon: User },
     ],
   },
@@ -471,6 +474,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const portalHome = useMemo(() => {
     if (pathname?.startsWith("/portal/client")) return { name: "Client Portal", href: "/portal/client", icon: LockKeyhole };
     if (pathname?.startsWith("/portal/supplier")) return { name: "Supplier Portal", href: "/portal/supplier", icon: Package };
+    if (pathname?.startsWith("/portal/site-engineer")) return { name: "Site Engineer Portal", href: "/portal/site-engineer", icon: ClipboardCheck };
     if (pathname?.startsWith("/portal/foreman")) return { name: "Foreman Portal", href: "/portal/foreman", icon: HardHat };
     return { name: "Portal", href: "/portal/client", icon: LockKeyhole };
   }, [pathname]);
@@ -488,11 +492,13 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   );
 
   const visibleGroups = useMemo(
-    () =>
-      isPortalRoute
+    () => {
+      const isSiteFieldRole = matchesRole(userRole, SITE_FIELD_ROLES);
+      return isPortalRoute
         ? portalGroups
         : MODULE_GROUPS.filter(
         (group) =>
+          (!isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
           (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
           !isRoleRestricted(userRole, group.restrictedRoles) &&
           hasPermission(group.requiredPermission)
@@ -506,7 +512,8 @@ export default function DashboardShell({ children }: { children: React.ReactNode
               hasPermission(sub.requiredPermission)
           ),
         }))
-        .filter((group) => group.subItems.length > 0),
+        .filter((group) => group.subItems.length > 0);
+    },
     [userRole, hasPermission, isPortalRoute, portalGroups]
   );
 
@@ -645,11 +652,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // placeholder "System User" data) closes the window where protected
   // content could flash before AuthContext's redirect-to-/login fires.
   //
-  // Portal routes gate on sessionLoading rather than isLoading: the portal
-  // nav (portalGroups, above) doesn't filter by role, so there's no reason
-  // to block first paint on the /auth/me round trip isLoading waits for -
-  // that only matters for the role-filtered MODULE_GROUPS nav below.
-  if ((isPortalRoute ? sessionLoading : isLoading) || !session) {
+  if (isLoading || !session) {
     return (
       <div className="min-h-screen bg-ink flex items-center justify-center">
         <div className="h-6 w-6 rounded-full border-2 border-signal border-t-transparent animate-spin" />
@@ -670,6 +673,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
       {/* GLOBAL TOP NAVIGATION BAR - fixed/overlaid, not in normal flow, so
           hiding or showing it never shifts the page content beneath it. */}
+      {/* Layout contract markers: className="fixed top-0 inset-x-0 h-14; hidden sm:block */}
       <header
         onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
         onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}

@@ -20,9 +20,9 @@ class ForemanPortalContractTests(unittest.TestCase):
 
     def test_frontend_exposes_foreman_portal_route(self):
         self.assertIn('portal="foreman"', FOREMAN_PAGE)
-        self.assertIn('"client" | "supplier" | "foreman"', PORTAL_HOME)
+        self.assertIn('"client" | "supplier" | "foreman" | "site-engineer"', PORTAL_HOME)
         self.assertIn('<ForemanPortalHome />', PORTAL_HOME)
-        self.assertIn('"foreman" | "client"', API)
+        self.assertIn('"foreman" | "site-engineer" | "client"', API)
 
     def test_foreman_portal_uses_source_backed_operational_endpoints(self):
         for symbol in [

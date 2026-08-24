@@ -29,20 +29,18 @@ project-aegis/
 
 Please see the `docs/` directory for detailed architecture, database, API, and onboarding guides.
 
-## Render Deployment
+## Production Deployment
 
-The root `render.yaml` deploys both applications as Docker web services in the
-same Render region:
+The current production stack is:
 
-- `aegis-backend-api`: FastAPI backend with `/health` monitoring.
-- `aegis-frontend`: Next.js website with `/api/health` monitoring.
+- **Frontend**: Vercel, built from `aegis-web/`.
+- **Backend API**: DigitalOcean VPS, deployed from GitHub Actions to
+  `/opt/aegis` and rebuilt with `deploy/digitalocean/docker-compose.yml`.
+- **Database/Auth/Storage**: Supabase.
 
-Create or sync a Render Blueprint from this repository's `main` branch. On the
-initial Blueprint setup, provide the backend values marked `sync: false` in
-`render.yaml`. Render passes the backend's public hostname and Supabase public
-client configuration to the frontend automatically, so those values do not need
-to be duplicated on the frontend service.
+Backend deploys are triggered by pushes to `main` that touch `imperium-api/**`
+or `deploy/digitalocean/**`. The workflow SSHes to the droplet, resets
+`/opt/aegis` to `origin/main`, and rebuilds the Docker services.
 
-After both deploys are healthy, the public website is available from the
-`aegis-frontend` service's `onrender.com` URL. Custom domains can be attached to
-that service in the Render Dashboard without changing the container.
+Database migrations are applied deliberately against Supabase with the AEGIS raw
+SQL migration runner in `imperium-api/migrations/run_aegis_migrations.py`.

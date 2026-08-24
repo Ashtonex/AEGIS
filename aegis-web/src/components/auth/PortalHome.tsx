@@ -8,10 +8,13 @@ import { getPortalAccess } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { ForemanPortalHome } from "@/components/auth/ForemanPortalHome";
+import { QsPortalHome } from "@/components/auth/QsPortalHome";
+import { SiteAgentPortalHome } from "@/components/auth/SiteAgentPortalHome";
+import { SiteEngineerPortalHome } from "@/components/auth/SiteEngineerPortalHome";
 import { SupplierPortalHome } from "@/components/auth/SupplierPortalHome";
 import { ClientPortalHome } from "@/components/auth/ClientPortalHome";
 
-type ExternalPortal = "client" | "supplier" | "foreman";
+type ExternalPortal = "client" | "supplier" | "foreman" | "site-engineer" | "site-agent" | "qs";
 
 // ClientPortalHome owns createClientPortalMessage after this admission gate
 // verifies access against the server-side portal tables.
@@ -65,6 +68,9 @@ export function PortalHome({ portal }: { portal: ExternalPortal }) {
   if (!admitted) return <PortalLoading />;
 
   if (portal === "foreman") return <ForemanPortalHome />;
+  if (portal === "site-engineer") return <SiteEngineerPortalHome />;
+  if (portal === "site-agent") return <SiteAgentPortalHome />;
+  if (portal === "qs") return <QsPortalHome />;
   if (portal === "supplier") return <SupplierPortalHome />;
   return <ClientPortalHome />;
 }

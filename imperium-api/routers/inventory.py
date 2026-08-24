@@ -145,12 +145,14 @@ async def stock_levels(
                COALESCE(i.reorder_level, 0) AS reorder_level,
                COALESCE(i.standard_cost, 0) AS standard_cost,
                st.id AS store_id, st.name AS store_name, st.store_type,
+               st.project_id, p.name AS project_name, p.client_name,
                COALESCE(b.available_qty, 0) AS available_qty,
                COALESCE(b.stock_value, 0) AS stock_value,
                CASE WHEN COALESCE(b.available_qty, 0) <= COALESCE(i.reorder_level, 0) THEN true ELSE false END AS below_reorder
         FROM procurement.inventory_items i
         LEFT JOIN balances b ON b.item_id=i.id
         LEFT JOIN procurement.stores st ON st.id=b.store_id AND st.organization_id=:org_id
+        LEFT JOIN projects.projects p ON p.id=st.project_id AND p.organization_id=:org_id
         WHERE i.organization_id=:org_id AND i.is_deleted=false
           AND (:below_reorder = false OR COALESCE(b.available_qty, 0) <= COALESCE(i.reorder_level, 0))
         ORDER BY i.item_name NULLS LAST, st.name NULLS LAST
@@ -176,7 +178,7 @@ async def movements(
 ):
     rows = await db.execute(
         text("""
-        SELECT sl.*, i.item_name, i.item_code, st.name AS store_name, p.name AS project_name
+        SELECT sl.*, i.item_name, i.item_code, st.name AS store_name, p.name AS project_name, p.client_name
         FROM procurement.stock_ledger sl
         JOIN procurement.inventory_items i ON i.id=sl.item_id AND i.organization_id=sl.organization_id
         LEFT JOIN procurement.stores st ON st.id=sl.store_id AND st.organization_id=sl.organization_id
@@ -206,7 +208,7 @@ async def list_stores(
 ):
     rows = await db.execute(
         text("""
-        SELECT st.*, p.name AS project_name, s.name AS site_name
+        SELECT st.*, p.name AS project_name, p.client_name, s.name AS site_name
         FROM procurement.stores st
         LEFT JOIN projects.projects p ON p.id=st.project_id AND p.organization_id=st.organization_id
         LEFT JOIN projects.sites s ON s.id=st.site_id AND s.organization_id=st.organization_id

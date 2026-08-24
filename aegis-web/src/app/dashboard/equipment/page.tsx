@@ -1381,7 +1381,7 @@ function Toast({
 
 export default function EquipmentPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager", "Maintenance Planner", "Executive Read Only"]}>
       <EquipmentDashboard />
     </RBACGuard>
   );

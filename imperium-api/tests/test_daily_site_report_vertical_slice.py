@@ -58,7 +58,8 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
             'require_permission("site_operations.daily_report.create")',
             'require_permission("site_operations.daily_report.update")',
             'require_permission("site_operations.daily_report.submit")',
-            'require_permission("site_operations.daily_report.approve")',
+            'require_permission("site_operations.engineer_verify")',
+            'require_permission("site_operations.site_agent_authorize")',
             'require_permission("site_operations.labour.record")',
             'require_permission("site_operations.equipment.record")',
             'require_permission("site_operations.material.record")',
@@ -135,6 +136,7 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
     def test_approval_rules_prevent_empty_report_and_self_approval(self):
         self.assertIn("Cannot submit an empty daily report.", ROUTER)
         self.assertIn("Self-approval is not permitted for daily site reports.", ROUTER)
+        self.assertIn("Site Engineer verification is required before Site Agent approval.", ROUTER)
         self.assertIn(
             "Only submitted daily reports can receive an approval decision.", ROUTER
         )
@@ -159,6 +161,8 @@ class DailySiteReportVerticalSliceTests(unittest.TestCase):
         self.assertIn("INSERT INTO finance.cost_transactions", INV_SERVICE)
         self.assertIn("INSERT INTO procurement.purchase_requisitions", ROUTER)
         self.assertIn("INSERT INTO procurement.requisition_lines", ROUTER)
+        self.assertIn('@router.post("/material-requests/{request_id}/engineer-decision")', ROUTER)
+        self.assertIn("site.material_request.engineer_verified.v1", ROUTER)
         for event_type in [
             "site.material.requested.v1",
             "inventory.material_issued.v1",

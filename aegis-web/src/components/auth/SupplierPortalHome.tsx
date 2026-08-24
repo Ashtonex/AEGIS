@@ -6,6 +6,7 @@ import {
   Banknote,
   CheckCircle2,
   Clock,
+  ClipboardList,
   FileText,
   Loader2,
   Package,
@@ -18,6 +19,7 @@ import {
 import {
   ApiError,
   SupplierPortalWorkspace,
+  SupplierPortalRfq,
   VendorPaymentRequest,
   VendorRateItem,
   VendorRateType,
@@ -26,8 +28,10 @@ import {
   createSupplierPortalRateItem,
   getSupplierPortalPaymentRequests,
   getSupplierPortalRateItems,
+  getSupplierPortalRfqs,
   getSupplierPortalWorkspace,
   registerSupplierPortalDocument,
+  submitSupplierPortalRfqResponse,
   submitSupplierPortalProfileForReview,
   updateSupplierPortalProfile,
 } from "@/lib/api";
@@ -126,10 +130,28 @@ const RATE_TYPE_LABEL: Record<VendorRateType, string> = {
   service: "Service",
 };
 
+type QuoteDocument = {
+  id: string;
+  title: string;
+  category: string;
+  created_at: string;
+};
+
+type RfqResponseForm = {
+  reference: string;
+  delivery_days: string;
+  validity_days: string;
+  notes: string;
+  prices: Record<string, string>;
+};
+
 export function SupplierPortalHome() {
   const [workspace, setWorkspace] = useState<SupplierPortalWorkspace | null>(null);
   const [rateItems, setRateItems] = useState<VendorRateItem[]>([]);
   const [paymentRequests, setPaymentRequests] = useState<VendorPaymentRequest[]>([]);
+  const [rfqs, setRfqs] = useState<SupplierPortalRfq[]>([]);
+  const [rfqForms, setRfqForms] = useState<Record<string, RfqResponseForm>>({});
+  const [rfqQuoteDocuments, setRfqQuoteDocuments] = useState<Record<string, QuoteDocument>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -141,6 +163,8 @@ export function SupplierPortalHome() {
   const [profileForm, setProfileForm] = useState({
     name: "", registration_number: "", tax_clearance_number: "", nssa_number: "", praz_number: "",
     contact_name: "", contact_email: "", contact_phone: "", address: "",
+    preferred_contact_method: "email", alternate_contact_name: "", alternate_contact_email: "",
+    alternate_contact_phone: "", accounts_contact_email: "", accounts_contact_phone: "",
   });
   const [rateForm, setRateForm] = useState({
     rate_type: "material" as VendorRateType, item_code: "", description: "", unit_of_measure: "each",
@@ -163,10 +187,11 @@ export function SupplierPortalHome() {
     setLoading(true);
     setError(null);
     try {
-      const [wsRes, rateRes, paymentRes] = await Promise.allSettled([
+      const [wsRes, rateRes, paymentRes, rfqRes] = await Promise.allSettled([
         getSupplierPortalWorkspace(),
         getSupplierPortalRateItems(),
         getSupplierPortalPaymentRequests(),
+        getSupplierPortalRfqs(),
       ]);
       if (wsRes.status === "fulfilled" && wsRes.value.data) {
         const vendor = wsRes.value.data.vendor;
@@ -177,12 +202,19 @@ export function SupplierPortalHome() {
           praz_number: vendor.praz_number ?? "", contact_name: vendor.contact_name ?? "",
           contact_email: vendor.contact_email ?? "", contact_phone: vendor.contact_phone ?? "",
           address: vendor.address ?? "",
+          preferred_contact_method: vendor.preferred_contact_method ?? "email",
+          alternate_contact_name: vendor.alternate_contact_name ?? "",
+          alternate_contact_email: vendor.alternate_contact_email ?? "",
+          alternate_contact_phone: vendor.alternate_contact_phone ?? "",
+          accounts_contact_email: vendor.accounts_contact_email ?? "",
+          accounts_contact_phone: vendor.accounts_contact_phone ?? "",
         });
       } else {
         setError("The supplier portal workspace could not be loaded.");
       }
       if (rateRes.status === "fulfilled") setRateItems(rateRes.value.data ?? []);
       if (paymentRes.status === "fulfilled") setPaymentRequests(paymentRes.value.data ?? []);
+      if (rfqRes.status === "fulfilled") setRfqs(rfqRes.value.data ?? []);
     } finally {
       setLoading(false);
     }
@@ -276,6 +308,65 @@ export function SupplierPortalHome() {
       await load();
     } catch (err) {
       setError(actionMessage(err, "Rate item could not be added."));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleRfqQuoteUpload(result: UploadedDocumentResult, rfqId: string) {
+    setSaving(`rfq-upload-${rfqId}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await registerSupplierPortalDocument({ ...result, category: "rfq_quote" });
+      if (!response.data?.id) throw new Error("The quote file could not be registered.");
+      setRfqQuoteDocuments((current) => ({ ...current, [rfqId]: response.data as QuoteDocument }));
+      setNotice("Quote file uploaded.");
+    } catch (err) {
+      setError(actionMessage(err, "Quote file could not be uploaded."));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function submitRfqResponse(rfq: SupplierPortalRfq) {
+    const form = rfqForms[rfq.id] ?? { reference: "", delivery_days: "", validity_days: "30", notes: "", prices: {} };
+    const lineItems = rfq.requested_items
+      .flatMap((item, index) => {
+        const key = item.id ?? String(index);
+        const rawPrice = form.prices[key]?.trim();
+        if (!rawPrice) return [];
+        const unitPrice = Number(rawPrice);
+        if (!Number.isFinite(unitPrice)) return [];
+        return [{
+          description: item.description,
+          qty: item.qty,
+          uom: item.uom,
+          unit_price: unitPrice,
+          notes: item.notes,
+        }];
+      });
+    const quoteDocument = rfqQuoteDocuments[rfq.id];
+    if (lineItems.length === 0 && !quoteDocument) {
+      setError("Add at least one line price or upload a formal quotation.");
+      return;
+    }
+    setSaving(`rfq-${rfq.id}`);
+    setError(null);
+    setNotice(null);
+    try {
+      await submitSupplierPortalRfqResponse(rfq.id, {
+        reference: form.reference || undefined,
+        delivery_days: form.delivery_days ? Number(form.delivery_days) : undefined,
+        validity_days: form.validity_days ? Number(form.validity_days) : 30,
+        notes: form.notes || undefined,
+        line_items: lineItems,
+        quote_document_id: quoteDocument?.id,
+      });
+      setNotice("RFQ response submitted.");
+      await load();
+    } catch (err) {
+      setError(actionMessage(err, "RFQ response could not be submitted."));
     } finally {
       setSaving(null);
     }
@@ -392,7 +483,7 @@ export function SupplierPortalHome() {
             <p className="font-semibold">{verification.label}</p>
             <p className="mt-1 text-sm opacity-90">{verification.body}</p>
             {workspace?.vendor.hr_verification_notes && workspace.vendor.verification_stage === "rejected" && (
-              <p className="mt-2 text-sm italic opacity-90">"{workspace.vendor.hr_verification_notes}"</p>
+              <p className="mt-2 text-sm italic opacity-90">&quot;{workspace.vendor.hr_verification_notes}&quot;</p>
             )}
             {reviewProblems.length > 0 && (
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm opacity-90">
@@ -427,6 +518,35 @@ export function SupplierPortalHome() {
                   ["tax_clearance_number", "Tax clearance number"], ["nssa_number", "NSSA number"],
                   ["praz_number", "PRAZ number (optional)"], ["contact_name", "Contact person"],
                   ["contact_email", "Contact email"], ["contact_phone", "Contact phone"],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="block">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">{label}</span>
+                    <input
+                      value={profileForm[key]}
+                      onChange={(e) => setProfileForm((c) => ({ ...c, [key]: e.target.value }))}
+                      className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                    />
+                  </label>
+                ))}
+                <label className="block md:col-span-2">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Preferred contact method</span>
+                  <select
+                    value={profileForm.preferred_contact_method}
+                    onChange={(e) => setProfileForm((c) => ({ ...c, preferred_contact_method: e.target.value }))}
+                    className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                  >
+                    <option value="email">Email</option>
+                    <option value="phone">Phone call</option>
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="sms">SMS</option>
+                  </select>
+                </label>
+                {([
+                  ["alternate_contact_name", "Alternate contact"],
+                  ["alternate_contact_email", "Alternate email"],
+                  ["alternate_contact_phone", "Alternate phone"],
+                  ["accounts_contact_email", "Accounts email"],
+                  ["accounts_contact_phone", "Accounts phone"],
                 ] as const).map(([key, label]) => (
                   <label key={key} className="block">
                     <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">{label}</span>
@@ -484,6 +604,148 @@ export function SupplierPortalHome() {
                       <span className="font-mono text-[10px] text-slate-light">{formatDate(doc.created_at)}</span>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            <div className="border border-ink-mid bg-ink-light">
+              <div className="flex items-center justify-between border-b border-ink-mid p-4">
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Requests from AEGIS</p>
+                  <h2 className="mt-1 text-xl font-semibold">RFQs and requested materials</h2>
+                </div>
+                <ClipboardList className="h-5 w-5 text-slate-light" />
+              </div>
+              {rfqs.length === 0 ? (
+                <p className="p-6 text-sm text-slate-light">No issued RFQs are available for response right now.</p>
+              ) : (
+                <div className="divide-y divide-ink-mid">
+                  {rfqs.map((rfq) => {
+                    const form = rfqForms[rfq.id] ?? { reference: "", delivery_days: "", validity_days: "30", notes: "", prices: {} };
+                    const quoteDocument = rfqQuoteDocuments[rfq.id];
+                    return (
+                      <article key={rfq.id} className="p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div>
+                            <p className="font-mono text-[10px] uppercase tracking-widest text-slate-light">{rfq.rfq_number}</p>
+                            <h3 className="mt-1 text-lg font-semibold">{rfq.title}</h3>
+                            <p className="mt-1 text-sm text-slate-light">{rfq.description || "No description supplied."}</p>
+                            <p className="mt-2 font-mono text-[10px] uppercase text-slate-light">
+                              {rfq.project_name || "Project not linked"} {rfq.closing_date ? `· closes ${formatDate(rfq.closing_date)}` : ""}
+                            </p>
+                          </div>
+                          {rfq.response ? (
+                            <span className="shrink-0 border border-emerald-500/30 bg-emerald-950/20 px-3 py-2 font-mono text-[10px] uppercase text-emerald-300">
+                              Submitted · {money(Number(rfq.response.total_amount || 0), "USD")}
+                            </span>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-4 space-y-2">
+                          {(rfq.requested_items ?? []).length === 0 ? (
+                            <p className="text-sm text-slate-light">No line items were attached to this RFQ. Upload a formal quote or add notes below.</p>
+                          ) : (
+                            (rfq.requested_items ?? []).map((item, index) => {
+                              const key = item.id ?? String(index);
+                              return (
+                                <div key={key} className="grid gap-2 border border-ink-mid bg-ink p-3 md:grid-cols-[1fr_120px_160px] md:items-end">
+                                  <div>
+                                    <p className="text-sm font-medium">{item.description}</p>
+                                    <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">
+                                      {item.qty ?? "-"} {item.uom || "units"} {item.work_package ? `· ${item.work_package}` : ""}
+                                    </p>
+                                  </div>
+                                  <label className="block">
+                                    <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Unit price</span>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={form.prices[key] ?? ""}
+                                      onChange={(e) => setRfqForms((current) => ({
+                                        ...current,
+                                        [rfq.id]: {
+                                          ...form,
+                                          prices: { ...form.prices, [key]: e.target.value },
+                                        },
+                                      }))}
+                                      className="mt-2 h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper outline-none focus:border-signal"
+                                    />
+                                  </label>
+                                  <p className="font-mono text-xs text-slate-light">
+                                    Line total{" "}
+                                    <span className="text-paper">
+                                      {form.prices[key] ? money((item.qty || 1) * Number(form.prices[key]), "USD") : "--"}
+                                    </span>
+                                  </p>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-3">
+                          <label className="block">
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Quote reference</span>
+                            <input
+                              value={form.reference}
+                              onChange={(e) => setRfqForms((current) => ({ ...current, [rfq.id]: { ...form, reference: e.target.value } }))}
+                              className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Delivery days</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={form.delivery_days}
+                              onChange={(e) => setRfqForms((current) => ({ ...current, [rfq.id]: { ...form, delivery_days: e.target.value } }))}
+                              className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Validity days</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={form.validity_days}
+                              onChange={(e) => setRfqForms((current) => ({ ...current, [rfq.id]: { ...form, validity_days: e.target.value } }))}
+                              className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                            />
+                          </label>
+                          <label className="block md:col-span-3">
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Notes / exclusions</span>
+                            <textarea
+                              rows={2}
+                              value={form.notes}
+                              onChange={(e) => setRfqForms((current) => ({ ...current, [rfq.id]: { ...form, notes: e.target.value } }))}
+                              className="mt-2 w-full resize-none border border-ink-mid bg-ink p-3 text-sm text-paper outline-none focus:border-signal"
+                            />
+                          </label>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+                          <div>
+                            <PortalDocumentUpload
+                              label={quoteDocument ? quoteDocument.title : "Upload formal quotation"}
+                              accept=".pdf,.xls,.xlsx,.doc,.docx,.png,.jpg,.jpeg"
+                              onUploaded={(result) => handleRfqQuoteUpload(result, rfq.id)}
+                              disabled={saving === `rfq-upload-${rfq.id}`}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void submitRfqResponse(rfq)}
+                            disabled={saving === `rfq-${rfq.id}`}
+                            className="inline-flex h-10 items-center justify-center gap-2 bg-signal px-4 font-mono text-xs uppercase tracking-widest text-ink disabled:opacity-50"
+                          >
+                            {saving === `rfq-${rfq.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardList className="h-4 w-4" />}
+                            Submit response
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </div>

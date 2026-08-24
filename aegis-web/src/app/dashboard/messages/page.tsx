@@ -1,9 +1,12 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
+  ExternalLink,
+  FileText,
   Inbox,
   Loader2,
   MessageSquare,
@@ -15,9 +18,11 @@ import {
 
 import {
   ApiError,
+  PortalInboxItem,
   PortalCommunicationMessage,
   createCrmCommunication,
   getCrmCommunications,
+  getPortalInbox,
   getUsers,
 } from "@/lib/api";
 
@@ -43,14 +48,24 @@ function channelLabel(channel?: string) {
   return String(channel || "manual_note").replaceAll("_", " ");
 }
 
+function statusTone(status?: string) {
+  const value = String(status || "").toLowerCase();
+  if (["approved", "selected", "cleared", "resolved", "closed", "completed"].includes(value)) return "border-emerald-500/30 text-emerald-300";
+  if (["rejected", "disputed", "cancelled", "failed"].includes(value)) return "border-red-500/30 text-red-300";
+  if (["submitted", "received", "sent", "issued", "acknowledged", "waiting_on_client"].includes(value)) return "border-amber-500/30 text-amber-300";
+  return "border-ink-mid text-slate-light";
+}
+
 export default function DashboardMessagesPage() {
   const [messages, setMessages] = useState<PortalCommunicationMessage[]>([]);
+  const [portalItems, setPortalItems] = useState<PortalInboxItem[]>([]);
   const [users, setUsers] = useState<UserOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "internal" | "client">("all");
+  const [portalFilter, setPortalFilter] = useState<"all" | "client" | "supplier" | "payments" | "variations">("all");
   const [search, setSearch] = useState("");
   const [form, setForm] = useState({
     recipient_user_id: "",
@@ -63,9 +78,10 @@ export default function DashboardMessagesPage() {
     setLoading(true);
     setError(null);
     try {
-      const [communicationResult, userResult] = await Promise.allSettled([
+      const [communicationResult, userResult, portalResult] = await Promise.allSettled([
         getCrmCommunications({ limit: 200 }),
         getUsers(),
+        getPortalInbox(150),
       ]);
 
       if (communicationResult.status === "fulfilled" && Array.isArray(communicationResult.value.data)) {
@@ -80,12 +96,19 @@ export default function DashboardMessagesPage() {
       } else {
         setUsers([]);
       }
+
+      if (portalResult.status === "fulfilled" && Array.isArray(portalResult.value.data)) {
+        setPortalItems(portalResult.value.data);
+      } else {
+        setPortalItems([]);
+      }
     } catch (loadError) {
       const message = loadError instanceof ApiError
         ? loadError.message
         : "Communications could not be loaded.";
       setError(message);
       setMessages([]);
+      setPortalItems([]);
     } finally {
       setLoading(false);
     }
@@ -112,6 +135,16 @@ export default function DashboardMessagesPage() {
       ].join(" ").toLowerCase().includes(term);
     });
   }, [filter, messages, search]);
+
+  const filteredPortalItems = useMemo(() => {
+    return portalItems.filter((item) => {
+      if (portalFilter === "client" && !item.item_type.startsWith("client_")) return false;
+      if (portalFilter === "supplier" && !["supplier_rfq_response", "vendor_payment_request"].includes(item.item_type)) return false;
+      if (portalFilter === "payments" && !item.item_type.includes("payment")) return false;
+      if (portalFilter === "variations" && item.item_type !== "client_variation") return false;
+      return true;
+    });
+  }, [portalFilter, portalItems]);
 
   async function submitInternalMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -157,7 +190,7 @@ export default function DashboardMessagesPage() {
             One ledger for client portal messages, CRM outreach, and executive-to-employee communication.
           </p>
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="border border-ink-mid bg-ink-light px-4 py-3">
             <p className="font-mono text-[10px] text-slate-light uppercase">Total</p>
             <p className="text-2xl font-semibold">{messages.length}</p>
@@ -169,6 +202,10 @@ export default function DashboardMessagesPage() {
           <div className="border border-ink-mid bg-ink-light px-4 py-3">
             <p className="font-mono text-[10px] text-slate-light uppercase">Portal</p>
             <p className="text-2xl font-semibold">{messages.filter((item) => item.channel === "portal_message").length}</p>
+          </div>
+          <div className="border border-ink-mid bg-ink-light px-4 py-3">
+            <p className="font-mono text-[10px] text-slate-light uppercase">Portal inbox</p>
+            <p className="text-2xl font-semibold">{portalItems.length}</p>
           </div>
         </div>
       </section>
@@ -185,6 +222,77 @@ export default function DashboardMessagesPage() {
           <span>{notice}</span>
         </div>
       )}
+
+      <section className="mb-6 border border-ink-mid bg-ink-light">
+        <div className="flex flex-col gap-4 border-b border-ink-mid p-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
+            <Inbox className="h-5 w-5 text-signal" />
+            <div>
+              <h2 className="text-xl font-semibold">Portal inbox</h2>
+              <p className="text-sm text-slate-light">
+                External portal work that needs staff attention, routed to the owning module for the actual decision.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap border border-ink-mid bg-ink">
+            {(["all", "client", "supplier", "payments", "variations"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setPortalFilter(value)}
+                className={`px-3 py-2 font-mono text-xs uppercase ${portalFilter === value ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        </div>
+        {loading ? (
+          <div className="p-8 flex justify-center">
+            <Loader2 className="h-5 w-5 animate-spin text-signal" />
+          </div>
+        ) : filteredPortalItems.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-light">No portal items match this view.</div>
+        ) : (
+          <div className="divide-y divide-ink-mid">
+            {filteredPortalItems.map((item) => (
+              <article key={`${item.item_type}-${item.id}`} className="grid gap-4 p-5 xl:grid-cols-[1fr_220px]">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[10px] uppercase tracking-widest text-signal">{item.item_label}</span>
+                    <span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${statusTone(item.status)}`}>
+                      {item.status || "recorded"}
+                    </span>
+                    {(item.document_count ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-1 border border-blue-500/30 px-2 py-0.5 font-mono text-[10px] uppercase text-blue-300">
+                        <FileText className="h-3 w-3" /> {item.document_count} doc{item.document_count === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="mt-2 text-base font-semibold text-paper">{item.title}</h3>
+                  {item.detail && <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-light">{item.detail}</p>}
+                  <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-light">
+                    <span>{item.party_name || "External party"}</span>
+                    {item.project_name && <span>{item.project_name}</span>}
+                    <span>{formatDate(item.occurred_at)}</span>
+                  </div>
+                  {item.control_note && (
+                    <p className="mt-3 border-l-2 border-signal/50 pl-3 text-xs leading-5 text-slate-light">{item.control_note}</p>
+                  )}
+                </div>
+                <div className="flex items-start xl:justify-end">
+                  <Link
+                    href={item.action_url}
+                    className="inline-flex h-10 items-center gap-2 border border-ink-mid px-4 font-mono text-xs uppercase tracking-widest text-paper hover:border-signal hover:text-signal"
+                  >
+                    Open <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
 
       <section className="grid gap-6 xl:grid-cols-[1fr_380px]">
         <div className="border border-ink-mid bg-ink-light">
