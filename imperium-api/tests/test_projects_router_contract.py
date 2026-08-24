@@ -117,6 +117,28 @@ class ProjectsRouterContractTests(unittest.TestCase):
         self.assertIn("onProjectUpdated", PROJECTS_PAGE)
         self.assertIn("updateInternalProject(project.id, { latitude: latNum, longitude: longNum })", PROJECTS_PAGE)
 
+    def test_executive_footprint_is_zimbabwe_wide_and_selectable(self):
+        for marker in [
+            "ZIMBABWE_REGIONS",
+            '"Mashonaland Central"',
+            '"Matabeleland South"',
+            '"is_seeded_region": True',
+            "sorted(grouped.values()",
+        ]:
+            self.assertIn(marker, EXECUTIVE_ROUTER)
+        for marker in [
+            "selectedName",
+            "selectedProjects",
+            "setSelectedName(String(region.name))",
+            "No project or CRM records pinned to this province yet.",
+        ]:
+            self.assertIn(marker, EXECUTIVE_PAGE)
+
+    def test_executive_inventory_value_uses_live_stock_ledger(self):
+        self.assertIn("procurement.stock_ledger sl", EXECUTIVE_ROUTER)
+        self.assertIn("sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)", EXECUTIVE_ROUTER)
+        self.assertNotIn("SUM(stock_quantity * standard_cost)", EXECUTIVE_ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()

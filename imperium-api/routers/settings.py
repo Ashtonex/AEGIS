@@ -297,12 +297,6 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
-        "page": "Pursuit teams",
-        "route": "/dashboard/crm/pursuit-teams",
-        "permission": "pursuit_teams.read",
-        "module": "Commercial",
-    },
-    {
         "page": "Documents",
         "route": "/dashboard/crm/documents",
         "permission": "documents.read",

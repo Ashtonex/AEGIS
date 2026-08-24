@@ -1549,48 +1549,6 @@ export async function updatePursuit(id: string, payload: Record<string, any>): P
   });
 }
 
-// ─── Pursuit Teams (temporary, pursuit-scoped teams — not core.teams) ─────
-
-export async function getPursuitTeams(pursuitId?: string): Promise<ApiResponse<any[]>> {
-  const qs = pursuitId ? `?pursuit_id=${encodeURIComponent(pursuitId)}` : '';
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/pursuit-teams/${qs}`, { cache: 'no-store', allowFallback: false });
-}
-
-export async function createPursuitTeam(payload: { pursuit_id: string; name: string; objective?: string; team_lead_user_id?: string }): Promise<ApiResponse<{ id: string }>> {
-  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/pursuit-teams/', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    allowFallback: false,
-  });
-}
-
-export async function updatePursuitTeam(id: string, payload: Record<string, any>): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/pursuit-teams/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-    allowFallback: false,
-  });
-}
-
-export async function getPursuitTeamMembers(teamId: string): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/pursuit-teams/${teamId}/members`, { cache: 'no-store', allowFallback: false });
-}
-
-export async function addPursuitTeamMember(teamId: string, payload: { user_id: string; department_id?: string; role_label?: string }): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/pursuit-teams/${teamId}/members`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    allowFallback: false,
-  });
-}
-
-export async function removePursuitTeamMember(teamId: string, userId: string): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/pursuit-teams/${teamId}/members/${userId}`, {
-    method: 'DELETE',
-    allowFallback: false,
-  });
-}
-
 // ─── Assignment (lead/opportunity/tender/project/fleet/machinery → person or team) ─
 
 export async function getAssignment(entityType: string, entityId: string): Promise<ApiResponse<{ assigned_to_user_id: string | null; assigned_to_team_id: string | null; assigned_user_name: string | null; assigned_team_name: string | null }>> {
@@ -3915,6 +3873,15 @@ export async function getStockMovements(params?: { store_id?: string; movement_t
 /** Post a stock receipt (goods inward). */
 export async function receiveStock(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/inventory/receive', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Capture a complete supplier invoice and receive every stock line together. */
+export async function receiveInventoryInvoice(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/inventory/receive-invoice', {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,

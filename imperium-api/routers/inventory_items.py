@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from decimal import Decimal, ROUND_HALF_UP
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
@@ -22,8 +23,19 @@ ITEM_RETURNING_COLUMNS = """
     id, organization_id, created_by, created_at, updated_at, is_deleted,
     item_name, stock_quantity, item_code, description, category,
     unit_of_measure, reorder_level, reorder_quantity, standard_cost,
-    is_hazardous
+    is_hazardous, item_type, vat_rate, vat_inclusive, unit_price_ex_vat,
+    unit_price_inc_vat
 """
+
+
+def _decimal(value, default: str = "0") -> Decimal:
+    if value in (None, ""):
+        return Decimal(default)
+    return Decimal(str(value))
+
+
+def _money4(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
 def normalize_item_payload(payload: dict) -> dict:
@@ -32,6 +44,34 @@ def normalize_item_payload(payload: dict) -> dict:
         if "unit_of_measure" not in normalized:
             normalized["unit_of_measure"] = normalized["uom"]
         normalized.pop("uom", None)
+    if "apply_zimra_vat" in normalized:
+        if normalized.pop("apply_zimra_vat") and not normalized.get("vat_rate"):
+            normalized["vat_rate"] = Decimal("15.5")
+    if "item_type" in normalized and normalized["item_type"] not in {
+        "material",
+        "supply",
+        "tool",
+    }:
+        raise HTTPException(status_code=422, detail="Invalid inventory item type.")
+
+    vat_rate = _decimal(normalized.get("vat_rate"))
+    vat_inclusive = bool(normalized.get("vat_inclusive"))
+    entered_cost = _decimal(normalized.get("standard_cost"))
+    if entered_cost > 0:
+        multiplier = Decimal("1") + (vat_rate / Decimal("100"))
+        if vat_rate > 0 and not vat_inclusive:
+            unit_ex = entered_cost
+            unit_inc = entered_cost * multiplier
+        elif vat_rate > 0 and vat_inclusive:
+            unit_inc = entered_cost
+            unit_ex = entered_cost / multiplier
+        else:
+            unit_ex = entered_cost
+            unit_inc = entered_cost
+        normalized["unit_price_ex_vat"] = _money4(unit_ex)
+        normalized["unit_price_inc_vat"] = _money4(unit_inc)
+        normalized["standard_cost"] = _money4(unit_inc)
+        normalized["vat_rate"] = _money4(vat_rate)
     return normalized
 
 

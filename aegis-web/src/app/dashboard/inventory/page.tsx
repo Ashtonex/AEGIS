@@ -19,12 +19,14 @@ import {
   PackageMinus,
   PackagePlus,
   Plus,
+  ReceiptText,
   RefreshCw,
   Search,
   ShieldAlert,
   Store,
   Truck,
   Warehouse,
+  Wrench,
   X,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
@@ -43,6 +45,7 @@ import {
   getSiteOperationSites,
   getStockMovements,
   issueStock,
+  receiveInventoryInvoice,
   receiveStock,
   transferStock,
 } from "@/lib/api";
@@ -77,6 +80,16 @@ function dateShort(v: unknown) {
   if (!v) return "\u2014";
   const d = new Date(String(v));
   return Number.isNaN(d.getTime()) ? String(v) : new Intl.DateTimeFormat("en-ZW", { dateStyle: "medium", timeStyle: "short" }).format(d);
+}
+function itemType(value: unknown) {
+  const normalized = tx(value, "material").toLowerCase();
+  return ["material", "supply", "tool"].includes(normalized) ? normalized : "material";
+}
+function stockValue(row: Rec) {
+  if (row.stock_value !== undefined && row.stock_value !== null) return num(row.stock_value);
+  const q = num(row.available_qty ?? row.quantity ?? row.stock_quantity);
+  const c = num(row.unit_price_inc_vat ?? row.standard_cost ?? row.unit_cost);
+  return q * c;
 }
 
 const UNASSIGNED_CLIENT_KEY = "__unassigned_client__";
@@ -141,6 +154,7 @@ function InventoryWorkspace() {
   const [stockSearch, setStockSearch] = useState("");
   const [storeFilter, setStoreFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [itemTypeFilter, setItemTypeFilter] = useState("");
   const [belowReorder, setBelowReorder] = useState(false);
   const [catSearch, setCatSearch] = useState("");
   const [movDateFrom, setMovDateFrom] = useState("");
@@ -152,6 +166,7 @@ function InventoryWorkspace() {
 
   const [showIssue, setShowIssue] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
+  const [showInvoice, setShowInvoice] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
   const [showAddItem, setShowAddItem] = useState(false);
@@ -208,9 +223,7 @@ function InventoryWorkspace() {
       return q > 0 && reorder > 0 && q <= reorder;
     });
     const totalValue = stockLevels.reduce((sum, r) => {
-      const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
-      const c = num(r.standard_cost ?? r.unit_cost);
-      return sum + q * c;
+      return sum + stockValue(r);
     }, 0);
     const yesterday = Date.now() - 86_400_000;
     const recentMovements = movements.filter((m) => new Date(m.created_at ?? m.movement_date ?? 0).getTime() > yesterday);
@@ -281,8 +294,7 @@ function InventoryWorkspace() {
     stockLevels.forEach((row) => {
       const group = ensure(rowClientKey(row), tx(row.client_name ?? "Unassigned / Company Stores"));
       const q = num(row.available_qty ?? row.quantity ?? row.stock_quantity);
-      const c = num(row.standard_cost ?? row.unit_cost);
-      group.stockValue += q * c;
+      group.stockValue += stockValue(row);
       if (q !== 0) group.itemCount += 1;
     });
     return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
@@ -315,15 +327,19 @@ function InventoryWorkspace() {
       if (selectedProjectId && rowProjectId(r) !== selectedProjectId) return false;
       if (storeFilter && tx(r.store_id) !== storeFilter && tx(r.store_name) !== storeFilter) return false;
       if (categoryFilter && tx(r.category).toLowerCase() !== categoryFilter.toLowerCase()) return false;
-      const hay = `${tx(r.item_code)} ${tx(r.item_name)} ${tx(r.category)} ${tx(r.store_name)} ${tx(r.project_name)} ${tx(r.client_name)}`.toLowerCase();
+      if (itemTypeFilter && itemType(r.item_type) !== itemTypeFilter) return false;
+      const hay = `${tx(r.item_code)} ${tx(r.item_name)} ${tx(r.category)} ${tx(r.item_type)} ${tx(r.store_name)} ${tx(r.project_name)} ${tx(r.client_name)}`.toLowerCase();
       return hay.includes(stockSearch.toLowerCase());
     });
-  }, [stockLevels, belowReorder, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId, storeFilter, categoryFilter, stockSearch]);
+  }, [stockLevels, belowReorder, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId, storeFilter, categoryFilter, itemTypeFilter, stockSearch]);
 
   const filteredCatalogue = useMemo(() => {
     const q = catSearch.toLowerCase();
-    return catalogue.filter((r) => `${tx(r.item_code)} ${tx(r.item_name ?? r.name)} ${tx(r.category)}`.toLowerCase().includes(q));
-  }, [catalogue, catSearch]);
+    return catalogue.filter((r) => {
+      if (itemTypeFilter && itemType(r.item_type) !== itemTypeFilter) return false;
+      return `${tx(r.item_code)} ${tx(r.item_name ?? r.name)} ${tx(r.category)} ${tx(r.item_type)}`.toLowerCase().includes(q);
+    });
+  }, [catalogue, catSearch, itemTypeFilter]);
 
   const filteredMovements = useMemo(() => {
     return movements.filter((m) => {
@@ -362,6 +378,12 @@ function InventoryWorkspace() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowInvoice(true)}
+            className="inline-flex h-10 items-center gap-2 border border-blue-500/40 bg-blue-950/20 px-3 font-mono text-xs uppercase tracking-wider text-blue-300 hover:border-blue-400 hover:bg-blue-950/40"
+          >
+            <ReceiptText className="h-4 w-4" /> Capture Invoice
+          </button>
           <button
             onClick={() => setShowReceive(true)}
             className="inline-flex h-10 items-center gap-2 border border-emerald-500/40 bg-emerald-950/20 px-3 font-mono text-xs uppercase tracking-wider text-emerald-300 hover:border-emerald-400 hover:bg-emerald-950/40"
@@ -534,6 +556,12 @@ function InventoryWorkspace() {
               <option value="">All Categories</option>
               {categories.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
+            <select value={itemTypeFilter} onChange={(e) => setItemTypeFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
+              <option value="">Materials, Supplies &amp; Tools</option>
+              <option value="material">Materials</option>
+              <option value="supply">Supplies</option>
+              <option value="tool">Reusable Tools</option>
+            </select>
             <label className="flex h-9 cursor-pointer items-center gap-2 border border-amber-500/30 bg-amber-950/10 px-3 text-xs text-amber-300">
               <input type="checkbox" checked={belowReorder} onChange={(e) => setBelowReorder(e.target.checked)} className="accent-amber-400" />
               Below Reorder Only
@@ -548,7 +576,7 @@ function InventoryWorkspace() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-ink-mid bg-ink-light/40">
-                    {["Item Code", "Item Name", "Category", "UOM", "Store / Site", "Available Qty", "Reserved Qty", "Reorder Level", "Std Cost", "Total Value"].map((h) => (
+                    {["Item Code", "Item Name", "Type", "Category", "UOM", "Store / Site", "Available Qty", "Reserved Qty", "Reorder Level", "Inc VAT Cost", "Total Value"].map((h) => (
                       <th key={h} className="px-3 py-3 text-left font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>
                     ))}
                   </tr>
@@ -557,7 +585,9 @@ function InventoryWorkspace() {
                   {filteredStock.map((r) => {
                     const avail = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
                     const reorder = num(r.reorder_level ?? r.reorder_point);
-                    const cost = num(r.standard_cost ?? r.unit_cost);
+                    const cost = num(r.unit_price_inc_vat ?? r.standard_cost ?? r.unit_cost);
+                    const value = stockValue(r);
+                    const type = itemType(r.item_type);
                     const isOut = avail <= 0;
                     const isLow = !isOut && reorder > 0 && avail <= reorder;
                     const rowClass = isOut
@@ -572,9 +602,11 @@ function InventoryWorkspace() {
                           <div className="flex items-center gap-2">
                             {isOut && <span className="inline-block rounded-sm bg-red-500/20 px-1.5 py-0.5 font-mono text-[9px] uppercase text-red-300">Out</span>}
                             {isLow && <span className="inline-block rounded-sm bg-amber-500/20 px-1.5 py-0.5 font-mono text-[9px] uppercase text-amber-300">Low</span>}
+                            {type === "tool" && <span className="inline-flex items-center gap-1 rounded-sm border border-blue-500/30 bg-blue-950/20 px-1.5 py-0.5 font-mono text-[9px] uppercase text-blue-300"><Wrench className="h-3 w-3" /> Tool</span>}
                             {tx(r.item_name ?? r.name)}
                           </div>
                         </td>
+                        <td className="px-3 py-2.5 font-mono text-[10px] uppercase text-slate-light">{type}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.category)}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.uom ?? r.unit_of_measure)}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.store_name ?? r.store_code)}</td>
@@ -582,7 +614,7 @@ function InventoryWorkspace() {
                         <td className="px-3 py-2.5 font-mono text-slate-light">{qty(r.reserved_qty ?? 0)}</td>
                         <td className={`px-3 py-2.5 font-mono ${reorder > 0 ? "text-slate-light" : "text-slate"}`}>{reorder > 0 ? qty(reorder) : "\u2014"}</td>
                         <td className="px-3 py-2.5 font-mono text-slate-light">{cost > 0 ? money(cost) : "\u2014"}</td>
-                        <td className="px-3 py-2.5 font-mono font-semibold text-paper">{cost > 0 ? money(avail * cost) : "\u2014"}</td>
+                        <td className="px-3 py-2.5 font-mono font-semibold text-paper">{value ? money(value) : "\u2014"}</td>
                       </tr>
                     );
                   })}
@@ -602,6 +634,12 @@ function InventoryWorkspace() {
               <Search className="h-4 w-4 text-slate" />
               <input value={catSearch} onChange={(e) => setCatSearch(e.target.value)} placeholder="Search catalogue…" className="bg-transparent text-sm outline-none placeholder:text-slate" />
             </label>
+            <select value={itemTypeFilter} onChange={(e) => setItemTypeFilter(e.target.value)} className="h-9 border border-ink-mid bg-ink-light px-3 text-sm text-paper">
+              <option value="">All Item Types</option>
+              <option value="material">Materials</option>
+              <option value="supply">Supplies</option>
+              <option value="tool">Reusable Tools</option>
+            </select>
             <div className="ml-auto">
               <button onClick={() => setShowAddItem(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink">
                 <Plus className="h-4 w-4" /> Add Item
@@ -617,7 +655,7 @@ function InventoryWorkspace() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-ink-mid bg-ink-light/40">
-                    {["Item Code", "Description", "Category", "UOM", "Std Cost", "Hazardous", "Total Stock"].map((h) => (
+                    {["Item Code", "Description", "Type", "Category", "UOM", "Ex VAT", "VAT", "Inc VAT", "Hazardous", "Total Stock"].map((h) => (
                       <th key={h} className="px-3 py-3 text-left font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>
                     ))}
                     <th className="px-3 py-3" />
@@ -632,9 +670,12 @@ function InventoryWorkspace() {
                       <tr key={r.id} className="cursor-pointer hover:bg-ink-light/40" onClick={() => setCatalogueDetail(r)}>
                         <td className="px-3 py-2.5 font-mono text-xs text-signal">{tx(r.item_code)}</td>
                         <td className="px-3 py-2.5 font-medium text-paper">{tx(r.item_name ?? r.name ?? r.description)}</td>
+                        <td className="px-3 py-2.5 font-mono text-[10px] uppercase text-slate-light">{itemType(r.item_type)}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.category)}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.uom ?? r.unit_of_measure)}</td>
-                        <td className="px-3 py-2.5 font-mono text-slate-light">{num(r.standard_cost) > 0 ? money(r.standard_cost) : "\u2014"}</td>
+                        <td className="px-3 py-2.5 font-mono text-slate-light">{num(r.unit_price_ex_vat ?? r.standard_cost) > 0 ? money(r.unit_price_ex_vat ?? r.standard_cost) : "\u2014"}</td>
+                        <td className="px-3 py-2.5 font-mono text-slate-light">{num(r.vat_rate) > 0 ? `${num(r.vat_rate)}%` : "\u2014"}</td>
+                        <td className="px-3 py-2.5 font-mono text-slate-light">{num(r.unit_price_inc_vat ?? r.standard_cost) > 0 ? money(r.unit_price_inc_vat ?? r.standard_cost) : "\u2014"}</td>
                         <td className="px-3 py-2.5">
                           {r.is_hazardous ? (
                             <span className="inline-block border border-red-500/40 bg-red-950/20 px-2 py-0.5 font-mono text-[10px] uppercase text-red-300">Yes</span>
@@ -673,9 +714,7 @@ function InventoryWorkspace() {
               {contextualStores.map((s) => {
                 const storeItems = stockLevels.filter((r) => tx(r.store_id) === s.id || tx(r.store_name) === tx(s.name));
                 const storeValue = storeItems.reduce((sum, r) => {
-                  const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
-                  const c = num(r.standard_cost ?? r.unit_cost);
-                  return sum + q * c;
+                  return sum + stockValue(r);
                 }, 0);
                 const typeLabel = tx(s.store_type ?? s.type, "store");
                 const typeIcon = typeLabel.toLowerCase().includes("warehouse")
@@ -825,6 +864,29 @@ function InventoryWorkspace() {
               await load();
             } catch (e) {
               flash(normalizeActionError(e, "Failed to receive stock."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+        />
+      )}
+      {showInvoice && (
+        <ReceiveInvoiceModal
+          catalogue={catalogue}
+          stores={contextualStores}
+          suppliers={suppliers}
+          projects={contextualProjects}
+          saving={saving}
+          onClose={() => setShowInvoice(false)}
+          onSubmit={async (payload) => {
+            setSaving(true);
+            try {
+              await receiveInventoryInvoice(payload);
+              flash("Supplier invoice and stock receipts captured.");
+              setShowInvoice(false);
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to capture supplier invoice."));
             } finally {
               setSaving(false);
             }
@@ -1163,6 +1225,122 @@ function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onIt
   );
 }
 
+function ReceiveInvoiceModal({ catalogue, stores, suppliers, projects, saving, onClose, onSubmit }: {
+  catalogue: Rec[]; stores: Rec[]; suppliers: Rec[]; projects: Rec[]; saving: boolean;
+  onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({ supplier_id: "", store_id: "", project_id: "", invoice_number: "", supplier_invoice_ref: "", invoice_date: today, due_date: "", notes: "" });
+  const [lines, setLines] = useState([{ item_id: "", quantity: "", unit_cost: "", vat_rate: "15.5", vat_inclusive: false, description: "" }]);
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const setLine = (index: number, key: string, value: string | boolean) => {
+    setLines((current) => current.map((line, i) => i === index ? { ...line, [key]: value } : line));
+  };
+  const totals = useMemo(() => lines.reduce((acc, line) => {
+    const quantity = num(line.quantity);
+    const unit = num(line.unit_cost);
+    const rate = num(line.vat_rate);
+    const grossUnit = line.vat_inclusive && rate > 0 ? unit : unit * (1 + rate / 100);
+    const exUnit = line.vat_inclusive && rate > 0 ? unit / (1 + rate / 100) : unit;
+    acc.subtotal += quantity * exUnit;
+    acc.total += quantity * grossUnit;
+    return acc;
+  }, { subtotal: 0, total: 0 }), [lines]);
+  const validLines = lines.filter((line) => line.item_id && num(line.quantity) > 0);
+  return (
+    <ModalShell title="Capture Supplier Invoice" onClose={onClose} wide>
+      <div className="grid gap-3 md:grid-cols-3">
+        <FieldGroup label="Supplier">
+          <select value={form.supplier_id} onChange={(e) => set("supplier_id", e.target.value)} className="field">
+            <option value="">Select supplier</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{tx(s.supplier_name ?? s.name, s.id)}</option>)}
+          </select>
+        </FieldGroup>
+        <FieldGroup label="Receiving Store / Site">
+          <select value={form.store_id} onChange={(e) => set("store_id", e.target.value)} className="field">
+            <option value="">Select store</option>
+            {stores.map((s) => <option key={s.id} value={s.id}>{tx(s.name ?? s.store_name)} ({tx(s.store_code)})</option>)}
+          </select>
+        </FieldGroup>
+        <FieldGroup label="Project (optional)">
+          <select value={form.project_id} onChange={(e) => set("project_id", e.target.value)} className="field">
+            <option value="">Organisation stock</option>
+            {projects.map((p) => <option key={p.id} value={p.id}>{projectName(p)}</option>)}
+          </select>
+        </FieldGroup>
+        <FieldGroup label="AEGIS Invoice No.">
+          <input value={form.invoice_number} onChange={(e) => set("invoice_number", e.target.value)} placeholder="e.g. INV-2026-0042" className="field" />
+        </FieldGroup>
+        <FieldGroup label="Supplier Invoice Ref">
+          <input value={form.supplier_invoice_ref} onChange={(e) => set("supplier_invoice_ref", e.target.value)} placeholder="Supplier reference" className="field" />
+        </FieldGroup>
+        <FieldGroup label="Invoice Date">
+          <input type="date" value={form.invoice_date} onChange={(e) => set("invoice_date", e.target.value)} className="field" />
+        </FieldGroup>
+      </div>
+      <div className="mt-5 overflow-x-auto border border-ink-mid">
+        <table className="w-full min-w-[860px] text-sm">
+          <thead>
+            <tr className="border-b border-ink-mid bg-ink-light/40">
+              {["Item", "Qty", "Unit Cost", "VAT %", "Inclusive", "Description", ""].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[10px] uppercase text-slate">{h}</th>)}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-mid">
+            {lines.map((line, index) => (
+              <tr key={index}>
+                <td className="px-3 py-2">
+                  <select value={line.item_id} onChange={(e) => setLine(index, "item_id", e.target.value)} className="field">
+                    <option value="">Select item</option>
+                    {catalogue.map((i) => <option key={i.id} value={i.id}>{tx(i.item_code)} - {tx(i.item_name ?? i.name)}</option>)}
+                  </select>
+                </td>
+                <td className="px-3 py-2"><input type="number" min="0" value={line.quantity} onChange={(e) => setLine(index, "quantity", e.target.value)} className="field w-24" /></td>
+                <td className="px-3 py-2"><input type="number" min="0" value={line.unit_cost} onChange={(e) => setLine(index, "unit_cost", e.target.value)} className="field w-28" /></td>
+                <td className="px-3 py-2"><input type="number" min="0" value={line.vat_rate} onChange={(e) => setLine(index, "vat_rate", e.target.value)} className="field w-24" /></td>
+                <td className="px-3 py-2 text-center"><input type="checkbox" checked={line.vat_inclusive} onChange={(e) => setLine(index, "vat_inclusive", e.target.checked)} className="accent-signal" /></td>
+                <td className="px-3 py-2"><input value={line.description} onChange={(e) => setLine(index, "description", e.target.value)} placeholder="Optional" className="field" /></td>
+                <td className="px-3 py-2">
+                  <button type="button" onClick={() => setLines((current) => current.filter((_, i) => i !== index))} disabled={lines.length === 1} className="text-slate hover:text-red-300 disabled:opacity-40"><X className="h-4 w-4" /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <button type="button" onClick={() => setLines((current) => [...current, { item_id: "", quantity: "", unit_cost: "", vat_rate: "15.5", vat_inclusive: false, description: "" }])} className="inline-flex h-9 items-center gap-2 border border-ink-mid px-3 font-mono text-xs uppercase text-slate-light hover:border-signal hover:text-paper">
+          <Plus className="h-4 w-4" /> Add Line
+        </button>
+        <div className="flex gap-4 font-mono text-xs text-slate-light">
+          <span>Ex VAT {money(totals.subtotal)}</span>
+          <span>VAT {money(totals.total - totals.subtotal)}</span>
+          <span className="text-paper">Total {money(totals.total)}</span>
+        </div>
+      </div>
+      <FieldGroup label="Notes">
+        <input value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder="Optional invoice notes" className="field mt-3" />
+      </FieldGroup>
+      <div className="mt-6 flex justify-end gap-3">
+        <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
+        <button
+          onClick={() => onSubmit({
+            ...form,
+            supplier_invoice_ref: form.supplier_invoice_ref || undefined,
+            due_date: form.due_date || undefined,
+            project_id: form.project_id || undefined,
+            lines: validLines.map((line) => ({ ...line, quantity: Number(line.quantity), unit_cost: Number(line.unit_cost), vat_rate: Number(line.vat_rate), store_id: form.store_id, project_id: form.project_id || undefined })),
+          })}
+          disabled={saving || !form.supplier_id || !form.store_id || !form.invoice_number || !form.invoice_date || !validLines.length}
+          className="inline-flex h-10 items-center gap-2 border border-blue-500/50 bg-blue-950/30 px-4 font-mono text-xs font-bold uppercase text-blue-300 disabled:opacity-50 hover:bg-blue-950/50"
+        >
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+          <ReceiptText className="h-4 w-4" /> Capture Invoice
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 // Minimal supplier creation for use inline from Receive Stock, when the
 // supplier doesn't exist yet - full registration (tax numbers, portal
 // login, etc.) still happens on the Procurement > Suppliers page.
@@ -1295,11 +1473,30 @@ function AdjustStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
 }
 
 function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
-  const [form, setForm] = useState({ item_code: "", item_name: "", category: "", uom: "", standard_cost: "", reorder_level: "", is_hazardous: false, description: "" });
+  const [form, setForm] = useState({
+    item_code: "",
+    item_name: "",
+    item_type: "material",
+    category: "",
+    uom: "",
+    standard_cost: "",
+    reorder_level: "",
+    vat_rate: "15.5",
+    vat_inclusive: false,
+    apply_zimra_vat: true,
+    is_hazardous: false,
+    description: "",
+  });
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
   const submit = () => {
     const { uom, ...itemPayload } = form;
-    onSubmit({ ...itemPayload, unit_of_measure: uom, standard_cost: Number(form.standard_cost), reorder_level: Number(form.reorder_level) });
+    onSubmit({
+      ...itemPayload,
+      unit_of_measure: uom,
+      standard_cost: Number(form.standard_cost),
+      reorder_level: Number(form.reorder_level),
+      vat_rate: form.apply_zimra_vat ? Number(form.vat_rate || 15.5) : 0,
+    });
   };
   return (
     <ModalShell title="Add Catalogue Item" onClose={onClose}>
@@ -1310,18 +1507,38 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
         <FieldGroup label="Item Name">
           <input value={form.item_name} onChange={(e) => set("item_name", e.target.value)} placeholder="e.g. Portland Cement 50kg" className="field" />
         </FieldGroup>
+        <FieldGroup label="Item Type">
+          <select value={form.item_type} onChange={(e) => set("item_type", e.target.value)} className="field">
+            <option value="material">Material</option>
+            <option value="supply">Supply</option>
+            <option value="tool">Reusable Tool</option>
+          </select>
+        </FieldGroup>
         <FieldGroup label="Category">
           <input value={form.category} onChange={(e) => set("category", e.target.value)} placeholder="e.g. Structural Materials" className="field" />
         </FieldGroup>
         <FieldGroup label="Unit of Measure">
           <input value={form.uom} onChange={(e) => set("uom", e.target.value)} placeholder="e.g. Bag / m\u00b3 / kg" className="field" />
         </FieldGroup>
-        <FieldGroup label="Standard Cost (USD)">
+        <FieldGroup label="Unit Price Before VAT (USD)">
           <input type="number" min="0" value={form.standard_cost} onChange={(e) => set("standard_cost", e.target.value)} placeholder="0.00" className="field" />
         </FieldGroup>
         <FieldGroup label="Reorder Level">
           <input type="number" min="0" value={form.reorder_level} onChange={(e) => set("reorder_level", e.target.value)} placeholder="Min qty before alert" className="field" />
         </FieldGroup>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-light">
+          <input type="checkbox" checked={form.apply_zimra_vat} onChange={(e) => set("apply_zimra_vat", e.target.checked)} className="accent-signal" />
+          Apply ZIMRA VAT
+        </label>
+        <div className="grid grid-cols-2 gap-3">
+          <FieldGroup label="VAT Rate %">
+            <input type="number" min="0" value={form.vat_rate} onChange={(e) => set("vat_rate", e.target.value)} disabled={!form.apply_zimra_vat} className="field disabled:opacity-40" />
+          </FieldGroup>
+          <label className="flex cursor-pointer items-center gap-2 pt-5 text-sm text-slate-light">
+            <input type="checkbox" checked={form.vat_inclusive} onChange={(e) => set("vat_inclusive", e.target.checked)} className="accent-signal" />
+            Entered price already includes VAT
+          </label>
+        </div>
         <div className="md:col-span-2">
           <FieldGroup label="Description">
             <input value={form.description} onChange={(e) => set("description", e.target.value)} placeholder="Optional description" className="field" />
@@ -1661,10 +1878,10 @@ function CatalogueDetailPanel({ item, stockLevels, movements, onClose }: { item:
   );
 }
 
-function ModalShell({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+function ModalShell({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-xl border border-ink-mid bg-ink shadow-2xl">
+      <div className={`w-full ${wide ? "max-w-5xl" : "max-w-xl"} border border-ink-mid bg-ink shadow-2xl`}>
         <header className="flex items-center justify-between border-b border-ink-mid p-5">
           <h2 className="font-mono text-sm font-bold uppercase tracking-wider text-paper">{title}</h2>
           <button onClick={onClose} className="border border-ink-mid p-1.5 text-slate-light hover:border-signal hover:text-paper"><X className="h-4 w-4" /></button>

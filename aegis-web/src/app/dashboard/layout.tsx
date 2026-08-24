@@ -1,8 +1,6 @@
 import DashboardShell from "./DashboardShell";
 import { LiveDataProvider } from "@/lib/live/LiveDataProvider";
 
-export const dynamic = "force-dynamic";
-
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <LiveDataProvider>

@@ -46,6 +46,19 @@ EXECUTIVE_HEALTH_SOURCES: Dict[str, Dict[str, str | None]] = {
     "core.compliance_items": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
 }
 
+ZIMBABWE_REGIONS: List[Dict[str, Any]] = [
+    {"name": "Bulawayo", "latitude": -20.1325, "longitude": 28.6265},
+    {"name": "Harare", "latitude": -17.8252, "longitude": 31.0335},
+    {"name": "Manicaland", "latitude": -18.9216, "longitude": 32.1746},
+    {"name": "Mashonaland Central", "latitude": -16.7644, "longitude": 31.0794},
+    {"name": "Mashonaland East", "latitude": -18.5872, "longitude": 31.2626},
+    {"name": "Mashonaland West", "latitude": -17.4851, "longitude": 29.7889},
+    {"name": "Masvingo", "latitude": -20.0744, "longitude": 30.8327},
+    {"name": "Matabeleland North", "latitude": -18.5332, "longitude": 27.5496},
+    {"name": "Matabeleland South", "latitude": -21.0523, "longitude": 29.0459},
+    {"name": "Midlands", "latitude": -19.0552, "longitude": 29.6035},
+]
+
 
 async def _rows(
     db: AsyncSession,
@@ -319,7 +332,7 @@ async def get_regional_footprint(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Aggregate the regional footprint from project records; no seeded locations."""
+    """Aggregate the regional footprint from project records over all Zimbabwe provinces."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
     projects = await _rows(
@@ -371,7 +384,18 @@ async def get_regional_footprint(
         source_errors=source_errors,
     )
 
-    grouped: Dict[str, Dict[str, Any]] = {}
+    grouped: Dict[str, Dict[str, Any]] = {
+        region["name"]: {
+            "name": region["name"],
+            "projects": [],
+            "crm_records": [],
+            "active_projects": 0,
+            "latitude": region["latitude"],
+            "longitude": region["longitude"],
+            "is_seeded_region": True,
+        }
+        for region in ZIMBABWE_REGIONS
+    }
     for record in [*projects, *opportunities, *tenders]:
         region = record.pop("region") or "Unassigned"
         bucket = grouped.setdefault(
@@ -383,6 +407,7 @@ async def get_regional_footprint(
                 "active_projects": 0,
                 "latitude": None,
                 "longitude": None,
+                "is_seeded_region": False,
             },
         )
         if bucket["latitude"] is None and record.get("latitude") is not None:
@@ -400,7 +425,7 @@ async def get_regional_footprint(
 
     return {
         "success": True,
-        "data": list(grouped.values()),
+        "data": sorted(grouped.values(), key=lambda item: str(item["name"])),
         "message": "Regional footprint fetched.",
         "meta": {"total": len(grouped), "source_errors": source_errors},
     }
@@ -629,9 +654,15 @@ async def get_executive_stats(
 
     # 5. Inventory value
     try:
-        inv_query = text(
-            "SELECT COALESCE(SUM(stock_quantity * standard_cost), 0) FROM procurement.inventory_items WHERE organization_id = :org_id AND is_deleted = false"
-        )
+        inv_query = text("""
+            SELECT COALESCE(SUM(sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)), 0)
+            FROM procurement.stock_ledger sl
+            JOIN procurement.inventory_items i
+              ON i.id = sl.item_id
+             AND i.organization_id = sl.organization_id
+             AND i.is_deleted = false
+            WHERE sl.organization_id = :org_id
+        """)
         inv_res = await db.execute(inv_query, {"org_id": org_id})
         inventory_value = inv_res.scalar() or 0.0
     except Exception:

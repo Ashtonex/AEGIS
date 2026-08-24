@@ -340,6 +340,7 @@ function ModuleGateway({ modules }: { modules: ApiData[] }) {
 }
 
 function RegionalFootprint({ regions }: { regions: ApiData[] }) {
+  const [selectedName, setSelectedName] = useState("");
   const minLat = -23.0;
   const maxLat = -15.0;
   const minLong = 24.0;
@@ -356,6 +357,9 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
       return lat !== null && long !== null && lat !== 0 && long !== 0;
     }
   );
+  const selectedRegion = regions.find((region) => String(region.name) === selectedName) || validCoordsRegions[0] || regions[0];
+  const selectedProjects = Array.isArray(selectedRegion?.projects) ? selectedRegion.projects as ApiData[] : [];
+  const selectedCrm = Array.isArray(selectedRegion?.crm_records) ? selectedRegion.crm_records as ApiData[] : [];
 
   return (
     <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] xl:col-span-2 min-h-[340px] flex flex-col">
@@ -370,7 +374,7 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
       {regions.length ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 flex-1">
           <div className="p-4 border-b lg:border-b-0 lg:border-r border-ink-mid flex flex-col justify-between">
-            <div className="relative w-full aspect-square max-h-[220px] border border-ink-mid bg-ink-light/50 rounded-md overflow-hidden flex items-center justify-center p-2">
+            <div className="relative w-full aspect-square max-h-[260px] border border-ink-mid bg-ink-light/50 rounded-md overflow-hidden flex items-center justify-center p-2">
               {validCoordsRegions.length > 0 ? (
                 <svg className="w-full h-full relative z-10" viewBox="0 0 100 100">
                   <line x1="50" y1="0" x2="50" y2="100" stroke="#1e293b" strokeWidth="0.5" strokeDasharray="2,2" />
@@ -383,19 +387,19 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
                     const y = (1 - (lat - minLat) / (maxLat - minLat)) * 80 + 10;
 
                     return (
-                      <g key={String(region.name)} className="group cursor-pointer">
+                      <g key={String(region.name)} className="group cursor-pointer" onClick={() => setSelectedName(String(region.name))}>
                         <circle
                           cx={x}
                           cy={y}
-                          r="4"
+                          r={String(region.name) === String(selectedRegion?.name) ? "5" : "4"}
                           className="fill-signal/20 stroke-signal/40 animate-ping"
                           style={{ animationDuration: '3s' }}
                         />
                         <circle
                           cx={x}
                           cy={y}
-                          r="2"
-                          className="fill-signal stroke-paper stroke-[0.5px]"
+                          r={String(region.name) === String(selectedRegion?.name) ? "3" : "2"}
+                          className={String(region.name) === String(selectedRegion?.name) ? "fill-paper stroke-signal stroke-[0.8px]" : "fill-signal stroke-paper stroke-[0.5px]"}
                         />
                         <title>{`${String(region.name)} (${lat.toFixed(4)}, ${long.toFixed(4)})`}</title>
                       </g>
@@ -415,14 +419,14 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-2">
-              {regions.slice(0, 2).map((region) => (
-                <div key={String(region.name)} className="border border-ink-mid bg-ink-light p-2.5 rounded-md">
+              {regions.map((region) => (
+                <button key={String(region.name)} type="button" onClick={() => setSelectedName(String(region.name))} className={`border bg-ink-light p-2.5 rounded-md text-left ${String(region.name) === String(selectedRegion?.name) ? "border-signal" : "border-ink-mid hover:border-signal/50"}`}>
                   <span className="font-mono text-[9px] text-slate uppercase block">Region Profile</span>
                   <h4 className="font-semibold text-xs text-paper mt-0.5 truncate">{String(region.name)}</h4>
                   <span className="text-[9px] font-mono text-slate-light block mt-1">
                     {region.latitude && region.longitude ? `${Number(region.latitude).toFixed(2)}°, ${Number(region.longitude).toFixed(2)}°` : "No Coordinates"}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -431,13 +435,13 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
             <div className="space-y-4">
               <h3 className="font-mono text-[9px] text-slate uppercase tracking-wider">Project Density Distribution</h3>
               <div className="space-y-3">
-                {regions.slice(0, 4).map((region) => {
+                {regions.map((region) => {
                   const active = Number(region.active_projects || 0);
                   const total = Math.max(1, Array.isArray(region.projects) ? region.projects.length : 0);
                   const pct = Math.min(100, Math.round((active / total) * 100));
 
                   return (
-                    <div key={String(region.name)} className="space-y-1">
+                    <button key={String(region.name)} type="button" onClick={() => setSelectedName(String(region.name))} className="w-full space-y-1 text-left">
                       <div className="flex justify-between text-xs font-mono">
                         <span className="text-paper">{String(region.name)}</span>
                         <span className="text-slate-light">{active} / {total} Active ({pct})</span>
@@ -448,10 +452,26 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
                           style={{ width: `${pct}%` }}
                         />
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
+              {selectedRegion ? (
+                <div className="mt-4 border border-ink-mid bg-ink-light p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="font-mono text-xs uppercase text-paper">{String(selectedRegion.name)}</h4>
+                    <span className="font-mono text-[10px] text-slate-light">{selectedProjects.length} projects · {selectedCrm.length} CRM</span>
+                  </div>
+                  <div className="mt-3 max-h-36 space-y-2 overflow-y-auto pr-1">
+                    {[...selectedProjects, ...selectedCrm].length ? [...selectedProjects, ...selectedCrm].map((record) => (
+                      <div key={`${String(record.source_type)}-${String(record.id)}`} className="border border-ink-mid/60 bg-ink px-2 py-1.5">
+                        <p className="truncate text-xs font-semibold text-paper">{displayValue(record.name)}</p>
+                        <p className="font-mono text-[10px] uppercase text-slate-light">{displayValue(record.source_type)} · {displayValue(record.status)}</p>
+                      </div>
+                    )) : <p className="text-xs text-slate-light">No project or CRM records pinned to this province yet.</p>}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-6 border-t border-ink-mid pt-4 overflow-x-auto">

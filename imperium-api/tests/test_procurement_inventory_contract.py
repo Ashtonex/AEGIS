@@ -256,6 +256,34 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("require_ref(\n        db, \"procurement.inventory_items\", payload.item_id", INV)
         self.assertIn("inventory_service.receive_stock", INV)
 
+    def test_inventory_supports_tools_zimra_vat_and_full_invoice_receipt(self):
+        for marker in [
+            "item_type, vat_rate, vat_inclusive, unit_price_ex_vat",
+            '"apply_zimra_vat" in normalized',
+            'normalized["vat_rate"] = Decimal("15.5")',
+            '"tool"',
+        ]:
+            self.assertIn(marker, INV_ITEMS)
+        for marker in [
+            "InventoryInvoiceReceiptPayload",
+            '@router.post("/receive-invoice"',
+            'require_permission("procurement.invoice.create")',
+            "procurement.supplier_invoice_lines",
+            'source_type="supplier_invoice"',
+            "inventory.invoice_received.v1",
+        ]:
+            self.assertIn(marker, INV)
+        self.assertIn("receiveInventoryInvoice", WEB_API)
+        for marker in [
+            "Capture Invoice",
+            "ReceiveInvoiceModal",
+            "Reusable Tool",
+            "Apply ZIMRA VAT",
+            "unit_price_inc_vat",
+            "stockValue(row)",
+        ]:
+            self.assertIn(marker, INVENTORY_PAGE)
+
     def test_procurement_page_degrades_supporting_sources_without_killing_workflow(
         self,
     ):

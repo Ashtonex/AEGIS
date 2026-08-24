@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
@@ -142,7 +142,6 @@ const MODULE_GROUPS: ModuleGroup[] = [
       },
       { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck },
       { name: "Teams", href: "/dashboard/crm/teams", icon: Users },
-      { name: "Pursuit Teams", href: "/dashboard/crm/pursuit-teams", icon: Users, requiredPermission: "pursuit_teams.read" },
     ],
   },
   {
@@ -362,6 +361,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { session, role, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
   const [time, setTime] = useState("");
@@ -557,6 +557,13 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     }
   }, [tourStorageKey]);
 
+  const prefetchRoute = useCallback(
+    (href: string) => {
+      router.prefetch(href);
+    },
+    [router]
+  );
+
   useEffect(() => {
     if (!activeGroup) return;
     setOpenGroups((current) => ({ ...current, [activeGroup.name]: true }));
@@ -637,6 +644,9 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                     <Link
                       key={sub.name}
                       href={sub.href}
+                      prefetch
+                      onMouseEnter={() => prefetchRoute(sub.href)}
+                      onFocus={() => prefetchRoute(sub.href)}
                       className={`flex min-w-0 items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
                         isSubCurrent
                           ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
@@ -661,7 +671,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // placeholder "System User" data) closes the window where protected
   // content could flash before AuthContext's redirect-to-/login fires.
   //
-  if (isLoading || !session) {
+  if (!session || (isLoading && sessionLoading)) {
     return (
       <div className="min-h-screen bg-ink flex items-center justify-center">
         <div className="h-6 w-6 rounded-full border-2 border-signal border-t-transparent animate-spin" />

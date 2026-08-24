@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
+  output: process.env.NODE_ENV === "production" ? "standalone" : undefined,
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -29,6 +29,11 @@ const nextConfig: NextConfig = {
         source: "/login/supplier",
         destination: "/login",
         permanent: true,
+      },
+      {
+        source: "/dashboard/crm/pursuit-teams",
+        destination: "/dashboard/crm/teams",
+        permanent: false,
       },
     ];
   },
