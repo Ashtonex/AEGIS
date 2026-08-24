@@ -315,6 +315,20 @@ async function getApiHeaders(headersInit?: HeadersInit): Promise<Headers> {
   return headers;
 }
 
+async function ensureAuthorizationHeader(headers: Headers, timeoutMs?: number): Promise<boolean> {
+  if (headers.has("Authorization") || process.env.AEGIS_BUILD_PHASE === "true") {
+    return headers.has("Authorization");
+  }
+
+  const token = await getSupabaseAccessToken(timeoutMs);
+  if (!token) {
+    return false;
+  }
+
+  headers.set("Authorization", `Bearer ${token}`);
+  return true;
+}
+
 function createIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `web-${crypto.randomUUID()}`;
@@ -454,11 +468,24 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
 
     timeoutId = setTimeout(() => controller.abort(timeoutReason()), timeoutMs);
 
-    const response = await fetch(url, {
+    let sentAuthorization = headers.has("Authorization");
+    let response = await fetch(url, {
       ...requestOptions,
       headers,
       signal: controller.signal
     });
+
+    if (response.status === 401 && !sentAuthorization) {
+      const retryHeaders = new Headers(headers);
+      sentAuthorization = await ensureAuthorizationHeader(retryHeaders, 10000);
+      if (sentAuthorization && !controller.signal.aborted) {
+        response = await fetch(url, {
+          ...requestOptions,
+          headers: retryHeaders,
+          signal: controller.signal
+        });
+      }
+    }
 
     if (!response.ok) {
       throw await buildApiError(response);
