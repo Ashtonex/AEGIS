@@ -68,6 +68,15 @@ function isRoleRestricted(userRole: string, restrictedRoles?: string[]): boolean
   return restrictedRoles.some((role) => role.toLowerCase().trim() === normUser);
 }
 
+function isExactRole(userRole: string, roles: string[]): boolean {
+  const normUser = userRole.toLowerCase().trim();
+  return roles.some((role) => role.toLowerCase().trim() === normUser);
+}
+
+function isSuperAdminRole(userRole: string): boolean {
+  return userRole.toLowerCase().trim() === "superadmin";
+}
+
 const SITE_FIELD_ROLES = ["FOREMAN", "Site Clerk", "Site Engineer", "Site Agent"];
 const SITE_FIELD_DASHBOARD_GROUPS = new Set(["Messages", "Notifications", "Site Operations", "Settings"]);
 
@@ -447,8 +456,8 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   }, [session?.access_token, isPortalRoute]);
 
   const hasPermission = useCallback(
-    (requiredPermission?: string) => !requiredPermission || !permissions || permissions.has(requiredPermission),
-    [permissions]
+    (requiredPermission?: string) => isSuperAdminRole(userRole) || !requiredPermission || !permissions || permissions.has(requiredPermission),
+    [permissions, userRole]
   );
 
   useEffect(() => {
@@ -493,7 +502,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
   const visibleGroups = useMemo(
     () => {
-      const isSiteFieldRole = matchesRole(userRole, SITE_FIELD_ROLES);
+      const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);
       return isPortalRoute
         ? portalGroups
         : MODULE_GROUPS.filter(

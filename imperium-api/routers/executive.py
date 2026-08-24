@@ -12,6 +12,20 @@ from app.shared.sql import tenant_relation_summary_sql
 
 router = APIRouter()
 
+PROJECT_TERMINAL_STATUSES = (
+    "cancelled",
+    "canceled",
+    "closed",
+    "complete",
+    "completed",
+    "archived",
+    "lost",
+)
+PROJECT_OPEN_STATUS_SQL = (
+    "lower(COALESCE(p.status, '')) NOT IN "
+    "('cancelled', 'canceled', 'closed', 'complete', 'completed', 'archived', 'lost')"
+)
+
 
 async def _rows(
     db: AsyncSession,
@@ -49,7 +63,8 @@ async def get_executive_kpis(
     db: AsyncSession = Depends(get_db),
 ):
     """Fetch high-level KPIs for the Executive Dashboard."""
-    # This fetches from the new executive.kpi_snapshots table
+    org_id = user["org_id"]
+    source_errors: List[Dict[str, Any]] = []
     query = text("""
         SELECT 
             cash_survival_days,
@@ -62,7 +77,7 @@ async def get_executive_kpis(
         ORDER BY snapshot_date DESC
         LIMIT 1
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {"org_id": org_id})
     snapshot = result.fetchone()
 
     # A missing snapshot is not a zero-performance result. Keep it explicit so
@@ -79,11 +94,133 @@ async def get_executive_kpis(
         }
     )
 
+    if not snapshot:
+        source_errors.append(
+            {
+                "source": "executive.kpi_snapshots",
+                "status": "no_data",
+                "reason": "No executive KPI snapshot rows found; live fallbacks applied where available.",
+            }
+        )
+
+    live_rows = await _rows(
+        db,
+        f"""
+        SELECT
+            COUNT(*) FILTER (WHERE {PROJECT_OPEN_STATUS_SQL}) AS open_projects,
+            NULLIF(COALESCE(SUM(COALESCE(p.contract_value, 0)) FILTER (WHERE {PROJECT_OPEN_STATUS_SQL}), 0), 0) AS portfolio_value
+        FROM projects.projects p
+        WHERE p.organization_id = :org_id AND p.is_deleted = false
+        """,
+        {"org_id": org_id},
+        source="kpis.projects",
+        source_errors=source_errors,
+    )
+    if live_rows:
+        data["active_projects_count"] = int(live_rows[0].get("open_projects") or 0)
+
+    pipeline_rows = await _rows(
+        db,
+        """
+        SELECT
+            COALESCE(
+                (SELECT SUM(COALESCE(deal_value, budget))
+                 FROM crm.opportunities
+                 WHERE organization_id = :org_id
+                   AND is_deleted = false
+                   AND COALESCE(win_loss_status, '') <> 'lost'
+                   AND lower(COALESCE(stage, '')) NOT IN ('contract', 'lost')),
+                0
+            )
+            +
+            COALESCE(
+                (SELECT SUM(bid_amount)
+                 FROM crm.tenders
+                 WHERE organization_id = :org_id
+                   AND is_deleted = false
+                   AND lower(COALESCE(stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled', 'canceled')),
+                0
+            ) AS pipeline_value
+        """,
+        {"org_id": org_id},
+        source="kpis.pipeline",
+        source_errors=source_errors,
+    )
+    if pipeline_rows:
+        data["pipeline"] = f"${float(pipeline_rows[0].get('pipeline_value') or 0):,.2f}"
+
+    finance_rows = await _rows(
+        db,
+        """
+        SELECT
+            NULLIF(COALESCE(SUM(COALESCE(certified_amount, net_claim_amount, this_claim_amount)), 0), 0) AS revenue_ytd
+        FROM finance.progress_claims
+        WHERE organization_id = :org_id
+          AND is_deleted = false
+          AND COALESCE(claim_period_end, claim_period_start, created_at::date) >= date_trunc('year', CURRENT_DATE)::date
+          AND lower(COALESCE(status, '')) NOT IN ('rejected', 'cancelled', 'canceled')
+        """,
+        {"org_id": org_id},
+        source="kpis.progress_claims",
+        source_errors=source_errors,
+    )
+    cost_rows = await _rows(
+        db,
+        """
+        SELECT NULLIF(COALESCE(SUM(amount), 0), 0) AS cost_ytd
+        FROM finance.cost_transactions
+        WHERE organization_id = :org_id
+          AND transaction_date >= date_trunc('year', CURRENT_DATE)::date
+          AND lower(COALESCE(status, '')) NOT IN ('void', 'cancelled', 'canceled', 'rejected')
+        """,
+        {"org_id": org_id},
+        source="kpis.cost_transactions",
+        source_errors=source_errors,
+    )
+    revenue_ytd = float(finance_rows[0].get("revenue_ytd") or 0) if finance_rows else 0
+    cost_ytd = float(cost_rows[0].get("cost_ytd") or 0) if cost_rows else 0
+    if revenue_ytd > 0:
+        data["revenue"] = f"${revenue_ytd:,.2f}"
+        data["margin"] = f"{((revenue_ytd - cost_ytd) / revenue_ytd) * 100:.2f}%"
+
+    concentration_rows = await _rows(
+        db,
+        f"""
+        WITH client_totals AS (
+            SELECT COALESCE(NULLIF(client_name, ''), client_org_id::text, 'Unassigned') AS client_key,
+                   SUM(COALESCE(contract_value, 0)) AS contract_value
+            FROM projects.projects p
+            WHERE p.organization_id = :org_id
+              AND p.is_deleted = false
+              AND {PROJECT_OPEN_STATUS_SQL}
+            GROUP BY 1
+        )
+        SELECT
+            CASE WHEN SUM(contract_value) > 0
+                 THEN ROUND(MAX(contract_value) / SUM(contract_value) * 100, 2)
+                 ELSE NULL
+            END AS concentration_percent
+        FROM client_totals
+        """,
+        {"org_id": org_id},
+        source="kpis.client_concentration",
+        source_errors=source_errors,
+    )
+    if (
+        data.get("revenue_concentration_percent") is None
+        and concentration_rows
+        and concentration_rows[0].get("concentration_percent") is not None
+    ):
+        data["revenue_concentration_percent"] = concentration_rows[0]["concentration_percent"]
+
     return {
         "success": True,
         "data": data,
         "message": "Executive KPIs fetched.",
-        "meta": {"source_status": "available" if snapshot else "unavailable"},
+        "meta": {
+            "source_status": "snapshot" if snapshot else "live_fallback",
+            "source_errors": source_errors,
+        },
     }
 
 
@@ -235,13 +372,10 @@ async def get_regional_footprint(
             bucket["projects"].append(record)
         else:
             bucket["crm_records"].append(record)
-        if record.get("source_type") == "project" and str(record.get("status", "")).lower() in {
-            "active",
-            "in progress",
-            "ongoing",
-            "live",
-            "execution",
-        }:
+        if (
+            record.get("source_type") == "project"
+            and str(record.get("status", "")).lower() not in PROJECT_TERMINAL_STATUSES
+        ):
             bucket["active_projects"] += 1
 
     return {
@@ -264,7 +398,7 @@ async def get_active_projects(
         SELECT to_jsonb(p) AS project
         FROM projects.projects p
         WHERE organization_id = :org_id AND is_deleted = false
-          AND lower(COALESCE(status, '')) IN ('active', 'in progress', 'ongoing', 'live', 'execution')
+          AND lower(COALESCE(status, '')) NOT IN ('cancelled', 'canceled', 'closed', 'complete', 'completed', 'archived', 'lost')
         ORDER BY updated_at DESC
     """,
         {"org_id": user["org_id"]},
@@ -426,7 +560,13 @@ async def get_executive_stats(
     # 1. Projects count
     try:
         proj_query = text(
-            "SELECT COUNT(*) FROM projects.projects WHERE organization_id = :org_id AND is_deleted = false"
+            f"""
+            SELECT COUNT(*)
+            FROM projects.projects p
+            WHERE p.organization_id = :org_id
+              AND p.is_deleted = false
+              AND {PROJECT_OPEN_STATUS_SQL}
+            """
         )
         proj_res = await db.execute(proj_query, {"org_id": org_id})
         projects_count = proj_res.scalar() or 0

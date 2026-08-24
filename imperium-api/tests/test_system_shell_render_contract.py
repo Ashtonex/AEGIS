@@ -32,6 +32,13 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn("isPortalRoute\n        ? portalGroups", DASHBOARD_SHELL)
         self.assertIn('subItems: [{ name: "Workspace", href: portalHome.href, icon: portalHome.icon }]', DASHBOARD_SHELL)
 
+    def test_superadmin_sidebar_is_not_collapsed_by_field_role_filter(self):
+        self.assertIn("function isExactRole(userRole: string, roles: string[]): boolean", DASHBOARD_SHELL)
+        self.assertIn("function isSuperAdminRole(userRole: string): boolean", DASHBOARD_SHELL)
+        self.assertIn("const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
+        self.assertNotIn("const isSiteFieldRole = matchesRole(userRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
+        self.assertIn("isSuperAdminRole(userRole) || !requiredPermission", DASHBOARD_SHELL)
+
     def test_top_nav_and_mobile_drawer_have_non_overlapping_layout(self):
         self.assertIn('className="fixed top-0 inset-x-0 h-14', DASHBOARD_SHELL)
         self.assertIn('className="box-border flex h-full min-h-0 overflow-hidden pt-14"', DASHBOARD_SHELL)
