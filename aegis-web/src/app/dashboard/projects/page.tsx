@@ -41,6 +41,7 @@ import {
   getProductionRevenue, addProductionRevenue,
   updateProjectPreMobilisationCheck, approveProjectPreMobilisation,
   getProjectCommercialReadiness, updateProjectCommercialReadiness, clearProjectCommercialReadiness,
+  getCrmOrganizations, getCrmContacts,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -67,6 +68,8 @@ type Project = Record<string, unknown> & {
   end_date?: string;
   health?: string;
   project_code?: string;
+  client_org_id?: string;
+  client_id?: string;
   client_name?: string;
   client?: string;
   department_id?: string;
@@ -76,6 +79,8 @@ type Project = Record<string, unknown> & {
 };
 
 type Department = { id: string; code: string; name: string };
+type ClientOrganization = { id: string; name: string; lifecycle_stage?: string; account_status?: string };
+type ClientContact = { id: string; contact_name?: string; first_name?: string; last_name?: string; email?: string; phone?: string; client_org_id?: string };
 
 type Detail = Record<string, unknown> & { 
   project?: Project; 
@@ -157,6 +162,11 @@ function title(project: Project) {
   return text(project.name ?? project.project_name ?? project.project_code ?? project.id); 
 }
 
+function contactLabel(contact: ClientContact) {
+  const fullName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim();
+  return text(contact.contact_name ?? fullName ?? contact.email ?? contact.phone, "Unnamed contact");
+}
+
 function statusTone(status: unknown) {
   const normalized = text(status, "unknown").toLowerCase();
   if (riskStatuses.has(normalized)) return "border-red-500/30 bg-red-950/20 text-red-300";
@@ -192,6 +202,8 @@ function ProjectsWorkspace() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [clientOrganizations, setClientOrganizations] = useState<ClientOrganization[]>([]);
+  const [clientContacts, setClientContacts] = useState<ClientContact[]>([]);
   const [viewMode, setViewMode] = useState<"list" | "kanban">("list");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
 
@@ -199,6 +211,12 @@ function ProjectsWorkspace() {
     getFinanceDepartments()
       .then((res) => setDepartments(res.data || []))
       .catch(() => setDepartments([]));
+    getCrmOrganizations()
+      .then((res) => setClientOrganizations(res.data || []))
+      .catch(() => setClientOrganizations([]));
+    getCrmContacts()
+      .then((res) => setClientContacts(res.data || []))
+      .catch(() => setClientContacts([]));
   }, []);
 
   const normalizeError = useCallback((value: unknown, fallback: string) => {
@@ -459,6 +477,8 @@ function ProjectsWorkspace() {
       {isCreateOpen && (
         <CreateProjectModal
           departments={departments}
+          clientOrganizations={clientOrganizations}
+          clientContacts={clientContacts}
           onClose={() => setIsCreateOpen(false)}
           onCreated={() => {
             setIsCreateOpen(false);
@@ -471,6 +491,8 @@ function ProjectsWorkspace() {
         <ProjectDetail
           project={selected}
           departments={departments}
+          clientOrganizations={clientOrganizations}
+          clientContacts={clientContacts}
           onDepartmentChange={(deptId) => {
             setSelected((prev) => (prev ? { ...prev, department_id: deptId } : prev));
             setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, department_id: deptId } : p)));
@@ -478,6 +500,7 @@ function ProjectsWorkspace() {
           onProjectUpdated={(patch) => {
             setSelected((prev) => (prev ? { ...prev, ...patch } : prev));
             setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, ...patch } : p)));
+            setDetail((prev) => prev ? { ...prev, project: prev.project ? { ...prev.project, ...patch } : prev.project } : prev);
           }}
           detail={detail}
           loading={detailLoading}
@@ -593,18 +616,23 @@ function ProjectPipeline({
 
 function CreateProjectModal({
   departments,
+  clientOrganizations,
+  clientContacts,
   onClose,
   onCreated,
 }: {
   departments: Department[];
+  clientOrganizations: ClientOrganization[];
+  clientContacts: ClientContact[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [form, setForm] = useState({
-    name: "", project_code: "", project_type: "", client_name: "",
+    name: "", project_code: "", project_type: "", client_org_id: "", client_name: "",
     contract_value: "", start_date: "", planned_completion_date: "", department_id: "",
   });
   const [initiatedBy, setInitiatedBy] = useState<"client" | "company">("client");
+  const [clientType, setClientType] = useState<"organization" | "individual">("organization");
   const [durationValue, setDurationValue] = useState("");
   const [durationUnit, setDurationUnit] = useState<"weeks" | "months">("weeks");
   const [busy, setBusy] = useState(false);
@@ -625,6 +653,8 @@ function CreateProjectModal({
         name: form.name.trim(),
         project_code: form.project_code || undefined,
         project_type: form.project_type || undefined,
+        client_org_id: initiatedBy === "client" && clientType === "organization" ? (form.client_org_id || undefined) : undefined,
+        client_id: initiatedBy === "client" && clientType === "individual" ? (form.client_org_id || undefined) : undefined,
         client_name: initiatedBy === "client" ? (form.client_name || undefined) : undefined,
         contract_value: initiatedBy === "client" && form.contract_value ? Number(form.contract_value) : undefined,
         start_date: initiatedBy === "client" ? (form.start_date || undefined) : undefined,
@@ -678,8 +708,45 @@ function CreateProjectModal({
           <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Project name *" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper sm:col-span-2" />
           {initiatedBy === "client" && (
             <>
-              <input value={form.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Client name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              <div className="flex h-10 border border-ink-mid bg-ink-light p-1 sm:col-span-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClientType("organization");
+                    setForm((prev) => ({ ...prev, client_org_id: "", client_name: "" }));
+                  }}
+                  className={`flex-1 font-mono text-[10px] uppercase tracking-wider ${clientType === "organization" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+                >
+                  Organisation
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClientType("individual");
+                    setForm((prev) => ({ ...prev, client_org_id: "", client_name: "" }));
+                  }}
+                  className={`flex-1 font-mono text-[10px] uppercase tracking-wider ${clientType === "individual" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+                >
+                  Individual
+                </button>
+              </div>
+              <select
+                value={form.client_org_id}
+                onChange={(e) => {
+                  const clientId = e.target.value;
+                  const contact = clientContacts.find((item) => item.id === clientId);
+                  const clientName = clientType === "organization" ? clientOrganizations.find((org) => org.id === clientId)?.name : contact ? contactLabel(contact) : undefined;
+                  setForm((prev) => ({ ...prev, client_org_id: clientId, client_name: clientName ?? prev.client_name }));
+                }}
+                className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper"
+              >
+                <option value="">{clientType === "organization" ? "Link CRM organisation" : "Link CRM individual"}</option>
+                {clientType === "organization"
+                  ? clientOrganizations.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)
+                  : clientContacts.map((contact) => <option key={contact.id} value={contact.id}>{contactLabel(contact)}</option>)}
+              </select>
               <input value={form.contract_value} onChange={(e) => set("contract_value", e.target.value)} type="number" placeholder="Contract value ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              <input value={form.client_name} onChange={(e) => set("client_name", e.target.value)} placeholder="Client display name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper sm:col-span-2" />
             </>
           )}
           <input value={form.project_code} onChange={(e) => set("project_code", e.target.value)} placeholder="Project code" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
@@ -1701,6 +1768,8 @@ function ProjectDetail({
   error,
   onClose,
   departments,
+  clientOrganizations,
+  clientContacts,
   onDepartmentChange,
   onProjectUpdated,
   onRefresh,
@@ -1712,6 +1781,8 @@ function ProjectDetail({
   error: string | null;
   onClose: () => void;
   departments: Department[];
+  clientOrganizations: ClientOrganization[];
+  clientContacts: ClientContact[];
   onDepartmentChange: (departmentId: string) => void;
   onProjectUpdated: (patch: Partial<Project>) => void;
   onRefresh: () => void;
@@ -1746,6 +1817,15 @@ function ProjectDetail({
 
   const [departmentSaving, setDepartmentSaving] = useState(false);
   const [departmentError, setDepartmentError] = useState<string | null>(null);
+  const [clientSaving, setClientSaving] = useState(false);
+  const [clientError, setClientError] = useState<string | null>(null);
+  const [clientLinkType, setClientLinkType] = useState<"organization" | "individual">(
+    source.client_id ? "individual" : "organization",
+  );
+
+  useEffect(() => {
+    setClientLinkType(source.client_id ? "individual" : "organization");
+  }, [source.client_id, source.client_org_id]);
 
   const handleDepartmentSelect = useCallback(async (event: React.ChangeEvent<HTMLSelectElement>) => {
     const deptId = event.target.value;
@@ -1760,6 +1840,32 @@ function ProjectDetail({
       setDepartmentSaving(false);
     }
   }, [project.id, onDepartmentChange]);
+
+  const handleClientSelect = useCallback(async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const clientId = event.target.value;
+    const selectedOrg = clientOrganizations.find((org) => org.id === clientId);
+    const selectedContact = clientContacts.find((contact) => contact.id === clientId);
+    const clientName = clientLinkType === "organization" ? selectedOrg?.name : selectedContact ? contactLabel(selectedContact) : undefined;
+    setClientSaving(true);
+    setClientError(null);
+    try {
+      const response = await updateInternalProject(project.id, {
+        client_org_id: clientLinkType === "organization" ? clientId || null : null,
+        client_id: clientLinkType === "individual" ? clientId || null : null,
+        client_name: clientName ?? null,
+      });
+      const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
+      onProjectUpdated({
+        client_org_id: ((saved.client_org_id as string | undefined) ?? (clientLinkType === "organization" ? clientId : "")) || undefined,
+        client_id: ((saved.client_id as string | undefined) ?? (clientLinkType === "individual" ? clientId : "")) || undefined,
+        client_name: (saved.client_name as string | undefined) ?? clientName ?? undefined,
+      });
+    } catch (err) {
+      setClientError("Failed to link client account.");
+    } finally {
+      setClientSaving(false);
+    }
+  }, [clientContacts, clientLinkType, clientOrganizations, project.id, onProjectUpdated]);
   const viability = detail?.viability?.[0];
 
   // Region/coordinates live on projects.project_profiles, not projects.projects, so they
@@ -2020,21 +2126,55 @@ function ProjectDetail({
             <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-light">
               <MapPin className="h-3.5 w-3.5 text-signal" />{text(source.location)}
             </p>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Department</span>
-              <select
-                value={(source.department_id as string | undefined) ?? ""}
-                onChange={handleDepartmentSelect}
-                disabled={departmentSaving}
-                className="h-7 border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
-              >
-                <option value="">Unassigned</option>
-                {departments.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}</option>
-                ))}
-              </select>
-              {departmentSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
-              {departmentError && <span className="text-[10px] text-red-300">{departmentError}</span>}
+            <div className="mt-2 flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Client account</span>
+                <div className="flex h-7 border border-ink-mid bg-ink-light p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setClientLinkType("organization")}
+                    className={`px-2 font-mono text-[9px] uppercase tracking-wider ${clientLinkType === "organization" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+                  >
+                    Org
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setClientLinkType("individual")}
+                    className={`px-2 font-mono text-[9px] uppercase tracking-wider ${clientLinkType === "individual" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+                  >
+                    Person
+                  </button>
+                </div>
+                <select
+                  value={clientLinkType === "organization" ? ((source.client_org_id as string | undefined) ?? "") : ((source.client_id as string | undefined) ?? "")}
+                  onChange={handleClientSelect}
+                  disabled={clientSaving}
+                  className="h-7 max-w-[260px] border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
+                >
+                  <option value="">{clientLinkType === "organization" ? "Unlinked organisation" : "Unlinked individual"}</option>
+                  {clientLinkType === "organization"
+                    ? clientOrganizations.map((org) => <option key={org.id} value={org.id}>{org.name}</option>)
+                    : clientContacts.map((contact) => <option key={contact.id} value={contact.id}>{contactLabel(contact)}</option>)}
+                </select>
+                {clientSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+                {clientError && <span className="text-[10px] text-red-300">{clientError}</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Department</span>
+                <select
+                  value={(source.department_id as string | undefined) ?? ""}
+                  onChange={handleDepartmentSelect}
+                  disabled={departmentSaving}
+                  className="h-7 border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
+                >
+                  <option value="">Unassigned</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+                {departmentSaving && <Loader2 className="h-3.5 w-3.5 animate-spin text-signal" />}
+                {departmentError && <span className="text-[10px] text-red-300">{departmentError}</span>}
+              </div>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2">

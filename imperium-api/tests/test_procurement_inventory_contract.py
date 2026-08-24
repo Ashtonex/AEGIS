@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROC = (ROOT / "routers" / "procurement.py").read_text()
 INV = (ROOT / "routers" / "inventory.py").read_text()
+INV_ITEMS = (ROOT / "routers" / "inventory_items.py").read_text()
 INV_SERVICE = (ROOT / "app" / "services" / "inventory_service.py").read_text()
 MAIN = (ROOT / "main.py").read_text()
 WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text()
@@ -238,6 +239,22 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("Inventory catalogue could not be loaded.", INVENTORY_PAGE)
         self.assertIn("Store register could not be loaded.", INVENTORY_PAGE)
         self.assertIn("Movement history could not be loaded.", INVENTORY_PAGE)
+
+    def test_receive_stock_uses_persistent_catalogue_items(self):
+        self.assertIn("getInventoryCatalogue()", INVENTORY_PAGE)
+        self.assertIn("catalogue={catalogue}", INVENTORY_PAGE)
+        self.assertIn("set(\"item_id\", String(id))", INVENTORY_PAGE)
+        self.assertIn("unit_of_measure: uom", INVENTORY_PAGE)
+        self.assertIn("normalize_item_payload", INV_ITEMS)
+        self.assertIn('"uom" in normalized', INV_ITEMS)
+        self.assertIn('"unit_of_measure"', INV_ITEMS)
+        self.assertIn("SELECT {ITEM_RETURNING_COLUMNS}", INV_ITEMS)
+        self.assertIn("ORDER BY item_name NULLS LAST", INV_ITEMS)
+        self.assertIn("LIMIT 500", INV_ITEMS)
+        self.assertIn("delete body.uom", WEB_API)
+        self.assertIn("body.unit_of_measure = body.uom", WEB_API)
+        self.assertIn("require_ref(\n        db, \"procurement.inventory_items\", payload.item_id", INV)
+        self.assertIn("inventory_service.receive_stock", INV)
 
     def test_procurement_page_degrades_supporting_sources_without_killing_workflow(
         self,

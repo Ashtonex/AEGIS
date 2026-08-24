@@ -18,6 +18,23 @@ Description: Auto-generated CRUD endpoints for procurement.inventory_items.
 """
 
 
+ITEM_RETURNING_COLUMNS = """
+    id, organization_id, created_by, created_at, updated_at, is_deleted,
+    item_name, stock_quantity, item_code, description, category,
+    unit_of_measure, reorder_level, reorder_quantity, standard_cost,
+    is_hazardous
+"""
+
+
+def normalize_item_payload(payload: dict) -> dict:
+    normalized = dict(payload)
+    if "uom" in normalized:
+        if "unit_of_measure" not in normalized:
+            normalized["unit_of_measure"] = normalized["uom"]
+        normalized.pop("uom", None)
+    return normalized
+
+
 @router.get("/")
 async def list_items(
     user: dict = Depends(get_current_user),
@@ -29,8 +46,8 @@ async def list_items(
         SELECT *
         FROM procurement.inventory_items
         WHERE organization_id = :org_id AND is_deleted = false
-        ORDER BY created_at DESC
-        LIMIT 100
+        ORDER BY item_name NULLS LAST, created_at DESC
+        LIMIT 500
     """)
     result = await db.execute(query, {"org_id": user["org_id"]})
     items = [dict(row._mapping) for row in result]
@@ -50,7 +67,7 @@ async def create_item(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("inventory_items.create")),
 ):
-    payload = await request.json()
+    payload = normalize_item_payload(await request.json())
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -67,11 +84,19 @@ async def create_item(
 
     try:
         result = await db.execute(query, params)
+        item_id = result.scalar()
+        item_row = await db.execute(
+            text(f"""
+                SELECT {ITEM_RETURNING_COLUMNS}
+                FROM procurement.inventory_items
+                WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"item_id": item_id, "org_id": user["org_id"]},
+        )
         await db.commit()
-        new_id = str(result.scalar())
         return {
             "success": True,
-            "data": {"id": new_id},
+            "data": dict(item_row.mappings().one()),
             "message": "inventory_items created.",
             "meta": {},
         }
@@ -114,7 +139,7 @@ async def update_item(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("inventory_items.update")),
 ):
-    payload = await request.json()
+    payload = normalize_item_payload(await request.json())
     safe_keys = safe_payload_columns(payload.keys())
 
     if not safe_keys:

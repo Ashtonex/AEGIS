@@ -574,11 +574,12 @@ async def customer_360(
           AND is_deleted=false
           AND (
             client_org_id=:client_org_id
+            OR client_id = ANY(:contact_ids)
             OR client_name=CAST((SELECT name FROM crm.organizations WHERE id=:client_org_id) AS varchar)
           )
         ORDER BY updated_at DESC
         """,
-        params,
+        {**params, "contact_ids": contact_ids or [None]},
     )
     tickets = await _rows(
         db,

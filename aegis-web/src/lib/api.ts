@@ -3950,9 +3950,12 @@ export async function adjustStock(payload: Record<string, unknown>): Promise<Api
 
 /** Add a new item to the master catalogue. */
 export async function addInventoryItem(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  const body = { ...payload };
+  if (body.uom && !body.unit_of_measure) body.unit_of_measure = body.uom;
+  delete body.uom;
   return fetchApi<ApiResponse<any>>('/api/v1/inventory-items/', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
     allowFallback: false,
   });
 }

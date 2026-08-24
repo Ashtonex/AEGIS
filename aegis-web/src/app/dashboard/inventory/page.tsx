@@ -1105,9 +1105,10 @@ function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onIt
             setCreatingItem(true);
             try {
               const res = await addInventoryItem(payload);
-              const id = (res.data as Rec | undefined)?.id;
+              const saved = ((res.data as Rec | undefined) ?? {}) as Partial<Rec>;
+              const id = saved.id;
               if (!id) throw new Error("Item was not created.");
-              const created = { ...payload, id } as Rec;
+              const created = { ...payload, ...saved, id } as Rec;
               onItemCreated(created);
               set("item_id", String(id));
               setShowAddItem(false);
@@ -1296,6 +1297,10 @@ function AdjustStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
 function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
   const [form, setForm] = useState({ item_code: "", item_name: "", category: "", uom: "", standard_cost: "", reorder_level: "", is_hazardous: false, description: "" });
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
+  const submit = () => {
+    const { uom, ...itemPayload } = form;
+    onSubmit({ ...itemPayload, unit_of_measure: uom, standard_cost: Number(form.standard_cost), reorder_level: Number(form.reorder_level) });
+  };
   return (
     <ModalShell title="Add Catalogue Item" onClose={onClose}>
       <div className="grid gap-3 md:grid-cols-2">
@@ -1330,7 +1335,7 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ ...form, standard_cost: Number(form.standard_cost), reorder_level: Number(form.reorder_level) })}
+          onClick={submit}
           disabled={saving || !form.item_code || !form.item_name}
           className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
         >

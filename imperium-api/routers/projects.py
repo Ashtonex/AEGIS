@@ -74,6 +74,8 @@ class ProjectCreate(BaseModel):
     status: str = Field(default="planning", max_length=50)
     project_code: Optional[str] = Field(default=None, max_length=80)
     project_type: Optional[str] = Field(default=None, max_length=100)
+    client_org_id: Optional[UUID] = None
+    client_id: Optional[UUID] = None
     client_name: Optional[str] = Field(default=None, max_length=255)
     contract_value: Optional[Decimal] = None
     start_date: Optional[date] = None
@@ -96,6 +98,8 @@ class ProjectUpdate(BaseModel):
     status: Optional[str] = Field(default=None, max_length=50)
     project_code: Optional[str] = Field(default=None, max_length=80)
     project_type: Optional[str] = Field(default=None, max_length=100)
+    client_org_id: Optional[UUID] = None
+    client_id: Optional[UUID] = None
     client_name: Optional[str] = Field(default=None, max_length=255)
     contract_value: Optional[Decimal] = None
     start_date: Optional[date] = None
@@ -302,6 +306,42 @@ async def _project_ref_or_404(db: AsyncSession, project_ref: str, org_id: str) -
     if not row:
         raise HTTPException(status_code=404, detail="Project not found")
     return dict(row._mapping)
+
+
+async def _client_org_name_or_404(db: AsyncSession, client_org_id: UUID, org_id: str) -> str:
+    name = (
+        await db.execute(
+            text("""
+                SELECT name
+                FROM crm.organizations
+                WHERE id = :client_org_id
+                  AND organization_id = :org_id
+                  AND is_deleted = false
+            """),
+            {"client_org_id": client_org_id, "org_id": org_id},
+        )
+    ).scalar()
+    if not name:
+        raise HTTPException(status_code=404, detail="Client organization not found")
+    return str(name)
+
+
+async def _client_contact_name_or_404(db: AsyncSession, client_id: UUID, org_id: str) -> str:
+    name = (
+        await db.execute(
+            text("""
+                SELECT COALESCE(NULLIF(contact_name, ''), NULLIF(first_name || ' ' || last_name, ' '), email, phone)
+                FROM crm.contacts
+                WHERE id = :client_id
+                  AND organization_id = :org_id
+                  AND is_deleted = false
+            """),
+            {"client_id": client_id, "org_id": org_id},
+        )
+    ).scalar()
+    if not name:
+        raise HTTPException(status_code=404, detail="Individual client contact not found")
+    return str(name)
 
 
 def _result(data, message: str, total: Optional[int] = None):
@@ -566,12 +606,20 @@ async def create_project(
     fields = payload.model_dump()
     initiated_by = fields.pop("initiated_by")
     setup_duration_weeks = fields.pop("setup_duration_weeks")
+    if fields.get("client_org_id"):
+        client_org_name = await _client_org_name_or_404(db, fields["client_org_id"], user["org_id"])
+        fields["client_name"] = fields.get("client_name") or client_org_name
+        fields["client_id"] = None
+    elif fields.get("client_id"):
+        client_contact_name = await _client_contact_name_or_404(db, fields["client_id"], user["org_id"])
+        fields["client_name"] = fields.get("client_name") or client_contact_name
+        fields["client_org_id"] = None
     try:
         row = (
             await db.execute(
                 text("""
-            INSERT INTO projects.projects (name, status, project_code, project_type, client_name, contract_value, start_date, planned_completion_date, department_id, organization_id, created_by)
-            VALUES (:name, :status, :project_code, :project_type, :client_name, :contract_value, :start_date, :planned_completion_date, :department_id, :org_id, :user_id)
+            INSERT INTO projects.projects (name, status, project_code, project_type, client_org_id, client_id, client_name, contract_value, start_date, planned_completion_date, department_id, organization_id, created_by)
+            VALUES (:name, :status, :project_code, :project_type, :client_org_id, :client_id, :client_name, :contract_value, :start_date, :planned_completion_date, :department_id, :org_id, :user_id)
             RETURNING id
         """),
                 {
@@ -1716,6 +1764,14 @@ async def update_project(
     values = payload.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(status_code=400, detail="No project changes were supplied.")
+    if values.get("client_org_id"):
+        client_org_name = await _client_org_name_or_404(db, values["client_org_id"], user["org_id"])
+        values["client_name"] = values.get("client_name") or client_org_name
+        values["client_id"] = None
+    elif values.get("client_id"):
+        client_contact_name = await _client_contact_name_or_404(db, values["client_id"], user["org_id"])
+        values["client_name"] = values.get("client_name") or client_contact_name
+        values["client_org_id"] = None
     if (
         str(values.get("status") or "").lower() == "active"
         and str(current_project.get("status") or "").lower() != "active"
