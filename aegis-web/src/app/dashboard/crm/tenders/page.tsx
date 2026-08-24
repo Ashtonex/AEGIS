@@ -43,6 +43,8 @@ const STAGES = [
 ];
 
 const RESOLVED_STAGES = ['Awarded', 'Lost', 'Awarded/Lost'];
+const POST_SUBMISSION_STAGES = ['Submitted', 'Adjudication', ...RESOLVED_STAGES];
+const isPostSubmissionStage = (stage: string) => POST_SUBMISSION_STAGES.includes(stage);
 
 const CATEGORIES = [
   'Civil Works',
@@ -303,6 +305,16 @@ export default function TendersCommand() {
       return { text: `${days}d ${hours}h left`, urgency: 'warning' };
     }
     return { text: `${days}d left`, urgency: 'normal' };
+  };
+
+  const getTenderTimingStatus = (tender: Pick<Tender, 'stage' | 'submission_deadline'>) => {
+    if (isPostSubmissionStage(tender.stage)) {
+      if (tender.stage === 'Submitted') return { text: 'Submitted for review', urgency: 'submitted' };
+      if (tender.stage === 'Adjudication') return { text: 'Under adjudication', urgency: 'submitted' };
+      if (tender.stage === 'Awarded' || tender.stage === 'Awarded/Lost') return { text: 'Awarded', urgency: 'resolved' };
+      if (tender.stage === 'Lost') return { text: 'Closed - not awarded', urgency: 'resolved' };
+    }
+    return getCountdown(tender.submission_deadline);
   };
 
   const getChecklistCount = (t: Tender) => {
@@ -693,6 +705,7 @@ export default function TendersCommand() {
   });
 
   const selectedTender = tenders.find(t => t.id === selectedTenderId);
+  const selectedTenderTimingStatus = selectedTender ? getTenderTimingStatus(selectedTender) : null;
 
   // Initialize edit drawer form when drawer opens
   useEffect(() => {
@@ -899,7 +912,7 @@ export default function TendersCommand() {
               {/* Cards list */}
               <div className="flex-1 overflow-y-auto space-y-2.5 custom-scrollbar pr-1 min-h-0">
                 {stageTenders.map(t => {
-                  const countdown = getCountdown(t.submission_deadline);
+                  const timingStatus = getTenderTimingStatus(t);
                   const progress = getChecklistCount(t);
                   const bondVal = Number(t.bond_amount) || 0;
                   const isLiabilityOutstanding = t.bid_bond_secured && !RESOLVED_STAGES.includes(t.stage);
@@ -986,18 +999,20 @@ export default function TendersCommand() {
                         </div>
                       </div>
 
-                      {/* Footer with deadline countdown */}
+                      {/* Footer with bid timing/status */}
                       <div className="flex justify-between items-end border-t border-white/5 pt-2.5 mt-2">
-                        {t.submission_deadline ? (
+                        {t.submission_deadline || isPostSubmissionStage(t.stage) ? (
                           <div className="flex items-center space-x-1.5">
                             <Clock className={`w-3.5 h-3.5 ${
-                              countdown.urgency === 'critical' ? 'text-red-500 animate-pulse' :
-                              countdown.urgency === 'warning' ? 'text-[#D4AF37]' : 'text-[#3B82F6]'
+                              timingStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
+                              timingStatus.urgency === 'warning' ? 'text-[#D4AF37]' :
+                              timingStatus.urgency === 'submitted' ? 'text-emerald-400' : 'text-[#3B82F6]'
                             }`} />
                             <span className={`font-mono text-[9px] ${
-                              countdown.urgency === 'critical' ? 'text-red-400 font-bold' :
-                              countdown.urgency === 'warning' ? 'text-[#D4AF37]' : 'text-slate-light'
-                            }`}>{countdown.text}</span>
+                              timingStatus.urgency === 'critical' ? 'text-red-400 font-bold' :
+                              timingStatus.urgency === 'warning' ? 'text-[#D4AF37]' :
+                              timingStatus.urgency === 'submitted' ? 'text-emerald-300' : 'text-slate-light'
+                            }`}>{timingStatus.text}</span>
                           </div>
                         ) : (
                           <span className="font-mono text-[8px] text-slate">NO DEADLINE</span>
@@ -1563,17 +1578,18 @@ export default function TendersCommand() {
                 <AssignmentPanel entityType="tender" entityId={selectedTender.id} />
               </div>
 
-              {/* Countdown panel */}
-              {selectedTender.submission_deadline && (
+              {/* Bid timing panel */}
+              {selectedTenderTimingStatus && (selectedTender.submission_deadline || isPostSubmissionStage(selectedTender.stage)) && (
                 <div className="bg-[#111111] border border-white/5 p-4 rounded-sm font-mono text-xs flex justify-between items-center">
                   <div className="flex items-center space-x-2 text-slate-light">
                     <Clock className="w-4 h-4 text-[#3B82F6]" />
-                    <span>Countdown metric:</span>
+                    <span>{isPostSubmissionStage(selectedTender.stage) ? 'Bid status:' : 'Countdown metric:'}</span>
                   </div>
                   <span className={`font-bold tracking-widest ${
-                    getCountdown(selectedTender.submission_deadline).urgency === 'critical' ? 'text-red-500 animate-pulse' : 'text-[#3B82F6]'
+                    selectedTenderTimingStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
+                    selectedTenderTimingStatus.urgency === 'submitted' ? 'text-emerald-300' : 'text-[#3B82F6]'
                   }`}>
-                    {getCountdown(selectedTender.submission_deadline).text.toUpperCase()}
+                    {selectedTenderTimingStatus.text.toUpperCase()}
                   </span>
                 </div>
               )}
