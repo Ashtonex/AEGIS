@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, ChevronDown, Circle, FileSpreadsheet, Layers, Link2, Loader2, Lock, Plus, ShieldCheck, Trash2, TrendingUp, Users, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, ChevronDown, Circle, FileSpreadsheet, Layers, Link2, Loader2, Lock, Plus, ShieldCheck, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
 import {
   getCrmTasks,
   createCrmTask,
@@ -120,6 +120,21 @@ function groupKey(task: Task) {
   return task.entity_type && task.entity_id ? `${task.entity_type}:${task.entity_id}` : "unlinked";
 }
 
+function stackLabel(tasks: Task[]) {
+  const first = tasks[0];
+  if (!first?.entity_type) return "General tasks";
+  const name = first.entity_name || first.entity_id?.slice(0, 8) || "Unknown";
+  return `${first.entity_type} · ${name}`;
+}
+
+function isAssignedTask(task: Task) {
+  return !!task.assigned_to_user_id || !!task.assigned_to_team_id;
+}
+
+function isActiveAssignedTask(task: Task) {
+  return isAssignedTask(task) && !CLOSED_STATUSES.has(task.status);
+}
+
 const PRIORITY_BORDER: Record<Task["priority"], string> = {
   low: "border-l-ink-mid",
   normal: "border-l-ink-mid",
@@ -132,6 +147,13 @@ const DEPARTMENT_TABS: { value: string; label: string }[] = [
   { value: "construction", label: "Construction" },
   { value: "plant_equipment", label: "Plant & Equipment" },
 ];
+
+const ENTITY_STAGE_GUIDANCE: Record<string, string> = {
+  lead: "Lead work is qualification, paperwork capture, site/client follow-up, and conversion readiness.",
+  opportunity: "Opportunity work is scope clarity, pricing readiness, bid strategy, and client decision support.",
+  tender: "Tender work is BOQ, quotation, subcontractor sourcing, compliance documents, bonds, and deadline control.",
+  project: "Project work is handover, pre-mobilisation, site controls, budget discipline, requisitions, and delivery proof.",
+};
 
 export default function CrmTasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -155,6 +177,9 @@ export default function CrmTasksPage() {
   const [progressOpen, setProgressOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [assignmentView, setAssignmentView] = useState<"needs_assignment" | "assigned" | "all">("needs_assignment");
+  const [selectedStackKey, setSelectedStackKey] = useState<string>("all");
+  const [openStacks, setOpenStacks] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -207,7 +232,48 @@ export default function CrmTasksPage() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(task);
     }
-    return Array.from(map.entries());
+    return Array.from(map.entries()).sort((a, b) => stackLabel(a[1]).localeCompare(stackLabel(b[1])));
+  }, [tasks]);
+
+  const stackOptions = useMemo(() => {
+    return groups.map(([key, groupTasks]) => ({ key, label: stackLabel(groupTasks), count: groupTasks.length }));
+  }, [groups]);
+
+  const filteredGroups = useMemo(() => {
+    const byStack = selectedStackKey === "all" ? groups : groups.filter(([key]) => key === selectedStackKey);
+    return byStack
+      .map(([key, groupTasks]) => {
+        const byCompletion = showCompleted ? groupTasks : groupTasks.filter((t) => !CLOSED_STATUSES.has(t.status));
+        const byAssignment = byCompletion.filter((task) => {
+          if (assignmentView === "needs_assignment") return !isAssignedTask(task);
+          if (assignmentView === "assigned") return isActiveAssignedTask(task);
+          return true;
+        });
+        return [key, byAssignment] as [string, Task[]];
+      })
+      .filter(([, groupTasks]) => groupTasks.length > 0);
+  }, [assignmentView, groups, selectedStackKey, showCompleted]);
+
+  const boardTasks = useMemo(() => {
+    const byStack = selectedStackKey === "all" ? groups : groups.filter(([key]) => key === selectedStackKey);
+    return byStack.flatMap(([, groupTasks]) => {
+      return groupTasks.filter((task) => {
+        if (!showCompleted && CLOSED_STATUSES.has(task.status)) return false;
+        if (statusFilter !== "all" && task.status !== statusFilter) return false;
+        if (assigneeFilter !== "all" && task.assigned_to_user_id !== assigneeFilter) return false;
+        return true;
+      });
+    });
+  }, [assigneeFilter, groups, selectedStackKey, showCompleted, statusFilter]);
+
+  const assignmentSummary = useMemo(() => {
+    const openTasks = tasks.filter((task) => !CLOSED_STATUSES.has(task.status));
+    return {
+      unassigned: openTasks.filter((task) => !isAssignedTask(task)).length,
+      assigned: openTasks.filter(isAssignedTask).length,
+      underReview: openTasks.filter((task) => task.status === "under_review").length,
+      overdue: openTasks.filter(isOverdue).length,
+    };
   }, [tasks]);
 
   const workload = useMemo(() => {
@@ -370,9 +436,9 @@ export default function CrmTasksPage() {
   };
 
   return (
-    <div className="min-h-screen bg-ink p-6 text-paper">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <div className="flex items-start justify-between">
+    <div className="min-h-screen bg-ink px-4 py-6 text-paper sm:px-6 xl:px-8">
+      <div className="mx-auto w-full max-w-[1500px] space-y-6">
+        <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <Link href="/dashboard/crm" className="inline-flex items-center gap-1.5 text-xs text-slate-light hover:text-paper">
               <ArrowLeft className="h-3.5 w-3.5" /> Back to CRM
@@ -396,6 +462,41 @@ export default function CrmTasksPage() {
               <Plus className="h-3.5 w-3.5" /> New Task
             </button>
           </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          <button
+            type="button"
+            onClick={() => setAssignmentView("needs_assignment")}
+            className={`border p-3 text-left transition-colors ${assignmentView === "needs_assignment" ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/25 hover:border-slate"}`}
+          >
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Needs assignment</p>
+            <p className="mt-1 text-2xl font-semibold text-paper">{assignmentSummary.unassigned}</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAssignmentView("assigned")}
+            className={`border p-3 text-left transition-colors ${assignmentView === "assigned" ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/25 hover:border-slate"}`}
+          >
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Assigned / in motion</p>
+            <p className="mt-1 text-2xl font-semibold text-paper">{assignmentSummary.assigned}</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("under_review")}
+            className="border border-ink-mid bg-ink-light/25 p-3 text-left transition-colors hover:border-slate"
+          >
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Needs verification</p>
+            <p className="mt-1 text-2xl font-semibold text-paper">{assignmentSummary.underReview}</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("all")}
+            className="border border-ink-mid bg-ink-light/25 p-3 text-left transition-colors hover:border-slate"
+          >
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Overdue open work</p>
+            <p className={`mt-1 text-2xl font-semibold ${assignmentSummary.overdue > 0 ? "text-red-300" : "text-paper"}`}>{assignmentSummary.overdue}</p>
+          </button>
         </div>
 
         {progress && (
@@ -462,7 +563,20 @@ export default function CrmTasksPage() {
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid gap-2 lg:grid-cols-[minmax(240px,1.4fr)_minmax(160px,0.8fr)_minmax(180px,0.8fr)_auto_auto]">
+          <select
+            value={selectedStackKey}
+            onChange={(e) => {
+              setSelectedStackKey(e.target.value);
+              if (e.target.value !== "all") setOpenStacks((current) => ({ ...current, [e.target.value]: true }));
+            }}
+            className="border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+          >
+            <option value="all">All task stacks</option>
+            {stackOptions.map((stack) => (
+              <option key={stack.key} value={stack.key}>{stack.label} ({stack.count})</option>
+            ))}
+          </select>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper">
             <option value="all">All statuses</option>
             {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
@@ -471,10 +585,15 @@ export default function CrmTasksPage() {
             <option value="all">All assignees</option>
             {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
           </select>
+          <select value={assignmentView} onChange={(e) => setAssignmentView(e.target.value as typeof assignmentView)} className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper">
+            <option value="needs_assignment">Needs assignment</option>
+            <option value="assigned">Assigned / in motion</option>
+            <option value="all">All work</option>
+          </select>
           <label className="flex items-center gap-1.5 border border-ink-mid px-3 py-1.5 text-xs text-slate-light">
             <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} /> Show completed
           </label>
-          <div className="ml-auto flex border border-ink-mid">
+          <div className="flex border border-ink-mid">
             <button
               type="button"
               onClick={() => setViewMode("list")}
@@ -498,25 +617,27 @@ export default function CrmTasksPage() {
           <div className="flex items-center justify-center py-12 text-slate-light">
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
-        ) : tasks.length === 0 ? (
+        ) : filteredGroups.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-light">No tasks match these filters.</p>
         ) : viewMode === "board" ? (
-          <TaskBoard tasks={tasks} busyId={busyId} onStatusChange={handleBoardStatusChange} />
+          <TaskBoard tasks={boardTasks} busyId={busyId} onStatusChange={handleBoardStatusChange} />
         ) : (
           <div className="space-y-6">
-            {groups.map(([key, groupTasks]) => {
+            {filteredGroups.map(([key, groupTasks]) => {
               const [entityType, entityId] = key === "unlinked" ? [null, null] : key.split(":");
               const doneCount = groupTasks.filter((t) => t.status === "completed").length;
-              const visibleTasks = showCompleted ? groupTasks : groupTasks.filter((t) => !CLOSED_STATUSES.has(t.status));
-              if (visibleTasks.length === 0) return null;
+              const isOpen = selectedStackKey !== "all" || (openStacks[key] ?? filteredGroups.length <= 3);
               return (
                 <div key={key} className="border border-ink-mid">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <Layers className="h-3.5 w-3.5 text-signal" />
-                      <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">
-                        {entityType ? `${entityType} · ${groupTasks[0]?.entity_name || entityId?.slice(0, 8)}` : "General tasks"}
-                      </span>
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setOpenStacks((current) => ({ ...current, [key]: !isOpen }))}
+                      className="flex min-w-0 items-center gap-2 text-left"
+                    >
+                      <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-light transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                      <Layers className="h-3.5 w-3.5 shrink-0 text-signal" />
+                      <span className="truncate font-mono text-[10px] uppercase tracking-wider text-slate-light">{stackLabel(groupTasks)}</span>
                       <span className="flex items-center gap-1.5 text-[11px] text-slate-light">
                         <span className="h-1 w-14 overflow-hidden rounded-full bg-ink-mid">
                           <span
@@ -526,7 +647,7 @@ export default function CrmTasksPage() {
                         </span>
                         {doneCount}/{groupTasks.length}
                       </span>
-                    </div>
+                    </button>
                     {entityType && entityId && (
                       <div className="flex items-center gap-1.5">
                         <select
@@ -548,6 +669,9 @@ export default function CrmTasksPage() {
                       </div>
                     )}
                   </div>
+                  {entityType && ENTITY_STAGE_GUIDANCE[entityType] && (
+                    <p className="border-b border-ink-mid bg-ink/40 px-4 py-2 text-xs text-slate-light">{ENTITY_STAGE_GUIDANCE[entityType]}</p>
+                  )}
                   {!showCompleted && doneCount > 0 && (
                     <button
                       type="button"
@@ -557,8 +681,9 @@ export default function CrmTasksPage() {
                       <CheckCircle2 className="h-3 w-3 text-emerald-400" /> {doneCount} completed hidden
                     </button>
                   )}
+                  {isOpen && (
                   <ul className="divide-y divide-ink-mid">
-                    {visibleTasks.map((task) => {
+                    {groupTasks.map((task) => {
                       const blockedByPredecessor = !!task.depends_on_task_id && task.depends_on_status !== "completed";
                       const availableContributors = users.filter((u) => !task.contributors.some((c) => c.id === u.id));
                       return (
@@ -596,6 +721,11 @@ export default function CrmTasksPage() {
                               {task.status !== "not_started" && task.status !== "completed" && (
                                 <span className="border border-ink-mid px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-light">
                                   {STATUS_OPTIONS.find((s) => s.value === task.status)?.label}
+                                </span>
+                              )}
+                              {isAssignedTask(task) && (
+                                <span className="flex items-center gap-1 border border-sky-400/30 bg-sky-400/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-sky-200">
+                                  <UserCheck className="h-2.5 w-2.5" /> Assigned
                                 </span>
                               )}
                               {task.gate_effect === "blocking" && (
@@ -707,6 +837,7 @@ export default function CrmTasksPage() {
                       );
                     })}
                   </ul>
+                  )}
                 </div>
               );
             })}
@@ -729,13 +860,28 @@ export default function CrmTasksPage() {
 // same mechanism already used by the opportunities Kanban board
 // (crm/opportunities/page.tsx's OpportunitiesKanban), so no drag-and-drop
 // library gets added to the project just for this view.
-const BOARD_COLUMNS: { key: string; label: string; statuses: TaskStatus[]; dropStatus: TaskStatus }[] = [
-  { key: "not_started", label: "Planned / Ready", statuses: ["planned", "not_started", "ready"], dropStatus: "ready" },
-  { key: "in_progress", label: "In Progress", statuses: ["in_progress", "waiting_on_third_party"], dropStatus: "in_progress" },
-  { key: "under_review", label: "Under Review", statuses: ["under_review"], dropStatus: "under_review" },
-  { key: "completed", label: "Completed", statuses: ["completed"], dropStatus: "completed" },
-  { key: "blocked", label: "Blocked / Rejected", statuses: ["blocked", "rejected"], dropStatus: "blocked" },
-  { key: "closed", label: "Closed", statuses: ["not_applicable", "cancelled", "superseded"], dropStatus: "cancelled" },
+const BOARD_COLUMNS: { key: string; label: string; dropStatus: TaskStatus; match: (task: Task) => boolean }[] = [
+  {
+    key: "unassigned",
+    label: "Needs Assignment",
+    dropStatus: "ready",
+    match: (task) => !isAssignedTask(task) && !CLOSED_STATUSES.has(task.status),
+  },
+  {
+    key: "assigned",
+    label: "Assigned",
+    dropStatus: "ready",
+    match: (task) => isAssignedTask(task) && ["planned", "not_started", "ready"].includes(task.status),
+  },
+  {
+    key: "in_progress",
+    label: "In Progress",
+    dropStatus: "in_progress",
+    match: (task) => isAssignedTask(task) && ["in_progress", "waiting_on_third_party"].includes(task.status),
+  },
+  { key: "under_review", label: "Under Review", dropStatus: "under_review", match: (task) => task.status === "under_review" },
+  { key: "completed", label: "Completed", dropStatus: "completed", match: (task) => task.status === "completed" },
+  { key: "blocked", label: "Blocked / Rejected", dropStatus: "blocked", match: (task) => ["blocked", "rejected"].includes(task.status) },
 ];
 
 function TaskBoard({ tasks, busyId, onStatusChange }: { tasks: Task[]; busyId: string | null; onStatusChange: (task: Task, status: TaskStatus) => void }) {
@@ -744,7 +890,7 @@ function TaskBoard({ tasks, busyId, onStatusChange }: { tasks: Task[]; busyId: s
   return (
     <div className="flex gap-3 overflow-x-auto pb-2">
       {BOARD_COLUMNS.map((column) => {
-        const columnTasks = tasks.filter((t) => column.statuses.includes(t.status));
+        const columnTasks = tasks.filter(column.match);
         return (
           <div
             key={column.key}
