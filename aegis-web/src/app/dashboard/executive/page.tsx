@@ -362,8 +362,8 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
   const selectedCrm = Array.isArray(selectedRegion?.crm_records) ? selectedRegion.crm_records as ApiData[] : [];
 
   return (
-    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] xl:col-span-2 min-h-[340px] flex flex-col">
-      <div className="p-4 border-b border-ink-mid flex justify-between items-center">
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] xl:col-span-2 min-h-[340px] max-h-[760px] overflow-hidden flex flex-col">
+      <div className="shrink-0 p-4 border-b border-ink-mid flex justify-between items-center">
         <div>
           <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Regional Footprint</h2>
           <p className="text-xs text-slate-light mt-1">Live coverage register based on project profile location data.</p>
@@ -372,9 +372,9 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
       </div>
 
       {regions.length ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 flex-1">
-          <div className="p-4 border-b lg:border-b-0 lg:border-r border-ink-mid flex flex-col justify-between">
-            <div className="relative w-full aspect-square max-h-[260px] border border-ink-mid bg-ink-light/50 rounded-md overflow-hidden flex items-center justify-center p-2">
+        <div className="grid min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-2 lg:overflow-hidden flex-1">
+          <div className="min-h-0 p-4 border-b lg:border-b-0 lg:border-r border-ink-mid flex flex-col lg:overflow-hidden">
+            <div className="relative w-full aspect-[4/3] max-h-[240px] shrink-0 border border-ink-mid bg-ink-light/50 rounded-md overflow-hidden flex items-center justify-center p-2">
               {validCoordsRegions.length > 0 ? (
                 <svg className="w-full h-full relative z-10" viewBox="0 0 100 100">
                   <line x1="50" y1="0" x2="50" y2="100" stroke="#1e293b" strokeWidth="0.5" strokeDasharray="2,2" />
@@ -418,7 +418,7 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
               )}
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-2">
+            <div className="mt-4 grid max-h-44 grid-cols-1 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
               {regions.map((region) => (
                 <button key={String(region.name)} type="button" onClick={() => setSelectedName(String(region.name))} className={`border bg-ink-light p-2.5 rounded-md text-left ${String(region.name) === String(selectedRegion?.name) ? "border-signal" : "border-ink-mid hover:border-signal/50"}`}>
                   <span className="font-mono text-[9px] text-slate uppercase block">Region Profile</span>
@@ -431,10 +431,10 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
             </div>
           </div>
 
-          <div className="p-4 flex flex-col justify-between">
-            <div className="space-y-4">
+          <div className="min-h-0 p-4 flex flex-col lg:overflow-y-auto">
+            <div className="min-h-0 space-y-4">
               <h3 className="font-mono text-[9px] text-slate uppercase tracking-wider">Project Density Distribution</h3>
-              <div className="space-y-3">
+              <div className="max-h-40 space-y-3 overflow-y-auto pr-1">
                 {regions.map((region) => {
                   const active = Number(region.active_projects || 0);
                   const total = Math.max(1, Array.isArray(region.projects) ? region.projects.length : 0);
@@ -442,9 +442,9 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
 
                   return (
                     <button key={String(region.name)} type="button" onClick={() => setSelectedName(String(region.name))} className="w-full space-y-1 text-left">
-                      <div className="flex justify-between text-xs font-mono">
-                        <span className="text-paper">{String(region.name)}</span>
-                        <span className="text-slate-light">{active} / {total} Active ({pct})</span>
+                      <div className="flex min-w-0 justify-between gap-3 text-xs font-mono">
+                        <span className="min-w-0 truncate text-paper">{String(region.name)}</span>
+                        <span className="shrink-0 text-slate-light">{active} / {total} Active ({pct})</span>
                       </div>
                       <div className="h-1 bg-ink-light border border-ink-mid rounded-full overflow-hidden">
                         <div
@@ -458,11 +458,11 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
               </div>
               {selectedRegion ? (
                 <div className="mt-4 border border-ink-mid bg-ink-light p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h4 className="font-mono text-xs uppercase text-paper">{String(selectedRegion.name)}</h4>
-                    <span className="font-mono text-[10px] text-slate-light">{selectedProjects.length} projects · {selectedCrm.length} CRM</span>
+                  <div className="flex min-w-0 items-center justify-between gap-3">
+                    <h4 className="min-w-0 truncate font-mono text-xs uppercase text-paper">{String(selectedRegion.name)}</h4>
+                    <span className="shrink-0 font-mono text-[10px] text-slate-light">{selectedProjects.length} projects · {selectedCrm.length} CRM</span>
                   </div>
-                  <div className="mt-3 max-h-36 space-y-2 overflow-y-auto pr-1">
+                  <div className="mt-3 max-h-32 space-y-2 overflow-y-auto pr-1">
                     {[...selectedProjects, ...selectedCrm].length ? [...selectedProjects, ...selectedCrm].map((record) => (
                       <div key={`${String(record.source_type)}-${String(record.id)}`} className="border border-ink-mid/60 bg-ink px-2 py-1.5">
                         <p className="truncate text-xs font-semibold text-paper">{displayValue(record.name)}</p>
@@ -474,16 +474,17 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
               ) : null}
             </div>
 
-            <div className="mt-6 border-t border-ink-mid pt-4 overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="font-mono text-[9px] text-slate uppercase border-b border-ink-mid">
+            <div className="mt-4 min-h-0 border-t border-ink-mid pt-4">
+              <div className="max-h-36 overflow-auto pr-1">
+                <table className="w-full min-w-[360px] text-left text-xs">
+                  <thead className="sticky top-0 z-10 bg-ink font-mono text-[9px] text-slate uppercase border-b border-ink-mid">
                   <tr>
                     <th className="pb-2 font-normal">Region</th>
                     <th className="pb-2 font-normal text-right">Active</th>
                     <th className="pb-2 font-normal text-right">Portfolio</th>
                   </tr>
-                </thead>
-                <tbody>
+                  </thead>
+                  <tbody>
                   {regions.map((region) => (
                     <tr key={String(region.name)} className="border-b border-ink-mid/40">
                       <td className="py-2 text-paper font-medium">{String(region.name)}</td>
@@ -493,8 +494,9 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
                       </td>
                     </tr>
                   ))}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
