@@ -3954,6 +3954,26 @@ export async function addInventoryItem(payload: Record<string, unknown>): Promis
   });
 }
 
+/** Update a catalogue item, including once-off / reorder policy metadata. */
+export async function updateInventoryItem(itemId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  const body = { ...payload };
+  if (body.uom && !body.unit_of_measure) body.unit_of_measure = body.uom;
+  delete body.uom;
+  return fetchApi<ApiResponse<any>>(`/api/v1/inventory-items/${itemId}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+    allowFallback: false,
+  });
+}
+
+/** Soft-delete a catalogue item. Existing stock ledger history is kept. */
+export async function deleteInventoryItem(itemId: string): Promise<ApiResponse<void>> {
+  return fetchApi<ApiResponse<void>>(`/api/v1/inventory-items/${itemId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
 /** Register a new store / warehouse / yard. */
 export async function addInventoryStore(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/inventory/stores', {

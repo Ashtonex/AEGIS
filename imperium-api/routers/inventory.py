@@ -69,6 +69,9 @@ class StorePayload(Payload):
     store_type: Literal["warehouse", "site", "yard", "vehicle"] = "warehouse"
     project_id: Optional[UUID] = None
     site_id: Optional[UUID] = None
+    store_manager_id: Optional[UUID] = None
+    engineer_id: Optional[UUID] = None
+    foreman_id: Optional[UUID] = None
     location_label: Optional[str] = Field(default=None, max_length=255)
     status: Literal["active", "inactive", "closed"] = "active"
 
@@ -143,6 +146,7 @@ async def require_ref(
         "procurement.stores",
         "projects.projects",
         "procurement.suppliers",
+        "core.users",
     }
     if table not in allowed:
         raise HTTPException(status_code=500, detail="Unsupported reference validation")
@@ -263,10 +267,16 @@ async def list_stores(
 ):
     rows = await db.execute(
         text("""
-        SELECT st.*, p.name AS project_name, p.client_name, s.name AS site_name
+        SELECT st.*, p.name AS project_name, p.client_name, s.name AS site_name,
+               manager.full_name AS store_manager_name,
+               engineer.full_name AS engineer_name,
+               foreman.full_name AS foreman_name
         FROM procurement.stores st
         LEFT JOIN projects.projects p ON p.id=st.project_id AND p.organization_id=st.organization_id
         LEFT JOIN projects.sites s ON s.id=st.site_id AND s.organization_id=st.organization_id
+        LEFT JOIN core.users manager ON manager.id=st.store_manager_id AND manager.organization_id=st.organization_id
+        LEFT JOIN core.users engineer ON engineer.id=st.engineer_id AND engineer.organization_id=st.organization_id
+        LEFT JOIN core.users foreman ON foreman.id=st.foreman_id AND foreman.organization_id=st.organization_id
         WHERE st.organization_id=:org_id AND st.is_deleted=false
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
         ORDER BY st.store_type, st.name
@@ -290,16 +300,19 @@ async def create_store(
     await require_site_for_project(
         db, site_id=payload.site_id, project_id=payload.project_id, org_id=user["org_id"]
     )
+    await require_ref(db, "core.users", payload.store_manager_id, user["org_id"], "Store manager")
+    await require_ref(db, "core.users", payload.engineer_id, user["org_id"], "Engineer")
+    await require_ref(db, "core.users", payload.foreman_id, user["org_id"], "Foreman")
     try:
         store_id = (
             await db.execute(
                 text("""
             INSERT INTO procurement.stores (
                 organization_id, project_id, site_id, store_code, name, store_type,
-                location_label, status, created_by
+                store_manager_id, engineer_id, foreman_id, location_label, status, created_by
             ) VALUES (
                 :org_id, :project_id, :site_id, :store_code, :name, :store_type,
-                :location_label, :status, :user_id
+                :store_manager_id, :engineer_id, :foreman_id, :location_label, :status, :user_id
             ) RETURNING id
         """),
                 {

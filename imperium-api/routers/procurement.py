@@ -18,6 +18,7 @@ from app.services import inventory_service
 from app.services.finance.ccb_monitor import record_requisition_budget_breach
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 from app.shared.events import emit_notification, emit_role_notification
+from app.shared.project_setup import ensure_project_operational_setup
 
 router = APIRouter()
 
@@ -1854,17 +1855,32 @@ async def receive_goods(
             status_code=409,
             detail="Goods can only be received against an issued purchase order.",
         )
-    if payload.store_id:
+    receipt_store_id = payload.store_id
+    if receipt_store_id is None and po["project_id"]:
+        setup = await ensure_project_operational_setup(
+            db, org_id=user["org_id"], project_id=po["project_id"], created_by=user["user_id"]
+        )
+        receipt_store_id = setup.get("store_id")
+    if receipt_store_id:
         store = (
             await db.execute(
                 text(
-                    "SELECT 1 FROM procurement.stores WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                    """
+                    SELECT 1 FROM procurement.stores
+                    WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+                      AND (CAST(:project_id AS uuid) IS NULL OR project_id=CAST(:project_id AS uuid) OR project_id IS NULL)
+                    """
                 ),
-                {"id": payload.store_id, "org_id": user["org_id"]},
+                {"id": receipt_store_id, "org_id": user["org_id"], "project_id": po["project_id"]},
             )
         ).scalar()
         if not store:
             raise HTTPException(status_code=404, detail="Store not found")
+    if receipt_store_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Select a store for this goods receipt, or link the purchase order to a project so AEGIS can use the project store.",
+        )
     lines = (
         (
             await db.execute(
@@ -1903,7 +1919,7 @@ async def receive_goods(
                 "number": grn_no,
                 "po_id": payload.po_id,
                 "supplier_id": po["supplier_id"],
-                "store_id": payload.store_id,
+                "store_id": receipt_store_id,
                 "project_id": po["project_id"],
                 "delivery_date": payload.delivery_date,
                 "delivery_note_ref": payload.delivery_note_ref,
@@ -1955,7 +1971,7 @@ async def receive_goods(
                 db,
                 user,
                 item_id=line["item_id"],
-                store_id=payload.store_id,
+                store_id=receipt_store_id,
                 project_id=po["project_id"],
                 quantity=remaining,
                 unit_cost=line["unit_price"],

@@ -24,6 +24,7 @@ import {
   Search,
   ShieldAlert,
   Store,
+  Trash2,
   Truck,
   Warehouse,
   Wrench,
@@ -47,7 +48,9 @@ import {
   issueStock,
   receiveInventoryInvoice,
   receiveStock,
+  deleteInventoryItem,
   transferStock,
+  updateInventoryItem,
 } from "@/lib/api";
 
 type Rec = Record<string, any> & { id: string };
@@ -172,6 +175,7 @@ function InventoryWorkspace() {
   const [showAddItem, setShowAddItem] = useState(false);
   const [showAddStore, setShowAddStore] = useState(false);
   const [catalogueDetail, setCatalogueDetail] = useState<Rec | null>(null);
+  const [storeDetail, setStoreDetail] = useState<Rec | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -723,7 +727,7 @@ function InventoryWorkspace() {
                   ? <Truck className="h-4 w-4" />
                   : <Store className="h-4 w-4" />;
                 return (
-                  <div key={s.id} className="border border-ink-mid bg-ink-light/30 p-4 hover:border-signal/30">
+                  <button key={s.id} type="button" onClick={() => setStoreDetail(s)} className="border border-ink-mid bg-ink-light/30 p-4 text-left hover:border-signal/30">
                     <div className="mb-3 flex items-start justify-between gap-2">
                       <div>
                         <p className="font-mono text-xs uppercase tracking-wider text-signal">{tx(s.store_code)}</p>
@@ -747,7 +751,8 @@ function InventoryWorkspace() {
                       </div>
                     </div>
                     {s.location && <p className="mt-3 truncate text-xs text-slate">{tx(s.location)}</p>}
-                  </div>
+                    <p className="mt-3 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-signal">Open Store <ChevronRight className="h-3 w-3" /></p>
+                  </button>
                 );
               })}
             </div>
@@ -981,6 +986,77 @@ function InventoryWorkspace() {
           stockLevels={stockLevels.filter((s) => tx(s.item_code) === tx(catalogueDetail.item_code) || tx(s.item_id) === catalogueDetail.id)}
           movements={movements.filter((m) => tx(m.item_code) === tx(catalogueDetail.item_code) || tx(m.item_id) === catalogueDetail.id).slice(0, 20)}
           onClose={() => setCatalogueDetail(null)}
+        />
+      )}
+      {storeDetail && (
+        <StoreDetailModal
+          store={storeDetail}
+          stockLevels={stockLevels.filter((s) => tx(s.store_id) === storeDetail.id || tx(s.store_name) === tx(storeDetail.name))}
+          movements={movements.filter((m) => tx(m.store_id) === storeDetail.id || tx(m.store_name) === tx(storeDetail.name)).slice(0, 30)}
+          catalogue={catalogue}
+          projects={contextualProjects}
+          saving={saving}
+          onClose={() => setStoreDetail(null)}
+          onReceive={async (payload) => {
+            setSaving(true);
+            try {
+              await receiveStock(payload);
+              flash("Store stock added.");
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to add stock."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onIssue={async (payload) => {
+            setSaving(true);
+            try {
+              await issueStock(payload);
+              flash("Store stock reduced.");
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to reduce stock."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onAdjust={async (payload) => {
+            setSaving(true);
+            try {
+              await adjustStock(payload);
+              flash("Store adjustment recorded.");
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to adjust stock."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onUpdateItem={async (itemId, payload) => {
+            setSaving(true);
+            try {
+              await updateInventoryItem(itemId, payload);
+              flash("Item policy updated.");
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to update item."));
+            } finally {
+              setSaving(false);
+            }
+          }}
+          onDeleteItem={async (itemId) => {
+            setSaving(true);
+            try {
+              await deleteInventoryItem(itemId);
+              flash("Item removed from catalogue.");
+              await load();
+            } catch (e) {
+              flash(normalizeActionError(e, "Failed to delete item."));
+            } finally {
+              setSaving(false);
+            }
+          }}
         />
       )}
     </main>
@@ -1485,6 +1561,9 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
     vat_inclusive: false,
     apply_zimra_vat: true,
     is_hazardous: false,
+    is_once_off_purchase: false,
+    repurchase_policy: "reorder",
+    procurement_notes: "",
     description: "",
   });
   const set = (k: string, v: string | boolean) => setForm((f) => ({ ...f, [k]: v }));
@@ -1496,6 +1575,7 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
       standard_cost: Number(form.standard_cost),
       reorder_level: Number(form.reorder_level),
       vat_rate: form.apply_zimra_vat ? Number(form.vat_rate || 15.5) : 0,
+      repurchase_policy: form.is_once_off_purchase ? "once_off" : form.repurchase_policy,
     });
   };
   return (
@@ -1548,6 +1628,15 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
           <input type="checkbox" checked={form.is_hazardous} onChange={(e) => set("is_hazardous", e.target.checked)} className="accent-red-400" />
           Mark as hazardous material (will display HAZMAT indicator)
         </label>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-light md:col-span-2">
+          <input type="checkbox" checked={form.is_once_off_purchase} onChange={(e) => set("is_once_off_purchase", e.target.checked)} className="accent-signal" />
+          Once-off purchase / do not auto-reorder
+        </label>
+        <div className="md:col-span-2">
+          <FieldGroup label="Procurement Notes">
+            <input value={form.procurement_notes} onChange={(e) => set("procurement_notes", e.target.value)} placeholder="Why this does or does not need repurchase" className="field" />
+          </FieldGroup>
+        </div>
       </div>
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
@@ -1875,6 +1964,179 @@ function CatalogueDetailPanel({ item, stockLevels, movements, onClose }: { item:
         </div>
       </aside>
     </div>
+  );
+}
+
+function StoreDetailModal({ store, stockLevels, movements, catalogue, projects, saving, onClose, onReceive, onIssue, onAdjust, onUpdateItem, onDeleteItem }: {
+  store: Rec;
+  stockLevels: Rec[];
+  movements: Rec[];
+  catalogue: Rec[];
+  projects: Rec[];
+  saving: boolean;
+  onClose: () => void;
+  onReceive: (payload: Record<string, unknown>) => Promise<void>;
+  onIssue: (payload: Record<string, unknown>) => Promise<void>;
+  onAdjust: (payload: Record<string, unknown>) => Promise<void>;
+  onUpdateItem: (itemId: string, payload: Record<string, unknown>) => Promise<void>;
+  onDeleteItem: (itemId: string) => Promise<void>;
+}) {
+  const defaultProjectId = tx(store.project_id, "");
+  const firstItemId = stockLevels[0]?.item_id ? String(stockLevels[0].item_id) : "";
+  const [receiveForm, setReceiveForm] = useState({ item_id: firstItemId, quantity: "1", unit_cost: "0", reference: "", notes: "" });
+  const [issueForm, setIssueForm] = useState({ item_id: firstItemId, project_id: defaultProjectId, quantity: "1", unit_cost: "0", reference: "", notes: "", override_reason: "" });
+  const [adjustForm, setAdjustForm] = useState({ item_id: firstItemId, quantity_delta: "-1", unit_cost: "0", reason: "", reference: "" });
+  const storeValue = stockLevels.reduce((sum, row) => sum + stockValue(row), 0);
+  const materials = stockLevels.filter((row) => itemType(row.item_type) !== "tool");
+  const tools = stockLevels.filter((row) => itemType(row.item_type) === "tool");
+  const itemOptions = catalogue.length ? catalogue : stockLevels;
+  const storeId = String(store.id);
+
+  const submitReceive = async () => {
+    await onReceive({
+      ...receiveForm,
+      item_id: receiveForm.item_id,
+      store_id: storeId,
+      project_id: defaultProjectId || null,
+      quantity: Number(receiveForm.quantity),
+      unit_cost: Number(receiveForm.unit_cost),
+      reference: receiveForm.reference || undefined,
+      notes: receiveForm.notes || undefined,
+    });
+  };
+  const submitIssue = async () => {
+    await onIssue({
+      ...issueForm,
+      store_id: storeId,
+      project_id: issueForm.project_id || defaultProjectId || null,
+      quantity: Number(issueForm.quantity),
+      unit_cost: Number(issueForm.unit_cost),
+      reference: issueForm.reference || undefined,
+      notes: issueForm.notes || undefined,
+      override_reason: issueForm.override_reason || undefined,
+    });
+  };
+  const submitAdjust = async () => {
+    await onAdjust({
+      ...adjustForm,
+      store_id: storeId,
+      quantity_delta: Number(adjustForm.quantity_delta),
+      unit_cost: Number(adjustForm.unit_cost),
+      reference: adjustForm.reference || undefined,
+    });
+  };
+
+  return (
+    <ModalShell title={`Store: ${tx(store.name ?? store.store_name)}`} onClose={onClose} wide>
+      <div className="grid gap-4 lg:grid-cols-[1.35fr_.9fr]">
+        <div className="space-y-4">
+          <section className="grid gap-3 sm:grid-cols-4">
+            <InfoCard label="Store Value" value={money(storeValue)} />
+            <InfoCard label="Materials" value={String(materials.length)} />
+            <InfoCard label="Tools" value={String(tools.length)} />
+            <InfoCard label="Project" value={tx(store.project_name ?? store.project_id, "Company store")} />
+          </section>
+          <section className="grid gap-3 sm:grid-cols-3">
+            <InfoCard label="Store Manager" value={tx(store.store_manager_name, "Not assigned")} />
+            <InfoCard label="Engineer" value={tx(store.engineer_name, "Not assigned")} />
+            <InfoCard label="Foreman" value={tx(store.foreman_name, "Not assigned")} />
+          </section>
+          <section className="border border-ink-mid">
+            <div className="border-b border-ink-mid p-3">
+              <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Materials and Tools at Store</h3>
+            </div>
+            {stockLevels.length === 0 ? (
+              <Empty label="No stock in this store." sub="Use Add Stock when goods arrive, or let a fulfilled PO populate this store automatically." />
+            ) : (
+              <div className="max-h-80 overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-ink-light">
+                    <tr className="border-b border-ink-mid">
+                      {["Item", "Type", "Available", "Value", "Policy", ""].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[10px] uppercase text-slate">{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-ink-mid">
+                    {stockLevels.map((row) => {
+                      const available = num(row.available_qty ?? row.quantity ?? row.stock_quantity);
+                      const policy = tx(row.repurchase_policy, row.is_once_off_purchase ? "once_off" : "reorder");
+                      return (
+                        <tr key={`${row.item_id ?? row.id}-${row.store_id ?? store.id}`}>
+                          <td className="px-3 py-2 text-paper">{tx(row.item_name ?? row.item_code)}</td>
+                          <td className="px-3 py-2"><span className="border border-ink-mid px-2 py-0.5 font-mono text-[10px] uppercase text-slate-light">{itemType(row.item_type)}</span></td>
+                          <td className="px-3 py-2 font-mono text-emerald-300">{qty(available)}</td>
+                          <td className="px-3 py-2 font-mono text-paper">{money(stockValue(row))}</td>
+                          <td className="px-3 py-2 text-xs text-slate-light">{policy === "reorder" ? "Reorder" : "Once-off / no repurchase"}</td>
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => onUpdateItem(String(row.item_id ?? row.id), { is_once_off_purchase: policy === "reorder", repurchase_policy: policy === "reorder" ? "once_off" : "reorder" })}
+                              disabled={saving}
+                              className="mr-2 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
+                            >
+                              {policy === "reorder" ? "Once-off" : "Reorder"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDeleteItem(String(row.item_id ?? row.id))}
+                              disabled={saving}
+                              className="inline-flex items-center border border-red-500/40 px-2 py-1 text-red-300 hover:bg-red-950/20 disabled:opacity-50"
+                              aria-label="Delete item"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+          <section className="border border-ink-mid p-4">
+            <h3 className="mb-3 font-mono text-xs font-bold uppercase tracking-wider text-paper">CCB and Procurement Link</h3>
+            <p className="text-sm text-slate-light">
+              This store is project-linked, so requisitions, RFQs and POs carry the project cost context. When a PO is goods-received, AEGIS posts the receipt into this project store automatically.
+            </p>
+          </section>
+        </div>
+        <aside className="space-y-4">
+          <ActionPanel title="Add Materials / Tools">
+            <select value={receiveForm.item_id} onChange={(e) => setReceiveForm({ ...receiveForm, item_id: e.target.value })} className="field"><option value="">Select item</option>{itemOptions.map((i) => <option key={i.id} value={i.id}>{tx(i.item_name ?? i.name ?? i.item_code)}</option>)}</select>
+            <div className="grid grid-cols-2 gap-2"><input type="number" min="0.001" step="0.001" value={receiveForm.quantity} onChange={(e) => setReceiveForm({ ...receiveForm, quantity: e.target.value })} className="field" /><input type="number" min="0" step="0.01" value={receiveForm.unit_cost} onChange={(e) => setReceiveForm({ ...receiveForm, unit_cost: e.target.value })} className="field" /></div>
+            <input value={receiveForm.reference} onChange={(e) => setReceiveForm({ ...receiveForm, reference: e.target.value })} placeholder="Reference" className="field" />
+            <button onClick={submitReceive} disabled={saving || !receiveForm.item_id} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"><PackagePlus className="h-4 w-4" /> Add Stock</button>
+          </ActionPanel>
+          <ActionPanel title="Reduce / Issue Stock">
+            <select value={issueForm.item_id} onChange={(e) => setIssueForm({ ...issueForm, item_id: e.target.value })} className="field"><option value="">Select item</option>{stockLevels.map((i) => <option key={i.item_id ?? i.id} value={i.item_id ?? i.id}>{tx(i.item_name ?? i.item_code)}</option>)}</select>
+            <select value={issueForm.project_id} onChange={(e) => setIssueForm({ ...issueForm, project_id: e.target.value })} className="field"><option value="">No project</option>{projects.map((p) => <option key={p.id} value={p.id}>{projectName(p)}</option>)}</select>
+            <div className="grid grid-cols-2 gap-2"><input type="number" min="0.001" step="0.001" value={issueForm.quantity} onChange={(e) => setIssueForm({ ...issueForm, quantity: e.target.value })} className="field" /><input type="number" min="0" step="0.01" value={issueForm.unit_cost} onChange={(e) => setIssueForm({ ...issueForm, unit_cost: e.target.value })} className="field" /></div>
+            <input value={issueForm.override_reason} onChange={(e) => setIssueForm({ ...issueForm, override_reason: e.target.value })} placeholder="Override reason if stock is short" className="field" />
+            <button onClick={submitIssue} disabled={saving || !issueForm.item_id} className="inline-flex h-10 w-full items-center justify-center gap-2 border border-blue-500/40 bg-blue-950/20 px-4 font-mono text-xs font-bold uppercase text-blue-300 disabled:opacity-50"><PackageMinus className="h-4 w-4" /> Reduce Stock</button>
+          </ActionPanel>
+          <ActionPanel title="Count Correction">
+            <select value={adjustForm.item_id} onChange={(e) => setAdjustForm({ ...adjustForm, item_id: e.target.value })} className="field"><option value="">Select item</option>{stockLevels.map((i) => <option key={i.item_id ?? i.id} value={i.item_id ?? i.id}>{tx(i.item_name ?? i.item_code)}</option>)}</select>
+            <div className="grid grid-cols-2 gap-2"><input type="number" step="0.001" value={adjustForm.quantity_delta} onChange={(e) => setAdjustForm({ ...adjustForm, quantity_delta: e.target.value })} className="field" /><input type="number" min="0" step="0.01" value={adjustForm.unit_cost} onChange={(e) => setAdjustForm({ ...adjustForm, unit_cost: e.target.value })} className="field" /></div>
+            <input value={adjustForm.reason} onChange={(e) => setAdjustForm({ ...adjustForm, reason: e.target.value })} placeholder="Reason" className="field" />
+            <button onClick={submitAdjust} disabled={saving || !adjustForm.item_id || adjustForm.reason.length < 3} className="inline-flex h-10 w-full items-center justify-center gap-2 border border-ink-mid px-4 font-mono text-xs font-bold uppercase text-slate-light hover:text-paper disabled:opacity-50"><ClipboardEdit className="h-4 w-4" /> Adjust Count</button>
+          </ActionPanel>
+          <ActionPanel title="Recent Movements">
+            <div className="max-h-48 space-y-2 overflow-auto">
+              {movements.length === 0 ? <p className="text-sm text-slate-light">No recent movements.</p> : movements.map((m) => <div key={m.id} className="flex items-center justify-between border-b border-ink-mid/60 pb-2 text-xs"><span className="text-slate-light">{tx(m.item_name ?? m.item_code)} · {tx(m.movement_type)}</span><span className="font-mono text-paper">{qty(m.quantity)}</span></div>)}
+            </div>
+          </ActionPanel>
+        </aside>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ActionPanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="space-y-2 border border-ink-mid p-3">
+      <h3 className="font-mono text-[10px] font-bold uppercase tracking-wider text-paper">{title}</h3>
+      {children}
+    </section>
   );
 }
 

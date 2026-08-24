@@ -17,6 +17,7 @@ from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
 from app.shared.project_delete import find_project_blockers, hard_delete_project
+from app.shared.project_setup import ensure_project_operational_setup
 
 router = APIRouter()
 
@@ -638,6 +639,9 @@ async def create_project(
                 """),
                 {"project_id": row.id, "org_id": user["org_id"], "setup_duration_weeks": setup_duration_weeks},
             )
+        await ensure_project_operational_setup(
+            db, org_id=user["org_id"], project_id=row.id, created_by=user["user_id"]
+        )
         await db.commit()
         if initiated_by == "client":
             # Company-initiated projects defer task generation until their

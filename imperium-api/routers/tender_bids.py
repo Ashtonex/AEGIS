@@ -23,6 +23,7 @@ from app.services.quotations.calculator import QuotationCalculator, build_calc_i
 from app.shared.events import emit_event, emit_notification
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
 from app.shared.pursuits import get_or_create_pursuit
+from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -473,6 +474,9 @@ async def award_tender(
         )
 
         if project_id:
+            await ensure_project_operational_setup(
+                db, org_id=org_id, project_id=project_id, created_by=user_id
+            )
             await db.execute(
                 text("""
                     INSERT INTO projects.project_profiles (

@@ -322,6 +322,7 @@ async def issue_stock(
         db, org_id=user["org_id"], item_id=item_id, store_id=store_id
     )
     is_override = False
+    issue_amount = (quantity * unit_cost).quantize(Decimal("0.01"))
     if available < quantity:
         if user.get("role") not in BUDGET_OVERRIDE_ROLES:
             raise HTTPException(
@@ -334,6 +335,37 @@ async def issue_stock(
                 detail=f"Insufficient stock available for issue. Available quantity is {available}. Provide an override reason to issue anyway.",
             )
         is_override = True
+    if project_id is not None and issue_amount > 0:
+        available_budget = await budget_available(db, org_id=user["org_id"], project_id=project_id)
+        if available_budget is not None and issue_amount > available_budget:
+            if user.get("role") not in BUDGET_OVERRIDE_ROLES:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stock issue exceeds available approved project budget.",
+                )
+            if not override_reason:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stock issue exceeds available approved project budget. Provide an override reason to issue anyway.",
+                )
+            is_override = True
+            await emit_event(
+                db,
+                user=user,
+                event_type="inventory.issue.budget_overridden.v1",
+                aggregate_type="inventory_item",
+                aggregate_id=item_id,
+                project_id=project_id,
+                event_data={
+                    "store_id": str(store_id) if store_id else None,
+                    "quantity_requested": str(quantity),
+                    "unit_cost": str(unit_cost),
+                    "issue_amount": str(issue_amount),
+                    "budget_available": str(available_budget),
+                    "override_reason": override_reason,
+                    "overridden_by_role": user.get("role"),
+                },
+            )
     movement_id = await record_stock_movement(
         db,
         user,
@@ -390,7 +422,6 @@ async def issue_stock(
 
     cost_transaction_id: Optional[UUID] = None
     if project_id is not None:
-        amount = (quantity * unit_cost).quantize(Decimal("0.01"))
         cost_transaction_id = await post_cost_transaction(
             db,
             org_id=user["org_id"],
@@ -401,7 +432,7 @@ async def issue_stock(
             description=cost_description or f"Stock issue ({source_type})",
             quantity=quantity,
             unit_cost=unit_cost,
-            amount=amount,
+            amount=issue_amount,
             posted_by=user["user_id"],
         )
         if cost_transaction_id is not None:
@@ -418,7 +449,7 @@ async def issue_stock(
                     "cost_category": cost_category,
                     "quantity": str(quantity),
                     "unit_cost": str(unit_cost),
-                    "amount": str(amount),
+                    "amount": str(issue_amount),
                 },
             )
 

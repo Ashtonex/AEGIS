@@ -24,7 +24,7 @@ ITEM_RETURNING_COLUMNS = """
     item_name, stock_quantity, item_code, description, category,
     unit_of_measure, reorder_level, reorder_quantity, standard_cost,
     is_hazardous, item_type, vat_rate, vat_inclusive, unit_price_ex_vat,
-    unit_price_inc_vat
+    unit_price_inc_vat, is_once_off_purchase, repurchase_policy, procurement_notes
 """
 
 
@@ -53,6 +53,14 @@ def normalize_item_payload(payload: dict) -> dict:
         "tool",
     }:
         raise HTTPException(status_code=422, detail="Invalid inventory item type.")
+    if "repurchase_policy" in normalized and normalized["repurchase_policy"] not in {
+        "reorder",
+        "once_off",
+        "do_not_reorder",
+    }:
+        raise HTTPException(status_code=422, detail="Invalid repurchase policy.")
+    if normalized.get("is_once_off_purchase") and not normalized.get("repurchase_policy"):
+        normalized["repurchase_policy"] = "once_off"
 
     vat_rate = _decimal(normalized.get("vat_rate"))
     vat_inclusive = bool(normalized.get("vat_inclusive"))

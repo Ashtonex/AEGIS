@@ -77,6 +77,42 @@ def _json_dumps(value: Any, fallback: Any) -> str:
     return json.dumps(_json_value(value, fallback))
 
 
+def _normalize_stage(stage: Optional[str]) -> Optional[str]:
+    if not stage:
+        return None
+    return " ".join(str(stage).strip().split())
+
+
+async def _load_templates(db: AsyncSession, *, org_id: str, entity_type: str, stage: Optional[str]):
+    base_sql = """
+        SELECT id, title, description, template_key, template_version,
+               requirement_code, task_type, outcome_key, stage,
+               reuse_scope, responsible_role, reviewer_role,
+               approver_role, criticality, weight, gate_effect,
+               completion_criteria, required_evidence,
+               contribution_target
+        FROM crm.task_templates
+        WHERE organization_id = :org_id AND entity_type = :entity_type
+          AND is_active = true AND is_deleted = false
+          AND {stage_filter}
+        ORDER BY sort_order
+    """
+    params = {"org_id": org_id, "entity_type": entity_type, "stage": stage}
+    stage_filter = "stage = :stage" if stage else "stage IS NULL"
+    rows = (
+        await db.execute(text(base_sql.format(stage_filter=stage_filter)), params)
+    ).mappings().all()
+    if rows or not stage:
+        return rows
+
+    return (
+        await db.execute(
+            text(base_sql.format(stage_filter="stage IS NULL")),
+            {"org_id": org_id, "entity_type": entity_type, "stage": None},
+        )
+    ).mappings().all()
+
+
 async def generate_task_stack(
     db: AsyncSession,
     *,
@@ -95,28 +131,13 @@ async def generate_task_stack(
     can't be a simple unique constraint). Returns the number of tasks
     created (0 if none, including the no-op case)."""
     try:
-        templates = (
-            await db.execute(
-                text("""
-                    SELECT id, title, description, template_key, template_version,
-                           requirement_code, task_type, outcome_key, stage,
-                           reuse_scope, responsible_role, reviewer_role,
-                           approver_role, criticality, weight, gate_effect,
-                           completion_criteria, required_evidence,
-                           contribution_target
-                    FROM crm.task_templates
-                    WHERE organization_id = :org_id AND entity_type = :entity_type
-                      AND is_active = true AND is_deleted = false
-                    ORDER BY sort_order
-                """),
-                {"org_id": org_id, "entity_type": entity_type},
-            )
-        ).mappings().all()
+        normalized_stage = _normalize_stage(stage)
+        templates = await _load_templates(db, org_id=org_id, entity_type=entity_type, stage=normalized_stage)
         if not templates:
             return 0
 
         created = 0
-        pack_stage = stage or entity_type
+        pack_stage = normalized_stage or entity_type
         pack_key = f"{entity_type}.standard"
         pack = (
             await db.execute(
@@ -310,3 +331,39 @@ async def cascade_delete_entity_tasks(
         )
         await db.rollback()
         return 0
+
+
+async def supersede_entity_tasks(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    entity_type: str,
+    entity_id: UUID | str,
+    authorized_by: Optional[str] = None,
+    reason: str = "Superseded by lifecycle transition",
+) -> int:
+    """Scratches off still-open tasks for an entity when its CRM lifecycle
+    moves to a new stage. Completed work remains audit-visible."""
+    result = await db.execute(
+        text("""
+            UPDATE crm.tasks
+            SET status = 'superseded',
+                cancellation_reason = COALESCE(cancellation_reason, :reason),
+                cancellation_authorized_by = COALESCE(cancellation_authorized_by, CAST(:authorized_by AS uuid)),
+                updated_at = NOW()
+            WHERE organization_id = :org_id
+              AND entity_type = :entity_type
+              AND entity_id = :entity_id
+              AND is_deleted = false
+              AND status NOT IN ('completed', 'cancelled', 'superseded', 'not_applicable')
+            RETURNING id
+        """),
+        {
+            "org_id": org_id,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "authorized_by": authorized_by,
+            "reason": reason,
+        },
+    )
+    return len(result.fetchall())

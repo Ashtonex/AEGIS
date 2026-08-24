@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, ChevronDown, Circle, FileSpreadsheet, Layers, Link2, Loader2, Lock, Plus, ShieldCheck, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, ChevronDown, Circle, ClipboardCheck, FileSpreadsheet, FileText, Layers, Link2, Loader2, Lock, Mail, MessageSquare, Phone, Plus, ShieldCheck, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
 import {
   getCrmTasks,
   createCrmTask,
   updateCrmTask,
   deleteCrmTask,
+  createCrmActivity,
   getAssignableUsers,
   getTeams,
   assignTaskStack,
@@ -18,6 +19,7 @@ import {
   TaskProgressRow,
 } from "@/lib/api";
 import { initials, avatarTone } from "@/lib/avatar";
+import { EntityDocumentsPanel, type DocumentEntityType } from "@/components/documents/EntityDocumentsPanel";
 
 type TaskStatus = "planned" | "not_started" | "ready" | "in_progress" | "waiting_on_third_party" | "blocked" | "under_review" | "completed" | "rejected" | "not_applicable" | "cancelled" | "superseded";
 
@@ -68,6 +70,7 @@ interface Task {
 // entity_type values the quotation builder's source picker supports (see
 // _SOURCE_LINK_COLUMNS in quotations.py).
 const QUOTABLE_ENTITY_TYPES = new Set(["tender", "opportunity", "lead", "project"]);
+const DOCUMENT_ENTITY_TYPES = new Set(["lead", "opportunity", "tender", "project", "fleet", "machinery"]);
 
 interface AssignableUser {
   id: string;
@@ -96,6 +99,7 @@ const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
 ];
 
 const CLOSED_STATUSES = new Set<TaskStatus>(["completed", "cancelled", "superseded", "not_applicable"]);
+const HIDDEN_BY_DEFAULT_STATUSES = new Set<TaskStatus>(["completed", "cancelled", "not_applicable"]);
 
 function isOverdue(task: Task) {
   // Overdue is deliberately derived, not a stored status - a task can be
@@ -180,6 +184,9 @@ export default function CrmTasksPage() {
   const [assignmentView, setAssignmentView] = useState<"needs_assignment" | "assigned" | "all">("needs_assignment");
   const [selectedStackKey, setSelectedStackKey] = useState<string>("all");
   const [openStacks, setOpenStacks] = useState<Record<string, boolean>>({});
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+
+  const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? null, [selectedTaskId, tasks]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -243,7 +250,7 @@ export default function CrmTasksPage() {
     const byStack = selectedStackKey === "all" ? groups : groups.filter(([key]) => key === selectedStackKey);
     return byStack
       .map(([key, groupTasks]) => {
-        const byCompletion = showCompleted ? groupTasks : groupTasks.filter((t) => !CLOSED_STATUSES.has(t.status));
+        const byCompletion = showCompleted ? groupTasks : groupTasks.filter((t) => !HIDDEN_BY_DEFAULT_STATUSES.has(t.status));
         const byAssignment = byCompletion.filter((task) => {
           if (assignmentView === "needs_assignment") return !isAssignedTask(task);
           if (assignmentView === "assigned") return isActiveAssignedTask(task);
@@ -258,7 +265,7 @@ export default function CrmTasksPage() {
     const byStack = selectedStackKey === "all" ? groups : groups.filter(([key]) => key === selectedStackKey);
     return byStack.flatMap(([, groupTasks]) => {
       return groupTasks.filter((task) => {
-        if (!showCompleted && CLOSED_STATUSES.has(task.status)) return false;
+        if (!showCompleted && HIDDEN_BY_DEFAULT_STATUSES.has(task.status)) return false;
         if (statusFilter !== "all" && task.status !== statusFilter) return false;
         if (assigneeFilter !== "all" && task.assigned_to_user_id !== assigneeFilter) return false;
         return true;
@@ -620,7 +627,7 @@ export default function CrmTasksPage() {
         ) : filteredGroups.length === 0 ? (
           <p className="py-8 text-center text-sm text-slate-light">No tasks match these filters.</p>
         ) : viewMode === "board" ? (
-          <TaskBoard tasks={boardTasks} busyId={busyId} onStatusChange={handleBoardStatusChange} />
+          <TaskBoard tasks={boardTasks} busyId={busyId} onStatusChange={handleBoardStatusChange} onOpenTask={(task) => setSelectedTaskId(task.id)} />
         ) : (
           <div className="space-y-6">
             {filteredGroups.map(([key, groupTasks]) => {
@@ -687,10 +694,14 @@ export default function CrmTasksPage() {
                       const blockedByPredecessor = !!task.depends_on_task_id && task.depends_on_status !== "completed";
                       const availableContributors = users.filter((u) => !task.contributors.some((c) => c.id === u.id));
                       return (
-                        <li key={task.id} className={`flex items-start gap-3 border-l-2 p-4 ${PRIORITY_BORDER[task.priority]}`}>
+                        <li
+                          key={task.id}
+                          onClick={() => setSelectedTaskId(task.id)}
+                          className={`flex cursor-pointer items-start gap-3 border-l-2 p-4 transition-colors hover:bg-ink-light/25 ${PRIORITY_BORDER[task.priority]}`}
+                        >
                           <button
                             type="button"
-                            disabled={busyId === task.id || blockedByPredecessor}
+                            disabled={busyId === task.id || blockedByPredecessor || task.status === "superseded"}
                             title={
                               blockedByPredecessor
                                 ? `Blocked until "${task.depends_on_title}" is completed`
@@ -698,7 +709,7 @@ export default function CrmTasksPage() {
                                   ? "Verify submitted work"
                                   : "Submit proof for completion"
                             }
-                            onClick={() => void handleToggleDone(task)}
+                            onClick={(e) => { e.stopPropagation(); void handleToggleDone(task); }}
                             className="mt-0.5 shrink-0 disabled:opacity-40"
                           >
                             {blockedByPredecessor ? (
@@ -713,7 +724,7 @@ export default function CrmTasksPage() {
                           </button>
                           <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className={`text-sm font-medium ${task.status === "completed" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
+                              <p className={`text-sm font-medium ${task.status === "completed" || task.status === "superseded" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
                               <span className={`border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${PRIORITY_TONE[task.priority]}`}>{task.priority}</span>
                               {task.source === "template" && (
                                 <span className="border border-signal/30 bg-signal/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-signal">Auto</span>
@@ -767,6 +778,7 @@ export default function CrmTasksPage() {
                               {task.quotation_id ? (
                                 <Link
                                   href={`/dashboard/quotations/builder?edit=${task.quotation_id}`}
+                                  onClick={(e) => e.stopPropagation()}
                                   className="flex items-center gap-1 border border-emerald-500/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-400 hover:bg-emerald-950/20"
                                 >
                                   <FileSpreadsheet className="h-3 w-3" /> Quotation
@@ -774,6 +786,7 @@ export default function CrmTasksPage() {
                               ) : task.entity_type && QUOTABLE_ENTITY_TYPES.has(task.entity_type) && task.entity_id ? (
                                 <Link
                                   href={`/dashboard/quotations/builder?source_type=${task.entity_type}&source_id=${task.entity_id}&task_id=${task.id}`}
+                                  onClick={(e) => e.stopPropagation()}
                                   className="flex items-center gap-1 border border-dashed border-ink-mid px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-signal"
                                 >
                                   <FileSpreadsheet className="h-3 w-3" /> Build Quotation
@@ -796,7 +809,8 @@ export default function CrmTasksPage() {
                               )}
                               <select
                                 value={task.assigned_to_user_id ?? ""}
-                                onChange={(e) => void handleDistribute(task, e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => void handleDistribute(task, e.target.value)}
                                 disabled={busyId === task.id}
                                 className="border border-ink-mid bg-ink-light px-2 py-1 text-[11px] text-paper disabled:opacity-40"
                               >
@@ -806,7 +820,7 @@ export default function CrmTasksPage() {
                               {task.contributors.map((c) => (
                                 <span key={c.id} className="flex items-center gap-1 border border-ink-mid px-1.5 py-0.5 text-[11px] text-slate-light">
                                   {c.full_name}
-                                  <button type="button" onClick={() => void handleRemoveContributor(task, c.id)} disabled={busyId === task.id} className="hover:text-red-300 disabled:opacity-40">
+                                  <button type="button" onClick={(e) => { e.stopPropagation(); void handleRemoveContributor(task, c.id); }} disabled={busyId === task.id} className="hover:text-red-300 disabled:opacity-40">
                                     <X className="h-2.5 w-2.5" />
                                   </button>
                                 </span>
@@ -814,6 +828,7 @@ export default function CrmTasksPage() {
                               {availableContributors.length > 0 && (
                                 <select
                                   value=""
+                                  onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => void handleAddContributor(task, e.target.value)}
                                   disabled={busyId === task.id}
                                   title="Add a contributor"
@@ -828,7 +843,7 @@ export default function CrmTasksPage() {
                           <button
                             type="button"
                             disabled={busyId === task.id}
-                            onClick={() => void handleDelete(task)}
+                            onClick={(e) => { e.stopPropagation(); void handleDelete(task); }}
                             className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300 disabled:opacity-40"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -850,6 +865,47 @@ export default function CrmTasksPage() {
           users={users}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); void load(); }}
+        />
+      )}
+      {selectedTask && (
+        <TaskWorkModal
+          task={selectedTask}
+          users={users}
+          busy={busyId === selectedTask.id}
+          onClose={() => setSelectedTaskId(null)}
+          onUpdate={async (payload) => {
+            setBusyId(selectedTask.id);
+            setError(null);
+            try {
+              const res = await updateCrmTask(selectedTask.id, payload);
+              if (!res.success) throw new Error("Task could not be updated.");
+              await load();
+            } catch (e) {
+              setError(normalizeError(e, "Task could not be updated."));
+              throw e;
+            } finally {
+              setBusyId(null);
+            }
+          }}
+          onLogActivity={async (payload) => {
+            setBusyId(selectedTask.id);
+            setError(null);
+            try {
+              const res = await createCrmActivity(payload);
+              if (!res.success) throw new Error("Activity could not be logged.");
+              await updateCrmTask(selectedTask.id, {
+                evidence_ref: payload.subject,
+                outcome: payload.description || payload.subject,
+                status: selectedTask.status === "not_started" ? "in_progress" : selectedTask.status,
+              });
+              await load();
+            } catch (e) {
+              setError(normalizeError(e, "Activity could not be logged."));
+              throw e;
+            } finally {
+              setBusyId(null);
+            }
+          }}
         />
       )}
     </div>
@@ -882,9 +938,20 @@ const BOARD_COLUMNS: { key: string; label: string; dropStatus: TaskStatus; match
   { key: "under_review", label: "Under Review", dropStatus: "under_review", match: (task) => task.status === "under_review" },
   { key: "completed", label: "Completed", dropStatus: "completed", match: (task) => task.status === "completed" },
   { key: "blocked", label: "Blocked / Rejected", dropStatus: "blocked", match: (task) => ["blocked", "rejected"].includes(task.status) },
+  { key: "superseded", label: "Superseded", dropStatus: "superseded", match: (task) => task.status === "superseded" },
 ];
 
-function TaskBoard({ tasks, busyId, onStatusChange }: { tasks: Task[]; busyId: string | null; onStatusChange: (task: Task, status: TaskStatus) => void }) {
+function TaskBoard({
+  tasks,
+  busyId,
+  onStatusChange,
+  onOpenTask,
+}: {
+  tasks: Task[];
+  busyId: string | null;
+  onStatusChange: (task: Task, status: TaskStatus) => void;
+  onOpenTask: (task: Task) => void;
+}) {
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 
   return (
@@ -917,10 +984,11 @@ function TaskBoard({ tasks, busyId, onStatusChange }: { tasks: Task[]; busyId: s
                 <div
                   key={task.id}
                   draggable={busyId !== task.id}
+                  onClick={() => onOpenTask(task)}
                   onDragStart={(e) => { e.dataTransfer.setData("text/plain", task.id); e.dataTransfer.effectAllowed = "move"; }}
                   className={`border-l-2 border border-ink-mid bg-ink p-2.5 ${PRIORITY_BORDER[task.priority]} ${busyId === task.id ? "opacity-40" : "cursor-grab active:cursor-grabbing"}`}
                 >
-                  <p className={`text-xs font-medium ${task.status === "completed" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
+                  <p className={`text-xs font-medium ${task.status === "completed" || task.status === "superseded" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</p>
                   {task.entity_name && (
                     <p className="mt-0.5 truncate text-[10px] text-slate-light">{task.entity_type} · {task.entity_name}</p>
                   )}
@@ -973,6 +1041,259 @@ function ProgressColumn({ title, rows, labelKey }: { title: string; rows: TaskPr
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+type ActivityKind = "Email" | "Text" | "Call" | "Meeting" | "Note";
+
+function TaskWorkModal({
+  task,
+  users,
+  busy,
+  onClose,
+  onUpdate,
+  onLogActivity,
+}: {
+  task: Task;
+  users: AssignableUser[];
+  busy: boolean;
+  onClose: () => void;
+  onUpdate: (payload: Record<string, unknown>) => Promise<void>;
+  onLogActivity: (payload: {
+    type: string;
+    subject: string;
+    description?: string | null;
+    activity_date?: string;
+    status?: string;
+    lead_id?: string | null;
+    opportunity_id?: string | null;
+    owner_user_id?: string | null;
+    priority?: "low" | "normal" | "high" | "urgent";
+  }) => Promise<void>;
+}) {
+  const [activityKind, setActivityKind] = useState<ActivityKind>("Email");
+  const [activitySubject, setActivitySubject] = useState(task.title);
+  const [activityNotes, setActivityNotes] = useState("");
+  const [status, setStatus] = useState<TaskStatus>(task.status);
+  const [evidenceRef, setEvidenceRef] = useState(task.evidence_ref ?? "");
+  const [outcome, setOutcome] = useState(task.outcome ?? "");
+  const [nextAction, setNextAction] = useState(task.next_action ?? "");
+  const [assignedTo, setAssignedTo] = useState(task.assigned_to_user_id ?? "");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActivitySubject(task.title);
+    setStatus(task.status);
+    setEvidenceRef(task.evidence_ref ?? "");
+    setOutcome(task.outcome ?? "");
+    setNextAction(task.next_action ?? "");
+    setAssignedTo(task.assigned_to_user_id ?? "");
+    setLocalError(null);
+  }, [task]);
+
+  const linkedDocumentEntity =
+    task.entity_type && task.entity_id && DOCUMENT_ENTITY_TYPES.has(task.entity_type)
+      ? { entityType: task.entity_type as DocumentEntityType, entityId: task.entity_id }
+      : null;
+
+  const activityEntityPayload = {
+    lead_id: task.entity_type === "lead" ? task.entity_id : null,
+    opportunity_id: task.entity_type === "opportunity" ? task.entity_id : null,
+  };
+
+  const handleSave = async () => {
+    setLocalError(null);
+    try {
+      await onUpdate({
+        status,
+        evidence_ref: evidenceRef.trim() || null,
+        outcome: outcome.trim() || null,
+        next_action: nextAction.trim() || null,
+        assigned_to_user_id: assignedTo || null,
+      });
+    } catch (e) {
+      setLocalError(normalizeError(e, "Task could not be saved."));
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!evidenceRef.trim()) {
+      setLocalError("Proof is required before this task can be submitted for completion.");
+      return;
+    }
+    setLocalError(null);
+    try {
+      await onUpdate({
+        status: "completed",
+        evidence_ref: evidenceRef.trim(),
+        outcome: outcome.trim() || null,
+        next_action: nextAction.trim() || null,
+        assigned_to_user_id: assignedTo || null,
+      });
+    } catch (e) {
+      setLocalError(normalizeError(e, "Task could not be completed."));
+    }
+  };
+
+  const handleLogActivity = async () => {
+    if (!activitySubject.trim() && !activityNotes.trim()) {
+      setLocalError("Add a subject or note before logging work.");
+      return;
+    }
+    setLocalError(null);
+    try {
+      await onLogActivity({
+        type: activityKind,
+        subject: activitySubject.trim() || `${activityKind} logged for ${task.title}`,
+        description: activityNotes.trim() || null,
+        activity_date: new Date().toISOString(),
+        status: "Completed",
+        owner_user_id: assignedTo || undefined,
+        priority: task.priority,
+        ...activityEntityPayload,
+      });
+      setActivityNotes("");
+      setEvidenceRef((current) => current || `${activityKind}: ${activitySubject.trim() || task.title}`);
+    } catch (e) {
+      setLocalError(normalizeError(e, "Work could not be logged."));
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onClick={onClose}>
+      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col border border-ink-mid bg-ink shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <header className="flex items-start justify-between gap-4 border-b border-ink-mid p-4">
+          <div className="min-w-0">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className={`border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${PRIORITY_TONE[task.priority]}`}>{task.priority}</span>
+              <span className="border border-ink-mid px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-light">
+                {STATUS_OPTIONS.find((item) => item.value === task.status)?.label ?? task.status}
+              </span>
+              {task.gate_effect === "blocking" && <span className="border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-red-200">Blocking</span>}
+              {task.source === "template" && <span className="border border-signal/30 bg-signal/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-signal">Auto</span>}
+            </div>
+            <h2 className={`font-display text-xl font-semibold ${task.status === "superseded" ? "text-slate-light line-through" : "text-paper"}`}>{task.title}</h2>
+            <p className="mt-1 text-xs text-slate-light">
+              {task.entity_type ? `${task.entity_type} · ${task.entity_name || task.entity_id}` : "General task"}
+              {task.due_date ? ` · Due ${new Date(task.due_date).toLocaleDateString()}` : ""}
+            </p>
+          </div>
+          <button onClick={onClose} className="shrink-0 text-slate-light hover:text-paper"><X className="h-4 w-4" /></button>
+        </header>
+
+        <div className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[1.1fr_0.9fr]">
+          <section className="space-y-4 border-b border-ink-mid p-4 lg:border-b-0 lg:border-r">
+            {task.description && <p className="text-sm leading-relaxed text-slate-light">{task.description}</p>}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Owner</label>
+                <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">
+                  <option value="">-- Unassigned --</option>
+                  {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Status</label>
+                <select value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">
+                  {STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <button type="button" onClick={() => setActivityKind("Email")} className={`flex items-center justify-center gap-1.5 border px-3 py-2 text-xs uppercase tracking-wider ${activityKind === "Email" ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}><Mail className="h-3.5 w-3.5" /> Email</button>
+              <button type="button" onClick={() => setActivityKind("Text")} className={`flex items-center justify-center gap-1.5 border px-3 py-2 text-xs uppercase tracking-wider ${activityKind === "Text" ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}><MessageSquare className="h-3.5 w-3.5" /> Text</button>
+              <button type="button" onClick={() => setActivityKind("Call")} className={`flex items-center justify-center gap-1.5 border px-3 py-2 text-xs uppercase tracking-wider ${activityKind === "Call" ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}><Phone className="h-3.5 w-3.5" /> Call</button>
+            </div>
+
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Work log subject</label>
+              <input value={activitySubject} onChange={(e) => setActivitySubject(e.target.value)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper" />
+            </div>
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Notes</label>
+              <textarea value={activityNotes} onChange={(e) => setActivityNotes(e.target.value)} rows={4} className="w-full resize-none border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper" placeholder="Record what happened, who responded, and what was agreed." />
+            </div>
+            <button type="button" onClick={() => void handleLogActivity()} disabled={busy} className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40">
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ClipboardCheck className="h-3.5 w-3.5" />} Log Work
+            </button>
+
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Proof / reference</label>
+              <input value={evidenceRef} onChange={(e) => setEvidenceRef(e.target.value)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper" placeholder="Document link, sent email, portal receipt, call note or file reference" />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Outcome</label>
+                <textarea value={outcome} onChange={(e) => setOutcome(e.target.value)} rows={3} className="w-full resize-none border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper" />
+              </div>
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Next action</label>
+                <textarea value={nextAction} onChange={(e) => setNextAction(e.target.value)} rows={3} className="w-full resize-none border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper" />
+              </div>
+            </div>
+
+            {localError && <p className="text-xs text-red-300">{localError}</p>}
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-ink-mid pt-3">
+              <button type="button" onClick={() => void handleSave()} disabled={busy} className="border border-ink-mid px-4 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40">Save</button>
+              <button type="button" onClick={() => void handleComplete()} disabled={busy || task.status === "completed"} className="flex items-center gap-1.5 border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-xs uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/15 disabled:opacity-40">
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />} Complete
+              </button>
+            </div>
+          </section>
+
+          <aside className="space-y-4 p-4">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="border border-ink-mid p-2">
+                <p className="font-mono text-[9px] uppercase tracking-wider text-slate">Requirement</p>
+                <p className="mt-1 text-paper">{task.requirement_code || "None"}</p>
+              </div>
+              <div className="border border-ink-mid p-2">
+                <p className="font-mono text-[9px] uppercase tracking-wider text-slate">Contribution</p>
+                <p className="mt-1 text-paper">{task.contribution_percent ?? 0}% / {task.weight}</p>
+              </div>
+              <div className="border border-ink-mid p-2">
+                <p className="font-mono text-[9px] uppercase tracking-wider text-slate">Team</p>
+                <p className="mt-1 text-paper">{task.assigned_to_team_name || "None"}</p>
+              </div>
+              <div className="border border-ink-mid p-2">
+                <p className="font-mono text-[9px] uppercase tracking-wider text-slate">Approver</p>
+                <p className="mt-1 text-paper">{task.approver_name || "Team lead"}</p>
+              </div>
+            </div>
+
+            {task.depends_on_title && (
+              <p className="flex items-center gap-1.5 border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-200">
+                <Lock className="h-3.5 w-3.5" /> After: {task.depends_on_title}
+              </p>
+            )}
+
+            {task.entity_type && QUOTABLE_ENTITY_TYPES.has(task.entity_type) && task.entity_id && (
+              <Link
+                href={task.quotation_id ? `/dashboard/quotations/builder?edit=${task.quotation_id}` : `/dashboard/quotations/builder?source_type=${task.entity_type}&source_id=${task.entity_id}&task_id=${task.id}`}
+                className="flex items-center justify-center gap-1.5 border border-signal/40 bg-signal/10 px-3 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/15"
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" /> {task.quotation_id ? "Open Quotation" : "Build Quotation"}
+              </Link>
+            )}
+
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5 text-signal" />
+                <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Documents</p>
+              </div>
+              {linkedDocumentEntity ? (
+                <EntityDocumentsPanel entityType={linkedDocumentEntity.entityType} entityId={linkedDocumentEntity.entityId} />
+              ) : (
+                <p className="border border-ink-mid p-3 text-xs text-slate-light">Documents can be attached after the task is linked to a lead, opportunity, tender, project, fleet item or machinery item.</p>
+              )}
+            </div>
+          </aside>
+        </div>
+      </div>
     </div>
   );
 }

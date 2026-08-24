@@ -23,8 +23,9 @@ from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
 )
 from app.shared.sql import update_tenant_row_sql
-from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
 from app.shared.pursuits import get_or_create_pursuit
+from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.vendor_verification import run_system_verification_check
 from core.logging import logger
 from app.services.auth_provisioning import provision_portal_user
@@ -1766,7 +1767,12 @@ async def create_opportunity(
         ) from exc
 
     await generate_task_stack(
-        db, org_id=org_id, entity_type="opportunity", entity_id=new_opportunity_id, created_by=user_id,
+        db,
+        org_id=org_id,
+        entity_type="opportunity",
+        entity_id=new_opportunity_id,
+        created_by=user_id,
+        stage=payload.stage.value,
     )
 
     return {
@@ -1797,8 +1803,11 @@ async def update_opportunity(
         }
 
     params = {k: values[k] for k in safe_keys}
+    stage_changed = False
+    next_stage: Optional[str] = None
     if "stage" in params and params["stage"] is not None:
         params["stage"] = params["stage"].value
+        next_stage = params["stage"]
         current_stage_row = await _single_row(
             db,
             """
@@ -1811,6 +1820,7 @@ async def update_opportunity(
             raise HTTPException(status_code=404, detail="Opportunity not found")
         if params["stage"] != current_stage_row.get("stage"):
             await _ensure_opportunity_stage_unlocked(db, user, current_stage_row.get("stage"))
+            stage_changed = True
     if "deal_value" in params or "probability" in params:
         current = await _single_row(
             db,
@@ -1842,9 +1852,29 @@ async def update_opportunity(
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Opportunity not found")
+        if stage_changed:
+            await supersede_entity_tasks(
+                db,
+                org_id=org_id,
+                entity_type="opportunity",
+                entity_id=opportunity_id,
+                authorized_by=user.get("sub") or user.get("user_id"),
+                reason=f"Opportunity moved to {next_stage}; prior-stage work superseded.",
+            )
         await db.commit()
         if "stage" in safe_keys:
             await fire_trigger(db, org_id, user.get("sub"), "opportunity_stage_changed", {**params, "id": opportunity_id})
+        if stage_changed and next_stage:
+            await generate_task_stack(
+                db,
+                org_id=org_id,
+                entity_type="opportunity",
+                entity_id=opportunity_id,
+                created_by=user.get("sub") or user.get("user_id"),
+                source_event="opportunity_stage_changed",
+                generation_reason=f"Opportunity moved to {next_stage}.",
+                stage=next_stage,
+            )
         return {
             "success": True,
             "data": {"id": opportunity_id},
@@ -2364,11 +2394,24 @@ async def mark_opportunity_won(
                     detail="Referral credit could not be posted for the won opportunity.",
                 ) from exc
 
+        if project_id:
+            await ensure_project_operational_setup(
+                db, org_id=org_id, project_id=project_id, created_by=user_id
+            )
+
         # Award Task Pack: resolve (or create, if this Opportunity never
         # went through Lead qualification) the pursuit spine row and mark it
         # won, in the same transaction as everything else above.
         pursuit_id = await get_or_create_pursuit(
             db, org_id=org_id, opportunity_id=str(opportunity_id), status="won", created_by=user_id,
+        )
+        await supersede_entity_tasks(
+            db,
+            org_id=org_id,
+            entity_type="opportunity",
+            entity_id=opportunity_id,
+            authorized_by=user_id,
+            reason="Opportunity marked won; opportunity-stage work superseded.",
         )
 
         await db.commit()
@@ -2456,6 +2499,14 @@ async def mark_opportunity_lost(
 
     pursuit_id = await get_or_create_pursuit(
         db, org_id=org_id, opportunity_id=str(opportunity_id), status="lost", created_by=user_id,
+    )
+    await supersede_entity_tasks(
+        db,
+        org_id=org_id,
+        entity_type="opportunity",
+        entity_id=opportunity_id,
+        authorized_by=user_id,
+        reason="Opportunity marked lost; opportunity-stage work superseded.",
     )
     await db.commit()
 

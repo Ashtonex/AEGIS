@@ -10,7 +10,7 @@ from core.security import require_permission, user_has_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 from app.services.crm.automation_engine import fire_trigger
 from app.services.crm.compliance_gap import check_and_alert_lead_compliance_gap
-from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
 
 router = APIRouter()
 
@@ -822,6 +822,14 @@ async def qualify_lead(
                 "opportunity_id": opportunity_id,
             },
         )
+        await supersede_entity_tasks(
+            db,
+            org_id=org_id,
+            entity_type="lead",
+            entity_id=lead_id,
+            authorized_by=user_id,
+            reason="Lead qualified to opportunity; lead-stage work superseded.",
+        )
         if lead_row.campaign_id:
             await db.execute(
                 text("""
@@ -845,6 +853,16 @@ async def qualify_lead(
             )
 
         await db.commit()
+        await generate_task_stack(
+            db,
+            org_id=org_id,
+            entity_type="opportunity",
+            entity_id=opportunity_id,
+            created_by=user_id,
+            source_event="lead_qualified_to_opportunity",
+            generation_reason="Lead qualified to opportunity.",
+            stage=opp_data.stage,
+        )
         return {
             "success": True,
             "data": {
