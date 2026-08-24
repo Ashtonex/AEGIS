@@ -513,7 +513,7 @@ async def delete_item(
 
 
 class OrganizationQualify(BaseModel):
-    name: str
+    name: Optional[str] = None
     sector: Optional[str] = None
     website: Optional[str] = None
     registration_number: Optional[str] = None
@@ -544,7 +544,7 @@ class ActivityQualify(BaseModel):
 
 
 class QualifyLeadPayload(BaseModel):
-    organization: OrganizationQualify
+    organization: Optional[OrganizationQualify] = None
     contact: ContactQualify
     opportunity: OpportunityQualify
     activity: Optional[ActivityQualify] = None
@@ -659,42 +659,45 @@ async def qualify_lead(
             raise HTTPException(status_code=404, detail="Lead not found")
         await _ensure_lead_status_unlocked(db, user, lead_row.status)
 
-        # 1. Check if client organization exists in crm.organizations (by name)
+        # 1. If this lead represents a company, link or create its client organization.
         org_data = payload.organization
-        fetch_org_query = text("""
-            SELECT id FROM crm.organizations
-            WHERE LOWER(name) = LOWER(:name) AND organization_id = :org_id AND is_deleted = false
-            LIMIT 1
-        """)
-        org_res = await db.execute(
-            fetch_org_query, {"name": org_data.name, "org_id": org_id}
-        )
-        org_row = org_res.first()
-
-        if org_row:
-            client_org_id = org_row[0]
-        else:
-            insert_org_query = text("""
-                INSERT INTO crm.organizations (
-                    organization_id, name, sector, industry, website, registration_number, tax_id, address, created_by
-                ) VALUES (
-                    :org_id, :name, :sector, :sector, :website, :registration_number, :tax_id, :address, :user_id
-                ) RETURNING id
+        org_name = org_data.name.strip() if org_data and org_data.name else None
+        client_org_id = None
+        if org_name:
+            fetch_org_query = text("""
+                SELECT id FROM crm.organizations
+                WHERE LOWER(name) = LOWER(:name) AND organization_id = :org_id AND is_deleted = false
+                LIMIT 1
             """)
-            insert_org_res = await db.execute(
-                insert_org_query,
-                {
-                    "org_id": org_id,
-                    "name": org_data.name,
-                    "sector": org_data.sector,
-                    "website": org_data.website,
-                    "registration_number": org_data.registration_number,
-                    "tax_id": org_data.tax_id,
-                    "address": org_data.address,
-                    "user_id": user_id,
-                },
+            org_res = await db.execute(
+                fetch_org_query, {"name": org_name, "org_id": org_id}
             )
-            client_org_id = insert_org_res.scalar()
+            org_row = org_res.first()
+
+            if org_row:
+                client_org_id = org_row[0]
+            else:
+                insert_org_query = text("""
+                    INSERT INTO crm.organizations (
+                        organization_id, name, sector, industry, website, registration_number, tax_id, address, created_by
+                    ) VALUES (
+                        :org_id, :name, :sector, :sector, :website, :registration_number, :tax_id, :address, :user_id
+                    ) RETURNING id
+                """)
+                insert_org_res = await db.execute(
+                    insert_org_query,
+                    {
+                        "org_id": org_id,
+                        "name": org_name,
+                        "sector": org_data.sector,
+                        "website": org_data.website,
+                        "registration_number": org_data.registration_number,
+                        "tax_id": org_data.tax_id,
+                        "address": org_data.address,
+                        "user_id": user_id,
+                    },
+                )
+                client_org_id = insert_org_res.scalar()
 
         # 2. Check if contact exists in crm.contacts (by email), if not, create it linked to the organization
         contact_data = payload.contact
@@ -845,7 +848,7 @@ async def qualify_lead(
         return {
             "success": True,
             "data": {
-                "organization_id": str(client_org_id),
+                "organization_id": str(client_org_id) if client_org_id else None,
                 "contact_id": str(contact_id),
                 "opportunity_id": str(opportunity_id),
             },

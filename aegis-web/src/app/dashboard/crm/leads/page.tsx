@@ -46,8 +46,8 @@ const PRIVILEGED_LEAD_STATUS_ROLES = ['Executive (Admin)', 'Managing Director'];
 
 interface Lead {
   id: string;
-  company_name: string;
-  contact_name: string;
+  company_name?: string | null;
+  contact_name?: string | null;
   contact_email?: string;
   contact_phone?: string;
   sector: string;
@@ -77,6 +77,15 @@ interface ComplianceRequirementType {
 }
 
 const LEAD_SOURCE_OPTIONS = ['Manual Log', 'Referral', 'Website', 'Tender Notice', 'Cold Call', 'Government Portal'];
+
+const leadPrimaryName = (lead: Pick<Lead, 'company_name' | 'contact_name'>) =>
+  lead.company_name?.trim() || lead.contact_name?.trim() || 'Unnamed lead';
+
+const leadContactName = (lead: Pick<Lead, 'contact_name' | 'company_name'>) =>
+  lead.contact_name?.trim() || lead.company_name?.trim() || 'Unnamed contact';
+
+const leadOpportunityName = (lead: Pick<Lead, 'company_name' | 'contact_name'>) =>
+  `${leadPrimaryName(lead)} - Contract Opportunity`;
 
 const ACTIVITY_CHANNELS: { value: string; label: string; icon: typeof PhoneCall }[] = [
   { value: 'phone_call', label: 'Call', icon: PhoneCall },
@@ -258,7 +267,10 @@ export default function CRMLeadsApp() {
 
   const handleSaveLead = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manualForm.company_name.trim()) return;
+    if (!manualForm.contact_name.trim()) {
+      showToast("Client / contact name is required.", "error");
+      return;
+    }
     if (manualForm.estimated_budget < 0) {
       showToast("Estimated value / budget can't be negative.", "error");
       return;
@@ -272,14 +284,14 @@ export default function CRMLeadsApp() {
     setIsSavingLead(true);
     try {
       const payload = {
-        company_name: manualForm.company_name,
-        contact_name: manualForm.contact_name,
-        contact_email: manualForm.contact_email || undefined,
-        contact_phone: manualForm.contact_phone || undefined,
+        company_name: manualForm.company_name.trim() || undefined,
+        contact_name: manualForm.contact_name.trim(),
+        contact_email: manualForm.contact_email.trim() || undefined,
+        contact_phone: manualForm.contact_phone.trim() || undefined,
         sector: manualForm.sector,
         estimated_budget: Number(manualForm.estimated_budget),
         ai_score: Number(manualForm.ai_score),
-        ai_rationale: manualForm.ai_rationale,
+        ai_rationale: manualForm.ai_rationale.trim() || 'Manually logged opportunity signal.',
         lead_source: manualForm.lead_source,
         expected_close_date: manualForm.expected_close_date || undefined,
         labels: labelsArray,
@@ -313,7 +325,7 @@ export default function CRMLeadsApp() {
     } catch (err) {
       const fallback = editingLead ? "Could not update lead." : "Could not save manual lead.";
       if (err instanceof ApiError && err.status === 409) {
-        showToast("A lead with this company name, email, or phone already exists. Check the pipeline before logging it again.", "error");
+        showToast("A lead with this name, email, or phone already exists. Check the pipeline before logging it again.", "error");
       } else if (err instanceof ApiError && err.message) {
         showToast(err.message, "error");
       } else {
@@ -382,18 +394,24 @@ export default function CRMLeadsApp() {
     if (qualifyingId) return;
     setQualifyingId(lead.id);
     try {
+      const hasCompany = Boolean(lead.company_name?.trim());
+      const contactName = leadContactName(lead);
       const res = await qualifyCrmLead(lead.id, {
-        organization: {
-          name: lead.company_name,
-          sector: lead.sector
-        },
+        ...(hasCompany
+          ? {
+              organization: {
+                name: lead.company_name?.trim(),
+                sector: lead.sector
+              }
+            }
+          : {}),
         contact: {
-          contact_name: lead.contact_name,
+          contact_name: contactName,
           email: lead.contact_email,
           phone: lead.contact_phone
         },
         opportunity: {
-          name: `${lead.company_name} - Contract Opportunity`,
+          name: leadOpportunityName(lead),
           stage: 'Qualification',
           budget: lead.estimated_budget,
           probability: lead.ai_score
@@ -409,7 +427,7 @@ export default function CRMLeadsApp() {
         if (contactId) {
           setQualifiedLeadPrompt({
             contactId,
-            contactName: lead.contact_name,
+            contactName,
             email: lead.contact_email
           });
         }
@@ -538,7 +556,7 @@ export default function CRMLeadsApp() {
       const res = await findDuplicateCrmLeads({
         email: lead.contact_email,
         phone: lead.contact_phone,
-        company_name: lead.company_name
+        company_name: lead.company_name || undefined
       });
       if (res.success && Array.isArray(res.data)) {
         // Filter out current lead
@@ -722,7 +740,7 @@ export default function CRMLeadsApp() {
                   return (
                   <TableRow key={lead.id}>
                     <TableCell className="font-semibold text-paper">
-                      {lead.company_name}
+                      {leadPrimaryName(lead)}
                       {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
                         <span
                           title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
@@ -732,7 +750,7 @@ export default function CRMLeadsApp() {
                         </span>
                       )}
                     </TableCell>
-                    <TableCell>{lead.contact_name}</TableCell>
+                    <TableCell>{leadContactName(lead)}</TableCell>
                     <TableCell>{lead.sector}</TableCell>
                     <TableCell className="font-semibold text-emerald-400">
                       ${lead.estimated_budget.toLocaleString()}
@@ -760,7 +778,7 @@ export default function CRMLeadsApp() {
                         Edit
                       </button>
                       <button
-                        onClick={() => setDocumentsFor({ id: lead.id, label: lead.company_name })}
+                        onClick={() => setDocumentsFor({ id: lead.id, label: leadPrimaryName(lead) })}
                         className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] bg-[#111827] border border-[#1E293B] rounded text-slate-300 hover:text-white"
                       >
                         <Paperclip className="h-2.5 w-2.5" /> Docs
@@ -834,7 +852,7 @@ export default function CRMLeadsApp() {
                         } ${movingLeadId === lead.id ? 'opacity-60 pointer-events-none' : ''}`}
                       >
                         <div>
-                          <h4 className="text-sm font-bold text-white line-clamp-1">{lead.company_name}</h4>
+                          <h4 className="text-sm font-bold text-white line-clamp-1">{leadPrimaryName(lead)}</h4>
                           <span className="text-[9px] font-mono text-slate-400">{lead.sector} | {lead.lead_source}</span>
                         </div>
                         {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
@@ -949,22 +967,23 @@ export default function CRMLeadsApp() {
             <h2 className="text-lg font-bold text-white mb-4">{editingLead ? 'Edit Lead' : 'Log Manual Lead Signal'}</h2>
             <form onSubmit={handleSaveLead} className="space-y-4 text-xs">
               <div>
-                <label className="block text-slate-400 mb-1 font-semibold">Company Name</label>
+                <label className="block text-slate-400 mb-1 font-semibold">Company Name (optional)</label>
                 <input
                   type="text"
                   value={manualForm.company_name}
                   onChange={(e) => setManualForm(prev => ({ ...prev, company_name: e.target.value }))}
-                  required
+                  placeholder="Leave blank for individual clients"
                   className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-slate-400 mb-1 font-semibold">Contact Name</label>
+                  <label className="block text-slate-400 mb-1 font-semibold">Client / Contact Name</label>
                   <input
                     type="text"
                     value={manualForm.contact_name}
                     onChange={(e) => setManualForm(prev => ({ ...prev, contact_name: e.target.value }))}
+                    required
                     className="w-full bg-[#0A0D14] border border-[#1E293B] rounded p-2 text-white"
                   />
                 </div>
@@ -1113,7 +1132,7 @@ export default function CRMLeadsApp() {
               <X className="h-4 w-4" />
             </button>
             <h2 className="text-lg font-bold text-white mb-1">Activity History</h2>
-            <p className="text-xs text-slate-400 mb-4">{activityLead.company_name}</p>
+            <p className="text-xs text-slate-400 mb-4">{leadPrimaryName(activityLead)}</p>
 
             <div className="flex-1 overflow-y-auto space-y-2 mb-4 min-h-[120px]">
               {activityLoading ? (
@@ -1185,7 +1204,7 @@ export default function CRMLeadsApp() {
               <X className="h-4 w-4" />
             </button>
             <h2 className="text-lg font-bold text-white mb-2 text-rose-400">Disqualify Lead</h2>
-            <p className="text-xs text-slate-400 mb-4">Please detail the reason for disqualifying {selectedLead?.company_name}.</p>
+            <p className="text-xs text-slate-400 mb-4">Please detail the reason for disqualifying {selectedLead ? leadPrimaryName(selectedLead) : 'this lead'}.</p>
             <div className="space-y-4 text-xs">
               <textarea
                 value={disqualifyReason}
@@ -1251,7 +1270,7 @@ export default function CRMLeadsApp() {
             </button>
             <h2 className="text-lg font-bold text-white mb-2 text-rose-400">Delete Lead</h2>
             <p className="text-xs text-slate-400 mb-4">
-              Delete <span className="text-white font-bold">{selectedLead?.company_name}</span>? This can&apos;t be undone from this screen.
+              Delete <span className="text-white font-bold">{selectedLead ? leadPrimaryName(selectedLead) : 'this lead'}</span>? This can&apos;t be undone from this screen.
             </p>
             <div className="flex gap-3 text-xs">
               <button
@@ -1279,7 +1298,7 @@ export default function CRMLeadsApp() {
               <X className="h-4 w-4" />
             </button>
             <h2 className="text-lg font-bold text-white mb-2">Duplicate Resolution Engine</h2>
-            <p className="text-xs text-slate-400 mb-4">Potential matches found in the CRM directory for <span className="text-white font-bold">{selectedLead?.company_name}</span>.</p>
+            <p className="text-xs text-slate-400 mb-4">Potential matches found in the CRM directory for <span className="text-white font-bold">{selectedLead ? leadPrimaryName(selectedLead) : 'this lead'}</span>.</p>
 
             <div className="space-y-3 max-h-60 overflow-y-auto">
               {duplicateLeads.length === 0 ? (
@@ -1288,8 +1307,8 @@ export default function CRMLeadsApp() {
                 duplicateLeads.map((dup) => (
                   <div key={dup.id} className="bg-[#0A0D14] border border-[#1E293B] p-3 rounded-lg flex items-center justify-between text-xs">
                     <div>
-                      <h4 className="font-bold text-white">{dup.company_name}</h4>
-                      <p className="text-slate-400">{dup.contact_name} | {dup.contact_email}</p>
+                      <h4 className="font-bold text-white">{leadPrimaryName(dup)}</h4>
+                      <p className="text-slate-400">{leadContactName(dup)} | {dup.contact_email || 'No email'}</p>
                     </div>
                     <button
                       onClick={() => handleMergeLeads(dup.id)}

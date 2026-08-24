@@ -886,7 +886,7 @@ export async function deleteCrmLead(leadId: string): Promise<ApiResponse<void>> 
 }
 
 export async function createCrmLead(data: {
-  company_name: string;
+  company_name?: string;
   contact_name: string;
   contact_email?: string;
   contact_phone?: string;
