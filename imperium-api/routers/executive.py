@@ -8,8 +8,6 @@ from core.database import get_db
 from core.logging import logger
 from core.security import require_permission
 from core.analytics_ml import ml_engine
-from app.shared.sql import tenant_relation_summary_sql
-
 router = APIRouter()
 
 PROJECT_TERMINAL_STATUSES = (
@@ -25,6 +23,28 @@ PROJECT_OPEN_STATUS_SQL = (
     "lower(COALESCE(p.status, '')) NOT IN "
     "('cancelled', 'canceled', 'closed', 'complete', 'completed', 'archived', 'lost')"
 )
+EXECUTIVE_HEALTH_SOURCES: Dict[str, Dict[str, str | None]] = {
+    "projects.projects": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "projects.project_profiles": {"updated_column": "updated_at", "deleted_filter": None},
+    "projects.daily_site_reports": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "projects.hse_incidents": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "crm.leads": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "crm.opportunities": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "crm.tenders": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "crm.activities": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "finance.quotations": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "finance.progress_claims": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "finance.cost_transactions": {"updated_column": "created_at", "deleted_filter": None},
+    "finance.project_forecasts": {"updated_column": "computed_at", "deleted_filter": None},
+    "procurement.purchase_orders": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "procurement.suppliers": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "procurement.inventory_items": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "hr.employees": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "fleet.fleet": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "fleet.plant_requests": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "fleet.plant_incidents": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+    "core.compliance_items": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
+}
 
 
 async def _rows(
@@ -95,13 +115,13 @@ async def get_executive_kpis(
     )
 
     if not snapshot:
-        source_errors.append(
+        data["_notices"] = [
             {
                 "source": "executive.kpi_snapshots",
                 "status": "no_data",
-                "reason": "No executive KPI snapshot rows found; live fallbacks applied where available.",
+                "reason": "No executive KPI snapshot rows found; live module fallbacks are being used.",
             }
-        )
+        ]
 
     live_rows = await _rows(
         db,
@@ -746,18 +766,19 @@ async def _source_health(
     db: AsyncSession, org_id: str, name: str, relation: str
 ) -> Dict[str, Any]:
     """Report source state without treating an unavailable relation as a zero."""
-    allowed_relations = {
-        "projects.projects",
-        "projects.hse_incidents",
-        "procurement.purchase_orders",
-        "hr.employees",
-        "crm.leads",
-        "crm.opportunities",
-        "crm.activities",
-    }
+    source_config = EXECUTIVE_HEALTH_SOURCES[relation]
+    updated_column = source_config["updated_column"]
+    deleted_filter = source_config["deleted_filter"]
+    deletion_clause = f" AND {deleted_filter}" if deleted_filter else ""
     try:
         result = await db.execute(
-            tenant_relation_summary_sql(relation, allowed_relations),
+            text(
+                f"""
+                SELECT COUNT(*) AS record_count, MAX({updated_column}) AS last_updated
+                FROM {relation}
+                WHERE organization_id = :org_id{deletion_clause}
+                """
+            ),
             {"org_id": org_id},
         )
         row = result.one()
@@ -799,12 +820,25 @@ async def get_executive_data_health(
     org_id = user["org_id"]
     sources = [
         _source_health(db, org_id, "Projects", "projects.projects"),
+        _source_health(db, org_id, "Project Profiles", "projects.project_profiles"),
+        _source_health(db, org_id, "Site Reports", "projects.daily_site_reports"),
         _source_health(db, org_id, "HSE", "projects.hse_incidents"),
-        _source_health(db, org_id, "Procurement", "procurement.purchase_orders"),
-        _source_health(db, org_id, "Workforce", "hr.employees"),
         _source_health(db, org_id, "CRM Leads", "crm.leads"),
         _source_health(db, org_id, "CRM Deals", "crm.opportunities"),
+        _source_health(db, org_id, "CRM Tenders", "crm.tenders"),
         _source_health(db, org_id, "CRM Activity", "crm.activities"),
+        _source_health(db, org_id, "Finance Quotes", "finance.quotations"),
+        _source_health(db, org_id, "Finance Progress Claims", "finance.progress_claims"),
+        _source_health(db, org_id, "Finance Costs", "finance.cost_transactions"),
+        _source_health(db, org_id, "Finance Forecasts", "finance.project_forecasts"),
+        _source_health(db, org_id, "Procurement Orders", "procurement.purchase_orders"),
+        _source_health(db, org_id, "Suppliers", "procurement.suppliers"),
+        _source_health(db, org_id, "Inventory", "procurement.inventory_items"),
+        _source_health(db, org_id, "Workforce", "hr.employees"),
+        _source_health(db, org_id, "Fleet", "fleet.fleet"),
+        _source_health(db, org_id, "Plant Requests", "fleet.plant_requests"),
+        _source_health(db, org_id, "Plant Incidents", "fleet.plant_incidents"),
+        _source_health(db, org_id, "Compliance", "core.compliance_items"),
     ]
     sources = [await source for source in sources]
     return {
