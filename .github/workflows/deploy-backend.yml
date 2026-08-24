@@ -34,7 +34,9 @@ jobs:
             cd /opt/aegis
             git fetch origin main
             git reset --hard origin/main
-            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --build
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env build
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env down --remove-orphans || true
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --no-build
             docker image prune -f
             echo "--- disk usage after build ---"
             df -h /
