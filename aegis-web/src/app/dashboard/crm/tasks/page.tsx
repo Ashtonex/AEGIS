@@ -11,6 +11,7 @@ import {
   createCrmActivity,
   getAssignableUsers,
   getTeams,
+  getTeamMembers,
   assignTaskStack,
   backfillCrmTaskStacks,
   addCrmTaskContributor,
@@ -81,6 +82,13 @@ interface AssignableUser {
 interface Team {
   id: string;
   name: string;
+}
+
+interface TeamMember {
+  id: string;
+  full_name: string;
+  email: string;
+  is_lead: boolean;
 }
 
 const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
@@ -181,10 +189,12 @@ export default function CrmTasksPage() {
   const [progressOpen, setProgressOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
-  const [assignmentView, setAssignmentView] = useState<"needs_assignment" | "assigned" | "all">("needs_assignment");
+  const [assignmentView, setAssignmentView] = useState<"needs_assignment" | "assigned" | "all">("assigned");
   const [selectedStackKey, setSelectedStackKey] = useState<string>("all");
   const [openStacks, setOpenStacks] = useState<Record<string, boolean>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
+  const [canUseAssignmentTools, setCanUseAssignmentTools] = useState(true);
 
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? null, [selectedTaskId, tasks]);
 
@@ -192,11 +202,11 @@ export default function CrmTasksPage() {
     setLoading(true);
     setError(null);
     try {
-      const [tasksRes, usersRes, teamsRes, progressRes] = await Promise.all([
+      const [tasksResult, usersResult, teamsResult, progressResult] = await Promise.allSettled([
         getCrmTasks({
           department,
           status: statusFilter !== "all" ? statusFilter : undefined,
-          assigned_to_user_id: assigneeFilter !== "all" ? assigneeFilter : undefined,
+          assigned_to_user_id: canUseAssignmentTools && assigneeFilter !== "all" ? assigneeFilter : undefined,
         }),
         getAssignableUsers(),
         getTeams(),
@@ -205,16 +215,46 @@ export default function CrmTasksPage() {
         // the Promise.all and blank out tasks/users/teams for everyone else.
         getCrmTaskProgressSummary().catch(() => null),
       ]);
+
+      if (tasksResult.status === "rejected") {
+        throw tasksResult.reason;
+      }
+      const tasksRes = tasksResult.value;
       if (tasksRes.success && Array.isArray(tasksRes.data)) setTasks(tasksRes.data);
-      if (usersRes.success && Array.isArray(usersRes.data)) setUsers(usersRes.data);
-      if (teamsRes.success && Array.isArray(teamsRes.data)) setTeams(teamsRes.data);
+
+      if (usersResult.status === "fulfilled" && usersResult.value.success && Array.isArray(usersResult.value.data)) {
+        setUsers(usersResult.value.data);
+        setCanUseAssignmentTools(true);
+      } else {
+        setUsers([]);
+        setCanUseAssignmentTools(false);
+        if (assigneeFilter !== "all") setAssigneeFilter("all");
+      }
+
+      if (teamsResult.status === "fulfilled" && teamsResult.value.success && Array.isArray(teamsResult.value.data)) {
+        const nextTeams = teamsResult.value.data;
+        setTeams(nextTeams);
+        const memberResults = await Promise.allSettled(nextTeams.map((team) => getTeamMembers(team.id)));
+        const nextTeamMembers: Record<string, TeamMember[]> = {};
+        memberResults.forEach((result, index) => {
+          if (result.status === "fulfilled" && result.value.success && Array.isArray(result.value.data)) {
+            nextTeamMembers[nextTeams[index].id] = result.value.data;
+          }
+        });
+        setTeamMembers(nextTeamMembers);
+      } else {
+        setTeams([]);
+        setTeamMembers({});
+      }
+
+      const progressRes = progressResult.status === "fulfilled" ? progressResult.value : null;
       if (progressRes?.success && progressRes.data) setProgress(progressRes.data);
     } catch (e) {
       setError(normalizeError(e, "Tasks did not load."));
     } finally {
       setLoading(false);
     }
-  }, [department, statusFilter, assigneeFilter]);
+  }, [assigneeFilter, canUseAssignmentTools, department, statusFilter]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -297,6 +337,23 @@ export default function CrmTasksPage() {
       .map(([id, v]) => ({ id, ...v }))
       .sort((a, b) => b.overdue - a.overdue || b.open - a.open);
   }, [tasks]);
+
+  const teamLeadNames = useCallback(
+    (teamId: string | null) => {
+      if (!teamId) return "";
+      const leads = (teamMembers[teamId] ?? []).filter((member) => member.is_lead);
+      return leads.map((member) => member.full_name).join(", ");
+    },
+    [teamMembers],
+  );
+
+  const teamRoster = useMemo(() => {
+    return teams.map((team) => {
+      const members = teamMembers[team.id] ?? [];
+      const leads = members.filter((member) => member.is_lead);
+      return { ...team, members, leads };
+    });
+  }, [teamMembers, teams]);
 
   const handleToggleDone = async (task: Task) => {
     // Reopening is always unrestricted. Completing is two-step: the assignee
@@ -453,22 +510,24 @@ export default function CrmTasksPage() {
             <h1 className="mt-2 font-display text-2xl font-semibold text-paper">Tasks</h1>
             <p className="mt-1 text-sm text-slate-light">Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people.</p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => void handleBackfill()}
-              disabled={backfilling}
-              title="Generate task stacks for existing records that predate auto-generation"
-              className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
-            >
-              {backfilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />} Backfill Stacks
-            </button>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="flex items-center gap-1.5 border border-signal bg-signal/10 px-4 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/20"
-            >
-              <Plus className="h-3.5 w-3.5" /> New Task
-            </button>
-          </div>
+          {canUseAssignmentTools && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void handleBackfill()}
+                disabled={backfilling}
+                title="Generate task stacks for existing records that predate auto-generation"
+                className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
+              >
+                {backfilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />} Backfill Stacks
+              </button>
+              <button
+                onClick={() => setShowCreate(true)}
+                className="flex items-center gap-1.5 border border-signal bg-signal/10 px-4 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/20"
+              >
+                <Plus className="h-3.5 w-3.5" /> New Task
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-3 md:grid-cols-4">
@@ -556,6 +615,44 @@ export default function CrmTasksPage() {
           </div>
         )}
 
+        {teamRoster.length > 0 && (
+          <div className="grid gap-3 lg:grid-cols-3">
+            {teamRoster.map((team) => (
+              <div key={team.id} className="border border-ink-mid bg-ink-light/25 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-paper">{team.name}</p>
+                    <p className="mt-1 text-[11px] text-slate-light">
+                      Lead: <span className="text-paper">{team.leads.map((lead) => lead.full_name).join(", ") || "Not assigned"}</span>
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-ink-mid px-2 py-0.5 font-mono text-[10px] text-slate-light">
+                    {team.members.length} member{team.members.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                {team.members.length > 0 && (
+                  <div className="mt-3 flex -space-x-1 overflow-hidden">
+                    {team.members.slice(0, 8).map((member) => (
+                      <span
+                        key={member.id}
+                        title={`${member.full_name}${member.is_lead ? " - Lead" : ""}`}
+                        className={`flex h-7 w-7 items-center justify-center rounded-full border font-mono text-[10px] font-bold ${avatarTone(member.id)}`}
+                      >
+                        {initials(member.full_name)}
+                      </span>
+                    ))}
+                    {team.members.length > 8 && (
+                      <span className="flex h-7 w-7 items-center justify-center rounded-full border border-ink-mid bg-ink text-[10px] text-slate-light">
+                        +{team.members.length - 8}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex overflow-x-auto border-b border-ink-mid">
           {DEPARTMENT_TABS.map((tab) => (
             <button
@@ -588,10 +685,14 @@ export default function CrmTasksPage() {
             <option value="all">All statuses</option>
             {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
-          <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)} className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper">
-            <option value="all">All assignees</option>
-            {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-          </select>
+          {canUseAssignmentTools ? (
+            <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)} className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper">
+              <option value="all">All assignees</option>
+              {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+            </select>
+          ) : (
+            <div className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-slate-light">Your assigned work</div>
+          )}
           <select value={assignmentView} onChange={(e) => setAssignmentView(e.target.value as typeof assignmentView)} className="border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper">
             <option value="needs_assignment">Needs assignment</option>
             <option value="assigned">Assigned / in motion</option>
@@ -655,7 +756,7 @@ export default function CrmTasksPage() {
                         {doneCount}/{groupTasks.length}
                       </span>
                     </button>
-                    {entityType && entityId && (
+                    {canUseAssignmentTools && entityType && entityId && (
                       <div className="flex items-center gap-1.5">
                         <select
                           value={stackTeamPick[key] ?? ""}
@@ -692,7 +793,7 @@ export default function CrmTasksPage() {
                   <ul className="divide-y divide-ink-mid">
                     {groupTasks.map((task) => {
                       const blockedByPredecessor = !!task.depends_on_task_id && task.depends_on_status !== "completed";
-                      const availableContributors = users.filter((u) => !task.contributors.some((c) => c.id === u.id));
+                      const availableContributors = canUseAssignmentTools ? users.filter((u) => !task.contributors.some((c) => c.id === u.id)) : [];
                       return (
                         <li
                           key={task.id}
@@ -800,29 +901,38 @@ export default function CrmTasksPage() {
                             </div>
                             <div className="mt-1.5 flex flex-wrap items-center gap-2">
                               {task.assigned_to_team_name && (
-                                <span className="text-[11px] text-slate-light">Team: <span className="text-paper">{task.assigned_to_team_name}</span> ·</span>
+                                <span className="text-[11px] text-slate-light">
+                                  Team: <span className="text-paper">{task.assigned_to_team_name}</span>
+                                  {teamLeadNames(task.assigned_to_team_id) ? <> · Lead: <span className="text-paper">{teamLeadNames(task.assigned_to_team_id)}</span></> : null}
+                                </span>
                               )}
                               {task.assigned_to_user_id && task.assigned_to_name && (
                                 <span className={`flex h-5 w-5 items-center justify-center rounded-full border font-mono text-[9px] font-bold ${avatarTone(task.assigned_to_user_id)}`} title={task.assigned_to_name}>
                                   {initials(task.assigned_to_name)}
                                 </span>
                               )}
-                              <select
-                                value={task.assigned_to_user_id ?? ""}
+                              {canUseAssignmentTools ? (
+                                <select
+                                  value={task.assigned_to_user_id ?? ""}
                                   onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => void handleDistribute(task, e.target.value)}
-                                disabled={busyId === task.id}
-                                className="border border-ink-mid bg-ink-light px-2 py-1 text-[11px] text-paper disabled:opacity-40"
-                              >
-                                <option value="">{task.assigned_to_team_name ? "-- Distribute to a person --" : "-- Unassigned --"}</option>
-                                {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                              </select>
+                                  disabled={busyId === task.id}
+                                  className="border border-ink-mid bg-ink-light px-2 py-1 text-[11px] text-paper disabled:opacity-40"
+                                >
+                                  <option value="">{task.assigned_to_team_name ? "-- Distribute to a person --" : "-- Unassigned --"}</option>
+                                  {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                                </select>
+                              ) : task.assigned_to_name ? (
+                                <span className="text-[11px] text-slate-light">Owner: <span className="text-paper">{task.assigned_to_name}</span></span>
+                              ) : null}
                               {task.contributors.map((c) => (
                                 <span key={c.id} className="flex items-center gap-1 border border-ink-mid px-1.5 py-0.5 text-[11px] text-slate-light">
                                   {c.full_name}
-                                  <button type="button" onClick={(e) => { e.stopPropagation(); void handleRemoveContributor(task, c.id); }} disabled={busyId === task.id} className="hover:text-red-300 disabled:opacity-40">
-                                    <X className="h-2.5 w-2.5" />
-                                  </button>
+                                  {canUseAssignmentTools && (
+                                    <button type="button" onClick={(e) => { e.stopPropagation(); void handleRemoveContributor(task, c.id); }} disabled={busyId === task.id} className="hover:text-red-300 disabled:opacity-40">
+                                      <X className="h-2.5 w-2.5" />
+                                    </button>
+                                  )}
                                 </span>
                               ))}
                               {availableContributors.length > 0 && (
@@ -840,14 +950,16 @@ export default function CrmTasksPage() {
                               )}
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            disabled={busyId === task.id}
-                            onClick={(e) => { e.stopPropagation(); void handleDelete(task); }}
-                            className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300 disabled:opacity-40"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          {canUseAssignmentTools && (
+                            <button
+                              type="button"
+                              disabled={busyId === task.id}
+                              onClick={(e) => { e.stopPropagation(); void handleDelete(task); }}
+                              className="shrink-0 rounded-sm p-1.5 text-slate-light hover:bg-red-950/40 hover:text-red-300 disabled:opacity-40"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </li>
                       );
                     })}
@@ -871,6 +983,8 @@ export default function CrmTasksPage() {
         <TaskWorkModal
           task={selectedTask}
           users={users}
+          canUseAssignmentTools={canUseAssignmentTools}
+          teamLeadName={teamLeadNames(selectedTask.assigned_to_team_id)}
           busy={busyId === selectedTask.id}
           onClose={() => setSelectedTaskId(null)}
           onUpdate={async (payload) => {
@@ -1050,6 +1164,8 @@ type ActivityKind = "Email" | "Text" | "Call" | "Meeting" | "Note";
 function TaskWorkModal({
   task,
   users,
+  canUseAssignmentTools,
+  teamLeadName,
   busy,
   onClose,
   onUpdate,
@@ -1057,6 +1173,8 @@ function TaskWorkModal({
 }: {
   task: Task;
   users: AssignableUser[];
+  canUseAssignmentTools: boolean;
+  teamLeadName: string;
   busy: boolean;
   onClose: () => void;
   onUpdate: (payload: Record<string, unknown>) => Promise<void>;
@@ -1105,13 +1223,16 @@ function TaskWorkModal({
   const handleSave = async () => {
     setLocalError(null);
     try {
-      await onUpdate({
+      const payload: Record<string, unknown> = {
         status,
         evidence_ref: evidenceRef.trim() || null,
         outcome: outcome.trim() || null,
         next_action: nextAction.trim() || null,
-        assigned_to_user_id: assignedTo || null,
-      });
+      };
+      if (canUseAssignmentTools) {
+        payload.assigned_to_user_id = assignedTo || null;
+      }
+      await onUpdate(payload);
     } catch (e) {
       setLocalError(normalizeError(e, "Task could not be saved."));
     }
@@ -1124,13 +1245,16 @@ function TaskWorkModal({
     }
     setLocalError(null);
     try {
-      await onUpdate({
+      const payload: Record<string, unknown> = {
         status: "completed",
         evidence_ref: evidenceRef.trim(),
         outcome: outcome.trim() || null,
         next_action: nextAction.trim() || null,
-        assigned_to_user_id: assignedTo || null,
-      });
+      };
+      if (canUseAssignmentTools) {
+        payload.assigned_to_user_id = assignedTo || null;
+      }
+      await onUpdate(payload);
     } catch (e) {
       setLocalError(normalizeError(e, "Task could not be completed."));
     }
@@ -1149,7 +1273,7 @@ function TaskWorkModal({
         description: activityNotes.trim() || null,
         activity_date: new Date().toISOString(),
         status: "Completed",
-        owner_user_id: assignedTo || undefined,
+        owner_user_id: canUseAssignmentTools ? assignedTo || undefined : undefined,
         priority: task.priority,
         ...activityEntityPayload,
       });
@@ -1187,13 +1311,22 @@ function TaskWorkModal({
             {task.description && <p className="text-sm leading-relaxed text-slate-light">{task.description}</p>}
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Owner</label>
-                <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">
-                  <option value="">-- Unassigned --</option>
-                  {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                </select>
-              </div>
+              {canUseAssignmentTools ? (
+                <div>
+                  <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Owner</label>
+                  <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">
+                    <option value="">-- Unassigned --</option>
+                    {users.map((u) => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-slate-light">Owner</p>
+                  <div className="border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">
+                    {task.assigned_to_name || "Assigned to team"}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-slate-light">Status</label>
                 <select value={status} onChange={(e) => setStatus(e.target.value as TaskStatus)} className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">
@@ -1260,8 +1393,8 @@ function TaskWorkModal({
                 <p className="mt-1 text-paper">{task.assigned_to_team_name || "None"}</p>
               </div>
               <div className="border border-ink-mid p-2">
-                <p className="font-mono text-[9px] uppercase tracking-wider text-slate">Approver</p>
-                <p className="mt-1 text-paper">{task.approver_name || "Team lead"}</p>
+                <p className="font-mono text-[9px] uppercase tracking-wider text-slate">Team Lead</p>
+                <p className="mt-1 text-paper">{teamLeadName || task.approver_name || "Not assigned"}</p>
               </div>
             </div>
 

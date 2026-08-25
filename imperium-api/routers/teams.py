@@ -113,6 +113,17 @@ async def list_team_members(
     if not team_check.first():
         raise HTTPException(status_code=404, detail="Team not found.")
 
+    if not await user_has_permission(db, user, "teams.read_all"):
+        membership_check = await db.execute(
+            text("""
+                SELECT 1 FROM core.team_members
+                WHERE team_id = :team_id AND user_id = :user_id
+            """),
+            {"team_id": team_id, "user_id": user["user_id"]},
+        )
+        if not membership_check.first():
+            raise HTTPException(status_code=403, detail="You can only view members of teams you belong to.")
+
     result = await db.execute(
         text("""
             SELECT u.id, u.full_name, u.email, tm.is_lead

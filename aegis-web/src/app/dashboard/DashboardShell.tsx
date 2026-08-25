@@ -140,8 +140,8 @@ const MODULE_GROUPS: ModuleGroup[] = [
         restrictedRoles: ["CRM Associate"],
         requiredPermission: "crm.reports.read",
       },
-      { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck },
-      { name: "Teams", href: "/dashboard/crm/teams", icon: Users },
+      { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck, requiredPermission: "crm_tasks.read" },
+      { name: "Teams", href: "/dashboard/crm/teams", icon: Users, requiredPermission: "users.read_assignable" },
     ],
   },
   {

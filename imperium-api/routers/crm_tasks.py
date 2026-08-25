@@ -178,6 +178,15 @@ TASK_UPDATE_COLUMNS = (
     "applicability_reason", "evidence_status", "review_status",
 )
 
+SELF_SERVICE_TASK_UPDATE_COLUMNS = {
+    "status",
+    "evidence_ref",
+    "outcome",
+    "next_action",
+    "applicability_result",
+    "applicability_reason",
+}
+
 
 class StackAssignPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -633,7 +642,7 @@ async def update_task(
                 SELECT title, assigned_to_user_id, assigned_to_team_id, status,
                        depends_on_task_id, evidence_required, evidence_ref, approver_user_id,
                        review_submitted_at, review_submitted_by_user_id,
-                       gate_effect, applicability_result
+                       gate_effect, applicability_result, created_by
                 FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             """),
             {"id": task_id, "org_id": org_id},
@@ -646,6 +655,40 @@ async def update_task(
     safe_keys = [column for column in TASK_UPDATE_COLUMNS if column in values]
     if not safe_keys:
         return {"success": True, "data": {"id": str(task_id)}, "message": "No fields to update.", "meta": {}}
+
+    has_org_wide_task_access = await user_has_permission(db, user, "crm_tasks.read_all")
+    if not has_org_wide_task_access:
+        membership = None
+        if current["assigned_to_team_id"]:
+            membership = (
+                await db.execute(
+                    text("""
+                        SELECT 1 FROM core.team_members
+                        WHERE team_id = :team_id AND user_id = :user_id
+                    """),
+                    {"team_id": current["assigned_to_team_id"], "user_id": user["user_id"]},
+                )
+            ).first()
+        contributor = (
+            await db.execute(
+                text("SELECT 1 FROM crm.task_contributors WHERE task_id = :task_id AND user_id = :user_id"),
+                {"task_id": task_id, "user_id": user["user_id"]},
+            )
+        ).first()
+        can_work_task = (
+            (current["assigned_to_user_id"] and str(current["assigned_to_user_id"]) == user["user_id"])
+            or bool(membership)
+            or bool(contributor)
+            or (current["created_by"] and str(current["created_by"]) == user["user_id"])
+        )
+        if not can_work_task:
+            raise HTTPException(status_code=403, detail="You can only update tasks assigned to you or your team.")
+        blocked_fields = sorted(set(safe_keys) - SELF_SERVICE_TASK_UPDATE_COLUMNS)
+        if blocked_fields:
+            raise HTTPException(
+                status_code=403,
+                detail="Only team leads or task managers can reassign or edit task setup fields.",
+            )
 
     if "assigned_to_user_id" in safe_keys and values["assigned_to_user_id"]:
         target_check = await db.execute(
@@ -668,7 +711,7 @@ async def update_task(
                 {"team_id": current["assigned_to_team_id"], "user_id": user["user_id"]},
             )
         ).first()
-        if not is_lead and not await user_has_permission(db, user, "crm_tasks.read_all"):
+        if not is_lead and not has_org_wide_task_access:
             raise HTTPException(
                 status_code=403,
                 detail="Only that team's lead can redistribute its tasks to individual members.",
