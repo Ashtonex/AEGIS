@@ -9,7 +9,7 @@ from core.database import check_database_health
 from core.logging import logger, setup_logging
 from core.security import require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
-from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, inventory_items, budgets, financial_performance, quotations, hr_records, hr_verification, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export, drawings, sop_compliance, finance_departments, finance_transfers, finance_statutory, boq_progress, final_accounts, teams, assignments, crm_tasks, pursuits, pursuit_teams  # fmt: skip
+from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, inventory_items, budgets, financial_performance, quotations, hr_records, hr_verification, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, crm_integrations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export, drawings, sop_compliance, finance_departments, finance_transfers, finance_statutory, boq_progress, final_accounts, teams, assignments, crm_tasks, pursuits, pursuit_teams  # fmt: skip
 from routers import finance_ccb_findings  # fmt: skip
 
 
@@ -135,6 +135,7 @@ def create_app() -> FastAPI:
     app.include_router(crm_activities.router, prefix="/api/v1/crm-activities", tags=["CRM Activities"], dependencies=[Depends(require_resource_permission("crm_activities"))])  # fmt: skip
     app.include_router(crm_communications.router, prefix="/api/v1/crm-communications", tags=["CRM Communications"])  # fmt: skip
     app.include_router(crm_automations.router, prefix="/api/v1/crm-automations", tags=["CRM Automations"], dependencies=[Depends(require_resource_permission("crm_automations"))])  # fmt: skip
+    app.include_router(crm_integrations.router, prefix="/api/v1/crm-integrations", tags=["CRM Integrations"])  # fmt: skip
     app.include_router(crm_import_export.router, prefix="/api/v1/crm-import-export", tags=["CRM Import Export"])
     app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
     app.include_router(assignments.router, prefix="/api/v1/assignments", tags=["Assignments"])

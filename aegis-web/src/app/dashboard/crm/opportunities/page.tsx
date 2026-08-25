@@ -41,6 +41,7 @@ import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 // crm.opportunities.override_stage permission grants).
 const PRIVILEGED_STAGE_OVERRIDE_ROLES = ['Executive (Admin)', 'Managing Director'];
 const LOCKED_BACKEND_STAGES = ['Contract', 'Lost'];
+const CLOSED_FRONTEND_STAGES = ['Won', 'Lost'];
 
 // Stages definition requested by user
 const STAGES = [
@@ -77,6 +78,23 @@ const formatCurrency = (value: number | string) => {
     currency: "USD",
     maximumFractionDigits: 0,
   });
+};
+
+const toDateInputValue = (date: Date) => date.toISOString().slice(0, 10);
+
+const tomorrowDateInputValue = () => {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return toDateInputValue(tomorrow);
+};
+
+const isPastDueDate = (value?: string) => {
+  if (!value) return false;
+  const due = new Date(value);
+  if (Number.isNaN(due.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return due < today;
 };
 
 // crm.activities requires a non-empty `subject` (<=255 chars) and has no `notes`
@@ -138,6 +156,12 @@ export default function OpportunitiesKanban() {
   const { role } = useAuth();
   const canOverrideStage = role ? matchesRole(role, PRIVILEGED_STAGE_OVERRIDE_ROLES) : false;
   const isOpportunityLocked = (opp: Opportunity) => LOCKED_BACKEND_STAGES.includes(opp.stage);
+  const isOpenOpportunity = (opp: Opportunity) => {
+    const frontendStage = BACKEND_TO_FRONTEND_STAGE[opp.stage] || 'Qualification';
+    return !CLOSED_FRONTEND_STAGES.includes(frontendStage) && !opp.win_loss_status;
+  };
+  const needsNextAction = (opp: Opportunity) => isOpenOpportunity(opp) && !opp.next_activity_due_at;
+  const hasOverdueNextAction = (opp: Opportunity) => isOpenOpportunity(opp) && isPastDueDate(opp.next_activity_due_at);
 
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -149,6 +173,17 @@ export default function OpportunitiesKanban() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | null>(null);
+  const [stageMoveRequest, setStageMoveRequest] = useState<{
+    oppId: string;
+    currentFrontendStage: string;
+    targetFrontendStage: string;
+    source: 'drag' | 'button' | 'drawer';
+  } | null>(null);
+  const [nextActionForm, setNextActionForm] = useState({
+    type: 'Follow-up',
+    dueDate: tomorrowDateInputValue(),
+    notes: ''
+  });
 
   // Close Win/Loss and Forecast States
   const [showForecast, setShowForecast] = useState(false);
@@ -218,6 +253,7 @@ export default function OpportunitiesKanban() {
     client_id: string;
     client_org_id: string;
     originating_department_id: string;
+    next_activity_due_at: string;
   } | null>(null);
 
   // New Note State
@@ -326,6 +362,96 @@ export default function OpportunitiesKanban() {
     setDraggedOverStage(null);
   };
 
+  const openStageMoveGate = (oppId: string, currentFrontendStage: string, targetFrontendStage: string, source: 'drag' | 'button' | 'drawer') => {
+    const opp = opportunities.find(o => o.id === oppId);
+    if (!opp) return;
+
+    if (currentFrontendStage === targetFrontendStage) return;
+
+    if (isOpportunityLocked(opp) && !canOverrideStage) {
+      alert("This deal is already won or lost - only Admin, Executive, or Managing Director can change its stage further.");
+      return;
+    }
+
+    setSelectedOpportunityId(oppId);
+    if (targetFrontendStage === 'Won') {
+      void handleMarkWon();
+      return;
+    }
+    if (targetFrontendStage === 'Lost') {
+      void handleMarkLost();
+      return;
+    }
+
+    setNextActionForm({
+      type: targetFrontendStage === 'Proposal' ? 'Email' : targetFrontendStage === 'Negotiation' ? 'Meeting' : 'Follow-up',
+      dueDate: opp.next_activity_due_at ? toDateInputValue(new Date(opp.next_activity_due_at)) : tomorrowDateInputValue(),
+      notes: ''
+    });
+    setStageMoveRequest({ oppId, currentFrontendStage, targetFrontendStage, source });
+  };
+
+  const executeStageMove = async (request: {
+    oppId: string;
+    currentFrontendStage: string;
+    targetFrontendStage: string;
+    source: 'drag' | 'button' | 'drawer';
+  }) => {
+    const backendStage = FRONTEND_TO_BACKEND_STAGE[request.targetFrontendStage] || request.targetFrontendStage;
+    const dueDate = nextActionForm.dueDate;
+
+    setIsSubmitting(true);
+    setOpportunities(prev => prev.map(o => o.id === request.oppId ? {
+      ...o,
+      stage: backendStage,
+      next_activity_due_at: dueDate,
+      is_stale: false
+    } : o));
+
+    try {
+      const res = await updateCrmOpportunity(request.oppId, {
+        stage: backendStage,
+        next_activity_due_at: dueDate
+      });
+      if (!res.success) {
+        await loadData();
+        return;
+      }
+
+      const actionSummary = nextActionForm.notes.trim()
+        || `${nextActionForm.type} required for ${request.targetFrontendStage} stage.`;
+      await createCrmActivity({
+        type: nextActionForm.type,
+        ...activityLogFields(actionSummary),
+        opportunity_id: request.oppId,
+        activity_date: new Date(`${dueDate}T09:00:00`).toISOString(),
+        status: 'Planned',
+        priority: request.targetFrontendStage === 'Negotiation' ? 'high' : 'normal'
+      });
+      await createCrmActivity({
+        type: 'System Log',
+        ...activityLogFields(`Stage moved from ${request.currentFrontendStage} to ${request.targetFrontendStage}; next action set for ${dueDate}`),
+        opportunity_id: request.oppId
+      });
+
+      setStageMoveRequest(null);
+      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '' });
+      await loadData();
+    } catch (err) {
+      console.error('Failed to update stage:', err);
+      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
+      await loadData();
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleConfirmStageMove = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!stageMoveRequest || !nextActionForm.dueDate) return;
+    await executeStageMove(stageMoveRequest);
+  };
+
   const handleDrop = async (e: React.DragEvent, targetStage: string) => {
     e.preventDefault();
     setDraggedOverStage(null);
@@ -338,52 +464,12 @@ export default function OpportunitiesKanban() {
     const currentFrontendStage = BACKEND_TO_FRONTEND_STAGE[opp.stage] || 'Qualification';
     if (currentFrontendStage === targetStage) return;
 
-    if (isOpportunityLocked(opp) && !canOverrideStage) {
-      alert("This deal is already won or lost - only Admin, Executive, or Managing Director can change its stage further.");
-      return;
-    }
-
-    const backendStage = FRONTEND_TO_BACKEND_STAGE[targetStage] || targetStage;
-
-    // Optimistically update local state
-    setOpportunities(prev => prev.map(o => o.id === oppId ? { ...o, stage: backendStage } : o));
-
-    try {
-      const res = await updateCrmOpportunity(oppId, { stage: backendStage });
-      if (!res.success) {
-        // Rollback on failure
-        loadData();
-      } else {
-        try {
-          await createCrmActivity({
-            type: 'System Log',
-            ...activityLogFields(`Stage moved from ${currentFrontendStage} to ${targetStage} (via drag & drop)`),
-            opportunity_id: oppId
-          });
-          const actRes = await getCrmActivities();
-          if (actRes.success && Array.isArray(actRes.data)) {
-            setActivities(actRes.data);
-          }
-        } catch (logErr) {
-          // The stage move already succeeded - a logging hiccup shouldn't roll it back or surface as an error.
-          console.warn('Failed to log stage-move activity:', logErr);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to drag-drop stage:', err);
-      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-      loadData();
-    }
+    openStageMoveGate(oppId, currentFrontendStage, targetStage, 'drag');
   };
 
   // Quick fallback step mover
   const handleStageMove = async (oppId: string, currentFrontendStage: string, direction: 'prev' | 'next') => {
     const opp = opportunities.find(o => o.id === oppId);
-    if (opp && isOpportunityLocked(opp) && !canOverrideStage) {
-      alert("This deal is already won or lost - only Admin, Executive, or Managing Director can change its stage further.");
-      return;
-    }
-
     const currentIndex = STAGES.indexOf(currentFrontendStage);
     if (currentIndex === -1) return;
 
@@ -393,35 +479,7 @@ export default function OpportunitiesKanban() {
 
     if (nextIndex === currentIndex) return;
     const nextFrontendStage = STAGES[nextIndex];
-    const backendStage = FRONTEND_TO_BACKEND_STAGE[nextFrontendStage];
-
-    // Optimistically update state
-    setOpportunities(prev => prev.map(o => o.id === oppId ? { ...o, stage: backendStage } : o));
-
-    try {
-      const res = await updateCrmOpportunity(oppId, { stage: backendStage });
-      if (!res.success) {
-        loadData();
-      } else {
-        try {
-          await createCrmActivity({
-            type: 'System Log',
-            ...activityLogFields(`Stage moved from ${currentFrontendStage} to ${nextFrontendStage}`),
-            opportunity_id: oppId
-          });
-          const actRes = await getCrmActivities();
-          if (actRes.success && Array.isArray(actRes.data)) {
-            setActivities(actRes.data);
-          }
-        } catch (logErr) {
-          console.warn('Failed to log stage-move activity:', logErr);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to update stage:', err);
-      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-      loadData();
-    }
+    openStageMoveGate(oppId, currentFrontendStage, nextFrontendStage, 'button');
   };
 
   const handleCreateDeal = async (e: React.FormEvent) => {
@@ -499,6 +557,20 @@ export default function OpportunitiesKanban() {
     e.preventDefault();
     if (!selectedOpportunityId || !editForm) return;
 
+    if (selectedOpp) {
+      const currentFrontendStage = BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || 'Qualification';
+      if (editForm.stage !== currentFrontendStage) {
+        if (CLOSED_FRONTEND_STAGES.includes(editForm.stage)) {
+          alert("Use Mark won or Mark lost so AEGIS can run the proper commercial handoff.");
+          return;
+        }
+        if (!editForm.next_activity_due_at) {
+          alert("Set the next action due date before moving this open deal.");
+          return;
+        }
+      }
+    }
+
     setIsSubmitting(true);
     try {
       const budgetVal = Number(editForm.budget) || 0;
@@ -514,7 +586,8 @@ export default function OpportunitiesKanban() {
         risk_level: editForm.risk_level,
         client_id: editForm.client_id || null,
         client_org_id: editForm.client_org_id || null,
-        originating_department_id: editForm.originating_department_id || null
+        originating_department_id: editForm.originating_department_id || null,
+        next_activity_due_at: editForm.next_activity_due_at || null
       };
 
       const res = await updateCrmOpportunity(selectedOpportunityId, updatePayload);
@@ -827,12 +900,18 @@ export default function OpportunitiesKanban() {
         risk_level: selectedOpp.risk_level || 'Low',
         client_id: selectedOpp.client_id || '',
         client_org_id: selectedOpp.client_org_id || '',
-        originating_department_id: selectedOpp.originating_department_id || ''
+        originating_department_id: selectedOpp.originating_department_id || '',
+        next_activity_due_at: selectedOpp.next_activity_due_at ? toDateInputValue(new Date(selectedOpp.next_activity_due_at)) : ''
       });
     } else {
       setEditForm(null);
     }
   }, [selectedOpp]);
+
+  const openOpportunities = opportunities.filter(isOpenOpportunity);
+  const missingNextActionCount = openOpportunities.filter(needsNextAction).length;
+  const overdueNextActionCount = openOpportunities.filter(hasOverdueNextAction).length;
+  const staleOpportunityCount = openOpportunities.filter(o => o.is_stale).length;
 
   if (isLoading && opportunities.length === 0) {
     return (
@@ -896,7 +975,7 @@ export default function OpportunitiesKanban() {
       )}
 
       {/* Pipeline stats banner */}
-      <div className="grid grid-cols-4 gap-2 mb-6 shrink-0 z-10">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-2 mb-6 shrink-0 z-10">
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1">Pipeline Total</span>
           <span className="font-mono text-lg font-bold text-paper tabular-nums">
@@ -913,6 +992,18 @@ export default function OpportunitiesKanban() {
           <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider mb-1">Average Margin</span>
           <span className="font-mono text-lg font-bold text-[#D4AF37] tabular-nums">
             {(opportunities.reduce((sum, o) => sum + (Number(o.expected_margin) || 0), 0) / (opportunities.filter(o => o.expected_margin).length || 1)).toFixed(1)}%
+          </span>
+        </div>
+        <div className={`border p-3 rounded-sm ${missingNextActionCount > 0 ? 'bg-amber-950/20 border-amber-500/25' : 'bg-[#0A0A0A] border-white/5'}`}>
+          <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1">No Next Action</span>
+          <span className={`font-mono text-lg font-bold tabular-nums ${missingNextActionCount > 0 ? 'text-amber-300' : 'text-paper'}`}>
+            {missingNextActionCount}
+          </span>
+        </div>
+        <div className={`border p-3 rounded-sm ${overdueNextActionCount + staleOpportunityCount > 0 ? 'bg-red-950/20 border-red-500/25' : 'bg-[#0A0A0A] border-white/5'}`}>
+          <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1">Needs Attention</span>
+          <span className={`font-mono text-lg font-bold tabular-nums ${overdueNextActionCount + staleOpportunityCount > 0 ? 'text-red-300' : 'text-paper'}`}>
+            {overdueNextActionCount + staleOpportunityCount}
           </span>
         </div>
         <button
@@ -1089,6 +1180,8 @@ export default function OpportunitiesKanban() {
                   const oppContact = opp.client_id ? contacts.find(c => c.id === opp.client_id) : null;
                   const locked = isOpportunityLocked(opp);
                   const canMoveStage = !locked || canOverrideStage;
+                  const missingNextAction = needsNextAction(opp);
+                  const overdueNextAction = hasOverdueNextAction(opp);
 
                   return (
                     <div
@@ -1115,6 +1208,23 @@ export default function OpportunitiesKanban() {
                       {oppContact && (
                         <span className="block font-mono text-[9px] text-slate-light mb-2">{oppContact.contact_name}</span>
                       )}
+
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {opp.is_stale && (
+                          <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 bg-amber-950/20 px-1.5 py-0.5 rounded-sm">Stale</span>
+                        )}
+                        {missingNextAction && (
+                          <span className="font-mono text-[8px] uppercase text-amber-200 border border-amber-400/25 bg-amber-950/20 px-1.5 py-0.5 rounded-sm">No next action</span>
+                        )}
+                        {overdueNextAction && (
+                          <span className="font-mono text-[8px] uppercase text-red-200 border border-red-400/25 bg-red-950/20 px-1.5 py-0.5 rounded-sm">Overdue</span>
+                        )}
+                        {opp.next_activity_due_at && !overdueNextAction && (
+                          <span className="font-mono text-[8px] uppercase text-[#3B82F6] border border-[#3B82F6]/25 bg-[#3B82F6]/10 px-1.5 py-0.5 rounded-sm">
+                            Next {new Date(opp.next_activity_due_at).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
 
                       <div className="flex justify-between items-end border-t border-white/5 pt-2 mt-2">
                         <span className="font-mono text-[10px] font-bold text-[#3B82F6] tabular-nums">
@@ -1153,6 +1263,97 @@ export default function OpportunitiesKanban() {
           );
         })}
       </div>
+
+      {/* STAGE MOVE NEXT ACTION MODAL */}
+      {stageMoveRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setStageMoveRequest(null)} />
+
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden">
+            <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.01]">
+              <div className="flex items-center space-x-2">
+                <Calendar className="w-4 h-4 text-[#D4AF37]" />
+                <h2 className="font-sans font-bold text-sm text-paper uppercase tracking-wider">Set Next Action</h2>
+              </div>
+              <button
+                onClick={() => setStageMoveRequest(null)}
+                className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmStageMove} className="p-5 space-y-4">
+              <div className="bg-black/40 border border-white/5 p-3 rounded-sm">
+                <span className="block font-mono text-[8px] text-slate-light uppercase tracking-wider">Pipeline move</span>
+                <div className="mt-1 flex items-center gap-2 text-xs text-paper">
+                  <span>{stageMoveRequest.currentFrontendStage}</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-[#D4AF37]" />
+                  <span className="font-bold">{stageMoveRequest.targetFrontendStage}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Type</label>
+                  <select
+                    value={nextActionForm.type}
+                    onChange={e => setNextActionForm({ ...nextActionForm, type: e.target.value })}
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                  >
+                    <option value="Follow-up">Follow-up</option>
+                    <option value="Call">Call</option>
+                    <option value="Email">Email</option>
+                    <option value="Meeting">Meeting</option>
+                    <option value="Site Visit">Site Visit</option>
+                    <option value="Proposal Review">Proposal Review</option>
+                    <option value="Negotiation">Negotiation</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Due Date</label>
+                  <input
+                    required
+                    type="date"
+                    value={nextActionForm.dueDate}
+                    onChange={e => setNextActionForm({ ...nextActionForm, dueDate: e.target.value })}
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Notes</label>
+                <textarea
+                  rows={3}
+                  value={nextActionForm.notes}
+                  onChange={e => setNextActionForm({ ...nextActionForm, notes: e.target.value })}
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all resize-none placeholder:text-slate"
+                  placeholder="What must happen next to keep this deal moving?"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-white/5 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setStageMoveRequest(null)}
+                  className="px-4 py-2 font-mono text-[10px] text-slate-light hover:text-paper hover:bg-white/5 rounded-sm transition-all uppercase"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !nextActionForm.dueDate}
+                  className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 transition-all uppercase"
+                >
+                  {isSubmitting ? 'Saving...' : 'Move deal'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* CREATE DEAL MODAL */}
       {isModalOpen && (
@@ -1388,6 +1589,12 @@ export default function OpportunitiesKanban() {
                     {selectedOpp.is_stale && (
                       <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 px-1.5 py-0.5">Stale deal</span>
                     )}
+                    {needsNextAction(selectedOpp) && (
+                      <span className="font-mono text-[8px] uppercase text-amber-200 border border-amber-400/30 px-1.5 py-0.5">No next action</span>
+                    )}
+                    {hasOverdueNextAction(selectedOpp) && (
+                      <span className="font-mono text-[8px] uppercase text-red-200 border border-red-400/30 px-1.5 py-0.5">Overdue</span>
+                    )}
                     {isOpportunityLocked(selectedOpp) && (
                       <span className="font-mono text-[8px] uppercase text-slate-light border border-white/10 px-1.5 py-0.5 flex items-center gap-1">
                         <Lock className="w-2.5 h-2.5" /> {selectedOpp.stage === 'Contract' ? 'Won' : 'Lost'} - locked
@@ -1411,6 +1618,12 @@ export default function OpportunitiesKanban() {
                   <div className="bg-black/40 border border-white/5 p-2">
                     <div className="uppercase">Approval</div>
                     <div className="mt-1 text-paper">{selectedOpp.approval_status || "not_required"}</div>
+                  </div>
+                  <div className="bg-black/40 border border-white/5 p-2 col-span-2">
+                    <div className="uppercase">Next required action</div>
+                    <div className={`mt-1 ${hasOverdueNextAction(selectedOpp) || needsNextAction(selectedOpp) ? 'text-amber-200' : 'text-paper'}`}>
+                      {selectedOpp.next_activity_due_at ? new Date(selectedOpp.next_activity_due_at).toLocaleDateString() : "not scheduled"}
+                    </div>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-2">
@@ -1573,6 +1786,16 @@ export default function OpportunitiesKanban() {
                         className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
                       />
                     </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block font-mono text-[8px] text-slate-light uppercase">Next Action Due</label>
+                    <input
+                      type="date"
+                      value={editForm.next_activity_due_at}
+                      onChange={e => setEditForm({ ...editForm, next_activity_due_at: e.target.value })}
+                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                    />
                   </div>
 
                   {/* Linked organization display/change */}

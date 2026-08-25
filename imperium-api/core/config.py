@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     WHATSAPP_VERIFY_TOKEN: Optional[str] = None
     WHATSAPP_GRAPH_API_VERSION: str = "v23.0"
     WHATSAPP_APP_SECRET: Optional[str] = None
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    MICROSOFT_CLIENT_ID: Optional[str] = None
+    MICROSOFT_CLIENT_SECRET: Optional[str] = None
+    CRM_OAUTH_REDIRECT_URL: Optional[str] = None
+    MAPS_API_KEY: Optional[str] = None
+    ACCOUNTING_PROVIDER_API_KEY: Optional[str] = None
     TWILIO_ACCOUNT_SID: Optional[str] = None
     TWILIO_AUTH_TOKEN: Optional[str] = None
     TWILIO_FROM_NUMBER: Optional[str] = None

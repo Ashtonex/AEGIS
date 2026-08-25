@@ -1237,6 +1237,110 @@ export async function convertCrmCommunication(communicationId: string, payload: 
   });
 }
 
+// --- CRM INTEGRATIONS / SALES INTELLIGENCE --- //
+export async function getCrmIntegrationProviders(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-integrations/providers', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmConnectedAccounts(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-integrations/connected-accounts', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function saveCrmConnectedAccount(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-integrations/connected-accounts', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function disconnectCrmConnectedAccount(accountId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-integrations/connected-accounts/${accountId}/disconnect`, {
+    method: 'PATCH',
+    allowFallback: false,
+  });
+}
+
+export async function queueCrmIntegrationSync(accountId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-integrations/connected-accounts/${accountId}/sync`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getCrmIntegrationSyncJobs(params?: { account_id?: string; limit?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.account_id) search.set("account_id", params.account_id);
+  if (params?.limit) search.set("limit", String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-integrations/sync-jobs${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function syncCrmEmailEvent(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-integrations/email-events', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function sendCrmPrivateEmail(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-integrations/email/send', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function scheduleCrmCalendarEvent(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-integrations/calendar-events', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function runCrmAiScoring(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/crm-integrations/ai/run-scoring', {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getCrmAiRecommendations(params?: {
+  entity_type?: "lead" | "opportunity";
+  status?: "open" | "accepted" | "dismissed" | "completed" | "all";
+  limit?: number;
+}): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.entity_type) search.set("entity_type", params.entity_type);
+  if (params?.status) search.set("status", params.status);
+  if (params?.limit) search.set("limit", String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-integrations/ai/recommendations${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function updateCrmAiRecommendation(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/crm-integrations/ai/recommendations/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 // --- CRM LIFECYCLE / CUSTOMER 360 --- //
 export async function getCrmCustomer360(organizationAccountId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/crm/customer-360/${organizationAccountId}`, {

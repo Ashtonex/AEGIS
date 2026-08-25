@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp, ListChecks } from 'lucide-react';
+import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp, ListChecks, Plug } from 'lucide-react';
 import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations, getFinanceDepartments, getCommercialMorningBriefing } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
@@ -807,6 +807,13 @@ export default function CRMCommercialEngine() {
             >
               <TrendingUp className="w-3.5 h-3.5 mr-1.5" />
               MARKETING
+            </Link>
+            <Link
+              href="/dashboard/crm/integrations"
+              className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
+            >
+              <Plug className="w-3.5 h-3.5 mr-1.5" />
+              CONNECTED APPS
             </Link>
             <Link 
               href="/dashboard/crm/leads"
