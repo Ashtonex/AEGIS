@@ -18,6 +18,7 @@ import {
   DollarSign,
   FileText,
   Loader2,
+  MapPin,
   Package,
   PackageCheck,
   Plus,
@@ -28,6 +29,7 @@ import {
   ShoppingCart,
   Star,
   Truck,
+  Warehouse,
   X,
   XCircle,
 } from "lucide-react";
@@ -45,15 +47,18 @@ import {
   decideProcurementRfqResponse,
   decideSupplierInvoicePayment,
   confirmMaterialRequestPrice,
+  getCcbFindings,
   getDocuments,
   getInternalProjects,
   getInventoryStores,
+  getInventoryStockLevels,
   getMaterialRequests,
   getProcurementInvoices,
   getProcurementOrders,
   getProcurementRequisitions,
   getProcurementRfqs,
   getProcurementSuppliers,
+  getStockMovements,
   getSupplierCatalogue,
   issuePurchaseOrder,
   linkProcurementDocument,
@@ -68,7 +73,7 @@ import {
 
 type Rec = Record<string, any> & { id: string };
 // Legacy RFQ contract covered: type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices";
-type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
+type Tab = "command" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
 interface LineItem { description: string; qty: string; uom: string; unit_cost: string; }
 interface PaymentEvidencePayload {
   poDocumentId: string;
@@ -90,12 +95,28 @@ function num(v: unknown) {
 function money(v: unknown) {
   return new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(num(v));
 }
+function qty(v: unknown) {
+  return new Intl.NumberFormat("en-ZW", { maximumFractionDigits: 3 }).format(num(v));
+}
 function dt(v: unknown) {
   if (!v) return "—";
   const d = new Date(String(v));
   return isNaN(d.getTime()) ? String(v) : new Intl.DateTimeFormat("en-ZW", { dateStyle: "medium" }).format(d);
 }
 function pct(v: unknown) { return `${Math.round(num(v))}%`; }
+function itemType(value: unknown) {
+  const normalized = tx(value, "material").toLowerCase();
+  return ["material", "supply", "tool"].includes(normalized) ? normalized : "material";
+}
+function stockValue(row: Rec) {
+  if (row.stock_value !== undefined && row.stock_value !== null) return num(row.stock_value);
+  return num(row.available_qty ?? row.quantity ?? row.stock_quantity) * num(row.unit_price_inc_vat ?? row.standard_cost ?? row.unit_cost);
+}
+function movementDate(row: Rec) {
+  const value = row.movement_at ?? row.created_at ?? row.updated_at;
+  const date = new Date(String(value ?? 0));
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
 
 // ─── Badge helpers ────────────────────────────────────────────────────────────
 
@@ -168,9 +189,9 @@ export default function ProcurementPage() {
   const searchParams = useSearchParams();
   const requestedTab = searchParams?.get("tab");
   const initialTab: Tab =
-    requestedTab === "rfqs" || requestedTab === "orders" || requestedTab === "suppliers" || requestedTab === "invoices" || requestedTab === "pricing"
+    requestedTab === "command" || requestedTab === "requisitions" || requestedTab === "rfqs" || requestedTab === "orders" || requestedTab === "suppliers" || requestedTab === "invoices" || requestedTab === "pricing"
       ? (requestedTab === "orders" ? "orders" : requestedTab)
-      : "requisitions";
+      : "command";
 
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
@@ -182,6 +203,7 @@ export default function ProcurementPage() {
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
 const TAB_ROUTES: Record<Tab, string> = {
+  command: "/dashboard/procurement",
   requisitions: "/dashboard/procurement/requisitions",
   rfqs: "/dashboard/procurement/rfqs",
   orders: "/dashboard/procurement/purchase-orders",
@@ -233,6 +255,9 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       invoices: () => getProcurementInvoices({ match_status: invMatchStatus }),
       projects: () => getInternalProjects(),
       stores: () => getInventoryStores(),
+      stockLevels: () => getInventoryStockLevels(),
+      movements: () => getStockMovements({ limit: 300 }),
+      ccbFindings: () => getCcbFindings({ status: "open" }),
       pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
     },
     [prStatus, rfqStatus, poStatus, invMatchStatus],
@@ -246,13 +271,25 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
         invoices: "Invoices",
         projects: "Project register",
         stores: "Store register",
+        stockLevels: "Stock levels",
+        movements: "Stock movements",
+        ccbFindings: "CCB findings",
         pendingPricing: "Pending pricing",
       },
     }
   );
 
   useLiveTable("procurement.procurement_orders", () => void load());
+  useLiveTable("procurement.purchase_requisitions", () => void load());
+  useLiveTable("procurement.purchase_orders", () => void load());
+  useLiveTable("procurement.rfqs", () => void load());
+  useLiveTable("procurement.goods_received_notes", () => void load());
+  useLiveTable("procurement.supplier_invoices", () => void load());
+  useLiveTable("procurement.stock_ledger", () => void load());
+  useLiveTable("procurement.inventory_items", () => void load());
+  useLiveTable("procurement.stores", () => void load());
   useLiveTable("procurement.suppliers", () => void load());
+  useLiveTable("finance.ccb_monitor_findings", () => void load());
 
   const requisitions = useMemo(() => (Array.isArray(procurementData.requisitions?.data) ? procurementData.requisitions.data : []), [procurementData.requisitions]);
   const rfqs = useMemo(() => (Array.isArray(procurementData.rfqs?.data) ? procurementData.rfqs.data : []), [procurementData.rfqs]);
@@ -261,6 +298,9 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const invoices = useMemo(() => (Array.isArray(procurementData.invoices?.data) ? procurementData.invoices.data : []), [procurementData.invoices]);
   const projects = useMemo(() => (Array.isArray(procurementData.projects?.data) ? procurementData.projects.data : []), [procurementData.projects]);
   const stores = useMemo(() => (Array.isArray(procurementData.stores?.data) ? procurementData.stores.data : []), [procurementData.stores]);
+  const stockLevels = useMemo(() => (Array.isArray(procurementData.stockLevels?.data) ? procurementData.stockLevels.data : []), [procurementData.stockLevels]);
+  const movements = useMemo(() => (Array.isArray(procurementData.movements?.data) ? procurementData.movements.data : []), [procurementData.movements]);
+  const ccbFindings = useMemo(() => (Array.isArray(procurementData.ccbFindings?.data) ? procurementData.ccbFindings.data : []), [procurementData.ccbFindings]);
   const pendingPricing = useMemo(() => (Array.isArray(procurementData.pendingPricing?.data) ? procurementData.pendingPricing.data : []), [procurementData.pendingPricing]);
   const error = loadError ? loadFailureMessage(loadError) : null;
 
@@ -274,6 +314,69 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     const committed = orders.filter((r) => tx(r.status).toLowerCase() !== "cancelled").reduce((s, r) => s + num(r.total_amount ?? r.amount), 0);
     return { openPRs, awaitingApproval, activePOs, grnsPending, invPending, committed, activeRFQs };
   }, [requisitions, rfqs, orders, invoices]);
+
+  const command = useMemo(() => {
+    const stockValueTotal = stockLevels.reduce((sum, row) => sum + stockValue(row), 0);
+    const materialsValue = stockLevels
+      .filter((row) => itemType(row.item_type) !== "tool")
+      .reduce((sum, row) => sum + stockValue(row), 0);
+    const toolsValue = stockLevels
+      .filter((row) => itemType(row.item_type) === "tool")
+      .reduce((sum, row) => sum + stockValue(row), 0);
+    const lowStock = stockLevels.filter((row) => {
+      const available = num(row.available_qty ?? row.quantity ?? row.stock_quantity);
+      const reorder = num(row.reorder_level ?? row.reorder_point);
+      return reorder > 0 && available > 0 && available <= reorder;
+    });
+    const outOfStock = stockLevels.filter((row) => num(row.available_qty ?? row.quantity ?? row.stock_quantity) <= 0);
+    const incomingPOs = orders.filter((po) => ["issued", "partially_received"].includes(tx(po.status).toLowerCase()));
+    const incomingValue = incomingPOs.reduce((sum, po) => {
+      const percentReceived = Math.min(100, Math.max(0, num(po.percent_received ?? 0)));
+      return sum + (num(po.total_amount ?? po.amount) * (1 - percentReceived / 100));
+    }, 0);
+    const overduePOs = incomingPOs.filter((po) => {
+      const raw = po.expected_delivery_date ?? po.required_by_date ?? po.required_by;
+      if (!raw) return false;
+      const date = new Date(String(raw));
+      return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+    });
+    const additions = movements.filter((m) => num(m.quantity) > 0);
+    const subtractions = movements.filter((m) => num(m.quantity) < 0);
+    const transfers = movements.filter((m) => tx(m.movement_type).toLowerCase().includes("transfer"));
+    const adjustments = movements.filter((m) => tx(m.movement_type).toLowerCase() === "adjustment");
+    const storeSummaries = stores.map((store) => {
+      const rows = stockLevels.filter((stock) => tx(stock.store_id, "") === String(store.id) || tx(stock.store_name, "") === tx(store.name ?? store.store_name, ""));
+      return {
+        ...store,
+        itemCount: rows.filter((row) => num(row.available_qty ?? row.quantity ?? row.stock_quantity) !== 0).length,
+        value: rows.reduce((sum, row) => sum + stockValue(row), 0),
+      };
+    }).sort((a, b) => num(b.value) - num(a.value));
+    const actionQueue = [
+      ...pendingPricing.slice(0, 8).map((row) => ({ id: `price-${row.id}`, tone: "amber" as const, label: "Confirm price", title: tx(row.request_number, row.id), meta: `${tx(row.project_name)} · ${tx(row.item_name ?? row.item_code)}` })),
+      ...requisitions.filter((row) => tx(row.status).toLowerCase() === "submitted").slice(0, 8).map((row) => ({ id: `pr-${row.id}`, tone: "blue" as const, label: "Approve PR", title: tx(row.requisition_number ?? row.pr_number, row.id), meta: `${tx(row.project_name)} · ${money(row.total_estimated)}` })),
+      ...rfqs.filter((row) => ["issued", "draft"].includes(tx(row.status).toLowerCase())).slice(0, 8).map((row) => ({ id: `rfq-${row.id}`, tone: "slate" as const, label: "RFQ open", title: tx(row.rfq_number, row.id), meta: tx(row.project_name) })),
+      ...overduePOs.slice(0, 8).map((row) => ({ id: `po-${row.id}`, tone: "red" as const, label: "PO overdue", title: tx(row.po_number, row.id), meta: `${tx(row.supplier_name)} · ${dt(row.expected_delivery_date ?? row.required_by_date)}` })),
+      ...ccbFindings.slice(0, 8).map((row) => ({ id: `ccb-${row.id}`, tone: "red" as const, label: "CCB", title: tx(row.title ?? row.check_type, row.id), meta: tx(row.project_name ?? row.status) })),
+    ].slice(0, 12);
+    return {
+      stockValueTotal,
+      materialsValue,
+      toolsValue,
+      lowStock,
+      outOfStock,
+      incomingPOs,
+      incomingValue,
+      overduePOs,
+      additions,
+      subtractions,
+      transfers,
+      adjustments,
+      storeSummaries,
+      actionQueue,
+      recentMovements: [...movements].sort((a, b) => movementDate(b) - movementDate(a)).slice(0, 12),
+    };
+  }, [stockLevels, movements, stores, orders, pendingPricing, requisitions, rfqs, ccbFindings]);
 
   const submitPR = async (id: string, overrideReason?: string) => {
     setSaving(`submit-${id}`);
@@ -513,7 +616,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           </p>
           <h1 className="font-display text-3xl font-bold uppercase tracking-tight">Procurement Pipeline</h1>
           <p className="mt-1 max-w-3xl text-sm text-slate-light">
-            End-to-end procurement lifecycle — requisitions through purchase orders, GRN confirmation and invoice matching.
+            Procurement and inventory command view — what is in store, what moved, what is coming, and what needs action.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -550,9 +653,10 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
       {/* Module bar */}
       <div className="flex border-b border-ink-mid">
-        {(["requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"] as Tab[]).map((item) => {
+        {(["command", "requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"] as Tab[]).map((item) => {
           const isCurrent = tab === item;
           const label =
+            item === "command" ? "Command" :
             item === "requisitions" ? "Requisitions" :
             item === "rfqs" ? "RFQs" :
             item === "orders" ? "Purchase Orders" :
@@ -583,7 +687,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       </div>
 
       {/* Filter bar */}
-      <div className="flex flex-col gap-2 border-b border-ink-mid bg-ink-light/30 p-3 sm:flex-row sm:items-center">
+      {tab !== "command" && <div className="flex flex-col gap-2 border-b border-ink-mid bg-ink-light/30 p-3 sm:flex-row sm:items-center">
         <label className="flex flex-1 h-9 items-center gap-2 border border-ink-mid bg-ink px-3">
           <Search className="h-3.5 w-3.5 text-slate" />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${tab}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
@@ -627,11 +731,12 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
             <option value="disputed">Disputed</option>
           </select>
         )}
-      </div>
+      </div>}
 
       {/* Tab content */}
       <section className="border border-t-0 border-ink-mid bg-ink">
         {loading && !procurementData.requisitions ? <LoadingState label={`Loading ${tab}…`} /> :
+          tab === "command" ? <ProcurementCommandDashboard command={command} loading={loading} /> :
           tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} /> :
           tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
@@ -680,6 +785,169 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {invoicingPO && <SupplierInvoiceModal po={invoicingPO} saving={saving === "invoice-po"} onSubmit={registerInvoice} onClose={() => setInvoicingPO(null)} />}
       {paymentEvidenceInvoice && <PaymentEvidenceModal invoice={paymentEvidenceInvoice} saving={saving === `pay-invoice-${paymentEvidenceInvoice.id}`} onSubmit={(payload) => void approveInvoicePayment(paymentEvidenceInvoice, payload)} onClose={() => setPaymentEvidenceInvoice(null)} />}
     </main>
+  );
+}
+
+// ─── Procurement Manager Command Dashboard ───────────────────────────────────
+
+function ProcurementCommandDashboard({ command, loading }: { command: any; loading: boolean }) {
+  if (loading && !command) return <LoadingState label="Loading command dashboard…" />;
+  return (
+    <div className="space-y-5 p-4">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <KpiCard icon={<Warehouse />} label="Stock Value" value={money(command.stockValueTotal)} tone="text-signal" />
+        <KpiCard icon={<Package />} label="Materials" value={money(command.materialsValue)} />
+        <KpiCard icon={<Truck />} label="Tools" value={money(command.toolsValue)} />
+        <KpiCard icon={<AlertTriangle />} label="Low Stock" value={String(command.lowStock.length)} tone={command.lowStock.length ? "text-amber-300" : undefined} />
+        <KpiCard icon={<XCircle />} label="Out of Stock" value={String(command.outOfStock.length)} tone={command.outOfStock.length ? "text-red-300" : undefined} />
+        <KpiCard icon={<ShoppingCart />} label="Incoming PO Value" value={money(command.incomingValue)} tone="text-purple-300" />
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.1fr_1.2fr_.9fr]">
+        <CommandPanel title="Stores and Stock Position" icon={<MapPin />}>
+          <div className="space-y-2">
+            {command.storeSummaries.length === 0 ? (
+              <p className="py-8 text-center text-sm text-slate-light">No stores registered yet.</p>
+            ) : command.storeSummaries.slice(0, 10).map((store: Rec) => (
+              <div key={store.id} className="grid grid-cols-[1fr_auto] gap-3 border-b border-ink-mid/70 pb-2">
+                <div>
+                  <p className="text-sm font-semibold text-paper">{tx(store.name ?? store.store_name)}</p>
+                  <p className="mt-0.5 text-xs text-slate-light">{tx(store.project_name ?? store.client_name ?? store.store_type, "Company store")}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-mono text-sm text-paper">{money(store.value)}</p>
+                  <p className="font-mono text-[10px] uppercase text-slate">{num(store.itemCount)} items</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CommandPanel>
+
+        <CommandPanel title="Live Movement Feed" icon={<PackageCheck />}>
+          <div className="mb-3 grid grid-cols-4 gap-2">
+            <MiniMetric label="Added" value={String(command.additions.length)} tone="text-emerald-300" />
+            <MiniMetric label="Reduced" value={String(command.subtractions.length)} tone="text-blue-300" />
+            <MiniMetric label="Transfers" value={String(command.transfers.length)} tone="text-purple-300" />
+            <MiniMetric label="Adjust" value={String(command.adjustments.length)} tone="text-amber-300" />
+          </div>
+          <div className="max-h-80 space-y-2 overflow-auto">
+            {command.recentMovements.length === 0 ? (
+              <p className="py-8 text-center text-sm text-slate-light">No stock movements recorded.</p>
+            ) : command.recentMovements.map((movement: Rec) => {
+              const quantity = num(movement.quantity);
+              const isAdd = quantity > 0;
+              return (
+                <div key={movement.id} className="flex items-start justify-between gap-3 border-b border-ink-mid/70 pb-2">
+                  <div>
+                    <p className="text-sm text-paper">{tx(movement.item_name ?? movement.item_code)}</p>
+                    <p className="mt-0.5 text-xs text-slate-light">{tx(movement.movement_type)} · {tx(movement.store_name)} · {tx(movement.project_name, "No project")}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className={`font-mono text-sm font-semibold ${isAdd ? "text-emerald-300" : "text-blue-300"}`}>{isAdd ? "+" : ""}{qty(quantity)}</p>
+                    <p className="font-mono text-[10px] text-slate">{dt(movement.movement_at ?? movement.created_at)}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CommandPanel>
+
+        <CommandPanel title="Action and Risk Queue" icon={<ShieldAlert />}>
+          <div className="space-y-2">
+            {command.actionQueue.length === 0 ? (
+              <p className="py-8 text-center text-sm text-slate-light">No urgent procurement or inventory actions.</p>
+            ) : command.actionQueue.map((item: { id: string; tone: "amber" | "blue" | "red" | "slate"; label: string; title: string; meta: string }) => (
+              <div key={item.id} className="border border-ink-mid/70 p-3">
+                <span className={`inline-block border px-2 py-0.5 font-mono text-[10px] uppercase ${queueToneClass(item.tone)}`}>{item.label}</span>
+                <p className="mt-2 text-sm font-semibold text-paper">{item.title}</p>
+                <p className="mt-0.5 text-xs text-slate-light">{item.meta}</p>
+              </div>
+            ))}
+          </div>
+        </CommandPanel>
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-2">
+        <CommandPanel title="Incoming Purchase Orders" icon={<ShoppingCart />}>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] text-sm">
+              <thead>
+                <tr className="border-b border-ink-mid text-left">
+                  {["PO", "Supplier", "Project", "Status", "Remaining Value", "Expected"].map((h) => <th key={h} className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-mid/70">
+                {command.incomingPOs.length === 0 ? (
+                  <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-slate-light">No issued or partially received POs waiting for delivery.</td></tr>
+                ) : command.incomingPOs.slice(0, 10).map((po: Rec) => {
+                  const pctReceived = Math.min(100, Math.max(0, num(po.percent_received ?? 0)));
+                  const remaining = num(po.total_amount ?? po.amount) * (1 - pctReceived / 100);
+                  return (
+                    <tr key={po.id}>
+                      <td className="px-3 py-2 font-mono text-xs text-signal">{tx(po.po_number, po.id)}</td>
+                      <td className="px-3 py-2 text-paper">{tx(po.supplier_name)}</td>
+                      <td className="px-3 py-2 text-slate-light">{tx(po.project_name)}</td>
+                      <td className="px-3 py-2"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${poStatusClass(po.status)}`}>{tx(po.status)}</span></td>
+                      <td className="px-3 py-2 font-mono text-paper">{money(remaining)}</td>
+                      <td className="px-3 py-2 text-slate-light">{dt(po.expected_delivery_date ?? po.required_by_date)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CommandPanel>
+
+        <CommandPanel title="Stock Exceptions" icon={<AlertTriangle />}>
+          <div className="grid gap-3 md:grid-cols-2">
+            <ExceptionList title="Below reorder" rows={command.lowStock.slice(0, 8)} tone="amber" />
+            <ExceptionList title="Out of stock" rows={command.outOfStock.slice(0, 8)} tone="red" />
+          </div>
+        </CommandPanel>
+      </section>
+    </div>
+  );
+}
+
+function CommandPanel({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+  return (
+    <section className="border border-ink-mid bg-ink p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">{title}</h2>
+        <span className="text-signal [&_svg]:h-4 [&_svg]:w-4">{icon}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function MiniMetric({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <div className="border border-ink-mid bg-ink-light/30 p-2 text-center">
+      <p className={`font-mono text-lg font-semibold ${tone}`}>{value}</p>
+      <p className="font-mono text-[9px] uppercase text-slate">{label}</p>
+    </div>
+  );
+}
+
+function queueToneClass(tone: "amber" | "blue" | "red" | "slate") {
+  if (tone === "amber") return "border-amber-500/40 bg-amber-950/20 text-amber-300";
+  if (tone === "blue") return "border-blue-500/40 bg-blue-950/20 text-blue-300";
+  if (tone === "red") return "border-red-500/40 bg-red-950/20 text-red-300";
+  return "border-slate-500/40 bg-slate-800/40 text-slate-400";
+}
+
+function ExceptionList({ title, rows, tone }: { title: string; rows: Rec[]; tone: "amber" | "red" }) {
+  return (
+    <div className="border border-ink-mid/70 p-3">
+      <h3 className={`mb-2 font-mono text-[10px] uppercase tracking-wider ${tone === "red" ? "text-red-300" : "text-amber-300"}`}>{title}</h3>
+      {rows.length === 0 ? <p className="text-sm text-slate-light">Clear.</p> : rows.map((row) => (
+        <div key={`${row.item_id ?? row.id}-${row.store_id ?? row.store_name}`} className="border-b border-ink-mid/60 py-2 last:border-0">
+          <p className="text-sm text-paper">{tx(row.item_name ?? row.item_code)}</p>
+          <p className="text-xs text-slate-light">{tx(row.store_name, "No store")} · available {qty(row.available_qty ?? row.quantity ?? row.stock_quantity)}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 
