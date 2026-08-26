@@ -215,7 +215,8 @@ export default function TendersCommand() {
     try {
       const res = await updateCrmTender(tenderId, { stage: targetStage });
       if (!res.success) {
-        loadData();
+        alert(res.message || "The stage move did not save. The tender has been put back where it was.");
+        await loadData();
       }
     } catch (err) {
       console.error('Failed to update stage via drag-drop:', err);
@@ -350,7 +351,8 @@ export default function TendersCommand() {
     try {
       const res = await updateCrmTender(tenderId, { stage: nextStage });
       if (!res.success) {
-        loadData();
+        alert(res.message || "The stage move did not save. The tender has been put back where it was.");
+        await loadData();
       }
     } catch (err) {
       console.error('Failed to update stage:', err);

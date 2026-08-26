@@ -769,7 +769,8 @@ export async function createCrmTender(data: { tender_name: string, stage: string
 export async function updateCrmOpportunity(id: string, data: Record<string, any>) {
   return await fetchApi<ApiResponse<void>>(`/api/v1/crm/opportunities/${id}`, {
     method: 'PUT',
-    body: JSON.stringify(data)
+    body: JSON.stringify(data),
+    allowFallback: false,
   });
 }
 
@@ -802,7 +803,8 @@ export async function mergeCrmOpportunities(opportunityId: string, sourceOpportu
 export async function updateCrmTender(id: string, data: Record<string, any>) {
   return await fetchApi<ApiResponse<void>>(`/api/v1/tender-bids/${id}`, {
     method: 'PUT',
-    body: JSON.stringify(data)
+    body: JSON.stringify(data),
+    allowFallback: false,
   });
 }
 

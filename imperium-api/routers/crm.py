@@ -1855,6 +1855,10 @@ async def update_opportunity(
             params["weighted_value"] = _weighted_value(forecast_value, probability)
             if "weighted_value" not in safe_keys:
                 safe_keys.append("weighted_value")
+    if isinstance(params.get("next_activity_due_at"), str):
+        params["next_activity_due_at"] = OpportunityUpdate.normalize_next_activity_due_at(
+            params["next_activity_due_at"]
+        )
     params["opportunity_id"] = opportunity_id
     params["org_id"] = org_id
 

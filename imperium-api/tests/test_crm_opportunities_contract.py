@@ -43,6 +43,7 @@ class CrmOpportunitiesContractTests(unittest.TestCase):
     def test_opportunity_stage_move_has_real_timestamp_and_failure_visibility(self):
         self.assertIn("next_activity_due_at: Optional[datetime]", CRM_ROUTER)
         self.assertIn("def normalize_next_activity_due_at", CRM_ROUTER)
+        self.assertIn('isinstance(params.get("next_activity_due_at"), str)', CRM_ROUTER)
         self.assertIn("return rawMessage || fallback", CRM_PAGE)
 
 

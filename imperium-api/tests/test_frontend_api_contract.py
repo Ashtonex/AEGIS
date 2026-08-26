@@ -92,6 +92,11 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('@router.get("/tender-signals")', CRM_ROUTER)
         self.assertIn('require_permission("crm.view_tenders")', CRM_ROUTER)
 
+    def test_crm_write_helpers_do_not_use_fallback(self):
+        self.assertIn("export async function updateCrmOpportunity", WEB_API)
+        self.assertIn("export async function updateCrmTender", WEB_API)
+        self.assertIn("allowFallback: false", WEB_API)
+
     def test_password_setup_contract_is_implemented_backend_side(self):
         self.assertIn("completePasswordSetup", WEB_API)
         self.assertIn("/api/v1/portals/password-setup/complete", WEB_API)

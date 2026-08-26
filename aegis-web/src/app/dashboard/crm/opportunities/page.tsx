@@ -419,6 +419,7 @@ export default function OpportunitiesKanban() {
       });
       if (!res.success) {
         await loadData();
+        setLoadError(res.message || "Opportunity stage move did not save. Please retry.");
         return;
       }
 
