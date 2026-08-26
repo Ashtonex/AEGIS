@@ -26,6 +26,7 @@ import {
   Search,
   Send,
   ShieldAlert,
+  ShieldCheck,
   ShoppingCart,
   Star,
   Truck,
@@ -43,12 +44,16 @@ import {
   createProcurementRequisition,
   createPurchaseOrderFromRequisition,
   createPurchaseOrderFromRfq,
+  createDocument,
   createSupplierRecord,
   decideProcurementRfqResponse,
+  decideSupplierComplianceDocument,
   decideSupplierInvoicePayment,
   confirmMaterialRequestPrice,
   getCcbFindings,
   getDocuments,
+  getSupplierComplianceDocuments,
+  getSupplierComplianceDocumentSignedUrl,
   getInternalProjects,
   getInventoryStores,
   getInventoryStockLevels,
@@ -64,12 +69,17 @@ import {
   issuePurchaseOrder,
   linkProcurementDocument,
   matchSupplierInvoice,
+  recordSupplierComplianceDocument,
   recordProcurementRfqResponse,
   recordGoodsReceived,
   registerSupplierInvoice,
   submitProcurementRequisition,
   updateSupplierRecord,
+  type SupplierComplianceDocumentStatus,
+  type SupplierComplianceDocumentType,
+  type VendorDocument,
 } from "@/lib/api";
+import { PortalDocumentUpload, type UploadedDocumentResult } from "@/components/portal/PortalDocumentUpload";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1260,7 +1270,15 @@ function SuppliersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => v
 
 const SUPPLIER_STATUSES = ["active", "pending_approval", "suspended", "blacklisted"] as const;
 const SUPPLIER_COMPLIANCE_STATUSES = ["pending", "compliant", "non_compliant", "exempt"] as const;
-type SupplierModalTab = "overview" | "dealings";
+type SupplierModalTab = "overview" | "documents" | "dealings";
+
+const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+  { key: "tax_clearance", label: "Tax Clearance" },
+  { key: "nssa", label: "NSSA" },
+  { key: "praz", label: "PRAZ" },
+  { key: "vat", label: "VAT" },
+  { key: "company_registration", label: "Company Registration" },
+];
 
 function supplierEditDraft(supplier: Rec) {
   return {
@@ -1445,6 +1463,7 @@ function Supplier360Modal({
         <div className="flex border-b border-ink-mid bg-ink-light/40">
           {([
             ["overview", "360 view"],
+            ["documents", "Documents"],
             ["dealings", "Business dealings"],
           ] as const).map(([id, label]) => (
             <button
@@ -1516,6 +1535,8 @@ function Supplier360Modal({
               </div>
             </section>
           </div>
+          ) : activeTab === "documents" ? (
+            <SupplierComplianceDocumentsPanel supplier={supplier} />
           ) : (
             <SupplierBusinessDealings
               items={items}
@@ -1535,6 +1556,172 @@ function Supplier360Modal({
             </button>
           )}
         </footer>
+      </div>
+    </div>
+  );
+}
+
+function supplierDocStatusClass(status: string) {
+  const normalized = status.toLowerCase();
+  if (normalized === "verified") return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
+  if (normalized === "rejected") return "border-red-500/30 bg-red-950/20 text-red-300";
+  if (normalized === "needs_update") return "border-amber-500/30 bg-amber-950/20 text-amber-300";
+  return "border-blue-500/30 bg-blue-950/20 text-blue-300";
+}
+
+function latestSupplierDocs(docs: VendorDocument[]) {
+  const latest: Partial<Record<SupplierComplianceDocumentType, VendorDocument>> = {};
+  for (const doc of docs) {
+    const key = doc.document_type ?? (doc.category as SupplierComplianceDocumentType);
+    if (!SUPPLIER_REQUIRED_DOCUMENTS.some((item) => item.key === key)) continue;
+    if (!latest[key]) latest[key] = doc;
+  }
+  return latest;
+}
+
+function SupplierComplianceDocumentsPanel({ supplier }: { supplier: Rec }) {
+  const [documents, setDocuments] = useState<VendorDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getSupplierComplianceDocuments(supplier.id);
+      setDocuments(res.data ?? []);
+    } catch (e) {
+      setError(normalizeActionError(e, "Supplier documents could not be loaded."));
+    } finally {
+      setLoading(false);
+    }
+  }, [supplier.id]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const docsByType = useMemo(() => latestSupplierDocs(documents), [documents]);
+
+  async function upload(result: UploadedDocumentResult, documentType: SupplierComplianceDocumentType) {
+    setBusyKey(documentType);
+    setError(null);
+    setNotice(null);
+    try {
+      const created = await createDocument({
+        title: `${SUPPLIER_REQUIRED_DOCUMENTS.find((d) => d.key === documentType)?.label ?? "Supplier document"} - ${tx(supplier.supplier_name ?? supplier.name)}`,
+        category: documentType,
+        file_name: result.file_name,
+        file_size_bytes: result.size_bytes,
+        storage_path: result.storage_path,
+        mime_type: result.mime_type,
+      });
+      const documentId = created.data?.id;
+      if (!documentId) throw new Error("The document could not be registered.");
+      const recorded = await recordSupplierComplianceDocument(supplier.id, { document_id: documentId, document_type: documentType });
+      setDocuments(recorded.data ?? []);
+      setNotice("Document uploaded and sent for verification.");
+    } catch (e) {
+      setError(normalizeActionError(e, "Document could not be uploaded."));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function view(documentId?: string) {
+    if (!documentId) return;
+    setError(null);
+    try {
+      const res = await getSupplierComplianceDocumentSignedUrl(supplier.id, documentId);
+      if (res.data?.url) window.open(res.data.url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setError(normalizeActionError(e, "Document could not be opened."));
+    }
+  }
+
+  async function decide(documentId: string, status: SupplierComplianceDocumentStatus) {
+    const review_notes = status === "verified" ? undefined : window.prompt("Record the reason or correction needed:") ?? undefined;
+    if (status !== "verified" && !review_notes?.trim()) return;
+    setBusyKey(documentId);
+    setError(null);
+    setNotice(null);
+    try {
+      await decideSupplierComplianceDocument(supplier.id, documentId, { status, review_notes: review_notes?.trim() });
+      setNotice(status === "verified" ? "Document verified." : "Document marked for correction.");
+      await load();
+    } catch (e) {
+      setError(normalizeActionError(e, "Document decision could not be saved."));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  if (loading) return <LoadingState label="Loading supplier documents..." />;
+
+  return (
+    <div className="space-y-4">
+      {error && <Banner tone="error" message={error} />}
+      {notice && <Banner tone="info" message={notice} />}
+      <div className="grid gap-3 md:grid-cols-5">
+        <SupplierDealMetric label="Required" value="5" detail="Compliance set" />
+        <SupplierDealMetric label="Uploaded" value={String(Object.keys(docsByType).length)} detail="Current files" />
+        <SupplierDealMetric label="Verified" value={String(documents.filter((d) => (d.status ?? d.review_status) === "verified").length)} detail="Accepted by staff" />
+        <SupplierDealMetric label="Pending" value={String(documents.filter((d) => (d.status ?? d.review_status ?? "pending_review") === "pending_review").length)} detail="Needs review" />
+        <SupplierDealMetric label="Corrections" value={String(documents.filter((d) => ["needs_update", "rejected"].includes(d.status ?? d.review_status ?? "")).length)} detail="Supplier action" />
+      </div>
+      <div className="divide-y divide-ink-mid border border-ink-mid bg-ink-light/40">
+        {SUPPLIER_REQUIRED_DOCUMENTS.map((required) => {
+          const doc = docsByType[required.key];
+          const documentId = doc?.document_id ?? doc?.id;
+          const status = doc?.status ?? doc?.review_status ?? "pending_review";
+          return (
+            <div key={required.key} className="grid gap-4 p-4 lg:grid-cols-[220px_minmax(0,1fr)_auto] lg:items-center">
+              <div>
+                <p className="font-semibold text-paper">{required.label}</p>
+                <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">Required supplier document</p>
+              </div>
+              <div className="min-w-0">
+                {doc ? (
+                  <>
+                    <p className="truncate text-sm text-paper">{tx(doc.file_name ?? doc.title)}</p>
+                    <p className="mt-1 text-xs text-slate-light">
+                      Uploaded {dt(doc.created_at)} · {tx(doc.uploaded_by_party, "staff")}
+                      {doc.reviewed_by_name ? ` · reviewed by ${doc.reviewed_by_name}` : ""}
+                    </p>
+                    {doc.review_notes && <p className="mt-1 text-xs text-amber-300">{doc.review_notes}</p>}
+                  </>
+                ) : (
+                  <p className="text-sm text-slate-light">No document uploaded yet.</p>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                <span className={`border px-2 py-1 font-mono text-[10px] uppercase ${supplierDocStatusClass(status)}`}>
+                  {status.replace("_", " ")}
+                </span>
+                <PortalDocumentUpload
+                  label={doc ? "Replace" : "Upload"}
+                  disabled={busyKey === required.key}
+                  onUploaded={(result) => upload(result, required.key)}
+                />
+                {doc && (
+                  <>
+                    <button onClick={() => void view(documentId)} className="inline-flex h-10 items-center gap-2 border border-ink-mid px-3 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper">
+                      <FileText className="h-3.5 w-3.5" />View
+                    </button>
+                    <button onClick={() => void decide(documentId!, "verified")} disabled={busyKey === documentId} className="inline-flex h-10 items-center gap-2 bg-emerald-600 px-3 font-mono text-[10px] uppercase text-white disabled:opacity-50">
+                      <ShieldCheck className="h-3.5 w-3.5" />Verify
+                    </button>
+                    <button onClick={() => void decide(documentId!, "needs_update")} disabled={busyKey === documentId} className="inline-flex h-10 items-center gap-2 border border-amber-500/40 px-3 font-mono text-[10px] uppercase text-amber-300 disabled:opacity-50">
+                      <ShieldAlert className="h-3.5 w-3.5" />Needs update
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

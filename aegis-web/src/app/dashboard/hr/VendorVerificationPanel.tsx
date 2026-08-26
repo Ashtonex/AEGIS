@@ -1,11 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RefreshCw, ScanSearch, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
+import { FileText, Loader2, RefreshCw, ScanSearch, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
 
-import { decideHrVendorVerification, getHrVendorVerificationQueue, runHrVendorSystemCheck } from "@/lib/api";
+import {
+  decideHrVendorVerification,
+  decideHrVendorVerificationDocument,
+  getHrVendorVerificationDocumentSignedUrl,
+  getHrVendorVerificationDocuments,
+  getHrVendorVerificationQueue,
+  runHrVendorSystemCheck,
+  type SupplierComplianceDocumentStatus,
+  type SupplierComplianceDocumentType,
+  type VendorDocument,
+} from "@/lib/api";
 
 type RecordData = Record<string, any>;
+
+const REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+  { key: "tax_clearance", label: "Tax Clearance" },
+  { key: "nssa", label: "NSSA" },
+  { key: "praz", label: "PRAZ" },
+  { key: "vat", label: "VAT" },
+  { key: "company_registration", label: "Company Registration" },
+];
 
 function textValue(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -14,7 +32,16 @@ function textValue(value: unknown, fallback = "Not recorded") {
 function dateValue(value: unknown) {
   if (!value) return "Not recorded";
   const date = new Date(String(value));
-  return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-ZW", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+  return Number.isNaN(date.getTime())
+    ? String(value)
+    : new Intl.DateTimeFormat("en-ZW", { day: "2-digit", month: "short", year: "numeric" }).format(date);
+}
+
+function docStatusClass(status: string) {
+  if (status === "verified") return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
+  if (status === "rejected") return "border-red-500/30 bg-red-950/20 text-red-300";
+  if (status === "needs_update") return "border-amber-500/30 bg-amber-950/20 text-amber-300";
+  return "border-blue-500/30 bg-blue-950/20 text-blue-300";
 }
 
 export function VendorVerificationPanel() {
@@ -24,6 +51,8 @@ export function VendorVerificationPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [documentsByVendor, setDocumentsByVendor] = useState<Record<string, VendorDocument[]>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -47,11 +76,7 @@ export function VendorVerificationPanel() {
     try {
       const res = await runHrVendorSystemCheck(id);
       const stage = res.data?.verification_stage;
-      setNotice(
-        stage === "system_verified"
-          ? "Passed automated checks - ready for HR review."
-          : "Still incomplete - see the notes below for what's missing."
-      );
+      setNotice(stage === "system_verified" ? "Passed automated checks - ready for HR review." : "Still incomplete - see the notes below for what's missing.");
       await load();
     } catch {
       setNotice("Could not run the system check for this vendor.");
@@ -67,8 +92,8 @@ export function VendorVerificationPanel() {
       await decideHrVendorVerification(id, "approve");
       setNotice("Vendor verified.");
       await load();
-    } catch {
-      setNotice("Could not approve this vendor profile.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not approve this vendor profile.");
     } finally {
       setBusyId(null);
     }
@@ -94,6 +119,50 @@ export function VendorVerificationPanel() {
     }
   }
 
+  async function toggleDocuments(id: string) {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    if (documentsByVendor[id]) return;
+    setBusyId(id);
+    try {
+      const res = await getHrVendorVerificationDocuments(id);
+      setDocumentsByVendor((current) => ({ ...current, [id]: res.data ?? [] }));
+    } catch {
+      setNotice("Vendor documents could not be loaded.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function viewDocument(vendorId: string, documentId: string) {
+    try {
+      const res = await getHrVendorVerificationDocumentSignedUrl(vendorId, documentId);
+      if (res.data?.url) window.open(res.data.url, "_blank", "noopener,noreferrer");
+    } catch {
+      setNotice("Document could not be opened.");
+    }
+  }
+
+  async function decideDocument(vendorId: string, documentId: string, status: SupplierComplianceDocumentStatus) {
+    const reviewNotes = status === "verified" ? undefined : window.prompt("Record the reason or correction needed:") ?? undefined;
+    if (status !== "verified" && !reviewNotes?.trim()) return;
+    setBusyId(documentId);
+    try {
+      await decideHrVendorVerificationDocument(vendorId, documentId, { status, review_notes: reviewNotes?.trim() });
+      const res = await getHrVendorVerificationDocuments(vendorId);
+      setDocumentsByVendor((current) => ({ ...current, [vendorId]: res.data ?? [] }));
+      await load();
+      setNotice(status === "verified" ? "Document verified." : "Document marked for correction.");
+    } catch {
+      setNotice("Document decision could not be saved.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -101,8 +170,7 @@ export function VendorVerificationPanel() {
           <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Vendor onboarding</p>
           <h2 className="mt-1 text-xl font-semibold">Verification queue</h2>
           <p className="mt-1 text-sm text-slate-light">
-            Every supplier/subcontractor not yet fully verified - including ones added directly by staff, which start
-            here and need a system check before HR can approve them.
+            Every supplier/subcontractor not yet fully verified, including profiles added directly by staff.
           </p>
         </div>
         <button
@@ -131,81 +199,151 @@ export function VendorVerificationPanel() {
           {queue.map((row) => {
             const stage = row.verification_stage as string | undefined;
             const readyForDecision = stage === "system_verified";
+            const docs = documentsByVendor[row.id] ?? [];
             return (
-            <div key={row.id} className="p-4">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold">{textValue(row.name)}</p>
-                    <span className="border border-ink-mid px-2 py-0.5 font-mono text-[10px] uppercase text-slate-light">
-                      {textValue(row.account_type, "vendor")}
-                    </span>
-                    <span className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${readyForDecision ? "border border-emerald-500/30 bg-emerald-950/20 text-emerald-300" : "border border-amber-500/30 bg-amber-950/20 text-amber-300"}`}>
-                      {textValue(stage, "incomplete").replace("_", " ")}
-                    </span>
+              <div key={row.id} className="p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold">{textValue(row.name)}</p>
+                      <span className="border border-ink-mid px-2 py-0.5 font-mono text-[10px] uppercase text-slate-light">
+                        {textValue(row.account_type, "vendor")}
+                      </span>
+                      <span className={`px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${readyForDecision ? "border border-emerald-500/30 bg-emerald-950/20 text-emerald-300" : "border border-amber-500/30 bg-amber-950/20 text-amber-300"}`}>
+                        {textValue(stage, "incomplete").replace("_", " ")}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-light">
+                      Reg. {textValue(row.registration_number)} · Tax {textValue(row.tax_clearance_number)} · Verified by system {dateValue(row.system_verified_at)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-light">{textValue(row.contact_email)} · {textValue(row.contact_phone)}</p>
+                    <p className="mt-1 text-xs text-slate-light">
+                      Documents {row.compliance_document_count ?? 0}/5 uploaded · {row.verified_document_count ?? 0}/5 verified
+                    </p>
+                    {!readyForDecision && row.system_verification_notes && (
+                      <p className="mt-1 text-xs text-amber-300">{row.system_verification_notes}</p>
+                    )}
                   </div>
-                  <p className="mt-1 text-xs text-slate-light">
-                    Reg. {textValue(row.registration_number)} · Tax {textValue(row.tax_clearance_number)} · Verified by system {dateValue(row.system_verified_at)}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-light">{textValue(row.contact_email)} · {textValue(row.contact_phone)}</p>
-                  {!readyForDecision && row.system_verification_notes && (
-                    <p className="mt-1 text-xs text-amber-300">{row.system_verification_notes}</p>
-                  )}
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {readyForDecision ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => void approve(row.id)}
-                        disabled={busyId === row.id}
-                        className="inline-flex h-9 items-center gap-2 bg-emerald-600 px-3 font-mono text-xs uppercase tracking-widest text-white disabled:opacity-50"
-                      >
-                        {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRejectingId(rejectingId === row.id ? null : row.id)}
-                        className="inline-flex h-9 items-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300 hover:bg-red-950/20"
-                      >
-                        <XCircle className="h-4 w-4" />
-                        Reject
-                      </button>
-                    </>
-                  ) : (
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => void runSystemCheck(row.id)}
+                      onClick={() => void toggleDocuments(row.id)}
                       disabled={busyId === row.id}
-                      className="inline-flex h-9 items-center gap-2 border border-signal/40 px-3 font-mono text-xs uppercase tracking-widest text-signal hover:bg-signal/10 disabled:opacity-50"
+                      className="inline-flex h-9 items-center gap-2 border border-ink-mid px-3 font-mono text-xs uppercase tracking-widest text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
                     >
-                      {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
-                      Run System Check
+                      {busyId === row.id && expandedId !== row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                      Documents
                     </button>
-                  )}
+                    {readyForDecision ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void approve(row.id)}
+                          disabled={busyId === row.id}
+                          className="inline-flex h-9 items-center gap-2 bg-emerald-600 px-3 font-mono text-xs uppercase tracking-widest text-white disabled:opacity-50"
+                        >
+                          {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRejectingId(rejectingId === row.id ? null : row.id)}
+                          className="inline-flex h-9 items-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300 hover:bg-red-950/20"
+                        >
+                          <XCircle className="h-4 w-4" />
+                          Reject
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void runSystemCheck(row.id)}
+                        disabled={busyId === row.id}
+                        className="inline-flex h-9 items-center gap-2 border border-signal/40 px-3 font-mono text-xs uppercase tracking-widest text-signal hover:bg-signal/10 disabled:opacity-50"
+                      >
+                        {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
+                        Run System Check
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {rejectingId === row.id && (
+                  <div className="mt-3 flex flex-col gap-2 border-t border-ink-mid pt-3 sm:flex-row">
+                    <input
+                      value={rejectReason}
+                      onChange={(event) => setRejectReason(event.target.value)}
+                      placeholder="Reason for rejection..."
+                      className="h-9 flex-1 border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void reject(row.id)}
+                      disabled={busyId === row.id}
+                      className="inline-flex h-9 items-center justify-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300 disabled:opacity-50"
+                    >
+                      <ShieldAlert className="h-4 w-4" />
+                      Confirm rejection
+                    </button>
+                  </div>
+                )}
+
+                {expandedId === row.id && (
+                  <div className="mt-4 border-t border-ink-mid pt-4">
+                    <div className="grid gap-3 lg:grid-cols-5">
+                      {REQUIRED_DOCUMENTS.map((required) => {
+                        const doc = docs.find((item) => (item.document_type ?? item.category) === required.key);
+                        const status = doc?.status ?? doc?.review_status ?? "pending_review";
+                        const documentId = doc?.document_id ?? doc?.id;
+                        return (
+                          <div key={required.key} className="border border-ink-mid bg-ink p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-sm font-semibold">{required.label}</p>
+                              <span className={`shrink-0 border px-2 py-0.5 font-mono text-[10px] uppercase ${docStatusClass(status)}`}>
+                                {doc ? status.replace("_", " ") : "missing"}
+                              </span>
+                            </div>
+                            <p className="mt-2 min-h-8 text-xs text-slate-light">
+                              {doc ? textValue(doc.file_name ?? doc.title) : "No file uploaded."}
+                            </p>
+                            {doc?.review_notes && <p className="mt-2 text-xs text-amber-300">{doc.review_notes}</p>}
+                            {doc && documentId && (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void viewDocument(row.id, documentId)}
+                                  className="inline-flex h-8 items-center gap-1 border border-ink-mid px-2 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper"
+                                >
+                                  <FileText className="h-3 w-3" />
+                                  View
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void decideDocument(row.id, documentId, "verified")}
+                                  disabled={busyId === documentId}
+                                  className="inline-flex h-8 items-center gap-1 bg-emerald-600 px-2 font-mono text-[10px] uppercase text-white disabled:opacity-50"
+                                >
+                                  <ShieldCheck className="h-3 w-3" />
+                                  Verify
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void decideDocument(row.id, documentId, "needs_update")}
+                                  disabled={busyId === documentId}
+                                  className="inline-flex h-8 items-center gap-1 border border-amber-500/40 px-2 font-mono text-[10px] uppercase text-amber-300 disabled:opacity-50"
+                                >
+                                  <ShieldAlert className="h-3 w-3" />
+                                  Update
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
-              {rejectingId === row.id && (
-                <div className="mt-3 flex flex-col gap-2 border-t border-ink-mid pt-3 sm:flex-row">
-                  <input
-                    value={rejectReason}
-                    onChange={(e) => setRejectReason(e.target.value)}
-                    placeholder="Reason for rejection..."
-                    className="h-9 flex-1 border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void reject(row.id)}
-                    disabled={busyId === row.id}
-                    className="inline-flex h-9 items-center justify-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300 disabled:opacity-50"
-                  >
-                    <ShieldAlert className="h-4 w-4" />
-                    Confirm rejection
-                  </button>
-                </div>
-              )}
-            </div>
             );
           })}
         </div>

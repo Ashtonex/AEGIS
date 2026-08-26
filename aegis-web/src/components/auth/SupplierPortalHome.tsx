@@ -27,6 +27,7 @@ import {
   createSupplierPortalPaymentRequest,
   createSupplierPortalRateItem,
   getSupplierPortalPaymentRequests,
+  getSupplierPortalDocumentSignedUrl,
   getSupplierPortalRateItems,
   getSupplierPortalRfqs,
   getSupplierPortalWorkspace,
@@ -34,6 +35,7 @@ import {
   submitSupplierPortalRfqResponse,
   submitSupplierPortalProfileForReview,
   updateSupplierPortalProfile,
+  type SupplierComplianceDocumentType,
 } from "@/lib/api";
 import { PortalDocumentUpload, type UploadedDocumentResult } from "@/components/portal/PortalDocumentUpload";
 import { usePortalTour } from "@/hooks/usePortalTour";
@@ -59,7 +61,7 @@ const SUPPLIER_TOUR_STEPS: ModuleTourStep[] = [
   },
   {
     title: "Compliance documents",
-    body: "Upload your registration certificate and tax clearance here - these are required before you can be verified.",
+    body: "Upload your tax clearance, NSSA, PRAZ, VAT, and company registration documents here - these are required before you can be verified.",
     target: "supplier-documents",
     placement: "top",
   },
@@ -136,6 +138,14 @@ type QuoteDocument = {
   category: string;
   created_at: string;
 };
+
+const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+  { key: "tax_clearance", label: "Tax Clearance" },
+  { key: "nssa", label: "NSSA" },
+  { key: "praz", label: "PRAZ" },
+  { key: "vat", label: "VAT" },
+  { key: "company_registration", label: "Company Registration" },
+];
 
 type RfqResponseForm = {
   reference: string;
@@ -271,13 +281,23 @@ export function SupplierPortalHome() {
     }
   }
 
-  async function handleComplianceUpload(result: UploadedDocumentResult, category: string) {
+  async function handleComplianceUpload(result: UploadedDocumentResult, documentType: SupplierComplianceDocumentType) {
     try {
-      await registerSupplierPortalDocument({ ...result, category });
+      await registerSupplierPortalDocument({ ...result, category: documentType, document_type: documentType });
       setNotice("Document uploaded.");
       await load();
     } catch (err) {
       setError(actionMessage(err, "Document could not be registered."));
+    }
+  }
+
+  async function viewSupplierDocument(documentId: string) {
+    setError(null);
+    try {
+      const res = await getSupplierPortalDocumentSignedUrl(documentId);
+      if (res.data?.url) window.open(res.data.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(actionMessage(err, "Document could not be opened."));
     }
   }
 
@@ -584,14 +604,42 @@ export function SupplierPortalHome() {
                 <FileText className="h-5 w-5 text-slate-light" />
               </div>
               <div className="grid gap-4 p-4 md:grid-cols-2">
-                <PortalDocumentUpload
-                  label="Upload registration certificate"
-                  onUploaded={(r) => handleComplianceUpload(r, "registration_certificate")}
-                />
-                <PortalDocumentUpload
-                  label="Upload tax clearance"
-                  onUploaded={(r) => handleComplianceUpload(r, "tax_clearance")}
-                />
+                {SUPPLIER_REQUIRED_DOCUMENTS.map((required) => {
+                  const doc = workspace?.documents.find((item) => (item.document_type ?? item.category) === required.key);
+                  const reviewStatus = doc?.review_status ?? doc?.status ?? "pending_review";
+                  return (
+                    <div key={required.key} className="border border-ink-mid bg-ink p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-paper">{required.label}</p>
+                          <p className="mt-1 truncate text-xs text-slate-light">
+                            {doc ? doc.title : "No file uploaded yet."}
+                          </p>
+                        </div>
+                        <span className="shrink-0 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light">
+                          {reviewStatus.replace("_", " ")}
+                        </span>
+                      </div>
+                      {doc?.review_notes && <p className="mt-2 text-xs text-amber-300">{doc.review_notes}</p>}
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <PortalDocumentUpload
+                          label={doc ? "Upload updated file" : "Upload file"}
+                          onUploaded={(r) => handleComplianceUpload(r, required.key)}
+                        />
+                        {doc && (
+                          <button
+                            type="button"
+                            onClick={() => void viewSupplierDocument(doc.id)}
+                            className="inline-flex items-center justify-center gap-2 border border-ink-mid bg-ink-light px-4 py-3 text-sm text-slate-light hover:border-signal hover:text-paper"
+                          >
+                            <FileText className="h-4 w-4" />
+                            View saved file
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
               {workspace && workspace.documents.length > 0 && (
                 <div className="divide-y divide-ink-mid border-t border-ink-mid">

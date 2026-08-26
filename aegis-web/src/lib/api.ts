@@ -2076,6 +2076,46 @@ export async function issueSupplierPortalLogin(id: string): Promise<ApiResponse<
   });
 }
 
+export async function getSupplierComplianceDocuments(id: string): Promise<ApiResponse<VendorDocument[]>> {
+  return fetchApi<ApiResponse<VendorDocument[]>>(`/api/v1/supplier-records/${encodeURIComponent(id)}/documents`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function recordSupplierComplianceDocument(id: string, payload: {
+  document_id: string;
+  document_type: SupplierComplianceDocumentType;
+}): Promise<ApiResponse<VendorDocument[]>> {
+  return fetchApi<ApiResponse<VendorDocument[]>>(`/api/v1/supplier-records/${encodeURIComponent(id)}/documents`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getSupplierComplianceDocumentSignedUrl(
+  supplierId: string,
+  documentId: string
+): Promise<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>> {
+  return fetchApi<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>>(`/api/v1/supplier-records/${encodeURIComponent(supplierId)}/documents/${encodeURIComponent(documentId)}/signed-url`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
+export async function decideSupplierComplianceDocument(
+  supplierId: string,
+  documentId: string,
+  payload: { status: SupplierComplianceDocumentStatus; review_notes?: string }
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/supplier-records/${encodeURIComponent(supplierId)}/documents/${encodeURIComponent(documentId)}/decision`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getProcurementSuppliers(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>("/api/v1/procurement/suppliers", { cache: "no-store", allowFallback: false });
 }
@@ -2442,6 +2482,7 @@ export interface ClientPortalWorkspace {
   };
   tickets: ClientPortalTicket[];
   messages?: PortalCommunicationMessage[];
+  documents?: Array<{ id: string; title: string; category: string; file_name?: string; file_size_bytes?: number; created_at: string }>;
   modules: Array<{ key: string; label: string; status: "active" | "pending" }>;
 }
 
@@ -2523,9 +2564,23 @@ export interface VendorDocument {
   id: string;
   title: string;
   category: string;
+  document_id?: string;
+  document_type?: SupplierComplianceDocumentType;
+  review_status?: SupplierComplianceDocumentStatus;
+  status?: SupplierComplianceDocumentStatus;
+  review_notes?: string;
+  reviewed_at?: string;
+  reviewed_by_name?: string;
+  uploaded_by_party?: "staff" | "supplier";
+  file_name?: string;
+  file_size_bytes?: number;
+  mime_type?: string;
   expiry_date?: string;
   created_at: string;
 }
+
+export type SupplierComplianceDocumentType = "tax_clearance" | "nssa" | "praz" | "vat" | "company_registration";
+export type SupplierComplianceDocumentStatus = "pending_review" | "verified" | "rejected" | "needs_update";
 
 export interface VendorPaymentRequest {
   id: string;
@@ -2631,6 +2686,7 @@ export async function registerSupplierPortalDocument(payload: {
   mime_type?: string;
   size_bytes?: number;
   category: string;
+  document_type?: SupplierComplianceDocumentType;
   expiry_date?: string;
 }): Promise<ApiResponse<VendorDocument>> {
   return fetchApi<ApiResponse<VendorDocument>>(`/api/v1/portals/supplier/documents`, {
@@ -2662,6 +2718,13 @@ export async function createSupplierPortalRateItem(payload: {
   return fetchApi<ApiResponse<VendorRateItem>>(`/api/v1/portals/supplier/rate-items`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getSupplierPortalDocumentSignedUrl(id: string): Promise<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>> {
+  return fetchApi<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>>(`/api/v1/portals/supplier/documents/${id}/signed-url`, {
+    cache: 'no-store',
     allowFallback: false,
   });
 }
@@ -2849,6 +2912,13 @@ export async function registerClientPortalDocument(payload: {
   return fetchApi<ApiResponse<{ id: string; title: string; category: string; created_at: string }>>(`/api/v1/portals/client/documents`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getClientPortalDocumentSignedUrl(id: string): Promise<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>> {
+  return fetchApi<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>>(`/api/v1/portals/client/documents/${id}/signed-url`, {
+    cache: 'no-store',
     allowFallback: false,
   });
 }
@@ -3793,6 +3863,19 @@ export async function getHrVendorVerificationQueue(stage?: string): Promise<ApiR
   });
 }
 
+export interface HrVendorVerificationDetail {
+  vendor: SupplierPortalVendor & Record<string, any>;
+  filled_fields: Array<{ key: string; label: string; value: any }>;
+  documents: VendorDocument[];
+}
+
+export async function getHrVendorVerificationDetail(subcontractorId: string): Promise<ApiResponse<HrVendorVerificationDetail>> {
+  return fetchApi<ApiResponse<HrVendorVerificationDetail>>(`/api/v1/hr/vendor-verification/${encodeURIComponent(subcontractorId)}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 export async function decideHrVendorVerification(subcontractorId: string, decision: "approve" | "reject", notes?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${subcontractorId}/decision`, {
     method: 'POST',
@@ -3804,6 +3887,35 @@ export async function decideHrVendorVerification(subcontractorId: string, decisi
 export async function runHrVendorSystemCheck(subcontractorId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${subcontractorId}/run-system-check`, {
     method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getHrVendorVerificationDocuments(subcontractorId: string): Promise<ApiResponse<VendorDocument[]>> {
+  return fetchApi<ApiResponse<VendorDocument[]>>(`/api/v1/hr/vendor-verification/${encodeURIComponent(subcontractorId)}/documents`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getHrVendorVerificationDocumentSignedUrl(
+  subcontractorId: string,
+  documentId: string
+): Promise<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>> {
+  return fetchApi<ApiResponse<{ url: string; file_name: string | null; mime_type: string | null; expires_in: number }>>(`/api/v1/hr/vendor-verification/${encodeURIComponent(subcontractorId)}/documents/${encodeURIComponent(documentId)}/signed-url`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function decideHrVendorVerificationDocument(
+  subcontractorId: string,
+  documentId: string,
+  payload: { status: SupplierComplianceDocumentStatus; review_notes?: string }
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${encodeURIComponent(subcontractorId)}/documents/${encodeURIComponent(documentId)}/decision`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
     allowFallback: false,
   });
 }

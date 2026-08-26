@@ -13,10 +13,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_role_notification
 from app.shared.vendor_verification import run_system_verification_check
-from core.database import get_db
+from core.database import get_db, supabase
 from core.security import get_current_user, resolve_primary_role
 
 router = APIRouter()
+
+DOCUMENTS_BUCKET = "documents"
+SIGNED_URL_TTL_SECONDS = 300
+SUPPLIER_COMPLIANCE_DOCUMENT_TYPES = {
+    "tax_clearance": "Tax Clearance",
+    "nssa": "NSSA",
+    "praz": "PRAZ",
+    "vat": "VAT",
+    "company_registration": "Company Registration",
+}
 
 _PORTALS = {
     "executive": "/dashboard/executive",
@@ -463,22 +473,48 @@ async def get_client_workspace(
     )
     messages = [dict(row._mapping) for row in message_rows]
 
+    doc_rows = await db.execute(
+        text("""
+        SELECT DISTINCT d.id, d.title, d.category, d.file_name, d.file_size_bytes, d.created_at
+        FROM core.document_links dl
+        JOIN core.documents d
+          ON d.id = dl.document_id
+         AND d.organization_id = dl.organization_id
+         AND d.is_deleted = false
+        WHERE dl.organization_id = :org_id
+          AND dl.is_deleted = false
+          AND (
+            (dl.entity_type = 'client_contact' AND dl.entity_id = :contact_id)
+            OR (dl.entity_type = 'client_organization' AND dl.entity_id = :client_org_id)
+          )
+        ORDER BY d.created_at DESC
+        LIMIT 100
+    """),
+        {
+            "org_id": user["org_id"],
+            "contact_id": client["contact_id"],
+            "client_org_id": client["client_org_id"],
+        },
+    )
+    documents = [dict(row._mapping) for row in doc_rows]
+
     return {
         "success": True,
         "data": {
             "client": client,
             "tickets": tickets,
             "messages": messages,
+            "documents": documents,
             "modules": [
                 {"key": "messages", "label": "Communication thread", "status": "active"},
                 {"key": "tickets", "label": "Support tickets", "status": "active"},
-                {"key": "documents", "label": "Project documents", "status": "pending"},
+                {"key": "documents", "label": "Project documents", "status": "active"},
                 {"key": "progress", "label": "Project progress", "status": "pending"},
                 {"key": "commercial", "label": "Commercial records", "status": "pending"},
             ],
         },
         "message": "Client portal workspace loaded.",
-        "meta": {"total_tickets": len(tickets), "total_messages": len(messages)},
+        "meta": {"total_tickets": len(tickets), "total_messages": len(messages), "total_documents": len(documents)},
     }
 
 
@@ -829,6 +865,10 @@ class SupplierDocumentRegister(BaseModel):
     mime_type: Optional[str] = Field(default=None, max_length=120)
     size_bytes: Optional[int] = None
     category: str = Field(min_length=1, max_length=80)
+    document_type: Optional[str] = Field(
+        default=None,
+        pattern=r"^(tax_clearance|nssa|praz|vat|company_registration)$",
+    )
     expiry_date: Optional[date] = None
 
 
@@ -917,9 +957,18 @@ async def get_supplier_workspace(
 
     doc_rows = await db.execute(
         text("""
-        SELECT d.id, d.title, d.category, d.expiry_date, d.created_at
+        SELECT
+            d.id, d.title, d.category, d.expiry_date, d.created_at,
+            scd.document_type,
+            scd.status AS review_status,
+            scd.review_notes,
+            scd.reviewed_at
         FROM core.document_links dl
         JOIN core.documents d ON d.id = dl.document_id AND d.organization_id = dl.organization_id AND d.is_deleted = false
+        LEFT JOIN procurement.supplier_compliance_documents scd
+          ON scd.document_id = d.id
+         AND scd.organization_id = dl.organization_id
+         AND scd.is_deleted = false
         WHERE dl.organization_id = :org_id AND dl.entity_type = 'subcontractor' AND dl.entity_id = :id
           AND dl.is_deleted = false
         ORDER BY d.created_at DESC
@@ -1031,6 +1080,8 @@ async def register_supplier_document(
 ):
     vendor = await _get_supplier_portal_context(user, db)
     subcontractor_id = vendor["subcontractor_id"]
+    supplier_id = vendor.get("linked_supplier_id")
+    document_type = payload.document_type or payload.category
 
     attachment_id = (
         await db.execute(
@@ -1067,13 +1118,137 @@ async def register_supplier_document(
         await db.execute(
             text("""
             INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
-            VALUES (:org_id, :document_id, 'subcontractor', :entity_id, 'compliance', :user_id)
+            VALUES (:org_id, :document_id, 'subcontractor', :entity_id, :link_role, :user_id)
             ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
         """),
-            {"org_id": user["org_id"], "document_id": document.id, "entity_id": subcontractor_id, "user_id": user["user_id"]},
+            {
+                "org_id": user["org_id"], "document_id": document.id, "entity_id": subcontractor_id,
+                "link_role": document_type, "user_id": user["user_id"],
+            },
         )
+        if supplier_id:
+            await db.execute(
+                text("""
+                INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+                VALUES (:org_id, :document_id, 'supplier', :entity_id, :link_role, :user_id)
+                ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+            """),
+                {
+                    "org_id": user["org_id"], "document_id": document.id, "entity_id": supplier_id,
+                    "link_role": document_type, "user_id": user["user_id"],
+                },
+            )
+        if document_type in SUPPLIER_COMPLIANCE_DOCUMENT_TYPES:
+            await db.execute(
+                text("""
+                INSERT INTO procurement.supplier_compliance_documents (
+                    organization_id, supplier_id, subcontractor_id, document_id, document_type,
+                    uploaded_by_party, status, created_by
+                ) VALUES (
+                    :org_id, :supplier_id, :subcontractor_id, :document_id, :document_type,
+                    'supplier', 'pending_review', :user_id
+                )
+                ON CONFLICT (organization_id, document_id, document_type) DO UPDATE SET
+                    supplier_id = EXCLUDED.supplier_id,
+                    subcontractor_id = EXCLUDED.subcontractor_id,
+                    status = 'pending_review',
+                    uploaded_by_party = 'supplier',
+                    review_notes = NULL,
+                    reviewed_by = NULL,
+                    reviewed_at = NULL,
+                    is_deleted = false,
+                    updated_at = NOW()
+            """),
+                {
+                    "org_id": user["org_id"], "supplier_id": supplier_id, "subcontractor_id": subcontractor_id,
+                    "document_id": document.id, "document_type": document_type, "user_id": user["user_id"],
+                },
+            )
+            await db.execute(
+                text("""
+                UPDATE crm.subcontractors
+                SET verification_stage = 'incomplete',
+                    system_verified_at = NULL,
+                    hr_verified_at = NULL,
+                    updated_at = NOW()
+                WHERE id = :subcontractor_id AND organization_id = :org_id
+            """),
+                {"org_id": user["org_id"], "subcontractor_id": subcontractor_id},
+            )
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["HR Manager", "HR Officer", "Procurement Manager", "Stores and Procurement Manager"],
+                title="Supplier uploaded compliance document",
+                message=f"{vendor['name']} uploaded {SUPPLIER_COMPLIANCE_DOCUMENT_TYPES[document_type]} for review.",
+                notification_type="supplier_compliance_document",
+                action_url="/dashboard/hr?tab=vendor-verification",
+                metadata={
+                    "subcontractor_id": str(subcontractor_id),
+                    "supplier_id": str(supplier_id) if supplier_id else None,
+                    "document_id": str(document.id),
+                    "document_type": document_type,
+                },
+            )
     await db.commit()
     return {"success": True, "data": dict(document._mapping), "message": "Document registered.", "meta": {}}
+
+
+@router.get("/supplier/documents/{document_id}/signed-url")
+async def get_supplier_document_signed_url(
+    document_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    vendor = await _get_supplier_portal_context(user, db)
+    row = (
+        await db.execute(
+            text("""
+                SELECT fa.storage_path, fa.mime_type, fa.file_name
+                FROM core.document_links dl
+                JOIN core.documents d
+                  ON d.id = dl.document_id
+                 AND d.organization_id = dl.organization_id
+                 AND d.is_deleted = false
+                JOIN core.file_attachments fa
+                  ON fa.id = d.file_attachment_id
+                 AND fa.is_deleted = false
+                WHERE dl.organization_id = :org_id
+                  AND dl.entity_type = 'subcontractor'
+                  AND dl.entity_id = :subcontractor_id
+                  AND dl.document_id = :document_id
+                  AND dl.is_deleted = false
+                LIMIT 1
+            """),
+            {
+                "org_id": user["org_id"],
+                "subcontractor_id": vendor["subcontractor_id"],
+                "document_id": str(document_id),
+            },
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Supplier document not found.")
+    try:
+        signed = supabase.storage.from_(DOCUMENTS_BUCKET).create_signed_url(
+            row["storage_path"], SIGNED_URL_TTL_SECONDS
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not generate a view link for this file. Try again.")
+    signed_url = signed.get("signedURL")
+    if not signed_url:
+        raise HTTPException(status_code=502, detail="Could not generate a view link for this file. Try again.")
+    return {
+        "success": True,
+        "data": {
+            "url": signed_url,
+            "file_name": row["file_name"],
+            "mime_type": row["mime_type"],
+            "expires_in": SIGNED_URL_TTL_SECONDS,
+        },
+        "message": "Document view link generated.",
+        "meta": {},
+    }
 
 
 @router.post("/client/documents", status_code=status.HTTP_201_CREATED)
@@ -1082,10 +1257,11 @@ async def register_client_document(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Register an uploaded file (currently: payment-request receipts only)
-    for the client portal. The document is linked to its target entity at
-    the point of use (e.g. clear_client_payment_request), not here."""
-    await _get_client_portal_context(user, db)
+    """Register an uploaded file for the client portal. Workflow-specific
+    files are also linked at their point of use, but every client upload is
+    attached to the client contact/company so it can be reviewed and replaced
+    from the portal and found through the Documents module."""
+    client = await _get_client_portal_context(user, db)
 
     attachment_id = (
         await db.execute(
@@ -1115,8 +1291,99 @@ async def register_client_document(
             },
         )
     ).first()
+    for entity_type, entity_id in (
+        ("client_contact", client["contact_id"]),
+        ("client_organization", client["client_org_id"]),
+    ):
+        if not entity_id:
+            continue
+        await db.execute(
+            text("""
+            INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+            VALUES (:org_id, :document_id, :entity_type, :entity_id, :link_role, :user_id)
+            ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+        """),
+            {
+                "org_id": user["org_id"],
+                "document_id": document.id,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "link_role": payload.category,
+                "user_id": user["user_id"],
+            },
+        )
+    await emit_role_notification(
+        db,
+        org_id=user["org_id"],
+        role_names=["Project Manager", "Commercial Manager", "Executive (Admin)"],
+        title="Client uploaded a document",
+        message=f"{client['contact_name']} uploaded {payload.file_name}.",
+        notification_type="client_document_upload",
+        action_url="/dashboard/client-portal",
+        metadata={"contact_id": str(client["contact_id"]), "document_id": str(document.id), "category": payload.category},
+    )
     await db.commit()
     return {"success": True, "data": dict(document._mapping), "message": "Document registered.", "meta": {}}
+
+
+@router.get("/client/documents/{document_id}/signed-url")
+async def get_client_document_signed_url(
+    document_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client = await _get_client_portal_context(user, db)
+    row = (
+        await db.execute(
+            text("""
+                SELECT fa.storage_path, fa.mime_type, fa.file_name
+                FROM core.document_links dl
+                JOIN core.documents d
+                  ON d.id = dl.document_id
+                 AND d.organization_id = dl.organization_id
+                 AND d.is_deleted = false
+                JOIN core.file_attachments fa
+                  ON fa.id = d.file_attachment_id
+                 AND fa.is_deleted = false
+                WHERE dl.organization_id = :org_id
+                  AND dl.document_id = :document_id
+                  AND dl.is_deleted = false
+                  AND (
+                    (dl.entity_type = 'client_contact' AND dl.entity_id = :contact_id)
+                    OR (dl.entity_type = 'client_organization' AND dl.entity_id = :client_org_id)
+                  )
+                LIMIT 1
+            """),
+            {
+                "org_id": user["org_id"],
+                "document_id": str(document_id),
+                "contact_id": client["contact_id"],
+                "client_org_id": client["client_org_id"],
+            },
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Client document not found.")
+    try:
+        signed = supabase.storage.from_(DOCUMENTS_BUCKET).create_signed_url(
+            row["storage_path"], SIGNED_URL_TTL_SECONDS
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not generate a view link for this file. Try again.")
+    signed_url = signed.get("signedURL")
+    if not signed_url:
+        raise HTTPException(status_code=502, detail="Could not generate a view link for this file. Try again.")
+    return {
+        "success": True,
+        "data": {
+            "url": signed_url,
+            "file_name": row["file_name"],
+            "mime_type": row["mime_type"],
+            "expires_in": SIGNED_URL_TTL_SECONDS,
+        },
+        "message": "Document view link generated.",
+        "meta": {},
+    }
 
 
 @router.get("/supplier/rate-items")

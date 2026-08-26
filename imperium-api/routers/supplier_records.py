@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from typing import Optional
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field
 
-from core.database import get_db
+from core.database import get_db, supabase
 from core.security import get_current_user, require_permission, user_has_permission
+from app.shared.events import emit_role_notification
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -38,6 +42,135 @@ SUPPLIER_EDIT_COLUMNS = {
     "performance_score",
     "on_time_delivery_pct",
 }
+
+DOCUMENTS_BUCKET = "documents"
+SIGNED_URL_TTL_SECONDS = 300
+
+SUPPLIER_COMPLIANCE_DOCUMENT_TYPES = {
+    "tax_clearance": "Tax Clearance",
+    "nssa": "NSSA",
+    "praz": "PRAZ",
+    "vat": "VAT",
+    "company_registration": "Company Registration",
+}
+
+
+class SupplierComplianceDocumentRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    document_id: UUID
+    document_type: str = Field(pattern=r"^(tax_clearance|nssa|praz|vat|company_registration)$")
+
+
+class SupplierComplianceDocumentDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    status: str = Field(pattern=r"^(verified|rejected|needs_update|pending_review)$")
+    review_notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+async def _supplier_exists(db: AsyncSession, *, org_id: str, supplier_id: str) -> dict:
+    row = (
+        await db.execute(
+            text("""
+                SELECT id, supplier_name, primary_contact_email
+                FROM procurement.suppliers
+                WHERE id = :supplier_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": org_id, "supplier_id": supplier_id},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return dict(row)
+
+
+async def _supplier_document_rows(db: AsyncSession, *, org_id: str, supplier_id: str) -> list[dict]:
+    rows = await db.execute(
+        text("""
+            SELECT
+                scd.id,
+                scd.supplier_id,
+                scd.subcontractor_id,
+                scd.document_id,
+                scd.document_type,
+                scd.status,
+                scd.uploaded_by_party,
+                scd.review_notes,
+                scd.reviewed_by,
+                scd.reviewed_at,
+                scd.created_at,
+                d.title,
+                d.category,
+                d.expiry_date,
+                d.file_name,
+                d.file_size_bytes,
+                fa.mime_type,
+                u.full_name AS reviewed_by_name
+            FROM procurement.supplier_compliance_documents scd
+            JOIN core.documents d
+              ON d.id = scd.document_id
+             AND d.organization_id = scd.organization_id
+             AND d.is_deleted = false
+            LEFT JOIN core.file_attachments fa
+              ON fa.id = d.file_attachment_id
+             AND fa.is_deleted = false
+            LEFT JOIN core.users u
+              ON u.id = scd.reviewed_by
+             AND u.organization_id = scd.organization_id
+             AND u.is_deleted = false
+            WHERE scd.organization_id = :org_id
+              AND scd.supplier_id = :supplier_id
+              AND scd.is_deleted = false
+            ORDER BY scd.document_type ASC, scd.created_at DESC
+        """),
+        {"org_id": org_id, "supplier_id": supplier_id},
+    )
+    return [dict(row._mapping) for row in rows]
+
+
+async def _signed_url_for_supplier_document(
+    db: AsyncSession, *, org_id: str, supplier_id: str, document_id: str
+) -> dict:
+    row = (
+        await db.execute(
+            text("""
+                SELECT fa.storage_path, fa.mime_type, fa.file_name
+                FROM procurement.supplier_compliance_documents scd
+                JOIN core.documents d
+                  ON d.id = scd.document_id
+                 AND d.organization_id = scd.organization_id
+                 AND d.is_deleted = false
+                JOIN core.file_attachments fa
+                  ON fa.id = d.file_attachment_id
+                 AND fa.is_deleted = false
+                WHERE scd.organization_id = :org_id
+                  AND scd.supplier_id = :supplier_id
+                  AND scd.document_id = :document_id
+                  AND scd.is_deleted = false
+                LIMIT 1
+            """),
+            {"org_id": org_id, "supplier_id": supplier_id, "document_id": document_id},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Supplier document not found.")
+    try:
+        signed = supabase.storage.from_(DOCUMENTS_BUCKET).create_signed_url(
+            row["storage_path"], SIGNED_URL_TTL_SECONDS
+        )
+    except Exception:
+        logger.exception("Failed to create signed URL for supplier document", document_id=document_id)
+        raise HTTPException(status_code=502, detail="Could not generate a view link for this file. Try again.")
+    signed_url = signed.get("signedURL")
+    if not signed_url:
+        raise HTTPException(status_code=502, detail="Could not generate a view link for this file. Try again.")
+    return {
+        "url": signed_url,
+        "file_name": row["file_name"],
+        "mime_type": row["mime_type"],
+        "expires_in": SIGNED_URL_TTL_SECONDS,
+    }
 
 
 async def ensure_supplier_subcontractor_bridge(
@@ -277,6 +410,216 @@ async def create_item(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.get("/{item_id}/documents")
+async def list_supplier_compliance_documents(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("supplier_compliance_documents.read")),
+):
+    await _supplier_exists(db, org_id=user["org_id"], supplier_id=item_id)
+    items = await _supplier_document_rows(db, org_id=user["org_id"], supplier_id=item_id)
+    return {
+        "success": True,
+        "data": items,
+        "message": "Supplier compliance documents loaded.",
+        "meta": {"required": list(SUPPLIER_COMPLIANCE_DOCUMENT_TYPES.keys()), "total": len(items)},
+    }
+
+
+@router.post("/{item_id}/documents", status_code=status.HTTP_201_CREATED)
+async def record_supplier_compliance_document(
+    item_id: str,
+    payload: SupplierComplianceDocumentRecord,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("supplier_compliance_documents.upload")),
+):
+    supplier = await _supplier_exists(db, org_id=user["org_id"], supplier_id=item_id)
+    doc_row = (
+        await db.execute(
+            text("""
+                SELECT id FROM core.documents
+                WHERE id = :document_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"document_id": str(payload.document_id), "org_id": user["org_id"]},
+        )
+    ).first()
+    if not doc_row:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    try:
+        subcontractor_id = await ensure_supplier_subcontractor_bridge(
+            db, org_id=user["org_id"], user_id=user["sub"], supplier_id=item_id
+        )
+        await db.execute(
+            text("""
+                UPDATE core.documents
+                SET category = :document_type, updated_at = NOW()
+                WHERE id = :document_id AND organization_id = :org_id
+            """),
+            {"org_id": user["org_id"], "document_id": str(payload.document_id), "document_type": payload.document_type},
+        )
+        for entity_type, entity_id in (("supplier", item_id), ("subcontractor", subcontractor_id)):
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :document_id, :entity_type, :entity_id, :document_type, :user_id
+                    )
+                    ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "document_id": str(payload.document_id),
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "document_type": payload.document_type,
+                    "user_id": user["user_id"],
+                },
+            )
+        await db.execute(
+            text("""
+                INSERT INTO procurement.supplier_compliance_documents (
+                    organization_id, supplier_id, subcontractor_id, document_id, document_type,
+                    uploaded_by_party, status, created_by
+                ) VALUES (
+                    :org_id, :supplier_id, :subcontractor_id, :document_id, :document_type,
+                    'staff', 'pending_review', :user_id
+                )
+                ON CONFLICT (organization_id, document_id, document_type) DO UPDATE SET
+                    supplier_id = EXCLUDED.supplier_id,
+                    subcontractor_id = EXCLUDED.subcontractor_id,
+                    status = 'pending_review',
+                    uploaded_by_party = 'staff',
+                    review_notes = NULL,
+                    reviewed_by = NULL,
+                    reviewed_at = NULL,
+                    is_deleted = false,
+                    updated_at = NOW()
+            """),
+            {
+                "org_id": user["org_id"],
+                "supplier_id": item_id,
+                "subcontractor_id": subcontractor_id,
+                "document_id": str(payload.document_id),
+                "document_type": payload.document_type,
+                "user_id": user["user_id"],
+            },
+        )
+        await db.execute(
+            text("""
+                UPDATE crm.subcontractors
+                SET verification_stage = 'incomplete',
+                    system_verified_at = NULL,
+                    hr_verified_at = NULL,
+                    updated_at = NOW()
+                WHERE id = :subcontractor_id AND organization_id = :org_id
+            """),
+            {"org_id": user["org_id"], "subcontractor_id": subcontractor_id},
+        )
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=["HR Manager", "HR Officer"],
+            title="Supplier document ready for review",
+            message=f"{supplier['supplier_name']} has a new {SUPPLIER_COMPLIANCE_DOCUMENT_TYPES[payload.document_type]} document awaiting verification.",
+            notification_type="supplier_compliance_document",
+            action_url="/dashboard/hr?tab=vendor-verification",
+            metadata={"supplier_id": item_id, "document_id": str(payload.document_id), "document_type": payload.document_type},
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Supplier document could not be recorded: {str(e)}")
+
+    items = await _supplier_document_rows(db, org_id=user["org_id"], supplier_id=item_id)
+    return {
+        "success": True,
+        "data": items,
+        "message": "Supplier compliance document recorded.",
+        "meta": {"total": len(items)},
+    }
+
+
+@router.get("/{item_id}/documents/{document_id}/signed-url")
+async def get_supplier_compliance_document_signed_url(
+    item_id: str,
+    document_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("supplier_compliance_documents.read")),
+):
+    await _supplier_exists(db, org_id=user["org_id"], supplier_id=item_id)
+    data = await _signed_url_for_supplier_document(
+        db, org_id=user["org_id"], supplier_id=item_id, document_id=str(document_id)
+    )
+    return {"success": True, "data": data, "message": "Document view link generated.", "meta": {}}
+
+
+@router.post("/{item_id}/documents/{document_id}/decision")
+async def decide_supplier_compliance_document(
+    item_id: str,
+    document_id: UUID,
+    payload: SupplierComplianceDocumentDecision,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("supplier_compliance_documents.verify")),
+):
+    await _supplier_exists(db, org_id=user["org_id"], supplier_id=item_id)
+    row = (
+        await db.execute(
+            text("""
+                UPDATE procurement.supplier_compliance_documents
+                SET status = :status,
+                    review_notes = :review_notes,
+                    reviewed_by = :user_id,
+                    reviewed_at = NOW(),
+                    updated_at = NOW()
+                WHERE organization_id = :org_id
+                  AND supplier_id = :supplier_id
+                  AND document_id = :document_id
+                  AND is_deleted = false
+                RETURNING id, document_type, subcontractor_id
+            """),
+            {
+                "org_id": user["org_id"],
+                "supplier_id": item_id,
+                "document_id": str(document_id),
+                "status": payload.status,
+                "review_notes": payload.review_notes,
+                "user_id": user["user_id"],
+            },
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Supplier document not found.")
+    if payload.status in {"rejected", "needs_update"} and row.subcontractor_id:
+        await db.execute(
+            text("""
+                UPDATE crm.subcontractors
+                SET verification_stage = 'incomplete',
+                    system_verified_at = NULL,
+                    hr_verified_at = NULL,
+                    updated_at = NOW()
+                WHERE id = :subcontractor_id AND organization_id = :org_id
+            """),
+            {"org_id": user["org_id"], "subcontractor_id": str(row.subcontractor_id)},
+        )
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": str(row.id), "document_type": row.document_type, "status": payload.status},
+        "message": "Supplier document decision recorded.",
+        "meta": {},
+    }
 
 
 @router.get("/{item_id}")

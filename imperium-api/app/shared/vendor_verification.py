@@ -28,7 +28,13 @@ REQUIRED_VENDOR_PROFILE_FIELDS = (
     "registration_number", "tax_clearance_number", "nssa_number",
     "contact_name", "contact_email", "contact_phone", "address",
 )
-REQUIRED_COMPLIANCE_CATEGORIES = ("registration_certificate", "tax_clearance")
+REQUIRED_COMPLIANCE_CATEGORIES = (
+    "tax_clearance",
+    "nssa",
+    "praz",
+    "vat",
+    "company_registration",
+)
 
 
 async def run_system_verification_check(
@@ -40,9 +46,21 @@ async def run_system_verification_check(
     profile_row = (
         await db.execute(
             text("""
-            SELECT name, registration_number, tax_clearance_number, nssa_number,
-                   contact_name, contact_email, contact_phone, address
-            FROM crm.subcontractors WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            SELECT
+                COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
+                COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, '')) AS registration_number,
+                COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, '')) AS tax_clearance_number,
+                COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, '')) AS nssa_number,
+                COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, '')) AS contact_name,
+                COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, '')) AS contact_email,
+                COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, '')) AS contact_phone,
+                COALESCE(NULLIF(s.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address
+            FROM crm.subcontractors s
+            LEFT JOIN procurement.suppliers ps
+              ON ps.id = s.linked_supplier_id
+             AND ps.organization_id = s.organization_id
+             AND ps.is_deleted = false
+            WHERE s.id = :id AND s.organization_id = :org_id AND s.is_deleted = false
         """),
             {"id": subcontractor_id, "org_id": org_id},
         )
@@ -54,11 +72,40 @@ async def run_system_verification_check(
 
     doc_rows = await db.execute(
         text("""
-        SELECT d.category, d.expiry_date
+        SELECT DISTINCT ON (COALESCE(scd.document_type, d.category, dl.link_role))
+               COALESCE(scd.document_type, d.category, dl.link_role) AS category,
+               d.expiry_date
         FROM core.document_links dl
         JOIN core.documents d ON d.id = dl.document_id AND d.organization_id = dl.organization_id AND d.is_deleted = false
+        LEFT JOIN procurement.supplier_compliance_documents scd
+          ON scd.document_id = d.id
+         AND scd.organization_id = dl.organization_id
+         AND scd.is_deleted = false
+         AND scd.status NOT IN ('rejected', 'needs_update')
+        JOIN crm.subcontractors s
+          ON s.id = :id
+         AND s.organization_id = dl.organization_id
+         AND s.is_deleted = false
         WHERE dl.organization_id = :org_id AND dl.entity_type = 'subcontractor' AND dl.entity_id = :id
-          AND dl.link_role = 'compliance' AND dl.is_deleted = false
+          AND dl.link_role IN ('compliance', 'tax_clearance', 'nssa', 'praz', 'vat', 'company_registration')
+          AND dl.is_deleted = false
+        UNION
+        SELECT DISTINCT ON (scd.document_type)
+               scd.document_type AS category,
+               d.expiry_date
+        FROM procurement.supplier_compliance_documents scd
+        JOIN core.documents d
+          ON d.id = scd.document_id
+         AND d.organization_id = scd.organization_id
+         AND d.is_deleted = false
+        JOIN crm.subcontractors s
+          ON s.organization_id = scd.organization_id
+         AND s.is_deleted = false
+         AND (scd.subcontractor_id = s.id OR scd.supplier_id = s.linked_supplier_id)
+        WHERE scd.organization_id = :org_id
+          AND s.id = :id
+          AND scd.status NOT IN ('rejected', 'needs_update')
+          AND scd.is_deleted = false
     """),
         {"org_id": org_id, "id": subcontractor_id},
     )

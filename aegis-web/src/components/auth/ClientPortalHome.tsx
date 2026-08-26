@@ -7,6 +7,7 @@ import {
   Building2,
   CheckCircle2,
   ClipboardList,
+  FileText,
   FolderKanban,
   Loader2,
   MessageSquare,
@@ -30,6 +31,7 @@ import {
   createClientPortalTicket,
   createClientPortalVariation,
   getClientPortalProjectDetail,
+  getClientPortalDocumentSignedUrl,
   getClientPortalProjects,
   getClientPortalWorkspace,
   registerClientPortalDocument,
@@ -260,6 +262,31 @@ export function ClientPortalHome() {
       setError(actionMessage(err, "Evidence could not be uploaded."));
     } finally {
       setSaving(null);
+    }
+  }
+
+  async function uploadClientDocument(result: UploadedDocumentResult) {
+    setSaving("client-document");
+    setError(null);
+    setNotice(null);
+    try {
+      await registerClientPortalDocument({ ...result, category: "client_document" });
+      setNotice("Document uploaded.");
+      await load();
+    } catch (err) {
+      setError(actionMessage(err, "Document could not be uploaded."));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function viewClientDocument(documentId: string) {
+    setError(null);
+    try {
+      const res = await getClientPortalDocumentSignedUrl(documentId);
+      if (res.data?.url) window.open(res.data.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(actionMessage(err, "Document could not be opened."));
     }
   }
 
@@ -653,6 +680,45 @@ export function ClientPortalHome() {
           </div>
 
           <aside className="space-y-6">
+            <div className="border border-ink-mid bg-ink-light">
+              <div className="flex items-center justify-between border-b border-ink-mid p-4">
+                <div>
+                  <p className="font-mono text-[10px] tracking-widest text-signal uppercase">Documents</p>
+                  <h2 className="mt-1 text-xl font-semibold">Your files</h2>
+                </div>
+                <FileText className="h-5 w-5 text-slate-light" />
+              </div>
+              <div className="border-b border-ink-mid p-4">
+                <PortalDocumentUpload
+                  label="Upload updated document"
+                  onUploaded={uploadClientDocument}
+                  disabled={saving === "client-document"}
+                />
+              </div>
+              {(workspace?.documents ?? []).length === 0 ? (
+                <p className="p-4 text-sm text-slate-light">No documents uploaded yet.</p>
+              ) : (
+                <div className="max-h-80 divide-y divide-ink-mid overflow-y-auto">
+                  {(workspace?.documents ?? []).map((doc) => (
+                    <div key={doc.id} className="p-4">
+                      <p className="truncate text-sm font-medium">{doc.file_name || doc.title}</p>
+                      <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">
+                        {doc.category.replaceAll("_", " ")} · {formatDate(doc.created_at)}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void viewClientDocument(doc.id)}
+                        className="mt-3 inline-flex h-8 items-center gap-2 border border-ink-mid px-3 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        View
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <form onSubmit={saveProfile} className="border border-ink-mid bg-ink-light">
               <div className="flex items-center justify-between border-b border-ink-mid p-4">
                 <div>
