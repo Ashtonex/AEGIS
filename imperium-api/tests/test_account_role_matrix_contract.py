@@ -26,6 +26,10 @@ PROCUREMENT_MANAGER_BOUNDARY_MIGRATION = (
 CRM_ASSOCIATE_WORKSPACE_MIGRATION = (
     ROOT / "migrations" / "163_crm_associate_primary_workspace_access.sql"
 ).read_text(encoding="utf-8")
+CRM_ASSOCIATE_ACCESS_BRIDGE_MIGRATION = (
+    ROOT / "migrations" / "165_crm_associate_assignment_tender_leave_access.sql"
+).read_text(encoding="utf-8")
+TENDER_BIDS_ROUTER = (ROOT / "routers" / "tender_bids.py").read_text(encoding="utf-8")
 SETTINGS_PAGE = (
     WEB_ROOT / "app" / "dashboard" / "settings" / "page.tsx"
 ).read_text(encoding="utf-8")
@@ -151,6 +155,21 @@ class AccountRoleMatrixContractTests(unittest.TestCase):
             self.assertIn(permission_key, CRM_ASSOCIATE_WORKSPACE_MIGRATION)
         self.assertIn('"CRM Associate"', DASHBOARD_SHELL)
         self.assertNotIn('name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, restrictedRoles: ["CRM Associate"]', DASHBOARD_SHELL)
+
+    def test_crm_associate_can_assign_tenders_and_use_leave_self_service(self):
+        for permission_key in (
+            "assignments.manage",
+            "tender_bids.read",
+            "tender_bids.create",
+            "tender_bids.update",
+            "tender_bids.award",
+            "crm.opportunities.close_won",
+            "hr.leave.self_service",
+        ):
+            self.assertIn(permission_key, CRM_ASSOCIATE_ACCESS_BRIDGE_MIGRATION)
+        self.assertIn("supersede_entity_tasks", TENDER_BIDS_ROUTER)
+        self.assertIn('source_event="tender_stage_changed"', TENDER_BIDS_ROUTER)
+        self.assertIn('entity_type="tender"', TENDER_BIDS_ROUTER)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ from app.services.finance.project_forecast import (
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.shared.events import emit_event, emit_notification
-from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.sql import (
@@ -170,12 +170,47 @@ async def update_item(
     params["org_id"] = user["org_id"]
     _coerce_timestamptz_columns(params)
 
+    stage_changed = False
+    next_stage = params.get("stage")
+    if "stage" in safe_keys:
+        current_stage = await _single_row(
+            db,
+            """
+            SELECT stage FROM crm.tenders
+            WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+            """,
+            {"item_id": item_id, "org_id": user["org_id"]},
+        )
+        if not current_stage:
+            raise HTTPException(status_code=404, detail="Item not found")
+        stage_changed = next_stage != current_stage.get("stage")
+
     query = update_returning_id_sql("crm.tenders", safe_keys, safe_keys)
 
     try:
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
+
+        if stage_changed:
+            await supersede_entity_tasks(
+                db,
+                org_id=user["org_id"],
+                entity_type="tender",
+                entity_id=item_id,
+                authorized_by=user.get("sub") or user.get("user_id"),
+                reason=f"Tender moved to {next_stage}; prior-stage work superseded.",
+            )
+            await generate_task_stack(
+                db,
+                org_id=user["org_id"],
+                entity_type="tender",
+                entity_id=item_id,
+                created_by=user.get("sub") or user.get("user_id"),
+                source_event="tender_stage_changed",
+                generation_reason=f"Tender moved to {next_stage}.",
+                stage=next_stage,
+            )
 
         await db.commit()
         return {
