@@ -4702,14 +4702,10 @@ export async function importBoqFile(
   const headers = await getApiHeaders();
   headers.delete("Content-Type"); // let the browser set the multipart boundary
   const response = await fetch(url, { method: "POST", headers, body: formData });
-  const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      body?.detail || body?.message || `BOQ import failed (server responded ${response.status}).`
-    );
+    throw await buildApiError(response);
   }
-  return body;
+  return parseJsonResponse<ApiResponse<{ items: any[]; warnings: string[]; summary: Record<string, unknown>; linked?: Record<string, unknown> }>>(response);
 }
 
 export async function getQuotations(params?: {

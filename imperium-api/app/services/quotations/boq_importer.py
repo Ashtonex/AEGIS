@@ -1,7 +1,8 @@
-import pandas as pd
+import csv
+import math
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Dict, Any
-from io import BytesIO
+from io import BytesIO, StringIO
 from openpyxl import load_workbook
 from app.services.quotations.calculator import BOQItem
 
@@ -25,11 +26,19 @@ class BOQImportResult:
 
 class BOQImporter:
     @staticmethod
+    def _is_blank(val: Any) -> bool:
+        if val is None:
+            return True
+        if isinstance(val, float) and math.isnan(val):
+            return True
+        return str(val).strip() == ""
+
+    @staticmethod
     def _sanitize_decimal(val: Any) -> tuple[Decimal, bool]:
         """Returns (value, parse_failed). parse_failed is only True when the
         cell had content that wasn't a valid number - never for a genuinely
         empty/NaN cell, so callers can warn without flagging every blank cell."""
-        if pd.isna(val) or val is None:
+        if BOQImporter._is_blank(val):
             return Decimal("0"), False
         try:
             # Strip formatting characters like currency symbols or commas
@@ -46,7 +55,7 @@ class BOQImporter:
 
     @staticmethod
     def _clean_text(val: Any) -> str:
-        if pd.isna(val) or val is None:
+        if BOQImporter._is_blank(val):
             return ""
         return str(val).strip()
 
@@ -176,7 +185,9 @@ class BOQImporter:
             if file_extension.lower() in [".xlsx", ".xls"]:
                 return cls._import_excel_workbook(file_content)
             elif file_extension.lower() == ".csv":
-                df = pd.read_csv(BytesIO(file_content))
+                text = file_content.decode("utf-8-sig", errors="replace")
+                rows = list(csv.DictReader(StringIO(text)))
+                columns = [str(c).strip().lower() for c in (rows[0].keys() if rows else [])]
             else:
                 raise ValueError(f"Unsupported file format: {file_extension}")
         except Exception as e:
@@ -189,9 +200,6 @@ class BOQImporter:
                     "total_direct_costs": "0.00",
                 },
             )
-
-        # Standardise column names (lowercase and stripped)
-        df.columns = [str(c).strip().lower() for c in df.columns]
 
         # Column mapping matrix
         desc_cols = [
@@ -210,7 +218,7 @@ class BOQImporter:
 
         # Helper to find first matching column
         def find_col(possible_names: List[str], fallback: str) -> str:
-            for col in df.columns:
+            for col in columns:
                 if col in possible_names:
                     return col
             return fallback
@@ -222,36 +230,37 @@ class BOQImporter:
         section_col = find_col(section_cols, "section")
         item_no_col = find_col(item_no_cols, "item_no")
 
-        if desc_col not in df.columns:
+        if desc_col not in columns:
             warnings.append(
                 "Could not find description column. Using first column as fallback."
             )
-            desc_col = df.columns[0] if len(df.columns) > 0 else "description"
+            desc_col = columns[0] if columns else "description"
 
         total_direct_costs = Decimal("0")
         rows_processed = 0
 
-        for idx, row in df.iterrows():
+        for idx, row in enumerate(rows):
             rows_processed += 1
             # Retrieve values safely
-            raw_desc = row.get(desc_col) if desc_col in df.columns else None
-            raw_qty = row.get(qty_col) if qty_col in df.columns else None
-            raw_unit = row.get(unit_col) if unit_col in df.columns else None
-            raw_rate = row.get(rate_col) if rate_col in df.columns else None
-            raw_section = row.get(section_col) if section_col in df.columns else None
-            raw_item_no = row.get(item_no_col) if item_no_col in df.columns else None
+            normalized_row = {str(k).strip().lower(): v for k, v in row.items()}
+            raw_desc = normalized_row.get(desc_col) if desc_col in columns else None
+            raw_qty = normalized_row.get(qty_col) if qty_col in columns else None
+            raw_unit = normalized_row.get(unit_col) if unit_col in columns else None
+            raw_rate = normalized_row.get(rate_col) if rate_col in columns else None
+            raw_section = normalized_row.get(section_col) if section_col in columns else None
+            raw_item_no = normalized_row.get(item_no_col) if item_no_col in columns else None
 
             # Skip completely empty rows
-            if pd.isna(raw_desc) and pd.isna(raw_qty) and pd.isna(raw_rate):
+            if cls._is_blank(raw_desc) and cls._is_blank(raw_qty) and cls._is_blank(raw_rate):
                 continue
 
-            desc = str(raw_desc).strip() if not pd.isna(raw_desc) else ""
+            desc = cls._clean_text(raw_desc)
             if not desc:
                 warnings.append(f"Row {idx + 1}: Empty description, skipping row.")
                 continue
 
             qty, qty_parse_failed = cls._sanitize_decimal(raw_qty)
-            unit = str(raw_unit).strip() if not pd.isna(raw_unit) else "item"
+            unit = cls._clean_text(raw_unit) or "item"
             rate, rate_parse_failed = cls._sanitize_decimal(raw_rate)
 
             if qty_parse_failed:
@@ -266,8 +275,8 @@ class BOQImporter:
                 warnings.append(f"Row {idx + 1}: Negative rate ({rate}) set to 0.")
                 rate = Decimal("0")
 
-            section = str(raw_section).strip() if section_col in df.columns and not pd.isna(raw_section) else "Measured Works"
-            item_no = str(raw_item_no).strip() if item_no_col in df.columns and not pd.isna(raw_item_no) else ""
+            section = (cls._clean_text(raw_section) if section_col in columns else "") or "Measured Works"
+            item_no = cls._clean_text(raw_item_no) if item_no_col in columns else ""
             boq_item = BOQItem(section=section, item_no=item_no, description=desc, quantity=qty, unit=unit, rate=rate)
             items.append(boq_item)
 
