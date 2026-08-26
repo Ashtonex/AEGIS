@@ -146,8 +146,42 @@ async def resolve_portal_access(
             "meta": {},
         }
 
+    primary_role = None
+    landing_path = None
+    primary_role_name = ""
+    if role_names:
+        primary_role, landing_path = await resolve_primary_role(
+            db, user["user_id"], user["org_id"], fallback_role="EMPLOYEE"
+        )
+        primary_role_name = primary_role.upper()
+
+    # Internal commercial/office roles can hold secondary operational roles
+    # for visibility, but their login destination must stay on their primary
+    # workspace. Otherwise CRM Associates with an extra Quantity Surveyor
+    # assignment get trapped in /portal/qs.
+    portal_primary_roles = {
+        "SITE ENGINEER",
+        "SITE AGENT",
+        "QUANTITY SURVEYOR",
+        "FOREMAN",
+        "SITE CLERK",
+        "STOREKEEPER",
+        "CLIENT",
+        "SUPPLIER",
+    }
+    if role_names and primary_role_name not in portal_primary_roles:
+        return {
+            "success": True,
+            "data": {
+                "portal": "employee",
+                "destination": landing_path or "/dashboard/executive",
+            },
+            "message": "Internal portal access confirmed.",
+            "meta": {},
+        }
+
     # 2. Site Engineer gets the technical control portal.
-    if "SITE ENGINEER" in role_names:
+    if primary_role_name == "SITE ENGINEER":
         return {
             "success": True,
             "data": {"portal": "site-engineer", "destination": "/portal/site-engineer"},
@@ -156,7 +190,7 @@ async def resolve_portal_access(
         }
 
     # 3. Site Agent gets the weekly execution and programme control portal.
-    if "SITE AGENT" in role_names:
+    if primary_role_name == "SITE AGENT":
         return {
             "success": True,
             "data": {"portal": "site-agent", "destination": "/portal/site-agent"},
@@ -165,7 +199,7 @@ async def resolve_portal_access(
         }
 
     # 4. Quantity Surveyor gets the commercial entitlement portal.
-    if "QUANTITY SURVEYOR" in role_names:
+    if primary_role_name == "QUANTITY SURVEYOR":
         return {
             "success": True,
             "data": {"portal": "qs", "destination": "/portal/qs"},
@@ -174,7 +208,7 @@ async def resolve_portal_access(
         }
 
     # 5. Foreman / site-team check
-    if {"FOREMAN", "SITE CLERK", "STOREKEEPER"} & role_names:
+    if primary_role_name in {"FOREMAN", "SITE CLERK", "STOREKEEPER"}:
         return {
             "success": True,
             "data": {"portal": "foreman", "destination": "/portal/foreman"},
@@ -184,7 +218,7 @@ async def resolve_portal_access(
 
     # 6. Client check - external accounts are confined to the client portal,
     # never falling through to the internal dashboard below.
-    if "CLIENT" in role_names:
+    if primary_role_name == "CLIENT":
         client_access = (
             await db.execute(
                 text("""
@@ -207,7 +241,7 @@ async def resolve_portal_access(
         )
 
     # 7. Supplier check - same confinement as clients.
-    if "SUPPLIER" in role_names:
+    if primary_role_name == "SUPPLIER":
         supplier_access = (
             await db.execute(
                 text("""
@@ -240,9 +274,6 @@ async def resolve_portal_access(
     # confined elsewhere - everyone else holding a real, organization-scoped
     # role is internal staff.
     if role_names:
-        _primary_role, landing_path = await resolve_primary_role(
-            db, user["user_id"], user["org_id"], fallback_role="EMPLOYEE"
-        )
         return {
             "success": True,
             "data": {

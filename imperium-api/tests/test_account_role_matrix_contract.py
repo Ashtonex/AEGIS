@@ -23,6 +23,9 @@ SITE_ENGINEER_MIGRATION = (
 PROCUREMENT_MANAGER_BOUNDARY_MIGRATION = (
     ROOT / "migrations" / "148_procurement_manager_control_boundaries.sql"
 ).read_text(encoding="utf-8")
+CRM_ASSOCIATE_WORKSPACE_MIGRATION = (
+    ROOT / "migrations" / "163_crm_associate_primary_workspace_access.sql"
+).read_text(encoding="utf-8")
 SETTINGS_PAGE = (
     WEB_ROOT / "app" / "dashboard" / "settings" / "page.tsx"
 ).read_text(encoding="utf-8")
@@ -127,6 +130,27 @@ class AccountRoleMatrixContractTests(unittest.TestCase):
         ):
             self.assertIn(restricted_key, PROCUREMENT_MANAGER_BOUNDARY_MIGRATION)
         self.assertIn("DELETE FROM core.role_permissions", PROCUREMENT_MANAGER_BOUNDARY_MIGRATION)
+
+    def test_crm_associate_primary_role_stays_in_crm_not_qs_portal(self):
+        self.assertIn("primary_role_name not in portal_primary_roles", PORTALS_ROUTER)
+        self.assertIn("secondary operational roles", PORTALS_ROUTER)
+        self.assertIn("trapped in /portal/qs", PORTALS_ROUTER)
+        self.assertIn("default_landing_path = '/dashboard/crm'", CRM_ASSOCIATE_WORKSPACE_MIGRATION)
+        for permission_key in (
+            "crm.view_opportunities",
+            "crm.view_tenders",
+            "crm_communications.read",
+            "crm_automations.read",
+            "crm.marketing.read",
+            "crm.reports.read",
+            "crm.support.read",
+            "crm.import",
+            "documents.read",
+            "crm_tasks.read",
+        ):
+            self.assertIn(permission_key, CRM_ASSOCIATE_WORKSPACE_MIGRATION)
+        self.assertIn('"CRM Associate"', DASHBOARD_SHELL)
+        self.assertNotIn('name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, restrictedRoles: ["CRM Associate"]', DASHBOARD_SHELL)
 
 
 if __name__ == "__main__":
