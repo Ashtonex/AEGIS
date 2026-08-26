@@ -2061,6 +2061,21 @@ export async function createSupplierRecord(payload: Record<string, unknown>): Pr
   });
 }
 
+export async function updateSupplierRecord(id: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/supplier-records/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function issueSupplierPortalLogin(id: string): Promise<ApiResponse<{ id: string; email: string; temporary_password: string; portal_path: string }>> {
+  return fetchApi<ApiResponse<{ id: string; email: string; temporary_password: string; portal_path: string }>>(`/api/v1/supplier-records/${encodeURIComponent(id)}/portal-login`, {
+    method: "POST",
+    allowFallback: false,
+  });
+}
+
 export async function getProcurementSuppliers(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>("/api/v1/procurement/suppliers", { cache: "no-store", allowFallback: false });
 }
@@ -3369,6 +3384,7 @@ export async function createExternalPlantHireAgreement(payload: Record<string, u
     allowFallback: false,
   });
 }
+
 export async function getPlantLifecycleSummary(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/fleet/plant/summary', { cache: 'no-store', allowFallback: false });
 }

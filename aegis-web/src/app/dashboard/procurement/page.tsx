@@ -60,6 +60,7 @@ import {
   getProcurementSuppliers,
   getStockMovements,
   getSupplierCatalogue,
+  issueSupplierPortalLogin,
   issuePurchaseOrder,
   linkProcurementDocument,
   matchSupplierInvoice,
@@ -67,6 +68,7 @@ import {
   recordGoodsReceived,
   registerSupplierInvoice,
   submitProcurementRequisition,
+  updateSupplierRecord,
 } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -224,7 +226,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [notice, setNotice] = useState<string | null>(null);
   const [showCreatePR, setShowCreatePR] = useState(false);
   const [showAddSupplier, setShowAddSupplier] = useState(false);
-  const [viewingSupplierCatalogue, setViewingSupplierCatalogue] = useState<Rec | null>(null);
+  const [viewingSupplier, setViewingSupplier] = useState<Rec | null>(null);
   const [issuedSupplierCredentials, setIssuedSupplierCredentials] = useState<{ email: string; temporary_password: string } | null>(null);
   const [selectedPO, setSelectedPO] = useState<Rec | null>(null);
   const [approvingPR, setApprovingPR] = useState<Rec | null>(null);
@@ -744,7 +746,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} /> :
           tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
-          tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} onView={setViewingSupplierCatalogue} /> :
+          tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} onView={setViewingSupplier} /> :
           tab === "pricing" ? <PendingPricingTable rows={filteredPricing} saving={saving} onConfirm={confirmPricing} /> :
           <InvoicesTab rows={filteredInvoices} unmatchedCount={unmatchedCount} saving={saving} onMatch={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} />
         }
@@ -766,8 +768,17 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {issuedSupplierCredentials && (
         <CredentialsIssuedModal credentials={issuedSupplierCredentials} onClose={() => setIssuedSupplierCredentials(null)} />
       )}
-      {viewingSupplierCatalogue && (
-        <SupplierCatalogueModal supplier={viewingSupplierCatalogue} onClose={() => setViewingSupplierCatalogue(null)} />
+      {viewingSupplier && (
+        <Supplier360Modal
+          supplier={viewingSupplier}
+          onClose={() => setViewingSupplier(null)}
+          onSaved={(updatedSupplier) => {
+            setViewingSupplier(updatedSupplier);
+            setNotice("Supplier updated.");
+            void load();
+          }}
+          onCredentials={(credentials) => setIssuedSupplierCredentials(credentials)}
+        />
       )}
       {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onApprove={approvePO} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
       {approvingPR && <ApproveModal pr={approvingPR} saving={saving?.startsWith("decide-") ?? false} onDecide={(d, r) => void decidePR(approvingPR.id, d, r)} onClose={() => setApprovingPR(null)} />}
@@ -1219,7 +1230,7 @@ function SuppliersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => v
             const stars = Math.round(Math.min(score, 5));
             const otd = num(row.on_time_delivery_pct);
             return (
-              <tr key={row.id} onClick={() => onView(row)} className="cursor-pointer hover:bg-ink-light/40" title="View product catalogue">
+              <tr key={row.id} onClick={() => onView(row)} className="cursor-pointer hover:bg-ink-light/40" title="Open Supplier 360">
                 <td className="px-4 py-3 font-semibold text-paper">{tx(row.name ?? row.supplier_name)}</td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-light">{tx(row.code ?? row.supplier_code)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${supplierStatusClass(row.status)}`}>{tx(row.status, "active")}</span></td>
@@ -1247,18 +1258,64 @@ function SuppliersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => v
   );
 }
 
-// Derived from every stock receipt ever tagged with this supplier (quick
-// manual receipts and formal PO/GRN receiving alike) - not a maintained
-// list, so it's always exactly what's actually been received from them.
-function SupplierCatalogueModal({ supplier, onClose }: { supplier: Rec; onClose: () => void; }) {
+const SUPPLIER_STATUSES = ["active", "pending_approval", "suspended", "blacklisted"] as const;
+const SUPPLIER_COMPLIANCE_STATUSES = ["pending", "compliant", "non_compliant", "exempt"] as const;
+type SupplierModalTab = "overview" | "dealings";
+
+function supplierEditDraft(supplier: Rec) {
+  return {
+    supplier_name: tx(supplier.supplier_name ?? supplier.name, ""),
+    supplier_code: tx(supplier.supplier_code ?? supplier.code, ""),
+    trading_name: tx(supplier.trading_name, ""),
+    registration_number: tx(supplier.registration_number, ""),
+    tax_number: tx(supplier.tax_number, ""),
+    praz_number: tx(supplier.praz_number, ""),
+    nssa_number: tx(supplier.nssa_number, ""),
+    primary_contact_name: tx(supplier.primary_contact_name, ""),
+    primary_contact_email: tx(supplier.primary_contact_email, ""),
+    primary_contact_phone: tx(supplier.primary_contact_phone, ""),
+    payment_terms_days: String(supplier.payment_terms_days ?? 30),
+    currency: tx(supplier.currency, "USD"),
+    status: tx(supplier.status, "pending_approval"),
+    compliance_status: tx(supplier.compliance_status, "pending"),
+    performance_score: supplier.performance_score == null ? "" : String(supplier.performance_score),
+    on_time_delivery_pct: supplier.on_time_delivery_pct == null ? "" : String(supplier.on_time_delivery_pct),
+  };
+}
+
+function Supplier360Modal({
+  supplier,
+  onClose,
+  onSaved,
+  onCredentials,
+}: {
+  supplier: Rec;
+  onClose: () => void;
+  onSaved: (supplier: Rec) => void;
+  onCredentials: (credentials: { email: string; temporary_password: string }) => void;
+}) {
   const [items, setItems] = useState<Rec[]>([]);
+  const [orders, setOrders] = useState<Rec[]>([]);
+  const [invoices, setInvoices] = useState<Rec[]>([]);
+  const [quotes, setQuotes] = useState<Rec[]>([]);
+  const [form, setForm] = useState(() => supplierEditDraft(supplier));
+  const [activeTab, setActiveTab] = useState<SupplierModalTab>("overview");
   const [loading, setLoading] = useState(true);
+  const [dealingsLoading, setDealingsLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [issuingLogin, setIssuingLogin] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dealingsError, setDealingsError] = useState<string | null>(null);
+  const [copiedPortalCard, setCopiedPortalCard] = useState(false);
+  const portalUrl = typeof window !== "undefined" ? `${window.location.origin}/portal/supplier` : "/portal/supplier";
 
   useEffect(() => {
     let cancelled = false;
+    setForm(supplierEditDraft(supplier));
     setLoading(true);
+    setDealingsLoading(true);
     setError(null);
+    setDealingsError(null);
     getSupplierCatalogue(supplier.id)
       .then((res) => {
         if (cancelled) return;
@@ -1267,56 +1324,371 @@ function SupplierCatalogueModal({ supplier, onClose }: { supplier: Rec; onClose:
       })
       .catch(() => { if (!cancelled) setError("Catalogue could not be loaded."); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    Promise.allSettled([
+      getProcurementOrders({ supplier_id: supplier.id }),
+      getProcurementInvoices(),
+      getProcurementRfqs(),
+    ])
+      .then(([ordersRes, invoicesRes, rfqsRes]) => {
+        if (cancelled) return;
+        if (ordersRes.status === "fulfilled" && Array.isArray(ordersRes.value.data)) setOrders(ordersRes.value.data);
+        else setDealingsError("Some supplier dealings could not be loaded.");
+
+        if (invoicesRes.status === "fulfilled" && Array.isArray(invoicesRes.value.data)) {
+          setInvoices(invoicesRes.value.data.filter((invoice) => invoice.supplier_id === supplier.id || tx(invoice.supplier_name, "").toLowerCase() === tx(supplier.supplier_name ?? supplier.name, "").toLowerCase()));
+        } else {
+          setDealingsError("Some supplier dealings could not be loaded.");
+        }
+
+        if (rfqsRes.status === "fulfilled" && Array.isArray(rfqsRes.value.data)) {
+          const supplierQuotes = rfqsRes.value.data.flatMap((rfq) => {
+            const responses = Array.isArray(rfq.responses) ? rfq.responses : [];
+            return responses
+              .filter((response: Rec) => response.supplier_id === supplier.id || tx(response.supplier_name, "").toLowerCase() === tx(supplier.supplier_name ?? supplier.name, "").toLowerCase())
+              .map((response: Rec) => ({
+                ...response,
+                rfq_number: rfq.rfq_number,
+                rfq_title: rfq.title,
+                closing_date: rfq.closing_date,
+              }));
+          });
+          setQuotes(supplierQuotes);
+        } else {
+          setDealingsError("Some supplier dealings could not be loaded.");
+        }
+      })
+      .catch(() => { if (!cancelled) setDealingsError("Supplier dealings could not be loaded."); })
+      .finally(() => { if (!cancelled) setDealingsLoading(false); });
     return () => { cancelled = true; };
-  }, [supplier.id]);
+  }, [supplier]);
+
+  const updateField = (field: keyof ReturnType<typeof supplierEditDraft>, value: string) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const save = async () => {
+    if (!form.supplier_name.trim()) { setError("Supplier name is required."); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      const payload: Record<string, unknown> = {
+        supplier_name: form.supplier_name.trim(),
+        supplier_code: form.supplier_code.trim() || null,
+        trading_name: form.trading_name.trim() || null,
+        registration_number: form.registration_number.trim() || null,
+        tax_number: form.tax_number.trim() || null,
+        praz_number: form.praz_number.trim() || null,
+        nssa_number: form.nssa_number.trim() || null,
+        primary_contact_name: form.primary_contact_name.trim() || null,
+        primary_contact_email: form.primary_contact_email.trim() || null,
+        primary_contact_phone: form.primary_contact_phone.trim() || null,
+        payment_terms_days: Number(form.payment_terms_days || 30),
+        currency: form.currency.trim() || "USD",
+        status: form.status,
+        compliance_status: form.compliance_status,
+        performance_score: form.performance_score === "" ? null : Number(form.performance_score),
+        on_time_delivery_pct: form.on_time_delivery_pct === "" ? null : Number(form.on_time_delivery_pct),
+      };
+      await updateSupplierRecord(supplier.id, payload);
+      onSaved({ ...supplier, ...payload });
+    } catch (e) {
+      setError(normalizeActionError(e, "Supplier could not be updated."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const issueLogin = async () => {
+    if (!form.primary_contact_email.trim()) {
+      setError("Add and save a primary contact email before issuing login details.");
+      return;
+    }
+    setIssuingLogin(true);
+    setError(null);
+    try {
+      const res = await issueSupplierPortalLogin(supplier.id);
+      if (!res.success || !res.data?.temporary_password) throw new Error("No password returned.");
+      onCredentials({ email: res.data.email, temporary_password: res.data.temporary_password });
+    } catch (e) {
+      setError(normalizeActionError(e, "Supplier portal login could not be issued."));
+    } finally {
+      setIssuingLogin(false);
+    }
+  };
+
+  const copyPortalCard = async () => {
+    const card = [
+      `Supplier portal: ${portalUrl}`,
+      `Supplier: ${form.supplier_name}`,
+      `Email: ${form.primary_contact_email || "Add contact email first"}`,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(card);
+      setCopiedPortalCard(true);
+      window.setTimeout(() => setCopiedPortalCard(false), 1800);
+    } catch {
+      setError("Could not copy portal details.");
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-2xl border border-ink-mid bg-ink shadow-2xl">
+      <div className="w-full max-w-6xl border border-ink-mid bg-ink shadow-2xl">
         <header className="flex items-center justify-between border-b border-ink-mid p-4">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Product Catalogue</p>
-            <h2 className="mt-1 text-lg font-semibold text-paper">{tx(supplier.name ?? supplier.supplier_name)}</h2>
-            <p className="mt-1 text-xs text-slate-light">Every item ever received against this supplier, built up automatically from receiving activity.</p>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Supplier 360</p>
+            <h2 className="mt-1 text-lg font-semibold text-paper">{tx(form.supplier_name)}</h2>
+            <p className="mt-1 text-xs text-slate-light">Profile, compliance status, portal access and receipt-backed catalogue in one place.</p>
           </div>
           <button onClick={onClose} className="border border-ink-mid p-2 text-slate-light hover:border-signal hover:text-paper"><X className="h-5 w-5" /></button>
         </header>
-        <div className="max-h-[70vh] overflow-y-auto p-4">
-          {loading ? (
-            <LoadingState label="Loading catalogue…" />
-          ) : error ? (
-            <Banner tone="error" message={error} />
-          ) : items.length === 0 ? (
-            <EmptyState label="No products received from this supplier yet." sub="Items appear here as soon as a stock receipt (manual or via a Goods Received Note) is tagged with this supplier." />
+        <div className="flex border-b border-ink-mid bg-ink-light/40">
+          {([
+            ["overview", "360 view"],
+            ["dealings", "Business dealings"],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              className={`h-11 border-r border-ink-mid px-4 font-mono text-[10px] font-bold uppercase tracking-wider ${activeTab === id ? "bg-signal text-ink" : "text-slate-light hover:bg-ink-light hover:text-paper"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="max-h-[76vh] overflow-y-auto p-4">
+          {error && <div className="mb-4"><Banner tone="error" message={error} /></div>}
+          {activeTab === "overview" ? (
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)]">
+            <section className="space-y-4">
+              <div className="border border-ink-mid bg-ink-light/40 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3 border-b border-ink-mid pb-3">
+                  <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-paper">Company and compliance</h3>
+                  <span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${supplierStatusClass(form.status)}`}>{form.status}</span>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <SupplierField label="Supplier name" value={form.supplier_name} onChange={(v) => updateField("supplier_name", v)} required />
+                  <SupplierField label="Supplier code" value={form.supplier_code} onChange={(v) => updateField("supplier_code", v)} />
+                  <SupplierField label="Trading name" value={form.trading_name} onChange={(v) => updateField("trading_name", v)} />
+                  <SupplierField label="Registration number" value={form.registration_number} onChange={(v) => updateField("registration_number", v)} />
+                  <SupplierField label="Tax clearance number" value={form.tax_number} onChange={(v) => updateField("tax_number", v)} />
+                  <SupplierField label="PRAZ number" value={form.praz_number} onChange={(v) => updateField("praz_number", v)} />
+                  <SupplierField label="NSSA number" value={form.nssa_number} onChange={(v) => updateField("nssa_number", v)} />
+                  <SupplierField label="Currency" value={form.currency} onChange={(v) => updateField("currency", v.toUpperCase().slice(0, 3))} />
+                  <SupplierSelect label="Supplier status" value={form.status} options={SUPPLIER_STATUSES} onChange={(v) => updateField("status", v)} />
+                  <SupplierSelect label="Compliance status" value={form.compliance_status} options={SUPPLIER_COMPLIANCE_STATUSES} onChange={(v) => updateField("compliance_status", v)} />
+                  <SupplierField label="Payment terms days" type="number" value={form.payment_terms_days} onChange={(v) => updateField("payment_terms_days", v)} />
+                  <SupplierField label="Performance score" type="number" value={form.performance_score} onChange={(v) => updateField("performance_score", v)} />
+                  <SupplierField label="On-time delivery %" type="number" value={form.on_time_delivery_pct} onChange={(v) => updateField("on_time_delivery_pct", v)} />
+                </div>
+              </div>
+
+              <div className="border border-ink-mid bg-ink-light/40 p-4">
+                <h3 className="mb-3 border-b border-ink-mid pb-3 font-mono text-xs font-bold uppercase tracking-widest text-paper">Primary contact</h3>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <SupplierField label="Contact name" value={form.primary_contact_name} onChange={(v) => updateField("primary_contact_name", v)} />
+                  <SupplierField label="Contact phone" value={form.primary_contact_phone} onChange={(v) => updateField("primary_contact_phone", v)} />
+                  <div className="md:col-span-2">
+                    <SupplierField label="Contact email" type="email" value={form.primary_contact_email} onChange={(v) => updateField("primary_contact_email", v)} />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="space-y-4">
+              <div className="border border-signal/30 bg-signal/5 p-4">
+                <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-paper">Supplier portal access</h3>
+                <p className="mt-2 text-xs leading-relaxed text-slate-light">Issue or reset login details for the supplier contact. The password is shown once so it can be copied and shared directly.</p>
+                <div className="mt-3 space-y-2 border border-ink-mid bg-ink p-3">
+                  <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Portal link</p>
+                  <p className="break-all font-mono text-xs text-paper">{portalUrl}</p>
+                  <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Login email</p>
+                  <p className="break-all font-mono text-xs text-paper">{form.primary_contact_email || "Add contact email first"}</p>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button onClick={() => void copyPortalCard()} className="inline-flex h-9 items-center gap-2 border border-ink-mid px-3 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper">
+                    <ClipboardList className="h-3.5 w-3.5" />{copiedPortalCard ? "Copied" : "Copy details"}
+                  </button>
+                  <button onClick={() => void issueLogin()} disabled={issuingLogin || !form.primary_contact_email.trim()} className="inline-flex h-9 items-center gap-2 bg-signal px-3 font-mono text-[10px] font-bold uppercase text-ink disabled:opacity-50">
+                    {issuingLogin ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}Issue login
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[640px] text-sm">
-                <thead>
-                  <tr className="border-b border-ink-mid bg-ink-light/50 text-left">
-                    {["Item", "Category", "UoM", "Receipts", "Total Qty Received", "Last Unit Cost", "Last Received"].map((h) => (
-                      <th key={h} className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-slate">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-mid">
-                  {items.map((item) => (
-                    <tr key={item.item_id}>
-                      <td className="px-3 py-2 text-paper">{tx(item.item_code)} — {tx(item.item_name)}</td>
-                      <td className="px-3 py-2 text-xs text-slate-light">{tx(item.category)}</td>
-                      <td className="px-3 py-2 text-xs text-slate-light">{tx(item.unit_of_measure)}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-paper">{num(item.receipt_count)}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-paper">{num(item.total_quantity_received)}</td>
-                      <td className="px-3 py-2 font-mono text-xs text-paper">{money(item.last_unit_cost ?? 0)}</td>
-                      <td className="px-3 py-2 text-xs text-slate-light">{item.last_received_at ? new Date(item.last_received_at).toLocaleDateString() : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <SupplierBusinessDealings
+              items={items}
+              loading={loading || dealingsLoading}
+              error={dealingsError}
+              orders={orders}
+              invoices={invoices}
+              quotes={quotes}
+            />
           )}
         </div>
+        <footer className="flex justify-end gap-3 border-t border-ink-mid p-4">
+          <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Close</button>
+          {activeTab === "overview" && (
+            <button onClick={() => void save()} disabled={saving} className="inline-flex h-10 items-center gap-2 bg-signal px-5 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}Save supplier
+            </button>
+          )}
+        </footer>
       </div>
     </div>
+  );
+}
+
+function SupplierBusinessDealings({
+  items,
+  loading,
+  error,
+  orders,
+  invoices,
+  quotes,
+}: {
+  items: Rec[];
+  loading: boolean;
+  error: string | null;
+  orders: Rec[];
+  invoices: Rec[];
+  quotes: Rec[];
+}) {
+  const poTotal = orders.reduce((sum, row) => sum + num(row.total_amount ?? row.amount ?? 0), 0);
+  const invoiceTotal = invoices.reduce((sum, row) => sum + num(row.total_amount ?? row.amount ?? 0), 0);
+  const receivedValue = items.reduce((sum, row) => sum + (num(row.total_quantity_received) * num(row.last_unit_cost ?? 0)), 0);
+  const selectedQuotes = quotes.filter((row) => tx(row.status, "").toLowerCase() === "selected").length;
+
+  if (loading) return <LoadingState label="Loading supplier dealings..." />;
+
+  return (
+    <div className="space-y-4">
+      {error && <Banner tone="info" message={error} />}
+      <div className="grid gap-3 md:grid-cols-4">
+        <SupplierDealMetric label="Purchase orders" value={String(orders.length)} detail={money(poTotal)} />
+        <SupplierDealMetric label="Invoices" value={String(invoices.length)} detail={money(invoiceTotal)} />
+        <SupplierDealMetric label="Quoted RFQs" value={String(quotes.length)} detail={`${selectedQuotes} selected`} />
+        <SupplierDealMetric label="Received catalogue" value={String(items.length)} detail={money(receivedValue)} />
+      </div>
+
+      <SupplierDealTable
+        title="Purchase orders"
+        empty="No purchase orders with this supplier yet."
+        headers={["PO", "Project", "Status", "Total", "Issued", "Expected"]}
+        rows={orders.map((row) => [
+          tx(row.po_number ?? row.reference_number, row.id?.slice(0, 8)),
+          tx(row.project_name ?? row.project),
+          tx(row.status),
+          money(row.total_amount ?? row.amount ?? 0),
+          dt(row.issued_at ?? row.created_at),
+          dt(row.expected_delivery_date ?? row.required_by_date),
+        ])}
+      />
+
+      <SupplierDealTable
+        title="Supplier invoices"
+        empty="No supplier invoices captured for this supplier yet."
+        headers={["Invoice", "Supplier ref", "PO", "Date", "Total", "Match", "Status"]}
+        rows={invoices.map((row) => [
+          tx(row.invoice_number ?? row.reference_number, row.id?.slice(0, 8)),
+          tx(row.supplier_invoice_ref ?? row.external_reference),
+          tx(row.po_number),
+          dt(row.invoice_date ?? row.created_at),
+          money(row.total_amount ?? row.amount ?? 0),
+          tx(row.match_status ?? row.matching_status),
+          tx(row.status),
+        ])}
+      />
+
+      <SupplierDealTable
+        title="RFQ quotations"
+        empty="No RFQ quotations recorded for this supplier yet."
+        headers={["RFQ", "Reference", "Amount", "Delivery", "Score", "Status"]}
+        rows={quotes.map((row) => [
+          tx(row.rfq_number ?? row.rfq_title),
+          tx(row.reference),
+          money(row.total_amount ?? 0),
+          row.delivery_days ? `${num(row.delivery_days)} days` : "-",
+          row.evaluation_score == null ? "-" : String(row.evaluation_score),
+          tx(row.status),
+        ])}
+      />
+
+      <SupplierDealTable
+        title="Received materials and tools"
+        empty="No stock has been received from this supplier yet."
+        headers={["Item", "Category", "Receipts", "Quantity", "Last cost", "Last received"]}
+        rows={items.map((row) => [
+          `${tx(row.item_code)} - ${tx(row.item_name)}`,
+          tx(row.category),
+          String(num(row.receipt_count)),
+          String(num(row.total_quantity_received)),
+          money(row.last_unit_cost ?? 0),
+          row.last_received_at ? new Date(row.last_received_at).toLocaleDateString() : "-",
+        ])}
+      />
+    </div>
+  );
+}
+
+function SupplierDealMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="border border-ink-mid bg-ink-light/40 p-3">
+      <p className="font-mono text-[10px] uppercase tracking-widest text-slate">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-paper">{value}</p>
+      <p className="mt-1 font-mono text-xs text-signal">{detail}</p>
+    </div>
+  );
+}
+
+function SupplierDealTable({ title, empty, headers, rows }: { title: string; empty: string; headers: string[]; rows: string[][] }) {
+  return (
+    <section className="border border-ink-mid bg-ink-light/40 p-4">
+      <h3 className="mb-3 border-b border-ink-mid pb-3 font-mono text-xs font-bold uppercase tracking-widest text-paper">{title}</h3>
+      {rows.length === 0 ? (
+        <EmptyState label={empty} sub="Activity will appear here once it is recorded in procurement." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead>
+              <tr className="border-b border-ink-mid bg-ink/60 text-left">
+                {headers.map((header) => <th key={header} className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-slate">{header}</th>)}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-mid">
+              {rows.map((row, rowIndex) => (
+                <tr key={`${title}-${rowIndex}`}>
+                  {row.map((cell, cellIndex) => (
+                    <td key={`${title}-${rowIndex}-${cellIndex}`} className={`px-3 py-2 ${cellIndex === 0 ? "text-paper" : "text-xs text-slate-light"}`}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SupplierField({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">{label}{required ? " *" : ""}</span>
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
+    </label>
+  );
+}
+
+function SupplierSelect({ label, value, options, onChange }: { label: string; value: string; options: readonly string[]; onChange: (value: string) => void; }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal">
+        {options.map((option) => <option key={option} value={option}>{option.replace("_", " ")}</option>)}
+      </select>
+    </label>
   );
 }
 
@@ -1437,12 +1809,32 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
 }
 
 function CredentialsIssuedModal({ credentials, onClose }: { credentials: { email: string; temporary_password: string }; onClose: () => void; }) {
+  const [copied, setCopied] = useState(false);
+  const portalUrl = typeof window !== "undefined" ? `${window.location.origin}/portal/supplier` : "/portal/supplier";
+  const copyLoginCard = async () => {
+    try {
+      await navigator.clipboard.writeText([
+        `Supplier portal: ${portalUrl}`,
+        `Email: ${credentials.email}`,
+        `Temporary password: ${credentials.temporary_password}`,
+      ].join("\n"));
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm">
       <div className="w-full max-w-md border border-signal/40 bg-ink p-5 shadow-2xl">
         <h2 className="text-xl font-semibold text-paper">Portal Login Issued</h2>
         <p className="mt-2 text-xs text-slate-light">Copy this password now and hand it to them directly — it will not be shown again, and they must change it on first login.</p>
         <div className="mt-4 space-y-2">
+          <div className="border border-ink-mid bg-ink-light p-2">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Supplier portal</p>
+            <p className="mt-1 break-all font-mono text-xs text-paper">{portalUrl}</p>
+          </div>
           <div className="border border-ink-mid bg-ink-light p-2">
             <p className="font-mono text-[10px] uppercase tracking-widest text-slate">Sign-in email</p>
             <p className="mt-1 break-all font-mono text-xs text-paper">{credentials.email}</p>
@@ -1452,7 +1844,10 @@ function CredentialsIssuedModal({ credentials, onClose }: { credentials: { email
             <p className="mt-1 break-all font-mono text-xs text-paper">{credentials.temporary_password}</p>
           </div>
         </div>
-        <button onClick={onClose} className="mt-5 h-10 w-full bg-signal font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90">Done</button>
+        <div className="mt-5 grid gap-2 sm:grid-cols-2">
+          <button onClick={() => void copyLoginCard()} className="h-10 border border-ink-mid font-mono text-xs font-bold uppercase text-paper hover:border-signal">{copied ? "Copied" : "Copy login"}</button>
+          <button onClick={onClose} className="h-10 bg-signal font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90">Done</button>
+        </div>
       </div>
     </div>
   );

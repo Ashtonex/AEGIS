@@ -14,6 +14,10 @@ INVENTORY_PAGE = (
 PROCUREMENT_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx"
 ).read_text()
+SUPPLIER_RECORDS = (ROOT / "routers" / "supplier_records.py").read_text()
+SUPPLIER_EDIT_PERMISSION_REPAIR = (
+    ROOT / "migrations" / "166_supplier_edit_permission_repair.sql"
+).read_text()
 USE_API_QUERIES_HOOK = (
     ROOT.parent / "aegis-web" / "src" / "hooks" / "useApiQueries.ts"
 ).read_text()
@@ -302,6 +306,31 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn('rfqs: "RFQs"', PROCUREMENT_PAGE)
         self.assertIn('orders: "Purchase orders"', PROCUREMENT_PAGE)
         self.assertIn('suppliers: "Suppliers"', PROCUREMENT_PAGE)
+
+    def test_supplier_360_allows_editing_and_portal_login_issue(self):
+        for marker in [
+            "Supplier360Modal",
+            "Supplier 360",
+            "Business dealings",
+            "SupplierBusinessDealings",
+            "updateSupplierRecord",
+            "issueSupplierPortalLogin",
+            "Issue login",
+            "Copy login",
+            "Purchase orders",
+            "Supplier invoices",
+            "RFQ quotations",
+            "Received materials and tools",
+        ]:
+            self.assertIn(marker, PROCUREMENT_PAGE + WEB_API)
+
+        self.assertIn('@router.post("/{item_id}/portal-login")', SUPPLIER_RECORDS)
+        self.assertIn("sync_supplier_subcontractor_bridge", SUPPLIER_RECORDS)
+        self.assertIn("ensure_supplier_subcontractor_bridge", SUPPLIER_RECORDS)
+        self.assertIn('user_has_permission(db, user, "settings.update")', SUPPLIER_RECORDS)
+        self.assertIn("'Executive (Admin)'", SUPPLIER_EDIT_PERMISSION_REPAIR)
+        self.assertIn("'Procurement Manager'", SUPPLIER_EDIT_PERMISSION_REPAIR)
+        self.assertIn("'supplier_records.update'", SUPPLIER_EDIT_PERMISSION_REPAIR)
 
 
 if __name__ == "__main__":

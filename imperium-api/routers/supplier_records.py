@@ -20,6 +20,127 @@ Module: supplier_records
 Description: Auto-generated CRUD endpoints for procurement.suppliers.
 """
 
+SUPPLIER_EDIT_COLUMNS = {
+    "supplier_name",
+    "supplier_code",
+    "trading_name",
+    "registration_number",
+    "tax_number",
+    "praz_number",
+    "nssa_number",
+    "primary_contact_name",
+    "primary_contact_email",
+    "primary_contact_phone",
+    "payment_terms_days",
+    "currency",
+    "status",
+    "compliance_status",
+    "performance_score",
+    "on_time_delivery_pct",
+}
+
+
+async def ensure_supplier_subcontractor_bridge(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    user_id: str,
+    supplier_id: str,
+) -> str:
+    row = await db.execute(
+        text("""
+            SELECT sc.id
+            FROM crm.subcontractors sc
+            WHERE sc.organization_id = :org_id
+              AND sc.linked_supplier_id = :supplier_id
+              AND sc.is_deleted = false
+            LIMIT 1
+        """),
+        {"org_id": org_id, "supplier_id": supplier_id},
+    )
+    existing_id = row.scalar()
+    if existing_id:
+        return str(existing_id)
+
+    supplier_row = await db.execute(
+        text("""
+            SELECT supplier_name, trading_name, registration_number, tax_number, praz_number, nssa_number,
+                   primary_contact_name, primary_contact_email, primary_contact_phone, compliance_status
+            FROM procurement.suppliers
+            WHERE id = :supplier_id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"org_id": org_id, "supplier_id": supplier_id},
+    )
+    supplier = supplier_row.first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    data = dict(supplier._mapping)
+    created = await db.execute(
+        text("""
+            INSERT INTO crm.subcontractors (
+                organization_id, created_by, name, registration_number, tax_clearance_number,
+                praz_number, nssa_number, contact_name, contact_email, contact_phone,
+                compliance_status, linked_supplier_id, submission_data
+            )
+            VALUES (
+                :org_id, :user_id, :name, :registration_number, :tax_clearance_number,
+                :praz_number, :nssa_number, :contact_name, :contact_email, :contact_phone,
+                :compliance_status, :supplier_id, CAST(:submission_data AS jsonb)
+            )
+            RETURNING id
+        """),
+        {
+            "org_id": org_id,
+            "user_id": user_id,
+            "name": data.get("supplier_name") or data.get("trading_name") or "Supplier",
+            "registration_number": data.get("registration_number"),
+            "tax_clearance_number": data.get("tax_number"),
+            "praz_number": data.get("praz_number"),
+            "nssa_number": data.get("nssa_number"),
+            "contact_name": data.get("primary_contact_name"),
+            "contact_email": data.get("primary_contact_email"),
+            "contact_phone": data.get("primary_contact_phone"),
+            "compliance_status": data.get("compliance_status") or "pending",
+            "supplier_id": supplier_id,
+            "submission_data": "{}",
+        },
+    )
+    return str(created.scalar())
+
+
+async def sync_supplier_subcontractor_bridge(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    user_id: str,
+    supplier_id: str,
+) -> None:
+    subcontractor_id = await ensure_supplier_subcontractor_bridge(
+        db, org_id=org_id, user_id=user_id, supplier_id=supplier_id
+    )
+    await db.execute(
+        text("""
+            UPDATE crm.subcontractors sc
+            SET name = COALESCE(s.supplier_name, sc.name),
+                registration_number = COALESCE(s.registration_number, sc.registration_number),
+                tax_clearance_number = COALESCE(s.tax_number, sc.tax_clearance_number),
+                praz_number = COALESCE(s.praz_number, sc.praz_number),
+                nssa_number = COALESCE(s.nssa_number, sc.nssa_number),
+                contact_name = COALESCE(s.primary_contact_name, sc.contact_name),
+                contact_email = COALESCE(s.primary_contact_email, sc.contact_email),
+                contact_phone = COALESCE(s.primary_contact_phone, sc.contact_phone),
+                compliance_status = COALESCE(s.compliance_status, sc.compliance_status),
+                updated_at = NOW()
+            FROM procurement.suppliers s
+            WHERE sc.id = :subcontractor_id
+              AND sc.organization_id = :org_id
+              AND s.id = :supplier_id
+              AND s.organization_id = :org_id
+        """),
+        {"org_id": org_id, "supplier_id": supplier_id, "subcontractor_id": subcontractor_id},
+    )
+
 
 @router.get("/")
 async def list_items(
@@ -193,7 +314,9 @@ async def update_item(
     _: dict = Depends(require_permission("supplier_records.update")),
 ):
     payload = await request.json()
-    safe_keys = safe_payload_columns(payload.keys())
+    safe_keys = [
+        key for key in safe_payload_columns(payload.keys()) if key in SUPPLIER_EDIT_COLUMNS
+    ]
 
     if not safe_keys:
         return {
@@ -213,6 +336,9 @@ async def update_item(
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
 
+        await sync_supplier_subcontractor_bridge(
+            db, org_id=user["org_id"], user_id=user["sub"], supplier_id=item_id
+        )
         await db.commit()
         return {
             "success": True,
@@ -225,6 +351,86 @@ async def update_item(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post("/{item_id}/portal-login")
+async def issue_supplier_portal_login(
+    item_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("supplier_records.update")),
+):
+    if not await user_has_permission(db, user, "settings.update"):
+        raise HTTPException(
+            status_code=403,
+            detail="Issuing supplier portal logins requires settings.update.",
+        )
+
+    supplier_row = await db.execute(
+        text("""
+            SELECT supplier_name, primary_contact_name, primary_contact_email
+            FROM procurement.suppliers
+            WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"item_id": item_id, "org_id": user["org_id"]},
+    )
+    supplier = supplier_row.first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    supplier_data = dict(supplier._mapping)
+    email = supplier_data.get("primary_contact_email")
+    if not email:
+        raise HTTPException(
+            status_code=422,
+            detail="Add a primary contact email before issuing supplier portal login details.",
+        )
+
+    try:
+        subcontractor_id = await ensure_supplier_subcontractor_bridge(
+            db, org_id=user["org_id"], user_id=user["sub"], supplier_id=item_id
+        )
+        portal_user_id, temp_password = await provision_portal_user(
+            db,
+            org_id=user["org_id"],
+            email=email,
+            full_name=supplier_data.get("primary_contact_name")
+            or supplier_data.get("supplier_name")
+            or "Supplier contact",
+            account_type="supplier",
+        )
+        await db.execute(
+            text("""
+                INSERT INTO crm.supplier_portal_access (user_id, organization_id, subcontractor_id, is_active)
+                VALUES (:user_id, :org_id, :subcontractor_id, true)
+                ON CONFLICT (user_id, organization_id) DO UPDATE SET
+                    subcontractor_id=EXCLUDED.subcontractor_id, is_active=true, updated_at=NOW()
+            """),
+            {
+                "user_id": portal_user_id,
+                "org_id": user["org_id"],
+                "subcontractor_id": subcontractor_id,
+            },
+        )
+        await db.commit()
+    except HTTPException:
+        await db.rollback()
+        raise
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Portal login could not be issued: {str(e)}")
+
+    return {
+        "success": True,
+        "data": {
+            "id": item_id,
+            "email": email,
+            "temporary_password": temp_password,
+            "portal_path": "/portal/supplier",
+        },
+        "message": "Supplier portal login issued.",
+        "meta": {},
+    }
 
 
 @router.delete("/{item_id}")
