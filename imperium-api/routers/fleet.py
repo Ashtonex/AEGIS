@@ -85,14 +85,43 @@ class AssetPayload(Payload):
     vehicle_registration: str = Field(min_length=1, max_length=50)
     vehicle_type: Optional[str] = Field(default=None, max_length=100)
     asset_code: Optional[str] = Field(default=None, max_length=80)
-    ownership_type: Literal["owned", "leased", "rented", "subcontracted"] = "owned"
+    ownership_type: Literal["owned", "leased", "hired_in", "financed", "rented", "subcontracted"] = "owned"
     operational_status: Literal[
-        "available", "assigned", "in_service", "out_of_service", "retired"
+        "available",
+        "reserved",
+        "mobilisation_pending",
+        "deployed",
+        "operating",
+        "idle_on_site",
+        "under_inspection",
+        "scheduled_maintenance",
+        "breakdown",
+        "under_repair",
+        "awaiting_parts",
+        "hired_out",
+        "hired_in",
+        "quarantined",
+        "decommissioned",
+        "disposed",
+        "assigned",
+        "in_service",
+        "out_of_service",
+        "retired",
     ] = "available"
+    asset_category: Optional[str] = Field(default=None, max_length=80)
+    asset_type: Optional[str] = Field(default=None, max_length=120)
     make: Optional[str] = Field(default=None, max_length=100)
     model: Optional[str] = Field(default=None, max_length=100)
     model_year: Optional[int] = Field(default=None, ge=1900, le=2200)
     vin: Optional[str] = Field(default=None, max_length=80)
+    serial_number: Optional[str] = Field(default=None, max_length=120)
+    chassis_number: Optional[str] = Field(default=None, max_length=120)
+    supplier_id: Optional[UUID] = None
+    supplier_name: Optional[str] = Field(default=None, max_length=255)
+    purchase_date: Optional[date] = None
+    acquisition_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    current_book_value: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    useful_life_months: Optional[int] = Field(default=None, gt=0)
     odometer_km: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=14, decimal_places=2
     )
@@ -101,7 +130,27 @@ class AssetPayload(Payload):
     )
     capacity_description: Optional[str] = Field(default=None, max_length=160)
     home_location: Optional[str] = Field(default=None, max_length=255)
+    current_location: Optional[str] = Field(default=None, max_length=255)
+    responsible_custodian: Optional[str] = Field(default=None, max_length=255)
+    meter_type: Literal["kilometres", "engine_hours", "cycles"] = "engine_hours"
+    current_meter_reading: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     acquired_on: Optional[date] = None
+    insurance_provider: Optional[str] = Field(default=None, max_length=160)
+    insurance_policy_number: Optional[str] = Field(default=None, max_length=160)
+    insurance_expiry_date: Optional[date] = None
+    licence_number: Optional[str] = Field(default=None, max_length=160)
+    licence_expiry_date: Optional[date] = None
+    warranty_provider: Optional[str] = Field(default=None, max_length=160)
+    warranty_expiry_date: Optional[date] = None
+    photo_urls: list[str] = Field(default_factory=list)
+    qr_code_value: Optional[str] = Field(default=None, max_length=255)
+    barcode_value: Optional[str] = Field(default=None, max_length=255)
+    disposal_status: Literal["in_service", "marked_for_disposal", "under_disposal", "disposed"] = "in_service"
+    disposal_date: Optional[date] = None
+    finance_provider: Optional[str] = Field(default=None, max_length=160)
+    lease_contract_reference: Optional[str] = Field(default=None, max_length=160)
+    expected_replacement_date: Optional[date] = None
+    replacement_reason: Optional[str] = None
     retired_on: Optional[date] = None
     notes: Optional[str] = None
     owning_department_id: Optional[UUID] = None
@@ -125,6 +174,8 @@ class AssetPayload(Payload):
     def valid_dates(self):
         if self.acquired_on and self.retired_on and self.retired_on < self.acquired_on:
             raise ValueError("retired_on cannot precede acquired_on")
+        if self.acquired_on and self.disposal_date and self.disposal_date < self.acquired_on:
+            raise ValueError("disposal_date cannot precede acquired_on")
         return self
 
 
@@ -170,9 +221,23 @@ class AssignmentPayload(Payload):
 
 class InspectionPayload(Payload):
     fleet_id: UUID
-    inspection_type: Literal["pre_start", "post_trip", "scheduled", "compliance"]
+    inspection_type: Literal[
+        "pre_start",
+        "post_operation",
+        "post_trip",
+        "weekly",
+        "mobilisation",
+        "demobilisation",
+        "maintenance",
+        "accident",
+        "hired_in",
+        "statutory",
+        "scheduled",
+        "compliance",
+    ]
     inspected_at: Optional[datetime] = None
     outcome: Literal["pass", "conditional", "fail"]
+    severity: Optional[Literal["minor", "moderate", "critical", "catastrophic"]] = None
     odometer_km: Optional[Decimal] = Field(
         default=None, ge=0, max_digits=14, decimal_places=2
     )
@@ -188,12 +253,12 @@ class DefectPayload(Payload):
     inspection_id: Optional[UUID] = None
     defect_reference: Optional[str] = Field(default=None, max_length=100)
     title: str = Field(min_length=1, max_length=255)
-    severity: Literal["low", "medium", "high", "critical"]
+    severity: Literal["low", "medium", "high", "minor", "moderate", "critical", "catastrophic"]
     description: Optional[str] = None
 
 
 class DefectDecision(Payload):
-    status: Literal["triaged", "in_repair", "resolved", "deferred"]
+    status: Literal["triaged", "in_repair", "resolved", "deferred", "supervisor_approval", "asset_locked", "escalated"]
     resolution_notes: Optional[str] = None
 
 
@@ -212,7 +277,19 @@ class WorkOrderPayload(Payload):
 
 
 class WorkOrderDecision(Payload):
-    status: Literal["scheduled", "in_progress", "completed", "cancelled"]
+    status: Literal[
+        "reported",
+        "assessed",
+        "awaiting_approval",
+        "awaiting_parts",
+        "scheduled",
+        "in_progress",
+        "testing",
+        "completed",
+        "returned_to_service",
+        "closed",
+        "cancelled",
+    ]
     actual_cost: Optional[Decimal] = Field(
         default=None, ge=0, max_digits=15, decimal_places=2
     )
@@ -238,6 +315,13 @@ class FuelPayload(Payload):
     )
     supplier_name: Optional[str] = Field(default=None, max_length=255)
     receipt_reference: Optional[str] = Field(default=None, max_length=120)
+    storage_tank: Optional[str] = Field(default=None, max_length=120)
+    issued_to_operator_employee_id: Optional[UUID] = None
+    cost_centre: Optional[str] = Field(default=None, max_length=120)
+    receiver_signature: Optional[str] = None
+    tank_balance_after: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    actual_consumption_litres: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    duplicate_slip_hash: Optional[str] = Field(default=None, max_length=160)
     expected_consumption_litres: Optional[Decimal] = Field(
         default=None, ge=0, max_digits=14, decimal_places=3
     )
@@ -306,6 +390,19 @@ class MeterReadingPayload(Payload):
     )
     fuel_unit_cost: Optional[Decimal] = Field(
         default=None, ge=0, max_digits=15, decimal_places=4
+    )
+    expected_consumption_litres: Optional[Decimal] = Field(
+        default=None, ge=0, max_digits=14, decimal_places=3
+    )
+    actual_consumption_litres: Optional[Decimal] = Field(
+        default=None, ge=0, max_digits=14, decimal_places=3
+    )
+    storage_tank: Optional[str] = Field(default=None, max_length=120)
+    receipt_reference: Optional[str] = Field(default=None, max_length=120)
+    cost_centre: Optional[str] = Field(default=None, max_length=120)
+    receiver_signature: Optional[str] = None
+    tank_balance_after: Optional[Decimal] = Field(
+        default=None, ge=0, max_digits=14, decimal_places=3
     )
     productive_hours: Optional[Decimal] = Field(
         default=None, ge=0, le=24, max_digits=10, decimal_places=2
@@ -550,6 +647,66 @@ class PlantFinancialClosurePayload(Payload):
     )
     invoice_reference: Optional[str] = Field(default=None, max_length=120)
     finance_notes: Optional[str] = None
+
+
+class OperatorProfilePayload(Payload):
+    employee_id: Optional[UUID] = None
+    contractor_name: Optional[str] = Field(default=None, max_length=255)
+    assigned_asset_types: list[str] = Field(default_factory=list)
+    licence_classes: list[str] = Field(default_factory=list)
+    operator_certificates: list[dict] = Field(default_factory=list)
+    training_records: list[dict] = Field(default_factory=list)
+    medical_clearance_expiry: Optional[date] = None
+    competency_status: Literal["pending", "competent", "restricted", "expired", "suspended"] = "pending"
+    current_assignment_id: Optional[UUID] = None
+    incident_count: int = Field(default=0, ge=0)
+    performance_score: Optional[Decimal] = Field(
+        default=None, ge=0, le=100, max_digits=5, decimal_places=2
+    )
+    performance_history: list[dict] = Field(default_factory=list)
+    incidents_and_violations: list[dict] = Field(default_factory=list)
+    suspended: bool = False
+    notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def has_identity(self):
+        if not self.employee_id and not self.contractor_name:
+            raise ValueError("employee_id or contractor_name is required")
+        return self
+
+
+class ExternalHireAgreementPayload(Payload):
+    plant_request_id: Optional[UUID] = None
+    customer_id: Optional[UUID] = None
+    customer_name: Optional[str] = Field(default=None, max_length=255)
+    hire_agreement_number: Optional[str] = Field(default=None, max_length=120)
+    status: Literal[
+        "enquiry",
+        "quoted",
+        "approved",
+        "agreement_signed",
+        "deposit_pending",
+        "dispatched",
+        "active",
+        "off_hire_requested",
+        "returned",
+        "invoice_instruction",
+        "debtor_follow_up",
+        "closed",
+        "cancelled",
+    ] = "enquiry"
+    hire_type: Literal["dry_hire", "wet_hire", "hourly", "daily", "weekly_monthly", "output_based"] = "wet_hire"
+    rate_card: dict = Field(default_factory=dict)
+    deposit_required: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    fuel_responsibility: Literal["snc", "project", "client"] = "client"
+    mobilisation_charge: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    demobilisation_charge: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    standing_time_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    overtime_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    damage_recovery_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    invoice_instruction: Optional[str] = None
+    debtor_follow_up_status: Literal["not_started", "pending", "contacted", "disputed", "paid", "escalated", "closed"] = "not_started"
+    debtor_follow_up_notes: Optional[str] = None
 
 
 def result(data, message: str, total: Optional[int] = None):
@@ -825,7 +982,7 @@ async def list_assets(user: dict = Depends(require_permission("fleet.read")), db
           SELECT COALESCE(SUM(actual_cost), 0) AS maintenance_cost_month
           FROM fleet.maintenance_work_orders wo
           WHERE wo.fleet_id=f.id AND wo.organization_id=f.organization_id AND wo.is_deleted=false
-            AND wo.status='completed' AND wo.completed_at >= date_trunc('month', CURRENT_DATE)
+            AND wo.status IN ('completed','returned_to_service','closed') AND wo.completed_at >= date_trunc('month', CURRENT_DATE)
         ) maint ON true
         WHERE f.organization_id=:org_id AND f.is_deleted=false ORDER BY f.asset_code NULLS LAST, f.vehicle_registration LIMIT 500"""),
         {"org_id": user["org_id"]},
@@ -841,12 +998,32 @@ async def create_asset(
     db: AsyncSession = Depends(get_db),
 ):
     try:
+        params = payload.model_dump()
+        params["photo_urls"] = json.dumps(params.get("photo_urls") or [])
         new_id = (
             await db.execute(
-                text("""INSERT INTO fleet.fleet (organization_id,created_by,vehicle_registration,vehicle_type,asset_code,ownership_type,operational_status,make,model,model_year,vin,odometer_km,engine_hours,capacity_description,home_location,acquired_on,retired_on,notes,owning_department_id,hourly_charge_rate,hourly_operating_cost,idle_hour_cost,monthly_ownership_cost)
-           VALUES (:org_id,:user_id,:vehicle_registration,:vehicle_type,:asset_code,:ownership_type,:operational_status,:make,:model,:model_year,:vin,:odometer_km,:engine_hours,:capacity_description,:home_location,:acquired_on,:retired_on,:notes,:owning_department_id,:hourly_charge_rate,:hourly_operating_cost,:idle_hour_cost,:monthly_ownership_cost) RETURNING id"""),
+                text("""INSERT INTO fleet.fleet (
+                    organization_id,created_by,vehicle_registration,vehicle_type,asset_code,ownership_type,operational_status,
+                    asset_category,asset_type,make,model,model_year,vin,serial_number,chassis_number,supplier_id,supplier_name,
+                    purchase_date,acquisition_cost,current_book_value,useful_life_months,odometer_km,engine_hours,
+                    capacity_description,home_location,current_location,responsible_custodian,meter_type,current_meter_reading,
+                    acquired_on,insurance_provider,insurance_policy_number,insurance_expiry_date,licence_number,licence_expiry_date,
+                    warranty_provider,warranty_expiry_date,photo_urls,qr_code_value,barcode_value,disposal_status,disposal_date,
+                    finance_provider,lease_contract_reference,expected_replacement_date,replacement_reason,retired_on,notes,
+                    owning_department_id,hourly_charge_rate,hourly_operating_cost,idle_hour_cost,monthly_ownership_cost
+                )
+                VALUES (
+                    :org_id,:user_id,:vehicle_registration,:vehicle_type,:asset_code,:ownership_type,:operational_status,
+                    :asset_category,:asset_type,:make,:model,:model_year,:vin,:serial_number,:chassis_number,:supplier_id,:supplier_name,
+                    :purchase_date,:acquisition_cost,:current_book_value,:useful_life_months,:odometer_km,:engine_hours,
+                    :capacity_description,:home_location,:current_location,:responsible_custodian,:meter_type,:current_meter_reading,
+                    :acquired_on,:insurance_provider,:insurance_policy_number,:insurance_expiry_date,:licence_number,:licence_expiry_date,
+                    :warranty_provider,:warranty_expiry_date,CAST(:photo_urls AS jsonb),:qr_code_value,:barcode_value,:disposal_status,:disposal_date,
+                    :finance_provider,:lease_contract_reference,:expected_replacement_date,:replacement_reason,:retired_on,:notes,
+                    :owning_department_id,:hourly_charge_rate,:hourly_operating_cost,:idle_hour_cost,:monthly_ownership_cost
+                ) RETURNING id"""),
                 {
-                    **payload.model_dump(),
+                    **params,
                     "org_id": user["org_id"],
                     "user_id": user["sub"],
                 },
@@ -875,6 +1052,8 @@ async def update_asset(
     values = payload.model_dump(exclude_unset=True)
     if not values:
         return result({"id": str(fleet_id)}, "No fields to update.")
+    if "photo_urls" in values:
+        values["photo_urls"] = json.dumps(values["photo_urls"] or [])
     try:
         safe_keys = safe_payload_columns(values.keys())
         await db.execute(
@@ -884,6 +1063,7 @@ async def update_asset(
                 AssetUpdate.model_fields,
                 id_param="fleet_id",
                 require_not_deleted=False,
+                casts={"photo_urls": "jsonb"},
             ),
             {**values, "fleet_id": fleet_id, "org_id": user["org_id"]},
         )
@@ -905,6 +1085,159 @@ async def list_assignments(user: dict = Depends(require_permission("fleet.read")
         {"org_id": user["org_id"]},
     )
     return result([dict(r._mapping) for r in rows], "Assignments listed.")
+
+
+@router.get("/operator-profiles")
+async def list_operator_profiles(
+    user: dict = Depends(require_permission("fleet.operator_profiles.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await db.execute(
+        text("""
+            SELECT op.*, e.employee_name, e.employee_number
+            FROM fleet.operator_profiles op
+            LEFT JOIN hr.employees e ON e.id=op.employee_id AND e.organization_id=op.organization_id
+            WHERE op.organization_id=:org_id AND op.is_deleted=false
+            ORDER BY op.suspended ASC, op.competency_status, COALESCE(e.employee_name, op.contractor_name)
+            LIMIT 500
+        """),
+        {"org_id": user["org_id"]},
+    )
+    return result([dict(row._mapping) for row in rows], "Operator profiles listed.")
+
+
+@router.post("/operator-profiles", status_code=status.HTTP_201_CREATED)
+async def create_operator_profile(
+    payload: OperatorProfilePayload,
+    user: dict = Depends(require_permission("fleet.operator_profiles.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    await tenant_reference(db, "hr.employees", payload.employee_id, user["org_id"], "Employee")
+    await tenant_reference(db, "fleet.fleet_assignments", payload.current_assignment_id, user["org_id"], "Assignment")
+    row = await db.execute(
+        text("""
+            INSERT INTO fleet.operator_profiles (
+                organization_id, employee_id, contractor_name, assigned_asset_types, licence_classes,
+                operator_certificates, training_records, medical_clearance_expiry, competency_status,
+                current_assignment_id, incident_count, performance_score, performance_history, incidents_and_violations, suspended, notes, created_by
+            ) VALUES (
+                :org_id, :employee_id, :contractor_name, :assigned_asset_types, :licence_classes,
+                CAST(:operator_certificates AS jsonb), CAST(:training_records AS jsonb), :medical_clearance_expiry, :competency_status,
+                :current_assignment_id, :incident_count, :performance_score, CAST(:performance_history AS jsonb), CAST(:incidents_and_violations AS jsonb), :suspended, :notes, :user_id
+            )
+            RETURNING id
+        """),
+        {
+            **payload.model_dump(),
+            "operator_certificates": json.dumps(payload.operator_certificates),
+            "training_records": json.dumps(payload.training_records),
+            "performance_history": json.dumps(payload.performance_history),
+            "incidents_and_violations": json.dumps(payload.incidents_and_violations),
+            "org_id": user["org_id"],
+            "user_id": user["sub"],
+        },
+    )
+    await db.commit()
+    return result({"id": str(row.scalar())}, "Operator profile created.")
+
+
+@router.patch("/operator-profiles/{profile_id}")
+async def update_operator_profile(
+    profile_id: UUID,
+    payload: OperatorProfilePayload,
+    user: dict = Depends(require_permission("fleet.operator_profiles.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    await tenant_reference(db, "hr.employees", payload.employee_id, user["org_id"], "Employee")
+    await tenant_reference(db, "fleet.fleet_assignments", payload.current_assignment_id, user["org_id"], "Assignment")
+    updated = await db.execute(
+        text("""
+            UPDATE fleet.operator_profiles
+            SET employee_id=:employee_id,
+                contractor_name=:contractor_name,
+                assigned_asset_types=:assigned_asset_types,
+                licence_classes=:licence_classes,
+                operator_certificates=CAST(:operator_certificates AS jsonb),
+                training_records=CAST(:training_records AS jsonb),
+                medical_clearance_expiry=:medical_clearance_expiry,
+                competency_status=:competency_status,
+                current_assignment_id=:current_assignment_id,
+                incident_count=:incident_count,
+                performance_score=:performance_score,
+                performance_history=CAST(:performance_history AS jsonb),
+                incidents_and_violations=CAST(:incidents_and_violations AS jsonb),
+                suspended=:suspended,
+                notes=:notes,
+                updated_at=NOW()
+            WHERE id=:profile_id AND organization_id=:org_id AND is_deleted=false
+            RETURNING id
+        """),
+        {
+            **payload.model_dump(),
+            "operator_certificates": json.dumps(payload.operator_certificates),
+            "training_records": json.dumps(payload.training_records),
+            "performance_history": json.dumps(payload.performance_history),
+            "incidents_and_violations": json.dumps(payload.incidents_and_violations),
+            "profile_id": profile_id,
+            "org_id": user["org_id"],
+        },
+    )
+    if not updated.scalar():
+        raise HTTPException(status_code=404, detail="Operator profile not found")
+    await db.commit()
+    return result({"id": str(profile_id)}, "Operator profile updated.")
+
+
+@router.get("/external-hire-agreements")
+async def list_external_hire_agreements(
+    user: dict = Depends(require_permission("fleet.external_hire.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await db.execute(
+        text("""
+            SELECT eha.*, pr.request_number, pr.required_asset_type, pr.work_location
+            FROM fleet.external_hire_agreements eha
+            LEFT JOIN fleet.plant_requests pr ON pr.id=eha.plant_request_id AND pr.organization_id=eha.organization_id
+            WHERE eha.organization_id=:org_id AND eha.is_deleted=false
+            ORDER BY eha.updated_at DESC
+            LIMIT 500
+        """),
+        {"org_id": user["org_id"]},
+    )
+    return result([dict(row._mapping) for row in rows], "External hire agreements listed.")
+
+
+@router.post("/external-hire-agreements", status_code=status.HTTP_201_CREATED)
+async def create_external_hire_agreement(
+    payload: ExternalHireAgreementPayload,
+    user: dict = Depends(require_permission("fleet.external_hire.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    await tenant_reference(db, "fleet.plant_requests", payload.plant_request_id, user["org_id"], "Plant request")
+    await tenant_reference(db, "crm.contacts", payload.customer_id, user["org_id"], "Customer")
+    row = await db.execute(
+        text("""
+            INSERT INTO fleet.external_hire_agreements (
+                organization_id, plant_request_id, customer_id, customer_name, hire_agreement_number, status, hire_type, rate_card,
+                deposit_required, fuel_responsibility, mobilisation_charge, demobilisation_charge,
+                standing_time_rate, overtime_rate, damage_recovery_amount, invoice_instruction,
+                debtor_follow_up_status, debtor_follow_up_notes, created_by
+            ) VALUES (
+                :org_id, :plant_request_id, :customer_id, :customer_name, :hire_agreement_number, :status, :hire_type, CAST(:rate_card AS jsonb),
+                :deposit_required, :fuel_responsibility, :mobilisation_charge, :demobilisation_charge,
+                :standing_time_rate, :overtime_rate, :damage_recovery_amount, :invoice_instruction,
+                :debtor_follow_up_status, :debtor_follow_up_notes, :user_id
+            ) RETURNING id
+        """),
+        {
+            **payload.model_dump(),
+            "rate_card": json.dumps(payload.rate_card),
+            "org_id": user["org_id"],
+            "user_id": user["sub"],
+        },
+    )
+    await db.commit()
+    return result({"id": str(row.scalar())}, "External hire agreement created.")
 
 
 @router.post("/assignments", status_code=status.HTTP_201_CREATED)
@@ -995,7 +1328,7 @@ async def create_assignment(
         await db.execute(
             text("""
             UPDATE fleet.fleet
-            SET operational_status=CASE WHEN :status='active' THEN 'in_service' ELSE 'assigned' END,
+            SET operational_status=CASE WHEN :status='active' THEN 'operating' ELSE 'deployed' END,
                 current_project_id=:project_id,
                 current_assignment_id=:assignment_id,
                 updated_at=NOW()
@@ -1028,22 +1361,23 @@ async def create_inspection(
 ):
     await asset_or_404(db, payload.fleet_id, user["org_id"])
     row = await db.execute(
-        text("""INSERT INTO fleet.fleet_inspections (organization_id,fleet_id,inspection_type,inspected_at,inspector_id,outcome,odometer_km,engine_hours,checklist,notes,created_by)
-        VALUES (:org_id,:fleet_id,:inspection_type,COALESCE(:inspected_at,NOW()),:user_id,:outcome,:odometer_km,:engine_hours,CAST(:checklist AS jsonb),:notes,:user_id) RETURNING id"""),
+        text("""INSERT INTO fleet.fleet_inspections (organization_id,fleet_id,inspection_type,inspected_at,inspector_id,outcome,severity,odometer_km,engine_hours,checklist,notes,return_to_service_required,created_by)
+        VALUES (:org_id,:fleet_id,:inspection_type,COALESCE(:inspected_at,NOW()),:user_id,:outcome,:severity,:odometer_km,:engine_hours,CAST(:checklist AS jsonb),:notes,:return_to_service_required,:user_id) RETURNING id"""),
         {
             **payload.model_dump(),
             "checklist": json.dumps(payload.checklist),
+            "return_to_service_required": payload.outcome == "fail" or payload.severity in ("critical", "catastrophic"),
             "org_id": user["org_id"],
             "user_id": user["sub"],
         },
     )
     inspection_id = row.scalar()
-    if payload.outcome == "fail":
+    if payload.outcome == "fail" or payload.severity in ("critical", "catastrophic"):
         await db.execute(
             text(
-                "UPDATE fleet.fleet SET operational_status='out_of_service', updated_at=NOW() WHERE id=:fleet_id AND organization_id=:org_id"
+                "UPDATE fleet.fleet SET operational_status=CASE WHEN :severity='catastrophic' THEN 'breakdown' ELSE 'quarantined' END, updated_at=NOW() WHERE id=:fleet_id AND organization_id=:org_id"
             ),
-            {"fleet_id": payload.fleet_id, "org_id": user["org_id"]},
+            {"fleet_id": payload.fleet_id, "severity": payload.severity, "org_id": user["org_id"]},
         )
     await emit_event(
         db,
@@ -1073,18 +1407,37 @@ async def create_defect(
         user["org_id"],
         "Inspection",
     )
+    system_action = {
+        "minor": "corrective_task",
+        "moderate": "supervisor_approval",
+        "critical": "lock_asset",
+        "catastrophic": "management_escalation",
+    }.get(payload.severity)
+    initial_status = {
+        "moderate": "supervisor_approval",
+        "critical": "asset_locked",
+        "catastrophic": "escalated",
+    }.get(payload.severity, "open")
     row = await db.execute(
-        text("""INSERT INTO fleet.fleet_defects (organization_id,fleet_id,inspection_id,defect_reference,title,severity,description,reported_by)
-        VALUES (:org_id,:fleet_id,:inspection_id,:defect_reference,:title,:severity,:description,:user_id) RETURNING id"""),
-        {**payload.model_dump(), "org_id": user["org_id"], "user_id": user["sub"]},
+        text("""INSERT INTO fleet.fleet_defects (organization_id,fleet_id,inspection_id,defect_reference,title,severity,status,description,system_action,supervisor_approval_required,locked_asset,reported_by)
+        VALUES (:org_id,:fleet_id,:inspection_id,:defect_reference,:title,:severity,:status,:description,:system_action,:supervisor_approval_required,:locked_asset,:user_id) RETURNING id"""),
+        {
+            **payload.model_dump(),
+            "status": initial_status,
+            "system_action": system_action,
+            "supervisor_approval_required": payload.severity == "moderate",
+            "locked_asset": payload.severity in ("critical", "catastrophic"),
+            "org_id": user["org_id"],
+            "user_id": user["sub"],
+        },
     )
     defect_id = row.scalar()
-    if payload.severity in ("high", "critical"):
+    if payload.severity in ("high", "critical", "catastrophic"):
         await db.execute(
             text(
-                "UPDATE fleet.fleet SET operational_status='out_of_service', updated_at=NOW() WHERE id=:fleet_id AND organization_id=:org_id"
+                "UPDATE fleet.fleet SET operational_status=CASE WHEN :severity='catastrophic' THEN 'breakdown' ELSE 'quarantined' END, updated_at=NOW() WHERE id=:fleet_id AND organization_id=:org_id"
             ),
-            {"fleet_id": payload.fleet_id, "org_id": user["org_id"]},
+            {"fleet_id": payload.fleet_id, "severity": payload.severity, "org_id": user["org_id"]},
         )
     await emit_event(
         db,
@@ -1280,14 +1633,47 @@ async def record_fuel(
         if payload.expected_consumption_litres is not None
         else None
     )
+    litres_per_hour = None
+    if payload.actual_consumption_litres is not None:
+        hours_row = await db.execute(
+            text("""
+                SELECT operating_hours
+                FROM fleet.utilization_logs
+                WHERE organization_id=:org_id
+                  AND fleet_id=:fleet_id
+                  AND (CAST(:assignment_id AS uuid) IS NULL OR assignment_id=:assignment_id)
+                  AND is_deleted=false
+                ORDER BY occurred_on DESC, created_at DESC
+                LIMIT 1
+            """),
+            {
+                "org_id": user["org_id"],
+                "fleet_id": payload.fleet_id,
+                "assignment_id": payload.assignment_id,
+            },
+        )
+        latest_hours = hours_row.scalar()
+        if latest_hours and Decimal(str(latest_hours)) > Decimal("0"):
+            litres_per_hour = (payload.actual_consumption_litres / Decimal(str(latest_hours))).quantize(Decimal("0.001"))
     row = await db.execute(
-        text("""INSERT INTO fleet.fuel_transactions (organization_id,fleet_id,transaction_at,fuel_type,quantity_litres,unit_cost,total_cost,odometer_km,supplier_name,receipt_reference,plant_request_id,expected_consumption_litres,variance_litres,recorded_by)
-        VALUES (:org_id,:fleet_id,COALESCE(:transaction_at,NOW()),:fuel_type,:quantity_litres,:unit_cost,:total_cost,:odometer_km,:supplier_name,:receipt_reference,:plant_request_id,:expected_consumption_litres,:variance_litres,:user_id) RETURNING id"""),
+        text("""INSERT INTO fleet.fuel_transactions (
+            organization_id,fleet_id,transaction_at,fuel_type,quantity_litres,unit_cost,total_cost,odometer_km,
+            supplier_name,receipt_reference,plant_request_id,expected_consumption_litres,variance_litres,
+            storage_tank,issued_to_operator_employee_id,cost_centre,issuer_user_id,receiver_signature,
+            tank_balance_after,actual_consumption_litres,litres_per_hour,duplicate_slip_hash,recorded_by
+        )
+        VALUES (
+            :org_id,:fleet_id,COALESCE(:transaction_at,NOW()),:fuel_type,:quantity_litres,:unit_cost,:total_cost,:odometer_km,
+            :supplier_name,:receipt_reference,:plant_request_id,:expected_consumption_litres,:variance_litres,
+            :storage_tank,:issued_to_operator_employee_id,:cost_centre,:user_id,:receiver_signature,
+            :tank_balance_after,:actual_consumption_litres,:litres_per_hour,:duplicate_slip_hash,:user_id
+        ) RETURNING id"""),
         {
             **payload.model_dump(),
             "unit_cost": unit_cost,
             "total_cost": total_cost,
             "variance_litres": variance_litres,
+            "litres_per_hour": litres_per_hour,
             "org_id": user["org_id"],
             "user_id": user["sub"],
         },
@@ -1614,7 +2000,13 @@ async def record_meter_reading(
             quantity_litres=payload.fuel_litres,
             unit_cost=payload.fuel_unit_cost or Decimal("0"),
             odometer_km=payload.odometer_km,
-            receipt_reference="meter-reading",
+            receipt_reference=payload.receipt_reference or "meter-reading",
+            storage_tank=payload.storage_tank,
+            cost_centre=payload.cost_centre,
+            receiver_signature=payload.receiver_signature,
+            tank_balance_after=payload.tank_balance_after,
+            expected_consumption_litres=payload.expected_consumption_litres,
+            actual_consumption_litres=payload.actual_consumption_litres,
         )
         await record_fuel(fuel, user, db)
     return recorded

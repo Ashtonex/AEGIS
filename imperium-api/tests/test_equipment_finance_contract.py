@@ -70,7 +70,7 @@ class EquipmentFinanceContractTests(unittest.TestCase):
 
     def test_frontend_normalizes_legacy_equipment_payloads(self):
         self.assertIn("fleet_id: assetId", API)
-        self.assertIn("inspection_type: 'pre_start'", API)
+        self.assertIn("inspection_type: payload.inspection_type ?? 'pre_start'", API)
         self.assertIn("minor_defects: 'conditional'", API)
         self.assertIn("major_defects: 'fail'", API)
         self.assertIn("occurred_on:", API)

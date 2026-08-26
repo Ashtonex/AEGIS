@@ -3241,9 +3241,10 @@ export async function recordAssetInspection(assetId: string, payload: Record<str
   const outcome = typeof payload.outcome === 'string' ? payload.outcome : 'pass';
   const normalized = {
     fleet_id: assetId,
-    inspection_type: 'pre_start',
+    inspection_type: payload.inspection_type ?? 'pre_start',
     inspected_at: payload.inspection_date ? `${payload.inspection_date}T00:00:00` : undefined,
     outcome: outcomeMap[outcome] ?? outcome,
+    severity: payload.severity,
     odometer_km: payload.odometer_km,
     engine_hours: payload.engine_hours,
     checklist: {},
@@ -3266,6 +3267,13 @@ export async function recordAssetMeterReading(assetId: string, payload: Record<s
     odometer_km: payload.odometer_km,
     engine_hours: payload.engine_hours,
     fuel_litres: payload.fuel_litres,
+    expected_consumption_litres: payload.expected_consumption_litres,
+    actual_consumption_litres: payload.actual_consumption_litres,
+    storage_tank: payload.storage_tank,
+    receipt_reference: payload.receipt_reference,
+    cost_centre: payload.cost_centre,
+    receiver_signature: payload.receiver_signature,
+    tank_balance_after: payload.tank_balance_after,
     notes: payload.notes ?? (payload.recorded_by ? `Recorded by ${payload.recorded_by}` : undefined),
   };
   return fetchApi<ApiResponse<any>>(`/api/v1/fleet/${assetId}/meter-readings`, {
@@ -3279,7 +3287,7 @@ export async function recordAssetMeterReading(assetId: string, payload: Record<s
 export async function recordAssetDefect(assetId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   const normalized = {
     fleet_id: assetId,
-    title: payload.title,
+    title: payload.title ?? (payload.description ? String(payload.description).slice(0, 80) : "Asset defect"),
     severity: payload.severity,
     description: payload.description,
     defect_reference: payload.defect_reference,
@@ -3336,6 +3344,31 @@ export async function getFleetAssignments(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>('/api/v1/fleet/assignments', { cache: 'no-store', allowFallback: false });
 }
 
+export async function getFleetOperatorProfiles(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/fleet/operator-profiles', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createFleetOperatorProfile(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/operator-profiles', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function getExternalPlantHireAgreements(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/fleet/external-hire-agreements', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createExternalPlantHireAgreement(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/external-hire-agreements', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
 export async function getPlantLifecycleSummary(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/fleet/plant/summary', { cache: 'no-store', allowFallback: false });
 }

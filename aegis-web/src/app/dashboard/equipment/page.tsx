@@ -92,6 +92,11 @@ function msDate(record: AssetRecord, ...keys: string[]): number | null {
   return isNaN(t) ? null : t;
 }
 
+function isExpired(record: AssetRecord, ...keys: string[]): boolean {
+  const value = msDate(record, ...keys);
+  return value !== null && value < Date.now();
+}
+
 function assetCode(record: AssetRecord): string {
   return (
     str(record, "asset_code", "code", "fleet_number") ||
@@ -107,7 +112,7 @@ function assetLabel(record: AssetRecord): string {
 }
 
 function assetType(record: AssetRecord): string {
-  return str(record, "type", "asset_type", "category") || "Equipment";
+  return str(record, "asset_type", "vehicle_type", "type", "asset_category", "category") || "Equipment";
 }
 
 function normalStatus(record: AssetRecord): string {
@@ -153,6 +158,36 @@ function normalizeLoadError(reason: unknown, fallback: string) {
 const STATUS_STYLES: Record<string, string> = {
   available:
     "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  reserved:
+    "border-sky-500/40 bg-sky-500/10 text-sky-300",
+  mobilisation_pending:
+    "border-blue-500/40 bg-blue-500/10 text-blue-300",
+  deployed:
+    "border-blue-500/40 bg-blue-500/10 text-blue-300",
+  operating:
+    "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  idle_on_site:
+    "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  under_inspection:
+    "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  scheduled_maintenance:
+    "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  breakdown:
+    "border-red-500/40 bg-red-500/10 text-red-300",
+  under_repair:
+    "border-red-500/40 bg-red-500/10 text-red-300",
+  awaiting_parts:
+    "border-amber-500/40 bg-amber-500/10 text-amber-200",
+  hired_out:
+    "border-purple-500/40 bg-purple-500/10 text-purple-300",
+  hired_in:
+    "border-purple-500/40 bg-purple-500/10 text-purple-300",
+  quarantined:
+    "border-red-500/40 bg-red-500/10 text-red-300",
+  decommissioned:
+    "border-slate/50 bg-ink-light text-slate-light",
+  disposed:
+    "border-slate/50 bg-ink-light text-slate-light",
   assigned:
     "border-blue-500/40 bg-blue-500/10 text-blue-300",
   in_service:
@@ -427,9 +462,11 @@ function InspectionModal({
   onSuccess: () => void;
 }) {
   const [form, setForm] = useState({
+    inspection_type: "pre_start",
     inspection_date: new Date().toISOString().slice(0, 10),
     inspector_name: "",
     outcome: "pass",
+    severity: "",
     odometer_km: "",
     engine_hours: "",
     notes: "",
@@ -443,6 +480,7 @@ function InspectionModal({
     try {
       await recordAssetInspection(assetId, {
         ...form,
+        severity: form.severity || undefined,
         odometer_km: form.odometer_km ? Number(form.odometer_km) : undefined,
         engine_hours: form.engine_hours ? Number(form.engine_hours) : undefined,
       });
@@ -466,6 +504,28 @@ function InspectionModal({
             {err}
           </p>
         )}
+        <Field
+          label="Inspection Type"
+          input={
+            <select
+              value={form.inspection_type}
+              onChange={(e) =>
+                setForm((p) => ({ ...p, inspection_type: e.target.value }))
+              }
+              className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40"
+            >
+              <option value="pre_start">Daily pre-start</option>
+              <option value="post_operation">Daily post-operation</option>
+              <option value="weekly">Weekly inspection</option>
+              <option value="mobilisation">Mobilisation inspection</option>
+              <option value="demobilisation">Demobilisation inspection</option>
+              <option value="maintenance">Maintenance inspection</option>
+              <option value="accident">Accident inspection</option>
+              <option value="hired_in">Hired-in asset inspection</option>
+              <option value="statutory">Statutory inspection</option>
+            </select>
+          }
+        />
         <Field
           label="Inspection Date"
           input={
@@ -507,6 +567,24 @@ function InspectionModal({
               <option value="minor_defects">Minor Defects</option>
               <option value="major_defects">Major Defects</option>
               <option value="fail">Fail</option>
+            </select>
+          }
+        />
+        <Field
+          label="Defect Severity"
+          input={
+            <select
+              value={form.severity}
+              onChange={(e) =>
+                setForm((p) => ({ ...p, severity: e.target.value }))
+              }
+              className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40"
+            >
+              <option value="">No defect severity</option>
+              <option value="minor">Minor</option>
+              <option value="moderate">Moderate</option>
+              <option value="critical">Critical</option>
+              <option value="catastrophic">Catastrophic</option>
             </select>
           }
         />
@@ -653,8 +731,8 @@ function DefectModal({
             >
               <option value="minor">Minor</option>
               <option value="moderate">Moderate</option>
-              <option value="major">Major</option>
               <option value="critical">Critical</option>
+              <option value="catastrophic">Catastrophic</option>
             </select>
           }
         />
@@ -727,6 +805,13 @@ function MeterModal({
     engine_hours: "",
     odometer_km: "",
     fuel_litres: "",
+    expected_consumption_litres: "",
+    actual_consumption_litres: "",
+    storage_tank: "",
+    receipt_reference: "",
+    cost_centre: "",
+    receiver_signature: "",
+    tank_balance_after: "",
     recorded_by: "",
   });
   const [saving, setSaving] = useState(false);
@@ -745,6 +830,13 @@ function MeterModal({
         engine_hours: form.engine_hours ? Number(form.engine_hours) : undefined,
         odometer_km: form.odometer_km ? Number(form.odometer_km) : undefined,
         fuel_litres: form.fuel_litres ? Number(form.fuel_litres) : undefined,
+        expected_consumption_litres: form.expected_consumption_litres ? Number(form.expected_consumption_litres) : undefined,
+        actual_consumption_litres: form.actual_consumption_litres ? Number(form.actual_consumption_litres) : undefined,
+        storage_tank: form.storage_tank || undefined,
+        receipt_reference: form.receipt_reference || undefined,
+        cost_centre: form.cost_centre || undefined,
+        receiver_signature: form.receiver_signature || undefined,
+        tank_balance_after: form.tank_balance_after ? Number(form.tank_balance_after) : undefined,
       });
       onSuccess();
     } catch (e) {
@@ -821,6 +913,50 @@ function MeterModal({
               }
               className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40"
             />
+          }
+        />
+        <div className="grid grid-cols-2 gap-3">
+          <Field
+            label="Expected Fuel Use"
+            input={
+              <input type="number" placeholder="0" value={form.expected_consumption_litres} onChange={(e) => setForm((p) => ({ ...p, expected_consumption_litres: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
+            }
+          />
+          <Field
+            label="Actual Fuel Use"
+            input={
+              <input type="number" placeholder="0" value={form.actual_consumption_litres} onChange={(e) => setForm((p) => ({ ...p, actual_consumption_litres: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
+            }
+          />
+          <Field
+            label="Storage Tank"
+            input={
+              <input value={form.storage_tank} onChange={(e) => setForm((p) => ({ ...p, storage_tank: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
+            }
+          />
+          <Field
+            label="Tank Balance"
+            input={
+              <input type="number" value={form.tank_balance_after} onChange={(e) => setForm((p) => ({ ...p, tank_balance_after: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
+            }
+          />
+          <Field
+            label="Fuel Slip"
+            input={
+              <input value={form.receipt_reference} onChange={(e) => setForm((p) => ({ ...p, receipt_reference: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
+            }
+          />
+          <Field
+            label="Cost Centre"
+            input={
+              <input value={form.cost_centre} onChange={(e) => setForm((p) => ({ ...p, cost_centre: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
+            }
+          />
+        </div>
+        <Field
+          label="Receiver Signature"
+          input={
+            <input value={form.receiver_signature} onChange={(e) => setForm((p) => ({ ...p, receiver_signature: e.target.value }))} className="w-full bg-ink-light px-3 py-2 text-sm text-paper outline-none focus:ring-1 focus:ring-signal/40" />
           }
         />
         <Field
@@ -983,15 +1119,23 @@ function DetailPanel({
             />
             <PanelKV
               label="Year"
-              value={str(asset, "year", "manufacture_year") || "—"}
+              value={str(asset, "model_year", "year", "manufacture_year") || "—"}
             />
             <PanelKV
               label="VIN / Serial"
-              value={str(asset, "vin", "serial_number") || "Not recorded"}
+              value={str(asset, "vin", "chassis_number", "serial_number") || "Not recorded"}
             />
             <PanelKV
               label="Asset Type"
               value={assetType(asset)}
+            />
+            <PanelKV
+              label="Category"
+              value={str(asset, "asset_category", "category") || "Not recorded"}
+            />
+            <PanelKV
+              label="Supplier"
+              value={str(asset, "supplier_name") || "Not recorded"}
             />
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -1012,7 +1156,7 @@ function DetailPanel({
             />
             <PanelKV
               label="Site"
-              value={str(asset, "site", "site_name", "location") || "Unallocated"}
+              value={str(asset, "current_location", "site", "site_name", "location") || "Unallocated"}
             />
             <PanelKV
               label="Operator"
@@ -1020,6 +1164,10 @@ function DetailPanel({
                 str(asset, "operator_name", "operator", "assigned_to") ||
                 "No operator"
               }
+            />
+            <PanelKV
+              label="Custodian"
+              value={str(asset, "responsible_custodian") || "Not assigned"}
             />
           </div>
         </div>
@@ -1035,10 +1183,10 @@ function DetailPanel({
             <div className="space-y-3 text-right">
               <div>
                 <p className="font-mono text-[10px] uppercase tracking-wider text-slate">
-                  Engine Hours
+                  {str(asset, "meter_type") || "Engine Hours"}
                 </p>
                 <p className="mt-1 font-mono text-lg font-semibold text-paper">
-                  {fmtNum(engineHours, " hr")}
+                  {fmtNum(num(asset, "current_meter_reading") ?? engineHours, str(asset, "meter_type") === "kilometres" ? " km" : " hr")}
                 </p>
               </div>
               <div>
@@ -1097,6 +1245,34 @@ function DetailPanel({
               value={String(activeDefects)}
               tone={activeDefects > 0 ? "text-red-300" : "text-emerald-300"}
             />
+          </div>
+        </div>
+
+        <div className="border-b border-ink-mid px-5 py-4">
+          <SectionHead icon={<ShieldAlert size={13} />} title="Documents & Expiry Controls" />
+          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+            <PanelKV label="Insurance" value={str(asset, "insurance_policy_number") || "Not recorded"} />
+            <PanelKV label="Insurance Expiry" value={strDate(asset, "insurance_expiry_date") || "Not recorded"} tone={isExpired(asset, "insurance_expiry_date") ? "text-red-300" : undefined} />
+            <PanelKV label="Licence" value={str(asset, "licence_number") || "Not recorded"} />
+            <PanelKV label="Licence Expiry" value={strDate(asset, "licence_expiry_date") || "Not recorded"} tone={isExpired(asset, "licence_expiry_date") ? "text-red-300" : undefined} />
+            <PanelKV label="Warranty" value={str(asset, "warranty_provider") || "Not recorded"} />
+            <PanelKV label="Warranty Expiry" value={strDate(asset, "warranty_expiry_date") || "Not recorded"} />
+            <PanelKV label="QR Code" value={str(asset, "qr_code_value") || "Not recorded"} />
+            <PanelKV label="Barcode" value={str(asset, "barcode_value") || "Not recorded"} />
+          </div>
+        </div>
+
+        <div className="border-b border-ink-mid px-5 py-4">
+          <SectionHead icon={<Coins size={13} />} title="Value, Useful Life & Disposal" />
+          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
+            <PanelKV label="Acquisition Cost" value={fmtCurrency(num(asset, "acquisition_cost"))} />
+            <PanelKV label="Current Book Value" value={fmtCurrency(num(asset, "current_book_value"))} />
+            <PanelKV label="Useful Life" value={num(asset, "useful_life_months") !== null ? `${num(asset, "useful_life_months")} months` : "Not recorded"} />
+            <PanelKV label="Replacement Date" value={strDate(asset, "expected_replacement_date") || "Not recorded"} />
+            <PanelKV label="Finance Provider" value={str(asset, "finance_provider") || "Not recorded"} />
+            <PanelKV label="Lease Reference" value={str(asset, "lease_contract_reference") || "Not recorded"} />
+            <PanelKV label="Disposal Status" value={str(asset, "disposal_status") || "In service"} />
+            <PanelKV label="Disposal Date" value={strDate(asset, "disposal_date") || "Not recorded"} />
           </div>
         </div>
 
@@ -1510,11 +1686,11 @@ function EquipmentDashboard() {
   const metrics = useMemo(() => {
     const total = assets.length;
     const operating = assets.filter((a) =>
-      ["in_service", "assigned"].includes(normalStatus(a))
+      ["operating", "deployed", "in_service", "assigned", "hired_out"].includes(normalStatus(a))
     ).length;
-    const idle = assets.filter((a) => normalStatus(a) === "available").length;
+    const idle = assets.filter((a) => ["available", "idle_on_site", "reserved"].includes(normalStatus(a))).length;
     const maintenance = assets.filter((a) =>
-      normalStatus(a) === "out_of_service"
+      ["out_of_service", "under_inspection", "scheduled_maintenance", "breakdown", "under_repair", "awaiting_parts", "quarantined"].includes(normalStatus(a))
     ).length;
     const withRevenue = assets.filter(
       (a) => (num(a, "monthly_revenue", "revenue_per_month") ?? 0) > 0

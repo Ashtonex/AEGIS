@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
-import { ApiError, createPlantRequest, getComplianceDeploymentGateChecks, getFleet, getPlantLifecycleSummary, getPlantRequests } from "@/lib/api";
+import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests } from "@/lib/api";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
@@ -32,8 +32,8 @@ import {
 
 type FleetRecord = Record<string, unknown> & { id: string };
 
-const ACTIVE_STATUSES = new Set(["active", "available", "deployed", "in service", "operational"]);
-const MAINTENANCE_STATUSES = new Set(["maintenance", "in maintenance", "repair", "service", "out of service"]);
+const ACTIVE_STATUSES = new Set(["active", "available", "reserved", "mobilisation_pending", "deployed", "operating", "hired_out", "hired_in", "in service", "operational"]);
+const MAINTENANCE_STATUSES = new Set(["maintenance", "in maintenance", "repair", "service", "out of service", "under_inspection", "scheduled_maintenance", "breakdown", "under_repair", "awaiting_parts", "quarantined"]);
 
 function text(record: FleetRecord, ...keys: string[]): string {
   for (const key of keys) {
@@ -72,7 +72,7 @@ function displayStatus(record: FleetRecord): string {
 }
 
 function assetName(record: FleetRecord): string {
-  return text(record, "name", "asset_name", "description", "registration_number", "asset_code") || "Unnamed asset";
+  return text(record, "name", "asset_name", "description", "vehicle_registration", "registration_number", "asset_code") || "Unnamed asset";
 }
 
 function assetReference(record: FleetRecord): string {
@@ -175,7 +175,7 @@ export default function FleetTrackerPage() {
   return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"]}><FleetTrackerDashboard /></RBACGuard>;
 }
 
-type FleetModalKind = "register" | "edit" | "deploy" | "work-order" | "plant-request" | null;
+type FleetModalKind = "register" | "edit" | "deploy" | "work-order" | "plant-request" | "operator-profile" | "external-hire" | null;
 
 function FleetTrackerDashboard() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -191,9 +191,11 @@ function FleetTrackerDashboard() {
       gates: () => getComplianceDeploymentGateChecks({ limit: 50 }),
       plantSummary: () => getPlantLifecycleSummary(),
       plantRequests: () => getPlantRequests(),
+      operatorProfiles: () => getFleetOperatorProfiles(),
+      externalHire: () => getExternalPlantHireAgreements(),
     },
     [],
-    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests" } }
+    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests", operatorProfiles: "Operator profiles", externalHire: "External hire agreements" } }
   );
 
   const assets = useMemo(
@@ -207,6 +209,14 @@ function FleetTrackerDashboard() {
   const plantRequests = useMemo(
     () => (Array.isArray(data.plantRequests?.data) ? data.plantRequests.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.plantRequests]
+  );
+  const operatorProfiles = useMemo(
+    () => (Array.isArray(data.operatorProfiles?.data) ? data.operatorProfiles.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.operatorProfiles]
+  );
+  const externalHireAgreements = useMemo(
+    () => (Array.isArray(data.externalHire?.data) ? data.externalHire.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.externalHire]
   );
   const plantSummary = (data.plantSummary?.data && typeof data.plantSummary.data === "object" ? data.plantSummary.data : {}) as Record<string, unknown>;
   const errorMessage = error
@@ -358,6 +368,81 @@ function FleetTrackerDashboard() {
             )}
           </section>
 
+          <section className="mb-6 grid gap-6 xl:grid-cols-2">
+            <div className="border border-ink-mid bg-ink">
+              <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-4">
+                <div>
+                  <h2 className="text-sm font-semibold">Operator management</h2>
+                  <p className="mt-1 text-xs text-slate-light">Licence classes, competency, medical clearance, suspension and current assignment evidence.</p>
+                </div>
+                <button type="button" onClick={() => setModal("operator-profile")} className="shrink-0 border border-ink-mid px-3 py-1.5 text-xs text-slate-light hover:border-signal hover:text-paper">Add operator</button>
+              </div>
+              {operatorProfiles.length === 0 ? (
+                <div className="p-5 text-sm text-slate-light">No operator profiles have been recorded yet.</div>
+              ) : (
+                <OperationalTable className="min-w-[760px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Operator</TableHead>
+                      <TableHead>Competency</TableHead>
+                      <TableHead>Licence classes</TableHead>
+                      <TableHead>Medical expiry</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <tbody>
+                    {operatorProfiles.slice(0, 8).map((profile) => (
+                      <TableRow key={profile.id}>
+                        <TableCell className="text-paper">{text(profile, "employee_name", "contractor_name") || "Unnamed operator"}</TableCell>
+                        <TableCell>{text(profile, "competency_status") || "pending"}</TableCell>
+                        <TableCell>{Array.isArray(profile.licence_classes) && profile.licence_classes.length ? profile.licence_classes.join(", ") : "Not recorded"}</TableCell>
+                        <TableCell>{dateFrom(profile, "medical_clearance_expiry") || "Not recorded"}</TableCell>
+                        <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${profile.suspended || text(profile, "competency_status") === "suspended" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-green-500/30 bg-green-500/10 text-green-200"}`}>{profile.suspended ? "suspended" : `${number(profile, "incident_count") ?? 0} incidents / ${number(profile, "performance_score") ?? "no"} score`}</span></TableCell>
+                      </TableRow>
+                    ))}
+                  </tbody>
+                </OperationalTable>
+              )}
+            </div>
+            <div className="border border-ink-mid bg-ink">
+              <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-4">
+                <div>
+                  <h2 className="text-sm font-semibold">External plant hire</h2>
+                  <p className="mt-1 text-xs text-slate-light">Enquiry, quotation, agreement, dispatch, off-hire, invoice instruction and debtor follow-up tracking.</p>
+                </div>
+                <button type="button" onClick={() => setModal("external-hire")} className="shrink-0 border border-ink-mid px-3 py-1.5 text-xs text-slate-light hover:border-signal hover:text-paper">New hire</button>
+              </div>
+              {externalHireAgreements.length === 0 ? (
+                <div className="p-5 text-sm text-slate-light">No external plant hire agreements have been recorded yet.</div>
+              ) : (
+                <OperationalTable className="min-w-[820px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Request</TableHead>
+                      <TableHead>Hire type</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Deposit</TableHead>
+                      <TableHead>Charges</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <tbody>
+                    {externalHireAgreements.slice(0, 8).map((hire) => (
+                      <TableRow key={hire.id}>
+                        <TableCell className="text-paper">{text(hire, "customer_name") || "Customer not recorded"}</TableCell>
+                        <TableCell>{text(hire, "request_number", "required_asset_type") || "No linked request"}</TableCell>
+                        <TableCell>{text(hire, "hire_type").replaceAll("_", " ") || "wet hire"}</TableCell>
+                        <TableCell>{text(hire, "status").replaceAll("_", " ") || "enquiry"}</TableCell>
+                        <TableCell>{formatMoney(number(hire, "deposit_required"))}</TableCell>
+                        <TableCell>{formatMoney((number(hire, "mobilisation_charge") ?? 0) + (number(hire, "demobilisation_charge") ?? 0) + (number(hire, "damage_recovery_amount") ?? 0))}</TableCell>
+                      </TableRow>
+                    ))}
+                  </tbody>
+                </OperationalTable>
+              )}
+            </div>
+          </section>
+
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.9fr)]">
             <section className="border border-ink-mid bg-ink">
               <div className="flex flex-col gap-3 border-b border-ink-mid p-4 lg:flex-row lg:items-center lg:justify-between">
@@ -490,6 +575,19 @@ function FleetTrackerDashboard() {
           onSuccess={() => { setModal(null); setNotice("Work order created."); void loadFleet(); }}
         />
       )}
+      {modal === "operator-profile" && (
+        <OperatorProfileModal
+          onClose={() => setModal(null)}
+          onSuccess={() => { setModal(null); setNotice("Operator profile saved."); void loadFleet(); }}
+        />
+      )}
+      {modal === "external-hire" && (
+        <ExternalHireModal
+          plantRequests={plantRequests}
+          onClose={() => setModal(null)}
+          onSuccess={() => { setModal(null); setNotice("External plant hire agreement saved."); void loadFleet(); }}
+        />
+      )}
     </main>
   );
 }
@@ -500,6 +598,189 @@ function Metric({ icon, label, value, detail, tone = "text-paper" }: { icon: Rea
 
 function RecordField({ label, value }: { label: string; value: string }) {
   return <div className="p-4"><p className="font-mono text-[10px] uppercase tracking-wider text-slate">{label}</p><p className="mt-2 text-sm text-paper">{value}</p></div>;
+}
+
+function OperatorProfileModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const [employees, setEmployees] = useState<{ id: string; employee_name: string }[]>([]);
+  const [form, setForm] = useState({
+    employee_id: "",
+    contractor_name: "",
+    assigned_asset_types: "",
+    licence_classes: "",
+    medical_clearance_expiry: "",
+    competency_status: "pending",
+    incident_count: "0",
+    performance_score: "",
+    suspended: false,
+    notes: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fieldClass = "w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper outline-none placeholder:text-slate focus:border-signal";
+
+  useEffect(() => {
+    void getHREmployees({ status: "active" })
+      .then((res) => setEmployees(res.success && Array.isArray(res.data) ? res.data : []))
+      .catch(() => setEmployees([]));
+  }, []);
+
+  const patch = (key: keyof typeof form, value: string | boolean) => setForm(current => ({ ...current, [key]: value }));
+
+  async function submit() {
+    setError(null);
+    if (!form.employee_id && !form.contractor_name.trim()) {
+      setError("Select an employee or enter a contractor name.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await createFleetOperatorProfile({
+        employee_id: form.employee_id || undefined,
+        contractor_name: form.contractor_name.trim() || undefined,
+        assigned_asset_types: form.assigned_asset_types.split(",").map(item => item.trim()).filter(Boolean),
+        licence_classes: form.licence_classes.split(",").map(item => item.trim()).filter(Boolean),
+        medical_clearance_expiry: form.medical_clearance_expiry || undefined,
+        competency_status: form.competency_status,
+        incident_count: Number(form.incident_count || 0),
+        performance_score: form.performance_score ? Number(form.performance_score) : undefined,
+        suspended: form.suspended,
+        notes: form.notes.trim() || undefined,
+        operator_certificates: [],
+        training_records: [],
+        performance_history: [],
+        incidents_and_violations: [],
+      });
+      onSuccess();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Operator profile could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto border border-ink-mid bg-ink shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-5">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate">Operator management</p>
+            <h2 className="mt-1 text-lg font-semibold text-paper">Add Operator Profile</h2>
+          </div>
+          <button type="button" onClick={onClose} className="border border-ink-mid px-3 py-1.5 text-xs text-slate-light hover:border-slate hover:text-paper">Close</button>
+        </div>
+        {error && <div className="m-5 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-100">{error}</div>}
+        <div className="grid gap-4 p-5 md:grid-cols-2">
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Employee</span><select value={form.employee_id} onChange={event => patch("employee_id", event.target.value)} className={fieldClass}><option value="">Contractor / not linked</option>{employees.map(employee => <option key={employee.id} value={employee.id}>{employee.employee_name}</option>)}</select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Contractor name</span><input value={form.contractor_name} onChange={event => patch("contractor_name", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Asset types</span><input value={form.assigned_asset_types} onChange={event => patch("assigned_asset_types", event.target.value)} placeholder="Excavator, tipper, generator" className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Licence classes</span><input value={form.licence_classes} onChange={event => patch("licence_classes", event.target.value)} placeholder="Class 2, crane, forklift" className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Medical clearance expiry</span><input type="date" value={form.medical_clearance_expiry} onChange={event => patch("medical_clearance_expiry", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Competency</span><select value={form.competency_status} onChange={event => patch("competency_status", event.target.value)} className={fieldClass}><option value="pending">Pending</option><option value="competent">Competent</option><option value="restricted">Restricted</option><option value="expired">Expired</option><option value="suspended">Suspended</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Incident count</span><input type="number" min="0" value={form.incident_count} onChange={event => patch("incident_count", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Performance score</span><input type="number" min="0" max="100" step="0.01" value={form.performance_score} onChange={event => patch("performance_score", event.target.value)} className={fieldClass} /></label>
+          <label className="flex items-center gap-3 border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper"><input type="checkbox" checked={form.suspended} onChange={event => patch("suspended", event.target.checked)} /> Suspended from assignment</label>
+          <label className="space-y-1 md:col-span-2"><span className="font-mono text-[10px] uppercase text-slate">Notes</span><textarea value={form.notes} onChange={event => patch("notes", event.target.value)} rows={3} className={fieldClass} /></label>
+        </div>
+        <div className="flex justify-end gap-3 border-t border-ink-mid p-5">
+          <button type="button" onClick={onClose} className="border border-ink-mid px-4 py-2 text-sm text-slate-light hover:border-slate hover:text-paper">Cancel</button>
+          <button type="button" onClick={() => void submit()} disabled={saving} className="inline-flex items-center gap-2 bg-signal px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{saving && <Loader2 size={14} className="animate-spin" />} Save Operator</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExternalHireModal({ plantRequests, onClose, onSuccess }: { plantRequests: FleetRecord[]; onClose: () => void; onSuccess: () => void }) {
+  const [form, setForm] = useState({
+    plant_request_id: "",
+    customer_name: "",
+    hire_agreement_number: "",
+    status: "enquiry",
+    hire_type: "wet_hire",
+    deposit_required: "0",
+    fuel_responsibility: "client",
+    mobilisation_charge: "0",
+    demobilisation_charge: "0",
+    standing_time_rate: "",
+    overtime_rate: "",
+    damage_recovery_amount: "0",
+    invoice_instruction: "",
+    debtor_follow_up_status: "not_started",
+    debtor_follow_up_notes: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fieldClass = "w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper outline-none placeholder:text-slate focus:border-signal";
+  const patch = (key: keyof typeof form, value: string) => setForm(current => ({ ...current, [key]: value }));
+
+  async function submit() {
+    setError(null);
+    if (!form.customer_name.trim() && !form.plant_request_id) {
+      setError("Enter a customer name or link a plant request.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await createExternalPlantHireAgreement({
+        plant_request_id: form.plant_request_id || undefined,
+        customer_name: form.customer_name.trim() || undefined,
+        hire_agreement_number: form.hire_agreement_number.trim() || undefined,
+        status: form.status,
+        hire_type: form.hire_type,
+        deposit_required: Number(form.deposit_required) || 0,
+        fuel_responsibility: form.fuel_responsibility,
+        mobilisation_charge: Number(form.mobilisation_charge) || 0,
+        demobilisation_charge: Number(form.demobilisation_charge) || 0,
+        standing_time_rate: form.standing_time_rate || undefined,
+        overtime_rate: form.overtime_rate || undefined,
+        damage_recovery_amount: Number(form.damage_recovery_amount) || 0,
+        invoice_instruction: form.invoice_instruction.trim() || undefined,
+        debtor_follow_up_status: form.debtor_follow_up_status,
+        debtor_follow_up_notes: form.debtor_follow_up_notes.trim() || undefined,
+        rate_card: {},
+      });
+      onSuccess();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "External hire agreement could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-y-auto border border-ink-mid bg-ink shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-5">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-slate">External plant hire</p>
+            <h2 className="mt-1 text-lg font-semibold text-paper">New Hire Agreement</h2>
+          </div>
+          <button type="button" onClick={onClose} className="border border-ink-mid px-3 py-1.5 text-xs text-slate-light hover:border-slate hover:text-paper">Close</button>
+        </div>
+        {error && <div className="m-5 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-100">{error}</div>}
+        <div className="grid gap-4 p-5 md:grid-cols-2">
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Plant request</span><select value={form.plant_request_id} onChange={event => patch("plant_request_id", event.target.value)} className={fieldClass}><option value="">No linked request</option>{plantRequests.map(request => <option key={request.id} value={request.id}>{text(request, "request_number") || request.id.slice(0, 8)} - {text(request, "required_asset_type")}</option>)}</select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Customer</span><input value={form.customer_name} onChange={event => patch("customer_name", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Hire agreement number</span><input value={form.hire_agreement_number} onChange={event => patch("hire_agreement_number", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Hire type</span><select value={form.hire_type} onChange={event => patch("hire_type", event.target.value)} className={fieldClass}><option value="dry_hire">Dry hire</option><option value="wet_hire">Wet hire</option><option value="hourly">Hourly hire</option><option value="daily">Daily hire</option><option value="weekly_monthly">Weekly/monthly hire</option><option value="output_based">Output-based</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Status</span><select value={form.status} onChange={event => patch("status", event.target.value)} className={fieldClass}><option value="enquiry">Enquiry</option><option value="quoted">Quoted</option><option value="approved">Approved</option><option value="agreement_signed">Agreement signed</option><option value="deposit_pending">Deposit pending</option><option value="dispatched">Dispatched</option><option value="active">Active</option><option value="off_hire_requested">Off-hire requested</option><option value="returned">Returned</option><option value="invoice_instruction">Invoice instruction</option><option value="debtor_follow_up">Debtor follow-up</option><option value="closed">Closed</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Fuel responsibility</span><select value={form.fuel_responsibility} onChange={event => patch("fuel_responsibility", event.target.value)} className={fieldClass}><option value="client">Client</option><option value="snc">SNC</option><option value="project">Project</option></select></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Deposit required</span><input type="number" min="0" value={form.deposit_required} onChange={event => patch("deposit_required", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Mobilisation charge</span><input type="number" min="0" value={form.mobilisation_charge} onChange={event => patch("mobilisation_charge", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Demobilisation charge</span><input type="number" min="0" value={form.demobilisation_charge} onChange={event => patch("demobilisation_charge", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Standing time rate</span><input type="number" min="0" value={form.standing_time_rate} onChange={event => patch("standing_time_rate", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Overtime rate</span><input type="number" min="0" value={form.overtime_rate} onChange={event => patch("overtime_rate", event.target.value)} className={fieldClass} /></label>
+          <label className="space-y-1"><span className="font-mono text-[10px] uppercase text-slate">Debtor follow-up status</span><select value={form.debtor_follow_up_status} onChange={event => patch("debtor_follow_up_status", event.target.value)} className={fieldClass}><option value="not_started">Not started</option><option value="pending">Pending</option><option value="contacted">Contacted</option><option value="disputed">Disputed</option><option value="paid">Paid</option><option value="escalated">Escalated</option><option value="closed">Closed</option></select></label>
+          <label className="space-y-1 md:col-span-2"><span className="font-mono text-[10px] uppercase text-slate">Invoice instruction</span><textarea value={form.invoice_instruction} onChange={event => patch("invoice_instruction", event.target.value)} rows={3} className={fieldClass} /></label>
+          <label className="space-y-1 md:col-span-2"><span className="font-mono text-[10px] uppercase text-slate">Debtor follow-up notes</span><textarea value={form.debtor_follow_up_notes} onChange={event => patch("debtor_follow_up_notes", event.target.value)} rows={3} className={fieldClass} /></label>
+        </div>
+        <div className="flex justify-end gap-3 border-t border-ink-mid p-5">
+          <button type="button" onClick={onClose} className="border border-ink-mid px-4 py-2 text-sm text-slate-light hover:border-slate hover:text-paper">Cancel</button>
+          <button type="button" onClick={() => void submit()} disabled={saving} className="inline-flex items-center gap-2 bg-signal px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">{saving && <Loader2 size={14} className="animate-spin" />} Save Hire</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function PlantRequestModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (reference: string) => void }) {
@@ -662,12 +943,19 @@ function AssetDetail({
         </div>
       </div>
       <div className="grid divide-y divide-ink-mid md:grid-cols-3 md:divide-x md:divide-y-0">
-        <RecordField label="Classification" value={text(selected, "type", "asset_type", "category", "make") || "Not recorded"} />
-        <RecordField label="Assigned location" value={text(selected, "location", "site", "assigned_project", "project_name") || "Not allocated"} />
+        <RecordField label="Classification" value={text(selected, "asset_category", "asset_type", "type", "vehicle_type", "category", "make") || "Not recorded"} />
+        <RecordField label="Assigned location" value={text(selected, "current_location", "location", "site", "assigned_project", "project_name") || "Not allocated"} />
         <RecordField label="Assigned operator" value={text(selected, "operator", "operator_name", "assigned_to") || "Not assigned"} />
-        <RecordField label="Operating hours" value={formatNumber(number(selected, "operating_hours", "hours", "hour_meter"))} />
+        <RecordField label="Custodian" value={text(selected, "responsible_custodian") || "Not assigned"} />
+        <RecordField label="Meter reading" value={`${formatNumber(number(selected, "current_meter_reading", "operating_hours", "hours", "hour_meter"))} ${text(selected, "meter_type") || ""}`.trim()} />
         <RecordField label="Next maintenance" value={dateFrom(selected, "next_maintenance_at", "next_maintenance_date", "maintenance_due_date") || "Not recorded"} />
         <RecordField label="Last inspection" value={dateFrom(selected, "last_inspection_at", "inspection_date", "last_inspection_date") || "Not recorded"} />
+        <RecordField label="Insurance expiry" value={dateFrom(selected, "insurance_expiry_date") || "Not recorded"} />
+        <RecordField label="Licence expiry" value={dateFrom(selected, "licence_expiry_date") || "Not recorded"} />
+        <RecordField label="Warranty expiry" value={dateFrom(selected, "warranty_expiry_date") || "Not recorded"} />
+        <RecordField label="Supplier" value={text(selected, "supplier_name") || "Not recorded"} />
+        <RecordField label="Book value" value={formatMoney(number(selected, "current_book_value"))} />
+        <RecordField label="Disposal status" value={text(selected, "disposal_status") || "in_service"} />
       </div>
       <div className="border-t border-ink-mid p-4">
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-light">Record notes</h3>
