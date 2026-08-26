@@ -222,7 +222,7 @@ DROP POLICY IF EXISTS "External hire agreements service role only" ON fleet.exte
 CREATE POLICY "External hire agreements service role only"
     ON fleet.external_hire_agreements FOR ALL TO service_role USING (true) WITH CHECK (true);
 
-INSERT INTO core.permissions (permission_key, description)
+INSERT INTO core.permissions (key, description)
 VALUES
     ('fleet.operator_profiles.read', 'View Plant & Equipment operator profiles'),
     ('fleet.operator_profiles.create', 'Create Plant & Equipment operator profiles'),
@@ -230,12 +230,12 @@ VALUES
     ('fleet.external_hire.read', 'View external Plant & Equipment hire records'),
     ('fleet.external_hire.create', 'Create external Plant & Equipment hire records'),
     ('fleet.external_hire.update', 'Update external Plant & Equipment hire records')
-ON CONFLICT (permission_key) DO NOTHING;
+ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO core.role_permissions (role_id, permission_id)
 SELECT r.id, p.id
 FROM core.roles r
-JOIN core.permissions p ON p.permission_key IN (
+JOIN core.permissions p ON p.key IN (
     'fleet.operator_profiles.read',
     'fleet.operator_profiles.create',
     'fleet.operator_profiles.update',
