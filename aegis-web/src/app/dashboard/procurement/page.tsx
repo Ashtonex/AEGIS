@@ -1289,6 +1289,7 @@ function supplierEditDraft(supplier: Rec) {
     tax_number: tx(supplier.tax_number, ""),
     praz_number: tx(supplier.praz_number, ""),
     nssa_number: tx(supplier.nssa_number, ""),
+    address: tx(supplier.address, ""),
     primary_contact_name: tx(supplier.primary_contact_name, ""),
     primary_contact_email: tx(supplier.primary_contact_email, ""),
     primary_contact_phone: tx(supplier.primary_contact_phone, ""),
@@ -1397,6 +1398,7 @@ function Supplier360Modal({
         tax_number: form.tax_number.trim() || null,
         praz_number: form.praz_number.trim() || null,
         nssa_number: form.nssa_number.trim() || null,
+        address: form.address.trim() || null,
         primary_contact_name: form.primary_contact_name.trim() || null,
         primary_contact_email: form.primary_contact_email.trim() || null,
         primary_contact_phone: form.primary_contact_phone.trim() || null,
@@ -1493,6 +1495,7 @@ function Supplier360Modal({
                   <SupplierField label="Tax clearance number" value={form.tax_number} onChange={(v) => updateField("tax_number", v)} />
                   <SupplierField label="PRAZ number" value={form.praz_number} onChange={(v) => updateField("praz_number", v)} />
                   <SupplierField label="NSSA number" value={form.nssa_number} onChange={(v) => updateField("nssa_number", v)} />
+                  <SupplierField label="Address" value={form.address} onChange={(v) => updateField("address", v)} />
                   <SupplierField label="Currency" value={form.currency} onChange={(v) => updateField("currency", v.toUpperCase().slice(0, 3))} />
                   <SupplierSelect label="Supplier status" value={form.status} options={SUPPLIER_STATUSES} onChange={(v) => updateField("status", v)} />
                   <SupplierSelect label="Compliance status" value={form.compliance_status} options={SUPPLIER_COMPLIANCE_STATUSES} onChange={(v) => updateField("compliance_status", v)} />
@@ -1887,6 +1890,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
     tax_number: "",
     praz_number: "",
     nssa_number: "",
+    address: "",
     primary_contact_name: "",
     primary_contact_email: "",
     primary_contact_phone: "",
@@ -1907,6 +1911,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
         tax_number: form.tax_number.trim() || undefined,
         praz_number: form.praz_number.trim() || undefined,
         nssa_number: form.nssa_number.trim() || undefined,
+        address: form.address.trim() || undefined,
         primary_contact_name: form.primary_contact_name.trim() || undefined,
         primary_contact_email: form.primary_contact_email.trim() || undefined,
         primary_contact_phone: form.primary_contact_phone.trim() || undefined,
@@ -1960,6 +1965,10 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
             <div>
               <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">NSSA Number</label>
               <input value={form.nssa_number} onChange={(e) => setForm({ ...form, nssa_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Address</label>
+              <input value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
           </div>
           <div className="border-t border-ink-mid pt-3.5">

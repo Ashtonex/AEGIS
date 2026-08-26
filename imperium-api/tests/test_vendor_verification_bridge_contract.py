@@ -16,17 +16,26 @@ class VendorVerificationBridgeContractTests(unittest.TestCase):
         self.assertIn("LEFT JOIN procurement.suppliers ps", VENDOR_CHECK)
         self.assertIn("NULLIF(ps.primary_contact_email, '')", VENDOR_CHECK)
         self.assertIn("NULLIF(ps.tax_number, '')", VENDOR_CHECK)
+        self.assertIn("NULLIF(ps.address, '')", VENDOR_CHECK)
         self.assertIn("NULLIF(s.submission_data->>'company_address', '')", VENDOR_CHECK)
 
     def test_system_check_accepts_uploaded_supplier_compliance_documents(self):
         self.assertIn("procurement.supplier_compliance_documents scd", VENDOR_CHECK)
         self.assertIn("scd.status NOT IN ('rejected', 'needs_update')", VENDOR_CHECK)
         self.assertIn("scd.supplier_id = s.linked_supplier_id", VENDOR_CHECK)
+        self.assertIn("normalize_compliance_category", VENDOR_CHECK)
+        self.assertIn("dl.entity_type = 'supplier'", VENDOR_CHECK)
+        self.assertIn("registration_certificate", VENDOR_CHECK)
+
+    def test_system_check_survives_missing_supplier_compliance_table(self):
+        self.assertIn("to_regclass('procurement.supplier_compliance_documents')", VENDOR_CHECK)
+        self.assertIn("doc_sql =", VENDOR_CHECK)
 
     def test_hr_detail_endpoint_returns_combined_profile_and_documents(self):
         self.assertIn('@router.get("/{subcontractor_id}", summary="Get a combined supplier/subcontractor profile for HR review")', HR_ROUTER)
         self.assertIn('"filled_fields": filled_fields', HR_ROUTER)
         self.assertIn('"documents": documents', HR_ROUTER)
+        self.assertIn("NULLIF(ps.address, '')", HR_ROUTER)
         self.assertIn("scd.supplier_id = s.linked_supplier_id", HR_ROUTER)
 
     def test_hr_queue_survives_document_table_migration_gap(self):

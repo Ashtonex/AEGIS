@@ -32,6 +32,7 @@ SUPPLIER_EDIT_COLUMNS = {
     "tax_number",
     "praz_number",
     "nssa_number",
+    "address",
     "primary_contact_name",
     "primary_contact_email",
     "primary_contact_phone",
@@ -197,7 +198,7 @@ async def ensure_supplier_subcontractor_bridge(
 
     supplier_row = await db.execute(
         text("""
-            SELECT supplier_name, trading_name, registration_number, tax_number, praz_number, nssa_number,
+            SELECT supplier_name, trading_name, registration_number, tax_number, praz_number, nssa_number, address,
                    primary_contact_name, primary_contact_email, primary_contact_phone, compliance_status
             FROM procurement.suppliers
             WHERE id = :supplier_id AND organization_id = :org_id AND is_deleted = false
@@ -213,12 +214,12 @@ async def ensure_supplier_subcontractor_bridge(
         text("""
             INSERT INTO crm.subcontractors (
                 organization_id, created_by, name, registration_number, tax_clearance_number,
-                praz_number, nssa_number, contact_name, contact_email, contact_phone,
+                praz_number, nssa_number, address, contact_name, contact_email, contact_phone,
                 compliance_status, linked_supplier_id, submission_data
             )
             VALUES (
                 :org_id, :user_id, :name, :registration_number, :tax_clearance_number,
-                :praz_number, :nssa_number, :contact_name, :contact_email, :contact_phone,
+                :praz_number, :nssa_number, :address, :contact_name, :contact_email, :contact_phone,
                 :compliance_status, :supplier_id, CAST(:submission_data AS jsonb)
             )
             RETURNING id
@@ -231,6 +232,7 @@ async def ensure_supplier_subcontractor_bridge(
             "tax_clearance_number": data.get("tax_number"),
             "praz_number": data.get("praz_number"),
             "nssa_number": data.get("nssa_number"),
+            "address": data.get("address"),
             "contact_name": data.get("primary_contact_name"),
             "contact_email": data.get("primary_contact_email"),
             "contact_phone": data.get("primary_contact_phone"),
@@ -260,6 +262,7 @@ async def sync_supplier_subcontractor_bridge(
                 tax_clearance_number = COALESCE(s.tax_number, sc.tax_clearance_number),
                 praz_number = COALESCE(s.praz_number, sc.praz_number),
                 nssa_number = COALESCE(s.nssa_number, sc.nssa_number),
+                address = COALESCE(s.address, sc.address),
                 contact_name = COALESCE(s.primary_contact_name, sc.contact_name),
                 contact_email = COALESCE(s.primary_contact_email, sc.contact_email),
                 contact_phone = COALESCE(s.primary_contact_phone, sc.contact_phone),
@@ -347,16 +350,26 @@ async def create_item(
         subcontractor_row = await db.execute(
             text("""
                 INSERT INTO crm.subcontractors (
-                    organization_id, created_by, name, contact_name, contact_email, contact_phone,
+                    organization_id, created_by, name, registration_number, tax_clearance_number,
+                    praz_number, nssa_number, address, contact_name, contact_email, contact_phone,
                     compliance_status, linked_supplier_id
                 )
-                VALUES (:org_id, :user_id, :name, :contact_name, :contact_email, :contact_phone, :compliance_status, :supplier_id)
+                VALUES (
+                    :org_id, :user_id, :name, :registration_number, :tax_clearance_number,
+                    :praz_number, :nssa_number, :address, :contact_name, :contact_email, :contact_phone,
+                    :compliance_status, :supplier_id
+                )
                 RETURNING id
             """),
             {
                 "org_id": user["org_id"],
                 "user_id": user["sub"],
                 "name": payload.get("supplier_name") or payload.get("primary_contact_name"),
+                "registration_number": payload.get("registration_number"),
+                "tax_clearance_number": payload.get("tax_number"),
+                "praz_number": payload.get("praz_number"),
+                "nssa_number": payload.get("nssa_number"),
+                "address": payload.get("address"),
                 "contact_name": payload.get("primary_contact_name"),
                 "contact_email": payload.get("primary_contact_email"),
                 "contact_phone": payload.get("primary_contact_phone"),

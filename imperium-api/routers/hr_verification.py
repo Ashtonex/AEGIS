@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_notification
 from app.shared.pagination import ok
-from app.shared.vendor_verification import run_system_verification_check
+from app.shared.vendor_verification import normalize_compliance_category, run_system_verification_check
 from core.database import get_db, supabase
 from core.security import get_current_user, require_permission
 
@@ -130,11 +130,11 @@ async def list_vendor_verification_queue(
         SELECT
             s.id,
             COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
-            COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, '')) AS registration_number,
-            COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, '')) AS tax_clearance_number,
-            COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, '')) AS contact_name,
-            COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, '')) AS contact_email,
-            COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, '')) AS contact_phone,
+            COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
+            COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
+            COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
+            COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
+            COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
             s.compliance_status, s.verification_stage,
             s.system_verified_at, s.system_verification_notes,
             s.hr_verified_by, s.hr_verified_at, s.hr_verification_notes,
@@ -177,14 +177,14 @@ async def get_vendor_verification_detail(
                     s.hr_verification_notes,
                     s.submission_data->>'account_type' AS account_type,
                     COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
-                    COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, '')) AS registration_number,
-                    COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, '')) AS tax_clearance_number,
-                    COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, '')) AS nssa_number,
-                    COALESCE(NULLIF(s.praz_number, ''), NULLIF(ps.praz_number, '')) AS praz_number,
-                    COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, '')) AS contact_name,
-                    COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, '')) AS contact_email,
-                    COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, '')) AS contact_phone,
-                    COALESCE(NULLIF(s.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address,
+                    COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
+                    COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
+                    COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, ''), NULLIF(s.submission_data->>'nssa_number', '')) AS nssa_number,
+                    COALESCE(NULLIF(s.praz_number, ''), NULLIF(ps.praz_number, ''), NULLIF(s.submission_data->>'praz_number', '')) AS praz_number,
+                    COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
+                    COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
+                    COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
+                    COALESCE(NULLIF(s.address, ''), NULLIF(ps.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address,
                     s.coverage_provinces,
                     s.submission_data->>'preferred_contact_method' AS preferred_contact_method,
                     s.submission_data->>'alternate_contact_name' AS alternate_contact_name,
@@ -489,7 +489,11 @@ async def decide_vendor_verification(
             """),
             {"org_id": org_id, "subcontractor_id": str(subcontractor_id)},
         )
-        verified_types = {doc.document_type for doc in docs if doc.status == "verified"}
+        verified_types = {
+            category
+            for category in (normalize_compliance_category(doc.document_type) for doc in docs if doc.status == "verified")
+            if category
+        }
         missing_verified = [
             label
             for key, label in SUPPLIER_COMPLIANCE_DOCUMENT_TYPES.items()
