@@ -12,6 +12,9 @@ PORTAL_LOGIN = (
 BACKEND_URL = (
     ROOT.parent / "aegis-web" / "src" / "lib" / "backend-url.ts"
 ).read_text(encoding="utf-8")
+API_PROXY = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "api" / "proxy.ts"
+).read_text(encoding="utf-8")
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 PORTALS_ROUTER = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 
@@ -56,6 +59,10 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('"/api/tenders": "/api/v1/public/intake/tenders"', WEB_API)
         self.assertIn('"/api/cms/website-content": "/api/v1/public/intake/website-content"', WEB_API)
         self.assertIn('"/api/cms/broadcast-feeds": "/api/v1/public/intake/broadcast-feeds"', WEB_API)
+
+    def test_next_api_proxy_preserves_binary_multipart_upload_bodies(self):
+        self.assertIn("await req.arrayBuffer()", API_PROXY)
+        self.assertNotIn("await req.text()", API_PROXY)
 
     def test_portal_login_surfaces_actionable_api_failures(self):
         self.assertIn("setError(accessError.message)", PORTAL_LOGIN)
