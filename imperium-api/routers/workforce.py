@@ -671,4 +671,25 @@ async def list_my_attendance(
     )
     data = [dict(row._mapping) for row in rows]
     return result(data, "Attendance records listed.", len(data))
-    return result({"id": str(row.scalar())}, "Attendance event recorded.")
+
+
+@router.get("/{employee_id}")
+async def get_employee(
+    employee_id: UUID,
+    user: dict = Depends(require_permission("workforce.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.execute(
+        text("""
+            SELECT e.*
+            FROM hr.employees e
+            WHERE e.id = :employee_id
+              AND e.organization_id = :org_id
+              AND e.is_deleted = false
+        """),
+        {"employee_id": employee_id, "org_id": user["org_id"]},
+    )
+    employee = row.first()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return result(dict(employee._mapping), "Employee retrieved.")

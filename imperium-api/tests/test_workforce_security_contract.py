@@ -18,6 +18,12 @@ class WorkforceSecurityContractTests(unittest.TestCase):
             'include_router(workforce.router, prefix="/api/v1/workforce", tags=["Workforce"], dependencies=[Depends(require_resource_permission("workforce"))])',
             MAIN,
         )
+        self.assertIn('@router.get("/{employee_id}")', WORKFORCE_ROUTER)
+        self.assertIn("Employee retrieved.", WORKFORCE_ROUTER)
+        self.assertLess(
+            WORKFORCE_ROUTER.index('@router.get("/allocations")'),
+            WORKFORCE_ROUTER.index('@router.get("/{employee_id}")'),
+        )
 
     def test_all_record_access_is_organization_scoped(self):
         # List, lookup, update, and soft-delete must all carry the authenticated org predicate.
