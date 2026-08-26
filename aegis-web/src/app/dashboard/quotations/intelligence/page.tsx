@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import {
   Brain, ShieldAlert, Cpu, Calculator, TrendingUp, Calendar, AlertTriangle,
@@ -16,6 +16,7 @@ import {
   generateSpendForecast,
   auditSiteRequest,
   watchDocumentRevision,
+  getQuotations,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -59,6 +60,70 @@ const INTELLIGENCE_TOUR_STEPS: ModuleTourStep[] = [
   },
 ];
 
+type QuotationRecord = {
+  id: string;
+  client_name?: string;
+  quote_amount?: number | string;
+  project_id?: string | null;
+  status?: string;
+  metadata?: {
+    project_title?: string;
+    reference_number?: string;
+    direct_costs?: number;
+    profit_pct?: number;
+    built_area_sqm?: number;
+    area_sqm?: number;
+    project_duration_weeks?: number;
+    duration_weeks?: number;
+    currency?: string;
+    items?: Array<Record<string, unknown>>;
+  };
+};
+
+function toNumber(value: unknown, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function quoteTitle(quote: QuotationRecord): string {
+  return quote.metadata?.project_title || quote.client_name || `Quotation ${quote.id.slice(0, 8)}`;
+}
+
+function getQuoteIntelligenceItems(quote: QuotationRecord | null) {
+  const items = quote?.metadata?.items;
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      const description = String(item.description || item.name || "Unspecified work item");
+      const quantity = toNumber(item.quantity ?? item.qty, 0);
+      const rate = toNumber(item.rate ?? item.unit_rate, 0);
+      const buildup = Array.isArray(item.buildup) ? item.buildup : [];
+      const totals = buildup.reduce(
+        (acc, row: any) => {
+          const rowTotal = toNumber(row.total, toNumber(row.qty, 0) * toNumber(row.rate, 0));
+          const type = String(row.type || "other").toLowerCase();
+          if (type.includes("material")) acc.material_rate += rowTotal / Math.max(quantity, 1);
+          else if (type.includes("labour") || type.includes("labor")) acc.labour_rate += rowTotal / Math.max(quantity, 1);
+          else if (type.includes("equipment") || type.includes("plant")) acc.equipment_rate += rowTotal / Math.max(quantity, 1);
+          else if (type.includes("subcontract")) acc.subcontractor_rate += rowTotal / Math.max(quantity, 1);
+          return acc;
+        },
+        { material_rate: 0, labour_rate: 0, equipment_rate: 0, subcontractor_rate: 0 },
+      );
+      return {
+        description,
+        quantity,
+        unit: String(item.unit || item.uom || "unit"),
+        rate,
+        material_rate: toNumber(item.material_rate, totals.material_rate),
+        labour_rate: toNumber(item.labour_rate ?? item.labor_rate, totals.labour_rate),
+        equipment_rate: toNumber(item.equipment_rate, totals.equipment_rate),
+        subcontractor_rate: toNumber(item.subcontractor_rate, totals.subcontractor_rate),
+      };
+    })
+    .filter((item) => item.description && (item.quantity > 0 || item.rate > 0));
+}
+
 export default function QuotationIntelligencePage() {
   const { session } = useAuth();
   const intelligenceTour = useModuleTour("quotations_intelligence");
@@ -67,10 +132,13 @@ export default function QuotationIntelligencePage() {
   >("brain");
 
   const [loading, setLoading] = useState(false);
+  const [loadingQuotes, setLoadingQuotes] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
   // --- TAB 1: BRAIN EVALUATION STATE --- //
-  const [projectTitle, setProjectTitle] = useState("SNC Commercial Lodge Project");
+  const [quotations, setQuotations] = useState<QuotationRecord[]>([]);
+  const [selectedQuotationId, setSelectedQuotationId] = useState("");
+  const [projectTitle, setProjectTitle] = useState("");
   const [builtAreaSqm, setBuiltAreaSqm] = useState(450);
   const [durationWeeks, setDurationWeeks] = useState(16);
   const [profitRatePct, setProfitRatePct] = useState(18);
@@ -91,65 +159,65 @@ export default function QuotationIntelligencePage() {
   const [spendForecastResult, setSpendForecastResult] = useState<any>(null);
 
   // --- TAB 5: COMMERCIAL GUARD (BS DETECTOR) STATE --- //
-  const [guardRequesterName, setGuardRequesterName] = useState("Site Foreman - Dave Miller");
-  const [guardItemDesc, setGuardItemDesc] = useState("Cement 50kg bags (42.5N)");
-  const [guardRequestedQty, setGuardRequestedQty] = useState(500);
-  const [guardEarnedQty, setGuardEarnedQty] = useState(280);
-  const [guardUnitRate, setGuardUnitRate] = useState(12.50);
-  const [guardHistRate, setGuardHistRate] = useState(12.20);
+  const [guardRequesterName, setGuardRequesterName] = useState("");
+  const [guardItemDesc, setGuardItemDesc] = useState("");
+  const [guardRequestedQty, setGuardRequestedQty] = useState(0);
+  const [guardEarnedQty, setGuardEarnedQty] = useState(0);
+  const [guardUnitRate, setGuardUnitRate] = useState(0);
+  const [guardHistRate, setGuardHistRate] = useState(0);
   const [guardAuditResult, setGuardAuditResult] = useState<any>(null);
 
   // --- TAB 6: DOCUMENT WATCHER STATE --- //
-  const [docName, setDocName] = useState("Structural Drawing Rev R2 - Foundation Beam Scale Up");
-  const [docRevision, setDocRevision] = useState("R2");
-  const [docOrigCost, setDocOrigCost] = useState(100000);
-  const [docRevisedCost, setDocRevisedCost] = useState(118400);
-  const [docContractValue, setDocContractValue] = useState(130000);
+  const [docName, setDocName] = useState("");
+  const [docRevision, setDocRevision] = useState("");
+  const [docOrigCost, setDocOrigCost] = useState(0);
+  const [docRevisedCost, setDocRevisedCost] = useState(0);
+  const [docContractValue, setDocContractValue] = useState(0);
   const [docResult, setDocResult] = useState<any>(null);
 
   // --- INITIAL DATA LOAD --- //
+  const selectedQuotation = useMemo(
+    () => quotations.find((quote) => quote.id === selectedQuotationId) || null,
+    [quotations, selectedQuotationId],
+  );
+  const selectedQuoteItems = useMemo(() => getQuoteIntelligenceItems(selectedQuotation), [selectedQuotation]);
+
+  const handleFetchQuotations = useCallback(async () => {
+    setLoadingQuotes(true);
+    try {
+      const res = await getQuotations({ limit: 100, sort_by: "created_at", sort_dir: "desc" });
+      const liveQuotes = res.success && Array.isArray(res.data) ? (res.data as QuotationRecord[]) : [];
+      setQuotations(liveQuotes);
+      setSelectedQuotationId((current) => current || liveQuotes[0]?.id || "");
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to load live quotations.");
+    } finally {
+      setLoadingQuotes(false);
+    }
+  }, []);
+
   const handleEvaluateBrain = useCallback(async () => {
     setLoading(true);
     setErrorMsg("");
     try {
+      if (!selectedQuotation) {
+        setBrainResult(null);
+        setErrorMsg("No live quotation is selected. Create or select a quotation before running intelligence.");
+        return;
+      }
+      if (selectedQuoteItems.length === 0) {
+        setBrainResult(null);
+        setErrorMsg("The selected quotation has no BOQ line items. Upload or build the BOQ first, then run intelligence.");
+        return;
+      }
       const payload = {
-        quotation_id: "QT-INTEL-2026-001",
-        project_title: projectTitle,
+        quotation_id: selectedQuotation.id,
+        project_id: selectedQuotation.project_id || undefined,
+        project_title: projectTitle || quoteTitle(selectedQuotation),
         built_area_sqm: builtAreaSqm,
         profit_rate: profitRatePct / 100.0,
         project_duration_weeks: durationWeeks,
-        items: [
-          {
-            description: "Reinforced Concrete Foundations & Slab (25MPa)",
-            quantity: 85,
-            unit: "m3",
-            rate: 145.0,
-            material_rate: 70.0,
-            labour_rate: 45.0,
-            equipment_rate: 20.0,
-            subcontractor_rate: 10.0,
-          },
-          {
-            description: "Structural Brickwork 230mm Double Skin",
-            quantity: 620,
-            unit: "m2",
-            rate: 52.0,
-            material_rate: 28.0,
-            labour_rate: 20.0,
-            equipment_rate: 0.0,
-            subcontractor_rate: 4.0,
-          },
-          {
-            description: "Pitched IBR Roofing & Timber Structure",
-            quantity: 480,
-            unit: "m2",
-            rate: 35.0,
-            material_rate: 22.0,
-            labour_rate: 10.0,
-            equipment_rate: 0.0,
-            subcontractor_rate: 3.0,
-          },
-        ],
+        items: selectedQuoteItems,
       };
       const res = await evaluateQuotationIntelligence(payload);
       if (res.success) {
@@ -160,7 +228,7 @@ export default function QuotationIntelligencePage() {
     } finally {
       setLoading(false);
     }
-  }, [projectTitle, builtAreaSqm, profitRatePct, durationWeeks]);
+  }, [selectedQuotation, selectedQuoteItems, projectTitle, builtAreaSqm, profitRatePct, durationWeeks]);
 
   const handleFetchAssemblies = useCallback(async () => {
     try {
@@ -197,14 +265,14 @@ export default function QuotationIntelligencePage() {
 
   const handleGenerateForecast = useCallback(async () => {
     try {
+      if (!selectedQuotation || selectedQuoteItems.length === 0) {
+        setSpendForecastResult(null);
+        return;
+      }
       const payload = {
         project_duration_weeks: durationWeeks,
         profit_margin_pct: profitRatePct,
-        items: [
-          { description: "Concrete Works", quantity: 85, rate: 145.0, material_rate: 70.0, labour_rate: 45.0, equipment_rate: 20.0, subcontractor_rate: 10.0 },
-          { description: "Brickwork", quantity: 620, rate: 52.0, material_rate: 28.0, labour_rate: 20.0, equipment_rate: 0.0, subcontractor_rate: 4.0 },
-          { description: "Roofing", quantity: 480, rate: 35.0, material_rate: 22.0, labour_rate: 10.0, equipment_rate: 0.0, subcontractor_rate: 3.0 },
-        ],
+        items: selectedQuoteItems,
       };
       const res = await generateSpendForecast(payload);
       if (res.success) {
@@ -213,7 +281,7 @@ export default function QuotationIntelligencePage() {
     } catch (err: any) {
       setErrorMsg(err?.message || "Spend forecast failed.");
     }
-  }, [durationWeeks, profitRatePct]);
+  }, [selectedQuotation, selectedQuoteItems, durationWeeks, profitRatePct]);
 
   const handleAuditGuard = useCallback(async () => {
     try {
@@ -255,22 +323,39 @@ export default function QuotationIntelligencePage() {
   }, [docName, docRevision, docOrigCost, docRevisedCost, docContractValue, profitRatePct]);
 
   useEffect(() => {
-    void handleEvaluateBrain();
+    void handleFetchQuotations();
     void handleFetchAssemblies();
     void handleCalculateAssembly();
     void handleBenchmarkRate();
-    void handleGenerateForecast();
-    void handleAuditGuard();
-    void handleWatchDocument();
   }, [
-    handleEvaluateBrain,
+    handleFetchQuotations,
     handleFetchAssemblies,
     handleCalculateAssembly,
     handleBenchmarkRate,
-    handleGenerateForecast,
-    handleAuditGuard,
-    handleWatchDocument,
   ]);
+
+  useEffect(() => {
+    if (!selectedQuotation) return;
+    const title = quoteTitle(selectedQuotation);
+    setProjectTitle(title);
+    setBuiltAreaSqm(toNumber(selectedQuotation.metadata?.built_area_sqm ?? selectedQuotation.metadata?.area_sqm, 450));
+    setDurationWeeks(toNumber(selectedQuotation.metadata?.project_duration_weeks ?? selectedQuotation.metadata?.duration_weeks, 16));
+    setProfitRatePct(toNumber(selectedQuotation.metadata?.profit_pct, 18));
+    setDocName(`${title} BOQ / Drawing Revision`);
+    setDocOrigCost(toNumber(selectedQuotation.metadata?.direct_costs, 0));
+    setDocRevisedCost(toNumber(selectedQuotation.metadata?.direct_costs, 0));
+    setDocContractValue(toNumber(selectedQuotation.quote_amount, 0));
+  }, [selectedQuotation]);
+
+  useEffect(() => {
+    if (!selectedQuotation || selectedQuoteItems.length === 0) {
+      setBrainResult(null);
+      setSpendForecastResult(null);
+      return;
+    }
+    void handleEvaluateBrain();
+    void handleGenerateForecast();
+  }, [selectedQuotation?.id, selectedQuoteItems, handleEvaluateBrain, handleGenerateForecast, selectedQuotation]);
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 text-paper font-sans">
@@ -313,7 +398,7 @@ export default function QuotationIntelligencePage() {
           </Link>
           <button
             onClick={handleEvaluateBrain}
-            disabled={loading}
+            disabled={loading || loadingQuotes || !selectedQuotation || selectedQuoteItems.length === 0}
             className="flex items-center space-x-2 bg-signal text-ink px-4 py-2 text-xs font-semibold rounded hover:bg-signal-hover transition-all"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -432,6 +517,33 @@ export default function QuotationIntelligencePage() {
 
               <div className="space-y-3 text-xs">
                 <div>
+                  <label className="text-slate block mb-1">Live Quotation</label>
+                  <select
+                    value={selectedQuotationId}
+                    onChange={(e) => setSelectedQuotationId(e.target.value)}
+                    disabled={loadingQuotes || quotations.length === 0}
+                    className="w-full bg-ink border border-ink-mid rounded p-2 text-white font-mono focus:border-signal outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {quotations.length === 0 ? (
+                      <option value="">{loadingQuotes ? "Loading quotations..." : "No live quotations found"}</option>
+                    ) : (
+                      quotations.map((quote) => (
+                        <option key={quote.id} value={quote.id}>
+                          {quoteTitle(quote)} - {quote.status || "draft"} - {quote.metadata?.items?.length || 0} BOQ lines
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  {selectedQuotation ? (
+                    <p className="mt-1 text-[11px] text-slate-light">
+                      Using {selectedQuoteItems.length} BOQ line{selectedQuoteItems.length === 1 ? "" : "s"} from {selectedQuotation.metadata?.reference_number || selectedQuotation.id.slice(0, 8)}.
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-amber-300">Create a quotation or BOQ first, then run the intelligence engine from here.</p>
+                  )}
+                </div>
+
+                <div>
                   <label className="text-slate block mb-1">Project Title</label>
                   <input
                     type="text"
@@ -475,7 +587,7 @@ export default function QuotationIntelligencePage() {
 
                 <button
                   onClick={handleEvaluateBrain}
-                  disabled={loading}
+                  disabled={loading || loadingQuotes || !selectedQuotation || selectedQuoteItems.length === 0}
                   className="w-full bg-signal text-ink py-2.5 font-bold rounded text-xs hover:bg-signal-hover transition-all flex items-center justify-center space-x-2"
                 >
                   <Brain className="w-4 h-4" />
@@ -1224,37 +1336,10 @@ export default function QuotationIntelligencePage() {
 
             <div className="space-y-4">
               <div className="p-4 bg-ink border border-ink-mid rounded-lg space-y-3 font-mono text-xs">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <span className="px-2 py-0.5 bg-red-950/60 text-red-400 border border-red-500/30 rounded font-bold text-[10px] uppercase">
-                      OPEN INVESTIGATION CASE #INV-2026-088
-                    </span>
-                    <span className="text-white font-bold">John Foreman (Site Supervisor - Zone 4)</span>
-                  </div>
-                  <span className="text-signal font-bold">Risk Profile Score: 85/100 (HIGH RISK)</span>
-                </div>
-
+                <p className="text-white font-bold">No live investigation cases found.</p>
                 <p className="text-slate">
-                  User logged 3 consecutive material over-requests (+78.5% cement overage, +42% rebar steel overage) exceeding site earned progress. Evidence pack locked for MD investigation.
+                  Cases will appear here after real Commercial Guard audits flag repeat or high-risk over-requests.
                 </p>
-
-                <div className="flex items-center space-x-3 pt-2">
-                  <button
-                    disabled
-                    title="Not yet implemented - no backend action is wired to this button."
-                    className="bg-red-500/10 text-red-400/50 border border-red-500/20 px-3 py-1.5 rounded font-bold cursor-not-allowed"
-                  >
-                    Freeze Material Ordering Permissions
-                  </button>
-                  <button
-                    disabled
-                    title="Not yet implemented - no backend action is wired to this button."
-                    className="bg-signal/30 text-ink/50 px-3 py-1.5 rounded font-bold cursor-not-allowed"
-                  >
-                    Export MD Evidence Pack (PDF)
-                  </button>
-                  <span className="text-[10px] text-slate uppercase tracking-wide">Coming soon</span>
-                </div>
               </div>
             </div>
           </div>
