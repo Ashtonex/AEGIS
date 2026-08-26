@@ -9,6 +9,8 @@ class BOQItem(BaseModel):
     model_config = ConfigDict(coerce_numbers_to_str=False)
 
     description: str
+    section: str = Field(default="Measured Works")
+    item_no: str = Field(default="")
     quantity: Decimal = Field(default=Decimal("0"))
     unit: str = Field(default="item")
     rate: Decimal = Field(default=Decimal("0"))
@@ -136,6 +138,7 @@ class QuotationCalculator:
         total_subcontractors = Decimal("0")
         total_transport = Decimal("0")
         total_waste = Decimal("0")
+        section_totals: Dict[str, Decimal] = {}
 
         for item in raw_items:
             qty = cls.sanitize_decimal(item.get("quantity"))
@@ -150,6 +153,8 @@ class QuotationCalculator:
             waste = cls.sanitize_decimal(item.get("waste_allowance_rate"))
 
             desc = str(item.get("description", "Unspecified item"))
+            section = str(item.get("section") or "Measured Works").strip() or "Measured Works"
+            item_no = str(item.get("item_no") or item.get("itemNo") or "").strip()
             unit = str(item.get("unit", "m"))
 
             # Zero out negative quantities/rates - but flag it, since silently
@@ -189,6 +194,8 @@ class QuotationCalculator:
             boq_items.append(
                 BOQItem(
                     description=desc,
+                    section=section,
+                    item_no=item_no,
                     quantity=qty,
                     unit=unit,
                     rate=rate,
@@ -204,6 +211,7 @@ class QuotationCalculator:
             # Sum up direct item costs
             item_cost = (qty * rate).quantize(rounding_prec, rounding=ROUND_HALF_UP)
             direct_costs += item_cost
+            section_totals[section] = section_totals.get(section, Decimal("0")) + item_cost
 
             # Aggregate breakdown totals
             total_materials += (qty * mat).quantize(
@@ -324,6 +332,10 @@ class QuotationCalculator:
                 "transport": str(total_transport),
                 "waste_allowance": str(total_waste),
             },
+            "boq_section_totals": [
+                {"section": section, "amount": str(amount.quantize(rounding_prec, rounding=ROUND_HALF_UP))}
+                for section, amount in section_totals.items()
+            ],
             "estimation_controls": {
                 "built_area_sqm": str(built_area_sqm),
                 "finished_price_per_sqm": str(finished_price_per_sqm),
@@ -353,7 +365,13 @@ class QuotationCalculator:
             "built_area_sqm": str(built_area_sqm),
             "is_inflation_adjusted": is_inflation_adjusted,
             "items": [
-                {"description": bi.description, "quantity": str(bi.quantity), "rate": str(bi.rate)}
+                {
+                    "section": bi.section,
+                    "item_no": bi.item_no,
+                    "description": bi.description,
+                    "quantity": str(bi.quantity),
+                    "rate": str(bi.rate),
+                }
                 for bi in boq_items
             ],
         }
@@ -412,6 +430,8 @@ def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) 
         "items": [
             {
                 "description": it.get("description"),
+                "section": it.get("section") or "Measured Works",
+                "item_no": it.get("item_no") or it.get("itemNo") or "",
                 "quantity": it.get("qty"),
                 "unit": it.get("unit"),
                 "rate": it.get("rate"),

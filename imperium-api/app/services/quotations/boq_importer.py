@@ -2,6 +2,7 @@ import pandas as pd
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Dict, Any
 from io import BytesIO
+from openpyxl import load_workbook
 from app.services.quotations.calculator import BOQItem
 
 
@@ -43,6 +44,125 @@ class BOQImporter:
         except Exception:
             return Decimal("0"), True
 
+    @staticmethod
+    def _clean_text(val: Any) -> str:
+        if pd.isna(val) or val is None:
+            return ""
+        return str(val).strip()
+
+    @classmethod
+    def _import_excel_workbook(cls, file_content: bytes) -> BOQImportResult:
+        workbook = load_workbook(BytesIO(file_content), data_only=False, read_only=True)
+        warnings: List[str] = []
+        items: List[BOQItem] = []
+        total_direct_costs = Decimal("0")
+        rows_processed = 0
+        sections_seen: set[str] = set()
+
+        for ws in workbook.worksheets:
+            current_section = ws.title.strip() or "Measured Works"
+            header_map: Dict[str, int] = {}
+            pending_description = ""
+            sections_seen.add(current_section)
+
+            for row_number, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                values = list(row)
+                rows_processed += 1
+                normalized = [cls._clean_text(v).lower() for v in values]
+                joined = " ".join(v for v in normalized if v)
+
+                if not any(normalized):
+                    pending_description = ""
+                    continue
+
+                if "description" in joined or "details" in joined:
+                    for idx, value in enumerate(normalized):
+                        if value in {"item", "item no", "item no.", "no"}:
+                            header_map["item_no"] = idx
+                        elif "description" in value or "details" in value or value == "item":
+                            header_map["description"] = idx
+                        elif value in {"unit", "uom"}:
+                            header_map["unit"] = idx
+                        elif "quant" in value or value in {"qty", "quantity"}:
+                            header_map["quantity"] = idx
+                        elif "rate" in value or "unit rate" in value:
+                            header_map["rate"] = idx
+                    pending_description = ""
+                    continue
+
+                desc_idx = header_map.get("description", 1 if len(values) > 1 else 0)
+                item_idx = header_map.get("item_no", 0)
+                unit_idx = header_map.get("unit", 2)
+                qty_idx = header_map.get("quantity", 4 if len(values) > 4 else 3)
+                rate_idx = header_map.get("rate", 5 if len(values) > 5 else 4)
+
+                desc = cls._clean_text(values[desc_idx] if desc_idx < len(values) else "")
+                item_no = cls._clean_text(values[item_idx] if item_idx < len(values) else "")
+                unit = cls._clean_text(values[unit_idx] if unit_idx < len(values) else "")
+                raw_qty = values[qty_idx] if qty_idx < len(values) else None
+                raw_rate = values[rate_idx] if rate_idx < len(values) else None
+                qty, qty_parse_failed = cls._sanitize_decimal(raw_qty)
+                rate, rate_parse_failed = cls._sanitize_decimal(raw_rate)
+
+                has_measure = unit or qty != 0 or rate != 0
+                if desc and not has_measure:
+                    heading = desc.upper()
+                    heading_like = desc == heading
+                    if heading_like:
+                        current_section = heading
+                        sections_seen.add(current_section)
+                    elif pending_description or item_no:
+                        pending_description = f"{pending_description} {desc}".strip()
+                    elif items:
+                        last_item = items[-1]
+                        last_item.description = f"{last_item.description} {desc}".strip()
+                    else:
+                        pending_description = f"{pending_description} {desc}".strip()
+                    continue
+
+                if not desc and pending_description and has_measure:
+                    desc = pending_description
+                    pending_description = ""
+                elif desc and pending_description and has_measure:
+                    desc = f"{pending_description} {desc}".strip()
+                    pending_description = ""
+
+                if not desc or "total carried" in desc.lower() or "final summary" in desc.lower():
+                    continue
+
+                if qty_parse_failed:
+                    warnings.append(f"{ws.title} row {row_number}: Could not parse quantity '{raw_qty}' as a number; treated as 0.")
+                if rate_parse_failed:
+                    warnings.append(f"{ws.title} row {row_number}: Could not parse rate '{raw_rate}' as a number; treated as 0.")
+                if qty < 0:
+                    warnings.append(f"{ws.title} row {row_number}: Negative quantity ({qty}) set to 0.")
+                    qty = Decimal("0")
+                if rate < 0:
+                    warnings.append(f"{ws.title} row {row_number}: Negative rate ({rate}) set to 0.")
+                    rate = Decimal("0")
+
+                item = BOQItem(
+                    section=current_section,
+                    item_no=item_no,
+                    description=desc,
+                    quantity=qty,
+                    unit=unit or "item",
+                    rate=rate,
+                )
+                items.append(item)
+                total_direct_costs += (qty * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        return BOQImportResult(
+            items=items,
+            warnings=warnings,
+            summary={
+                "total_rows_processed": rows_processed,
+                "valid_items_imported": len(items),
+                "section_count": len(sections_seen),
+                "total_direct_costs": str(total_direct_costs),
+            },
+        )
+
     @classmethod
     def import_boq(cls, file_content: bytes, file_extension: str) -> BOQImportResult:
         """
@@ -54,8 +174,7 @@ class BOQImporter:
 
         try:
             if file_extension.lower() in [".xlsx", ".xls"]:
-                # Read using openpyxl for Excel files
-                df = pd.read_excel(BytesIO(file_content), engine="openpyxl")
+                return cls._import_excel_workbook(file_content)
             elif file_extension.lower() == ".csv":
                 df = pd.read_csv(BytesIO(file_content))
             else:
@@ -86,6 +205,8 @@ class BOQImporter:
         qty_cols = ["quantity", "qty", "volume", "amount_qty"]
         unit_cols = ["unit", "uom", "measure"]
         rate_cols = ["rate", "unit rate", "price", "unit price", "cost"]
+        section_cols = ["section", "bill", "trade", "heading", "category"]
+        item_no_cols = ["item no", "item no.", "item_no", "item", "no"]
 
         # Helper to find first matching column
         def find_col(possible_names: List[str], fallback: str) -> str:
@@ -98,6 +219,8 @@ class BOQImporter:
         qty_col = find_col(qty_cols, "quantity")
         unit_col = find_col(unit_cols, "unit")
         rate_col = find_col(rate_cols, "rate")
+        section_col = find_col(section_cols, "section")
+        item_no_col = find_col(item_no_cols, "item_no")
 
         if desc_col not in df.columns:
             warnings.append(
@@ -115,6 +238,8 @@ class BOQImporter:
             raw_qty = row.get(qty_col) if qty_col in df.columns else None
             raw_unit = row.get(unit_col) if unit_col in df.columns else None
             raw_rate = row.get(rate_col) if rate_col in df.columns else None
+            raw_section = row.get(section_col) if section_col in df.columns else None
+            raw_item_no = row.get(item_no_col) if item_no_col in df.columns else None
 
             # Skip completely empty rows
             if pd.isna(raw_desc) and pd.isna(raw_qty) and pd.isna(raw_rate):
@@ -141,7 +266,9 @@ class BOQImporter:
                 warnings.append(f"Row {idx + 1}: Negative rate ({rate}) set to 0.")
                 rate = Decimal("0")
 
-            boq_item = BOQItem(description=desc, quantity=qty, unit=unit, rate=rate)
+            section = str(raw_section).strip() if section_col in df.columns and not pd.isna(raw_section) else "Measured Works"
+            item_no = str(raw_item_no).strip() if item_no_col in df.columns and not pd.isna(raw_item_no) else ""
+            boq_item = BOQItem(section=section, item_no=item_no, description=desc, quantity=qty, unit=unit, rate=rate)
             items.append(boq_item)
 
             item_cost = (qty * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

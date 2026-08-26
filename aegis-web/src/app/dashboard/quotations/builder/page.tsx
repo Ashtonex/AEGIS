@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
@@ -60,6 +60,8 @@ const BUILDER_TOUR_STEPS: ModuleTourStep[] = [
 ];
 
 interface LineItem {
+  section?: string;
+  item_no?: string;
   description: string;
   qty: number;
   unit: string;
@@ -72,6 +74,18 @@ interface LineItem {
     rate: number;
   }>;
 }
+
+const DEFAULT_BOQ_SECTION = "Measured Works";
+
+const normalizeLineItem = (item: any): LineItem => ({
+  section: item.section || DEFAULT_BOQ_SECTION,
+  item_no: item.item_no || item.itemNo || "",
+  description: item.description || "",
+  qty: Number(item.qty ?? item.quantity) || 0,
+  unit: item.unit || "unit",
+  rate: Number(item.rate) || 0,
+  buildup: Array.isArray(item.buildup) ? item.buildup : [],
+});
 
 export default function QuotationBuilder() {
   const { session } = useAuth();
@@ -127,7 +141,7 @@ export default function QuotationBuilder() {
   // shape) rather than a fabricated example, since a user who doesn't notice and
   // clear a pre-filled row could save it as a real line item on the quotation.
   const [lineItems, setLineItems] = useState<LineItem[]>([
-    { description: "", qty: 1, unit: "unit", rate: 0, buildup: [] }
+    { section: DEFAULT_BOQ_SECTION, item_no: "", description: "", qty: 1, unit: "unit", rate: 0, buildup: [] }
   ]);
 
   // Rate Buildup Modal State
@@ -145,7 +159,7 @@ export default function QuotationBuilder() {
   const [boqPreview, setBoqPreview] = useState<{
     file: File;
     warnings: string[];
-    rows: Array<{ selected: boolean; description: string; qty: number; unit: string; rate: number }>;
+    rows: Array<{ selected: boolean; section: string; item_no: string; description: string; qty: number; unit: string; rate: number }>;
   } | null>(null);
   const [boqImportMode, setBoqImportMode] = useState<"replace" | "append">("replace");
 
@@ -211,7 +225,7 @@ export default function QuotationBuilder() {
             setAssumptionsText(Array.isArray(meta.assumptions) ? meta.assumptions.join("\n") : "");
             setExclusionsText(Array.isArray(meta.exclusions) ? meta.exclusions.join("\n") : "");
             if (Array.isArray(meta.items)) {
-              setLineItems(meta.items);
+              setLineItems(meta.items.map(normalizeLineItem));
             }
           }
         } else {
@@ -274,7 +288,7 @@ export default function QuotationBuilder() {
           setLineItems((prev) => {
             const existingIsBlank = prev.length === 1 && !prev[0].description && prev[0].rate === 0;
             const base = existingIsBlank ? [] : prev;
-            return [...base, ...res.data!.items.map((it: any) => ({ ...it, buildup: [] }))];
+            return [...base, ...res.data!.items.map((it: any) => normalizeLineItem({ ...it, buildup: [] }))];
           });
           setSuccessMsg(`Loaded ${res.data.items.length} measurement(s) from the drawing takeoff. Add rates before saving.`);
         }
@@ -324,6 +338,22 @@ export default function QuotationBuilder() {
   // preliminaries) independently - profit is NOT compounded on top of
   // overhead/contingency.
   const directCosts = lineItems.reduce((acc, item) => acc + item.qty * item.rate, 0);
+  const boqSectionSummaries = useMemo(() => {
+    const summaries: Array<{ section: string; amount: number; itemCount: number }> = [];
+    const index = new Map<string, number>();
+    lineItems.forEach((item) => {
+      const section = item.section?.trim() || DEFAULT_BOQ_SECTION;
+      const amount = item.qty * item.rate;
+      if (!index.has(section)) {
+        index.set(section, summaries.length);
+        summaries.push({ section, amount: 0, itemCount: 0 });
+      }
+      const target = summaries[index.get(section)!];
+      target.amount += amount;
+      target.itemCount += 1;
+    });
+    return summaries;
+  }, [lineItems]);
   const totalDirectAndPrelims = directCosts + preliminaries;
   const overheadAmount = totalDirectAndPrelims * (overheadPct / 100);
   const contingencyAmount = totalDirectAndPrelims * (contingencyPct / 100);
@@ -358,9 +388,41 @@ export default function QuotationBuilder() {
     warnings.push("Pricing represents historical rates and has not been inflation-adjusted for current material price fluctuations. Recommend review against cost catalog.");
   }
 
+  const printBoqSectionSummaries = useMemo(() => {
+    const stored = printQuoteData?.metadata?.boq_sections;
+    if (Array.isArray(stored) && stored.length > 0) return stored;
+    const rows = Array.isArray(printQuoteData?.metadata?.items) ? printQuoteData.metadata.items : [];
+    const summaries: Array<{ section: string; amount: number; itemCount: number }> = [];
+    const index = new Map<string, number>();
+    rows.forEach((item: any) => {
+      const section = item.section || DEFAULT_BOQ_SECTION;
+      if (!index.has(section)) {
+        index.set(section, summaries.length);
+        summaries.push({ section, amount: 0, itemCount: 0 });
+      }
+      const target = summaries[index.get(section)!];
+      target.amount += (Number(item.qty) || 0) * (Number(item.rate) || 0);
+      target.itemCount += 1;
+    });
+    return summaries;
+  }, [printQuoteData]);
+
   // Add line items
   const addLineItem = () => {
-    setLineItems((prev) => [...prev, { description: "", qty: 1, unit: "unit", rate: 0, buildup: [] }]);
+    setLineItems((prev) => {
+      const section = prev[prev.length - 1]?.section || DEFAULT_BOQ_SECTION;
+      return [...prev, { section, item_no: "", description: "", qty: 1, unit: "unit", rate: 0, buildup: [] }];
+    });
+  };
+
+  const addBoqSection = () => {
+    const section = window.prompt("Section heading", `Bill ${boqSectionSummaries.length + 1}`);
+    if (!section?.trim()) return;
+    setLineItems((prev) => {
+      const existingIsBlank = prev.length === 1 && !prev[0].description && prev[0].rate === 0;
+      const base = existingIsBlank ? [] : prev;
+      return [...base, { section: section.trim(), item_no: "", description: "", qty: 1, unit: "unit", rate: 0, buildup: [] }];
+    });
   };
 
   const removeLineItem = (index: number) => {
@@ -387,11 +449,14 @@ export default function QuotationBuilder() {
       // support tab or comma separators
       const parts = rawLine.split(/[,\t]/);
       if (parts.length >= 2) {
-        const desc = parts[0].replace(/^["']|["']$/g, "").trim();
-        const qty = parseFloat(parts[1]) || 1;
-        const unit = parts[2] ? parts[2].trim() : "unit";
-        const rate = parts[3] ? parseFloat(parts[3]) : 0;
+        const sectionFirst = parts.length >= 5;
+        const desc = parts[sectionFirst ? 1 : 0].replace(/^["']|["']$/g, "").trim();
+        const qty = parseFloat(parts[sectionFirst ? 2 : 1]) || 1;
+        const unit = parts[sectionFirst ? 3 : 2] ? parts[sectionFirst ? 3 : 2].trim() : "unit";
+        const rate = parts[sectionFirst ? 4 : 3] ? parseFloat(parts[sectionFirst ? 4 : 3]) : 0;
         parsed.push({
+          section: sectionFirst ? parts[0].replace(/^["']|["']$/g, "").trim() || DEFAULT_BOQ_SECTION : DEFAULT_BOQ_SECTION,
+          item_no: "",
           description: desc,
           qty,
           unit,
@@ -438,6 +503,8 @@ export default function QuotationBuilder() {
           warnings: res.data?.warnings || [],
           rows: items.map((it: any) => ({
             selected: true,
+            section: it.section || DEFAULT_BOQ_SECTION,
+            item_no: it.item_no || "",
             description: it.description,
             qty: Number(it.quantity) || 0,
             unit: it.unit || "unit",
@@ -464,7 +531,7 @@ export default function QuotationBuilder() {
     });
   };
 
-  const editBoqPreviewRow = (index: number, field: "description" | "qty" | "unit" | "rate", value: any) => {
+  const editBoqPreviewRow = (index: number, field: "section" | "item_no" | "description" | "qty" | "unit" | "rate", value: any) => {
     setBoqPreview((prev) => {
       if (!prev) return prev;
       const rows = [...prev.rows];
@@ -483,7 +550,7 @@ export default function QuotationBuilder() {
       return;
     }
     const importedItems: LineItem[] = selectedRows.map((r) => ({
-      description: r.description, qty: r.qty, unit: r.unit, rate: r.rate, buildup: [],
+      section: r.section || DEFAULT_BOQ_SECTION, item_no: r.item_no || "", description: r.description, qty: r.qty, unit: r.unit, rate: r.rate, buildup: [],
     }));
 
     if (boqImportMode === "replace") {
@@ -611,6 +678,8 @@ export default function QuotationBuilder() {
         exclusions: exclusionsList,
         items: lineItems.map((item) => ({
           description: item.description,
+          section: item.section || DEFAULT_BOQ_SECTION,
+          item_no: item.item_no || "",
           quantity: item.qty,
           rate: item.rate,
           unit: item.unit,
@@ -663,6 +732,7 @@ export default function QuotationBuilder() {
         assumptions: assumptionsList,
         exclusions: exclusionsList,
         items: lineItems,
+        boq_sections: boqSectionSummaries,
         audit_trail_hash: auditTrailHash,
       }
     };
@@ -750,6 +820,8 @@ export default function QuotationBuilder() {
       exclusions: printQuoteData.metadata?.exclusions || [],
       items: printQuoteData.metadata?.items?.map((item: any) => ({
         description: item.description,
+        section: item.section || DEFAULT_BOQ_SECTION,
+        item_no: item.item_no || "",
         quantity: item.qty,
         rate: item.rate,
         unit: item.unit,
@@ -1266,14 +1338,36 @@ export default function QuotationBuilder() {
             <div data-tour="builder-boq" className="bg-ink-light border border-ink-mid p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
               <div className="flex justify-between items-center border-b border-ink-mid pb-2">
                 <h2 className="font-display font-semibold text-sm text-white">Bill of Quantities (BOQ)</h2>
-                <button
-                  type="button"
-                  onClick={addLineItem}
-                  className="flex items-center space-x-1 bg-signal text-ink px-2.5 py-1 text-xs font-semibold rounded-sm hover:bg-signal-hover transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Line</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={addBoqSection}
+                    className="flex items-center space-x-1 bg-ink border border-ink-mid text-slate hover:text-white px-2.5 py-1 text-xs font-semibold rounded-sm transition-colors"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-signal" />
+                    <span>Add Section</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={addLineItem}
+                    className="flex items-center space-x-1 bg-signal text-ink px-2.5 py-1 text-xs font-semibold rounded-sm hover:bg-signal-hover transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Line</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                {boqSectionSummaries.map((section) => (
+                  <div key={section.section} className="border border-ink-mid bg-ink px-3 py-2">
+                    <div className="font-mono text-[9px] uppercase text-slate truncate">{section.section}</div>
+                    <div className="mt-1 flex items-center justify-between text-xs">
+                      <span className="text-slate-light">{section.itemCount} line(s)</span>
+                      <span className="font-mono font-semibold text-white">${section.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </div>
+                  </div>
+                ))}
               </div>
 
               <div className="overflow-x-auto">
@@ -1281,6 +1375,8 @@ export default function QuotationBuilder() {
                   <thead>
                     <tr className="border-b border-ink-mid/60 text-slate font-mono uppercase tracking-wider text-[10px]">
                       <th className="pb-2 font-normal w-12 text-center">#</th>
+                      <th className="pb-2 font-normal w-40">Section</th>
+                      <th className="pb-2 font-normal w-20">Item No</th>
                       <th className="pb-2 font-normal">Description</th>
                       <th className="pb-2 font-normal w-20 text-center">Qty</th>
                       <th className="pb-2 font-normal w-20 text-center">Unit</th>
@@ -1301,6 +1397,22 @@ export default function QuotationBuilder() {
                           >
                             <Trash2 className="w-3 h-3" />
                           </button>
+                        </td>
+                        <td className="py-2 px-1">
+                          <input
+                            type="text"
+                            value={item.section || DEFAULT_BOQ_SECTION}
+                            onChange={(e) => handleLineItemChange(idx, "section", e.target.value)}
+                            className="w-full bg-transparent border-0 border-b border-transparent hover:border-ink-mid focus:border-signal outline-none text-slate-light text-xs py-1"
+                          />
+                        </td>
+                        <td className="py-2 px-1">
+                          <input
+                            type="text"
+                            value={item.item_no || ""}
+                            onChange={(e) => handleLineItemChange(idx, "item_no", e.target.value)}
+                            className="w-full bg-transparent border-0 border-b border-transparent hover:border-ink-mid focus:border-signal outline-none font-mono text-slate-light text-xs py-1"
+                          />
                         </td>
                         <td className="py-2">
                           <input 
@@ -1781,14 +1893,14 @@ export default function QuotationBuilder() {
                       </tr>
                     </thead>
                     <tbody>
-                      {printQuoteData.metadata?.items?.map((item: any, idx: number) => (
+                      {printBoqSectionSummaries.map((section: any, idx: number) => (
                         <tr key={idx} className="border-b border-ink-mid/30 hover:bg-white/[0.01] print:border-slate-100">
                           <td className="py-2.5 text-center font-mono text-slate print:text-black">{idx + 1}</td>
-                          <td className="py-2.5 text-slate-light print:text-black font-semibold">{item.description}</td>
-                          <td className="py-2.5 text-center font-mono text-slate print:text-black">{item.qty}</td>
-                          <td className="py-2.5 text-center font-mono text-slate print:text-black uppercase">{item.unit}</td>
+                          <td className="py-2.5 text-slate-light print:text-black font-semibold">{section.section}</td>
+                          <td className="py-2.5 text-center font-mono text-slate print:text-black">{section.itemCount}</td>
+                          <td className="py-2.5 text-center font-mono text-slate print:text-black uppercase">section</td>
                           <td className="py-2.5 text-right font-mono text-white print:text-black font-bold">
-                            ${(item.qty * item.rate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            ${Number(section.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </td>
                         </tr>
                       ))}
@@ -1875,6 +1987,7 @@ export default function QuotationBuilder() {
                         <tr key={idx} className="border-b border-ink-mid/30 hover:bg-white/[0.01] print:border-slate-100">
                           <td className="py-2.5 text-center font-mono text-slate print:text-black">{idx + 1}</td>
                           <td className="py-2.5 text-slate-light print:text-black font-semibold">
+                            <span className="block text-[9px] uppercase text-slate print:text-slate-500">{item.section || DEFAULT_BOQ_SECTION} {item.item_no ? ` / ${item.item_no}` : ""}</span>
                             {item.description}
                           </td>
                           <td className="py-2.5 text-center font-mono text-slate print:text-black">{item.qty}</td>
@@ -2011,6 +2124,8 @@ export default function QuotationBuilder() {
                 <thead className="sticky top-0 bg-ink-light">
                   <tr className="text-left font-mono text-[9px] text-slate uppercase">
                     <th className="p-2 w-8"></th>
+                    <th className="p-2 w-36">Section</th>
+                    <th className="p-2 w-20">Item No</th>
                     <th className="p-2">Description</th>
                     <th className="p-2 w-24">Qty</th>
                     <th className="p-2 w-24">Unit</th>
@@ -2023,6 +2138,22 @@ export default function QuotationBuilder() {
                     <tr key={idx} className={`border-t border-ink-mid/50 ${row.selected ? "" : "opacity-40"}`}>
                       <td className="p-2">
                         <input type="checkbox" checked={row.selected} onChange={() => toggleBoqPreviewRow(idx)} />
+                      </td>
+                      <td className="p-2">
+                        <input
+                          type="text"
+                          value={row.section}
+                          onChange={(e) => editBoqPreviewRow(idx, "section", e.target.value)}
+                          className="w-full bg-transparent border border-transparent hover:border-ink-mid focus:border-signal rounded-sm px-1.5 py-1 outline-none"
+                        />
+                      </td>
+                      <td className="p-2">
+                        <input
+                          type="text"
+                          value={row.item_no}
+                          onChange={(e) => editBoqPreviewRow(idx, "item_no", e.target.value)}
+                          className="w-full bg-transparent border border-transparent hover:border-ink-mid focus:border-signal rounded-sm px-1.5 py-1 outline-none"
+                        />
                       </td>
                       <td className="p-2">
                         <input

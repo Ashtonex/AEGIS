@@ -9,6 +9,9 @@ caught immediately.
 
 import unittest
 from decimal import Decimal
+from io import BytesIO
+
+from openpyxl import Workbook
 
 from app.services.quotations.calculator import QuotationCalculator
 from app.services.quotations.intelligence_engine import (
@@ -260,6 +263,19 @@ class CalculatorNegativeValueAndChecksumTests(unittest.TestCase):
         mutated_items_hash = QuotationCalculator.calculate(mutated_items_payload).audit_trail_hash
         self.assertNotEqual(base_hash, mutated_items_hash)
 
+    def test_calculator_rolls_boq_lines_up_by_section(self):
+        result = QuotationCalculator.calculate({
+            "quotation_id": "QT-SECTION-TEST",
+            "items": [
+                {"section": "FOUNDATIONS", "description": "Excavate trenches", "quantity": 10, "unit": "m3", "rate": 5},
+                {"section": "FOUNDATIONS", "description": "Concrete footing", "quantity": 2, "unit": "m3", "rate": 100},
+                {"section": "ROOF", "description": "IBR sheets", "quantity": 3, "unit": "m2", "rate": 20},
+            ],
+        })
+        section_totals = result.breakdown_log["boq_section_totals"]
+        self.assertEqual(section_totals[0], {"section": "FOUNDATIONS", "amount": "250.00"})
+        self.assertEqual(section_totals[1], {"section": "ROOF", "amount": "60.00"})
+
 
 class BOQImporterParseFailureTests(unittest.TestCase):
     def test_unparseable_value_is_warned_not_silently_zeroed(self):
@@ -272,6 +288,25 @@ class BOQImporterParseFailureTests(unittest.TestCase):
         result = BOQImporter.import_boq(csv, ".csv")
         self.assertTrue(any("negative rate" in w.lower() for w in result.warnings))
         self.assertEqual(result.items[0].rate, Decimal("0"))
+
+    def test_excel_import_preserves_boq_headings_as_sections(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Foundations"
+        sheet.append(["Item No", "Description", "Unit", "Quantity", "Rate", "Amount"])
+        sheet.append([None, "SITE CLEARANCE", None, None, None, None])
+        sheet.append(["1", "Clearing site vegetation", "m2", 100, 1.5, "=D3*E3"])
+        sheet.append([None, "EXCAVATIONS", None, None, None, None])
+        sheet.append(["2", "Trench excavation", "m3", 20, 8, "=D5*E5"])
+        buffer = BytesIO()
+        workbook.save(buffer)
+
+        result = BOQImporter.import_boq(buffer.getvalue(), ".xlsx")
+
+        self.assertEqual(len(result.items), 2)
+        self.assertEqual(result.summary["section_count"], 3)
+        self.assertEqual(result.items[0].section, "SITE CLEARANCE")
+        self.assertEqual(result.items[1].section, "EXCAVATIONS")
 
 
 if __name__ == "__main__":
