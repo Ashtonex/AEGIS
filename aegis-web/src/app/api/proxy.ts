@@ -19,7 +19,8 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     };
     
     if (req.method !== "GET" && req.method !== "HEAD") {
-      init.body = await req.arrayBuffer();
+      const body = await req.arrayBuffer();
+      init.body = Buffer.from(body) as unknown as BodyInit;
     }
     
     const response = await fetch(backendUrl, init);
