@@ -26,7 +26,15 @@ async def hr_operations_summary(
     org_id = user["org_id"]
     today = date.today()
     expiry_window = today + timedelta(days=45)
-    params = {"org_id": org_id, "today": today, "expiry_window": expiry_window}
+    leave_window_start = today - timedelta(days=30)
+    leave_window_end = today + timedelta(days=90)
+    params = {
+        "org_id": org_id,
+        "today": today,
+        "expiry_window": expiry_window,
+        "leave_window_start": leave_window_start,
+        "leave_window_end": leave_window_end,
+    }
 
     candidates = await rows(
         db,
@@ -205,7 +213,7 @@ async def hr_operations_summary(
         FROM hr.leave_requests lr
         JOIN hr.employees e ON e.id = lr.employee_id AND e.organization_id = lr.organization_id
         WHERE lr.organization_id = :org_id AND lr.is_deleted = false
-          AND lr.start_date <= (:today + INTERVAL '90 days') AND lr.end_date >= (:today - INTERVAL '30 days')
+          AND lr.start_date <= :leave_window_end AND lr.end_date >= :leave_window_start
         ORDER BY lr.start_date, e.employee_name
         """,
         params,
