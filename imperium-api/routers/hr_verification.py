@@ -69,6 +69,15 @@ class VendorDocumentDecision(BaseModel):
     review_notes: Optional[str] = Field(default=None, max_length=1000)
 
 
+async def _supplier_compliance_documents_available(db: AsyncSession) -> bool:
+    row = (
+        await db.execute(
+            text("SELECT to_regclass('procurement.supplier_compliance_documents') IS NOT NULL AS exists")
+        )
+    ).mappings().first()
+    return bool(row and row["exists"])
+
+
 @router.get("/queue", summary="List supplier/subcontractor profiles awaiting HR verification")
 async def list_vendor_verification_queue(
     stage: Optional[str] = Query(default=None),
@@ -89,6 +98,32 @@ async def list_vendor_verification_queue(
     else:
         filters.append("s.verification_stage IN ('incomplete', 'system_pending', 'system_verified')")
     where = " AND ".join(filters)
+    documents_available = await _supplier_compliance_documents_available(db)
+    if documents_available:
+        document_count_columns = """
+            COALESCE(doc_stats.total_documents, 0) AS compliance_document_count,
+            COALESCE(doc_stats.verified_documents, 0) AS verified_document_count,
+            COALESCE(doc_stats.pending_documents, 0) AS pending_document_count
+        """
+        document_count_join = """
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(DISTINCT scd.document_type) AS total_documents,
+                COUNT(DISTINCT scd.document_type) FILTER (WHERE scd.status = 'verified') AS verified_documents,
+                COUNT(DISTINCT scd.document_type) FILTER (WHERE scd.status IN ('pending_review', 'needs_update', 'rejected')) AS pending_documents
+            FROM procurement.supplier_compliance_documents scd
+            WHERE scd.organization_id = s.organization_id
+              AND (scd.subcontractor_id = s.id OR scd.supplier_id = s.linked_supplier_id)
+              AND scd.is_deleted = false
+        ) doc_stats ON true
+        """
+    else:
+        document_count_columns = """
+            0::integer AS compliance_document_count,
+            0::integer AS verified_document_count,
+            0::integer AS pending_document_count
+        """
+        document_count_join = ""
 
     rows = await db.execute(
         text(f"""
@@ -106,20 +141,9 @@ async def list_vendor_verification_queue(
             s.linked_supplier_id,
             s.submission_data->>'account_type' AS account_type,
             s.created_at,
-            COALESCE(doc_stats.total_documents, 0) AS compliance_document_count,
-            COALESCE(doc_stats.verified_documents, 0) AS verified_document_count,
-            COALESCE(doc_stats.pending_documents, 0) AS pending_document_count
+            {document_count_columns}
         FROM crm.subcontractors s
-        LEFT JOIN LATERAL (
-            SELECT
-                COUNT(DISTINCT scd.document_type) AS total_documents,
-                COUNT(DISTINCT scd.document_type) FILTER (WHERE scd.status = 'verified') AS verified_documents,
-                COUNT(DISTINCT scd.document_type) FILTER (WHERE scd.status IN ('pending_review', 'needs_update', 'rejected')) AS pending_documents
-            FROM procurement.supplier_compliance_documents scd
-            WHERE scd.organization_id = s.organization_id
-              AND (scd.subcontractor_id = s.id OR scd.supplier_id = s.linked_supplier_id)
-              AND scd.is_deleted = false
-        ) doc_stats ON true
+        {document_count_join}
         LEFT JOIN procurement.suppliers ps
           ON ps.id = s.linked_supplier_id
          AND ps.organization_id = s.organization_id
@@ -213,6 +237,9 @@ async def get_vendor_verification_detail(
 async def _vendor_document_rows(
     db: AsyncSession, *, org_id: str, subcontractor_id: str, supplier_id: Optional[str]
 ) -> list[dict[str, Any]]:
+    if not await _supplier_compliance_documents_available(db):
+        return []
+
     rows = await db.execute(
         text("""
             SELECT DISTINCT ON (scd.document_id, scd.document_type)

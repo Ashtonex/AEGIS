@@ -64,8 +64,8 @@ export function VendorVerificationPanel() {
     try {
       const res = await getHrVendorVerificationQueue();
       setQueue(res.data ?? []);
-    } catch {
-      setNotice("Vendor verification queue could not be loaded.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Vendor verification queue could not be loaded.");
     } finally {
       setLoading(false);
     }
@@ -83,8 +83,8 @@ export function VendorVerificationPanel() {
       const res = await getHrVendorVerificationDetail(id);
       setDetail(res.data ?? null);
       setDocumentsByVendor((current) => ({ ...current, [id]: res.data?.documents ?? current[id] ?? [] }));
-    } catch {
-      setNotice("Vendor review detail could not be loaded.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Vendor review detail could not be loaded.");
     } finally {
       setDetailLoading(false);
     }

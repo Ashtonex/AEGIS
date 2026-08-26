@@ -29,6 +29,11 @@ class VendorVerificationBridgeContractTests(unittest.TestCase):
         self.assertIn('"documents": documents', HR_ROUTER)
         self.assertIn("scd.supplier_id = s.linked_supplier_id", HR_ROUTER)
 
+    def test_hr_queue_survives_document_table_migration_gap(self):
+        self.assertIn("to_regclass('procurement.supplier_compliance_documents')", HR_ROUTER)
+        self.assertIn("0::integer AS compliance_document_count", HR_ROUTER)
+        self.assertIn("0::integer AS verified_document_count", HR_ROUTER)
+
     def test_hr_panel_uses_full_review_modal_and_auto_refresh(self):
         self.assertIn("getHrVendorVerificationDetail", API)
         self.assertIn("HrVendorVerificationDetail", API)
