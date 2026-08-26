@@ -38,7 +38,7 @@ class StandardizedStackCalculationsTests(unittest.TestCase):
             "contingency_rate": 0.10,  # 10%
             "profit_rate": 0.15,  # 15%
             "discount": 100,
-            "tax_rate": 0.15,  # 15% VAT
+            "tax_rate": 0.155,  # 15.5% VAT
         }
 
         result = QuotationCalculator.calculate(payload)
@@ -61,11 +61,11 @@ class StandardizedStackCalculationsTests(unittest.TestCase):
         # Taxable: 4680 - 100 = 4580
         self.assertEqual(result.taxable_amount, Decimal("4580.00"))
 
-        # Tax: 4580 * 0.15 = 687
-        self.assertEqual(result.tax_amount, Decimal("687.00"))
+        # Tax: 4580 * 0.155 = 709.90
+        self.assertEqual(result.tax_amount, Decimal("709.90"))
 
-        # Grand: 4580 + 687 = 5267
-        self.assertEqual(result.grand_total, Decimal("5267.00"))
+        # Grand: 4580 + 709.90 = 5289.90
+        self.assertEqual(result.grand_total, Decimal("5289.90"))
 
     def test_quotation_calculations_with_negatives_and_empty(self):
         """Ensures calculator sanitizes invalid negative rates, negative quantities, and empty values."""
@@ -89,7 +89,7 @@ class StandardizedStackCalculationsTests(unittest.TestCase):
             "contingency_rate": 0.10,
             "profit_rate": 0.15,
             "discount": 5000,  # Discount greater than subtotal
-            "tax_rate": 0.15,
+            "tax_rate": 0.155,
         }
 
         result = QuotationCalculator.calculate(payload)

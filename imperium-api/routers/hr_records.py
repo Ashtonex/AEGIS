@@ -71,7 +71,7 @@ async def list_leave_requests(
 @router.post("/leave", status_code=status.HTTP_201_CREATED)
 async def create_leave_request(
     payload: LeaveRequestCreate,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission("hr.leave.create")),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -95,10 +95,10 @@ async def create_leave_request(
                 text("""
             INSERT INTO hr.leave_requests (
                 organization_id, employee_id, leave_type, start_date, end_date,
-                days_requested, reason, status, created_by
+                days_requested, reason, status, submitted_by, calendar_status, calendar_title, created_by
             ) VALUES (
                 :org_id, :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
-                :days_requested, :reason, 'pending', :user_id
+                :days_requested, :reason, 'pending', :user_id, 'pending', :calendar_title, :user_id
             ) RETURNING id
         """),
                 {
@@ -109,6 +109,7 @@ async def create_leave_request(
                     "end_date": payload.end_date,
                     "days_requested": payload.days_requested,
                     "reason": payload.reason,
+                    "calendar_title": f"{emp.employee_name} - {payload.leave_type}",
                     "user_id": user["user_id"],
                 },
             )
@@ -145,6 +146,8 @@ async def decide_leave_request(
             text("""
         UPDATE hr.leave_requests lr
         SET status = :decision,
+            calendar_status = CASE WHEN :decision = 'approved' THEN 'approved' WHEN :decision = 'rejected' THEN 'declined' ELSE calendar_status END,
+            calendar_title = COALESCE(calendar_title, e.employee_name || ' - ' || lr.leave_type),
             approved_by = CASE WHEN :decision = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
             approved_at = CASE WHEN :decision = 'approved' THEN NOW() ELSE approved_at END,
             rejection_reason = CASE WHEN :decision = 'rejected' THEN :reason ELSE NULL END,
@@ -280,10 +283,10 @@ async def create_my_leave_request(
                 text("""
             INSERT INTO hr.leave_requests (
                 organization_id, employee_id, leave_type, start_date, end_date,
-                days_requested, reason, status, created_by
+                days_requested, reason, status, submitted_by, calendar_status, calendar_title, created_by
             ) VALUES (
                 :org_id, :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
-                :days_requested, :reason, 'pending', :user_id
+                :days_requested, :reason, 'pending', :user_id, 'pending', :calendar_title, :user_id
             ) RETURNING id
         """),
                 {
@@ -294,6 +297,7 @@ async def create_my_leave_request(
                     "end_date": payload.end_date,
                     "days_requested": payload.days_requested,
                     "reason": payload.reason,
+                    "calendar_title": f"{user['email']} - {payload.leave_type}",
                     "user_id": user["user_id"],
                 },
             )

@@ -4255,6 +4255,38 @@ export async function approveHRLeaveRequest(id: string, decision: 'approved' | '
   });
 }
 
+export async function getMyHREmployeeRecord(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/hr-records/me', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getMyHRLeaveRequests(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/hr-records/me/leave', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getMyHRLeaveBalance(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/hr-records/me/leave-balance', { cache: 'no-store', allowFallback: false });
+}
+
+export async function createMyHRLeaveRequest(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/hr-records/me/leave', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getHROperationsSummary(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/hr/operations/summary', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getHRLeaveCalendar(params?: { date_from?: string; date_to?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.date_from) search.set('date_from', params.date_from);
+  if (params?.date_to) search.set('date_to', params.date_to);
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/hr/operations/leave-calendar${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
 // --- COMPLIANCE --- //
 
 export async function getComplianceObligations(params?: { authority?: string; status?: string }): Promise<ApiResponse<any[]>> {

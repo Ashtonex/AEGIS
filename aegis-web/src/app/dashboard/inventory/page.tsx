@@ -386,7 +386,7 @@ function InventoryWorkspace() {
             onClick={() => setShowInvoice(true)}
             className="inline-flex h-10 items-center gap-2 border border-blue-500/40 bg-blue-950/20 px-3 font-mono text-xs uppercase tracking-wider text-blue-300 hover:border-blue-400 hover:bg-blue-950/40"
           >
-            <ReceiptText className="h-4 w-4" /> Capture Invoice
+            <ReceiptText className="h-4 w-4" /> Bulk Store Invoice
           </button>
           <button
             onClick={() => setShowReceive(true)}
@@ -1324,7 +1324,10 @@ function ReceiveInvoiceModal({ catalogue, stores, suppliers, projects, saving, o
   }, { subtotal: 0, total: 0 }), [lines]);
   const validLines = lines.filter((line) => line.item_id && num(line.quantity) > 0);
   return (
-    <ModalShell title="Capture Supplier Invoice" onClose={onClose} wide>
+    <ModalShell title="Bulk Store Invoice Intake" onClose={onClose} wide>
+      <div className="mb-4 border border-blue-500/25 bg-blue-950/10 p-3 text-xs text-blue-100">
+        Use this when stores receive a full supplier receipt or invoice that is not tied to a purchase order. It saves the invoice, adds every line to the selected store, and keeps the record persistent without running PO matching.
+      </div>
       <div className="grid gap-3 md:grid-cols-3">
         <FieldGroup label="Supplier">
           <select value={form.supplier_id} onChange={(e) => set("supplier_id", e.target.value)} className="field">
@@ -1344,8 +1347,8 @@ function ReceiveInvoiceModal({ catalogue, stores, suppliers, projects, saving, o
             {projects.map((p) => <option key={p.id} value={p.id}>{projectName(p)}</option>)}
           </select>
         </FieldGroup>
-        <FieldGroup label="AEGIS Invoice No.">
-          <input value={form.invoice_number} onChange={(e) => set("invoice_number", e.target.value)} placeholder="e.g. INV-2026-0042" className="field" />
+        <FieldGroup label="Receipt / Invoice No.">
+          <input value={form.invoice_number} onChange={(e) => set("invoice_number", e.target.value)} placeholder="e.g. SUP-INV-2026-0042" className="field" />
         </FieldGroup>
         <FieldGroup label="Supplier Invoice Ref">
           <input value={form.supplier_invoice_ref} onChange={(e) => set("supplier_invoice_ref", e.target.value)} placeholder="Supplier reference" className="field" />
@@ -1410,7 +1413,7 @@ function ReceiveInvoiceModal({ catalogue, stores, suppliers, projects, saving, o
           className="inline-flex h-10 items-center gap-2 border border-blue-500/50 bg-blue-950/30 px-4 font-mono text-xs font-bold uppercase text-blue-300 disabled:opacity-50 hover:bg-blue-950/50"
         >
           {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-          <ReceiptText className="h-4 w-4" /> Capture Invoice
+          <ReceiptText className="h-4 w-4" /> Save Bulk Intake
         </button>
       </div>
     </ModalShell>

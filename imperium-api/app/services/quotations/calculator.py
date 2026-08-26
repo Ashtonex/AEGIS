@@ -39,7 +39,7 @@ class QuotationCalculationInput(BaseModel):
     )
     discount: Decimal = Field(default=Decimal("0"), description="Flat discount amount")
     tax_rate: Decimal = Field(
-        default=Decimal("0.15"), description="Tax rate (e.g. 0.15 for ZIMRA VAT)"
+        default=Decimal("0.155"), description="Tax rate (e.g. 0.155 for ZIMRA VAT)"
     )
     provisional_sums: Decimal = Field(
         default=Decimal("0"), description="Provisional sums for undefined works"
@@ -235,13 +235,13 @@ class QuotationCalculator:
         profit_rate = cls.sanitize_decimal(input_data.get("profit_rate"))
         discount = cls.sanitize_decimal(input_data.get("discount"))
         # An omitted tax_rate (key absent, e.g. an older caller that predates
-        # this field) falls back to the documented 0.15 ZIMRA VAT default
+        # this field) falls back to the documented 0.155 ZIMRA VAT default
         # rather than silently pricing the quote at 0% tax. An explicitly
         # supplied 0 (VAT-exempt quote) is honoured as-is.
         if "tax_rate" in input_data and input_data.get("tax_rate") is not None:
             tax_rate = cls.sanitize_decimal(input_data.get("tax_rate"))
         else:
-            tax_rate = Decimal("0.15")
+            tax_rate = Decimal("0.155")
         prov_sums = cls.sanitize_decimal(input_data.get("provisional_sums"))
 
         # Zero out negative rates/sums
@@ -406,7 +406,7 @@ def build_calc_input_from_metadata(quotation_id: str, metadata: Dict[str, Any]) 
         "contingency_rate": float(metadata.get("contingency_pct", 0) or 0) / 100.0,
         "profit_rate": float(metadata.get("profit_pct", 0) or 0) / 100.0,
         "discount": metadata.get("discount", 0),
-        "tax_rate": 0.15 if metadata.get("apply_vat") else 0,
+        "tax_rate": 0.155 if metadata.get("apply_vat") else 0,
         "provisional_sums": metadata.get("provisional_sums", 0),
         "built_area_sqm": metadata.get("built_area_sqm", 0),
         "items": [

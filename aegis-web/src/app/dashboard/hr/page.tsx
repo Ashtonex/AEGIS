@@ -18,15 +18,24 @@ import {
   getHRLeaveRequests,
   createHRLeaveRequest,
   approveHRLeaveRequest,
+  getHROperationsSummary,
   getInternalProjects
 } from "@/lib/api";
 import { VendorVerificationPanel } from "./VendorVerificationPanel";
 
 type RecordData = Record<string, any>;
-type HRTab = "employees" | "attendance" | "leave" | "payroll" | "vendor-verification";
+type HRTab = "employees" | "recruitment" | "documents" | "credentials" | "performance" | "assets" | "training" | "org-chart" | "planning" | "attendance" | "leave" | "payroll" | "vendor-verification";
 
 const TAB_ROUTES: Record<HRTab, string> = {
   employees: "/dashboard/hr/employees",
+  recruitment: "/dashboard/hr/recruitment",
+  documents: "/dashboard/hr/documents",
+  credentials: "/dashboard/hr/credentials",
+  performance: "/dashboard/hr/performance",
+  assets: "/dashboard/hr/assets",
+  training: "/dashboard/hr/training",
+  "org-chart": "/dashboard/hr/org-chart",
+  planning: "/dashboard/hr/planning",
   attendance: "/dashboard/hr/attendance",
   leave: "/dashboard/hr/leave",
   payroll: "/dashboard/hr/payroll",
@@ -86,6 +95,134 @@ function normalizeActionError(reason: unknown, fallback: string) {
   return fallback;
 }
 
+function formatCell(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return new Intl.NumberFormat("en-ZW", { maximumFractionDigits: 2 }).format(value);
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return dateValue(value);
+  return String(value).replace(/_/g, " ");
+}
+
+function columnLabel(value: string) {
+  return value.replace(/_/g, " ");
+}
+
+function OperationList({ title, rows, columns, empty }: { title: string; rows: RecordData[]; columns: string[]; empty: string }) {
+  return (
+    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
+      <div className="flex items-center justify-between gap-4 border-b border-ink-mid bg-ink/30 px-4 py-3">
+        <span className="font-mono text-xs tracking-wider uppercase text-slate">{title}</span>
+        <span className="font-mono text-xs text-paper">{rows.length}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="p-8 text-center text-sm text-slate-light">{empty}</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[860px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
+                {columns.map((column) => <th key={column} className="p-4">{columnLabel(column)}</th>)}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-mid">
+              {rows.map((row, index) => (
+                <tr key={row.id || index} className="hover:bg-ink-mid/10">
+                  {columns.map((column) => (
+                    <td key={column} className="p-4 text-slate-light">
+                      <span className={/(status|stage|severity|outcome|type)$/.test(column) ? "capitalize" : ""}>{formatCell(row[column])}</span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LeaveTable({ rows, onDecide }: { rows: RecordData[]; onDecide: (id: string, decision: "approved" | "rejected") => void }) {
+  return (
+    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
+      <div className="border-b border-ink-mid bg-ink/30 px-4 py-3">
+        <span className="font-mono text-xs tracking-wider uppercase text-slate">Leave request log</span>
+      </div>
+      <table className="w-full text-left border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
+            <th className="p-4">Employee</th>
+            <th className="p-4">Type</th>
+            <th className="p-4">Start</th>
+            <th className="p-4">End</th>
+            <th className="p-4 text-right">Days</th>
+            <th className="p-4">Status</th>
+            <th className="p-4 text-right">Action</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-ink-mid">
+          {rows.length === 0 ? (
+            <tr><td colSpan={7} className="p-4 text-center text-slate">No leave requests logged.</td></tr>
+          ) : rows.map((l) => (
+            <tr key={l.id} className="hover:bg-ink-mid/10">
+              <td className="p-4 font-medium text-paper">{l.employee_name}</td>
+              <td className="p-4 capitalize text-paper">{l.leave_type}</td>
+              <td className="p-4 text-slate-light">{dateValue(l.start_date)}</td>
+              <td className="p-4 text-slate-light">{dateValue(l.end_date)}</td>
+              <td className="p-4 text-right text-paper font-mono">{l.days_requested}</td>
+              <td className="p-4"><span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(l.status)}`}>{l.status}</span></td>
+              <td className="p-4 text-right space-x-2">
+                {l.status === "pending" && (
+                  <>
+                    <button onClick={() => onDecide(l.id, "approved")} className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 px-2 py-1 rounded text-xs font-mono">Approve</button>
+                    <button onClick={() => onDecide(l.id, "rejected")} className="bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 px-2 py-1 rounded text-xs font-mono">Reject</button>
+                  </>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LeaveCalendar({ rows }: { rows: RecordData[] }) {
+  const grouped = rows.reduce<Record<string, RecordData[]>>((acc, row) => {
+    const key = typeof row.start_date === "string" ? row.start_date.slice(0, 10) : "Unscheduled";
+    acc[key] = acc[key] || [];
+    acc[key].push(row);
+    return acc;
+  }, {});
+  const days = Object.keys(grouped).sort().slice(0, 21);
+  return (
+    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
+      <div className="border-b border-ink-mid bg-ink/30 px-4 py-3">
+        <span className="font-mono text-xs tracking-wider uppercase text-slate">Leave calendar</span>
+      </div>
+      {days.length === 0 ? (
+        <div className="p-6 text-center text-sm text-slate-light">No leave appears on the calendar.</div>
+      ) : (
+        <div className="grid gap-px bg-ink-mid md:grid-cols-3">
+          {days.map((day) => (
+            <div key={day} className="min-h-28 bg-ink p-3">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-slate">{dateValue(day)}</p>
+              <div className="mt-2 space-y-1.5">
+                {grouped[day].map((item) => (
+                  <div key={item.id} className={`border px-2 py-1 text-xs ${statusClass(item.status)}`}>
+                    <p className="font-medium text-paper">{item.employee_name || item.title}</p>
+                    <p className="capitalize text-slate-light">{item.leave_type} · {item.days_requested} day(s)</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function HRDashboard() {
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"]}>
@@ -101,6 +238,7 @@ function HRWorkspace() {
   const [attendance, setAttendance] = useState<RecordData[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<RecordData[]>([]);
   const [projects, setProjects] = useState<RecordData[]>([]);
+  const [operations, setOperations] = useState<RecordData>({});
 
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("");
   const [employeeDetail, setEmployeeDetail] = useState<RecordData | null>(null);
@@ -131,11 +269,12 @@ function HRWorkspace() {
     setLoading(true);
     setError(null);
     try {
-      const [empRes, attendRes, leaveRes, projRes] = await Promise.allSettled([
+      const [empRes, attendRes, leaveRes, projRes, opsRes] = await Promise.allSettled([
         getHREmployees(),
         getHRAttendance({ date: attendanceDate }),
         getHRLeaveRequests(),
-        getInternalProjects()
+        getInternalProjects(),
+        getHROperationsSummary()
       ]);
       const warnings: string[] = [];
       if (empRes.status === "fulfilled") setEmployees(empRes.value.data || []);
@@ -146,6 +285,8 @@ function HRWorkspace() {
       else warnings.push("Leave register could not be loaded.");
       if (projRes.status === "fulfilled") setProjects(projRes.value.data || []);
       else warnings.push("Project register could not be loaded.");
+      if (opsRes.status === "fulfilled") setOperations(opsRes.value.data || {});
+      else warnings.push("HR operating layer could not be loaded.");
       setSourceWarnings(warnings);
       if (empRes.status === "rejected") {
         throw new Error(loadFailureMessage(empRes.reason));
@@ -354,37 +495,30 @@ function HRWorkspace() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-ink-mid">
-        <Link
-          href={TAB_ROUTES.employees}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "employees" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Employee Register
-        </Link>
-        <Link
-          href={TAB_ROUTES.attendance}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "attendance" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Attendance Log
-        </Link>
-        <Link
-          href={TAB_ROUTES.leave}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "leave" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Leave Management
-        </Link>
-        <Link
-          href={TAB_ROUTES.payroll}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "payroll" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Payroll Runs
-        </Link>
-        <Link
-          href={TAB_ROUTES["vendor-verification"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "vendor-verification" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Vendor Verification
-        </Link>
+      <div className="flex flex-wrap border-b border-ink-mid">
+        {([
+          ["employees", "Employees"],
+          ["recruitment", "Recruitment"],
+          ["documents", "Contracts"],
+          ["credentials", "Credentials"],
+          ["performance", "Performance"],
+          ["assets", "Assets"],
+          ["training", "Training"],
+          ["org-chart", "Org Chart"],
+          ["planning", "Planning"],
+          ["attendance", "Attendance"],
+          ["leave", "Leave"],
+          ["payroll", "Payroll"],
+          ["vendor-verification", "Vendors"],
+        ] as Array<[HRTab, string]>).map(([key, label]) => (
+          <Link
+            key={key}
+            href={TAB_ROUTES[key]}
+            className={`px-3 py-2 font-mono text-[11px] tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === key ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+          >
+            {label}
+          </Link>
+        ))}
       </div>
 
       {activeTab === "vendor-verification" && (
@@ -528,77 +662,44 @@ function HRWorkspace() {
           )}
 
           {activeTab === "leave" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <table className="w-full text-left border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                    <th className="p-4">Employee</th>
-                    <th className="p-4">Type</th>
-                    <th className="p-4">Start</th>
-                    <th className="p-4">End</th>
-                    <th className="p-4 text-right">Days</th>
-                    <th className="p-4">Status</th>
-                    <th className="p-4 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-mid">
-                  {leaveRequests.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="p-4 text-center text-slate">No leave requests logged.</td>
-                    </tr>
-                  ) : (
-                    leaveRequests.map((l) => (
-                      <tr key={l.id} className="hover:bg-ink-mid/10">
-                        <td className="p-4 font-medium text-paper">{l.employee_name}</td>
-                        <td className="p-4 capitalize text-paper">{l.leave_type}</td>
-                        <td className="p-4 text-slate-light">{dateValue(l.start_date)}</td>
-                        <td className="p-4 text-slate-light">{dateValue(l.end_date)}</td>
-                        <td className="p-4 text-right text-paper font-mono">{l.days_requested}</td>
-                        <td className="p-4">
-                          <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(l.status)}`}>
-                            {l.status}
-                          </span>
-                        </td>
-                        <td className="p-4 text-right space-x-2">
-                          {l.status === "pending" && (
-                            <>
-                              <button
-                                onClick={() => void handleDecideLeave(l.id, "approved")}
-                                className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 px-2 py-1 rounded text-xs font-mono"
-                              >
-                                Approve
-                              </button>
-                              <button
-                                onClick={() => void handleDecideLeave(l.id, "rejected")}
-                                className="bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 px-2 py-1 rounded text-xs font-mono"
-                              >
-                                Reject
-                              </button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <div className="space-y-4">
+              <LeaveCalendar rows={operations.leave_calendar || leaveRequests} />
+              <LeaveTable rows={leaveRequests} onDecide={handleDecideLeave} />
             </div>
           )}
 
           {activeTab === "payroll" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
-                <span className="font-mono text-xs tracking-wider uppercase text-slate">Payroll Processing</span>
-              </div>
-              <div className="p-6 text-center text-slate">
-                <AlertTriangle className="h-8 w-8 text-signal/50 mx-auto mb-2" />
-                <p className="text-sm font-medium text-paper">Manual Payroll is Active</p>
-                <p className="text-xs mt-1">Payroll runs and payslips are currently handled manually via external registers.</p>
-                <button className="mt-4 px-4 py-2 bg-signal text-ink text-sm font-semibold rounded hover:bg-signal/90">
-                  Manage Payroll
-                </button>
-              </div>
-            </div>
+            <OperationList
+              title="Payroll statutory compliance"
+              rows={operations.payroll_adjustments || []}
+              columns={["employee_name", "adjustment_type", "description", "amount", "balance", "status"]}
+              empty="No PAYE, NSSA, deduction, loan or advance adjustments have been recorded."
+            />
+          )}
+
+          {activeTab === "recruitment" && (
+            <OperationList title="Recruitment and onboarding pipeline" rows={[...(operations.recruitment || []), ...(operations.onboarding || [])]} columns={["candidate_name", "employee_name", "role_applied_for", "task_name", "stage", "status", "due_date"]} empty="No recruitment candidates or onboarding tasks have been recorded." />
+          )}
+          {activeTab === "documents" && (
+            <OperationList title="Employee contracts and document expiry tracking" rows={operations.documents || []} columns={["employee_name", "document_type", "title", "document_number", "expires_on", "status"]} empty="No contract or employee document alerts." />
+          )}
+          {activeTab === "credentials" && (
+            <OperationList title="Certifications, medicals, inductions and license alerts" rows={[...(operations.certifications || []), ...(operations.medicals || [])]} columns={["employee_name", "certification_name", "check_type", "title", "expires_on", "verification_status", "status"]} empty="No certification, medical, induction or license alerts." />
+          )}
+          {activeTab === "performance" && (
+            <OperationList title="Performance reviews and disciplinary records" rows={[...(operations.performance || []), ...(operations.discipline || [])]} columns={["employee_name", "outcome", "rating", "next_review_date", "category", "severity", "status"]} empty="No performance reviews or disciplinary records have been recorded." />
+          )}
+          {activeTab === "assets" && (
+            <OperationList title="PPE, tools, vehicle and asset assignments" rows={operations.assets || []} columns={["employee_name", "asset_type", "asset_label", "asset_reference", "issued_on", "due_back_on", "status"]} empty="No employee asset assignments have been recorded." />
+          )}
+          {activeTab === "training" && (
+            <OperationList title="Training matrix by role and project" rows={operations.training || []} columns={["role_name", "training_name", "project_name", "mandatory", "employees_in_role", "current_records"]} empty="No training requirements have been recorded." />
+          )}
+          {activeTab === "org-chart" && (
+            <OperationList title="Org chart and reporting lines" rows={operations.org_chart || []} columns={["manager_name", "manager_job_title", "employee_name", "job_title", "relationship_type", "effective_from"]} empty="No reporting lines have been recorded." />
+          )}
+          {activeTab === "planning" && (
+            <OperationList title="Workforce planning by project and site" rows={operations.workforce_plans || []} columns={["project_name", "role_name", "required_headcount", "assigned_count", "shortfall", "status", "planned_start"]} empty="No workforce plans have been recorded." />
           )}
         </div>
 

@@ -41,7 +41,7 @@ const BUILDER_TOUR_STEPS: ModuleTourStep[] = [
   },
   {
     title: "Markups, allowances, and VAT",
-    body: "Preliminaries, overhead, contingency, and profit stack onto direct costs - but profit is calculated on Direct Costs + Preliminaries only, it does not compound on overhead or contingency. VAT is fetched live from Finance > Statutory > Rate Tables, not hardcoded; if no rate is configured it falls back to 15% with a visible notice.",
+    body: "Preliminaries, overhead, contingency, and profit stack onto direct costs - but profit is calculated on Direct Costs + Preliminaries only, it does not compound on overhead or contingency. VAT is fetched live from Finance > Statutory > Rate Tables, not hardcoded; if no rate is configured it falls back to 15.5% with a visible notice.",
     target: "builder-markups",
     placement: "right",
   },
@@ -112,7 +112,7 @@ export default function QuotationBuilder() {
   const [contingencyPct, setContingencyPct] = useState(5);
   const [profitPct, setProfitPct] = useState(12);
   const [applyVat, setApplyVat] = useState(true);
-  const DEFAULT_VAT_RATE = 0.15;
+  const DEFAULT_VAT_RATE = 0.155;
   const [vatRate, setVatRate] = useState(DEFAULT_VAT_RATE);
   const [vatRateIsConfigured, setVatRateIsConfigured] = useState(false);
   const [discount, setDiscount] = useState(0);
@@ -232,7 +232,7 @@ export default function QuotationBuilder() {
   }, [session, editId]);
 
   // Real ZIMRA VAT rate, when configured via Finance > Statutory > Rate Tables.
-  // Falls back to the historical 15% default so existing quoting behaviour
+  // Falls back to the standard 15.5% default so existing quoting behaviour
   // doesn't silently change until the org enters a real rate table.
   useEffect(() => {
     let cancelled = false;
@@ -1224,7 +1224,7 @@ export default function QuotationBuilder() {
                 </div>
                 {!vatRateIsConfigured && (
                   <p className="text-[10px] text-amber-400/80 font-mono">
-                    No VAT rate table configured for {currency} in Finance &gt; Statutory &gt; Rate Tables - using the default 15% until one is entered.
+                    No VAT rate table configured for {currency} in Finance &gt; Statutory &gt; Rate Tables - using the default 15.5% until one is entered.
                   </p>
                 )}
               </div>
@@ -1425,7 +1425,7 @@ export default function QuotationBuilder() {
                       </>
                     )}
                     <div className="flex justify-between text-slate-light">
-                      <span>VAT (15%):</span>
+                      <span>VAT ({(vatRate * 100).toFixed(vatRate * 100 % 1 === 0 ? 0 : 2)}%):</span>
                       <span className="text-white">${vat.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                     </div>
                   </div>
@@ -1842,7 +1842,7 @@ export default function QuotationBuilder() {
                           </>
                         )}
                         <tr className="border-b border-ink-mid/30">
-                          <td className="py-2 text-slate">VAT (15%)</td>
+                          <td className="py-2 text-slate">VAT ({((printQuoteData.metadata?.tax_rate ?? vatRate) * 100).toFixed(((printQuoteData.metadata?.tax_rate ?? vatRate) * 100) % 1 === 0 ? 0 : 2)}%)</td>
                           <td className="py-2 text-right text-white print:text-black">${printQuoteData.metadata?.vat?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                         </tr>
                         <tr className="text-white print:text-black font-bold text-xs bg-white/5 print:bg-slate-100 border-t border-signal print:border-black">

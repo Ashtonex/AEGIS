@@ -1286,7 +1286,7 @@ class AutonomousQuoteBuilder:
             "overhead_rate": float(context.get("overhead_rate", 0.05)),
             "contingency_rate": float(context.get("contingency_rate", 0.05)),
             "profit_rate": float(context.get("profit_rate", 0.15)),
-            "tax_rate": float(context.get("tax_rate", 0.15)),
+            "tax_rate": float(context.get("tax_rate", 0.155)),
             "assumptions": assumptions,
             "exclusions": exclusions,
             "currency": str(context.get("currency", "USD")),

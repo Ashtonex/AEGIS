@@ -530,6 +530,10 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   };
 
   const matchInvoice = async (invoice: Rec) => {
+    if (!invoice.po_id || !invoice.grn_id) {
+      setNotice("This is a store-only invoice intake. It is saved against stores and does not need PO matching.");
+      return;
+    }
     setSaving(`match-invoice-${invoice.id}`);
     try {
       await matchSupplierInvoice(invoice.id);
@@ -1466,10 +1470,10 @@ function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }
         </div>
       )}
       <div className="border-b border-blue-500/20 bg-blue-950/10 p-4 text-xs text-blue-200">
-        Payment approval is evidence-gated: PO evidence, GRN evidence, supplier invoice evidence and an approval document must be linked before finance approval.
+        Payment approval is evidence-gated for PO invoices. Store-only invoice intakes remain visible here for audit, but they are not sent through three-way matching.
       </div>
       {rows.length === 0 ? (
-        <EmptyState label="No invoices match this filter." sub="Invoices are posted against purchase orders." />
+        <EmptyState label="No invoices match this filter." sub="PO invoices and store invoice intakes appear here." />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1000px] text-sm">
@@ -1485,6 +1489,7 @@ function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }
                 const matchSt = tx(row.match_status ?? row.matching_status, "unmatched").toLowerCase();
                 const isRisk = matchSt === "unmatched" || matchSt === "disputed";
                 const isMatched = matchSt === "matched";
+                const canMatch = Boolean(row.po_id && row.grn_id);
                 const status = tx(row.status, "received").toLowerCase();
                 return (
                   <tr key={row.id} className={`hover:bg-ink-light/40 ${isRisk ? "bg-red-950/10" : ""}`}>
@@ -1498,11 +1503,16 @@ function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }
                     <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${prStatusClass(row.status)}`}>{tx(row.status, "pending")}</span></td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        {!isMatched && (
+                        {!isMatched && canMatch && (
                           <button onClick={() => onMatch(row)} disabled={saving === `match-invoice-${row.id}`}
                             className="inline-flex items-center gap-1 border border-blue-500/40 px-2 py-1 font-mono text-[10px] uppercase text-blue-300 hover:bg-blue-950/30 disabled:opacity-40">
                             <BadgeCheck className="h-3 w-3" />Match
                           </button>
+                        )}
+                        {!isMatched && !canMatch && (
+                          <span className="border border-slate-500/30 bg-slate-950/20 px-2 py-1 font-mono text-[10px] uppercase text-slate-light">
+                            Store intake
+                          </span>
                         )}
                         {isMatched && status !== "approved" && (
                           <button onClick={() => onApprovePayment(row)} disabled={saving === `pay-invoice-${row.id}`}

@@ -42,7 +42,7 @@ const QUOTATIONS_TOUR_STEPS: ModuleTourStep[] = [
   },
   {
     title: "VAT follows the real rate table",
-    body: "The VAT applied in the Builder isn't a hardcoded 15% anymore - it's fetched from Finance > Statutory > Rate Tables. Until a real rate is entered there, the Builder falls back to 15% with a visible notice, so pricing behaviour never changes silently.",
+    body: "The VAT applied in the Builder isn't a hardcoded 15% anymore - it's fetched from Finance > Statutory > Rate Tables. Until a real rate is entered there, the Builder falls back to 15.5% with a visible notice, so pricing behaviour never changes silently.",
     placement: "center",
   },
 ];

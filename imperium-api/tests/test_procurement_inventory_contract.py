@@ -275,7 +275,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             self.assertIn(marker, INV)
         self.assertIn("receiveInventoryInvoice", WEB_API)
         for marker in [
-            "Capture Invoice",
+            "Bulk Store Invoice",
             "ReceiveInvoiceModal",
             "Reusable Tool",
             "Apply ZIMRA VAT",
