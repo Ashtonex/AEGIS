@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -198,7 +198,7 @@ class OpportunityUpdate(CrmPayload):
         max_digits=15,
         decimal_places=2,
     )
-    next_activity_due_at: Optional[str] = None
+    next_activity_due_at: Optional[datetime] = None
     competitor: Optional[str] = Field(default=None, max_length=255)
     originating_department_id: Optional[UUID] = None
     region: Optional[str] = Field(default=None, max_length=120)
@@ -212,6 +212,23 @@ class OpportunityUpdate(CrmPayload):
     @classmethod
     def normalize_stage(cls, value: Any) -> Any:
         return _normalize_stage(value, OPPORTUNITY_STAGE_ALIASES)
+
+    @field_validator("next_activity_due_at", mode="before")
+    @classmethod
+    def normalize_next_activity_due_at(cls, value: Any) -> Any:
+        if value is None or isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime(value.year, value.month, value.day, 9, tzinfo=timezone.utc)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        return value
 
 
 OPPORTUNITY_UPDATE_COLUMNS = (
@@ -325,6 +342,7 @@ class WinLossReasonPayload(CrmPayload):
 
 class TenderCreate(CrmPayload):
     tender_name: str = Field(..., min_length=1, max_length=255)
+    bid_number: Optional[str] = Field(default=None, max_length=100)
     stage: TenderStage = Field(default=TenderStage.TENDER_IDENTIFIED)
     # Nullable: most tenders arrive without a budget - the real figure comes
     # from the BOQ once it's priced, and gets filled in via a later update.
@@ -1645,7 +1663,7 @@ async def list_tenders(
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
     query = text("""
-        SELECT id, tender_name, bid_amount, stage, submission_deadline, bid_bond_secured, region,
+        SELECT id, tender_name, bid_number, bid_amount, stage, submission_deadline, bid_bond_secured, region,
                latitude::float AS latitude, longitude::float AS longitude
         FROM crm.tenders
         WHERE organization_id = :org_id AND is_deleted = false
@@ -2584,9 +2602,9 @@ async def create_tender(
 
     query = text("""
         INSERT INTO crm.tenders (
-            tender_name, stage, bid_amount, region, latitude, longitude, organization_id
+            tender_name, bid_number, stage, bid_amount, region, latitude, longitude, organization_id
         )
-        VALUES (:name, :stage, :amount, :region, :latitude, :longitude, :org_id)
+        VALUES (:name, :bid_number, :stage, :amount, :region, :latitude, :longitude, :org_id)
         RETURNING id
     """)
     try:
@@ -2594,6 +2612,7 @@ async def create_tender(
             query,
             {
                 "name": payload.tender_name,
+                "bid_number": payload.bid_number,
                 "stage": payload.stage.value,
                 "amount": payload.bid_amount,
                 "region": payload.region,

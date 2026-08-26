@@ -373,6 +373,9 @@ export default function TendersCommand() {
         tender_name: newTender.tender_name.trim(),
         stage: newTender.stage
       };
+      if (newTender.bid_number.trim()) {
+        payload.bid_number = newTender.bid_number.trim();
+      }
       if (newTender.bid_amount.trim() !== '') {
         payload.bid_amount = Number(newTender.bid_amount);
       }

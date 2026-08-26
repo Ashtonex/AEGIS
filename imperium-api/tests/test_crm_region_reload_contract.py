@@ -36,11 +36,12 @@ def test_crm_dashboard_opportunity_reload_returns_region():
 def test_crm_dashboard_tender_reload_returns_region():
     section = _list_tenders_sql()
 
+    assert "bid_number" in section
     assert "bid_bond_secured," in section
     assert "latitude::float AS latitude" in section
     assert "longitude::float AS longitude" in section
     assert (
-        "INSERT INTO crm.tenders (\n            tender_name, stage, bid_amount, region, latitude, longitude, organization_id"
+        "INSERT INTO crm.tenders (\n            tender_name, bid_number, stage, bid_amount, region, latitude, longitude, organization_id"
         in CRM_ROUTER
     )
 

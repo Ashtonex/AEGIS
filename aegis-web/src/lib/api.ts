@@ -759,7 +759,7 @@ export async function getCrmTenderSignals(params?: {
   );
 }
 
-export async function createCrmTender(data: { tender_name: string, stage: string, bid_amount?: number, region?: string, latitude?: number, longitude?: number }): Promise<ApiResponse<any>> {
+export async function createCrmTender(data: { tender_name: string, stage: string, bid_number?: string, bid_amount?: number, region?: string, latitude?: number, longitude?: number }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/tenders', {
     method: 'POST',
     body: JSON.stringify(data)

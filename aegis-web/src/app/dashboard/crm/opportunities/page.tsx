@@ -11,6 +11,7 @@ import {
   Trash2, Copy, Lock
 } from 'lucide-react';
 import {
+  ApiError,
   getCrmOpportunities,
   createCrmOpportunity,
   updateCrmOpportunity,
@@ -278,10 +279,13 @@ export default function OpportunitiesKanban() {
 
   const normalizeActionError = (reason: unknown, fallback: string) => {
     const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
+    if (reason instanceof ApiError && reason.status === 403) {
+      return "You don't have permission to update this opportunity.";
+    }
     if (/aborted|cancelled|timed out|network error|fetch failed|not found/i.test(rawMessage)) {
       return fallback;
     }
-    return fallback;
+    return rawMessage || fallback;
   };
 
   const loadData = useCallback(async () => {

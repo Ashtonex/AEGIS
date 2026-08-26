@@ -3,6 +3,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 CRM_PAGE = (
     ROOT.parent
     / "aegis-web"
@@ -38,6 +39,11 @@ class CrmOpportunitiesContractTests(unittest.TestCase):
         self.assertNotIn("getCrmOpportunities().catch", CRM_PAGE)
         self.assertNotIn("getCrmContacts().catch", CRM_PAGE)
         self.assertNotIn("getCrmActivities().catch", CRM_PAGE)
+
+    def test_opportunity_stage_move_has_real_timestamp_and_failure_visibility(self):
+        self.assertIn("next_activity_due_at: Optional[datetime]", CRM_ROUTER)
+        self.assertIn("def normalize_next_activity_due_at", CRM_ROUTER)
+        self.assertIn("return rawMessage || fallback", CRM_PAGE)
 
 
 if __name__ == "__main__":

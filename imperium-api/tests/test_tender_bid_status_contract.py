@@ -16,3 +16,6 @@ def test_submitted_tender_status_supersedes_deadline_countdown():
     assert "t.submission_deadline || isPostSubmissionStage(t.stage)" in TENDERS_PAGE
     assert "selectedTender.submission_deadline || isPostSubmissionStage(selectedTender.stage)" in TENDERS_PAGE
 
+
+def test_tender_create_sends_user_bid_number_immediately():
+    assert "payload.bid_number = newTender.bid_number.trim();" in TENDERS_PAGE
