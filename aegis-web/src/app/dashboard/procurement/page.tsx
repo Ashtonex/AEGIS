@@ -196,7 +196,7 @@ export default function ProcurementPage() {
       : "command";
 
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Stores and Procurement Manager", "Stores & Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
       <ProcurementWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

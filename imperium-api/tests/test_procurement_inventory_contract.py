@@ -18,6 +18,19 @@ SUPPLIER_RECORDS = (ROOT / "routers" / "supplier_records.py").read_text()
 SUPPLIER_EDIT_PERMISSION_REPAIR = (
     ROOT / "migrations" / "166_supplier_edit_permission_repair.sql"
 ).read_text()
+STORES_PROCUREMENT_ACCESS_REPAIR = (
+    ROOT / "migrations" / "167_stores_procurement_manager_access_repair.sql"
+).read_text()
+SUPABASE_STORES_PROCUREMENT_ACCESS_REPAIR = (
+    ROOT.parent
+    / "supabase"
+    / "migrations"
+    / "20260826093000_stores_procurement_manager_access_repair.sql"
+).read_text()
+SETTINGS_ROUTER = (ROOT / "routers" / "settings.py").read_text()
+DASHBOARD_SHELL = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "DashboardShell.tsx"
+).read_text()
 USE_API_QUERIES_HOOK = (
     ROOT.parent / "aegis-web" / "src" / "hooks" / "useApiQueries.ts"
 ).read_text()
@@ -331,6 +344,59 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("'Executive (Admin)'", SUPPLIER_EDIT_PERMISSION_REPAIR)
         self.assertIn("'Procurement Manager'", SUPPLIER_EDIT_PERMISSION_REPAIR)
         self.assertIn("'supplier_records.update'", SUPPLIER_EDIT_PERMISSION_REPAIR)
+
+    def test_stores_procurement_manager_can_access_procurement_and_inventory(self):
+        for role_name in [
+            "Procurement Manager",
+            "Stores and Procurement Manager",
+            "Stores & Procurement Manager",
+        ]:
+            self.assertIn(role_name, STORES_PROCUREMENT_ACCESS_REPAIR)
+            self.assertIn(role_name, DASHBOARD_SHELL)
+            self.assertIn(role_name, PROCUREMENT_PAGE)
+            self.assertIn(role_name, INVENTORY_PAGE)
+
+        for permission in [
+            "procurement.requisition.read",
+            "procurement.requisition.create",
+            "procurement.requisition.submit",
+            "procurement.po.read",
+            "procurement.po.create",
+            "procurement.po.issue",
+            "procurement.rfq.read",
+            "procurement.rfq.create",
+            "procurement.rfq.manage",
+            "procurement.invoice.read",
+            "procurement.invoice.create",
+            "procurement.invoice.match",
+            "procurement.grn.read",
+            "procurement.grn.create",
+            "procurement.grn.confirm",
+            "procurement.supplier.read",
+            "supplier_records.read",
+            "supplier_records.create",
+            "supplier_records.update",
+            "inventory_items.read",
+            "inventory_items.create",
+            "inventory_items.update",
+            "inventory_items.delete",
+            "inventory.receipt.create",
+            "inventory.issue.create",
+            "inventory.transfer.create",
+            "inventory.count.create",
+            "inventory.store.manage",
+        ]:
+            self.assertIn(permission, STORES_PROCUREMENT_ACCESS_REPAIR)
+
+        self.assertIn("procurement.invoice.approve_payment", STORES_PROCUREMENT_ACCESS_REPAIR)
+        self.assertIn("procurement.po.approve", STORES_PROCUREMENT_ACCESS_REPAIR)
+        self.assertIn("DELETE FROM core.role_permissions", STORES_PROCUREMENT_ACCESS_REPAIR)
+        self.assertEqual(STORES_PROCUREMENT_ACCESS_REPAIR, SUPABASE_STORES_PROCUREMENT_ACCESS_REPAIR)
+
+    def test_inventory_page_is_visible_in_access_matrix(self):
+        self.assertIn('"page": "Inventory"', SETTINGS_ROUTER)
+        self.assertIn('"route": "/dashboard/inventory"', SETTINGS_ROUTER)
+        self.assertIn('"permission": "inventory_items.read"', SETTINGS_ROUTER)
 
 
 if __name__ == "__main__":

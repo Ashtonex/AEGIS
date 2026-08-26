@@ -79,6 +79,7 @@ function isSuperAdminRole(userRole: string): boolean {
 
 const SITE_FIELD_ROLES = ["FOREMAN", "Site Clerk", "Site Engineer", "Site Agent"];
 const SITE_FIELD_DASHBOARD_GROUPS = new Set(["Messages", "Notifications", "Site Operations", "Settings"]);
+const PROCUREMENT_STORES_MANAGER_ROLES = ["Procurement Manager", "Stores and Procurement Manager", "Stores & Procurement Manager"];
 
 const MODULE_GROUPS: ModuleGroup[] = [
   {
@@ -212,7 +213,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Procurement",
     href: "/dashboard/procurement",
     icon: ShoppingCart,
-    allowedRoles: ["Executive (Admin)", "Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
+    allowedRoles: ["Executive (Admin)", ...PROCUREMENT_STORES_MANAGER_ROLES, "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "procurement.requisition.read",
     subItems: [
@@ -229,7 +230,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Inventory",
     href: "/dashboard/inventory",
     icon: Package,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager", "Inventory Controller", "Executive Read Only"],
+    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", ...PROCUREMENT_STORES_MANAGER_ROLES, "Inventory Controller", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },

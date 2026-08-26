@@ -321,6 +321,12 @@ PAGE_ACCESS = [
         "module": "Commercial",
     },
     {
+        "page": "Inventory",
+        "route": "/dashboard/inventory",
+        "permission": "inventory_items.read",
+        "module": "Operations",
+    },
+    {
         # "finance.cash.read" only gates the cash-accounts sub-resource.
         # The Finance dashboard's primary data load - GET
         # /api/v1/financial-performance/projects - requires
