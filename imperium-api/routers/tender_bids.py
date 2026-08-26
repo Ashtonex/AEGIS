@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
 
 from core.database import get_db
+from core.logging import logger
 from core.security import get_current_user, is_self_certification, require_permission, SUPERADMIN_ROLE
 from app.services.finance.department_transfers import post_department_transfer
 from app.services.finance.project_forecast import (
@@ -192,15 +193,27 @@ async def update_item(
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
 
+        await db.commit()
+
         if stage_changed:
-            await supersede_entity_tasks(
-                db,
-                org_id=user["org_id"],
-                entity_type="tender",
-                entity_id=item_id,
-                authorized_by=user.get("sub") or user.get("user_id"),
-                reason=f"Tender moved to {next_stage}; prior-stage work superseded.",
-            )
+            try:
+                await supersede_entity_tasks(
+                    db,
+                    org_id=user["org_id"],
+                    entity_type="tender",
+                    entity_id=item_id,
+                    authorized_by=user.get("sub") or user.get("user_id"),
+                    reason=f"Tender moved to {next_stage}; prior-stage work superseded.",
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                logger.exception(
+                    "tender_bids.stage_task_supersede_failed",
+                    tender_id=item_id,
+                    org_id=user["org_id"],
+                    next_stage=next_stage,
+                )
             await generate_task_stack(
                 db,
                 org_id=user["org_id"],
@@ -211,11 +224,9 @@ async def update_item(
                 generation_reason=f"Tender moved to {next_stage}.",
                 stage=next_stage,
             )
-
-        await db.commit()
         return {
             "success": True,
-            "data": {"id": item_id},
+            "data": {"id": item_id, "stage": next_stage if stage_changed else params.get("stage")},
             "message": "tender_bids updated.",
             "meta": {},
         }
