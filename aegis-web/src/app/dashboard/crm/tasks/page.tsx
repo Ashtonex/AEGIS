@@ -1461,7 +1461,7 @@ function CreateTaskModal({ users, onClose, onCreated }: { users: AssignableUser[
         approver_user_id: evidenceRequired && approverId ? approverId : undefined,
         risk_flag: riskFlag,
       });
-      if (!res.success) throw new Error("Task could not be created.");
+      if (!res.success) throw new Error(res.message || "Task could not be created.");
       onCreated();
     } catch (e2) {
       setError(normalizeError(e2, "Task could not be created."));

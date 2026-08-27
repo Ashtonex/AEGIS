@@ -578,11 +578,11 @@ async def create_task(
                     :depends_on_task_id, :evidence_required, :approver_user_id, :risk_flag,
                     :task_type, :requirement_code, :primary_entity_type,
                     :primary_entity_id, CAST(:related_entities AS jsonb),
-                    :source_event,
+                    CAST(:source_event AS varchar),
                     jsonb_build_array(jsonb_build_object(
-                        'event', :source_event,
+                        'event', CAST(:history_source_event AS text),
                         'generated_at', NOW(),
-                        'initiated_by', :user_id
+                        'initiated_by', CAST(:history_user_id AS text)
                     )),
                     :expected_outcome, :deduplication_key, :criticality,
                     :weight, :gate_effect, CAST(:completion_criteria AS jsonb),
@@ -611,6 +611,8 @@ async def create_task(
                 "primary_entity_id": primary_entity_id,
                 "related_entities": json.dumps(payload.related_entities),
                 "source_event": payload.source_event or "manual_task_created",
+                "history_source_event": payload.source_event or "manual_task_created",
+                "history_user_id": str(user["user_id"]),
                 "expected_outcome": payload.expected_outcome,
                 "deduplication_key": deduplication_key,
                 "criticality": payload.criticality,

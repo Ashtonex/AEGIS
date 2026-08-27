@@ -43,6 +43,12 @@ class CrmTaskTeamLeadVerificationContractTests(unittest.TestCase):
         self.assertIn("await db.commit()\n\n    if payload.assigned_to_user_id", ROUTER)
         self.assertIn("Task created but assignee notification failed", ROUTER)
 
+    def test_manual_task_source_event_is_cast_for_asyncpg_json_history(self):
+        self.assertIn("CAST(:source_event AS varchar)", ROUTER)
+        self.assertIn("'event', CAST(:history_source_event AS text)", ROUTER)
+        self.assertIn("'initiated_by', CAST(:history_user_id AS text)", ROUTER)
+        self.assertIn('"history_user_id": str(user["user_id"])', ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()

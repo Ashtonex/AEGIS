@@ -494,7 +494,7 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
     const data = await parseJsonResponse<T>(response);
     const apiData = data as { success?: boolean; error?: { message?: string } };
     if (apiData.success === false) {
-      throw new ApiError(response.status, apiData.error?.message || "Unknown API error");
+      throw new ApiError(response.status, extractApiErrorMessage(data) || "Unknown API error");
     }
 
     return data;
