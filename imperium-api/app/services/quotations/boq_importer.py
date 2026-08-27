@@ -25,6 +25,12 @@ class BOQImportResult:
 
 
 class BOQImporter:
+    DESC_HEADERS = {"description", "item description", "task", "details", "name"}
+    QTY_HEADERS = {"quantity", "qty", "volume", "amount_qty"}
+    UNIT_HEADERS = {"unit", "uom", "measure"}
+    RATE_HEADERS = {"rate", "unit rate", "price", "unit price", "cost"}
+    ITEM_NO_HEADERS = {"item no", "item no.", "item_no", "no"}
+
     @staticmethod
     def _is_blank(val: Any) -> bool:
         if val is None:
@@ -84,17 +90,26 @@ class BOQImporter:
                     pending_description = ""
                     continue
 
-                if "description" in joined or "details" in joined:
+                has_header_signal = (
+                    any(value in cls.DESC_HEADERS for value in normalized)
+                    and (
+                        any(value in cls.QTY_HEADERS for value in normalized)
+                        or any(value in cls.RATE_HEADERS for value in normalized)
+                        or any(value in cls.UNIT_HEADERS for value in normalized)
+                    )
+                )
+
+                if "description" in joined or "details" in joined or has_header_signal:
                     for idx, value in enumerate(normalized):
-                        if value in {"item", "item no", "item no.", "no"}:
+                        if value in cls.ITEM_NO_HEADERS:
                             header_map["item_no"] = idx
-                        elif "description" in value or "details" in value or value == "item":
+                        elif value in cls.DESC_HEADERS or "description" in value or "details" in value:
                             header_map["description"] = idx
-                        elif value in {"unit", "uom"}:
+                        elif value in cls.UNIT_HEADERS:
                             header_map["unit"] = idx
-                        elif "quant" in value or value in {"qty", "quantity"}:
+                        elif value in cls.QTY_HEADERS or "quant" in value:
                             header_map["quantity"] = idx
-                        elif "rate" in value or "unit rate" in value:
+                        elif value in cls.RATE_HEADERS or "rate" in value:
                             header_map["rate"] = idx
                     pending_description = ""
                     continue

@@ -12,7 +12,7 @@ import {
 import {
   getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation,
   getDrawingRevisionAsBoq, importBoqFile, getFinanceActiveRateTable,
-  getCrmTenders, getCrmOpportunities, getCrmLeads, getQuotationSourceLookup,
+  getCrmTenders, getCrmOpportunities, getQuotationSourceLookup,
   createDocument, linkDocument,
 } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
@@ -29,7 +29,7 @@ const BUILDER_TOUR_STEPS: ModuleTourStep[] = [
   },
   {
     title: "Every estimate needs one source",
-    body: "Client & Project Info also picks the single Project, Tender, Opportunity, or Lead this estimate belongs to - deliberate, so the same piece of work never fragments into duplicate, orphaned estimates.",
+    body: "Client & Project Info also picks the single Project, Tender, or Opportunity this estimate belongs to - deliberate, so the same piece of work never fragments into duplicate, orphaned estimates.",
     target: "builder-metadata",
     placement: "right",
   },
@@ -102,12 +102,11 @@ export default function QuotationBuilder() {
   const [projectsList, setProjectsList] = useState<any[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
 
-  // Source picker: this BOQ must be linked to exactly one tender/opportunity/lead/project
-  const [sourceType, setSourceType] = useState<"project" | "tender" | "opportunity" | "lead">("project");
+  // Source picker: this BOQ must be linked to exactly one tender/opportunity/project.
+  const [sourceType, setSourceType] = useState<"project" | "tender" | "opportunity">("project");
   const [sourceId, setSourceId] = useState("");
   const [tendersList, setTendersList] = useState<any[]>([]);
   const [opportunitiesList, setOpportunitiesList] = useState<any[]>([]);
-  const [leadsList, setLeadsList] = useState<any[]>([]);
   const [sourceNotice, setSourceNotice] = useState("");
 
   // Form states
@@ -160,6 +159,7 @@ export default function QuotationBuilder() {
     file: File;
     warnings: string[];
     rows: Array<{ selected: boolean; section: string; item_no: string; description: string; qty: number; unit: string; rate: number }>;
+    linkedQuotationId?: string | null;
   } | null>(null);
   const [boqImportMode, setBoqImportMode] = useState<"replace" | "append">("replace");
 
@@ -179,18 +179,16 @@ export default function QuotationBuilder() {
       setLoading(true);
       setErrorMsg("");
       try {
-        const [projRes, tendersRes, opportunitiesRes, leadsRes] = await Promise.all([
+        const [projRes, tendersRes, opportunitiesRes] = await Promise.all([
           getInternalProjects(),
           getCrmTenders(),
           getCrmOpportunities(),
-          getCrmLeads(),
         ]);
         if (projRes.success && Array.isArray(projRes.data)) {
           setProjectsList(projRes.data);
         }
         if (tendersRes.success && Array.isArray(tendersRes.data)) setTendersList(tendersRes.data);
         if (opportunitiesRes.success && Array.isArray(opportunitiesRes.data)) setOpportunitiesList(opportunitiesRes.data);
-        if (leadsRes.success && Array.isArray(leadsRes.data)) setLeadsList(leadsRes.data);
 
         if (editId) {
           const res = await getQuotation(editId);
@@ -200,7 +198,6 @@ export default function QuotationBuilder() {
             setSelectedProjectId(q.project_id || "");
             if (q.tender_id) { setSourceType("tender"); setSourceId(q.tender_id); }
             else if (q.opportunity_id) { setSourceType("opportunity"); setSourceId(q.opportunity_id); }
-            else if (q.lead_id) { setSourceType("lead"); setSourceId(q.lead_id); }
             else if (q.project_id) { setSourceType("project"); setSourceId(q.project_id); }
 
             // Populate meta details
@@ -306,10 +303,10 @@ export default function QuotationBuilder() {
     setSelectedProjectId(sourceType === "project" ? sourceId : "");
   }, [sourceType, sourceId]);
 
-  // Resolves a tender/opportunity/lead/project source and, if a quotation
+  // Resolves a tender/opportunity/project source and, if a quotation
   // already exists for it, resumes that draft instead of letting the user
   // start a duplicate one - the actual anti-duplication mechanism.
-  const handleSourceSelect = useCallback(async (type: "project" | "tender" | "opportunity" | "lead", id: string) => {
+  const handleSourceSelect = useCallback(async (type: "project" | "tender" | "opportunity", id: string) => {
     setSourceType(type);
     setSourceId(id);
     setSourceNotice("");
@@ -328,7 +325,11 @@ export default function QuotationBuilder() {
   // Auto-select the source when arriving from the "Needs BOQ" queue.
   useEffect(() => {
     if (editId || !paramSourceType || !paramSourceId) return;
-    void handleSourceSelect(paramSourceType as any, paramSourceId);
+    if (!["project", "tender", "opportunity"].includes(paramSourceType)) {
+      setErrorMsg("Leads must be qualified into opportunities before a BOQ is built.");
+      return;
+    }
+    void handleSourceSelect(paramSourceType as "project" | "tender" | "opportunity", paramSourceId);
   }, [editId, handleSourceSelect, paramSourceType, paramSourceId]);
 
   // Mathematics buildup - MUST mirror QuotationCalculator.calculate() in
@@ -510,6 +511,7 @@ export default function QuotationBuilder() {
             unit: it.unit || "unit",
             rate: Number(it.rate) || 0,
           })),
+          linkedQuotationId: typeof res.data?.linked?.quotation_id === "string" ? res.data.linked.quotation_id : null,
         });
         setBoqImportMode("replace");
       } else {
@@ -587,7 +589,12 @@ export default function QuotationBuilder() {
         });
         if (docRes.success && docRes.data?.id) {
           await linkDocument(docRes.data.id, { entity_type: sourceType, entity_id: sourceId });
-          linkNote = ` File linked to this ${sourceType}.`;
+          if (boqPreview.linkedQuotationId) {
+            await linkDocument(docRes.data.id, { entity_type: "quotation", entity_id: boqPreview.linkedQuotationId });
+            linkNote = ` File linked to this ${sourceType} and quotation.`;
+          } else {
+            linkNote = ` File linked to this ${sourceType}.`;
+          }
         }
       } catch {
         linkNote = " (File could not be attached - line items were still imported.)";
@@ -596,6 +603,9 @@ export default function QuotationBuilder() {
 
     setSuccessMsg(`Imported ${importedItems.length} of ${boqPreview.rows.length} BOQ item(s) from ${file.name}.${linkNote}`);
     setBoqPreview(null);
+    if (boqPreview.linkedQuotationId && !editId) {
+      router.replace(`/dashboard/quotations/builder?edit=${boqPreview.linkedQuotationId}`);
+    }
   };
 
   // Cost rate buildup sub-modal
@@ -636,7 +646,7 @@ export default function QuotationBuilder() {
       return;
     }
     if (!sourceId) {
-      setErrorMsg("Select the project, tender, opportunity, or lead this BOQ belongs to before saving.");
+      setErrorMsg("Select the project, tender, or opportunity this BOQ belongs to before saving.");
       return;
     }
 
@@ -743,8 +753,6 @@ export default function QuotationBuilder() {
       payload.tender_id = sourceId;
     } else if (sourceType === "opportunity" && sourceId) {
       payload.opportunity_id = sourceId;
-    } else if (sourceType === "lead" && sourceId) {
-      payload.lead_id = sourceId;
     }
 
     // Reached via a task's "Build Quotation" action - link this quotation
@@ -1060,14 +1068,14 @@ export default function QuotationBuilder() {
               </label>
 
               {/* Source picker - every BOQ must be linked to exactly one
-                  project/tender/opportunity/lead, so it stays consistently
+                  project/tender/opportunity, so it stays consistently
                   maintained and doesn't fragment into duplicate/orphaned
                   estimates for the same piece of work. */}
               <div className="grid grid-cols-2 gap-3">
                 <label className="block">
                   <span className="font-mono text-[9px] uppercase text-slate flex items-center gap-1">
                     Source Type *
-                    <span title="Every BOQ must be linked to the project, tender, opportunity, or lead it belongs to.">
+                    <span title="Every BOQ must be linked to the project, tender, or opportunity it belongs to. Leads should be qualified first.">
                       <HelpCircle className="w-3 h-3 text-slate-light" />
                     </span>
                   </span>
@@ -1079,12 +1087,11 @@ export default function QuotationBuilder() {
                     <option value="project">Project</option>
                     <option value="tender">Tender</option>
                     <option value="opportunity">Opportunity</option>
-                    <option value="lead">Lead</option>
                   </select>
                 </label>
                 <label className="block">
                   <span className="font-mono text-[9px] uppercase text-slate">
-                    {sourceType === "project" ? "Project *" : sourceType === "tender" ? "Tender *" : sourceType === "opportunity" ? "Opportunity *" : "Lead *"}
+                    {sourceType === "project" ? "Project *" : sourceType === "tender" ? "Tender *" : "Opportunity *"}
                   </span>
                   <select
                     required
@@ -1101,9 +1108,6 @@ export default function QuotationBuilder() {
                     ))}
                     {sourceType === "opportunity" && opportunitiesList.map((o) => (
                       <option key={o.id} value={o.id}>{o.name}</option>
-                    ))}
-                    {sourceType === "lead" && leadsList.map((l) => (
-                      <option key={l.id} value={l.id}>{l.company_name || l.contact_name}</option>
                     ))}
                   </select>
                 </label>

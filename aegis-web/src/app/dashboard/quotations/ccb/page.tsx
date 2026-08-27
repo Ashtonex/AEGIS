@@ -95,7 +95,7 @@ const CCB_TOUR_STEPS: ModuleTourStep[] = [
 ];
 
 type Severity = "critical" | "high" | "medium" | "low";
-type AutonomousSourceType = "project" | "lead" | "opportunity" | "tender" | "manual";
+type AutonomousSourceType = "project" | "opportunity" | "tender" | "manual";
 
 type BuildupRow = {
   type: "material" | "labour" | "equipment" | "subcontractor" | "other";
@@ -1094,7 +1094,6 @@ export default function CommercialControlBrainPage() {
                   className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-xs text-paper outline-none transition-colors focus:border-signal/60"
                 >
                   <option value="project">Project</option>
-                  <option value="lead">CRM Lead</option>
                   <option value="opportunity">CRM Opportunity</option>
                   <option value="tender">CRM Tender</option>
                   <option value="manual">Manual Scope</option>
@@ -2054,6 +2053,5 @@ function FlagRow({ flag }: { flag: Flag }) {
     </div>
   );
 }
-
 
 

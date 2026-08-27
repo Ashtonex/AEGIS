@@ -159,11 +159,11 @@ class QuotationIntelligenceEngineTests(unittest.TestCase):
 
 
 
-    def test_autonomous_quote_builder_generates_from_crm_lead_context(self):
-        """CRM lead context should become a calculable autonomous draft quotation payload."""
+    def test_autonomous_quote_builder_generates_from_crm_opportunity_context(self):
+        """CRM opportunity context should become a calculable autonomous draft quotation payload."""
         payload = AutonomousQuoteBuilder.generate_quote_payload({
-            "source_type": "lead",
-            "source_id": "LEAD-001",
+            "source_type": "opportunity",
+            "source_id": "OPP-001",
             "company_name": "Acme Developments",
             "scope_text": "Residential townhouse building package with roof and finishes",
             "estimated_budget": 420000,
@@ -172,7 +172,7 @@ class QuotationIntelligenceEngineTests(unittest.TestCase):
 
         self.assertEqual(payload["client_name"], "Acme Developments")
         self.assertGreater(len(payload["items"]), 0)
-        self.assertEqual(payload["autonomous_metadata"]["source_type"], "lead")
+        self.assertEqual(payload["autonomous_metadata"]["source_type"], "opportunity")
         self.assertEqual(payload["autonomous_metadata"]["scope_profile"]["profile"], "building")
 
         calculation = QuotationCalculator.calculate(payload)
@@ -181,6 +181,32 @@ class QuotationIntelligenceEngineTests(unittest.TestCase):
         brain_eval = QuotationBrain.evaluate_project(payload)
         self.assertIn("metrics", brain_eval)
         self.assertGreater(brain_eval["metrics"]["target_selling_price"], 0)
+
+    def test_autonomous_quote_builder_keeps_roofing_scope_out_of_brickwork(self):
+        """Specialist roofing/tile/board scopes must not receive a full-building BOQ."""
+        roof_payload = AutonomousQuoteBuilder.generate_quote_payload({
+            "source_type": "opportunity",
+            "source_id": "OPP-ROOF",
+            "company_name": "Acme Maintenance",
+            "scope_text": "Replace damaged roof sheets and waterproof flashing only",
+            "built_area_sqm": 180,
+        })
+        roof_codes = {item["item_code"] for item in roof_payload["items"]}
+        self.assertEqual(roof_payload["autonomous_metadata"]["scope_profile"]["profile"], "roofing")
+        self.assertIn("ROOF-PITCH-SHEET", roof_codes)
+        self.assertNotIn("BRICK-DOUBLE-230", roof_codes)
+        self.assertNotIn("BRICK-SINGLE-115", roof_codes)
+
+        tile_payload = AutonomousQuoteBuilder.generate_quote_payload({
+            "source_type": "tender",
+            "source_id": "TENDER-TILE",
+            "tender_name": "Replace broken floor tiles",
+            "scope_text": "Remove and replace ceramic floor tiles only",
+            "built_area_sqm": 90,
+        })
+        tile_codes = {item["item_code"] for item in tile_payload["items"]}
+        self.assertEqual(tile_payload["autonomous_metadata"]["scope_profile"]["profile"], "tiling")
+        self.assertEqual(tile_codes, {"TILE-FLOOR-CERAMIC"})
 
     def test_autonomous_quote_builder_generates_from_project_context(self):
         """Project context should infer scale from contract value and generate assembly-backed items."""

@@ -52,7 +52,7 @@ export default function QuotationsDashboard() {
   const quotationsTour = useModuleTour("quotations");
   const [quotes, setQuotes] = useState<any[]>([]);
   const [projectsList, setProjectsList] = useState<any[]>([]);
-  const [needsBoq, setNeedsBoq] = useState<{ tenders: any[]; opportunities: any[]; leads: any[] }>({ tenders: [], opportunities: [], leads: [] });
+  const [needsBoq, setNeedsBoq] = useState<{ tenders: any[]; opportunities: any[] }>({ tenders: [], opportunities: [] });
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -151,7 +151,7 @@ export default function QuotationsDashboard() {
     if (needsBoqResult.status === "fulfilled" && needsBoqResult.value.success && needsBoqResult.value.data) {
       setNeedsBoq(needsBoqResult.value.data);
     } else {
-      setNeedsBoq({ tenders: [], opportunities: [], leads: [] });
+      setNeedsBoq({ tenders: [], opportunities: [] });
     }
 
     setLoading(false);
@@ -365,14 +365,14 @@ export default function QuotationsDashboard() {
         </div>
       )}
 
-      {/* Needs BOQ queue - tenders/opportunities/leads with no estimate started yet */}
-      {(needsBoq.tenders.length + needsBoq.opportunities.length + needsBoq.leads.length) > 0 && (
+      {/* Needs BOQ queue - tenders/opportunities with no estimate started yet */}
+      {(needsBoq.tenders.length + needsBoq.opportunities.length) > 0 && (
         <div className="border border-signal/20 bg-signal/5 rounded-sm p-4 space-y-3">
           <div className="flex items-center gap-2">
             <Briefcase className="w-4 h-4 text-signal" />
             <h2 className="text-sm font-bold text-white">Needs BOQ</h2>
             <span className="text-xs text-slate">
-              {needsBoq.tenders.length + needsBoq.opportunities.length + needsBoq.leads.length} awaiting an estimate
+              {needsBoq.tenders.length + needsBoq.opportunities.length} awaiting an estimate
             </span>
           </div>
           <div className="flex gap-3 overflow-x-auto pb-1">
@@ -399,19 +399,6 @@ export default function QuotationsDashboard() {
                 <p className="text-xs font-semibold text-white truncate mt-1">{o.label}</p>
                 <p className="text-[11px] text-slate mt-1">
                   {o.bid_amount ? `$${Number(o.bid_amount).toLocaleString()}` : "TBD"}
-                </p>
-              </Link>
-            ))}
-            {needsBoq.leads.map((l) => (
-              <Link
-                key={`lead-${l.id}`}
-                href={`/dashboard/quotations/builder?source_type=lead&source_id=${l.id}`}
-                className="shrink-0 w-56 p-3 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 transition-all"
-              >
-                <span className="text-[10px] font-mono uppercase text-sky-400">Lead</span>
-                <p className="text-xs font-semibold text-white truncate mt-1">{l.label}</p>
-                <p className="text-[11px] text-slate mt-1">
-                  {l.bid_amount ? `$${Number(l.bid_amount).toLocaleString()}` : "TBD"}
                 </p>
               </Link>
             ))}

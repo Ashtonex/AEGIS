@@ -69,8 +69,9 @@ interface Task {
 }
 
 // entity_type values the quotation builder's source picker supports (see
-// _SOURCE_LINK_COLUMNS in quotations.py).
-const QUOTABLE_ENTITY_TYPES = new Set(["tender", "opportunity", "lead", "project"]);
+// _SOURCE_LINK_COLUMNS in quotations.py). Leads qualify into opportunities
+// before estimating, so they intentionally do not get BOQ/quotation actions.
+const QUOTABLE_ENTITY_TYPES = new Set(["tender", "opportunity", "project"]);
 const DOCUMENT_ENTITY_TYPES = new Set(["lead", "opportunity", "tender", "project", "fleet", "machinery"]);
 
 interface AssignableUser {

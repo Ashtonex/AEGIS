@@ -126,6 +126,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Documents", href: "/dashboard/crm/documents", icon: BookOpen, requiredPermission: "documents.read" },
       { name: "Sales Inbox", href: "/dashboard/crm/inbox", icon: Inbox, requiredPermission: "crm_communications.read" },
       { name: "Automations", href: "/dashboard/crm/automations", icon: Zap, requiredPermission: "crm_automations.read" },
+      { name: "Integrations", href: "/dashboard/crm/integrations", icon: Settings, requiredPermission: "crm.integrations.read" },
       { name: "Marketing", href: "/dashboard/crm/marketing", icon: Megaphone },
       { name: "Campaigns", href: "/dashboard/crm/campaigns", icon: TrendingUp, requiredPermission: "crm.marketing.read" },
       { name: "Segments", href: "/dashboard/crm/segments", icon: PieChart },

@@ -4730,8 +4730,8 @@ export async function getQuotation(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}`, { cache: 'no-store', allowFallback: false });
 }
 
-export async function getQuotationsNeedsBoq(): Promise<ApiResponse<{ tenders: any[]; opportunities: any[]; leads: any[] }>> {
-  return fetchApi<ApiResponse<{ tenders: any[]; opportunities: any[]; leads: any[] }>>(`/api/v1/quotations/needs-boq`, { cache: 'no-store', allowFallback: false });
+export async function getQuotationsNeedsBoq(): Promise<ApiResponse<{ tenders: any[]; opportunities: any[] }>> {
+  return fetchApi<ApiResponse<{ tenders: any[]; opportunities: any[] }>>(`/api/v1/quotations/needs-boq`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function getQuotationSourceLookup(sourceType: string, sourceId: string): Promise<ApiResponse<{ source: any; existing_quotation_id: string | null }>> {

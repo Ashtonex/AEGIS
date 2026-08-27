@@ -270,6 +270,25 @@ DEFAULT_ASSEMBLIES: Dict[str, Dict[str, Any]] = {
         "wastage_tolerance_pct": 2.0,
         "output_rate_per_day": 6.0,  # openings per day per team
     },
+    "CEILING-BOARD-FIX": {
+        "assembly_code": "CEILING-BOARD-FIX",
+        "name": "Ceiling / Partition Board Replacement",
+        "category": "Ceilings & Boards",
+        "unit": "m2",
+        "material_recipe": [
+            {"material": "Gypsum/Rhino Board", "quantity_per_unit": 1.08, "unit": "m2", "unit_cost": 7.50},
+            {"material": "Brandering / Light Gauge Framing", "quantity_per_unit": 1.20, "unit": "m", "unit_cost": 2.80},
+            {"material": "Jointing Compound, Tape & Screws", "quantity_per_unit": 1.0, "unit": "set", "unit_cost": 2.20},
+        ],
+        "labour_gang": [
+            {"role": "Ceiling / Partition Installer", "hours_per_unit": 0.38, "hourly_rate": 13.00},
+            {"role": "Labourer", "hours_per_unit": 0.18, "hourly_rate": 6.00},
+        ],
+        "plant_needs": [],
+        "subcontractor_benchmark_rate": 16.50,
+        "wastage_tolerance_pct": 8.0,
+        "output_rate_per_day": 28.0,
+    },
 }
 
 
@@ -975,6 +994,7 @@ class FuzzyAssemblyMatcher:
         "PAINT-INT-2COAT": ["paint", "painting", "emulsion", "primer", "decorating"],
         "WATERPROOF-MEMBRANE": ["waterproof", "membrane", "damp proof", "tanking", "bituminous"],
         "DOOR-WINDOW-FIX": ["door frame", "window frame", "joinery", "ironmongery", "door fixing", "window fixing", "aluminium window", "aluminium door"],
+        "CEILING-BOARD-FIX": ["ceiling", "board", "gypsum", "rhino board", "drywall", "partition board", "replace board", "fascia board"],
     }
 
     @classmethod
@@ -1163,6 +1183,26 @@ class AutonomousQuoteBuilder:
             ("ROOF-PITCH-SHEET", 0.35, "m2", "Roof repair allowance"),
             ("CONC-25MPA", 0.06, "m3", "Minor concrete works allowance"),
         ],
+        "roofing": [
+            ("ROOF-PITCH-SHEET", 1.00, "m2", "Roof replacement / repair measured allowance"),
+            ("WATERPROOF-MEMBRANE", 0.25, "m2", "Roof waterproofing and flashing allowance"),
+        ],
+        "tiling": [
+            ("TILE-FLOOR-CERAMIC", 1.00, "m2", "Tile replacement measured allowance"),
+        ],
+        "boards": [
+            ("CEILING-BOARD-FIX", 1.00, "m2", "Board or ceiling replacement measured allowance"),
+            ("PAINT-INT-2COAT", 0.75, "m2", "Making good and paint finish allowance"),
+        ],
+        "electrical": [
+            ("ELEC-ROUGH-IN", 0.08, "point", "Electrical point replacement / repair allowance"),
+        ],
+        "plumbing": [
+            ("PLUMB-ROUGH-IN", 0.06, "point", "Plumbing point replacement / repair allowance"),
+        ],
+        "painting": [
+            ("PAINT-INT-2COAT", 1.00, "m2", "Painting / decorating measured allowance"),
+        ],
     }
 
     @staticmethod
@@ -1180,18 +1220,38 @@ class AutonomousQuoteBuilder:
     @classmethod
     def classify_scope(cls, context: Dict[str, Any]) -> Dict[str, Any]:
         blob = cls._text_blob(context)
+        roofing_hits = ["roof", "roofing", "truss", "sheeting", "ibr", "corrugated", "flashing", "gutter", "waterproof"]
+        tiling_hits = ["tile", "tiling", "ceramic", "porcelain", "grout"]
+        board_hits = ["board", "ceiling", "drywall", "gypsum", "rhino board", "partition board", "fascia"]
+        electrical_hits = ["electrical", "wiring", "socket", "switch", "db board", "distribution board", "cabling"]
+        plumbing_hits = ["plumbing", "pipe", "sanitary", "drainage point", "water supply"]
+        painting_hits = ["paint", "painting", "decorating", "emulsion", "primer"]
         civil_hits = ["civil", "road", "drain", "earthwork", "infrastructure", "mining", "platform", "retaining"]
-        renovation_hits = ["renovation", "refurb", "alteration", "fitout", "repair", "maintenance", "upgrade"]
+        renovation_hits = ["renovation", "refurb", "alteration", "fitout", "repair", "maintenance", "upgrade", "replace", "replacement"]
         building_hits = ["house", "building", "lodge", "office", "warehouse", "school", "clinic", "residential", "commercial"]
 
         scores = {
+            "roofing": sum(1 for kw in roofing_hits if kw in blob),
+            "tiling": sum(1 for kw in tiling_hits if kw in blob),
+            "boards": sum(1 for kw in board_hits if kw in blob),
+            "electrical": sum(1 for kw in electrical_hits if kw in blob),
+            "plumbing": sum(1 for kw in plumbing_hits if kw in blob),
+            "painting": sum(1 for kw in painting_hits if kw in blob),
             "civil": sum(1 for kw in civil_hits if kw in blob),
             "renovation": sum(1 for kw in renovation_hits if kw in blob),
             "building": sum(1 for kw in building_hits if kw in blob),
         }
-        profile = max(scores, key=scores.get)
+        specialist_profiles = ("roofing", "tiling", "boards", "electrical", "plumbing", "painting")
+        specialist_scores = {key: scores[key] for key in specialist_profiles}
+        best_specialist = max(specialist_scores, key=specialist_scores.get)
+        general_scores = {key: scores[key] for key in ("civil", "renovation", "building")}
+        best_general = max(general_scores, key=general_scores.get)
+        if specialist_scores[best_specialist] > 0 and specialist_scores[best_specialist] >= scores[best_general]:
+            profile = best_specialist
+        else:
+            profile = best_general
         if scores[profile] == 0:
-            profile = "building"
+            profile = "renovation"
         confidence = min(95, 45 + scores[profile] * 15)
         return {"profile": profile, "confidence_pct": confidence, "scores": scores}
 

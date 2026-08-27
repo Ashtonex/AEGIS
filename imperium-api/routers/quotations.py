@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -57,6 +58,7 @@ from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+CRM_BOQ_SOURCE_TYPES = {"opportunity", "tender"}
 
 # Real org roles for high-severity commercial/margin alerts. There is no "MD",
 # "COMMERCIAL_MANAGER", or bare "EXECUTIVE" role in this org's role catalog -
@@ -168,14 +170,13 @@ async def _load_autonomous_quote_source(
         raise HTTPException(status_code=400, detail="source_id is required for CRM and project quote sources.")
 
     source_queries = {
-        "lead": "SELECT to_jsonb(l.*) AS item FROM crm.leads l WHERE l.id = :source_id AND l.organization_id = :org_id AND COALESCE(l.is_deleted, false) = false",
         "opportunity": "SELECT to_jsonb(o.*) AS item FROM crm.opportunities o WHERE o.id = :source_id AND o.organization_id = :org_id AND COALESCE(o.is_deleted, false) = false",
         "tender": "SELECT to_jsonb(t.*) AS item FROM crm.tenders t WHERE t.id = :source_id AND t.organization_id = :org_id AND COALESCE(t.is_deleted, false) = false",
         "project": "SELECT to_jsonb(p.*) AS item FROM projects.projects p WHERE p.id = :source_id AND p.organization_id = :org_id AND COALESCE(p.is_deleted, false) = false",
     }
     query = source_queries.get(normalized)
     if query is None:
-        raise HTTPException(status_code=400, detail="source_type must be lead, opportunity, tender, project, or manual.")
+        raise HTTPException(status_code=400, detail="source_type must be opportunity, tender, project, or manual. Qualify leads into opportunities before building a BOQ.")
 
     result = await db.execute(text(query), {"source_id": source_id, "org_id": org_id})
     row = result.first()
@@ -186,6 +187,147 @@ async def _load_autonomous_quote_source(
     item["source_type"] = normalized
     item["source_id"] = source_id
     return item
+
+
+def _boq_import_items_for_metadata(result: Any) -> list[Dict[str, Any]]:
+    items: list[Dict[str, Any]] = []
+    for item in result.items:
+        raw = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+        quantity = raw.get("quantity", raw.get("qty", 0))
+        items.append({
+            "section": raw.get("section") or "Measured Works",
+            "item_no": raw.get("item_no") or "",
+            "description": raw.get("description") or "",
+            "quantity": quantity,
+            "qty": quantity,
+            "unit": raw.get("unit") or "item",
+            "rate": raw.get("rate") or 0,
+            "buildup": raw.get("buildup") or [],
+            "autonomous_source": "uploaded_boq",
+        })
+    return items
+
+
+async def _upsert_source_quotation_from_boq(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    user_id: str,
+    source_type: str,
+    source_id: str,
+    source_context: Dict[str, Any],
+    import_result: Any,
+    filename: Optional[str],
+    document_id: Optional[str],
+    task_id: Optional[str],
+) -> Optional[str]:
+    if source_type not in CRM_BOQ_SOURCE_TYPES or not import_result.items:
+        return None
+
+    existing_quotation_id = await _find_existing_quotation_id(db, org_id, source_type, source_id)
+    items = _boq_import_items_for_metadata(import_result)
+    project_title = (
+        source_context.get("name")
+        or source_context.get("tender_name")
+        or source_context.get("project_title")
+        or "Uploaded BOQ"
+    )
+    client_name = (
+        source_context.get("client_name")
+        or source_context.get("company_name")
+        or source_context.get("contact_name")
+        or project_title
+    )
+    reference_seed = f"{source_type}|{source_id}|{filename or 'boq'}"
+    reference_number = "SNC-BOQ-" + hashlib.sha1(reference_seed.encode("utf-8")).hexdigest()[:8].upper()
+    metadata = {
+        "project_title": project_title,
+        "reference_number": reference_number,
+        "quote_date": datetime.now(timezone.utc).date().isoformat(),
+        "currency": source_context.get("currency") or "USD",
+        "items": items,
+        "boq_sections": import_result.summary,
+        "uploaded_boq": {
+            "filename": filename,
+            "document_id": document_id,
+            "source_type": source_type,
+            "source_id": source_id,
+            "imported_at": datetime.now(timezone.utc).isoformat(),
+            "warnings": import_result.warnings,
+        },
+        "status": "uploaded_boq_draft",
+    }
+    calculation = QuotationCalculator.calculate({
+        "quotation_id": reference_number,
+        "items": items,
+        "currency": metadata["currency"],
+        "tax_rate": 0,
+        "profit_rate": 0,
+        "overhead_rate": 0,
+        "contingency_rate": 0,
+    })
+    metadata.update(calculation.model_dump(mode="json"))
+
+    if existing_quotation_id:
+        current = (
+            await db.execute(
+                text("""
+                    SELECT metadata FROM finance.quotations
+                    WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+                """),
+                {"id": existing_quotation_id, "org_id": org_id},
+            )
+        ).first()
+        merged = current.metadata if current else {}
+        if isinstance(merged, str):
+            merged = json.loads(merged)
+        merged = {**(merged or {}), **metadata}
+        await db.execute(
+            text("""
+                UPDATE finance.quotations
+                SET client_name = COALESCE(NULLIF(client_name, ''), :client_name),
+                    quote_amount = :quote_amount,
+                    metadata = CAST(:metadata AS jsonb),
+                    status = 'draft',
+                    updated_at = NOW()
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {
+                "id": existing_quotation_id,
+                "org_id": org_id,
+                "client_name": client_name,
+                "quote_amount": calculation.grand_total,
+                "metadata": json.dumps(merged, default=str),
+            },
+        )
+        quotation_id = existing_quotation_id
+    else:
+        insert_result = await db.execute(
+            text("""
+                INSERT INTO finance.quotations (
+                    organization_id, created_by, client_name, quote_amount,
+                    opportunity_id, tender_id, metadata, status
+                ) VALUES (
+                    :org_id, :created_by, :client_name, :quote_amount,
+                    :opportunity_id, :tender_id, CAST(:metadata AS jsonb), 'draft'
+                )
+                RETURNING id
+            """),
+            {
+                "org_id": org_id,
+                "created_by": user_id,
+                "client_name": client_name,
+                "quote_amount": calculation.grand_total,
+                "opportunity_id": source_id if source_type == "opportunity" else None,
+                "tender_id": source_id if source_type == "tender" else None,
+                "metadata": json.dumps(metadata, default=str),
+            },
+        )
+        quotation_id = str(insert_result.scalar())
+
+    if task_id:
+        await _link_task_to_quotation(db, org_id=org_id, task_id=task_id, quotation_id=quotation_id)
+    return quotation_id
 
 def _payload_with_calculation(payload: Dict[str, Any]) -> Dict[str, Any]:
     result = QuotationCalculator.calculate(payload)
@@ -325,12 +467,27 @@ async def import_boq(
     linked: dict[str, Any] = {}
     if source_type and source_id:
         normalized_source_type = source_type.strip().lower()
-        if normalized_source_type not in {"lead", "opportunity", "tender", "project"}:
-            raise HTTPException(status_code=400, detail="source_type must be lead, opportunity, tender, or project.")
-        await _load_autonomous_quote_source(db, user["org_id"], normalized_source_type, source_id)
+        if normalized_source_type not in {"opportunity", "tender", "project"}:
+            raise HTTPException(status_code=400, detail="source_type must be opportunity, tender, or project. Qualify leads into opportunities before building a BOQ.")
+        source_context = await _load_autonomous_quote_source(db, user["org_id"], normalized_source_type, source_id)
         linked["source_type"] = normalized_source_type
         linked["source_id"] = source_id
         existing_quotation_id = await _find_existing_quotation_id(db, user["org_id"], normalized_source_type, source_id)
+        imported_quotation_id = await _upsert_source_quotation_from_boq(
+            db,
+            org_id=user["org_id"],
+            user_id=user["sub"],
+            source_type=normalized_source_type,
+            source_id=source_id,
+            source_context=source_context,
+            import_result=result,
+            filename=file.filename,
+            document_id=document_id,
+            task_id=task_id,
+        )
+        if imported_quotation_id:
+            linked["quotation_id"] = imported_quotation_id
+            existing_quotation_id = imported_quotation_id
         if existing_quotation_id:
             linked["quotation_id"] = existing_quotation_id
             if task_id:
@@ -490,7 +647,7 @@ async def generate_autonomous_quote(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Builds a controlled autonomous draft quote from a CRM lead/opportunity/tender, project, or manual scope."""
+    """Builds a controlled autonomous draft quote from an opportunity/tender, project, or manual scope."""
     source_type = str(payload.get("source_type", "manual"))
     source_id = str(payload["source_id"]) if payload.get("source_id") else None
     source_context = await _load_autonomous_quote_source(db, user["org_id"], source_type, source_id)
@@ -524,7 +681,6 @@ async def generate_autonomous_quote(
     project_id = None
     opportunity_id = None
     tender_id = None
-    lead_id = None
     normalized_source_type = source_type.strip().lower()
     if normalized_source_type == "project":
         project_id = source_id
@@ -534,8 +690,6 @@ async def generate_autonomous_quote(
         opportunity_id = source_id
     elif normalized_source_type == "tender":
         tender_id = source_id
-    elif normalized_source_type == "lead":
-        lead_id = source_id
 
     brain_payload = dict(quote_payload)
     brain_payload["project_id"] = project_id
@@ -566,10 +720,10 @@ async def generate_autonomous_quote(
                 """
                 INSERT INTO finance.quotations (
                     organization_id, created_by, client_name, quote_amount, project_id,
-                    opportunity_id, tender_id, lead_id, metadata, status
+                    opportunity_id, tender_id, metadata, status
                 ) VALUES (
                     :org_id, :created_by, :client_name, :quote_amount, :project_id,
-                    :opportunity_id, :tender_id, :lead_id, CAST(:metadata AS jsonb), :status
+                    :opportunity_id, :tender_id, CAST(:metadata AS jsonb), :status
                 )
                 RETURNING id
                 """
@@ -582,7 +736,6 @@ async def generate_autonomous_quote(
                 "project_id": project_id,
                 "opportunity_id": opportunity_id,
                 "tender_id": tender_id,
-                "lead_id": lead_id,
                 "metadata": json.dumps(metadata, default=str),
                 "status": "draft",
             },
@@ -1373,7 +1526,6 @@ async def list_document_changes(
 _SOURCE_LINK_COLUMNS = {
     "tender": "tender_id",
     "opportunity": "opportunity_id",
-    "lead": "lead_id",
     "project": "project_id",
 }
 
@@ -1408,7 +1560,7 @@ async def list_needs_boq(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Tenders/opportunities/leads with no BOQ/estimate started against them yet."""
+    """Tenders/opportunities with no BOQ/estimate started against them yet."""
     org_id = user["org_id"]
 
     tenders_result = await db.execute(
@@ -1439,30 +1591,14 @@ async def list_needs_boq(
         """),
         {"org_id": org_id},
     )
-    leads_result = await db.execute(
-        text("""
-            SELECT l.id, l.company_name AS label, l.estimated_budget AS bid_amount, l.status AS stage, l.expected_close_date, l.created_at
-            FROM crm.leads l
-            WHERE l.organization_id = :org_id AND l.is_deleted = false
-              AND NOT EXISTS (
-                  SELECT 1 FROM finance.quotations q
-                  WHERE q.lead_id = l.id AND q.is_deleted = false
-              )
-            ORDER BY l.created_at DESC
-            LIMIT 100
-        """),
-        {"org_id": org_id},
-    )
-
     tenders = [dict(row._mapping) for row in tenders_result]
     opportunities = [dict(row._mapping) for row in opportunities_result]
-    leads = [dict(row._mapping) for row in leads_result]
 
     return {
         "success": True,
-        "data": jsonable_encoder({"tenders": tenders, "opportunities": opportunities, "leads": leads}),
+        "data": jsonable_encoder({"tenders": tenders, "opportunities": opportunities}),
         "message": "Sources awaiting a BOQ/estimate listed.",
-        "meta": {"total": len(tenders) + len(opportunities) + len(leads)},
+        "meta": {"total": len(tenders) + len(opportunities)},
     }
 
 
@@ -1473,7 +1609,7 @@ async def source_lookup(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validates a tender/opportunity/lead/project source and reports whether a quotation already exists for it."""
+    """Validates a tender/opportunity/project source and reports whether a quotation already exists for it."""
     source = await _load_autonomous_quote_source(db, user["org_id"], source_type, source_id)
     existing_quotation_id = await _find_existing_quotation_id(db, user["org_id"], source_type, source_id)
 

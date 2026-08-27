@@ -53,6 +53,7 @@ _DOCUMENT_LINK_ENTITY_TABLES = {
     "opportunity": "crm.opportunities",
     "lead": "crm.leads",
     "project": "projects.projects",
+    "quotation": "finance.quotations",
     "fleet": "fleet.fleet",
     "machinery": "fleet.equipment_assets",
     "supplier": "procurement.suppliers",
