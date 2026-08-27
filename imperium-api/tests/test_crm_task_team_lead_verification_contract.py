@@ -36,6 +36,13 @@ class CrmTaskTeamLeadVerificationContractTests(unittest.TestCase):
         self.assertIn("Proof required", TASKS_PAGE)
         self.assertIn("Proof attached", TASKS_PAGE)
 
+    def test_manual_task_creation_validates_people_and_does_not_depend_on_notifications(self):
+        self.assertIn("async def _ensure_active_org_user", ROUTER)
+        self.assertIn('not_found_detail="Assignee not found."', ROUTER)
+        self.assertIn('not_found_detail="Approver not found."', ROUTER)
+        self.assertIn("await db.commit()\n\n    if payload.assigned_to_user_id", ROUTER)
+        self.assertIn("Task created but assignee notification failed", ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()

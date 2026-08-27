@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from app.shared.events import emit_notification
 from app.shared.task_stacks import ENTITY_DEPARTMENT_CODE, generate_task_stack
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DEPARTMENT_ENTITY_TYPES: dict[str, list[str]] = {}
 for _entity_type, _department in ENTITY_DEPARTMENT_CODE.items():
@@ -90,6 +92,28 @@ async def _notify_task_reviewers(db: AsyncSession, *, org_id: str, task_id: UUID
             action_url="/dashboard/crm/tasks",
             metadata={"task_id": str(task_id), "status": "under_review"},
         )
+
+
+async def _ensure_active_org_user(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    org_id: str,
+    not_found_detail: str,
+) -> None:
+    target_check = await db.execute(
+        text("""
+            SELECT 1 FROM core.users
+            WHERE id = :id
+              AND organization_id = :org_id
+              AND is_deleted = false
+              AND is_active = true
+        """),
+        {"id": user_id, "org_id": org_id},
+    )
+    if not target_check.first():
+        raise HTTPException(status_code=404, detail=not_found_detail)
+
 
 # entity_type -> the table/id-column pair backfill-stacks sweeps to generate
 # stacks for every pre-existing record that predates auto-generation on
@@ -490,12 +514,19 @@ async def create_task(
             detail="Control tasks need a primary entity. Use a personal action/reminder for unlinked notes.",
         )
     if payload.assigned_to_user_id:
-        target_check = await db.execute(
-            text("SELECT 1 FROM core.users WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
-            {"id": payload.assigned_to_user_id, "org_id": org_id},
+        await _ensure_active_org_user(
+            db,
+            user_id=payload.assigned_to_user_id,
+            org_id=org_id,
+            not_found_detail="Assignee not found.",
         )
-        if not target_check.first():
-            raise HTTPException(status_code=404, detail="Assignee not found.")
+    if payload.approver_user_id:
+        await _ensure_active_org_user(
+            db,
+            user_id=payload.approver_user_id,
+            org_id=org_id,
+            not_found_detail="Approver not found.",
+        )
     requirement_code = _requirement_code(payload.title, payload.requirement_code)
     deduplication_key = (
         _dedupe_key(primary_entity_type, primary_entity_id, requirement_code)
@@ -613,18 +644,25 @@ async def create_task(
             },
         )
 
-    if payload.assigned_to_user_id and str(payload.assigned_to_user_id) != user["user_id"]:
-        await emit_notification(
-            db,
-            org_id=org_id,
-            user_id=str(payload.assigned_to_user_id),
-            title="New task assigned to you",
-            message=f'"{payload.title}" was assigned to you.',
-            notification_type="task",
-            action_url="/dashboard/crm/tasks",
-        )
-
     await db.commit()
+
+    if payload.assigned_to_user_id and str(payload.assigned_to_user_id) != user["user_id"]:
+        try:
+            await emit_notification(
+                db,
+                org_id=org_id,
+                user_id=str(payload.assigned_to_user_id),
+                title="New task assigned to you",
+                message=f'"{payload.title}" was assigned to you.',
+                notification_type="task",
+                action_url="/dashboard/crm/tasks",
+                metadata={"task_id": str(task_id)},
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Task created but assignee notification failed", extra={"task_id": str(task_id)})
+
     return {"success": True, "data": {"id": str(task_id)}, "message": "Task created.", "meta": {}}
 
 
