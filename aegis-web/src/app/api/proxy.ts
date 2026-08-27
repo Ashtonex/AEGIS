@@ -21,8 +21,18 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     };
     
     if (req.method !== "GET" && req.method !== "HEAD") {
-      init.body = req.body as unknown as BodyInit;
-      (init as RequestInit & { duplex: "half" }).duplex = "half";
+      const contentType = headers.get("content-type") || "";
+      const isTextBody =
+        contentType.includes("application/json") ||
+        contentType.includes("application/x-www-form-urlencoded") ||
+        contentType.startsWith("text/");
+
+      if (isTextBody) {
+        init.body = await req.text();
+      } else {
+        init.body = req.body as unknown as BodyInit;
+        (init as RequestInit & { duplex: "half" }).duplex = "half";
+      }
     }
     
     const response = await fetch(backendUrl, init);
