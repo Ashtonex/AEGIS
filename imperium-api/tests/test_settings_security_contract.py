@@ -76,7 +76,15 @@ class SettingsSecurityContractTests(unittest.TestCase):
         self.assertNotIn("setTimeout(async () =>", AUTH_CONTEXT)
         self.assertIn("router.push('/login')", AUTH_CONTEXT)
         self.assertIn("isLoading || session || !isProtectedRoute", AUTH_CONTEXT)
-        self.assertIn("if (isLoading || !session)", DASHBOARD_SHELL)
+        self.assertIn("if (!session || (isPortalRoute ? sessionLoading : isLoading))", DASHBOARD_SHELL)
+
+    def test_dashboard_never_defaults_unresolved_role_to_employee(self):
+        self.assertNotIn('role || "EMPLOYEE"', DASHBOARD_SHELL)
+        self.assertNotIn('role || "EMPLOYEE"', RBAC_GUARD)
+        self.assertIn('const userRole = role;', DASHBOARD_SHELL)
+        self.assertIn('const userRole = role;', RBAC_GUARD)
+        self.assertIn('if (!isPortalRoute && !userRole)', DASHBOARD_SHELL)
+        self.assertIn('Resolving access profile', RBAC_GUARD)
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn('if (pathname?.startsWith("/portal/client"))', DASHBOARD_SHELL)
         self.assertIn('if (pathname?.startsWith("/portal/supplier"))', DASHBOARD_SHELL)
         self.assertIn('if (pathname?.startsWith("/portal/foreman"))', DASHBOARD_SHELL)
-        self.assertIn("isPortalRoute\n        ? portalGroups", DASHBOARD_SHELL)
+        self.assertIn("if (isPortalRoute) return portalGroups;", DASHBOARD_SHELL)
         self.assertIn('subItems: [{ name: "Workspace", href: portalHome.href, icon: portalHome.icon }]', DASHBOARD_SHELL)
 
     def test_superadmin_sidebar_is_not_collapsed_by_field_role_filter(self):

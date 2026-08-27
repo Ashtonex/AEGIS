@@ -45,10 +45,10 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
   // The authoritative role from core.user_roles (resolved server-side via
   // /auth/me), not session.user.app_metadata.role - nothing keeps that in
   // sync once an admin assigns a functional role via Settings.
-  const userRole = role || "EMPLOYEE";
+  const userRole = role;
 
   const isAuthorized = React.useMemo(
-    () => matchesRole(userRole, allowedRoles),
+    () => (userRole ? matchesRole(userRole, allowedRoles) : false),
     [allowedRoles, userRole]
   );
 
@@ -71,12 +71,12 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
     setHasLoggedDenial(false);
   }, [userRole]);
 
-  if (isLoading) {
+  if (isLoading || (session && !userRole)) {
     return (
       <div className="min-h-[calc(100vh-3.5rem)] flex flex-col items-center justify-center bg-ink">
         <Loader2 className="w-8 h-8 text-signal animate-spin mb-4" />
         <p className="font-mono text-data-sm text-slate-light uppercase tracking-widest animate-pulse">
-          Decrypting access ledger...
+          Resolving access profile...
         </p>
       </div>
     );

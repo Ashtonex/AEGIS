@@ -14,7 +14,7 @@ import { matchesRole } from "@/lib/rbacMatch";
 import {
   Search, Bell, CircleHelp, User, LayoutDashboard, Briefcase,
   HardHat, Activity, Users, Truck, Wrench, ShoppingCart,
-  Package, DollarSign, UserCheck, ShieldCheck, FileText,
+  Package, DollarSign, UserCheck, ShieldCheck, ShieldAlert, FileText,
   BarChart, PieChart, Settings, LogOut, ChevronDown, ChevronRight,
   Target, Handshake, Building2, BookOpen, Inbox, Zap, MapPin,
   LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit,
@@ -437,7 +437,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const userEmail = session?.user?.email || "System User";
   // Create a display name from email (e.g., admin@example.com -> Admin)
   const displayName = userEmail.split('@')[0].charAt(0).toUpperCase() + userEmail.split('@')[0].slice(1);
-  const userRole = role || "EMPLOYEE";
+  const userRole = role;
 
   // Resolved permission keys for the signed-in user, used to layer
   // requiredPermission checks on top of the existing role-based nav gates.
@@ -465,7 +465,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   }, [session?.access_token, isPortalRoute]);
 
   const hasPermission = useCallback(
-    (requiredPermission?: string) => isSuperAdminRole(userRole) || !requiredPermission || !permissions || permissions.has(requiredPermission),
+    (requiredPermission?: string) => {
+      if (!userRole) return false;
+      return isSuperAdminRole(userRole) || !requiredPermission || !permissions || permissions.has(requiredPermission);
+    },
     [permissions, userRole]
   );
 
@@ -511,10 +514,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
   const visibleGroups = useMemo(
     () => {
+      if (isPortalRoute) return portalGroups;
+      if (!userRole) return [];
       const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);
-      return isPortalRoute
-        ? portalGroups
-        : MODULE_GROUPS.filter(
+      return MODULE_GROUPS.filter(
         (group) =>
           (!isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
           (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
@@ -675,15 +678,39 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     </>
   );
 
-  // Don't render dashboard chrome/content until the session check has
-  // resolved. Rendering nothing here (instead of the full shell with
-  // placeholder "System User" data) closes the window where protected
-  // content could flash before AuthContext's redirect-to-/login fires.
+  // Don't render dashboard chrome/content until the session and assigned
+  // role checks have resolved. A signed-in dashboard session with role=null
+  // is not an employee - it means the authoritative access profile has not
+  // loaded yet, or could not be loaded.
   //
-  if (!session || (isLoading && sessionLoading)) {
+  if (!session || (isPortalRoute ? sessionLoading : isLoading)) {
     return (
       <div className="min-h-screen bg-ink flex items-center justify-center">
         <div className="h-6 w-6 rounded-full border-2 border-signal border-t-transparent animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isPortalRoute && !userRole) {
+    return (
+      <div className="min-h-screen bg-ink flex items-center justify-center px-4">
+        <div className="max-w-md border border-signal/20 bg-ink-light/95 p-8 text-center shadow-2xl">
+          <div className="mx-auto mb-5 flex h-10 w-10 items-center justify-center rounded-sm border border-signal/30 bg-signal/10 text-signal">
+            <ShieldAlert className="h-5 w-5" />
+          </div>
+          <h1 className="font-display text-2xl text-paper">Access profile unavailable</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-light">
+            Your sign-in session is active, but the system could not load your assigned role. Refresh the page once the connection is ready, or sign in again.
+          </p>
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            className="mt-6 inline-flex items-center gap-2 rounded-sm border border-red-500/30 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-red-300 transition-colors hover:border-red-500/50 hover:bg-red-950/40"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign in again
+          </button>
+        </div>
       </div>
     );
   }
