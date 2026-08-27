@@ -61,9 +61,8 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('"/api/cms/broadcast-feeds": "/api/v1/public/intake/broadcast-feeds"', WEB_API)
 
     def test_next_api_proxy_preserves_binary_multipart_upload_bodies(self):
-        self.assertIn("async function readRequestBody", API_PROXY)
-        self.assertIn("req.body.getReader()", API_PROXY)
-        self.assertIn("Buffer.concat(chunks)", API_PROXY)
+        self.assertIn("init.body = req.body", API_PROXY)
+        self.assertIn('duplex: "half"', API_PROXY)
         self.assertNotIn("await req.arrayBuffer()", API_PROXY)
         self.assertIn('headers.delete("content-length")', API_PROXY)
         self.assertIn('headers.delete("content-encoding")', API_PROXY)
