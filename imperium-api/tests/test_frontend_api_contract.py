@@ -62,7 +62,9 @@ class FrontendApiContractTests(unittest.TestCase):
 
     def test_next_api_proxy_preserves_binary_multipart_upload_bodies(self):
         self.assertIn("await req.arrayBuffer()", API_PROXY)
-        self.assertIn("Buffer.from(body)", API_PROXY)
+        self.assertIn("Buffer.from(new Uint8Array(body))", API_PROXY)
+        self.assertIn('headers.delete("content-length")', API_PROXY)
+        self.assertIn('headers.delete("content-encoding")', API_PROXY)
         self.assertNotIn("await req.text()", API_PROXY)
 
     def test_portal_login_surfaces_actionable_api_failures(self):
