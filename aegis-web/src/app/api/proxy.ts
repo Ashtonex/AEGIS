@@ -12,6 +12,8 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     const headers = new Headers(req.headers);
     // Remove host header to avoid issues with backend routing
     headers.delete("host");
+    headers.delete("content-length");
+    headers.delete("content-encoding");
     
     const init: RequestInit = {
       method: req.method,
@@ -20,7 +22,7 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     
     if (req.method !== "GET" && req.method !== "HEAD") {
       const body = await req.arrayBuffer();
-      init.body = Buffer.from(body) as unknown as BodyInit;
+      init.body = Buffer.from(new Uint8Array(body)) as unknown as BodyInit;
     }
     
     const response = await fetch(backendUrl, init);
