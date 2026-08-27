@@ -3,6 +3,29 @@ import { resolveBackendOrigin } from "@/lib/backend-url";
 
 const BASE_BACKEND_URL = `${resolveBackendOrigin()}/api/v1`;
 
+async function readRequestBody(req: Request): Promise<Buffer | undefined> {
+  if (!req.body) {
+    return undefined;
+  }
+
+  const reader = req.body.getReader();
+  const chunks: Buffer[] = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    if (value) {
+      chunks.push(Buffer.from(value));
+    }
+  }
+
+  return chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
+}
+
 // Proxy helper
 export async function proxyToBackend(req: Request, endpoint: string) {
   const url = new URL(req.url);
@@ -21,8 +44,7 @@ export async function proxyToBackend(req: Request, endpoint: string) {
     };
     
     if (req.method !== "GET" && req.method !== "HEAD") {
-      const body = await req.arrayBuffer();
-      init.body = Buffer.from(new Uint8Array(body)) as unknown as BodyInit;
+      init.body = (await readRequestBody(req)) as unknown as BodyInit;
     }
     
     const response = await fetch(backendUrl, init);
