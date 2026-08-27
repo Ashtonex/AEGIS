@@ -21,6 +21,9 @@ NOTIFICATION_BELL = (
 NOTIFICATIONS_PAGE = (
     WEB_ROOT / "src" / "app" / "dashboard" / "notifications" / "page.tsx"
 ).read_text(encoding="utf-8")
+LIVE_DATA_PROVIDER = (
+    WEB_ROOT / "src" / "lib" / "live" / "LiveDataProvider.tsx"
+).read_text(encoding="utf-8")
 
 
 class NotificationsContractTests(unittest.TestCase):
@@ -57,6 +60,14 @@ class NotificationsContractTests(unittest.TestCase):
         self.assertIn("NotificationBell", DASHBOARD_SHELL)
         self.assertIn("/dashboard/notifications", DASHBOARD_SHELL)
         self.assertIn("markAllRead", NOTIFICATIONS_PAGE)
+
+    def test_live_socket_reconnect_loop_is_single_owner_and_jittered(self):
+        self.assertIn("const connectionSeqRef = useRef(0)", LIVE_DATA_PROVIDER)
+        self.assertIn("connectionSeq === connectionSeqRef.current", LIVE_DATA_PROVIDER)
+        self.assertIn("clearReconnectTimer()", LIVE_DATA_PROVIDER)
+        self.assertIn("RECONNECT_JITTER_MS", LIVE_DATA_PROVIDER)
+        self.assertIn("socket.onerror", LIVE_DATA_PROVIDER)
+        self.assertIn("socketRef.current?.close()", LIVE_DATA_PROVIDER)
 
 
 if __name__ == "__main__":

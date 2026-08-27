@@ -86,6 +86,13 @@ class SettingsSecurityContractTests(unittest.TestCase):
         self.assertIn('if (!isPortalRoute && !userRole)', DASHBOARD_SHELL)
         self.assertIn('Resolving access profile', RBAC_GUARD)
 
+    def test_auth_role_resolution_is_sequence_guarded_against_rehydration_loops(self):
+        self.assertIn("const roleResolveSeqRef = useRef(0)", AUTH_CONTEXT)
+        self.assertIn("roleResolveSeqRef.current = sequence", AUTH_CONTEXT)
+        self.assertIn("accessToken === lastAppliedTokenRef.current", AUTH_CONTEXT)
+        self.assertIn("roleResolveSeqRef.current += 1", AUTH_CONTEXT)
+        self.assertIn("setCachedAccessToken(null)", AUTH_CONTEXT)
+
 
 if __name__ == "__main__":
     unittest.main()

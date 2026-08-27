@@ -15,6 +15,9 @@ BACKEND_URL = (
 API_PROXY = (
     ROOT.parent / "aegis-web" / "src" / "app" / "api" / "proxy.ts"
 ).read_text(encoding="utf-8")
+PWA_RUNTIME = (
+    ROOT.parent / "aegis-web" / "src" / "components" / "pwa" / "PwaRuntime.tsx"
+).read_text(encoding="utf-8")
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 PORTALS_ROUTER = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 
@@ -108,6 +111,13 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn("export async function updateCrmOpportunity", WEB_API)
         self.assertIn("export async function updateCrmTender", WEB_API)
         self.assertIn("allowFallback: false", WEB_API)
+
+    def test_pwa_version_polling_uses_stable_refs_instead_of_recreating_interval(self):
+        self.assertIn("const currentVersionRef = useRef", PWA_RUNTIME)
+        self.assertIn("const registrationRef = useRef", PWA_RUNTIME)
+        self.assertIn("currentVersionRef.current", PWA_RUNTIME)
+        self.assertIn("registrationRef.current", PWA_RUNTIME)
+        self.assertIn("}, []);", PWA_RUNTIME)
 
     def test_password_setup_contract_is_implemented_backend_side(self):
         self.assertIn("completePasswordSetup", WEB_API)

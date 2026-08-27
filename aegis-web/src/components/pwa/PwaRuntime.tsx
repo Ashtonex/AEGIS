@@ -46,8 +46,23 @@ export function PwaRuntime() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [bannerVisible, setBannerVisible] = useState(false);
   const refreshRef = useRef<number | null>(null);
+  const currentVersionRef = useRef<string | null>(null);
+  const latestVersionRef = useRef<string | null>(null);
+  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
 
   const isDashboard = pathname?.startsWith("/dashboard") ?? false;
+
+  useEffect(() => {
+    currentVersionRef.current = currentVersion;
+  }, [currentVersion]);
+
+  useEffect(() => {
+    latestVersionRef.current = latestVersion;
+  }, [latestVersion]);
+
+  useEffect(() => {
+    registrationRef.current = registration;
+  }, [registration]);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) {
@@ -100,32 +115,41 @@ export function PwaRuntime() {
       if (!payload || cancelled) return;
 
       const remoteVersion = `${payload.app_version}:${payload.build_timestamp}:${payload.commit_sha ?? ""}`;
-      if (!currentVersion) {
+      const activeCurrentVersion = currentVersionRef.current;
+      if (!activeCurrentVersion) {
+        currentVersionRef.current = remoteVersion;
+        latestVersionRef.current = remoteVersion;
         setCurrentVersion(remoteVersion);
         setLatestVersion(remoteVersion);
         writeLocalVersion("aegis:last-version", remoteVersion);
         return;
       }
 
-      setLatestVersion(remoteVersion);
-      if (remoteVersion !== currentVersion) {
+      if (latestVersionRef.current !== remoteVersion) {
+        latestVersionRef.current = remoteVersion;
+        setLatestVersion(remoteVersion);
+      }
+      if (remoteVersion !== activeCurrentVersion) {
         setUpdateAvailable(true);
+      }
+    };
+
+    const updateRegistration = () => {
+      const activeRegistration = registrationRef.current;
+      if (activeRegistration?.update) {
+        void activeRegistration.update();
       }
     };
 
     void checkVersion();
     refreshRef.current = window.setInterval(() => {
       void checkVersion();
-      if (registration?.update) {
-        void registration.update();
-      }
+      updateRegistration();
     }, 5 * 60 * 1000);
 
     const onFocus = () => {
       void checkVersion();
-      if (registration?.update) {
-        void registration.update();
-      }
+      updateRegistration();
     };
 
     window.addEventListener("focus", onFocus);
@@ -137,7 +161,7 @@ export function PwaRuntime() {
         refreshRef.current = null;
       }
     };
-  }, [currentVersion, registration]);
+  }, []);
 
   useEffect(() => {
     const stored = readLocalVersion("aegis:last-version");

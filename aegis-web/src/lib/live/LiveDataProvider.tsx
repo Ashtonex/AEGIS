@@ -20,6 +20,7 @@ const LiveDataContext = createContext<{ subscribe: (key: string, listener: Liste
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
+const RECONNECT_JITTER_MS = 500;
 
 function wsUrl(token: string): string {
   const origin = resolveBackendOrigin().replace(/^http/, "ws");
@@ -36,25 +37,52 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
+  const connectionSeqRef = useRef(0);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
     const token = session?.access_token;
-    if (!token) return;
+    if (!token) {
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      socketRef.current?.close();
+      socketRef.current = null;
+      reconnectAttemptRef.current = 0;
+      setConnected(false);
+      return;
+    }
 
     let cancelled = false;
+    const connectionSeq = connectionSeqRef.current + 1;
+    connectionSeqRef.current = connectionSeq;
+
+    const clearReconnectTimer = () => {
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    const isCurrentConnection = (socket: WebSocket) =>
+      !cancelled && connectionSeq === connectionSeqRef.current && socketRef.current === socket;
 
     const connect = () => {
-      if (cancelled) return;
+      if (cancelled || connectionSeq !== connectionSeqRef.current) return;
+      clearReconnectTimer();
+      socketRef.current?.close();
       const socket = new WebSocket(wsUrl(token));
       socketRef.current = socket;
 
       socket.onopen = () => {
+        if (!isCurrentConnection(socket)) return;
         reconnectAttemptRef.current = 0;
         setConnected(true);
       };
 
       socket.onmessage = (raw) => {
+        if (!isCurrentConnection(socket)) return;
         let event: LiveEvent;
         try {
           event = JSON.parse(raw.data);
@@ -66,12 +94,18 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       };
 
       socket.onclose = () => {
+        if (!isCurrentConnection(socket)) return;
         setConnected(false);
-        if (cancelled) return;
         const attempt = reconnectAttemptRef.current + 1;
         reconnectAttemptRef.current = attempt;
-        const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+        const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS) + Math.floor(Math.random() * RECONNECT_JITTER_MS);
         reconnectTimerRef.current = window.setTimeout(connect, delay);
+      };
+
+      socket.onerror = () => {
+        if (isCurrentConnection(socket)) {
+          socket.close();
+        }
       };
     };
 
@@ -79,7 +113,8 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
-      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+      connectionSeqRef.current += 1;
+      clearReconnectTimer();
       socketRef.current?.close();
       socketRef.current = null;
       setConnected(false);

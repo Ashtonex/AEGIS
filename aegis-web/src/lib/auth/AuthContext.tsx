@@ -35,18 +35,27 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const pathname = usePathname();
   const resolvedUserIdRef = useRef<string | null>(null);
   const lastAppliedTokenRef = useRef<string | null>(null);
+  const roleResolveSeqRef = useRef(0);
 
   const resolveRole = useCallback(async (accessToken?: string) => {
+    const sequence = roleResolveSeqRef.current + 1;
+    roleResolveSeqRef.current = sequence;
     if (!accessToken) {
-      setRole(null);
+      if (sequence === roleResolveSeqRef.current) {
+        setRole(null);
+      }
       return;
     }
     try {
       const response = await getAuthMe(accessToken);
-      setRole(response.data?.role ?? null);
+      if (sequence === roleResolveSeqRef.current && accessToken === lastAppliedTokenRef.current) {
+        setRole(response.data?.role ?? null);
+      }
     } catch (error) {
       console.error("Error fetching resolved role:", error);
-      setRole(null);
+      if (sequence === roleResolveSeqRef.current && accessToken === lastAppliedTokenRef.current) {
+        setRole(null);
+      }
     }
   }, []);
 
@@ -175,6 +184,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   }, [sessionLoading, session, pathname, router]);
 
   const signOut = useCallback(async () => {
+    roleResolveSeqRef.current += 1;
+    lastAppliedTokenRef.current = null;
+    resolvedUserIdRef.current = null;
+    setCachedAccessToken(null);
     await supabase.auth.signOut();
     setRole(null);
     router.push('/login');
