@@ -72,6 +72,20 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
+function metricWithUnit(value: unknown, unit: string): string {
+  const displayed = displayValue(value);
+  return displayed === "Not recorded" ? displayed : `${displayed}${unit}`;
+}
+
+function statusLabel(value: unknown): string {
+  const status = String(value || "").toLowerCase();
+  if (status === "stale") return "needs recent records";
+  if (status === "unavailable") return "unavailable";
+  if (status === "no_data") return "no records yet";
+  if (status === "current") return "current";
+  return displayValue(value).toLowerCase();
+}
+
 function sourceErrorsFromMeta(meta: unknown) {
   if (!meta || typeof meta !== "object") return [];
   const sourceErrors = (meta as { source_errors?: unknown }).source_errors;
@@ -184,14 +198,14 @@ function ExecutiveCommandCentreWorkspace() {
   }, []);
 
   const metricCards = useMemo(() => [
-    { key: "cash_runway", label: "Cash Runway", value: `${displayValue(kpis.cash_survival_days)} days`, source: "Executive KPI snapshot or treasury snapshot when available" },
+    { key: "cash_runway", label: "Cash Runway", value: metricWithUnit(kpis.cash_survival_days, " days"), source: "Executive KPI snapshot or treasury snapshot when available" },
     { key: "revenue", label: "Revenue (YTD)", value: displayValue(kpis.revenue), source: "Live finance progress claims and cost records" },
     { key: "margin", label: "Gross Profit Margin", value: displayValue(kpis.margin), source: "Live finance progress claims and cost records" },
     { key: "active_projects", label: "Active Projects", value: String(activeProjects.length), source: "Live open project records" },
     { key: "pipeline", label: "Pipeline Value", value: displayValue(kpis.pipeline), source: "Live CRM opportunities and tenders" },
-    { key: "concentration", label: "Top Client Concentration", value: `${displayValue(kpis.revenue_concentration_percent)}%`, source: "Live project contract values or executive KPI snapshot" },
+    { key: "concentration", label: "Top Client Concentration", value: metricWithUnit(kpis.revenue_concentration_percent, "%"), source: "Live project contract values or executive KPI snapshot" },
     { key: "safety", label: "Safety Incidents (YTD)", value: displayValue(stats.safety_incidents), source: "Live HSE incident records" },
-    { key: "documented", label: "Documented Processes", value: `${displayValue(kpis.documented_workflow_percent ?? kpis.documented_percent)}%`, source: "Executive KPI snapshot or process register when available" },
+    { key: "documented", label: "Documented Processes", value: metricWithUnit(kpis.documented_workflow_percent ?? kpis.documented_percent, "%"), source: "Executive KPI snapshot or process register when available" },
   ], [activeProjects.length, kpis, stats]);
 
   const openProject = async (project: ApiData) => {
@@ -204,7 +218,7 @@ function ExecutiveCommandCentreWorkspace() {
       setProjectDetail(response.data || {});
       const errors = sourceErrorsFromMeta(response.meta);
       if (errors.length) {
-        setDetailError(errors.map((error) => `${displayValue(error.source)} is ${displayValue(error.status)}`).join(" · "));
+        setDetailError(errors.map((error) => `${displayValue(error.source)} ${statusLabel(error.status)}`).join(" · "));
       }
     } catch {
       setDetailError("Project detail could not be loaded.");
@@ -216,9 +230,9 @@ function ExecutiveCommandCentreWorkspace() {
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="w-7 h-7 text-signal animate-spin" /></div>;
 
   const selectedCard = metricCards.find((card) => card.key === selectedMetric);
-  return <div className="h-full overflow-y-auto p-6 space-y-4">
+  return <div className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-7 sm:px-6 sm:pt-8 space-y-4">
     <header className="flex flex-wrap items-end justify-between gap-3">
-      <div><h1 className="font-display text-4xl text-paper">{greetingForNow(currentTime)}, {displayName}.</h1><p className="text-sm text-slate-light">{userRole} · Live ERP view</p></div>
+      <div><h1 className="font-display text-3xl leading-[1.08] tracking-normal text-paper sm:text-4xl">{greetingForNow(currentTime)}, {displayName}.</h1><p className="mt-1 text-sm text-slate-light">{userRole} · Live ERP view</p></div>
       <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
     </header>
 
@@ -227,7 +241,7 @@ function ExecutiveCommandCentreWorkspace() {
 
     <section className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
       {metricCards.map((card) => <button key={card.key} onClick={() => setSelectedMetric(card.key)} className="min-h-24 text-left bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_10px_20px_-14px_rgba(0,0,0,0.55)] p-3 transition-shadow hover:border-signal hover:shadow-[0_0_40px_var(--dxl-signal-ghost)] focus-visible:outline focus-visible:outline-signal">
-        <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl text-paper mt-3 break-words">{card.value}</p>
+        <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{card.value}</p>
       </button>)}
     </section>
 
@@ -251,7 +265,7 @@ function Modal({ title, onClose, children, wide = false }: { title: string; onCl
 function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{Object.entries(data).map(([key, value]) => <div key={key} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{titleCase(key)}</p><p className="font-mono text-sm text-paper mt-1">{displayValue(value)}</p></div>)}</div>; }
 function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (project: ApiData) => void }) { if (!projects.length) return <p className="text-slate-light mt-6">No active project records were found.</p>; return <div className="mt-5 space-y-2">{projects.map((project) => <button key={String(project.id)} onClick={() => void onSelect(project)} className="w-full flex justify-between gap-3 text-left border border-ink-mid p-3 hover:border-signal"><span className="text-paper">{displayValue(project.name)}</span><span className="font-mono text-xs text-slate-light">{displayValue(project.status)}</span></button>)}</div>; }
 function ProjectDetail({ detail }: { detail: ApiData | null }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
-function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter((source) => !["current", "no_data"].includes(String(source.status))); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; if (!issues.length) return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className="w-4 h-4 text-green-500"/>{summary}</div>; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Some executive data needs attention</p><p className="text-xs text-slate-light mt-1">{summary}</p><p className="text-xs text-slate-light mt-1">{issues.map((source) => `${displayValue(source.source)}: ${displayValue(source.status)}`).join(" · ")}</p></div></div>; }
+function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter((source) => !["current", "no_data"].includes(String(source.status))); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; if (!issues.length) return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className="w-4 h-4 text-green-500"/>{summary}</div>; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Some executive data needs attention</p><p className="text-xs text-slate-light mt-1">{summary}</p><p className="text-xs text-slate-light mt-1">{issues.map((source) => `${displayValue(source.source)} ${statusLabel(source.status)}`).join(" · ")}</p></div></div>; }
 function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
 function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) { return <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]"><div className="p-4 border-b border-ink-mid flex justify-between gap-4"><div><h2 className="font-mono text-xs tracking-widest text-paper uppercase">Executive Exceptions</h2><p className="text-xs text-slate-light mt-1">Conditions requiring a decision or intervention, with source evidence and drill-through where a project is linked.</p></div><span className="font-mono text-[10px] text-slate">{exceptions.length} OPEN</span></div>{exceptions.length ? <div className="divide-y divide-ink-mid">{exceptions.map((item, index) => { const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null); return <button key={`${String(item.category)}-${String(item.id)}-${index}`} onClick={() => drillProjectId && void onProject({ id: drillProjectId, name: item.title })} className="w-full p-4 flex flex-wrap justify-between gap-3 text-left hover:bg-ink-light disabled:hover:bg-transparent" disabled={!drillProjectId}><div><p className="font-mono text-[10px] text-signal uppercase">{displayValue(item.category)}</p><p className="text-sm text-paper mt-1">{displayValue(item.title ?? item.severity ?? item.certificate_name)}</p><p className="text-xs text-slate-light mt-1">{displayValue(item.action)}</p>{item.evidence ? <p className="mt-2 max-w-3xl break-words font-mono text-[10px] text-slate">Evidence: {displayValue(item.evidence)}</p> : null}</div><span className="font-mono text-xs text-slate-light">{displayValue(item.evidence_date ?? item.expiry_date ?? item.incident_date ?? item.viability_status)}</span></button>; })}</div> : <p className="p-4 text-sm text-slate-light">No configured executive exceptions are currently recorded.</p>}</section>; }
 function ModuleGateway({ modules }: { modules: ApiData[] }) {

@@ -433,6 +433,11 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     };
   }, [revealTopBar, scheduleTopBarHide]);
 
+  useEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, left: 0 });
+    setTopBarVisible(true);
+  }, [pathname]);
+
   // Extract user info from session
   const userEmail = session?.user?.email || "System User";
   // Create a display name from email (e.g., admin@example.com -> Admin)

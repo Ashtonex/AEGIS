@@ -24,6 +24,9 @@ EXECUTIVE_PAGE = (
 SETTINGS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "settings" / "page.tsx"
 ).read_text(encoding="utf-8")
+DASHBOARD_SHELL = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "DashboardShell.tsx"
+).read_text(encoding="utf-8")
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 PORTALS_ROUTER = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 
@@ -137,6 +140,13 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('"metadata"', SETTINGS_PAGE)
         self.assertIn("details: pretty(item.details)", SETTINGS_PAGE)
         self.assertNotIn("details: typeof item.details === \"string\" ? item.details : JSON.stringify", SETTINGS_PAGE)
+
+    def test_executive_page_spacing_and_missing_units_are_stable(self):
+        self.assertIn("function metricWithUnit", EXECUTIVE_PAGE)
+        self.assertIn('displayed === "Not recorded" ? displayed', EXECUTIVE_PAGE)
+        self.assertIn("leading-[1.08]", EXECUTIVE_PAGE)
+        self.assertIn("tracking-normal", EXECUTIVE_PAGE)
+        self.assertIn("mainScrollRef.current?.scrollTo({ top: 0, left: 0 })", DASHBOARD_SHELL)
 
     def test_password_setup_contract_is_implemented_backend_side(self):
         self.assertIn("completePasswordSetup", WEB_API)
