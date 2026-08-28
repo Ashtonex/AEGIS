@@ -205,7 +205,22 @@ function normalizeTab(value: string | null | undefined): SettingsTab {
 function text(value: unknown, fallback = "Not recorded") { return typeof value === "string" && value.trim() ? value : fallback; }
 function dateTime(value?: string | null) { if (!value) return "Not recorded"; const date = new Date(value); return Number.isNaN(date.getTime()) ? "Not recorded" : date.toLocaleString("en-GB", { timeZone: "Africa/Harare" }); }
 function list(value: unknown): any[] { return Array.isArray(value) ? value : []; }
-function pretty(value: unknown) { return typeof value === "object" && value !== null ? JSON.stringify(value) : String(value ?? ""); }
+function pretty(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(pretty).filter(Boolean).join(" · ");
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const primary = record.message ?? record.summary ?? record.reason ?? record.description ?? record.detail ?? record.body ?? record.title;
+    if (primary) return pretty(primary);
+    return Object.entries(record)
+      .filter(([key]) => !["id", "uuid", "metadata", "tags", "source", "raw_payload"].includes(key))
+      .map(([key, entry]) => `${key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())}: ${pretty(entry)}`)
+      .filter((entry) => !entry.endsWith(": "))
+      .join(" · ");
+  }
+  return String(value);
+}
 function moduleNameFromPermission(key: string) {
   const prefix = key.split(".")[0].replace(/_/g, " ");
   return prefix.replace(/\b\w/g, (char) => char.toUpperCase());
@@ -239,14 +254,14 @@ function normalizeOverview(payload: any): SettingsOverview {
     page_access: list(source.page_access).map((item: any) => ({ page: String(item.page), route: String(item.route), permission: String(item.permission), module: String(item.module) })),
     website_content: list(source.website_content).map((item: any) => ({ id: String(item.id ?? `${item.page_key}-${item.section_key}`), page_key: String(item.page_key), section_key: String(item.section_key), title: item.title ?? "", subtitle: item.subtitle ?? "", body: item.body ?? "", status: item.status ?? "draft", metadata: item.metadata ?? {}, updated_at: item.updated_at ?? null })),
     integrations: list(source.integrations).map((item: any) => ({ id: String(item.id ?? item.provider), name: text(item.display_name ?? item.name, "Unnamed integration"), provider: item.provider ?? null, status: item.status ?? null, updated_at: item.updated_at ?? null, scopes: list(item.scopes).map(String) })),
-    audit_events: list(source.audit_events).map((item: any) => ({ id: String(item.id ?? `${item.event_type}-${item.occurred_at}`), occurred_at: String(item.occurred_at ?? ""), event: text(item.event_type ?? item.event ?? item.action, "Unspecified event"), actor: text(item.actor_name ?? item.actor_email ?? item.actor ?? item.user, "System"), resource: text(item.resource_type ?? item.resource, "System"), details: typeof item.details === "string" ? item.details : JSON.stringify(item.details ?? {}), status: String(item.status ?? item.outcome ?? "success").toLowerCase() as AuditStatus })),
+    audit_events: list(source.audit_events).map((item: any) => ({ id: String(item.id ?? `${item.event_type}-${item.occurred_at}`), occurred_at: String(item.occurred_at ?? ""), event: text(item.event_type ?? item.event ?? item.action, "Unspecified event"), actor: text(item.actor_name ?? item.actor_email ?? item.actor ?? item.user, "System"), resource: text(item.resource_type ?? item.resource, "System"), details: pretty(item.details), status: String(item.status ?? item.outcome ?? "success").toLowerCase() as AuditStatus })),
     source_warnings: list(source.source_warnings).map(String),
   };
 }
 
 function normalizeAuditEvents(payload: any): AuditEvent[] {
   const source = payload?.data ?? payload ?? [];
-  return list(source).map((item: any) => ({ id: String(item.id ?? `${item.event_type}-${item.occurred_at}`), occurred_at: String(item.occurred_at ?? ""), event: text(item.event_type ?? item.event ?? item.action, "Unspecified event"), actor: text(item.actor_name ?? item.actor_email ?? item.actor ?? item.user, "System"), resource: text(item.resource_type ?? item.resource, "System"), details: typeof item.details === "string" ? item.details : JSON.stringify(item.details ?? {}), status: String(item.status ?? item.outcome ?? "success").toLowerCase() as AuditStatus }));
+  return list(source).map((item: any) => ({ id: String(item.id ?? `${item.event_type}-${item.occurred_at}`), occurred_at: String(item.occurred_at ?? ""), event: text(item.event_type ?? item.event ?? item.action, "Unspecified event"), actor: text(item.actor_name ?? item.actor_email ?? item.actor ?? item.user, "System"), resource: text(item.resource_type ?? item.resource, "System"), details: pretty(item.details), status: String(item.status ?? item.outcome ?? "success").toLowerCase() as AuditStatus }));
 }
 
 function normalizeLoadError(reason: unknown, fallback: string) {

@@ -25,14 +25,50 @@ import {
 type ApiData = Record<string, unknown>;
 type SettledApiResult = PromiseSettledResult<{ data?: unknown; meta?: unknown }>;
 
-function titleCase(value: string) {
-  return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+function titleCase(value: string): string {
+  return value.replace(/^\_+/, "").replace(/\./g, " ").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function displayValue(value: unknown) {
+function parseJsonish(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed || !["{", "["].includes(trimmed[0])) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function sourceNoticeText(value: ApiData): string {
+  const source = titleCase(String(value.source || "Executive data"));
+  const reason: string | null = value.reason ? displayValue(value.reason) : null;
+  const status: string | null = value.status ? titleCase(String(value.status)) : null;
+  return reason ? `${source}: ${reason}` : [source, status].filter(Boolean).join(": ");
+}
+
+function structuredValue(value: ApiData): string {
+  const primary = value.reason ?? value.message ?? value.summary ?? value.description ?? value.detail ?? value.body;
+  if (primary) return displayValue(primary);
+  const visible: string[] = Object.entries(value)
+    .filter(([key]) => !["id", "uuid", "metadata", "tags", "source"].includes(key))
+    .map(([key, entry]) => `${titleCase(key)}: ${displayValue(entry)}`);
+  return visible.length ? visible.join(" · ") : "Recorded";
+}
+
+function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "Not recorded";
   if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "string") {
+    const parsed = parseJsonish(value);
+    return parsed === value ? value : displayValue(parsed);
+  }
+  if (Array.isArray(value)) {
+    if (!value.length) return "Not recorded";
+    return value
+      .map((entry) => typeof entry === "object" && entry !== null ? sourceNoticeText(entry as ApiData) : displayValue(entry))
+      .join(" · ");
+  }
+  if (typeof value === "object") return structuredValue(value as ApiData);
   return String(value);
 }
 

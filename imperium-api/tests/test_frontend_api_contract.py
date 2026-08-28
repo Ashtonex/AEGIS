@@ -18,6 +18,12 @@ API_PROXY = (
 PWA_RUNTIME = (
     ROOT.parent / "aegis-web" / "src" / "components" / "pwa" / "PwaRuntime.tsx"
 ).read_text(encoding="utf-8")
+EXECUTIVE_PAGE = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "executive" / "page.tsx"
+).read_text(encoding="utf-8")
+SETTINGS_PAGE = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "settings" / "page.tsx"
+).read_text(encoding="utf-8")
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 PORTALS_ROUTER = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 
@@ -118,6 +124,19 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn("currentVersionRef.current", PWA_RUNTIME)
         self.assertIn("registrationRef.current", PWA_RUNTIME)
         self.assertIn("}, []);", PWA_RUNTIME)
+
+    def test_executive_notices_are_rendered_as_human_text_not_raw_json(self):
+        self.assertIn("function parseJsonish", EXECUTIVE_PAGE)
+        self.assertIn("function sourceNoticeText", EXECUTIVE_PAGE)
+        self.assertIn("Executive data", EXECUTIVE_PAGE)
+        self.assertNotIn('if (typeof value === "object") return JSON.stringify(value);', EXECUTIVE_PAGE)
+
+    def test_settings_audit_details_hide_structured_tags_and_metadata(self):
+        self.assertIn("function pretty(value: unknown)", SETTINGS_PAGE)
+        self.assertIn('"tags"', SETTINGS_PAGE)
+        self.assertIn('"metadata"', SETTINGS_PAGE)
+        self.assertIn("details: pretty(item.details)", SETTINGS_PAGE)
+        self.assertNotIn("details: typeof item.details === \"string\" ? item.details : JSON.stringify", SETTINGS_PAGE)
 
     def test_password_setup_contract_is_implemented_backend_side(self):
         self.assertIn("completePasswordSetup", WEB_API)
