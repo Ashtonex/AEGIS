@@ -2560,6 +2560,17 @@ export interface SupplierPortalVendor {
   hr_verification_notes?: string;
   linked_supplier_id?: string;
   account_type?: "supplier" | "subcontractor";
+  onboarding_bypass?: {
+    enabled?: boolean;
+    accepted_by?: string;
+    accepted_by_name?: string;
+    accepted_at?: string;
+    missing_items?: string[];
+    notes?: string;
+    message?: string;
+  };
+  onboarding_bypass_enabled?: boolean;
+  onboarding_bypass_message?: string;
 }
 
 export interface VendorDocument {
@@ -3889,6 +3900,14 @@ export async function decideHrVendorVerification(subcontractorId: string, decisi
 export async function runHrVendorSystemCheck(subcontractorId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${subcontractorId}/run-system-check`, {
     method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function acceptHrVendorVerificationWithGaps(subcontractorId: string, notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/hr/vendor-verification/${encodeURIComponent(subcontractorId)}/accept-with-gaps`, {
+    method: 'POST',
+    body: JSON.stringify({ notes }),
     allowFallback: false,
   });
 }

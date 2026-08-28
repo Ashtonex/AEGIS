@@ -238,7 +238,7 @@ async def ensure_supplier_subcontractor_bridge(
             "contact_phone": data.get("primary_contact_phone"),
             "compliance_status": data.get("compliance_status") or "pending",
             "supplier_id": supplier_id,
-            "submission_data": "{}",
+            "submission_data": '{"account_type":"supplier"}',
         },
     )
     return str(created.scalar())
@@ -352,12 +352,12 @@ async def create_item(
                 INSERT INTO crm.subcontractors (
                     organization_id, created_by, name, registration_number, tax_clearance_number,
                     praz_number, nssa_number, address, contact_name, contact_email, contact_phone,
-                    compliance_status, linked_supplier_id
+                    compliance_status, linked_supplier_id, submission_data
                 )
                 VALUES (
                     :org_id, :user_id, :name, :registration_number, :tax_clearance_number,
                     :praz_number, :nssa_number, :address, :contact_name, :contact_email, :contact_phone,
-                    :compliance_status, :supplier_id
+                    :compliance_status, :supplier_id, CAST(:submission_data AS jsonb)
                 )
                 RETURNING id
             """),
@@ -375,6 +375,7 @@ async def create_item(
                 "contact_phone": payload.get("primary_contact_phone"),
                 "compliance_status": payload.get("compliance_status"),
                 "supplier_id": new_id,
+                "submission_data": '{"account_type":"supplier"}',
             },
         )
         subcontractor_id = subcontractor_row.scalar()

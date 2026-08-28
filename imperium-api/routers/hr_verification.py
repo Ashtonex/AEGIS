@@ -10,6 +10,7 @@ treated as eligible counterparties for new payment requests.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 from uuid import UUID
 
@@ -18,11 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.events import emit_notification
+from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.pagination import ok
 from app.shared.vendor_verification import normalize_compliance_category, run_system_verification_check
 from core.database import get_db, supabase
-from core.security import get_current_user, require_permission
+from core.security import SUPERADMIN_ROLE, get_current_user, require_permission
 
 router = APIRouter()
 
@@ -62,6 +63,12 @@ class VendorVerificationDecision(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=1000)
 
 
+class VendorVerificationExceptionAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
 class VendorDocumentDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -76,6 +83,67 @@ async def _supplier_compliance_documents_available(db: AsyncSession) -> bool:
         )
     ).mappings().first()
     return bool(row and row["exists"])
+
+
+def _value_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return False
+
+
+async def _vendor_missing_onboarding_items(
+    db: AsyncSession, *, org_id: str, subcontractor_id: str, linked_supplier_id: Optional[str]
+) -> list[str]:
+    profile_row = (
+        await db.execute(
+            text("""
+                SELECT
+                    COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
+                    COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
+                    COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
+                    COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, ''), NULLIF(s.submission_data->>'nssa_number', '')) AS nssa_number,
+                    COALESCE(NULLIF(s.praz_number, ''), NULLIF(ps.praz_number, ''), NULLIF(s.submission_data->>'praz_number', '')) AS praz_number,
+                    COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
+                    COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
+                    COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
+                    COALESCE(NULLIF(s.address, ''), NULLIF(ps.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address
+                FROM crm.subcontractors s
+                LEFT JOIN procurement.suppliers ps
+                  ON ps.id = s.linked_supplier_id
+                 AND ps.organization_id = s.organization_id
+                 AND ps.is_deleted = false
+                WHERE s.id = :id AND s.organization_id = :org_id AND s.is_deleted = false
+            """),
+            {"id": subcontractor_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    if not profile_row:
+        raise HTTPException(status_code=404, detail="Vendor profile not found.")
+
+    missing_items = [
+        label
+        for key, label in VENDOR_PROFILE_FIELD_LABELS.items()
+        if key in profile_row and _value_missing(profile_row[key])
+    ]
+    documents = await _vendor_document_rows(
+        db,
+        org_id=org_id,
+        subcontractor_id=subcontractor_id,
+        supplier_id=linked_supplier_id,
+    )
+    verified_types = {
+        category
+        for category in (normalize_compliance_category(doc.get("document_type") or doc.get("category")) for doc in documents if doc.get("status") == "verified")
+        if category
+    }
+    missing_items.extend(
+        f"{label} document"
+        for key, label in SUPPLIER_COMPLIANCE_DOCUMENT_TYPES.items()
+        if key not in verified_types
+    )
+    return missing_items
 
 
 @router.get("/queue", summary="List supplier/subcontractor profiles awaiting HR verification")
@@ -140,6 +208,9 @@ async def list_vendor_verification_queue(
             s.hr_verified_by, s.hr_verified_at, s.hr_verification_notes,
             s.linked_supplier_id,
             s.submission_data->>'account_type' AS account_type,
+            s.submission_data->'onboarding_bypass' AS onboarding_bypass,
+            COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS onboarding_bypass_enabled,
+            s.submission_data->'onboarding_bypass'->>'message' AS onboarding_bypass_message,
             s.created_at,
             {document_count_columns}
         FROM crm.subcontractors s
@@ -176,6 +247,9 @@ async def get_vendor_verification_detail(
                     s.hr_verified_at,
                     s.hr_verification_notes,
                     s.submission_data->>'account_type' AS account_type,
+                    s.submission_data->'onboarding_bypass' AS onboarding_bypass,
+                    COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS onboarding_bypass_enabled,
+                    s.submission_data->'onboarding_bypass'->>'message' AS onboarding_bypass_message,
                     COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
                     COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
                     COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
@@ -551,3 +625,158 @@ async def decide_vendor_verification(
 
     await db.commit()
     return ok({"id": str(subcontractor_id), "verification_stage": new_stage}, "Vendor verification decision recorded.")
+
+
+@router.post("/{subcontractor_id}/accept-with-gaps", summary="Accept a vendor while flagging incomplete onboarding")
+async def accept_vendor_with_onboarding_gaps(
+    subcontractor_id: UUID,
+    payload: VendorVerificationExceptionAccept,
+    user: dict = Depends(require_permission("hr.vendor_verification.decide")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    row = (
+        await db.execute(
+            text("""
+            SELECT s.id, s.name, s.linked_supplier_id, s.submission_data, s.submission_data->>'account_type' AS account_type,
+                   u.full_name AS actor_name, u.email AS actor_email
+            FROM crm.subcontractors s
+            LEFT JOIN core.users u
+              ON u.id = :user_id
+             AND u.organization_id = s.organization_id
+             AND u.is_deleted = false
+            WHERE s.id = :id AND s.organization_id = :org_id AND s.is_deleted = false
+        """),
+            {"id": str(subcontractor_id), "org_id": org_id, "user_id": user["user_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Vendor profile not found.")
+
+    missing_items = await _vendor_missing_onboarding_items(
+        db,
+        org_id=org_id,
+        subcontractor_id=str(subcontractor_id),
+        linked_supplier_id=str(row["linked_supplier_id"]) if row.get("linked_supplier_id") else None,
+    )
+    actor_name = row.get("actor_name") or row.get("actor_email") or user.get("email") or str(user["user_id"])
+    bypass_metadata = {
+        "enabled": True,
+        "accepted_by": user["user_id"],
+        "accepted_by_name": actor_name,
+        "accepted_at": "__NOW__",
+        "missing_items": missing_items,
+        "notes": payload.notes,
+        "message": "Vendor was accepted before onboarding was complete. Complete onboarding properly before relying on this vendor as fully compliant.",
+    }
+
+    await db.execute(
+        text("""
+        UPDATE crm.subcontractors
+        SET verification_stage = 'hr_verified',
+            hr_verified_by = :user_id,
+            hr_verified_at = NOW(),
+            hr_verification_notes = :notes,
+            submission_data = COALESCE(submission_data, '{}'::jsonb)
+                || jsonb_build_object(
+                    'account_type', COALESCE(submission_data->>'account_type', :account_type, 'vendor'),
+                    'onboarding_bypass', jsonb_build_object(
+                        'enabled', true,
+                        'accepted_by', :user_id,
+                        'accepted_by_name', :actor_name,
+                        'accepted_at', NOW(),
+                        'missing_items', CAST(:missing_items AS jsonb),
+                        'notes', :notes,
+                        'message', 'Vendor was accepted before onboarding was complete. Complete onboarding properly before relying on this vendor as fully compliant.'
+                    )
+                ),
+            updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id
+    """),
+        {
+            "user_id": user["user_id"],
+            "actor_name": actor_name,
+            "notes": payload.notes or "Accepted with incomplete onboarding.",
+            "missing_items": json.dumps(missing_items),
+            "account_type": row.get("account_type"),
+            "id": str(subcontractor_id),
+            "org_id": org_id,
+        },
+    )
+
+    if row.get("linked_supplier_id"):
+        await db.execute(
+            text("""
+            UPDATE procurement.suppliers
+            SET status = 'active',
+                updated_at = NOW()
+            WHERE id = :supplier_id AND organization_id = :org_id AND is_deleted = false
+        """),
+            {"supplier_id": str(row["linked_supplier_id"]), "org_id": org_id},
+        )
+
+    await emit_role_notification(
+        db,
+        org_id=org_id,
+        role_names=[SUPERADMIN_ROLE],
+        title="Vendor accepted with onboarding gaps",
+        message=f"{actor_name} accepted {row['name']} while onboarding is incomplete: {', '.join(missing_items) if missing_items else 'no gaps were reported'}.",
+        notification_type="vendor_onboarding_bypass",
+        priority="urgent",
+        action_url="/dashboard/hr?tab=vendor-verification",
+        metadata={
+            "subcontractor_id": str(subcontractor_id),
+            "linked_supplier_id": str(row["linked_supplier_id"]) if row.get("linked_supplier_id") else None,
+            "accepted_by": user["user_id"],
+            "accepted_by_name": actor_name,
+            "missing_items": missing_items,
+        },
+    )
+    await emit_event(
+        db,
+        user=user,
+        event_type="vendor.onboarding_bypass.accepted.v1",
+        aggregate_type="vendor",
+        aggregate_id=str(subcontractor_id),
+        event_data={
+            "vendor_name": row["name"],
+            "linked_supplier_id": str(row["linked_supplier_id"]) if row.get("linked_supplier_id") else None,
+            "accepted_by": user["user_id"],
+            "accepted_by_name": actor_name,
+            "missing_items": missing_items,
+            "notes": payload.notes,
+        },
+        idempotency_suffix=f"{user['user_id']}",
+    )
+
+    portal_users = await db.execute(
+        text("""
+        SELECT user_id FROM crm.supplier_portal_access
+        WHERE subcontractor_id = :id AND organization_id = :org_id AND is_active = true
+    """),
+        {"id": str(subcontractor_id), "org_id": org_id},
+    )
+    for portal_user in portal_users:
+        await emit_notification(
+            db,
+            org_id=org_id,
+            user_id=str(portal_user.user_id),
+            title="Vendor profile accepted with required follow-up",
+            message="Your vendor profile has been accepted, but onboarding is still incomplete. Please upload or update the missing information before further work is processed as fully compliant.",
+            notification_type="vendor_verification",
+            priority="high",
+            action_url="/portal/supplier",
+            metadata={"missing_items": missing_items},
+        )
+
+    await db.commit()
+    return ok(
+        {
+            "id": str(subcontractor_id),
+            "verification_stage": "hr_verified",
+            "onboarding_bypass": {
+                key: value for key, value in bypass_metadata.items() if key != "accepted_at"
+            },
+        },
+        "Vendor accepted with onboarding gaps flagged.",
+    )

@@ -442,6 +442,8 @@ def _subcontractor_db_values(values: Dict[str, Any]) -> Dict[str, Any]:
         "accounts_contact_phone",
     )
     submission_data: Dict[str, Any] = {}
+    if values.get("name"):
+        submission_data["account_type"] = "subcontractor"
     for field in metadata_fields:
         if field in db_values:
             submission_data[field] = db_values.pop(field)
@@ -2908,7 +2910,12 @@ async def list_subcontractors(
             submission_data ->> 'alternate_contact_phone' AS alternate_contact_phone,
             submission_data ->> 'accounts_contact_email' AS accounts_contact_email,
             submission_data ->> 'accounts_contact_phone' AS accounts_contact_phone,
-            submission_data -> 'capability_matrix' AS capability_matrix
+            submission_data ->> 'account_type' AS account_type,
+            submission_data -> 'capability_matrix' AS capability_matrix,
+            submission_data -> 'onboarding_bypass' AS onboarding_bypass,
+            COALESCE((submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS onboarding_bypass_enabled,
+            submission_data->'onboarding_bypass'->>'message' AS onboarding_bypass_message,
+            linked_supplier_id
         FROM crm.subcontractors
         WHERE organization_id = :org_id AND is_deleted = false
         ORDER BY reliability_score DESC, name ASC

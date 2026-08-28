@@ -408,7 +408,10 @@ async def list_vendor_payment_requests(
 
     rows = await db.execute(
         text(f"""
-            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type
+            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type,
+                   COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS vendor_onboarding_bypass_enabled,
+                   s.submission_data->'onboarding_bypass'->>'message' AS vendor_onboarding_bypass_message,
+                   s.submission_data->'onboarding_bypass'->'missing_items' AS vendor_onboarding_missing_items
             FROM finance.vendor_payment_requests vpr
             JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
             WHERE {' AND '.join(filters)}
@@ -432,7 +435,8 @@ async def clear_vendor_payment_request_as_finance(
             text("""
             SELECT vpr.id, vpr.amount, vpr.currency, vpr.status, vpr.reference_description,
                    vpr.project_id, vpr.subcontractor_id, s.name AS vendor_name,
-                   s.submission_data->>'account_type' AS account_type
+                   s.submission_data->>'account_type' AS account_type,
+                   COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS vendor_onboarding_bypass_enabled
             FROM finance.vendor_payment_requests vpr
             JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
             WHERE vpr.id = :id AND vpr.organization_id = :org_id AND vpr.is_deleted = false
@@ -474,7 +478,11 @@ async def clear_vendor_payment_request_as_finance(
             "org_id": org_id, "cash_account_id": cash_account_id, "tx_number": tx_number,
             "source_id": str(req.id), "project_id": str(req.project_id) if req.project_id else None,
             "counterparty_type": "supplier" if req.account_type == "supplier" else "subcontractor",
-            "counterparty_name": req.vendor_name, "description": f"Vendor payment: {req.reference_description}",
+            "counterparty_name": req.vendor_name,
+            "description": (
+                f"Vendor payment: {req.reference_description}"
+                + (" | Onboarding bypass: vendor must complete onboarding properly." if req.vendor_onboarding_bypass_enabled else "")
+            ),
             "amount": float(req.amount), "currency": req.currency, "user_id": user["user_id"],
         },
     )

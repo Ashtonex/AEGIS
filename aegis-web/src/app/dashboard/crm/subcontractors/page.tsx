@@ -42,6 +42,8 @@ interface ActiveProject {
 interface Subcontractor {
   id: string;
   name: string;
+  account_type?: 'supplier' | 'subcontractor' | string;
+  linked_supplier_id?: string;
   capability_tags: string[];
   compliance_status: string;
   nssa_number?: string;
@@ -62,6 +64,15 @@ interface Subcontractor {
   capability_matrix?: CapabilityDomain[];
   audit_log?: AuditEntry[];
   active_projects?: ActiveProject[];
+  onboarding_bypass_enabled?: boolean;
+  onboarding_bypass_message?: string;
+  onboarding_bypass?: {
+    enabled?: boolean;
+    accepted_by_name?: string;
+    accepted_at?: string;
+    missing_items?: string[];
+    message?: string;
+  };
 }
 
 const DEFAULT_CAP_MATRIX: CapabilityDomain[] = [
@@ -234,6 +245,19 @@ function TierStars({ tier }: { tier: number }) {
 // ---- Main page --------------------------------------------------------------
 
 type DetailTab = 'overview' | 'capability' | 'audit';
+type RegistryTab = 'subcontractors' | 'suppliers';
+
+function vendorKind(sub: Subcontractor): RegistryTab {
+  const explicit = String(sub.account_type || '').toLowerCase();
+  if (explicit === 'supplier') return 'suppliers';
+  if (explicit === 'subcontractor') return 'subcontractors';
+  const hasTradeScope = (sub.capability_tags ?? []).length > 0 || (sub.capability_matrix ?? []).some(cap => cap.tier > 0);
+  return sub.linked_supplier_id && !hasTradeScope ? 'suppliers' : 'subcontractors';
+}
+
+function registryLabel(kind: RegistryTab): string {
+  return kind === 'suppliers' ? 'supplier' : 'subcontractor';
+}
 
 export default function SubcontractorRegistry() {
   const { session } = useAuth();
@@ -241,6 +265,7 @@ export default function SubcontractorRegistry() {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
+  const [registryTab, setRegistryTab] = useState<RegistryTab>('subcontractors');
 
   const [search, setSearch] = useState('');
   const [complianceFilter, setComplianceFilter] = useState('All');
@@ -276,16 +301,22 @@ export default function SubcontractorRegistry() {
   }, [session]);
 
   useEffect(() => {
-    if (!isLoading && subs.length > 0 && !selectedId) setSelectedId(subs[0].id);
-  }, [isLoading, subs, selectedId]);
+    if (isLoading || subs.length === 0) return;
+    const currentVisible = selectedId ? subs.some(sub => sub.id === selectedId && vendorKind(sub) === registryTab) : false;
+    if (!currentVisible) {
+      setSelectedId(subs.find(sub => vendorKind(sub) === registryTab)?.id ?? null);
+      setActiveTab('overview');
+    }
+  }, [isLoading, registryTab, selectedId, subs]);
 
   const allTradesSet = new Set<string>();
-  subs.forEach(s => s.capability_tags?.forEach(t => allTradesSet.add(t)));
+  subs.filter(s => vendorKind(s) === registryTab).forEach(s => s.capability_tags?.forEach(t => allTradesSet.add(t)));
   const uniqueTrades = ['All', ...Array.from(allTradesSet)];
 
   const filteredSubs = subs.filter(sub => {
     const q = search.toLowerCase();
     return (
+      vendorKind(sub) === registryTab &&
       (sub.name.toLowerCase().includes(q) ||
        (sub.nssa_number ?? '').toLowerCase().includes(q) ||
        (sub.praz_number ?? '').toLowerCase().includes(q) ||
@@ -300,11 +331,14 @@ export default function SubcontractorRegistry() {
   const evaluations = selectedSub ? parseHistory(selectedSub) : [];
   const capMatrix = selectedSub?.capability_matrix ?? DEFAULT_CAP_MATRIX;
 
-  const compliantCount = subs.filter(s => s.compliance_status === 'Compliant').length;
-  const avgReliability = subs.length > 0
-    ? Math.round(subs.reduce((a, s) => a + (s.reliability_score || 0), 0) / subs.length)
+  const visiblePartners = subs.filter(s => vendorKind(s) === registryTab);
+  const supplierCount = subs.filter(s => vendorKind(s) === 'suppliers').length;
+  const subcontractorCount = subs.filter(s => vendorKind(s) === 'subcontractors').length;
+  const compliantCount = visiblePartners.filter(s => s.compliance_status === 'Compliant').length;
+  const avgReliability = visiblePartners.length > 0
+    ? Math.round(visiblePartners.reduce((a, s) => a + (s.reliability_score || 0), 0) / visiblePartners.length)
     : 0;
-  const tier1Count = subs.filter(s => s.authorization_tier === 1).length;
+  const tier1Count = visiblePartners.filter(s => s.authorization_tier === 1).length;
 
   const openAddModal = useCallback(() => {
     setFormData(blankForm()); setIsEditMode(false); setSaveError(null); setTagInput(''); setIssuePortalLogin(false); setShowModal(true);
@@ -382,7 +416,7 @@ export default function SubcontractorRegistry() {
           <div className="flex items-end justify-between border-b border-ink-mid pb-5">
             <div>
               <div className="font-mono text-[10px] text-signal tracking-widest mb-1">-- VENDOR INTELLIGENCE HUB</div>
-              <h1 className="font-display text-headline-xl tracking-tight text-paper">Subcontractor Registry</h1>
+              <h1 className="font-display text-headline-xl tracking-tight text-paper">Vendor Registry</h1>
               <p className="text-body-sm text-slate-light font-mono tracking-widest uppercase mt-1">Asset-Light Scale Infrastructure</p>
             </div>
             <button onClick={openAddModal}
@@ -392,11 +426,27 @@ export default function SubcontractorRegistry() {
           </div>
         </header>
 
+        <div className="mb-4 flex flex-wrap gap-2 border-b border-ink-mid">
+          {[
+            { key: 'subcontractors' as RegistryTab, label: 'Subcontractors', count: subcontractorCount },
+            { key: 'suppliers' as RegistryTab, label: 'Suppliers', count: supplierCount },
+          ].map(tab => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => { setRegistryTab(tab.key); setTradeFilter('All'); }}
+              className={`px-3 py-2 font-mono text-[11px] uppercase tracking-widest border-b-2 -mb-px transition-colors ${registryTab === tab.key ? 'border-signal text-signal' : 'border-transparent text-slate hover:text-paper'}`}
+            >
+              {tab.label} <span className="text-[10px] text-slate-light">({tab.count})</span>
+            </button>
+          ))}
+        </div>
+
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           {[
-            { label: "TOTAL REGISTERED",      value: String(subs.length),              cls: "text-paper"    },
-            { label: "CLEARANCE COMPLIANT",   value: `${compliantCount} / ${subs.length}`, cls: "text-green-400" },
+            { label: "TOTAL REGISTERED",      value: String(visiblePartners.length),              cls: "text-paper"    },
+            { label: "CLEARANCE COMPLIANT",   value: `${compliantCount} / ${visiblePartners.length}`, cls: "text-green-400" },
             { label: "AVG RELIABILITY INDEX", value: `${avgReliability}%`,             cls: "text-signal"   },
             { label: "STRATEGIC (TIER 1)",    value: String(tier1Count),               cls: "text-blue-400" }
           ].map(s => (
@@ -453,7 +503,7 @@ export default function SubcontractorRegistry() {
                 {filteredSubs.length === 0 ? (
                   <div className="p-6 text-center">
                     <ShieldAlert className="w-6 h-6 text-slate mx-auto mb-2" />
-                    <p className="font-mono text-[10px] text-slate uppercase">No records match filter</p>
+                    <p className="font-mono text-[10px] text-slate uppercase">No {registryLabel(registryTab)} records match filter</p>
                   </div>
                 ) : filteredSubs.map(sub => {
                   const sel = sub.id === selectedId;
@@ -466,6 +516,11 @@ export default function SubcontractorRegistry() {
                           {sub.compliance_status === 'Compliant' ? 'OK' : sub.compliance_status === 'Pending' ? 'PEND' : 'NON-C'}
                         </span>
                       </div>
+                      {sub.onboarding_bypass_enabled && (
+                        <p className="mb-2 border border-amber-500/30 bg-amber-950/20 px-2 py-1 text-[10px] text-amber-200">
+                          Onboarding accepted with gaps
+                        </p>
+                      )}
                       <div className="flex flex-wrap gap-1 mb-2">
                         {sub.capability_tags?.slice(0, 3).map(tag => (
                           <span key={tag} className="font-mono text-[8px] px-1.5 py-0.5 bg-ink border border-ink-mid text-slate">{tag.toUpperCase()}</span>
@@ -490,7 +545,7 @@ export default function SubcontractorRegistry() {
               </div>
 
               <div className="border-t border-ink-mid px-4 py-2">
-                <span className="font-mono text-[9px] text-slate-light">{filteredSubs.length} OF {subs.length} PARTNERS</span>
+                <span className="font-mono text-[9px] text-slate-light">{filteredSubs.length} OF {visiblePartners.length} {registryTab.toUpperCase()}</span>
               </div>
             </div>
 
@@ -500,7 +555,7 @@ export default function SubcontractorRegistry() {
                 <div className="flex-1 flex items-center justify-center">
                   <div className="text-center">
                     <Building2 className="w-10 h-10 text-slate mx-auto mb-3" />
-                    <p className="font-mono text-[11px] text-slate uppercase tracking-widest">Select a subcontractor to view profile</p>
+                    <p className="font-mono text-[11px] text-slate uppercase tracking-widest">Select a {registryLabel(registryTab)} to view profile</p>
                   </div>
                 </div>
               ) : (
@@ -518,7 +573,15 @@ export default function SubcontractorRegistry() {
                           {selectedSub.compliance_status === 'Non-Compliant'&& <ShieldAlert   className="w-2.5 h-2.5 inline mr-0.5" />}
                           {selectedSub.compliance_status.toUpperCase()}
                         </span>
+                        <span className="font-mono text-[9px] px-2 py-0.5 border border-ink-mid text-slate-light uppercase">
+                          {registryLabel(vendorKind(selectedSub))}
+                        </span>
                       </div>
+                      {selectedSub.onboarding_bypass_enabled && (
+                        <p className="mt-2 border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+                          {selectedSub.onboarding_bypass_message || 'Accepted with onboarding gaps. Complete onboarding properly before relying on this vendor as fully compliant.'}
+                        </p>
+                      )}
                       <h2 className="font-display text-headline-lg text-paper tracking-tight">{selectedSub.name}</h2>
                       <div className="flex flex-wrap gap-1.5 mt-2">
                         {selectedSub.capability_tags?.map(tag => (

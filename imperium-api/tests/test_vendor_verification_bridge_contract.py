@@ -9,6 +9,15 @@ HR_PANEL = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "hr" / "VendorVerificationPanel.tsx"
 ).read_text(encoding="utf-8")
 API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
+SUPPLIER_RECORDS = (ROOT / "routers" / "supplier_records.py").read_text(encoding="utf-8")
+PAYMENTS_ROUTER = (ROOT / "routers" / "payments.py").read_text(encoding="utf-8")
+SUBCONTRACTOR_PAGE = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "subcontractors" / "page.tsx"
+).read_text(encoding="utf-8")
+VENDOR_PAYMENTS_PANEL = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "finance" / "VendorPaymentsPanel.tsx"
+).read_text(encoding="utf-8")
 
 
 class VendorVerificationBridgeContractTests(unittest.TestCase):
@@ -50,6 +59,32 @@ class VendorVerificationBridgeContractTests(unittest.TestCase):
         self.assertIn("setInterval(() => void load(), 30000)", HR_PANEL)
         self.assertIn("Filled profile fields", HR_PANEL)
         self.assertIn("Uploaded compliance documents", HR_PANEL)
+
+    def test_registry_splits_supplier_and_subcontractor_records(self):
+        self.assertIn("submission_data ->> 'account_type' AS account_type", CRM_ROUTER)
+        self.assertIn('submission_data": \'{"account_type":"supplier"}\'', SUPPLIER_RECORDS)
+        self.assertIn("type RegistryTab = 'subcontractors' | 'suppliers'", SUBCONTRACTOR_PAGE)
+        self.assertIn("function vendorKind", SUBCONTRACTOR_PAGE)
+        self.assertIn("Subcontractors", SUBCONTRACTOR_PAGE)
+        self.assertIn("Suppliers", SUBCONTRACTOR_PAGE)
+
+    def test_hr_exception_accept_is_audited_and_notified(self):
+        self.assertIn('@router.post("/{subcontractor_id}/accept-with-gaps"', HR_ROUTER)
+        self.assertIn("vendor.onboarding_bypass.accepted.v1", HR_ROUTER)
+        self.assertIn("emit_role_notification", HR_ROUTER)
+        self.assertIn("SUPERADMIN_ROLE", HR_ROUTER)
+        self.assertIn("onboarding_bypass", HR_ROUTER)
+        self.assertIn("UPDATE procurement.suppliers", HR_ROUTER)
+        self.assertIn("status = 'active'", HR_ROUTER)
+        self.assertIn("acceptHrVendorVerificationWithGaps", API)
+        self.assertIn("Accept", HR_PANEL)
+
+    def test_bypassed_vendor_business_carries_onboarding_warning(self):
+        self.assertIn("vendor_onboarding_bypass_enabled", PAYMENTS_ROUTER)
+        self.assertIn("vendor_onboarding_bypass_message", PAYMENTS_ROUTER)
+        self.assertIn("Onboarding bypass: vendor must complete onboarding properly", PAYMENTS_ROUTER)
+        self.assertIn("vendor_onboarding_bypass_enabled", VENDOR_PAYMENTS_PANEL)
+        self.assertIn("Vendor was accepted before onboarding was complete", VENDOR_PAYMENTS_PANEL)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,11 @@ export function VendorPaymentsPanel() {
                       <div>
                         <p className="font-medium">{req.vendor_name} <span className="font-mono text-[10px] uppercase text-slate-light">({req.account_type})</span></p>
                         <p className="mt-1 text-sm text-slate-light">{req.reference_description}</p>
+                        {req.vendor_onboarding_bypass_enabled && (
+                          <p className="mt-2 border border-amber-500/30 bg-amber-950/20 px-2 py-1 text-xs text-amber-200">
+                            {req.vendor_onboarding_bypass_message || "Vendor was accepted before onboarding was complete. Complete onboarding properly before treating this vendor as fully compliant."}
+                          </p>
+                        )}
                         <p className="mt-1 font-mono text-[10px] text-slate-light">Submitted {dateValue(req.submitted_at)}</p>
                       </div>
                       <span className="shrink-0 font-mono text-lg">{money(req.amount, req.currency)}</span>
@@ -130,6 +135,9 @@ export function VendorPaymentsPanel() {
                   <div key={req.id} className="flex items-center justify-between p-4 text-sm">
                     <div>
                       <p>{req.vendor_name} - {req.reference_description}</p>
+                      {req.vendor_onboarding_bypass_enabled && (
+                        <p className="mt-1 text-xs text-amber-300">Onboarding incomplete when accepted - follow-up required.</p>
+                      )}
                       <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">Cleared by {req.cleared_by_party} on {dateValue(req.cleared_at)}</p>
                     </div>
                     <span className="font-mono text-emerald-400">{money(req.amount, req.currency)}</span>

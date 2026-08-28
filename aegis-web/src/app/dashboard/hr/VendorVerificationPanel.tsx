@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Eye, FileText, Loader2, RefreshCw, ScanSearch, ShieldAlert, ShieldCheck, X, XCircle } from "lucide-react";
+import { BadgeCheck, Eye, FileText, Loader2, RefreshCw, ScanSearch, ShieldAlert, ShieldCheck, X, XCircle } from "lucide-react";
 
 import {
+  acceptHrVendorVerificationWithGaps,
   decideHrVendorVerification,
   decideHrVendorVerificationDocument,
   getHrVendorVerificationDetail,
@@ -123,6 +124,23 @@ export function VendorVerificationPanel() {
       if (selectedId === id) await loadDetail(id);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not approve this vendor profile.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function acceptWithGaps(id: string) {
+    const note = window.prompt("Reason for accepting this vendor before onboarding is complete:");
+    if (note === null) return;
+    setBusyId(id);
+    setNotice(null);
+    try {
+      await acceptHrVendorVerificationWithGaps(id, note.trim() || undefined);
+      setNotice("Vendor accepted and flagged for incomplete onboarding. SUPERADMIN has been notified.");
+      await load();
+      if (selectedId === id) await loadDetail(id);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not accept this vendor with onboarding gaps.");
     } finally {
       setBusyId(null);
     }
@@ -255,6 +273,11 @@ export function VendorVerificationPanel() {
                     {!readyForDecision && row.system_verification_notes && (
                       <p className="mt-1 text-xs text-amber-300">{row.system_verification_notes}</p>
                     )}
+                    {row.onboarding_bypass_enabled && (
+                      <p className="mt-2 border border-amber-500/30 bg-amber-950/20 px-2 py-1 text-xs text-amber-200">
+                        {row.onboarding_bypass_message || "Accepted with onboarding gaps. Complete onboarding properly before relying on this vendor as fully compliant."}
+                      </p>
+                    )}
                   </div>
                   <div className="flex shrink-0 flex-wrap items-center gap-2">
                     <button
@@ -296,15 +319,26 @@ export function VendorVerificationPanel() {
                         </button>
                       </>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => void runSystemCheck(row.id)}
-                        disabled={busyId === row.id}
-                        className="inline-flex h-9 items-center gap-2 border border-signal/40 px-3 font-mono text-xs uppercase tracking-widest text-signal hover:bg-signal/10 disabled:opacity-50"
-                      >
-                        {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
-                        Run System Check
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void runSystemCheck(row.id)}
+                          disabled={busyId === row.id}
+                          className="inline-flex h-9 items-center gap-2 border border-signal/40 px-3 font-mono text-xs uppercase tracking-widest text-signal hover:bg-signal/10 disabled:opacity-50"
+                        >
+                          {busyId === row.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
+                          Run System Check
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void acceptWithGaps(row.id)}
+                          disabled={busyId === row.id}
+                          className="inline-flex h-9 items-center gap-2 border border-amber-500/50 px-3 font-mono text-xs uppercase tracking-widest text-amber-200 hover:bg-amber-950/20 disabled:opacity-50"
+                        >
+                          <BadgeCheck className="h-4 w-4" />
+                          Accept
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -400,6 +434,7 @@ export function VendorVerificationPanel() {
           }}
           onRunSystemCheck={() => void runSystemCheck(selectedId)}
           onApprove={() => void approve(selectedId)}
+          onAcceptWithGaps={() => void acceptWithGaps(selectedId)}
           onReject={() => setRejectingId(selectedId)}
           onDecideDocument={(documentId: string, status: SupplierComplianceDocumentStatus) => void decideDocument(selectedId, documentId, status)}
           onViewDocument={(documentId: string) => void viewDocument(selectedId, documentId)}
@@ -417,6 +452,7 @@ function VendorReviewModal({
   onClose,
   onRunSystemCheck,
   onApprove,
+  onAcceptWithGaps,
   onReject,
   onDecideDocument,
   onViewDocument,
@@ -427,6 +463,7 @@ function VendorReviewModal({
   onClose: () => void;
   onRunSystemCheck: () => void;
   onApprove: () => void;
+  onAcceptWithGaps: () => void;
   onReject: () => void;
   onDecideDocument: (documentId: string, status: SupplierComplianceDocumentStatus) => void;
   onViewDocument: (documentId: string) => void;
@@ -434,6 +471,7 @@ function VendorReviewModal({
   const vendor = detail?.vendor;
   const docs = detail?.documents ?? [];
   const readyForDecision = vendor?.verification_stage === "system_verified";
+  const acceptedWithGaps = Boolean(vendor?.onboarding_bypass_enabled);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm">
@@ -472,6 +510,11 @@ function VendorReviewModal({
               {vendor?.system_verification_notes && (
                 <p className="mt-4 border border-amber-500/30 bg-amber-950/20 p-3 text-sm text-amber-200">
                   {vendor.system_verification_notes}
+                </p>
+              )}
+              {acceptedWithGaps && (
+                <p className="mt-4 border border-amber-500/30 bg-amber-950/20 p-3 text-sm text-amber-200">
+                  {vendor?.onboarding_bypass_message || "Accepted with onboarding gaps. Complete onboarding properly before relying on this vendor as fully compliant."}
                 </p>
               )}
             </section>
@@ -531,6 +574,12 @@ function VendorReviewModal({
             <button type="button" onClick={onApprove} className="inline-flex h-9 items-center gap-2 bg-emerald-600 px-3 font-mono text-xs uppercase tracking-widest text-white">
               <ShieldCheck className="h-4 w-4" />
               Approve
+            </button>
+          )}
+          {!readyForDecision && !acceptedWithGaps && (
+            <button type="button" onClick={onAcceptWithGaps} className="inline-flex h-9 items-center gap-2 border border-amber-500/50 px-3 font-mono text-xs uppercase tracking-widest text-amber-200">
+              <BadgeCheck className="h-4 w-4" />
+              Accept
             </button>
           )}
           <button type="button" onClick={onReject} className="inline-flex h-9 items-center gap-2 border border-red-500/40 px-3 font-mono text-xs uppercase tracking-widest text-red-300">
