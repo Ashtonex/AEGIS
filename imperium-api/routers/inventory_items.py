@@ -38,6 +38,66 @@ def _money4(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
+INVENTORY_CATEGORY_ALIASES = {
+    "aggregate": "Aggregates",
+    "aggregates": "Aggregates",
+    "board": "Timber & Boards",
+    "boards": "Timber & Boards",
+    "brick": "Bricks & Blocks",
+    "bricks": "Bricks & Blocks",
+    "block": "Bricks & Blocks",
+    "blocks": "Bricks & Blocks",
+    "cement": "Cement & Concrete",
+    "cement concrete": "Cement & Concrete",
+    "cement & concrete": "Cement & Concrete",
+    "concrete": "Cement & Concrete",
+    "electrical": "Electrical",
+    "fastener": "Fasteners & Fixings",
+    "fasteners": "Fasteners & Fixings",
+    "fixings": "Fasteners & Fixings",
+    "fuel": "Fuel & Lubricants",
+    "lubricants": "Fuel & Lubricants",
+    "paint": "Paint & Chemicals",
+    "paint chemicals": "Paint & Chemicals",
+    "paint & chemicals": "Paint & Chemicals",
+    "ppe": "PPE & Safety",
+    "ppe safety": "PPE & Safety",
+    "ppe & safety": "PPE & Safety",
+    "plumbing": "Plumbing",
+    "roof": "Roofing",
+    "roofing": "Roofing",
+    "steel": "Steel & Metalwork",
+    "steel metalwork": "Steel & Metalwork",
+    "steel & metalwork": "Steel & Metalwork",
+    "structural material": "Structural Materials",
+    "structural materials": "Structural Materials",
+    "tile": "Tiles & Finishes",
+    "tiles": "Tiles & Finishes",
+    "tiles finishes": "Tiles & Finishes",
+    "tiles & finishes": "Tiles & Finishes",
+    "timber": "Timber & Boards",
+    "timber boards": "Timber & Boards",
+    "timber & boards": "Timber & Boards",
+    "tool": "Tools & Equipment",
+    "tools": "Tools & Equipment",
+    "tools equipment": "Tools & Equipment",
+    "tools & equipment": "Tools & Equipment",
+}
+
+
+def normalize_inventory_category(value) -> str | None:
+    if value in (None, ""):
+        return value
+    label = " ".join(str(value).replace("/", " ").split())
+    if not label:
+        return None
+    key = label.replace("&", " ").lower()
+    key = " ".join(key.split())
+    if key in INVENTORY_CATEGORY_ALIASES:
+        return INVENTORY_CATEGORY_ALIASES[key]
+    return " ".join(word.upper() if word.lower() in {"ppe", "pvc"} else word.capitalize() for word in label.split())
+
+
 def normalize_item_payload(payload: dict) -> dict:
     normalized = dict(payload)
     if "uom" in normalized:
@@ -61,6 +121,8 @@ def normalize_item_payload(payload: dict) -> dict:
         raise HTTPException(status_code=422, detail="Invalid repurchase policy.")
     if normalized.get("is_once_off_purchase") and not normalized.get("repurchase_policy"):
         normalized["repurchase_policy"] = "once_off"
+    if "category" in normalized:
+        normalized["category"] = normalize_inventory_category(normalized.get("category"))
 
     vat_rate = _decimal(normalized.get("vat_rate"))
     vat_inclusive = bool(normalized.get("vat_inclusive"))

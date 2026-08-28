@@ -69,6 +69,60 @@ function normalizeTab(value: string | null | undefined): ActiveTab {
 function tx(v: unknown, fallback = "\u2014") {
   return typeof v === "string" && v.trim() ? v.trim() : (v != null && String(v).trim() ? String(v).trim() : fallback);
 }
+const INVENTORY_CATEGORY_ALIASES: Record<string, string> = {
+  aggregate: "Aggregates",
+  aggregates: "Aggregates",
+  board: "Timber & Boards",
+  boards: "Timber & Boards",
+  brick: "Bricks & Blocks",
+  bricks: "Bricks & Blocks",
+  block: "Bricks & Blocks",
+  blocks: "Bricks & Blocks",
+  cement: "Cement & Concrete",
+  "cement concrete": "Cement & Concrete",
+  "cement & concrete": "Cement & Concrete",
+  concrete: "Cement & Concrete",
+  electrical: "Electrical",
+  fastener: "Fasteners & Fixings",
+  fasteners: "Fasteners & Fixings",
+  fixings: "Fasteners & Fixings",
+  fuel: "Fuel & Lubricants",
+  lubricants: "Fuel & Lubricants",
+  paint: "Paint & Chemicals",
+  "paint chemicals": "Paint & Chemicals",
+  "paint & chemicals": "Paint & Chemicals",
+  ppe: "PPE & Safety",
+  "ppe safety": "PPE & Safety",
+  "ppe & safety": "PPE & Safety",
+  plumbing: "Plumbing",
+  roof: "Roofing",
+  roofing: "Roofing",
+  steel: "Steel & Metalwork",
+  "steel metalwork": "Steel & Metalwork",
+  "steel & metalwork": "Steel & Metalwork",
+  "structural material": "Structural Materials",
+  "structural materials": "Structural Materials",
+  tile: "Tiles & Finishes",
+  tiles: "Tiles & Finishes",
+  "tiles finishes": "Tiles & Finishes",
+  "tiles & finishes": "Tiles & Finishes",
+  timber: "Timber & Boards",
+  "timber boards": "Timber & Boards",
+  "timber & boards": "Timber & Boards",
+  tool: "Tools & Equipment",
+  tools: "Tools & Equipment",
+  "tools equipment": "Tools & Equipment",
+  "tools & equipment": "Tools & Equipment",
+};
+function titleCategory(value: string) {
+  return value.split(" ").map((word) => ["ppe", "pvc"].includes(word.toLowerCase()) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ");
+}
+function normalizeInventoryCategory(value: unknown, fallback = "") {
+  const clean = tx(value, fallback).replaceAll("/", " ").replace(/\s+/g, " ").trim();
+  if (!clean || clean === fallback) return fallback;
+  const key = clean.replaceAll("&", " ").replace(/\s+/g, " ").toLowerCase();
+  return INVENTORY_CATEGORY_ALIASES[key] || titleCategory(clean);
+}
 function num(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -330,9 +384,9 @@ function InventoryWorkspace() {
       if (selectedClientKey && rowClientKey(r) !== selectedClientKey) return false;
       if (selectedProjectId && rowProjectId(r) !== selectedProjectId) return false;
       if (storeFilter && tx(r.store_id) !== storeFilter && tx(r.store_name) !== storeFilter) return false;
-      if (categoryFilter && tx(r.category).toLowerCase() !== categoryFilter.toLowerCase()) return false;
+      if (categoryFilter && normalizeInventoryCategory(r.category) !== categoryFilter) return false;
       if (itemTypeFilter && itemType(r.item_type) !== itemTypeFilter) return false;
-      const hay = `${tx(r.item_code)} ${tx(r.item_name)} ${tx(r.category)} ${tx(r.item_type)} ${tx(r.store_name)} ${tx(r.project_name)} ${tx(r.client_name)}`.toLowerCase();
+      const hay = `${tx(r.item_code)} ${tx(r.item_name)} ${normalizeInventoryCategory(r.category)} ${tx(r.item_type)} ${tx(r.store_name)} ${tx(r.project_name)} ${tx(r.client_name)}`.toLowerCase();
       return hay.includes(stockSearch.toLowerCase());
     });
   }, [stockLevels, belowReorder, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId, storeFilter, categoryFilter, itemTypeFilter, stockSearch]);
@@ -341,7 +395,7 @@ function InventoryWorkspace() {
     const q = catSearch.toLowerCase();
     return catalogue.filter((r) => {
       if (itemTypeFilter && itemType(r.item_type) !== itemTypeFilter) return false;
-      return `${tx(r.item_code)} ${tx(r.item_name ?? r.name)} ${tx(r.category)} ${tx(r.item_type)}`.toLowerCase().includes(q);
+      return `${tx(r.item_code)} ${tx(r.item_name ?? r.name)} ${normalizeInventoryCategory(r.category)} ${tx(r.item_type)}`.toLowerCase().includes(q);
     });
   }, [catalogue, catSearch, itemTypeFilter]);
 
@@ -360,7 +414,7 @@ function InventoryWorkspace() {
 
   const categories = useMemo(() => {
     const cats = new Set<string>();
-    [...stockLevels, ...catalogue].forEach((r) => { if (r.category) cats.add(tx(r.category)); });
+    [...stockLevels, ...catalogue].forEach((r) => { if (r.category) cats.add(normalizeInventoryCategory(r.category)); });
     return Array.from(cats).sort();
   }, [stockLevels, catalogue]);
 
@@ -611,7 +665,7 @@ function InventoryWorkspace() {
                           </div>
                         </td>
                         <td className="px-3 py-2.5 font-mono text-[10px] uppercase text-slate-light">{type}</td>
-                        <td className="px-3 py-2.5 text-slate-light">{tx(r.category)}</td>
+                        <td className="px-3 py-2.5 text-slate-light">{normalizeInventoryCategory(r.category, "\u2014")}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.uom ?? r.unit_of_measure)}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.store_name ?? r.store_code)}</td>
                         <td className={`px-3 py-2.5 font-mono font-semibold ${isOut ? "text-red-300" : isLow ? "text-amber-300" : "text-emerald-300"}`}>{qty(avail)}</td>
@@ -675,7 +729,7 @@ function InventoryWorkspace() {
                         <td className="px-3 py-2.5 font-mono text-xs text-signal">{tx(r.item_code)}</td>
                         <td className="px-3 py-2.5 font-medium text-paper">{tx(r.item_name ?? r.name ?? r.description)}</td>
                         <td className="px-3 py-2.5 font-mono text-[10px] uppercase text-slate-light">{itemType(r.item_type)}</td>
-                        <td className="px-3 py-2.5 text-slate-light">{tx(r.category)}</td>
+                        <td className="px-3 py-2.5 text-slate-light">{normalizeInventoryCategory(r.category, "\u2014")}</td>
                         <td className="px-3 py-2.5 text-slate-light">{tx(r.uom ?? r.unit_of_measure)}</td>
                         <td className="px-3 py-2.5 font-mono text-slate-light">{num(r.unit_price_ex_vat ?? r.standard_cost) > 0 ? money(r.unit_price_ex_vat ?? r.standard_cost) : "\u2014"}</td>
                         <td className="px-3 py-2.5 font-mono text-slate-light">{num(r.vat_rate) > 0 ? `${num(r.vat_rate)}%` : "\u2014"}</td>
@@ -853,6 +907,7 @@ function InventoryWorkspace() {
       {showReceive && (
         <ReceiveStockModal
           catalogue={catalogue}
+          categories={categories}
           stores={contextualStores}
           suppliers={suppliers}
           saving={saving}
@@ -943,6 +998,7 @@ function InventoryWorkspace() {
       {showAddItem && (
         <AddItemModal
           saving={saving}
+          categories={categories}
           onClose={() => setShowAddItem(false)}
           onSubmit={async (payload) => {
             setSaving(true);
@@ -1168,8 +1224,8 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
   );
 }
 
-function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onItemCreated, onSupplierCreated, onFlash, onSubmit }: {
-  catalogue: Rec[]; stores: Rec[]; suppliers: Rec[]; saving: boolean;
+function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, onClose, onItemCreated, onSupplierCreated, onFlash, onSubmit }: {
+  catalogue: Rec[]; categories: string[]; stores: Rec[]; suppliers: Rec[]; saving: boolean;
   onClose: () => void; onItemCreated: (item: Rec) => void; onSupplierCreated: (supplier: Rec) => void;
   onFlash: (msg: string) => void;
   onSubmit: (p: Record<string, unknown>) => void;
@@ -1238,6 +1294,7 @@ function ReceiveStockModal({ catalogue, stores, suppliers, saving, onClose, onIt
       {showAddItem && (
         <AddItemModal
           saving={creatingItem}
+          categories={categories}
           onClose={() => setShowAddItem(false)}
           onSubmit={async (payload) => {
             setCreatingItem(true);
@@ -1551,7 +1608,7 @@ function AdjustStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
   );
 }
 
-function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
+function AddItemModal({ saving, categories, onClose, onSubmit }: { saving: boolean; categories: string[]; onClose: () => void; onSubmit: (p: Record<string, unknown>) => void }) {
   const [form, setForm] = useState({
     item_code: "",
     item_name: "",
@@ -1574,6 +1631,7 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
     const { uom, ...itemPayload } = form;
     onSubmit({
       ...itemPayload,
+      category: normalizeInventoryCategory(form.category),
       unit_of_measure: uom,
       standard_cost: Number(form.standard_cost),
       reorder_level: Number(form.reorder_level),
@@ -1598,7 +1656,10 @@ function AddItemModal({ saving, onClose, onSubmit }: { saving: boolean; onClose:
           </select>
         </FieldGroup>
         <FieldGroup label="Category">
-          <input value={form.category} onChange={(e) => set("category", e.target.value)} placeholder="e.g. Structural Materials" className="field" />
+          <input value={form.category} onChange={(e) => set("category", e.target.value)} list="inventory-category-options" placeholder="e.g. Structural Materials" className="field" />
+          <datalist id="inventory-category-options">
+            {categories.map((category) => <option key={category} value={category} />)}
+          </datalist>
         </FieldGroup>
         <FieldGroup label="Unit of Measure">
           <input value={form.uom} onChange={(e) => set("uom", e.target.value)} placeholder="e.g. Bag / m\u00b3 / kg" className="field" />

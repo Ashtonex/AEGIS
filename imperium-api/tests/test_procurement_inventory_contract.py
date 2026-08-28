@@ -21,6 +21,9 @@ SUPPLIER_EDIT_PERMISSION_REPAIR = (
 STORES_PROCUREMENT_ACCESS_REPAIR = (
     ROOT / "migrations" / "167_stores_procurement_manager_access_repair.sql"
 ).read_text()
+INVENTORY_CATEGORY_NORMALIZATION = (
+    ROOT / "migrations" / "170_normalize_inventory_item_categories.sql"
+).read_text()
 SUPABASE_STORES_PROCUREMENT_ACCESS_REPAIR = (
     ROOT.parent
     / "supabase"
@@ -272,6 +275,19 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("body.unit_of_measure = body.uom", WEB_API)
         self.assertIn("require_ref(\n        db, \"procurement.inventory_items\", payload.item_id", INV)
         self.assertIn("inventory_service.receive_stock", INV)
+
+    def test_inventory_item_categories_are_canonicalized(self):
+        self.assertIn("INVENTORY_CATEGORY_ALIASES", INV_ITEMS)
+        self.assertIn("def normalize_inventory_category", INV_ITEMS)
+        self.assertIn('normalized["category"] = normalize_inventory_category', INV_ITEMS)
+        self.assertIn("normalizeInventoryCategory", INVENTORY_PAGE)
+        self.assertIn("list=\"inventory-category-options\"", INVENTORY_PAGE)
+        self.assertIn("categories={categories}", INVENTORY_PAGE)
+        self.assertIn("cats.add(normalizeInventoryCategory(r.category))", INVENTORY_PAGE)
+        self.assertIn("normalizeInventoryCategory(form.category)", INVENTORY_PAGE)
+        self.assertIn("UPDATE procurement.inventory_items", INVENTORY_CATEGORY_NORMALIZATION)
+        self.assertIn("Timber & Boards", INVENTORY_CATEGORY_NORMALIZATION)
+        self.assertIn("Cement & Concrete", INVENTORY_CATEGORY_NORMALIZATION)
 
     def test_inventory_supports_tools_zimra_vat_and_full_invoice_receipt(self):
         for marker in [
