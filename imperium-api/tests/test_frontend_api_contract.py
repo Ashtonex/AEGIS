@@ -148,6 +148,11 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn("tracking-normal", EXECUTIVE_PAGE)
         self.assertIn("mainScrollRef.current?.scrollTo({ top: 0, left: 0 })", DASHBOARD_SHELL)
 
+    def test_finance_cost_freshness_does_not_trigger_executive_warning_banner(self):
+        self.assertIn("function isExecutiveAttentionIssue", EXECUTIVE_PAGE)
+        self.assertIn('name === "finance costs" && status === "stale"', EXECUTIVE_PAGE)
+        self.assertIn("sources.filter(isExecutiveAttentionIssue)", EXECUTIVE_PAGE)
+
     def test_password_setup_contract_is_implemented_backend_side(self):
         self.assertIn("completePasswordSetup", WEB_API)
         self.assertIn("/api/v1/portals/password-setup/complete", WEB_API)
