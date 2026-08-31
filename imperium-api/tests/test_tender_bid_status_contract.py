@@ -6,6 +6,9 @@ TENDERS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "tenders" / "page.tsx"
 ).read_text(encoding="utf-8")
 TENDER_BIDS_ROUTER = (ROOT / "routers" / "tender_bids.py").read_text(encoding="utf-8")
+TENDER_CLOSEOUT_MIGRATION = (
+    ROOT / "migrations" / "171_tender_closeout_reason_next_steps.sql"
+).read_text(encoding="utf-8")
 
 
 def test_submitted_tender_status_supersedes_deadline_countdown():
@@ -32,3 +35,29 @@ def test_tender_stage_commit_happens_before_best_effort_task_generation():
     assert first_commit < task_generation
     assert "tender_bids.stage_task_supersede_failed" in update_section
     assert '"data": {"id": item_id, "stage": next_stage if stage_changed else params.get("stage")}' in update_section
+
+
+def test_tender_resolved_stage_requires_closeout_reason_and_next_steps():
+    assert "TENDER_RESOLVED_STAGES = {\"Awarded\", \"Lost\", \"Awarded/Lost\"}" in TENDER_BIDS_ROUTER
+    assert "Moving a tender to Awarded or Lost requires a close-out reason and enforced next steps." in TENDER_BIDS_ROUTER
+    assert "class TenderCloseoutPayload" in TENDER_BIDS_ROUTER
+    assert '@router.post("/{tender_id}/closeout")' in TENDER_BIDS_ROUTER
+    assert "closeout_reason" in TENDER_BIDS_ROUTER
+    assert "closeout_next_steps" in TENDER_BIDS_ROUTER
+    assert "tender.closeout.recorded.v1" in TENDER_BIDS_ROUTER
+    assert "tender_closeout_next_step" in TENDER_BIDS_ROUTER
+    assert "ADD COLUMN IF NOT EXISTS closeout_status" in TENDER_CLOSEOUT_MIGRATION
+    assert "ADD COLUMN IF NOT EXISTS closeout_reason" in TENDER_CLOSEOUT_MIGRATION
+    assert "ADD COLUMN IF NOT EXISTS closeout_next_steps" in TENDER_CLOSEOUT_MIGRATION
+    assert "ADD COLUMN IF NOT EXISTS closeout_recorded_by" in TENDER_CLOSEOUT_MIGRATION
+
+
+def test_tender_board_collects_won_lost_reason_and_next_steps():
+    assert "closeoutCrmTender" in TENDERS_PAGE
+    assert "parseNextSteps" in TENDERS_PAGE
+    assert "Why was this tender won?" in TENDERS_PAGE
+    assert "Why was this tender lost?" in TENDERS_PAGE
+    assert "Enforced next steps" in TENDERS_PAGE
+    assert "handleOpenCloseout" in TENDERS_PAGE
+    assert "Record why this tender was won and at least one next step." in TENDERS_PAGE
+    assert "Record why this tender was lost and at least one next step." in TENDERS_PAGE

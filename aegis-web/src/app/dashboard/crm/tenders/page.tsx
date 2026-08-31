@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import {
   FileText, Plus, X, ChevronLeft, ChevronRight,
@@ -16,6 +16,7 @@ import {
   updateCrmTender,
   deleteCrmTender,
   awardCrmTender,
+  closeoutCrmTender,
   getFinanceDepartments,
   getTenderRequirements,
   createTenderRequirement,
@@ -45,6 +46,7 @@ const STAGES = [
 const RESOLVED_STAGES = ['Awarded', 'Lost', 'Awarded/Lost'];
 const POST_SUBMISSION_STAGES = ['Submitted', 'Adjudication', ...RESOLVED_STAGES];
 const isPostSubmissionStage = (stage: string) => POST_SUBMISSION_STAGES.includes(stage);
+const parseNextSteps = (value: string) => value.split(/\r?\n/).map(step => step.trim()).filter(Boolean);
 
 const CATEGORIES = [
   'Civil Works',
@@ -73,6 +75,10 @@ interface Tender {
   praz_registration: boolean;
   tax_clearance: boolean;
   created_at: string;
+  closeout_status?: 'won' | 'lost' | null;
+  closeout_reason?: string | null;
+  closeout_next_steps?: string[] | null;
+  closeout_recorded_at?: string | null;
 }
 
 interface TenderRequirement {
@@ -101,7 +107,13 @@ export default function TendersCommand() {
   const [awardDepartmentOptions, setAwardDepartmentOptions] = useState<any[]>([]);
   const [selectedAwardDepartmentId, setSelectedAwardDepartmentId] = useState('');
   const [selectedAwardOriginatingDepartmentId, setSelectedAwardOriginatingDepartmentId] = useState('');
+  const [awardCloseoutReason, setAwardCloseoutReason] = useState('');
+  const [awardNextSteps, setAwardNextSteps] = useState('');
   const [isAwarding, setIsAwarding] = useState(false);
+  const [closeoutTender, setCloseoutTender] = useState<{ id: string; status: 'lost' } | null>(null);
+  const [closeoutReason, setCloseoutReason] = useState('');
+  const [closeoutNextSteps, setCloseoutNextSteps] = useState('');
+  const [isClosingOut, setIsClosingOut] = useState(false);
 
   // Requirements checklist state
   const [requirements, setRequirements] = useState<TenderRequirement[]>([]);
@@ -144,11 +156,7 @@ export default function TendersCommand() {
   // Edit Drawer Form State
   const [editForm, setEditForm] = useState<Tender | null>(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
@@ -166,7 +174,11 @@ export default function TendersCommand() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const getStageBidSum = (stage: string) => {
     return filteredTenders
@@ -204,8 +216,12 @@ export default function TendersCommand() {
     if (!tender) return;
     if (tender.stage === targetStage) return;
 
-    if (targetStage === 'Awarded' && !tender.project_id) {
+    if (targetStage === 'Awarded') {
       handleOpenAward(tenderId);
+      return;
+    }
+    if (targetStage === 'Lost') {
+      handleOpenCloseout(tenderId, 'lost');
       return;
     }
 
@@ -233,6 +249,8 @@ export default function TendersCommand() {
     setAwardTenderId(tenderId);
     setSelectedAwardDepartmentId('');
     setSelectedAwardOriginatingDepartmentId('');
+    setAwardCloseoutReason('');
+    setAwardNextSteps('');
     setIsAwardModalOpen(true);
     try {
       const res = await getFinanceDepartments();
@@ -244,12 +262,19 @@ export default function TendersCommand() {
 
   const handleConfirmAward = async () => {
     if (!awardTenderId) return;
+    const nextSteps = parseNextSteps(awardNextSteps);
+    if (!awardCloseoutReason.trim() || nextSteps.length === 0) {
+      alert("Record why this tender was won and at least one next step.");
+      return;
+    }
     setIsAwarding(true);
     try {
       const result = await awardCrmTender(awardTenderId, {
         create_project: true,
         department_id: selectedAwardDepartmentId || undefined,
         originating_department_id: selectedAwardOriginatingDepartmentId || undefined,
+        closeout_reason: awardCloseoutReason.trim(),
+        next_steps: nextSteps,
       });
       setIsAwardModalOpen(false);
       const budgetPendingReason = result?.data?.budget_pending_reason;
@@ -270,6 +295,43 @@ export default function TendersCommand() {
       ));
     } finally {
       setIsAwarding(false);
+    }
+  };
+
+  const handleOpenCloseout = (tenderId: string, status: 'lost') => {
+    setCloseoutTender({ id: tenderId, status });
+    setCloseoutReason('');
+    setCloseoutNextSteps('');
+  };
+
+  const handleConfirmCloseout = async () => {
+    if (!closeoutTender) return;
+    const nextSteps = parseNextSteps(closeoutNextSteps);
+    if (!closeoutReason.trim() || nextSteps.length === 0) {
+      alert("Record why this tender was lost and at least one next step.");
+      return;
+    }
+    setIsClosingOut(true);
+    try {
+      const res = await closeoutCrmTender(closeoutTender.id, {
+        status: closeoutTender.status,
+        reason: closeoutReason.trim(),
+        next_steps: nextSteps,
+      });
+      if (!res.success) {
+        alert(res.message || "Tender close-out did not save.");
+      }
+      setCloseoutTender(null);
+      await loadData();
+    } catch (err) {
+      console.error('Failed to close out tender:', err);
+      alert(describeActionError(
+        err,
+        "You don't have permission to close out this tender.",
+        "Tender close-out did not save. Check the CRM service connection and retry."
+      ));
+    } finally {
+      setIsClosingOut(false);
     }
   };
 
@@ -340,8 +402,12 @@ export default function TendersCommand() {
     const nextStage = STAGES[nextIndex];
 
     const tender = tenders.find(t => t.id === tenderId);
-    if (nextStage === 'Awarded' && !tender?.project_id) {
+    if (nextStage === 'Awarded') {
       handleOpenAward(tenderId);
+      return;
+    }
+    if (nextStage === 'Lost') {
+      handleOpenCloseout(tenderId, 'lost');
       return;
     }
 
@@ -955,6 +1021,14 @@ export default function TendersCommand() {
                           <Briefcase className="w-2.5 h-2.5" /> Project Live
                         </Link>
                       )}
+                      {t.closeout_reason && (
+                        <div className="mb-2 border border-[#D4AF37]/20 bg-[#D4AF37]/5 px-2 py-1.5">
+                          <p className="font-mono text-[8px] uppercase tracking-widest text-[#D4AF37]">
+                            {t.closeout_status === 'lost' ? 'Loss reason' : 'Win reason'}
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-[10px] text-slate-light">{t.closeout_reason}</p>
+                        </div>
+                      )}
 
                       {/* Display Bid details */}
                       <div className="space-y-1.5 my-3 text-[10px] text-slate-light font-mono">
@@ -1321,20 +1395,40 @@ export default function TendersCommand() {
                           the button below), never a bare stage save. */}
                       <select
                         value={editForm.stage}
-                        onChange={e => setEditForm({ ...editForm, stage: e.target.value })}
+                        onChange={e => {
+                          const nextStage = e.target.value;
+                          if (nextStage === 'Awarded') {
+                            handleOpenAward(editForm.id);
+                            return;
+                          }
+                          if (nextStage === 'Lost') {
+                            handleOpenCloseout(editForm.id, 'lost');
+                            return;
+                          }
+                          setEditForm({ ...editForm, stage: nextStage });
+                        }}
                         disabled={editForm.stage === 'Awarded'}
                         className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        {STAGES.filter(s => s !== 'Awarded' || editForm.stage === 'Awarded').map(s => <option key={s} value={s}>{s}</option>)}
+                        {STAGES.filter(s => !RESOLVED_STAGES.includes(s) || s === editForm.stage).map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
-                      {editForm.stage !== 'Awarded' && editForm.stage !== 'Lost' && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenAward(editForm.id)}
-                          className="mt-1 flex items-center gap-1 text-[9px] font-mono text-emerald-400 hover:text-emerald-300 uppercase tracking-wider"
-                        >
-                          <Briefcase className="w-2.5 h-2.5" /> Award & Create Project
-                        </button>
+                      {!RESOLVED_STAGES.includes(editForm.stage) && (
+                        <div className="mt-1 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenAward(editForm.id)}
+                            className="flex items-center gap-1 text-[9px] font-mono text-emerald-400 hover:text-emerald-300 uppercase tracking-wider"
+                          >
+                            <Briefcase className="w-2.5 h-2.5" /> Award & Create Project
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenCloseout(editForm.id, 'lost')}
+                            className="flex items-center gap-1 text-[9px] font-mono text-rose-300 hover:text-rose-200 uppercase tracking-wider"
+                          >
+                            <X className="w-2.5 h-2.5" /> Mark Lost
+                          </button>
+                        </div>
                       )}
                     </div>
 
@@ -1396,6 +1490,25 @@ export default function TendersCommand() {
                     </div>
                   </div>
                 </form>
+              )}
+
+              {/* CHECKLIST VALIDATOR INTERFACE */}
+              {selectedTender.closeout_reason && (
+                <div className="space-y-2 bg-[#0C0C0C] border border-[#D4AF37]/20 p-4 rounded-sm">
+                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">
+                    {selectedTender.closeout_status === 'lost' ? 'Loss close-out' : 'Win close-out'}
+                  </span>
+                  <p className="text-xs text-paper">{selectedTender.closeout_reason}</p>
+                  {Array.isArray(selectedTender.closeout_next_steps) && selectedTender.closeout_next_steps.length > 0 && (
+                    <div className="space-y-1">
+                      {selectedTender.closeout_next_steps.map((step, index) => (
+                        <div key={`${step}-${index}`} className="border border-white/5 bg-black/40 px-2 py-1.5 text-[10px] text-slate-light">
+                          {step}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
 
               {/* CHECKLIST VALIDATOR INTERFACE */}
@@ -1644,10 +1757,70 @@ export default function TendersCommand() {
                   </div>
                 </div>
               )}
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Why was this tender won?</label>
+                <textarea
+                  value={awardCloseoutReason}
+                  onChange={(e) => setAwardCloseoutReason(e.target.value)}
+                  rows={3}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none focus:border-[#D4AF37]"
+                  placeholder="Record the commercial or technical reason for the win."
+                />
+              </div>
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Enforced next steps</label>
+                <textarea
+                  value={awardNextSteps}
+                  onChange={(e) => setAwardNextSteps(e.target.value)}
+                  rows={4}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none focus:border-[#D4AF37]"
+                  placeholder={"One step per line\nConfirm deposit\nIssue project kickoff pack\nAssign commercial readiness owner"}
+                />
+              </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button onClick={() => setIsAwardModalOpen(false)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
-                <button onClick={handleConfirmAward} disabled={isAwarding} className="px-3 py-1.5 bg-emerald-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
+                <button onClick={handleConfirmAward} disabled={isAwarding || !awardCloseoutReason.trim() || parseNextSteps(awardNextSteps).length === 0} className="px-3 py-1.5 bg-emerald-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
                   {isAwarding ? 'Awarding...' : 'Confirm Award & Release Project'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {closeoutTender && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setCloseoutTender(null)} />
+          <div className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-6 shadow-2xl z-10">
+            <h3 className="font-mono text-sm text-rose-300 uppercase font-bold tracking-wider mb-2">Mark Tender Lost</h3>
+            <p className="text-xs text-slate-light mb-4">
+              Closing this tender as lost records the loss reason and creates next-step tasks against the tender.
+            </p>
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Why was this tender lost?</label>
+                <textarea
+                  value={closeoutReason}
+                  onChange={(e) => setCloseoutReason(e.target.value)}
+                  rows={3}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none focus:border-[#D4AF37]"
+                  placeholder="Record the actual reason before closing the bid."
+                />
+              </div>
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Enforced next steps</label>
+                <textarea
+                  value={closeoutNextSteps}
+                  onChange={(e) => setCloseoutNextSteps(e.target.value)}
+                  rows={4}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none focus:border-[#D4AF37]"
+                  placeholder={"One step per line\nLog lessons learnt\nReturn or release bid bond\nUpdate pricing assumptions"}
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setCloseoutTender(null)} className="px-3 py-1.5 border border-white/5 text-slate-light hover:text-white font-mono text-[10px] uppercase">Cancel</button>
+                <button onClick={handleConfirmCloseout} disabled={isClosingOut || !closeoutReason.trim() || parseNextSteps(closeoutNextSteps).length === 0} className="px-3 py-1.5 bg-rose-600 text-white font-mono text-[10px] uppercase font-bold disabled:opacity-40">
+                  {isClosingOut ? 'Closing...' : 'Confirm Lost'}
                 </button>
               </div>
             </div>

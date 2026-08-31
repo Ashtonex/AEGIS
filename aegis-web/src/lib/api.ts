@@ -817,6 +817,14 @@ export async function awardCrmTender(tenderId: string, payload: Record<string, u
   });
 }
 
+export async function closeoutCrmTender(tenderId: string, payload: { status: "won" | "lost"; reason: string; next_steps: string[] }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/closeout`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function deleteCrmTender(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${id}`, {
     method: 'DELETE'

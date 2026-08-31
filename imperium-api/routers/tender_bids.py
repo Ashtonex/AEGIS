@@ -50,6 +50,7 @@ async def _single_row(db: AsyncSession, sql: str, params: Dict[str, Any]) -> Opt
 # psycopg does), so an ISO string from the frontend fails DataError against
 # this table's one timestamptz column unless parsed here first.
 _TIMESTAMPTZ_COLUMNS = {"submission_deadline"}
+TENDER_RESOLVED_STAGES = {"Awarded", "Lost", "Awarded/Lost"}
 
 
 def _coerce_timestamptz_columns(params: dict) -> None:
@@ -57,6 +58,130 @@ def _coerce_timestamptz_columns(params: dict) -> None:
         value = params.get(column)
         if isinstance(value, str):
             params[column] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+class TenderCloseoutPayload(BaseModel):
+    status: str = Field(pattern=r"^(won|lost)$")
+    reason: str = Field(min_length=3, max_length=2000)
+    next_steps: list[str] = Field(min_length=1, max_length=12)
+
+
+async def _record_tender_closeout(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    user_id: str,
+    tender_id: str,
+    status: str,
+    reason: str,
+    next_steps: list[str],
+) -> list[str]:
+    clean_steps = [step.strip() for step in next_steps if step and step.strip()]
+    if not reason.strip():
+        raise HTTPException(status_code=422, detail="Tender close-out reason is required.")
+    if not clean_steps:
+        raise HTTPException(status_code=422, detail="At least one enforceable next step is required.")
+
+    stage = "Awarded" if status == "won" else "Lost"
+    updated = await db.execute(
+        text("""
+            UPDATE crm.tenders
+            SET stage = :stage,
+                closeout_status = :status,
+                closeout_reason = :reason,
+                closeout_next_steps = CAST(:next_steps AS jsonb),
+                closeout_recorded_by = :user_id,
+                closeout_recorded_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :tender_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """),
+        {
+            "stage": stage,
+            "status": status,
+            "reason": reason.strip(),
+            "next_steps": json.dumps(clean_steps),
+            "user_id": user_id,
+            "tender_id": tender_id,
+            "org_id": org_id,
+        },
+    )
+    if not updated.first():
+        raise HTTPException(status_code=404, detail="Tender not found.")
+
+    for index, step in enumerate(clean_steps, start=1):
+        requirement_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO crm.tender_requirements (
+                        organization_id, tender_id, label, sort_order, created_by
+                    ) VALUES (
+                        :org_id, :tender_id, :label, :sort_order, :user_id
+                    )
+                    RETURNING id
+                """),
+                {
+                    "org_id": org_id,
+                    "tender_id": tender_id,
+                    "label": step,
+                    "sort_order": index,
+                    "user_id": user_id,
+                },
+            )
+        ).scalar()
+        task_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO crm.tasks (
+                        organization_id, title, description, entity_type, entity_id,
+                        status, priority, created_by, primary_entity_type, primary_entity_id,
+                        source_event, expected_outcome, deduplication_key
+                    ) VALUES (
+                        :org_id, :title, :description, 'tender', :tender_id,
+                        'not_started', 'high', :user_id, 'tender', :tender_id,
+                        'tender_closeout_next_step', :expected_outcome, :deduplication_key
+                    )
+                    ON CONFLICT (organization_id, deduplication_key) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        description = EXCLUDED.description,
+                        status = CASE
+                            WHEN crm.tasks.status IN ('cancelled', 'superseded')
+                            THEN 'not_started'
+                            ELSE crm.tasks.status
+                        END,
+                        updated_at = NOW()
+                    RETURNING id
+                """),
+                {
+                    "org_id": org_id,
+                    "title": f"{stage} close-out: {step}",
+                    "description": f"Tender was marked {status}: {reason.strip()}",
+                    "tender_id": tender_id,
+                    "user_id": user_id,
+                    "expected_outcome": step,
+                    "deduplication_key": f"TENDER_CLOSEOUT:{tender_id}:{status}:{index}",
+                },
+            )
+        ).scalar()
+        await db.execute(
+            text("""
+                UPDATE crm.tender_requirements
+                SET linked_task_id = :task_id, updated_at = NOW()
+                WHERE id = :requirement_id AND organization_id = :org_id
+            """),
+            {"task_id": task_id, "requirement_id": requirement_id, "org_id": org_id},
+        )
+
+    await emit_event(
+        db,
+        user={"org_id": org_id, "user_id": user_id},
+        event_type="tender.closeout.recorded.v1",
+        aggregate_type="tender",
+        aggregate_id=tender_id,
+        event_data={"status": status, "reason": reason.strip(), "next_steps": clean_steps},
+        idempotency_suffix=status,
+    )
+    return clean_steps
 
 
 @router.get("/")
@@ -185,6 +310,11 @@ async def update_item(
         if not current_stage:
             raise HTTPException(status_code=404, detail="Item not found")
         stage_changed = next_stage != current_stage.get("stage")
+        if stage_changed and next_stage in TENDER_RESOLVED_STAGES:
+            raise HTTPException(
+                status_code=422,
+                detail="Moving a tender to Awarded or Lost requires a close-out reason and enforced next steps.",
+            )
 
     query = update_returning_id_sql("crm.tenders", safe_keys, safe_keys)
 
@@ -283,6 +413,48 @@ class TenderAwardPayload(BaseModel):
     planned_completion_date: Optional[date] = None
     department_id: Optional[UUID] = None
     originating_department_id: Optional[UUID] = None
+    closeout_reason: str = Field(min_length=3, max_length=2000)
+    next_steps: list[str] = Field(min_length=1, max_length=12)
+
+
+@router.post("/{tender_id}/closeout")
+async def closeout_tender(
+    tender_id: UUID,
+    payload: TenderCloseoutPayload,
+    user: dict = Depends(require_permission("tender_bids.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.status == "won":
+        raise HTTPException(
+            status_code=422,
+            detail="Won tenders must use Award & Create Project so the project handoff is completed.",
+        )
+    clean_steps = await _record_tender_closeout(
+        db,
+        org_id=user["org_id"],
+        user_id=user.get("sub") or user.get("user_id"),
+        tender_id=str(tender_id),
+        status=payload.status,
+        reason=payload.reason,
+        next_steps=payload.next_steps,
+    )
+    await db.commit()
+    await generate_task_stack(
+        db,
+        org_id=user["org_id"],
+        entity_type="tender",
+        entity_id=str(tender_id),
+        created_by=user.get("sub") or user.get("user_id"),
+        source_event="tender_closeout_recorded",
+        generation_reason=f"Tender marked {payload.status} with required next steps.",
+        stage="Lost",
+    )
+    return {
+        "success": True,
+        "data": {"id": str(tender_id), "stage": "Lost", "closeout_status": payload.status, "next_steps": clean_steps},
+        "message": "Tender close-out recorded and next steps enforced.",
+        "meta": {},
+    }
 
 
 @router.post("/{tender_id}/award")
@@ -360,10 +532,19 @@ async def award_tender(
             )
             project_id = project_row.scalar()
 
+        closeout_steps = await _record_tender_closeout(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            tender_id=str(tender_id),
+            status="won",
+            reason=payload.closeout_reason,
+            next_steps=payload.next_steps,
+        )
         await db.execute(
             text("""
                 UPDATE crm.tenders
-                SET stage = 'Awarded', project_id = :project_id, updated_at = NOW()
+                SET project_id = :project_id, updated_at = NOW()
                 WHERE id = :tender_id AND organization_id = :org_id AND is_deleted = false
             """),
             {"project_id": project_id, "tender_id": tender_id, "org_id": org_id},
@@ -576,6 +757,8 @@ async def award_tender(
             "budget_pending_reason": budget_pending_reason,
             "forecast": forecast_metrics,
             "margin_alert_raised": margin_alert_raised,
+            "closeout_status": "won",
+            "next_steps": closeout_steps,
         },
         "message": "Tender awarded and project handoff completed." + (
             " Project execution budget seeded from this quotation." if budget_id else ""
