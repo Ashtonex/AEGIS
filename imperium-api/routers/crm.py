@@ -1665,17 +1665,24 @@ async def list_tenders(
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
     query = text("""
-        SELECT id, tender_name, bid_number, category, bid_amount, stage,
-               site_visit_at, site_visit_mandatory, submission_deadline,
-               bid_bond_secured, jv_partners, bond_amount,
-               technical_proposal, financial_proposal, nssa_clearance,
-               praz_registration, tax_clearance, project_id, closeout_status,
-               closeout_reason, closeout_next_steps, closeout_recorded_at,
-               winning_contractor, recycling_status, region,
-               latitude::float AS latitude, longitude::float AS longitude
-        FROM crm.tenders
-        WHERE organization_id = :org_id AND is_deleted = false
-        ORDER BY created_at DESC
+        SELECT t.id, t.tender_name, t.bid_number, t.category, t.bid_amount, t.stage,
+               t.site_visit_at,
+               COALESCE((to_jsonb(t)->>'site_visit_mandatory')::boolean, false) AS site_visit_mandatory,
+               t.submission_deadline,
+               t.bid_bond_secured, t.jv_partners, t.bond_amount,
+               t.technical_proposal, t.financial_proposal, t.nssa_clearance,
+               t.praz_registration, t.tax_clearance, t.project_id,
+               to_jsonb(t)->>'closeout_status' AS closeout_status,
+               to_jsonb(t)->>'closeout_reason' AS closeout_reason,
+               COALESCE(to_jsonb(t)->'closeout_next_steps', '[]'::jsonb) AS closeout_next_steps,
+               (to_jsonb(t)->>'closeout_recorded_at')::timestamptz AS closeout_recorded_at,
+               to_jsonb(t)->>'winning_contractor' AS winning_contractor,
+               COALESCE(to_jsonb(t)->>'recycling_status', 'not_started') AS recycling_status,
+               t.region,
+               t.latitude::float AS latitude, t.longitude::float AS longitude
+        FROM crm.tenders t
+        WHERE t.organization_id = :org_id AND t.is_deleted = false
+        ORDER BY t.created_at DESC
         LIMIT :limit OFFSET :offset
     """)
     result = await db.execute(query, {"org_id": org_id, **pagination_params})

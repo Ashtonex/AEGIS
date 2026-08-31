@@ -94,6 +94,20 @@ def test_tender_list_returns_saved_detail_fields_after_refresh():
     ]:
         assert column in list_section
 
+    # These fields were added after the original tender table shipped. The
+    # production list view must still load when a deploy reaches Vercel before
+    # the matching migrations have been applied.
+    for optional_column in [
+        "site_visit_mandatory",
+        "closeout_status",
+        "closeout_reason",
+        "closeout_next_steps",
+        "closeout_recorded_at",
+        "winning_contractor",
+        "recycling_status",
+    ]:
+        assert f"to_jsonb(t)->>'{optional_column}'" in list_section or f"to_jsonb(t)->'{optional_column}'" in list_section
+
 
 def test_uploaded_tender_documents_support_builtin_checks():
     assert "deliverable_checks" in DOCUMENTS_ROUTER
