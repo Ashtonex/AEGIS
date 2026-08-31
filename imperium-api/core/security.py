@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 import jwt
 import httpx
+import hashlib
+import time
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -20,6 +22,8 @@ security = HTTPBearer()
 _supabase_auth_breaker = CircuitBreaker(
     "supabase_auth", failure_threshold=5, reset_timeout_seconds=30.0
 )
+_verified_token_cache: dict[str, tuple[float, dict]] = {}
+_VERIFIED_TOKEN_CACHE_MAX_SECONDS = 300
 
 
 @retry(
@@ -172,6 +176,52 @@ def _decode_locally(token: str) -> dict | None:
     return None
 
 
+def _token_cache_key(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _token_expiry(token: str) -> float | None:
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+    except jwt.PyJWTError:
+        return None
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    return float(exp) if isinstance(exp, (int, float)) else None
+
+
+def _cache_verified_token(token: str, authenticated_user: dict) -> None:
+    exp = _token_expiry(token)
+    if not exp:
+        return
+    now = time.time()
+    ttl_expiry = min(exp, now + _VERIFIED_TOKEN_CACHE_MAX_SECONDS)
+    if ttl_expiry <= now:
+        return
+    _verified_token_cache[_token_cache_key(token)] = (ttl_expiry, authenticated_user)
+
+
+def _read_verified_token_cache(token: str) -> dict | None:
+    key = _token_cache_key(token)
+    cached = _verified_token_cache.get(key)
+    if not cached:
+        return None
+    expires_at, authenticated_user = cached
+    if expires_at <= time.time():
+        _verified_token_cache.pop(key, None)
+        return None
+    return authenticated_user
+
+
+def _user_payload_from_supabase_user(authenticated_user: dict) -> dict:
+    return {
+        "sub": str(authenticated_user.get("id")),
+        "email": authenticated_user.get("email"),
+        "app_metadata": authenticated_user.get("app_metadata") or {},
+        "user_metadata": authenticated_user.get("user_metadata") or {},
+        "role": "authenticated",
+    }
+
+
 def verify_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> dict:
@@ -223,6 +273,9 @@ def verify_token_str(token: str) -> dict:
         try:
             response = _supabase_auth_breaker.call_sync(lambda: _call_supabase_auth_api(token))
         except CircuitBreakerOpen as exc:
+            cached_user = _read_verified_token_cache(token)
+            if cached_user:
+                return _user_payload_from_supabase_user(cached_user)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Authentication service temporarily unavailable. Please retry.",
@@ -235,18 +288,16 @@ def verify_token_str(token: str) -> dict:
         authenticated_user = response.json()
         if not isinstance(authenticated_user, dict) or not authenticated_user.get("id"):
             raise ValueError("Supabase did not return a user for this token.")
-        return {
-            "sub": str(authenticated_user.get("id")),
-            "email": authenticated_user.get("email"),
-            "app_metadata": authenticated_user.get("app_metadata") or {},
-            "user_metadata": authenticated_user.get("user_metadata") or {},
-            "role": "authenticated",
-        }
+        _cache_verified_token(token, authenticated_user)
+        return _user_payload_from_supabase_user(authenticated_user)
     except HTTPException:
         raise
     except httpx.HTTPStatusError as exc:
         # Every retry attempt hit a 5xx from Supabase itself - a genuine
         # service failure, not a rejected token.
+        cached_user = _read_verified_token_cache(token)
+        if cached_user:
+            return _user_payload_from_supabase_user(cached_user)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service temporarily unavailable. Please retry.",
@@ -256,6 +307,9 @@ def verify_token_str(token: str) -> dict:
         # couldn't be reached in time even after retrying. Reporting this as
         # 401 would make a transient network blip look like an invalid
         # session, prompting a needless sign-out. 503 lets callers retry.
+        cached_user = _read_verified_token_cache(token)
+        if cached_user:
+            return _user_payload_from_supabase_user(cached_user)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service temporarily unavailable. Please retry.",

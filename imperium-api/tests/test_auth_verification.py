@@ -48,6 +48,7 @@ class _Client:
 
 
 def test_verify_token_uses_supabase_auth_payload(monkeypatch):
+    security._verified_token_cache.clear()
     response = _Response(
         200,
         {
@@ -68,6 +69,36 @@ def test_verify_token_uses_supabase_auth_payload(monkeypatch):
         "user_metadata": {"full_name": "Ashton"},
         "role": "authenticated",
     }
+
+
+def test_verify_token_reuses_recently_verified_token_during_auth_outage(monkeypatch):
+    security._verified_token_cache.clear()
+    breaker = security._supabase_auth_breaker
+    breaker.record_success()
+    token = _forged_superadmin_token()
+    verified_user = {
+        "id": "user-123",
+        "email": "ashton@admin.com",
+        "app_metadata": {"org_id": "org-1", "role": "SUPERADMIN"},
+        "user_metadata": {"full_name": "Ashton"},
+    }
+    response = _Response(200, verified_user)
+    monkeypatch.setattr(security.httpx, "Client", lambda timeout: _Client(response))
+
+    assert security.verify_token(_Creds(token))["sub"] == "user-123"
+
+    try:
+        for _ in range(breaker.failure_threshold):
+            with pytest.raises(httpx.ConnectError):
+                breaker.call_sync(lambda: (_ for _ in ()).throw(httpx.ConnectError("down")))
+        assert breaker.is_open
+
+        payload = security.verify_token(_Creds(token))
+        assert payload["sub"] == "user-123"
+        assert payload["email"] == "ashton@admin.com"
+    finally:
+        breaker.record_success()
+        security._verified_token_cache.clear()
 
 
 def _forged_superadmin_token(secret: str = "attacker-guessed-or-wrong-secret") -> str:

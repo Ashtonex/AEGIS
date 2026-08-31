@@ -176,6 +176,19 @@ function normalizeApiError(error: unknown): ApiError {
   return new ApiError(0, "The service could not be reached. Please retry once the connection is ready.");
 }
 
+function isTransientServiceStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function isIdempotentRequest(method?: string): boolean {
+  const normalized = (method || "GET").toUpperCase();
+  return normalized === "GET" || normalized === "HEAD";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function timeoutReason(): Error | DOMException {
   if (typeof DOMException !== "undefined") {
     return new DOMException("API request timed out", "TimeoutError");
@@ -417,10 +430,11 @@ function extractApiErrorMessage(parsed: unknown): string | undefined {
 
 async function buildApiError(response: Response): Promise<ApiError> {
   let message = "The requested data could not be loaded. Please retry in a moment.";
+  const isTransientServiceError = isTransientServiceStatus(response.status);
   if (response.status === 401) message = "Your session could not be verified. Please sign in again.";
   if (response.status === 403) message = "You do not have permission to access this resource.";
   if (response.status === 404) message = "Requested resource was not found.";
-  if (response.status === 502 || response.status === 503 || response.status === 504) {
+  if (isTransientServiceError) {
     message = "The backend service is waking up or temporarily unavailable. Please retry in a few seconds.";
   } else if (response.status >= 500) {
     message = "The service is temporarily unavailable. Please try again.";
@@ -430,7 +444,8 @@ async function buildApiError(response: Response): Promise<ApiError> {
     const body = await response.text();
     if (body) {
       const parsed = JSON.parse(body) as unknown;
-      message = extractApiErrorMessage(parsed) ?? message;
+      const extracted = extractApiErrorMessage(parsed);
+      message = isTransientServiceError ? message : extracted ?? message;
     }
   } catch {
     // Keep the status-based message when the backend did not return JSON.
@@ -471,6 +486,7 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
     timeoutId = setTimeout(() => controller.abort(timeoutReason()), timeoutMs);
 
     let sentAuthorization = headers.has("Authorization");
+    const canRetryTransient = isIdempotentRequest(requestOptions.method);
     let response = await fetch(url, {
       ...requestOptions,
       headers,
@@ -487,6 +503,18 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
           signal: controller.signal
         });
       }
+    }
+
+    for (const backoffMs of [800, 1600]) {
+      if (!canRetryTransient || !isTransientServiceStatus(response.status) || controller.signal.aborted) {
+        break;
+      }
+      await delay(backoffMs);
+      response = await fetch(url, {
+        ...requestOptions,
+        headers,
+        signal: controller.signal
+      });
     }
 
     if (!response.ok) {
