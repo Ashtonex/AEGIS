@@ -488,13 +488,17 @@ async def tender_engine_insights(
         await db.execute(
             text("""
                 SELECT
-                    id, tender_name, stage, category, bid_amount, submission_deadline,
-                    site_visit_at, site_visit_mandatory, closeout_status,
-                    closeout_reason, winning_contractor, recycling_status,
-                    technical_proposal, financial_proposal, nssa_clearance,
-                    praz_registration, tax_clearance, bid_bond_secured
-                FROM crm.tenders
-                WHERE organization_id = :org_id AND is_deleted = false
+                    t.id, t.tender_name, t.stage, t.category, t.bid_amount, t.submission_deadline,
+                    (to_jsonb(t)->>'site_visit_at')::timestamptz AS site_visit_at,
+                    COALESCE((to_jsonb(t)->>'site_visit_mandatory')::boolean, false) AS site_visit_mandatory,
+                    to_jsonb(t)->>'closeout_status' AS closeout_status,
+                    to_jsonb(t)->>'closeout_reason' AS closeout_reason,
+                    to_jsonb(t)->>'winning_contractor' AS winning_contractor,
+                    COALESCE(to_jsonb(t)->>'recycling_status', 'not_started') AS recycling_status,
+                    t.technical_proposal, t.financial_proposal, t.nssa_clearance,
+                    t.praz_registration, t.tax_clearance, t.bid_bond_secured
+                FROM crm.tenders t
+                WHERE t.organization_id = :org_id AND t.is_deleted = false
             """),
             {"org_id": org_id},
         )

@@ -116,6 +116,14 @@ class FrontendApiContractTests(unittest.TestCase):
         self.assertIn('@router.get("/tender-signals")', CRM_ROUTER)
         self.assertIn('require_permission("crm.view_tenders")', CRM_ROUTER)
 
+    def test_crm_tenders_board_has_legacy_read_fallback(self):
+        start = WEB_API.index("export async function getCrmTenders()")
+        end = WEB_API.index("export async function getCommercialMorningBriefing()")
+        section = WEB_API[start:end]
+        self.assertIn("'/api/v1/crm/tenders'", section)
+        self.assertIn("'/api/v1/tender-bids/'", section)
+        self.assertIn("throw error;", section)
+
     def test_crm_write_helpers_do_not_use_fallback(self):
         self.assertIn("export async function updateCrmOpportunity", WEB_API)
         self.assertIn("export async function updateCrmTender", WEB_API)

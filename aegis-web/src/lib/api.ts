@@ -760,7 +760,18 @@ export async function createCrmOpportunity(data: { name: string, stage: string, 
 }
 
 export async function getCrmTenders() {
-  return await fetchApi<ApiResponse<any[]>>('/api/v1/crm/tenders', { cache: 'no-store' });
+  try {
+    return await fetchApi<ApiResponse<any[]>>('/api/v1/crm/tenders', { cache: 'no-store' });
+  } catch (error) {
+    // Keep the board alive during rolling deploys or delayed DB migrations:
+    // the legacy tender-bids list reads the same crm.tenders records without
+    // naming newly-added optional columns that may not exist yet.
+    try {
+      return await fetchApi<ApiResponse<any[]>>('/api/v1/tender-bids/', { cache: 'no-store', allowFallback: false });
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getCommercialMorningBriefing(): Promise<ApiResponse<any>> {

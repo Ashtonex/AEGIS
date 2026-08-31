@@ -128,3 +128,16 @@ def test_lost_tenders_enter_recycling_and_feed_engine():
     assert "weak_spots" in TENDER_BIDS_ROUTER
     assert "recycling" in TENDER_BIDS_ROUTER
     assert "getTenderEngineInsights" in TENDERS_PAGE
+
+    engine_section = TENDER_BIDS_ROUTER[
+        TENDER_BIDS_ROUTER.index('@router.get("/insights/engine")') : TENDER_BIDS_ROUTER.index('win_rate = round(')
+    ]
+    for optional_column in [
+        "site_visit_at",
+        "site_visit_mandatory",
+        "closeout_status",
+        "closeout_reason",
+        "winning_contractor",
+        "recycling_status",
+    ]:
+        assert f"to_jsonb(t)->>'{optional_column}'" in engine_section or f"to_jsonb(t)->'{optional_column}'" in engine_section
