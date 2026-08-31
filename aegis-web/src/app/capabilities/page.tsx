@@ -83,6 +83,7 @@ export default function CapabilitiesIndexPage() {
           </div>
         </div>
       </section>
+
     </PageWrapper>
   );
 }

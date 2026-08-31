@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -580,23 +579,6 @@ function InventoryWorkspace() {
           </div>
         </div>
       </section>
-
-      <div className="mb-0 flex border-b border-ink-mid">
-        {(["stock", "catalogue", "stores", "movements"] as ActiveTab[]).map((t) => {
-          const labels: Record<ActiveTab, string> = { stock: "Stock Levels", catalogue: "Item Catalogue", stores: "Stores", movements: "Stock Movements" };
-          return (
-            <Link
-              key={t}
-              href={TAB_ROUTES[t]}
-              className={`px-5 py-3 font-mono text-xs uppercase tracking-wider transition-colors ${
-                tab === t ? "border-b-2 border-signal text-signal" : "text-slate-light hover:text-paper"
-              }`}
-            >
-              {labels[t]}
-            </Link>
-          );
-        })}
-      </div>
 
       {/* Stock Levels Tab */}
       {tab === "stock" && (

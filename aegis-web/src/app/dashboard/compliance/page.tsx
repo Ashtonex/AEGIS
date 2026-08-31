@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -447,46 +446,6 @@ function ComplianceWorkspace() {
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Blocked Deployments</p>
           <p className="text-xl font-semibold text-red-400 tracking-tight mt-1">{complianceKPIS.blockedDeployments}</p>
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex border-b border-ink-mid">
-        <Link
-          href={TAB_ROUTES.obligations}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "obligations" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Obligation Register
-        </Link>
-        <Link
-          href={TAB_ROUTES.employees}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "employees" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Employee Credentials
-        </Link>
-        <Link
-          href={TAB_ROUTES.equipment}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "equipment" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Equipment Licenses
-        </Link>
-        <Link
-          href={TAB_ROUTES["deployment-gates"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "deployment-gates" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Deployment Gates
-        </Link>
-        <Link
-          href={TAB_ROUTES["corrective-actions"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "corrective-actions" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Corrective Actions (CAPA)
-        </Link>
-        <Link
-          href={TAB_ROUTES.incidents}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "incidents" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          HSE Incidents
-        </Link>
       </div>
 
       {/* Tab Panels */}

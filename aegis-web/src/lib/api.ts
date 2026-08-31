@@ -3,6 +3,7 @@ import { Project, Tender, Article, JobPosition, LeadershipProfile } from "@/type
 import { API_BASE_URL } from "./constants";
 import { resolveBackendOrigin } from "./backend-url";
 import { getSupabase, getCachedAccessToken } from "./supabase";
+import { PROJECTS_DOSSIERS, getProjectDossier } from "./projectsDossiers";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -76,6 +77,7 @@ function defaultTimeoutFor(endpoint: string): number {
 
 const SERVER_ROUTE_ALIASES: Record<string, string> = {
   "/api/tenders": "/api/v1/public/intake/tenders",
+  "/api/projects": "/api/v1/public/intake/projects",
   "/api/cms/website-content": "/api/v1/public/intake/website-content",
   "/api/cms/broadcast-feeds": "/api/v1/public/intake/broadcast-feeds",
 };
@@ -521,15 +523,47 @@ export async function getProjects(params?: { featured?: boolean; limit?: number;
   if (params?.limit) searchParams.set("limit", params.limit.toString());
   if (params?.category) searchParams.set("category", params.category);
 
-  return fetchApi<PaginatedResponse<Project>>(`/api/projects?${searchParams.toString()}`, {
-    next: { revalidate: 3600 }
-  });
+  try {
+    const res = await fetchApi<PaginatedResponse<Project>>(`/api/projects?${searchParams.toString()}`, {
+      next: { revalidate: 3600 }
+    });
+    if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
+      return res;
+    }
+  } catch {
+    // Fall through to verified dossiers
+  }
+
+  let list = [...PROJECTS_DOSSIERS];
+  if (params?.category) {
+    list = list.filter((p) => p.category.toLowerCase().includes(params.category!.toLowerCase()));
+  }
+  if (params?.limit) {
+    list = list.slice(0, params.limit);
+  }
+  return {
+    success: true,
+    data: list,
+    meta: { total: list.length, page: 1, limit: params?.limit || list.length, totalPages: 1 }
+  };
 }
 
 export async function getProject(slug: string): Promise<ApiResponse<Project>> {
-  return fetchApi<ApiResponse<Project>>(`/api/projects/${slug}`, {
-    next: { revalidate: 3600 }
-  });
+  try {
+    const res = await fetchApi<ApiResponse<Project>>(`/api/projects/${slug}`, {
+      next: { revalidate: 3600 }
+    });
+    if (res?.success && res.data) {
+      return res;
+    }
+  } catch {
+    // Fall through to verified dossiers
+  }
+  const dossier = getProjectDossier(slug);
+  return {
+    success: !!dossier,
+    data: dossier,
+  };
 }
 
 // --- TENDERS ---

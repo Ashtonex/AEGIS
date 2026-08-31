@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -203,34 +202,6 @@ function AnalyticsWorkspace() {
             </div>
           ))}
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex border-b border-ink-mid">
-        <Link
-          href={TAB_ROUTES.projects}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "projects" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Project Margin Trends
-        </Link>
-        <Link
-          href={TAB_ROUTES.equipment}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "equipment" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Fleet Productivity
-        </Link>
-        <Link
-          href={TAB_ROUTES.procurement}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "procurement" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Spend & Supplier SLA
-        </Link>
-        <Link
-          href={TAB_ROUTES.workforce}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "workforce" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Labour Allocation
-        </Link>
       </div>
 
       {/* Tab Panels */}

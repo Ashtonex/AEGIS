@@ -5,6 +5,10 @@ import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { sequenceRevealVariants, hoverElevation, transitions } from "@/lib/motion";
 import Link from "next/link";
 import Image from "next/image";
+import { LayoutGrid, Map as MapIcon } from "lucide-react";
+import { ZimbabweProjectMap } from "@/components/sections/ZimbabweProjectMap";
+import { PROJECTS_DOSSIERS } from "@/lib/projectsDossiers";
+import { cn } from "@/lib/utils";
 
 interface Project {
   id: string;
@@ -30,6 +34,7 @@ export default function ProjectsRegisterPage() {
   const shouldReduceMotion = useReducedMotion();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<"grid" | "map">("grid");
   const [metrics, setMetrics] = useState<{ projectsDelivered: number; contractValueM: number } | null>(null);
 
   // Live Harare Clock for the header
@@ -56,13 +61,32 @@ export default function ProjectsRegisterPage() {
         const res = await fetch("/api/v1/projects");
         if (res.ok) {
           const json = await res.json();
-          setProjects(json.data);
+          if (Array.isArray(json.data) && json.data.length > 0) {
+            setProjects(json.data);
+            return;
+          }
         }
       } catch (err) {
         console.error(err);
       } finally {
         setLoading(false);
       }
+
+      // Default curated projects from PROJECTS_DOSSIERS
+      const defaultList: Project[] = PROJECTS_DOSSIERS.map((d, i) => ({
+        id: d.id,
+        slug: d.slug,
+        title: d.title,
+        client: d.client,
+        sector: d.category,
+        status: d.status,
+        budget: d.value ? `$${(d.value / 1000000).toFixed(1)}M` : "Scope Confirmed",
+        duration: d.timeline.end ? `${d.timeline.start.slice(0, 4)} - ${d.timeline.end.slice(0, 4)}` : "Current",
+        scope: d.scopeSummary,
+        image: d.featuredImage || "/proj-highway.jpg",
+        grid: i === 0 ? "lg:col-span-8 lg:row-span-2" : i === 1 ? "lg:col-span-4 lg:row-span-1" : i === 2 ? "lg:col-span-4 lg:row-span-1" : "lg:col-span-6 lg:row-span-1",
+      }));
+      setProjects(defaultList);
     };
     const fetchMetrics = async () => {
       try {
@@ -86,7 +110,7 @@ export default function ProjectsRegisterPage() {
 
   return (
     <main className="min-h-screen bg-ink pt-32">
-      <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 mb-16">
+      <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 mb-12">
         {/* Header Block */}
         <motion.div
           className="flex flex-col md:flex-row items-start md:items-end justify-between border-b border-ink-mid pb-8"
@@ -103,61 +127,90 @@ export default function ProjectsRegisterPage() {
               Scale measured in kilometres, cubic metres, and months delivered.
             </p>
           </div>
-          <div className="mt-8 md:mt-0 flex flex-col items-end gap-2">
+          <div className="mt-8 md:mt-0 flex flex-col items-end gap-3">
             <span className="font-mono text-[10px] tracking-[0.1em] uppercase text-slate/50">
-              System Time (CAT)
+              System Time (CAT): <span className="text-paper ml-1 font-bold">{time || "00:00:00"}</span>
             </span>
-            <span className="font-mono text-[14px] tracking-[0.15em] text-paper" suppressHydrationWarning>
-              {time || "00:00:00"}
-            </span>
+
+            {/* View Mode Switcher */}
+            <div className="flex items-center bg-ink-light p-1 border border-ink-mid rounded-[4px]">
+              <button
+                type="button"
+                onClick={() => setViewMode("grid")}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-[2px] font-mono text-[11px] uppercase tracking-wider transition-colors",
+                  viewMode === "grid" ? "bg-signal text-ink font-bold" : "text-slate hover:text-paper"
+                )}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span>Matrix Grid</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("map")}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-[2px] font-mono text-[11px] uppercase tracking-wider transition-colors",
+                  viewMode === "map" ? "bg-signal text-ink font-bold" : "text-slate hover:text-paper"
+                )}
+              >
+                <MapIcon className="w-3.5 h-3.5" />
+                <span>Operational Map</span>
+              </button>
+            </div>
           </div>
         </motion.div>
       </div>
 
-      {/* The Edge-to-Edge Grid (Sequence 04 Architecture) */}
-      <div className="w-full bg-ink-mid">
-        {loading ? (
-          <div className="flex items-center justify-center h-[50vh]">
-            <span className="font-mono text-[12px] tracking-[0.2em] uppercase text-signal animate-pulse">
-              Loading Intelligence Matrix...
-            </span>
-          </div>
-        ) : (
-          <>
-            {/* Desktop: asymmetric CSS Grid */}
-            <div className="hidden lg:grid grid-cols-12 auto-rows-[320px] gap-px">
-              {projects.map((project, index) => (
-                <motion.div
-                  key={project.id}
-                  className={project.grid}
-                  initial="hidden"
-                  animate="visible"
-                  custom={index + 1}
-                  variants={sequenceRevealVariants}
-                >
-                  <ProjectTile project={project} shouldReduceMotion={shouldReduceMotion ?? false} />
-                </motion.div>
-              ))}
+      {viewMode === "map" ? (
+        <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 mb-16">
+          <ZimbabweProjectMap />
+        </div>
+      ) : (
+        /* The Edge-to-Edge Grid (Sequence 04 Architecture) */
+        <div className="w-full bg-ink-mid">
+          {loading ? (
+            <div className="flex items-center justify-center h-[50vh]">
+              <span className="font-mono text-[12px] tracking-[0.2em] uppercase text-signal animate-pulse">
+                Loading Intelligence Matrix...
+              </span>
             </div>
+          ) : (
+            <>
+              {/* Desktop: asymmetric CSS Grid */}
+              <div className="hidden lg:grid grid-cols-12 auto-rows-[320px] gap-px">
+                {projects.map((project, index) => (
+                  <motion.div
+                    key={project.id}
+                    className={project.grid}
+                    initial="hidden"
+                    animate="visible"
+                    custom={index + 1}
+                    variants={sequenceRevealVariants}
+                  >
+                    <ProjectTile project={project} shouldReduceMotion={shouldReduceMotion ?? false} />
+                  </motion.div>
+                ))}
+              </div>
 
-            {/* Mobile: single column stack */}
-            <div className="lg:hidden flex flex-col gap-px">
-              {projects.map((project, index) => (
-                <motion.div
-                  key={project.id}
-                  className="h-[300px]"
-                  initial="hidden"
-                  animate="visible"
-                  custom={index + 1}
-                  variants={sequenceRevealVariants}
-                >
-                  <ProjectTile project={project} shouldReduceMotion={shouldReduceMotion ?? false} />
-                </motion.div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
+              {/* Mobile: single column stack */}
+              <div className="lg:hidden flex flex-col gap-px">
+                {projects.map((project, index) => (
+                  <motion.div
+                    key={project.id}
+                    className="h-[300px]"
+                    initial="hidden"
+                    animate="visible"
+                    custom={index + 1}
+                    variants={sequenceRevealVariants}
+                  >
+                    <ProjectTile project={project} shouldReduceMotion={shouldReduceMotion ?? false} />
+                  </motion.div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       
       {/* Footer rail */}
       <div className="max-w-[1440px] mx-auto px-6 md:px-10 lg:px-16 xl:px-20 py-16 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 border-t border-ink-mid mt-px">

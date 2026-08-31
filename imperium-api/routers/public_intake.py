@@ -676,3 +676,86 @@ async def list_public_broadcast_feeds(db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch broadcast feeds.",
         )
+
+
+@router.get("/projects")
+async def list_public_projects(db: AsyncSession = Depends(get_db)):
+    """Return public project summaries without commercial or client-sensitive fields."""
+    try:
+        org_id = await _public_org_id(db)
+        result = await db.execute(
+            text("""
+            SELECT p.id, p.name AS title, p.project_code, p.status,
+                   p.start_date, p.target_completion_date, p.actual_completion_date,
+                   pp.region AS province, pp.project_category AS category,
+                   pp.latitude::float AS latitude, pp.longitude::float AS longitude
+            FROM projects.projects p
+            LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
+            WHERE p.organization_id = :org_id
+              AND p.is_deleted = false
+            ORDER BY p.created_at DESC
+        """),
+            {"org_id": org_id},
+        )
+        rows = [dict(row._mapping) for row in result]
+        for row in rows:
+            row["id"] = str(row["id"])
+            row["slug"] = (row.get("project_code") or str(row["id"])).lower().replace(" ", "-")
+            row["category"] = row.get("category") or "Civil Infrastructure"
+            row["province"] = row.get("province") or "Harare"
+            row["status"] = "Completed" if row.get("actual_completion_date") else ("In Progress" if row.get("start_date") else "Active")
+            row["client"] = "Client withheld"
+        return {
+            "success": True,
+            "data": rows,
+            "message": "Public projects fetched.",
+            "meta": {"total": len(rows)},
+        }
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to fetch public projects.",
+        )
+
+
+@router.get("/projects/{slug_or_id}")
+async def get_public_project_detail(slug_or_id: str, db: AsyncSession = Depends(get_db)):
+    """Return public project detail without commercial or client-sensitive fields."""
+    try:
+        org_id = await _public_org_id(db)
+        result = await db.execute(
+            text("""
+            SELECT p.id, p.name AS title, p.project_code, p.status,
+                   p.start_date, p.target_completion_date, p.actual_completion_date,
+                   pp.region AS province, pp.project_category AS category,
+                   pp.latitude::float AS latitude, pp.longitude::float AS longitude
+            FROM projects.projects p
+            LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
+            WHERE p.organization_id = :org_id
+              AND p.is_deleted = false
+              AND (CAST(p.id AS text) = :slug_or_id OR lower(p.project_code) = lower(:slug_or_id) OR lower(replace(p.project_code, ' ', '-')) = lower(:slug_or_id))
+            LIMIT 1
+        """),
+            {"org_id": org_id, "slug_or_id": slug_or_id},
+        )
+        row = result.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        data = dict(row._mapping)
+        data["id"] = str(data["id"])
+        data["slug"] = (data.get("project_code") or str(data["id"])).lower().replace(" ", "-")
+        data["category"] = data.get("category") or "Civil Infrastructure"
+        data["province"] = data.get("province") or "Harare"
+        data["status"] = "Completed" if data.get("actual_completion_date") else ("In Progress" if data.get("start_date") else "Active")
+        data["client"] = "Client withheld"
+        return {
+            "success": True,
+            "data": data,
+            "message": "Public project detail fetched.",
+            "meta": {},
+        }
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to fetch project detail.",
+        )

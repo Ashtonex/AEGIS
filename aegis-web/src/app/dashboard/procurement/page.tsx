@@ -7,7 +7,6 @@ import {
   useMemo,
   useState,
 } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
@@ -666,41 +665,6 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {error && <Banner tone="error" message={error} />}
       {sourceWarnings.length > 0 && <div className="mb-6 space-y-2">{sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}</div>}
       {notice && <Banner tone="info" message={notice} onClose={() => setNotice(null)} />}
-
-      {/* Module bar */}
-      <div className="flex border-b border-ink-mid">
-        {(["command", "requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"] as Tab[]).map((item) => {
-          const isCurrent = tab === item;
-          const label =
-            item === "command" ? "Command" :
-            item === "requisitions" ? "Requisitions" :
-            item === "rfqs" ? "RFQs" :
-            item === "orders" ? "Purchase Orders" :
-            item === "suppliers" ? "Suppliers" :
-            item === "pricing" ? "Pending Pricing" :
-            "Invoices";
-          return (
-            <Link
-              key={item}
-              href={TAB_ROUTES[item]}
-              onClick={() => setQuery("")}
-              className={`px-5 py-3 font-mono text-xs font-bold uppercase tracking-widest transition-colors ${isCurrent ? "border-b-2 border-signal text-signal" : "text-slate hover:text-paper"}`}
-            >
-              {item === "invoices" ? (
-                <span className="flex items-center gap-1.5">
-                  {label}
-                  {unmatchedCount > 0 && !loading && <span className="rounded-full bg-red-600 px-1.5 py-0.5 font-mono text-[10px] text-white">{unmatchedCount}</span>}
-                </span>
-              ) : item === "pricing" ? (
-                <span className="flex items-center gap-1.5">
-                  {label}
-                  {pendingPricing.length > 0 && !loading && <span className="rounded-full bg-amber-600 px-1.5 py-0.5 font-mono text-[10px] text-white">{pendingPricing.length}</span>}
-                </span>
-              ) : label}
-            </Link>
-          );
-        })}
-      </div>
 
       {/* Filter bar */}
       {tab !== "command" && <div className="flex flex-col gap-2 border-b border-ink-mid bg-ink-light/30 p-3 sm:flex-row sm:items-center">

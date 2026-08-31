@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AlertTriangle, Award, Building2, CheckCircle2, Database, Globe2, History, Image as ImageIcon, KeyRound, Loader2, LockKeyhole, Mail, Plus, PowerOff, RefreshCw, Save, Settings2, ShieldCheck, Trash2, Upload, UserCheck, UserPlus, Users, X } from "lucide-react";
@@ -492,8 +491,6 @@ export default function SettingsPage() {
     {error && <div className="flex gap-2 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle className="h-4 w-4 shrink-0" /> {error}</div>}
     {overview.source_warnings.length > 0 && <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0" /> Partial settings source availability</div><ul className="list-disc space-y-1 pl-5 text-xs">{overview.source_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
     {notice && <div className="flex gap-2 border border-signal/40 bg-signal/10 p-3 text-sm text-paper"><ShieldCheck className="h-4 w-4 shrink-0 text-signal" /> {notice}</div>}
-    <nav className="flex overflow-x-auto border-b border-ink-mid font-mono text-xs">{([ ["configuration", Database, "Configuration"], ["access", Users, "Access control"], ["accounts", Building2, "Account setup"], ["website", Globe2, "Website content"], ["audit", History, "Audit log"], ["performance", Award, "Performance"] ] as const).map(([value, Icon, label]) => <Link key={value} href={TAB_ROUTES[value]} className={`flex shrink-0 items-center gap-2 border-b-2 px-5 py-3 font-bold uppercase tracking-wider ${tab === value ? "border-signal bg-signal/5 text-signal" : "border-transparent text-slate hover:text-paper"}`}><Icon className="h-4 w-4" /> {label}</Link>)}</nav>
-
     {tab === "configuration" && <ConfigurationTab overview={overview} saving={saving} saveSetting={saveSetting} />}
     {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} inviteUser={inviteUser} createRole={createRole} />}
     {tab === "accounts" && <ManagedAccountsTab overview={overview} saving={saving === "managed-account"} createManagedAccount={createManagedAccount} />}

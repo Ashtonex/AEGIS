@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -86,15 +85,15 @@ const FINANCE_TOUR_STEPS: ModuleTourStep[] = [
     placement: "bottom",
   },
   {
-    title: "Progress Claims and Internal Transfers",
-    body: "Progress Claims is where certifying a client claim happens - and that certification is also what triggers VAT to accrue automatically. Internal Transfers records money moving between departments (e.g. Plant & Equipment hiring gear to Construction) - these post themselves when the triggering event happens, nobody journals them by hand.",
-    target: "finance-tabs",
+    title: "Use the side navigation",
+    body: "Progress Claims is where certifying a client claim happens - and that certification is also what triggers VAT to accrue automatically. Internal Transfers records money moving between departments. Move between Finance sections from the side navigation.",
+    target: "dashboard-nav",
     placement: "bottom",
   },
   {
     title: "Statutory: the one place that needs your input first",
     body: "PAYE, NSSA, and VAT compute off real ZIMRA rate tables and accrue automatically once a claim is certified or payroll is posted. But those rate tables ship empty on purpose - until real rates are entered here, payroll hard-blocks (no silent $0 tax) and VAT falls back to a visible 15% default. This is the one manual step everything else depends on.",
-    target: "finance-statutory-tab",
+    target: "dashboard-nav",
     placement: "bottom",
   },
 ];
@@ -478,125 +477,6 @@ function FinanceWorkspace() {
             )}
           </div>
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex flex-wrap border-b border-ink-mid" data-tour="finance-tabs">
-        <Link
-          href={TAB_ROUTES["project-financials"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "project-financials" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Project Financials
-        </Link>
-        <Link
-          href={TAB_ROUTES["cost-codes"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "cost-codes" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Cost Codes
-        </Link>
-        <Link
-          href={TAB_ROUTES.variations}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "variations" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Variations
-        </Link>
-        <Link
-          href={TAB_ROUTES["progress-claims"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "progress-claims" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Progress Claims
-        </Link>
-        <Link
-          href={TAB_ROUTES["earned-value"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "earned-value" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Earned Value
-        </Link>
-        <Link
-          href={TAB_ROUTES["close-out"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "close-out" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Close-Out
-        </Link>
-        <Link
-          href={TAB_ROUTES.budgets}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "budgets" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Budgets
-        </Link>
-        <Link
-          href={TAB_ROUTES.banking}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "banking" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Banking & Cash
-        </Link>
-        <Link
-          href={TAB_ROUTES["cash-accounts"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "cash-accounts" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Accounts
-        </Link>
-        <Link
-          href={TAB_ROUTES.cashbook}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "cashbook" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Cashbook
-        </Link>
-        <Link
-          href={TAB_ROUTES["supplier-payments"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "supplier-payments" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Supplier Pay
-        </Link>
-        <Link
-          href={TAB_ROUTES.payroll}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "payroll" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Payroll
-        </Link>
-        <Link
-          href={TAB_ROUTES.transfers}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "transfers" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Internal Transfers
-        </Link>
-        <Link
-          href={TAB_ROUTES["department-pnl"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "department-pnl" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Department P&amp;L
-        </Link>
-        <Link
-          href={TAB_ROUTES.statutory}
-          data-tour="finance-statutory-tab"
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "statutory" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Statutory
-        </Link>
-        <Link
-          href={TAB_ROUTES["vendor-payments"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "vendor-payments" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Vendor Payments
-        </Link>
-        <Link
-          href={TAB_ROUTES["client-payments"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "client-payments" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Client Payments
-        </Link>
-        <Link
-          href={TAB_ROUTES["historical-entry"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "historical-entry" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Historical Entry
-        </Link>
-        <Link
-          href={TAB_ROUTES["financial-statements"]}
-          className={`px-4 py-2 font-mono text-xs tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === "financial-statements" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-        >
-          Financial Statements
-        </Link>
       </div>
 
       {/* Tab Panels */}

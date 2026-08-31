@@ -4,9 +4,10 @@ from sqlalchemy import text
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 
+from app.shared.events import emit_role_notification
 from core.database import get_db
 from core.logging import logger
-from core.security import require_permission
+from core.security import SUPERADMIN_ROLE, require_permission
 from core.analytics_ml import ml_engine
 router = APIRouter()
 
@@ -45,6 +46,8 @@ EXECUTIVE_HEALTH_SOURCES: Dict[str, Dict[str, str | None]] = {
     "fleet.plant_incidents": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
     "core.compliance_items": {"updated_column": "updated_at", "deleted_filter": "is_deleted = false"},
 }
+EXECUTIVE_DATA_HEALTH_ALERT_ROLES = ["Executive (Admin)", SUPERADMIN_ROLE]
+EXECUTIVE_DATA_HEALTH_NOTIFICATION_TYPE = "executive_data_health"
 
 ZIMBABWE_REGIONS: List[Dict[str, Any]] = [
     {"name": "Bulawayo", "latitude": -20.1325, "longitude": 28.6265},
@@ -842,6 +845,86 @@ async def _source_health(
         }
 
 
+def _executive_health_status_label(status: str) -> str:
+    if status == "stale":
+        return "needs recent records"
+    if status == "unavailable":
+        return "is unavailable"
+    return status.replace("_", " ")
+
+
+def _is_executive_health_attention_issue(source: Dict[str, Any]) -> bool:
+    status = str(source.get("status") or "").lower()
+    name = str(source.get("source") or "").lower()
+    if status in {"current", "no_data"}:
+        return False
+    if name == "finance costs" and status == "stale":
+        return False
+    return True
+
+
+async def _emit_executive_data_health_notification(
+    db: AsyncSession, org_id: str, sources: List[Dict[str, Any]]
+) -> None:
+    issues = [source for source in sources if _is_executive_health_attention_issue(source)]
+    if not issues:
+        return
+
+    issue_keys = sorted(
+        f"{source.get('source')}:{str(source.get('status') or '').lower()}"
+        for source in issues
+    )
+    fingerprint = f"executive-data-health:{'|'.join(issue_keys)}"
+    existing = await db.execute(
+        text(
+            """
+            SELECT 1
+            FROM core.notifications
+            WHERE organization_id = :org_id
+              AND notification_type = :notification_type
+              AND metadata ->> 'fingerprint' = :fingerprint
+              AND created_at >= NOW() - INTERVAL '24 hours'
+            LIMIT 1
+            """
+        ),
+        {
+            "org_id": org_id,
+            "notification_type": EXECUTIVE_DATA_HEALTH_NOTIFICATION_TYPE,
+            "fingerprint": fingerprint,
+        },
+    )
+    if existing.first():
+        return
+
+    message = " · ".join(
+        f"{source.get('source')} {_executive_health_status_label(str(source.get('status') or '').lower())}"
+        for source in issues
+    )
+    await emit_role_notification(
+        db,
+        org_id=org_id,
+        role_names=EXECUTIVE_DATA_HEALTH_ALERT_ROLES,
+        title="Executive data needs attention",
+        message=message,
+        notification_type=EXECUTIVE_DATA_HEALTH_NOTIFICATION_TYPE,
+        priority="normal",
+        action_url="/dashboard/executive",
+        metadata={
+            "fingerprint": fingerprint,
+            "sources": [
+                {
+                    "source": source.get("source"),
+                    "status": source.get("status"),
+                    "record_count": source.get("record_count"),
+                    "last_updated": source.get("last_updated"),
+                }
+                for source in issues
+            ],
+        },
+    )
+    await db.commit()
+
+
 @router.get("/data-health")
 async def get_executive_data_health(
     user: dict = Depends(require_permission("executive.view_dashboard")),
@@ -872,6 +955,14 @@ async def get_executive_data_health(
         _source_health(db, org_id, "Compliance", "core.compliance_items"),
     ]
     sources = [await source for source in sources]
+    try:
+        await _emit_executive_data_health_notification(db, org_id, sources)
+    except Exception as exc:
+        await db.rollback()
+        logger.warning(
+            "executive_data_health_notification_failed",
+            error_type=exc.__class__.__name__,
+        )
     return {
         "success": True,
         "data": sources,

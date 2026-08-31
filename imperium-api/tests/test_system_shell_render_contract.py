@@ -15,6 +15,18 @@ NAVIGATION_WRAPPER = (WEB_ROOT / "components" / "layout" / "NavigationWrapper.ts
 NOTIFICATION_BELL = (
     WEB_ROOT / "components" / "layout" / "dashboard" / "NotificationBell.tsx"
 ).read_text(encoding="utf-8")
+MODULE_PAGES_WITH_SIDENAV_ONLY = [
+    path.read_text(encoding="utf-8")
+    for path in [
+        WEB_ROOT / "app" / "dashboard" / "analytics" / "page.tsx",
+        WEB_ROOT / "app" / "dashboard" / "compliance" / "page.tsx",
+        WEB_ROOT / "app" / "dashboard" / "finance" / "page.tsx",
+        WEB_ROOT / "app" / "dashboard" / "hr" / "page.tsx",
+        WEB_ROOT / "app" / "dashboard" / "inventory" / "page.tsx",
+        WEB_ROOT / "app" / "dashboard" / "procurement" / "page.tsx",
+        WEB_ROOT / "app" / "dashboard" / "settings" / "page.tsx",
+    ]
+]
 
 
 class SystemShellRenderContractTests(unittest.TestCase):
@@ -47,6 +59,22 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn('hidden min-w-0 text-right sm:block', DASHBOARD_SHELL)
         self.assertIn('hidden sm:block', DASHBOARD_SHELL)
         self.assertIn('w-[min(360px,calc(100vw-1rem))]', NOTIFICATION_BELL)
+
+    def test_single_destination_groups_render_as_direct_links(self):
+        self.assertIn("directLink?: boolean", DASHBOARD_SHELL)
+        for name in ("Executive", "Messages", "Notifications"):
+            group_start = DASHBOARD_SHELL.index(f'name: "{name}"')
+            group_end = DASHBOARD_SHELL.index("subItems:", group_start)
+            self.assertIn("directLink: true", DASHBOARD_SHELL[group_start:group_end])
+        self.assertIn("if (group.directLink)", DASHBOARD_SHELL)
+        self.assertIn("href={group.href}", DASHBOARD_SHELL)
+
+    def test_module_pages_do_not_render_duplicate_horizontal_navigation(self):
+        for source in MODULE_PAGES_WITH_SIDENAV_ONLY:
+            self.assertNotIn('from "next/link"', source)
+            self.assertNotIn("data-tour=\"finance-tabs\"", source)
+            self.assertNotIn("{/* Module bar */}", source)
+            self.assertNotIn("{/* Tabs */}", source)
 
 
 if __name__ == "__main__":

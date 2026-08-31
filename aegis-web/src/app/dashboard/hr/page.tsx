@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -492,33 +491,6 @@ function HRWorkspace() {
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Competence Registered SKUs</p>
           <p className="text-xl font-semibold text-paper tracking-tight mt-1">{kpis.skillsCount}</p>
         </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex flex-wrap border-b border-ink-mid">
-        {([
-          ["employees", "Employees"],
-          ["recruitment", "Recruitment"],
-          ["documents", "Contracts"],
-          ["credentials", "Credentials"],
-          ["performance", "Performance"],
-          ["assets", "Assets"],
-          ["training", "Training"],
-          ["org-chart", "Org Chart"],
-          ["planning", "Planning"],
-          ["attendance", "Attendance"],
-          ["leave", "Leave"],
-          ["payroll", "Payroll"],
-          ["vendor-verification", "Vendors"],
-        ] as Array<[HRTab, string]>).map(([key, label]) => (
-          <Link
-            key={key}
-            href={TAB_ROUTES[key]}
-            className={`px-3 py-2 font-mono text-[11px] tracking-wider uppercase border-b-2 -mb-px transition-colors ${activeTab === key ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
-          >
-            {label}
-          </Link>
-        ))}
       </div>
 
       {activeTab === "vendor-verification" && (

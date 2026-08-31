@@ -48,6 +48,7 @@ type ModuleGroup = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   subItems: ModuleNavItem[];
+  directLink?: boolean;
   // Roles allowed to see the whole group. Harvested from the RBACGuard on
   // the group's root page - sub-items don't carry their own RBACGuard today
   // so this is the closest real signal for "who should see this module".
@@ -89,6 +90,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     allowedRoles: ["Executive (Admin)", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "executive.view_dashboard",
+    directLink: true,
     subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard, requiredPermission: "executive.view_dashboard" }],
   },
   {
@@ -96,6 +98,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/messages",
     icon: Inbox,
     restrictedRoles: ["CRM Associate"],
+    directLink: true,
     subItems: [{ name: "Communication Ledger", href: "/dashboard/messages", icon: Inbox }],
   },
   {
@@ -103,6 +106,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/notifications",
     icon: Bell,
     restrictedRoles: ["CRM Associate"],
+    directLink: true,
     subItems: [{ name: "Notification Center", href: "/dashboard/notifications", icon: Bell }],
   },
   {
@@ -264,6 +268,10 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Internal Transfers", href: "/dashboard/finance/transfers", icon: Receipt },
       { name: "Department P&L", href: "/dashboard/finance/department-pnl", icon: PieChart },
       { name: "Statutory", href: "/dashboard/finance/statutory", icon: ShieldCheck },
+      { name: "Vendor Payments", href: "/dashboard/finance/vendor-payments", icon: Receipt },
+      { name: "Client Payments", href: "/dashboard/finance/client-payments", icon: Banknote },
+      { name: "Historical Entry", href: "/dashboard/finance/historical-entry", icon: BookMarked },
+      { name: "Financial Statements", href: "/dashboard/finance/financial-statements", icon: FileText },
     ],
   },
   {
@@ -286,6 +294,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Attendance Log", href: "/dashboard/hr/attendance", icon: Calendar },
       { name: "Leave Management", href: "/dashboard/hr/leave", icon: UserCheck },
       { name: "Payroll", href: "/dashboard/hr/payroll", icon: Banknote },
+      { name: "Vendor Verification", href: "/dashboard/hr/vendor-verification", icon: ShieldCheck },
     ],
   },
   {
@@ -363,6 +372,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2, allowedRoles: ["Executive (Admin)", "System Administrator"] },
       { name: "Website Content", href: "/dashboard/settings/website", icon: FileText, allowedRoles: ["Executive (Admin)", "System Administrator"] },
       { name: "Audit Log", href: "/dashboard/settings/audit", icon: ShieldCheck, allowedRoles: ["Executive (Admin)", "System Administrator", "External Auditor"] },
+      { name: "Performance", href: "/dashboard/settings/performance", icon: TrendingUp, allowedRoles: ["Executive (Admin)", "System Administrator"] },
       { name: "My Profile", href: "/dashboard/profile", icon: User },
     ],
   },
@@ -637,6 +647,23 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       {visibleGroups.map((group) => {
         const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
         const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
+        if (group.directLink) {
+          return (
+            <Link
+              key={group.name}
+              href={group.href}
+              prefetch
+              onMouseEnter={() => prefetchRoute(group.href)}
+              onFocus={() => prefetchRoute(group.href)}
+              className={`mb-1 flex min-w-0 items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors ${
+                isCurrent ? "bg-signal/5 text-signal" : "text-slate-light hover:bg-ink-light hover:text-paper"
+              }`}
+            >
+              <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? "text-signal" : "text-slate"}`} />
+              <span className="truncate">{group.name}</span>
+            </Link>
+          );
+        }
 
         return (
           <div key={group.name} className="mb-1">

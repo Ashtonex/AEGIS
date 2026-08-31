@@ -74,6 +74,22 @@ class ExecutiveExceptionsContractTests(unittest.TestCase):
         self.assertIn('"status": "degraded"', EXECUTIVE_ROUTER)
         self.assertIn('"source_errors": source_errors', EXECUTIVE_ROUTER)
 
+    def test_data_health_attention_is_sent_through_notifications(self):
+        self.assertIn("emit_role_notification", EXECUTIVE_ROUTER)
+        self.assertIn(
+            'EXECUTIVE_DATA_HEALTH_ALERT_ROLES = ["Executive (Admin)", SUPERADMIN_ROLE]',
+            EXECUTIVE_ROUTER,
+        )
+        self.assertIn('"Executive data needs attention"', EXECUTIVE_ROUTER)
+        self.assertIn('action_url="/dashboard/executive"', EXECUTIVE_ROUTER)
+        self.assertIn("metadata ->> 'fingerprint'", EXECUTIVE_ROUTER)
+        self.assertIn("INTERVAL '24 hours'", EXECUTIVE_ROUTER)
+
+    def test_data_health_page_uses_quiet_status_line(self):
+        self.assertIn("function DataConfidence", EXECUTIVE_PAGE)
+        self.assertNotIn("Some executive data needs attention", EXECUTIVE_PAGE)
+        self.assertIn("iconClass", EXECUTIVE_PAGE)
+
 
 if __name__ == "__main__":
     unittest.main()
