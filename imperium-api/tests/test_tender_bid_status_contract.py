@@ -45,6 +45,9 @@ def test_tender_stage_commit_happens_before_best_effort_task_generation():
 def test_tender_resolved_stage_requires_closeout_reason_and_next_steps():
     assert "TENDER_RESOLVED_STAGES = {\"Awarded\", \"Lost\", \"Awarded/Lost\"}" in TENDER_BIDS_ROUTER
     assert "Moving a tender to Awarded or Lost requires a close-out reason and enforced next steps." in TENDER_BIDS_ROUTER
+    assert "async def _crm_tender_columns" in TENDER_BIDS_ROUTER
+    assert "information_schema.columns" in TENDER_BIDS_ROUTER
+    assert "if \"closeout_reason\" in tender_columns" in TENDER_BIDS_ROUTER
     assert "class TenderCloseoutPayload" in TENDER_BIDS_ROUTER
     assert '@router.post("/{tender_id}/closeout")' in TENDER_BIDS_ROUTER
     assert "closeout_reason" in TENDER_BIDS_ROUTER

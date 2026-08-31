@@ -60,6 +60,17 @@ def _coerce_timestamptz_columns(params: dict) -> None:
             params[column] = datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+async def _crm_tender_columns(db: AsyncSession) -> set[str]:
+    result = await db.execute(
+        text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'crm' AND table_name = 'tenders'
+        """)
+    )
+    return {str(row[0]) for row in result.fetchall()}
+
+
 class TenderCloseoutPayload(BaseModel):
     status: str = Field(pattern=r"^(won|lost)$")
     reason: str = Field(min_length=3, max_length=2000)
@@ -86,22 +97,35 @@ async def _record_tender_closeout(
         raise HTTPException(status_code=422, detail="At least one enforceable next step is required.")
 
     stage = "Awarded" if status == "won" else "Lost"
-    updated = await db.execute(
-        text("""
-            UPDATE crm.tenders
-            SET stage = :stage,
-                closeout_status = :status,
-                closeout_reason = :reason,
-                closeout_next_steps = CAST(:next_steps AS jsonb),
-                closeout_recorded_by = :user_id,
-                closeout_recorded_at = NOW(),
-                winning_contractor = CASE WHEN :status = 'lost' THEN :winning_contractor ELSE winning_contractor END,
-                recycling_status = CASE
+    tender_columns = await _crm_tender_columns(db)
+    set_clauses = ["stage = :stage"]
+    if "closeout_status" in tender_columns:
+        set_clauses.append("closeout_status = :status")
+    if "closeout_reason" in tender_columns:
+        set_clauses.append("closeout_reason = :reason")
+    if "closeout_next_steps" in tender_columns:
+        set_clauses.append("closeout_next_steps = CAST(:next_steps AS jsonb)")
+    if "closeout_recorded_by" in tender_columns:
+        set_clauses.append("closeout_recorded_by = :user_id")
+    if "closeout_recorded_at" in tender_columns:
+        set_clauses.append("closeout_recorded_at = NOW()")
+    if "winning_contractor" in tender_columns:
+        set_clauses.append("winning_contractor = CASE WHEN :status = 'lost' THEN :winning_contractor ELSE winning_contractor END")
+    if "recycling_status" in tender_columns:
+        set_clauses.append(
+            """recycling_status = CASE
                     WHEN :status = 'lost' AND COALESCE(:winning_contractor, '') <> '' THEN 'winner_identified'
                     WHEN :status = 'lost' THEN 'not_started'
                     ELSE recycling_status
-                END,
-                updated_at = NOW()
+                END"""
+        )
+    if "updated_at" in tender_columns:
+        set_clauses.append("updated_at = NOW()")
+
+    updated = await db.execute(
+        text(f"""
+            UPDATE crm.tenders
+            SET {", ".join(set_clauses)}
             WHERE id = :tender_id AND organization_id = :org_id AND is_deleted = false
             RETURNING id
         """),
