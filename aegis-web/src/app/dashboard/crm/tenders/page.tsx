@@ -856,7 +856,7 @@ export default function TendersCommand() {
   }
 
   return (
-    <div className="min-h-screen bg-[#050505] text-paper p-6 relative overflow-hidden flex flex-col">
+    <div className="h-dvh bg-[#050505] text-paper p-6 relative overflow-hidden flex flex-col">
 
       {/* Header */}
       <header className="flex justify-between items-end border-b border-white/5 pb-4 mb-6 relative z-10 shrink-0">
@@ -919,7 +919,7 @@ export default function TendersCommand() {
       </div>
 
       {engineInsights && (
-        <div className="mb-6 grid gap-2 border border-white/5 bg-[#0A0A0A] p-3 text-xs lg:grid-cols-4">
+        <div className="mb-4 grid gap-2 border border-white/5 bg-[#0A0A0A] p-3 text-xs lg:grid-cols-4 shrink-0 z-10">
           <div>
             <p className="font-mono text-[9px] uppercase tracking-wider text-slate-light">Tender Engine</p>
             <p className="mt-1 font-mono text-lg font-bold text-paper">{engineInsights.win_rate}% <span className="text-xs font-normal text-slate">win rate</span></p>
@@ -956,7 +956,7 @@ export default function TendersCommand() {
       )}
 
       {/* Search and Filters panel */}
-      <div className="bg-[#0A0A0A] border border-white/5 p-4 rounded-sm mb-6 flex flex-col lg:flex-row gap-4 justify-between items-center shrink-0 z-10">
+      <div className="bg-[#0A0A0A] border border-white/5 p-4 rounded-sm mb-4 flex flex-col lg:flex-row gap-4 justify-between items-center shrink-0 z-10">
         <div className="w-full lg:w-1/4 relative">
           <input
             type="text"
@@ -1030,14 +1030,14 @@ export default function TendersCommand() {
       </div>
 
       {loadError && (
-        <div className="mb-4 px-4 py-3 bg-rose-500/10 border border-rose-500/30 rounded-sm flex items-center gap-2">
+        <div className="mb-4 px-4 py-3 bg-rose-500/10 border border-rose-500/30 rounded-sm flex items-center gap-2 shrink-0">
           <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
           <span className="font-mono text-xs text-rose-200">{loadError}</span>
         </div>
       )}
 
       {/* Bid Board Kanban Board */}
-      <div className="flex-1 overflow-x-auto flex gap-4 pb-4 items-start min-h-0 select-none">
+      <div className="flex-1 overflow-x-auto overflow-y-hidden flex gap-4 pb-2 items-stretch min-h-0 select-none">
         {STAGES.map(stage => {
           const stageTenders = filteredTenders.filter(t => t.stage === stage);
           const stageSum = getStageBidSum(stage);
@@ -1049,7 +1049,7 @@ export default function TendersCommand() {
               onDragEnter={(e) => handleDragEnter(e, stage)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, stage)}
-              className={`flex-1 min-w-[290px] max-w-[330px] rounded-sm p-3 flex flex-col max-h-full min-h-[400px] transition-all duration-200 ${
+              className={`flex-1 min-w-[290px] max-w-[330px] rounded-sm p-3 flex flex-col h-full min-h-0 transition-all duration-200 ${
                 draggedOverStage === stage 
                   ? 'bg-[#181a1f] border border-[#3B82F6]/40 shadow-[0_0_20px_rgba(59,130,246,0.08)] scale-[1.01]' 
                   : 'bg-[#0A0A0A]/80 border border-white/5'
