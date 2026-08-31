@@ -352,10 +352,11 @@ export default function TendersCommand() {
       await loadData();
     } catch (err) {
       console.error('Failed to close out tender:', err);
+      const fallback = "Tender close-out did not save. Check the CRM service connection and retry.";
       alert(describeActionError(
         err,
         "You don't have permission to close out this tender.",
-        "Tender close-out did not save. Check the CRM service connection and retry."
+        err instanceof ApiError ? err.message : fallback
       ));
     } finally {
       setIsClosingOut(false);

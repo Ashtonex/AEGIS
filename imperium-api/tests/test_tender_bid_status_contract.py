@@ -57,6 +57,19 @@ def test_tender_resolved_stage_requires_closeout_reason_and_next_steps():
     assert "ADD COLUMN IF NOT EXISTS closeout_recorded_by" in TENDER_CLOSEOUT_MIGRATION
 
 
+def test_lost_tender_closeout_commits_before_best_effort_followups():
+    closeout_section = TENDER_BIDS_ROUTER[
+        TENDER_BIDS_ROUTER.index('@router.post("/{tender_id}/closeout")') : TENDER_BIDS_ROUTER.index("return {", TENDER_BIDS_ROUTER.index('@router.post("/{tender_id}/closeout")'))
+    ]
+    assert "create_followups=False" in closeout_section
+    first_commit = closeout_section.index("await db.commit()")
+    followup_attempt = closeout_section.index("followup_warning = None")
+    task_pack_attempt = closeout_section.index("task_pack_warning = None")
+    assert first_commit < followup_attempt < task_pack_attempt
+    assert "Tender was closed, but follow-up checklist items could not be generated automatically." in closeout_section
+    assert "Tender was closed, but the follow-up task pack could not be generated automatically." in closeout_section
+
+
 def test_tender_board_collects_won_lost_reason_and_next_steps():
     assert "closeoutCrmTender" in TENDERS_PAGE
     assert "parseNextSteps" in TENDERS_PAGE

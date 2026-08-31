@@ -77,6 +77,7 @@ async def _record_tender_closeout(
     reason: str,
     next_steps: list[str],
     winning_contractor: Optional[str] = None,
+    create_followups: bool = True,
 ) -> list[str]:
     clean_steps = [step.strip() for step in next_steps if step and step.strip()]
     if not reason.strip():
@@ -117,6 +118,9 @@ async def _record_tender_closeout(
     )
     if not updated.first():
         raise HTTPException(status_code=404, detail="Tender not found.")
+
+    if not create_followups:
+        return clean_steps
 
     for index, step in enumerate(clean_steps, start=1):
         requirement_id = (
@@ -452,18 +456,55 @@ async def closeout_tender(
         reason=payload.reason,
         next_steps=payload.next_steps,
         winning_contractor=payload.winning_contractor,
+        create_followups=False,
     )
     await db.commit()
-    await generate_task_stack(
-        db,
-        org_id=user["org_id"],
-        entity_type="tender",
-        entity_id=str(tender_id),
-        created_by=user.get("sub") or user.get("user_id"),
-        source_event="tender_closeout_recorded",
-        generation_reason=f"Tender marked {payload.status} with required next steps.",
-        stage="Lost",
-    )
+    followup_warning = None
+    try:
+        await _record_tender_closeout(
+            db,
+            org_id=user["org_id"],
+            user_id=user.get("sub") or user.get("user_id"),
+            tender_id=str(tender_id),
+            status=payload.status,
+            reason=payload.reason,
+            next_steps=payload.next_steps,
+            winning_contractor=payload.winning_contractor,
+            create_followups=True,
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        followup_warning = "Tender was closed, but follow-up checklist items could not be generated automatically."
+        logger.warning(
+            "tender.closeout.followups_failed",
+            tender_id=str(tender_id),
+            org_id=user["org_id"],
+            error=str(exc),
+        )
+
+    task_pack_warning = None
+    try:
+        await generate_task_stack(
+            db,
+            org_id=user["org_id"],
+            entity_type="tender",
+            entity_id=str(tender_id),
+            created_by=user.get("sub") or user.get("user_id"),
+            source_event="tender_closeout_recorded",
+            generation_reason=f"Tender marked {payload.status} with required next steps.",
+            stage="Lost",
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        task_pack_warning = "Tender was closed, but the follow-up task pack could not be generated automatically."
+        logger.warning(
+            "tender.closeout.task_pack_failed",
+            tender_id=str(tender_id),
+            org_id=user["org_id"],
+            error=str(exc),
+        )
     return {
         "success": True,
         "data": {
@@ -472,8 +513,10 @@ async def closeout_tender(
             "closeout_status": payload.status,
             "next_steps": clean_steps,
             "winning_contractor": payload.winning_contractor,
+            "followup_warning": followup_warning,
+            "task_pack_warning": task_pack_warning,
         },
-        "message": "Tender close-out recorded and next steps enforced.",
+        "message": followup_warning or task_pack_warning or "Tender close-out recorded and next steps enforced.",
         "meta": {},
     }
 
