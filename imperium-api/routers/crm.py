@@ -1666,7 +1666,7 @@ async def list_tenders(
     pagination_params = _pagination_params(limit, offset)
     query = text("""
         SELECT t.id, t.tender_name, t.bid_number, t.category, t.bid_amount, t.stage,
-               t.site_visit_at,
+               (to_jsonb(t)->>'site_visit_at')::timestamptz AS site_visit_at,
                COALESCE((to_jsonb(t)->>'site_visit_mandatory')::boolean, false) AS site_visit_mandatory,
                t.submission_deadline,
                t.bid_bond_secured, t.jv_partners, t.bond_amount,

@@ -98,6 +98,7 @@ def test_tender_list_returns_saved_detail_fields_after_refresh():
     # production list view must still load when a deploy reaches Vercel before
     # the matching migrations have been applied.
     for optional_column in [
+        "site_visit_at",
         "site_visit_mandatory",
         "closeout_status",
         "closeout_reason",
