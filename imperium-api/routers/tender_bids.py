@@ -97,6 +97,12 @@ async def _record_tender_closeout(
         raise HTTPException(status_code=422, detail="At least one enforceable next step is required.")
 
     stage = "Awarded" if status == "won" else "Lost"
+    recorded_user_id = None
+    if user_id:
+        try:
+            recorded_user_id = str(UUID(str(user_id)))
+        except (TypeError, ValueError):
+            recorded_user_id = None
     tender_columns = await _crm_tender_columns(db)
     set_clauses = ["stage = :stage"]
     if "closeout_status" in tender_columns:
@@ -106,7 +112,15 @@ async def _record_tender_closeout(
     if "closeout_next_steps" in tender_columns:
         set_clauses.append("closeout_next_steps = CAST(:next_steps AS jsonb)")
     if "closeout_recorded_by" in tender_columns:
-        set_clauses.append("closeout_recorded_by = :user_id")
+        set_clauses.append(
+            """closeout_recorded_by = (
+                SELECT u.id
+                FROM core.users u
+                WHERE u.id = CAST(:recorded_user_id AS uuid)
+                  AND u.organization_id = :org_id
+                LIMIT 1
+            )"""
+        )
     if "closeout_recorded_at" in tender_columns:
         set_clauses.append("closeout_recorded_at = NOW()")
     if "winning_contractor" in tender_columns:
@@ -136,6 +150,7 @@ async def _record_tender_closeout(
             "next_steps": json.dumps(clean_steps),
             "winning_contractor": winning_contractor.strip() if winning_contractor else None,
             "user_id": user_id,
+            "recorded_user_id": recorded_user_id,
             "tender_id": tender_id,
             "org_id": org_id,
         },

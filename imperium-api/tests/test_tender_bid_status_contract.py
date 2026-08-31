@@ -48,6 +48,9 @@ def test_tender_resolved_stage_requires_closeout_reason_and_next_steps():
     assert "async def _crm_tender_columns" in TENDER_BIDS_ROUTER
     assert "information_schema.columns" in TENDER_BIDS_ROUTER
     assert "if \"closeout_reason\" in tender_columns" in TENDER_BIDS_ROUTER
+    assert "recorded_user_id = str(UUID(str(user_id)))" in TENDER_BIDS_ROUTER
+    assert "SELECT u.id" in TENDER_BIDS_ROUTER
+    assert "closeout_recorded_by = (" in TENDER_BIDS_ROUTER
     assert "class TenderCloseoutPayload" in TENDER_BIDS_ROUTER
     assert '@router.post("/{tender_id}/closeout")' in TENDER_BIDS_ROUTER
     assert "closeout_reason" in TENDER_BIDS_ROUTER
