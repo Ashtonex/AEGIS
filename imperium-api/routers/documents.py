@@ -79,6 +79,27 @@ async def _auto_match_tender_requirements(
     first match automatically instead of requiring a separate manual step.
     Ambiguous or no matches are left for the user to tick by hand."""
     haystack = f"{file_name or ''} {title}".lower()
+    deliverable_checks = {
+        "technical_proposal": ("technical", "methodology", "programme", "program", "engineer cv", "schedule"),
+        "financial_proposal": ("financial", "boq", "bill of quantities", "pricing", "priced"),
+        "nssa_clearance": ("nssa", "social security"),
+        "praz_registration": ("praz", "procurement authority"),
+        "tax_clearance": ("tax", "zimra"),
+    }
+    matched_columns = [
+        column
+        for column, keywords in deliverable_checks.items()
+        if any(keyword in haystack for keyword in keywords)
+    ]
+    for column in matched_columns:
+        await db.execute(
+            text(f"""
+                UPDATE crm.tenders
+                SET {column} = true, updated_at = NOW()
+                WHERE id = :tender_id AND organization_id = :org_id AND is_deleted = false
+            """),  # nosec B608 - column is selected from the fixed deliverable_checks map above.
+            {"tender_id": tender_id, "org_id": org_id},
+        )
     open_items = (
         await db.execute(
             text("""

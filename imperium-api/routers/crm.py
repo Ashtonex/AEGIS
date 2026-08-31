@@ -1665,7 +1665,13 @@ async def list_tenders(
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
     query = text("""
-        SELECT id, tender_name, bid_number, bid_amount, stage, submission_deadline, bid_bond_secured, region,
+        SELECT id, tender_name, bid_number, category, bid_amount, stage,
+               site_visit_at, site_visit_mandatory, submission_deadline,
+               bid_bond_secured, jv_partners, bond_amount,
+               technical_proposal, financial_proposal, nssa_clearance,
+               praz_registration, tax_clearance, project_id, closeout_status,
+               closeout_reason, closeout_next_steps, closeout_recorded_at,
+               winning_contractor, recycling_status, region,
                latitude::float AS latitude, longitude::float AS longitude
         FROM crm.tenders
         WHERE organization_id = :org_id AND is_deleted = false

@@ -6,7 +6,7 @@ import {
   FileText, Plus, Trash2, CheckCircle,
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
-  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp
+  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp, Scale
 } from "lucide-react";
 import { getQuotations, getInternalProjects, getQuotationsNeedsBoq, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -333,6 +333,13 @@ export default function QuotationsDashboard() {
           >
             <FileText className="w-3.5 h-3.5" />
             <span>Drawing Takeoff</span>
+          </Link>
+          <Link
+            href="/dashboard/quotations/rates"
+            className="flex items-center space-x-2 border border-sky-500/40 text-sky-300 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-sky-500/10 transition-all"
+          >
+            <Scale className="w-3.5 h-3.5" />
+            <span>Rate Build-Up</span>
           </Link>
           <Link
             href="/dashboard/quotations/ccb"
@@ -676,6 +683,25 @@ export default function QuotationsDashboard() {
                 <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
+          </div>
+
+          <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">
+            <div className="w-10 h-10 rounded-sm bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-300">
+              <Scale className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-display font-semibold text-white">Rate Build-Up</h3>
+              <p className="text-xs text-slate mt-1">
+                Build task rates from materials, labour, plant, subcontractors, waste, overhead, profit, and owner-approved standard benchmarks.
+              </p>
+            </div>
+            <Link
+              href="/dashboard/quotations/rates"
+              className="flex items-center space-x-2 text-xs text-signal font-semibold hover:text-signal-hover transition-colors font-mono"
+            >
+              <span>Open rate builder</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
           </div>
 
           <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 space-y-4">

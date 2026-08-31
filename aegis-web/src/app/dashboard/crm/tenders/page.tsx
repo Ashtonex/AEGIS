@@ -14,6 +14,7 @@ import {
   getCrmTenders,
   createCrmTender,
   updateCrmTender,
+  getTenderEngineInsights,
   deleteCrmTender,
   awardCrmTender,
   closeoutCrmTender,
@@ -65,6 +66,8 @@ interface Tender {
   bid_amount: number | string | null;
   stage: string;
   project_id?: string | null;
+  site_visit_at?: string;
+  site_visit_mandatory?: boolean;
   submission_deadline?: string;
   bid_bond_secured: boolean;
   jv_partners?: string;
@@ -79,6 +82,8 @@ interface Tender {
   closeout_reason?: string | null;
   closeout_next_steps?: string[] | null;
   closeout_recorded_at?: string | null;
+  winning_contractor?: string | null;
+  recycling_status?: string | null;
 }
 
 interface TenderRequirement {
@@ -90,6 +95,17 @@ interface TenderRequirement {
   satisfied_document_id?: string | null;
 }
 
+interface TenderEngineInsights {
+  total: number;
+  decided: number;
+  won: number;
+  lost: number;
+  win_rate: number;
+  weak_spots: Array<{ check: string; lost_tender_count: number }>;
+  recycling: Array<{ id: string; tender_name: string; winning_contractor?: string | null; recycling_status?: string | null; next_action: string }>;
+  upcoming_site_visits: Array<{ id: string; tender_name: string; site_visit_at?: string | null; site_visit_mandatory?: boolean }>;
+}
+
 export default function TendersCommand() {
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -99,6 +115,7 @@ export default function TendersCommand() {
   const [isDeleteTenderModalOpen, setIsDeleteTenderModalOpen] = useState(false);
   const [isDeletingTender, setIsDeletingTender] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [engineInsights, setEngineInsights] = useState<TenderEngineInsights | null>(null);
 
   // Award modal state - moving a tender into 'Awarded' creates/links a real
   // project, so it's gated behind this modal instead of a plain stage move.
@@ -113,6 +130,7 @@ export default function TendersCommand() {
   const [closeoutTender, setCloseoutTender] = useState<{ id: string; status: 'lost' } | null>(null);
   const [closeoutReason, setCloseoutReason] = useState('');
   const [closeoutNextSteps, setCloseoutNextSteps] = useState('');
+  const [closeoutWinningContractor, setCloseoutWinningContractor] = useState('');
   const [isClosingOut, setIsClosingOut] = useState(false);
 
   // Requirements checklist state
@@ -142,6 +160,8 @@ export default function TendersCommand() {
     category: 'Civil Works',
     stage: 'Tender Identified',
     bid_amount: '',
+    site_visit_at: '',
+    site_visit_mandatory: true,
     submission_deadline: '',
     bid_bond_secured: false,
     jv_partners: '',
@@ -164,6 +184,11 @@ export default function TendersCommand() {
       if (res.success && Array.isArray(res.data)) {
         setTenders(res.data);
       }
+      getTenderEngineInsights()
+        .then(engineRes => {
+          if (engineRes.success && engineRes.data) setEngineInsights(engineRes.data as TenderEngineInsights);
+        })
+        .catch(() => setEngineInsights(null));
     } catch (error) {
       console.error('Error loading CRM tenders data:', error);
       setLoadError(describeActionError(
@@ -301,7 +326,8 @@ export default function TendersCommand() {
   const handleOpenCloseout = (tenderId: string, status: 'lost') => {
     setCloseoutTender({ id: tenderId, status });
     setCloseoutReason('');
-    setCloseoutNextSteps('');
+    setCloseoutWinningContractor('');
+    setCloseoutNextSteps('Find out who won the tender\nApproach the winning contractor for subcontract or supply work\nRecord lessons learned and update the next bid strategy');
   };
 
   const handleConfirmCloseout = async () => {
@@ -317,6 +343,7 @@ export default function TendersCommand() {
         status: closeoutTender.status,
         reason: closeoutReason.trim(),
         next_steps: nextSteps,
+        winning_contractor: closeoutWinningContractor.trim() || undefined,
       });
       if (!res.success) {
         alert(res.message || "Tender close-out did not save.");
@@ -378,6 +405,15 @@ export default function TendersCommand() {
       if (tender.stage === 'Lost') return { text: 'Closed - not awarded', urgency: 'resolved' };
     }
     return getCountdown(tender.submission_deadline);
+  };
+
+  const getSiteVisitStatus = (tender: Pick<Tender, 'site_visit_at' | 'site_visit_mandatory'>) => {
+    if (!tender.site_visit_at) return null;
+    const countdown = getCountdown(tender.site_visit_at);
+    return {
+      ...countdown,
+      text: `${tender.site_visit_mandatory ? 'Mandatory visit' : 'Site visit'}: ${countdown.text}`,
+    };
   };
 
   const getChecklistCount = (t: Tender) => {
@@ -460,6 +496,7 @@ export default function TendersCommand() {
           bid_bond_secured: newTender.bid_bond_secured,
           jv_partners: newTender.jv_partners.trim() || null,
           bond_amount: newTender.bond_amount.trim() !== '' ? Number(newTender.bond_amount) : null,
+          site_visit_mandatory: newTender.site_visit_mandatory,
           technical_proposal: newTender.technical_proposal,
           financial_proposal: newTender.financial_proposal,
           nssa_clearance: newTender.nssa_clearance,
@@ -469,6 +506,9 @@ export default function TendersCommand() {
 
         if (newTender.submission_deadline) {
           extraPayload.submission_deadline = new Date(newTender.submission_deadline).toISOString();
+        }
+        if (newTender.site_visit_at) {
+          extraPayload.site_visit_at = new Date(newTender.site_visit_at).toISOString();
         }
 
         const extraRes = await updateCrmTender(generatedId, extraPayload);
@@ -488,6 +528,8 @@ export default function TendersCommand() {
           category: 'Civil Works',
           stage: 'Tender Identified',
           bid_amount: '',
+          site_visit_at: '',
+          site_visit_mandatory: true,
           submission_deadline: '',
           bid_bond_secured: false,
           jv_partners: '',
@@ -535,6 +577,7 @@ export default function TendersCommand() {
         bid_bond_secured: editForm.bid_bond_secured,
         jv_partners: editForm.jv_partners || null,
         bond_amount: bondAmountStr !== '' ? Number(bondAmountStr) : null,
+        site_visit_mandatory: !!editForm.site_visit_mandatory,
         technical_proposal: editForm.technical_proposal,
         financial_proposal: editForm.financial_proposal,
         nssa_clearance: editForm.nssa_clearance,
@@ -546,6 +589,11 @@ export default function TendersCommand() {
         payload.submission_deadline = new Date(editForm.submission_deadline).toISOString();
       } else {
         payload.submission_deadline = null;
+      }
+      if (editForm.site_visit_at) {
+        payload.site_visit_at = new Date(editForm.site_visit_at).toISOString();
+      } else {
+        payload.site_visit_at = null;
       }
 
       const res = await updateCrmTender(selectedTenderId, payload);
@@ -777,6 +825,7 @@ export default function TendersCommand() {
 
   const selectedTender = tenders.find(t => t.id === selectedTenderId);
   const selectedTenderTimingStatus = selectedTender ? getTenderTimingStatus(selectedTender) : null;
+  const selectedTenderSiteVisitStatus = selectedTender ? getSiteVisitStatus(selectedTender) : null;
 
   // Initialize edit drawer form when drawer opens
   useEffect(() => {
@@ -868,6 +917,43 @@ export default function TendersCommand() {
           </span>
         </div>
       </div>
+
+      {engineInsights && (
+        <div className="mb-6 grid gap-2 border border-white/5 bg-[#0A0A0A] p-3 text-xs lg:grid-cols-4">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-wider text-slate-light">Tender Engine</p>
+            <p className="mt-1 font-mono text-lg font-bold text-paper">{engineInsights.win_rate}% <span className="text-xs font-normal text-slate">win rate</span></p>
+            <p className="text-[10px] text-slate-light">{engineInsights.won} won · {engineInsights.lost} lost · {engineInsights.decided} decided</p>
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-wider text-slate-light">Weakest Check</p>
+            {engineInsights.weak_spots.length ? (
+              <>
+                <p className="mt-1 text-sm font-semibold text-[#D4AF37]">{engineInsights.weak_spots[0].check.replace(/_/g, ' ')}</p>
+                <p className="text-[10px] text-slate-light">Missing on {engineInsights.weak_spots[0].lost_tender_count} lost tenders</p>
+              </>
+            ) : (
+              <p className="mt-1 text-[10px] text-slate-light">No loss pattern yet</p>
+            )}
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-wider text-slate-light">Next Site Visit</p>
+            {engineInsights.upcoming_site_visits.length ? (
+              <>
+                <p className="mt-1 text-sm font-semibold text-paper">{engineInsights.upcoming_site_visits[0].tender_name}</p>
+                <p className="text-[10px] text-slate-light">{new Date(engineInsights.upcoming_site_visits[0].site_visit_at as string).toLocaleString()}</p>
+              </>
+            ) : (
+              <p className="mt-1 text-[10px] text-slate-light">No visits logged</p>
+            )}
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-wider text-slate-light">Recycling Backlog</p>
+            <p className="mt-1 font-mono text-lg font-bold text-paper">{engineInsights.recycling.length}</p>
+            <p className="text-[10px] text-slate-light">Lost tenders still open for winner follow-up</p>
+          </div>
+        </div>
+      )}
 
       {/* Search and Filters panel */}
       <div className="bg-[#0A0A0A] border border-white/5 p-4 rounded-sm mb-6 flex flex-col lg:flex-row gap-4 justify-between items-center shrink-0 z-10">
@@ -984,6 +1070,8 @@ export default function TendersCommand() {
               <div className="flex-1 overflow-y-auto space-y-2.5 custom-scrollbar pr-1 min-h-0">
                 {stageTenders.map(t => {
                   const timingStatus = getTenderTimingStatus(t);
+                  const siteVisitStatus = getSiteVisitStatus(t);
+                  const primaryTimingStatus = siteVisitStatus && !isPostSubmissionStage(t.stage) ? siteVisitStatus : timingStatus;
                   const progress = getChecklistCount(t);
                   const bondVal = Number(t.bond_amount) || 0;
                   const isLiabilityOutstanding = t.bid_bond_secured && !RESOLVED_STAGES.includes(t.stage);
@@ -1027,6 +1115,11 @@ export default function TendersCommand() {
                             {t.closeout_status === 'lost' ? 'Loss reason' : 'Win reason'}
                           </p>
                           <p className="mt-1 line-clamp-2 text-[10px] text-slate-light">{t.closeout_reason}</p>
+                          {t.closeout_status === 'lost' && (
+                            <p className="mt-1 text-[9px] text-slate-light">
+                              Winner: <span className="text-paper">{t.winning_contractor || 'to confirm'}</span>
+                            </p>
+                          )}
                         </div>
                       )}
 
@@ -1070,6 +1163,17 @@ export default function TendersCommand() {
                             <span className="text-paper truncate max-w-[140px]">{t.jv_partners}</span>
                           </div>
                         )}
+                        {siteVisitStatus && !isPostSubmissionStage(t.stage) && (
+                          <div className="flex justify-between items-center">
+                            <span>{t.site_visit_mandatory ? 'Mandatory Visit:' : 'Site Visit:'}</span>
+                            <span className={`font-semibold ${
+                              siteVisitStatus.urgency === 'critical' ? 'text-red-400' :
+                              siteVisitStatus.urgency === 'warning' ? 'text-[#D4AF37]' : 'text-paper'
+                            }`}>
+                              {new Date(t.site_visit_at as string).toLocaleString()}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex justify-between items-center">
                           <span>Checklist:</span>
                           <span className={`px-1.5 py-0.5 rounded-sm text-[9px] ${
@@ -1080,18 +1184,18 @@ export default function TendersCommand() {
 
                       {/* Footer with bid timing/status */}
                       <div className="flex justify-between items-end border-t border-white/5 pt-2.5 mt-2">
-                        {t.submission_deadline || isPostSubmissionStage(t.stage) ? (
+                        {t.site_visit_at || t.submission_deadline || isPostSubmissionStage(t.stage) ? (
                           <div className="flex items-center space-x-1.5">
                             <Clock className={`w-3.5 h-3.5 ${
-                              timingStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
-                              timingStatus.urgency === 'warning' ? 'text-[#D4AF37]' :
-                              timingStatus.urgency === 'submitted' ? 'text-emerald-400' : 'text-[#3B82F6]'
+                              primaryTimingStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
+                              primaryTimingStatus.urgency === 'warning' ? 'text-[#D4AF37]' :
+                              primaryTimingStatus.urgency === 'submitted' ? 'text-emerald-400' : 'text-[#3B82F6]'
                             }`} />
                             <span className={`font-mono text-[9px] ${
-                              timingStatus.urgency === 'critical' ? 'text-red-400 font-bold' :
-                              timingStatus.urgency === 'warning' ? 'text-[#D4AF37]' :
-                              timingStatus.urgency === 'submitted' ? 'text-emerald-300' : 'text-slate-light'
-                            }`}>{timingStatus.text}</span>
+                              primaryTimingStatus.urgency === 'critical' ? 'text-red-400 font-bold' :
+                              primaryTimingStatus.urgency === 'warning' ? 'text-[#D4AF37]' :
+                              primaryTimingStatus.urgency === 'submitted' ? 'text-emerald-300' : 'text-slate-light'
+                            }`}>{primaryTimingStatus.text}</span>
                           </div>
                         ) : (
                           <span className="font-mono text-[8px] text-slate">NO DEADLINE</span>
@@ -1197,6 +1301,28 @@ export default function TendersCommand() {
                     {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </div>
+
+                <div className="space-y-1">
+                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Site Visit Date</label>
+                  <input
+                    type="datetime-local"
+                    value={newTender.site_visit_at}
+                    onChange={e => setNewTender({ ...newTender, site_visit_at: e.target.value })}
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="flex items-center space-x-2.5 cursor-pointer text-xs font-mono select-none text-slate-light py-2">
+                  <input
+                    type="checkbox"
+                    checked={newTender.site_visit_mandatory}
+                    onChange={e => setNewTender({ ...newTender, site_visit_mandatory: e.target.checked })}
+                    className="rounded border-white/10 bg-black text-[#D4AF37] focus:ring-0 focus:ring-offset-0 focus:outline-none"
+                  />
+                  <span className="uppercase text-[9px] tracking-wider font-bold text-[#D4AF37]">Mandatory Site Visit</span>
+                </label>
 
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Submission Deadline</label>
@@ -1431,6 +1557,28 @@ export default function TendersCommand() {
                         </div>
                       )}
                     </div>
+
+                    <div className="space-y-1">
+                      <label className="block font-mono text-[8px] text-slate-light uppercase">Site Visit Date</label>
+                      <input
+                        type="datetime-local"
+                        value={toLocalDatetimeInputValue(editForm.site_visit_at)}
+                        onChange={e => setEditForm({ ...editForm, site_visit_at: e.target.value })}
+                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <label className="flex items-center space-x-2.5 cursor-pointer text-xs font-mono select-none text-slate-light py-2">
+                      <input
+                        type="checkbox"
+                        checked={!!editForm.site_visit_mandatory}
+                        onChange={e => setEditForm({ ...editForm, site_visit_mandatory: e.target.checked })}
+                        className="rounded border-white/10 bg-black text-[#D4AF37] focus:ring-0 focus:ring-offset-0 focus:outline-none"
+                      />
+                      <span className="uppercase text-[9px] tracking-wider font-bold text-[#D4AF37]">Mandatory Site Visit</span>
+                    </label>
 
                     <div className="space-y-1">
                       <label className="block font-mono text-[8px] text-slate-light uppercase">Submission Deadline</label>
@@ -1697,6 +1845,20 @@ export default function TendersCommand() {
               </div>
 
               {/* Bid timing panel */}
+              {selectedTenderSiteVisitStatus && !isPostSubmissionStage(selectedTender.stage) && (
+                <div className="bg-[#111111] border border-[#D4AF37]/20 p-4 rounded-sm font-mono text-xs flex justify-between items-center">
+                  <div className="flex items-center space-x-2 text-slate-light">
+                    <Calendar className="w-4 h-4 text-[#D4AF37]" />
+                    <span>{selectedTender.site_visit_mandatory ? 'Mandatory site visit:' : 'Site visit:'}</span>
+                  </div>
+                  <span className={`font-bold tracking-widest ${
+                    selectedTenderSiteVisitStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
+                    selectedTenderSiteVisitStatus.urgency === 'warning' ? 'text-[#D4AF37]' : 'text-paper'
+                  }`}>
+                    {new Date(selectedTender.site_visit_at as string).toLocaleString()}
+                  </span>
+                </div>
+              )}
               {selectedTenderTimingStatus && (selectedTender.submission_deadline || isPostSubmissionStage(selectedTender.stage)) && (
                 <div className="bg-[#111111] border border-white/5 p-4 rounded-sm font-mono text-xs flex justify-between items-center">
                   <div className="flex items-center space-x-2 text-slate-light">
@@ -1805,6 +1967,15 @@ export default function TendersCommand() {
                   rows={3}
                   className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none focus:border-[#D4AF37]"
                   placeholder="Record the actual reason before closing the bid."
+                />
+              </div>
+              <div>
+                <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Who won it?</label>
+                <input
+                  value={closeoutWinningContractor}
+                  onChange={(e) => setCloseoutWinningContractor(e.target.value)}
+                  className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none focus:border-[#D4AF37]"
+                  placeholder="Leave blank if unknown - the first recycling task will find this out."
                 />
               </div>
               <div>

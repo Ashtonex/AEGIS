@@ -49,7 +49,7 @@ async def _single_row(db: AsyncSession, sql: str, params: Dict[str, Any]) -> Opt
 # asyncpg binds parameters directly (no string-to-timestamptz coercion like
 # psycopg does), so an ISO string from the frontend fails DataError against
 # this table's one timestamptz column unless parsed here first.
-_TIMESTAMPTZ_COLUMNS = {"submission_deadline"}
+_TIMESTAMPTZ_COLUMNS = {"submission_deadline", "site_visit_at"}
 TENDER_RESOLVED_STAGES = {"Awarded", "Lost", "Awarded/Lost"}
 
 
@@ -64,6 +64,7 @@ class TenderCloseoutPayload(BaseModel):
     status: str = Field(pattern=r"^(won|lost)$")
     reason: str = Field(min_length=3, max_length=2000)
     next_steps: list[str] = Field(min_length=1, max_length=12)
+    winning_contractor: Optional[str] = Field(default=None, max_length=255)
 
 
 async def _record_tender_closeout(
@@ -75,6 +76,7 @@ async def _record_tender_closeout(
     status: str,
     reason: str,
     next_steps: list[str],
+    winning_contractor: Optional[str] = None,
 ) -> list[str]:
     clean_steps = [step.strip() for step in next_steps if step and step.strip()]
     if not reason.strip():
@@ -92,6 +94,12 @@ async def _record_tender_closeout(
                 closeout_next_steps = CAST(:next_steps AS jsonb),
                 closeout_recorded_by = :user_id,
                 closeout_recorded_at = NOW(),
+                winning_contractor = CASE WHEN :status = 'lost' THEN :winning_contractor ELSE winning_contractor END,
+                recycling_status = CASE
+                    WHEN :status = 'lost' AND COALESCE(:winning_contractor, '') <> '' THEN 'winner_identified'
+                    WHEN :status = 'lost' THEN 'not_started'
+                    ELSE recycling_status
+                END,
                 updated_at = NOW()
             WHERE id = :tender_id AND organization_id = :org_id AND is_deleted = false
             RETURNING id
@@ -101,6 +109,7 @@ async def _record_tender_closeout(
             "status": status,
             "reason": reason.strip(),
             "next_steps": json.dumps(clean_steps),
+            "winning_contractor": winning_contractor.strip() if winning_contractor else None,
             "user_id": user_id,
             "tender_id": tender_id,
             "org_id": org_id,
@@ -178,7 +187,12 @@ async def _record_tender_closeout(
         event_type="tender.closeout.recorded.v1",
         aggregate_type="tender",
         aggregate_id=tender_id,
-        event_data={"status": status, "reason": reason.strip(), "next_steps": clean_steps},
+        event_data={
+            "status": status,
+            "reason": reason.strip(),
+            "next_steps": clean_steps,
+            "winning_contractor": winning_contractor.strip() if winning_contractor else None,
+        },
         idempotency_suffix=status,
     )
     return clean_steps
@@ -437,6 +451,7 @@ async def closeout_tender(
         status=payload.status,
         reason=payload.reason,
         next_steps=payload.next_steps,
+        winning_contractor=payload.winning_contractor,
     )
     await db.commit()
     await generate_task_stack(
@@ -451,8 +466,99 @@ async def closeout_tender(
     )
     return {
         "success": True,
-        "data": {"id": str(tender_id), "stage": "Lost", "closeout_status": payload.status, "next_steps": clean_steps},
+        "data": {
+            "id": str(tender_id),
+            "stage": "Lost",
+            "closeout_status": payload.status,
+            "next_steps": clean_steps,
+            "winning_contractor": payload.winning_contractor,
+        },
         "message": "Tender close-out recorded and next steps enforced.",
+        "meta": {},
+    }
+
+
+@router.get("/insights/engine")
+async def tender_engine_insights(
+    user: dict = Depends(require_permission("tender_bids.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    rows = (
+        await db.execute(
+            text("""
+                SELECT
+                    id, tender_name, stage, category, bid_amount, submission_deadline,
+                    site_visit_at, site_visit_mandatory, closeout_status,
+                    closeout_reason, winning_contractor, recycling_status,
+                    technical_proposal, financial_proposal, nssa_clearance,
+                    praz_registration, tax_clearance, bid_bond_secured
+                FROM crm.tenders
+                WHERE organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+    tenders = [dict(row) for row in rows]
+    decided = [tender for tender in tenders if tender.get("closeout_status") in {"won", "lost"}]
+    won = [tender for tender in decided if tender.get("closeout_status") == "won"]
+    lost = [tender for tender in decided if tender.get("closeout_status") == "lost"]
+    active = [tender for tender in tenders if tender.get("stage") not in TENDER_RESOLVED_STAGES]
+    missing_counts = {
+        "technical_proposal": 0,
+        "financial_proposal": 0,
+        "nssa_clearance": 0,
+        "praz_registration": 0,
+        "tax_clearance": 0,
+        "bid_bond_secured": 0,
+    }
+    for tender in lost:
+        for key in missing_counts:
+            if not tender.get(key):
+                missing_counts[key] += 1
+    weak_spots = [
+        {"check": key, "lost_tender_count": count}
+        for key, count in sorted(missing_counts.items(), key=lambda item: item[1], reverse=True)
+        if count
+    ]
+    recycling = [
+        {
+            "id": str(tender["id"]),
+            "tender_name": tender["tender_name"],
+            "winning_contractor": tender.get("winning_contractor"),
+            "recycling_status": tender.get("recycling_status"),
+            "next_action": "Identify who won and approach them for subcontract or supply work."
+            if not tender.get("winning_contractor")
+            else "Approach the winning contractor for subcontract or supply work.",
+        }
+        for tender in lost
+        if tender.get("recycling_status") not in {"converted", "closed"}
+    ]
+    upcoming_visits = [
+        {
+            "id": str(tender["id"]),
+            "tender_name": tender["tender_name"],
+            "site_visit_at": tender.get("site_visit_at"),
+            "site_visit_mandatory": tender.get("site_visit_mandatory"),
+        }
+        for tender in active
+        if tender.get("site_visit_at")
+    ]
+    upcoming_visits.sort(key=lambda item: item["site_visit_at"])
+    win_rate = round((len(won) / len(decided)) * 100, 1) if decided else 0
+    return {
+        "success": True,
+        "data": {
+            "total": len(tenders),
+            "decided": len(decided),
+            "won": len(won),
+            "lost": len(lost),
+            "win_rate": win_rate,
+            "weak_spots": weak_spots,
+            "recycling": recycling,
+            "upcoming_site_visits": upcoming_visits[:10],
+        },
+        "message": "Tender engine insights generated.",
         "meta": {},
     }
 

@@ -9,6 +9,11 @@ TENDER_BIDS_ROUTER = (ROOT / "routers" / "tender_bids.py").read_text(encoding="u
 TENDER_CLOSEOUT_MIGRATION = (
     ROOT / "migrations" / "171_tender_closeout_reason_next_steps.sql"
 ).read_text(encoding="utf-8")
+TENDER_VISIT_RECYCLING_MIGRATION = (
+    ROOT / "migrations" / "173_tender_visit_recycling_and_engine.sql"
+).read_text(encoding="utf-8")
+CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
+DOCUMENTS_ROUTER = (ROOT / "routers" / "documents.py").read_text(encoding="utf-8")
 
 
 def test_submitted_tender_status_supersedes_deadline_countdown():
@@ -61,3 +66,50 @@ def test_tender_board_collects_won_lost_reason_and_next_steps():
     assert "handleOpenCloseout" in TENDERS_PAGE
     assert "Record why this tender was won and at least one next step." in TENDERS_PAGE
     assert "Record why this tender was lost and at least one next step." in TENDERS_PAGE
+
+
+def test_tender_board_tracks_site_visit_and_submission_dates():
+    assert "site_visit_at" in TENDER_VISIT_RECYCLING_MIGRATION
+    assert "site_visit_mandatory" in TENDER_VISIT_RECYCLING_MIGRATION
+    assert 'type="datetime-local"' in TENDERS_PAGE
+    assert "Mandatory Site Visit" in TENDERS_PAGE
+    assert "getSiteVisitStatus" in TENDERS_PAGE
+    assert "_TIMESTAMPTZ_COLUMNS = {\"submission_deadline\", \"site_visit_at\"}" in TENDER_BIDS_ROUTER
+
+
+def test_tender_list_returns_saved_detail_fields_after_refresh():
+    list_section = CRM_ROUTER[
+        CRM_ROUTER.index('@router.get("/tenders")') : CRM_ROUTER.index('@router.get("/tender-signals")')
+    ]
+    for column in [
+        "technical_proposal",
+        "financial_proposal",
+        "nssa_clearance",
+        "praz_registration",
+        "tax_clearance",
+        "site_visit_at",
+        "site_visit_mandatory",
+        "winning_contractor",
+        "recycling_status",
+    ]:
+        assert column in list_section
+
+
+def test_uploaded_tender_documents_support_builtin_checks():
+    assert "deliverable_checks" in DOCUMENTS_ROUTER
+    for column in ["technical_proposal", "financial_proposal", "nssa_clearance", "praz_registration", "tax_clearance"]:
+        assert column in DOCUMENTS_ROUTER
+    assert "satisfied_document_id = :document_id" in DOCUMENTS_ROUTER
+
+
+def test_lost_tenders_enter_recycling_and_feed_engine():
+    assert "winning_contractor" in TENDER_VISIT_RECYCLING_MIGRATION
+    assert "recycling_status" in TENDER_VISIT_RECYCLING_MIGRATION
+    assert "Find out who won the tender" in TENDERS_PAGE
+    assert "Approach the winning contractor for subcontract or supply work" in TENDERS_PAGE
+    assert "class TenderCloseoutPayload" in TENDER_BIDS_ROUTER
+    assert "winning_contractor: Optional[str]" in TENDER_BIDS_ROUTER
+    assert '@router.get("/insights/engine")' in TENDER_BIDS_ROUTER
+    assert "weak_spots" in TENDER_BIDS_ROUTER
+    assert "recycling" in TENDER_BIDS_ROUTER
+    assert "getTenderEngineInsights" in TENDERS_PAGE

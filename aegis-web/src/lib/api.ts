@@ -842,6 +842,13 @@ export async function updateCrmTender(id: string, data: Record<string, any>) {
   });
 }
 
+export async function getTenderEngineInsights(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/tender-bids/insights/engine', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 /** Award a tender: creates/links a real project and seeds its budget from any linked quotation. */
 export async function awardCrmTender(tenderId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/award`, {
@@ -851,7 +858,7 @@ export async function awardCrmTender(tenderId: string, payload: Record<string, u
   });
 }
 
-export async function closeoutCrmTender(tenderId: string, payload: { status: "won" | "lost"; reason: string; next_steps: string[] }): Promise<ApiResponse<any>> {
+export async function closeoutCrmTender(tenderId: string, payload: { status: "won" | "lost"; reason: string; next_steps: string[]; winning_contractor?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/closeout`, {
     method: 'POST',
     body: JSON.stringify(payload),

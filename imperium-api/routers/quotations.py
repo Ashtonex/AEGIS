@@ -1134,6 +1134,19 @@ async def create_rate_benchmark(
     if not item_code:
         raise HTTPException(status_code=400, detail="item_code is required.")
 
+    await db.execute(
+        text(
+            """
+            UPDATE finance.rate_intelligence
+            SET is_deleted = true, updated_at = NOW()
+            WHERE organization_id = :org_id
+              AND item_code = :item_code
+              AND is_deleted = false
+            """
+        ),
+        {"org_id": user["org_id"], "item_code": item_code},
+    )
+
     result = await db.execute(
         text(
             """

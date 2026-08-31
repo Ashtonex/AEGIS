@@ -71,6 +71,8 @@ class QuotationStackContractTests(unittest.TestCase):
         self.assertIn('require_permission("quotations.manage_rate_intelligence")', QUOTATION_ROUTER)
         self.assertIn("INSERT INTO finance.construction_assemblies", QUOTATION_ROUTER)
         self.assertIn("INSERT INTO finance.rate_intelligence", QUOTATION_ROUTER)
+        self.assertIn("UPDATE finance.rate_intelligence", QUOTATION_ROUTER)
+        self.assertIn("AND item_code = :item_code", QUOTATION_ROUTER)
 
     def test_evaluate_and_benchmark_endpoints_merge_org_specific_overrides(self):
         self.assertIn("_load_org_rate_benchmarks", QUOTATION_ROUTER)

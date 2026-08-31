@@ -18,7 +18,7 @@ import {
   BarChart, PieChart, Settings, LogOut, ChevronDown, ChevronRight,
   Target, Handshake, Building2, BookOpen, Inbox, Zap, MapPin,
   LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit,
-  Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Menu, X
+  Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Scale, Menu, X
 } from "lucide-react";
 
 type ModuleNavItem = {
@@ -146,6 +146,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
         requiredPermission: "crm.reports.read",
       },
       { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck, requiredPermission: "crm_tasks.read" },
+      { name: "Rate Build-Up", href: "/dashboard/quotations/rates", icon: Scale, requiredPermission: "quotations.manage_rate_intelligence" },
       { name: "Teams", href: "/dashboard/crm/teams", icon: Users, requiredPermission: "users.read_assignable" },
     ],
   },
@@ -153,14 +154,14 @@ const MODULE_GROUPS: ModuleGroup[] = [
     name: "Estimating & Quotations",
     href: "/dashboard/quotations",
     icon: FileText,
-    restrictedRoles: ["CRM Associate"],
     subItems: [
-      { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard },
-      { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText },
-      { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit },
-      { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain },
-      { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers },
-      { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen },
+      { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard, restrictedRoles: ["CRM Associate"] },
+      { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText, restrictedRoles: ["CRM Associate"] },
+      { name: "Rate Build-Up", href: "/dashboard/quotations/rates", icon: Scale, requiredPermission: "quotations.manage_rate_intelligence" },
+      { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit, restrictedRoles: ["CRM Associate"] },
+      { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain, restrictedRoles: ["CRM Associate"] },
+      { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers, restrictedRoles: ["CRM Associate"] },
+      { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen, restrictedRoles: ["CRM Associate"] },
     ],
   },
   {
