@@ -155,10 +155,33 @@ export default function TeamsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [teamsRes, usersRes, tasksRes] = await Promise.all([getTeams(), getAssignableUsers(), getCrmTasks({})]);
-      const nextTeams = teamsRes.success && Array.isArray(teamsRes.data) ? teamsRes.data as Team[] : [];
-      const nextUsers = usersRes.success && Array.isArray(usersRes.data) ? usersRes.data as AssignableUser[] : [];
-      const nextTasks = tasksRes.success && Array.isArray(tasksRes.data) ? tasksRes.data as CrmTask[] : [];
+      const [teamsRes, usersRes, tasksRes] = await Promise.allSettled([getTeams(), getAssignableUsers(), getCrmTasks({})]);
+      const loadWarnings: string[] = [];
+      const nextTeams =
+        teamsRes.status === "fulfilled" && teamsRes.value.success && Array.isArray(teamsRes.value.data)
+          ? teamsRes.value.data as Team[]
+          : [];
+      const nextUsers =
+        usersRes.status === "fulfilled" && usersRes.value.success && Array.isArray(usersRes.value.data)
+          ? usersRes.value.data as AssignableUser[]
+          : [];
+      const nextTasks =
+        tasksRes.status === "fulfilled" && tasksRes.value.success && Array.isArray(tasksRes.value.data)
+          ? tasksRes.value.data as CrmTask[]
+          : [];
+
+      if (teamsRes.status === "rejected") {
+        throw teamsRes.reason;
+      }
+      if (teamsRes.status === "fulfilled" && !teamsRes.value.success) {
+        throw new Error(teamsRes.value.message || "Teams did not load.");
+      }
+      if (usersRes.status === "rejected" || (usersRes.status === "fulfilled" && !usersRes.value.success)) {
+        loadWarnings.push("Assignable users did not load; team membership controls are limited.");
+      }
+      if (tasksRes.status === "rejected" || (tasksRes.status === "fulfilled" && !tasksRes.value.success)) {
+        loadWarnings.push("CRM tasks did not load; workload and overdue counts may be incomplete.");
+      }
       const today = new Date(new Date().toDateString());
       const byUser: Record<string, WorkloadEntry> = {};
 
@@ -189,6 +212,7 @@ export default function TeamsPage() {
       setTasks(nextTasks);
       setWorkload(byUser);
       setMembersByTeam(Object.fromEntries(memberEntries));
+      setError(loadWarnings.length > 0 ? loadWarnings.join(" ") : null);
     } catch (e) {
       setError(normalizeError(e, "Teams did not load."));
     } finally {
