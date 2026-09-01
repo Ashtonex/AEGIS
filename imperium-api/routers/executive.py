@@ -154,36 +154,51 @@ async def get_executive_kpis(
     )
     if live_rows:
         data["active_projects_count"] = int(live_rows[0].get("open_projects") or 0)
+        data["active_project_portfolio_value"] = float(live_rows[0].get("portfolio_value") or 0)
 
     pipeline_rows = await _rows(
         db,
         """
         SELECT
-            COALESCE(
-                (SELECT SUM(COALESCE(deal_value, budget))
-                 FROM crm.opportunities
-                 WHERE organization_id = :org_id
-                   AND is_deleted = false
-                   AND COALESCE(win_loss_status, '') <> 'lost'
-                   AND lower(COALESCE(stage, '')) NOT IN ('contract', 'lost')),
-                0
-            )
-            +
-            COALESCE(
-                (SELECT SUM(bid_amount)
-                 FROM crm.tenders
-                 WHERE organization_id = :org_id
-                   AND is_deleted = false
-                   AND lower(COALESCE(stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled', 'canceled')),
-                0
-            ) AS pipeline_value
+            COALESCE(SUM(opportunity_value), 0) AS opportunity_value,
+            COALESCE(SUM(tender_value), 0) AS tender_value,
+            COALESCE(SUM(opportunity_count), 0) AS opportunity_count,
+            COALESCE(SUM(tender_count), 0) AS tender_count
+        FROM (
+            SELECT
+                COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS opportunity_value,
+                0::numeric AS tender_value,
+                COUNT(*) AS opportunity_count,
+                0::bigint AS tender_count
+            FROM crm.opportunities
+            WHERE organization_id = :org_id
+              AND is_deleted = false
+              AND COALESCE(win_loss_status, '') <> 'lost'
+              AND lower(COALESCE(stage, '')) NOT IN ('contract', 'lost')
+            UNION ALL
+            SELECT
+                0::numeric AS opportunity_value,
+                COALESCE(SUM(bid_amount), 0) AS tender_value,
+                0::bigint AS opportunity_count,
+                COUNT(*) AS tender_count
+            FROM crm.tenders
+            WHERE organization_id = :org_id
+              AND is_deleted = false
+              AND lower(COALESCE(stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled', 'canceled')
+        ) pipeline_parts
         """,
         {"org_id": org_id},
         source="kpis.pipeline",
         source_errors=source_errors,
     )
     if pipeline_rows:
-        data["pipeline"] = f"${float(pipeline_rows[0].get('pipeline_value') or 0):,.2f}"
+        opportunity_value = float(pipeline_rows[0].get("opportunity_value") or 0)
+        tender_value = float(pipeline_rows[0].get("tender_value") or 0)
+        data["pipeline_opportunity_value"] = opportunity_value
+        data["pipeline_tender_value"] = tender_value
+        data["pipeline_opportunity_count"] = int(pipeline_rows[0].get("opportunity_count") or 0)
+        data["pipeline_tender_count"] = int(pipeline_rows[0].get("tender_count") or 0)
+        data["pipeline"] = f"${opportunity_value + tender_value:,.2f}"
 
     finance_rows = await _rows(
         db,
@@ -215,9 +230,14 @@ async def get_executive_kpis(
     )
     revenue_ytd = float(finance_rows[0].get("revenue_ytd") or 0) if finance_rows else 0
     cost_ytd = float(cost_rows[0].get("cost_ytd") or 0) if cost_rows else 0
+    data["revenue_ytd"] = revenue_ytd
+    data["cost_ytd"] = cost_ytd
+    data["gross_profit_ytd"] = revenue_ytd - cost_ytd
     if revenue_ytd > 0:
         data["revenue"] = f"${revenue_ytd:,.2f}"
-        data["margin"] = f"{((revenue_ytd - cost_ytd) / revenue_ytd) * 100:.2f}%"
+        margin_percent = ((revenue_ytd - cost_ytd) / revenue_ytd) * 100
+        data["margin_percent"] = round(margin_percent, 2)
+        data["margin"] = f"{margin_percent:.2f}%"
 
     concentration_rows = await _rows(
         db,
@@ -232,6 +252,8 @@ async def get_executive_kpis(
             GROUP BY 1
         )
         SELECT
+            MAX(contract_value) AS top_client_contract_value,
+            SUM(contract_value) AS portfolio_contract_value,
             CASE WHEN SUM(contract_value) > 0
                  THEN ROUND(MAX(contract_value) / SUM(contract_value) * 100, 2)
                  ELSE NULL
@@ -248,6 +270,9 @@ async def get_executive_kpis(
         and concentration_rows[0].get("concentration_percent") is not None
     ):
         data["revenue_concentration_percent"] = concentration_rows[0]["concentration_percent"]
+    if concentration_rows:
+        data["top_client_contract_value"] = float(concentration_rows[0].get("top_client_contract_value") or 0)
+        data["portfolio_contract_value"] = float(concentration_rows[0].get("portfolio_contract_value") or 0)
 
     return {
         "success": True,

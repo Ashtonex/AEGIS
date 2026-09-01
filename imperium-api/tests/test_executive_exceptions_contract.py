@@ -90,6 +90,16 @@ class ExecutiveExceptionsContractTests(unittest.TestCase):
         self.assertNotIn("Some executive data needs attention", EXECUTIVE_PAGE)
         self.assertIn("iconClass", EXECUTIVE_PAGE)
 
+    def test_executive_metric_modals_use_metric_specific_detail_rows(self):
+        self.assertIn("function metricDetailRows", EXECUTIVE_PAGE)
+        self.assertIn("function MetricDetailGrid", EXECUTIVE_PAGE)
+        self.assertIn('rowsByMetric: Record<string, Array<{ label: string; value: string; source: string }>>', EXECUTIVE_PAGE)
+        self.assertIn("pipeline_opportunity_value", EXECUTIVE_ROUTER)
+        self.assertIn("pipeline_tender_value", EXECUTIVE_ROUTER)
+        self.assertIn("gross_profit_ytd", EXECUTIVE_ROUTER)
+        self.assertIn("top_client_contract_value", EXECUTIVE_ROUTER)
+        self.assertNotIn('selectedCard.key === "safety" ? stats : kpis', EXECUTIVE_PAGE)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -77,6 +77,12 @@ function metricWithUnit(value: unknown, unit: string): string {
   return displayed === "Not recorded" ? displayed : `${displayed}${unit}`;
 }
 
+function currencyValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "Not recorded";
+  const amount = Number(value);
+  return Number.isFinite(amount) ? `$${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : displayValue(value);
+}
+
 function statusLabel(value: unknown): string {
   const status = String(value || "").toLowerCase();
   if (status === "stale") return "needs recent records";
@@ -112,6 +118,63 @@ function sourceWarningsFrom(result: SettledApiResult, label: string) {
   return errors
     .filter((error) => !["current", "no_data"].includes(String(error.status)))
     .map((error) => `${label}: ${displayValue(error.source)} is ${displayValue(error.status)}.`);
+}
+
+function metricDetailRows(metricKey: string, kpis: ApiData, stats: ApiData, activeProjects: ApiData[], dataHealth: ApiData[]) {
+  const healthBySource = (name: string) => dataHealth.find((source) => String(source.source || "").toLowerCase().includes(name.toLowerCase()));
+  const rowsByMetric: Record<string, Array<{ label: string; value: string; source: string }>> = {
+    cash_runway: [
+      { label: "Cash Survival Days", value: metricWithUnit(kpis.cash_survival_days, " days"), source: "executive.kpi_snapshots" },
+      { label: "Snapshot Date", value: displayValue(kpis.snapshot_date), source: "executive.kpi_snapshots" },
+      { label: "Open Purchase Orders", value: displayValue(stats.open_purchase_orders), source: "procurement.purchase_orders" },
+      { label: "Inventory On Hand", value: displayValue(stats.materials_in_stock), source: "procurement.stock_ledger" },
+      { label: "Data Health", value: statusLabel(healthBySource("Finance")?.status), source: displayValue(healthBySource("Finance")?.source || "Finance source health") },
+    ],
+    revenue: [
+      { label: "Revenue YTD", value: currencyValue(kpis.revenue_ytd), source: "finance.progress_claims" },
+      { label: "Recognised Revenue", value: displayValue(kpis.revenue), source: "finance.progress_claims" },
+      { label: "Cost YTD", value: currencyValue(kpis.cost_ytd), source: "finance.cost_transactions" },
+      { label: "Gross Profit YTD", value: currencyValue(kpis.gross_profit_ytd), source: "finance.progress_claims + finance.cost_transactions" },
+      { label: "Finance Data Health", value: statusLabel(healthBySource("Finance")?.status), source: displayValue(healthBySource("Finance")?.source || "Finance source health") },
+    ],
+    margin: [
+      { label: "Gross Profit Margin", value: metricWithUnit(kpis.margin_percent, "%"), source: "calculated from YTD revenue and cost" },
+      { label: "Revenue YTD", value: currencyValue(kpis.revenue_ytd), source: "finance.progress_claims" },
+      { label: "Cost YTD", value: currencyValue(kpis.cost_ytd), source: "finance.cost_transactions" },
+      { label: "Gross Profit YTD", value: currencyValue(kpis.gross_profit_ytd), source: "derived" },
+      { label: "Margin Basis", value: "Revenue less recorded cost transactions", source: "executive KPI service" },
+    ],
+    pipeline: [
+      { label: "Opportunity Pipeline", value: currencyValue(kpis.pipeline_opportunity_value), source: "crm.opportunities" },
+      { label: "Tender Pipeline", value: currencyValue(kpis.pipeline_tender_value), source: "crm.tenders" },
+      { label: "Open Opportunities", value: displayValue(kpis.pipeline_opportunity_count ?? stats.open_deals), source: "crm.opportunities" },
+      { label: "Open Tenders", value: displayValue(kpis.pipeline_tender_count), source: "crm.tenders" },
+      { label: "Open Leads", value: displayValue(stats.open_leads), source: "crm.leads" },
+      { label: "Recent CRM Activity", value: displayValue(stats.recent_activity_last_7_days), source: "crm.activities last 7 days" },
+    ],
+    concentration: [
+      { label: "Top Client Concentration", value: metricWithUnit(kpis.revenue_concentration_percent, "%"), source: "projects.projects" },
+      { label: "Top Client Contract Value", value: currencyValue(kpis.top_client_contract_value), source: "projects.projects" },
+      { label: "Open Portfolio Contract Value", value: currencyValue(kpis.portfolio_contract_value), source: "projects.projects" },
+      { label: "Active Projects", value: String(activeProjects.length), source: "projects.projects" },
+      { label: "Project Data Health", value: statusLabel(healthBySource("Projects")?.status), source: displayValue(healthBySource("Projects")?.source || "Project source health") },
+    ],
+    safety: [
+      { label: "Safety Incidents YTD", value: displayValue(stats.safety_incidents), source: "projects.hse_incidents" },
+      { label: "Plant Serious Incidents", value: displayValue(stats.plant_serious_incidents), source: "fleet.plant_incidents" },
+      { label: "Active Workforce", value: displayValue(stats.active_workforce), source: "hr.employees" },
+      { label: "Live Projects", value: displayValue(stats.live_projects), source: "projects.projects" },
+      { label: "Active Plant Deployments", value: displayValue(stats.plant_active_deployments), source: "fleet.plant_requests" },
+    ],
+    documented: [
+      { label: "Documented Workflow Percent", value: metricWithUnit(kpis.documented_workflow_percent ?? kpis.documented_percent, "%"), source: "executive.kpi_snapshots or process register" },
+      { label: "Snapshot Date", value: displayValue(kpis.snapshot_date), source: "executive.kpi_snapshots" },
+      { label: "Documented Processes Source", value: statusLabel(healthBySource("Documents")?.status), source: displayValue(healthBySource("Documents")?.source || "Process/document source health") },
+      { label: "Documented Process Notice", value: displayValue(kpis._notices), source: "executive KPI service" },
+    ],
+  };
+
+  return rowsByMetric[metricKey] || [];
 }
 
 function greetingForNow(date: Date) {
@@ -264,12 +327,13 @@ function ExecutiveCommandCentreWorkspace() {
     <CCBAutomatedFindingsPanel />
     <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
-    {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricFields data={selectedCard.key === "safety" ? stats : kpis} />}</Modal>}
+    {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricDetailGrid rows={metricDetailRows(selectedCard.key, kpis, stats, activeProjects, dataHealth)} />}</Modal>}
     {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} /></>}</Modal>}
   </div>;
 }
 
 function Modal({ title, onClose, children, wide = false }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) { return <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}><div className={`bg-ink border border-ink-light rounded-lg shadow-[0_20px_60px_-20px_rgba(0,0,0,0.7)] w-full ${wide ? "max-w-5xl" : "max-w-2xl"} max-h-[85vh] overflow-y-auto p-5`} onClick={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-4 mb-5"><h2 className="font-display text-2xl text-paper">{title}</h2><button onClick={onClose} title="Close" className="text-slate hover:text-paper"><X className="w-5 h-5" /></button></div>{children}</div></div>; }
+function MetricDetailGrid({ rows }: { rows: Array<{ label: string; value: string; source: string }> }) { if (!rows.length) return <p className="mt-5 text-sm text-slate-light">No drill-down fields are configured for this metric.</p>; return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{rows.map((row) => <div key={`${row.label}-${row.source}`} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{row.label}</p><p className="font-mono text-sm text-paper mt-1">{row.value}</p><p className="mt-2 font-mono text-[10px] uppercase text-slate">Source: {row.source}</p></div>)}</div>; }
 function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{Object.entries(data).map(([key, value]) => <div key={key} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{titleCase(key)}</p><p className="font-mono text-sm text-paper mt-1">{displayValue(value)}</p></div>)}</div>; }
 function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (project: ApiData) => void }) { if (!projects.length) return <p className="text-slate-light mt-6">No active project records were found.</p>; return <div className="mt-5 space-y-2">{projects.map((project) => <button key={String(project.id)} onClick={() => void onSelect(project)} className="w-full flex justify-between gap-3 text-left border border-ink-mid p-3 hover:border-signal"><span className="text-paper">{displayValue(project.name)}</span><span className="font-mono text-xs text-slate-light">{displayValue(project.status)}</span></button>)}</div>; }
 function ProjectDetail({ detail }: { detail: ApiData | null }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
