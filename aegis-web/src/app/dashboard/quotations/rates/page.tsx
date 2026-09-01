@@ -7,14 +7,20 @@ import {
   ArrowLeft,
   Calculator,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Copy,
   FileText,
+  Layers,
   Loader2,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   Scale,
   Search,
   ShieldCheck,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import {
@@ -40,6 +46,98 @@ type RateBenchmark = {
   escalation_pct?: number | string;
 };
 
+export type MaterialAggregate = {
+  id: string;
+  name: string;
+  unit: string;
+  constant: number;
+  unit_cost: number;
+};
+
+export type AggregatePreset = {
+  label: string;
+  category: string;
+  unit: string;
+  description: string;
+  aggregates: Array<{
+    name: string;
+    unit: string;
+    constant: number;
+    unit_cost: number;
+  }>;
+};
+
+export const AGGREGATE_PRESETS: AggregatePreset[] = [
+  {
+    label: "Concrete Grade 20 (1:2:4)",
+    category: "Concrete",
+    unit: "m3",
+    description: "Standard structural concrete mix (per m3)",
+    aggregates: [
+      { name: "Portland Cement 42.5N (50kg bags)", unit: "bags", constant: 7.14, unit_cost: 12.50 },
+      { name: "Washed River Sand", unit: "m3", constant: 0.714, unit_cost: 22.00 },
+      { name: "19mm Crushed Granite Stone", unit: "m3", constant: 0.882, unit_cost: 28.00 },
+      { name: "Clean Batching Water", unit: "m3", constant: 0.18, unit_cost: 3.00 },
+    ],
+  },
+  {
+    label: "Concrete Grade 25",
+    category: "Concrete",
+    unit: "m3",
+    description: "Reinforced structural concrete mix (per m3)",
+    aggregates: [
+      { name: "Portland Cement 42.5N (50kg bags)", unit: "bags", constant: 6.00, unit_cost: 12.50 },
+      { name: "Concrete Sand", unit: "m3", constant: 0.714, unit_cost: 22.00 },
+      { name: "19mm Crushed Granite Stone", unit: "m3", constant: 0.882, unit_cost: 28.00 },
+      { name: "Clean Batching Water", unit: "m3", constant: 0.18, unit_cost: 3.00 },
+    ],
+  },
+  {
+    label: "Concrete Grade 30",
+    category: "Concrete",
+    unit: "m3",
+    description: "High-strength structural concrete mix (per m3)",
+    aggregates: [
+      { name: "Portland Cement 42.5N (50kg bags)", unit: "bags", constant: 8.87, unit_cost: 12.50 },
+      { name: "Washed River Sand", unit: "m3", constant: 0.704, unit_cost: 22.00 },
+      { name: "19mm Crushed Granite Stone", unit: "m3", constant: 0.903, unit_cost: 28.00 },
+      { name: "Clean Batching Water", unit: "m3", constant: 0.18, unit_cost: 3.00 },
+    ],
+  },
+  {
+    label: "Double Brickwork 230mm",
+    category: "Masonry",
+    unit: "m2",
+    description: "Double skin brickwork in 1:4 mortar (per m2)",
+    aggregates: [
+      { name: "Common Clay Bricks", unit: "pcs", constant: 110, unit_cost: 0.18 },
+      { name: "Portland Cement (50kg bags)", unit: "bags", constant: 0.42, unit_cost: 12.50 },
+      { name: "Building / Pit Sand", unit: "m3", constant: 0.08, unit_cost: 20.00 },
+      { name: "Brickforce Reinforcement 230mm", unit: "m", constant: 2.10, unit_cost: 0.85 },
+    ],
+  },
+  {
+    label: "Internal Plaster 12mm",
+    category: "Finishes",
+    unit: "m2",
+    description: "12mm cement-sand plaster in 1:4 mix (per m2)",
+    aggregates: [
+      { name: "Portland Cement (50kg bags)", unit: "bags", constant: 0.12, unit_cost: 12.50 },
+      { name: "Plaster Pit Sand", unit: "m3", constant: 0.02, unit_cost: 24.00 },
+    ],
+  },
+  {
+    label: "Floor Screed 40mm",
+    category: "Finishes",
+    unit: "m2",
+    description: "40mm monolithic screed in 1:3 mix (per m2)",
+    aggregates: [
+      { name: "Portland Cement (50kg bags)", unit: "bags", constant: 0.42, unit_cost: 12.50 },
+      { name: "Washed River Sand", unit: "m3", constant: 0.055, unit_cost: 22.00 },
+    ],
+  },
+];
+
 type RateInput = {
   item_code: string;
   description: string;
@@ -57,13 +155,14 @@ type RateInput = {
   profit_pct: number;
   escalation_pct: number;
   last_po_rate: number;
+  aggregates?: MaterialAggregate[];
 };
 
 const blankRate: RateInput = {
-  item_code: "TASK-CUSTOM-RATE",
+  item_code: "TASK-CONC-CUSTOM-M3",
   description: "Custom task rate",
-  category: "Task Rate",
-  unit: "unit",
+  category: "Concrete",
+  unit: "m3",
   currency: "USD",
   task_context: "",
   material_rate: 0,
@@ -76,39 +175,50 @@ const blankRate: RateInput = {
   profit_pct: 15,
   escalation_pct: 0,
   last_po_rate: 0,
+  aggregates: [],
 };
 
 const examples: RateInput[] = [
   {
     ...blankRate,
-    item_code: "TASK-CONC-SLAB-M2",
-    description: "Concrete slab placing rate",
+    item_code: "TASK-CONC-SLAB-M3",
+    description: "Concrete Grade 20 in slab casting",
     category: "Concrete",
-    unit: "m2",
-    task_context: "Site task - measured concrete works",
-    material_rate: 18,
-    labour_rate: 4.5,
-    equipment_rate: 2.25,
-    prelim_rate: 1.5,
+    unit: "m3",
+    task_context: "Site task - measured structural concrete works",
+    material_rate: 130.20,
+    labour_rate: 22.50,
+    equipment_rate: 15.00,
+    prelim_rate: 4.50,
     waste_pct: 3,
     overhead_pct: 8,
     profit_pct: 14,
-    last_po_rate: 29.5,
+    last_po_rate: 195.0,
+    aggregates: [
+      { id: "agg-ex-1", name: "Portland Cement 42.5N (50kg bags)", unit: "bags", constant: 7.14, unit_cost: 12.50 },
+      { id: "agg-ex-2", name: "Washed River Sand", unit: "m3", constant: 0.714, unit_cost: 22.00 },
+      { id: "agg-ex-3", name: "19mm Crushed Granite Stone", unit: "m3", constant: 0.882, unit_cost: 28.00 },
+      { id: "agg-ex-4", name: "Clean Batching Water", unit: "m3", constant: 0.18, unit_cost: 3.00 },
+    ],
   },
   {
     ...blankRate,
     item_code: "TASK-PLASTER-M2",
-    description: "Internal plastering task rate",
+    description: "Internal plastering 12mm task rate",
     category: "Finishes",
     unit: "m2",
     task_context: "CRM custom task - quotation adjustment",
-    material_rate: 5.75,
+    material_rate: 1.98,
     labour_rate: 7.25,
     equipment_rate: 0.5,
     waste_pct: 4,
     overhead_pct: 10,
     profit_pct: 16,
-    last_po_rate: 16,
+    last_po_rate: 12.50,
+    aggregates: [
+      { id: "agg-ex-5", name: "Portland Cement (50kg bags)", unit: "bags", constant: 0.12, unit_cost: 12.50 },
+      { id: "agg-ex-6", name: "Plaster Pit Sand", unit: "m3", constant: 0.02, unit_cost: 24.00 },
+    ],
   },
 ];
 
@@ -168,7 +278,12 @@ function rateHealth(rate: number, lastPoRate: number) {
 
 export default function RateBuildUpPage() {
   const { session } = useAuth();
-  const [rate, setRate] = useState<RateInput>(blankRate);
+  const [rate, setRate] = useState<RateInput>(examples[0]);
+  const [aggregates, setAggregates] = useState<MaterialAggregate[]>(
+    examples[0].aggregates ? examples[0].aggregates.map((a) => ({ ...a })) : []
+  );
+  const [breakdownMode, setBreakdownMode] = useState<boolean>(true);
+  const [showAggregatesPanel, setShowAggregatesPanel] = useState<boolean>(true);
   const [benchmarks, setBenchmarks] = useState<RateBenchmark[]>([]);
   const [benchmarkResult, setBenchmarkResult] = useState<any>(null);
   const [search, setSearch] = useState("");
@@ -181,6 +296,26 @@ export default function RateBuildUpPage() {
 
   const calculated = useMemo(() => buildRate(rate), [rate]);
   const health = useMemo(() => rateHealth(calculated.targetRate, rate.last_po_rate), [calculated.targetRate, rate.last_po_rate]);
+
+  const aggregateMaterialTotal = useMemo(() => {
+    return aggregates.reduce(
+      (sum, item) => sum + toNumber(item.constant) * toNumber(item.unit_cost),
+      0
+    );
+  }, [aggregates]);
+
+  // Synchronize overall rate.material_rate whenever breakdownMode is active and aggregates exist
+  useEffect(() => {
+    if (breakdownMode && aggregates.length > 0) {
+      const calculatedTotal = Number(aggregateMaterialTotal.toFixed(2));
+      setRate((curr) => {
+        if (Math.abs(curr.material_rate - calculatedTotal) > 0.001) {
+          return { ...curr, material_rate: calculatedTotal };
+        }
+        return curr;
+      });
+    }
+  }, [breakdownMode, aggregateMaterialTotal, aggregates.length]);
 
   const filteredBenchmarks = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -221,6 +356,57 @@ export default function RateBuildUpPage() {
     }));
   };
 
+  const addAggregate = (initial?: Partial<MaterialAggregate>) => {
+    const newId = `agg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newItem: MaterialAggregate = {
+      id: newId,
+      name: initial?.name || "",
+      unit: initial?.unit || "m3",
+      constant: initial?.constant ?? 1,
+      unit_cost: initial?.unit_cost ?? 0,
+    };
+    setAggregates((curr) => [...curr, newItem]);
+    setBreakdownMode(true);
+  };
+
+  const updateAggregate = (id: string, field: keyof MaterialAggregate, value: any) => {
+    setAggregates((curr) =>
+      curr.map((item) => {
+        if (item.id !== id) return item;
+        return {
+          ...item,
+          [field]: field === "constant" || field === "unit_cost" ? toNumber(value) : value,
+        };
+      })
+    );
+  };
+
+  const removeAggregate = (id: string) => {
+    setAggregates((curr) => curr.filter((item) => item.id !== id));
+  };
+
+  const applyAggregatePreset = (preset: AggregatePreset) => {
+    const items: MaterialAggregate[] = preset.aggregates.map((a, idx) => ({
+      id: `agg-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      name: a.name,
+      unit: a.unit,
+      constant: a.constant,
+      unit_cost: a.unit_cost,
+    }));
+    setAggregates(items);
+    setBreakdownMode(true);
+    setRate((curr) => ({
+      ...curr,
+      unit: preset.unit,
+      category: preset.category || curr.category,
+      description: curr.description === blankRate.description ? preset.description : curr.description,
+    }));
+  };
+
+  const clearAggregates = () => {
+    setAggregates([]);
+  };
+
   const applyBenchmark = (item: RateBenchmark) => {
     setBenchmarkResult(null);
     setSuccessMsg("");
@@ -238,12 +424,21 @@ export default function RateBuildUpPage() {
       profit_pct: current.profit_pct,
       overhead_pct: current.overhead_pct,
     }));
+    setAggregates([]);
+    setBreakdownMode(false);
   };
 
   const applyExample = (example: RateInput) => {
     setBenchmarkResult(null);
     setSuccessMsg("");
     setRate(example);
+    if (example.aggregates && example.aggregates.length > 0) {
+      setAggregates(example.aggregates.map((a) => ({ ...a })));
+      setBreakdownMode(true);
+    } else {
+      setAggregates([]);
+      setBreakdownMode(false);
+    }
   };
 
   const copyRate = async () => {
@@ -262,9 +457,16 @@ export default function RateBuildUpPage() {
       profit_pct: rate.profit_pct,
       escalation_pct: rate.escalation_pct,
       task_context: rate.task_context,
+      materials_breakdown: aggregates.map((item) => ({
+        material: item.name,
+        unit: item.unit,
+        constant_per_rate_unit: item.constant,
+        unit_cost: item.unit_cost,
+        subtotal_per_rate_unit: Number((item.constant * item.unit_cost).toFixed(2)),
+      })),
     };
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-    setSuccessMsg("Rate build-up copied.");
+    setSuccessMsg("Rate build-up with materials constants breakdown copied.");
   };
 
   const runBenchmark = async () => {
@@ -434,7 +636,18 @@ export default function RateBuildUpPage() {
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
-              <NumberField label="Material" value={rate.material_rate} onChange={(value) => updateRate("material_rate", value)} />
+              <NumberField
+                label="Material"
+                value={rate.material_rate}
+                readOnly={breakdownMode && aggregates.length > 0}
+                badge={breakdownMode && aggregates.length > 0 ? `${aggregates.length} Aggregates` : undefined}
+                onChange={(value) => {
+                  if (breakdownMode && aggregates.length > 0) {
+                    setBreakdownMode(false);
+                  }
+                  updateRate("material_rate", value);
+                }}
+              />
               <NumberField label="Labour" value={rate.labour_rate} onChange={(value) => updateRate("labour_rate", value)} />
               <NumberField label="Plant / Equipment" value={rate.equipment_rate} onChange={(value) => updateRate("equipment_rate", value)} />
               <NumberField label="Subcontractor" value={rate.subcontractor_rate} onChange={(value) => updateRate("subcontractor_rate", value)} />
@@ -444,6 +657,246 @@ export default function RateBuildUpPage() {
               <NumberField label="Profit %" value={rate.profit_pct} onChange={(value) => updateRate("profit_pct", value)} />
               <NumberField label="Escalation %" value={rate.escalation_pct} onChange={(value) => updateRate("escalation_pct", value)} />
               <NumberField label="Last PO Rate" value={rate.last_po_rate} onChange={(value) => updateRate("last_po_rate", value)} />
+            </div>
+
+            {/* --- MATERIAL CONSTANTS & AGGREGATES BREAKDOWN --- */}
+            <div className="mt-6 border border-ink-mid bg-ink p-5 shadow-sm">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Layers className="h-4 w-4 text-signal" />
+                    <h3 className="font-display text-sm font-bold uppercase tracking-wider text-white">
+                      Material Constants & Aggregates Mix
+                    </h3>
+                    <span className="rounded border border-signal/30 bg-signal/10 px-2 py-0.5 font-mono text-[10px] uppercase text-signal">
+                      {aggregates.length} {aggregates.length === 1 ? "constituent" : "constituents"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate">
+                    Control the overall materials figure by specifying exact aggregate constants (cement, sand, stone, water, additives) per {rate.unit || "unit"}.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex rounded border border-ink-mid bg-ink-light p-0.5 text-[11px] font-mono">
+                    <button
+                      type="button"
+                      onClick={() => setBreakdownMode(true)}
+                      className={`px-2.5 py-1 transition-all ${
+                        breakdownMode
+                          ? "bg-signal text-ink font-semibold"
+                          : "text-slate hover:text-white"
+                      }`}
+                    >
+                      Aggregates Mix
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBreakdownMode(false)}
+                      className={`px-2.5 py-1 transition-all ${
+                        !breakdownMode
+                          ? "bg-signal text-ink font-semibold"
+                          : "text-slate hover:text-white"
+                      }`}
+                    >
+                      Manual Lump Sum
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAggregatesPanel((prev) => !prev)}
+                    className="inline-flex items-center gap-1 border border-ink-mid bg-ink-light px-2.5 py-1 text-xs text-slate transition-colors hover:border-signal/50 hover:text-white"
+                  >
+                    {showAggregatesPanel ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    <span>{showAggregatesPanel ? "Collapse" : "Expand"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {showAggregatesPanel && (
+                <div className="mt-4 space-y-4">
+                  {/* Quick Presets */}
+                  <div className="border border-ink-mid/60 bg-ink-light/50 p-3">
+                    <div className="flex items-center justify-between gap-2 pb-2">
+                      <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-slate-light">
+                        <Sparkles className="h-3 w-3 text-signal" />
+                        Load Mix Preset from Estimation Constants:
+                      </span>
+                      {aggregates.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearAggregates}
+                          className="inline-flex items-center gap-1 font-mono text-[10px] uppercase text-red-400 hover:text-red-300 transition-colors"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          Clear Mix
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {AGGREGATE_PRESETS.map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => applyAggregatePreset(preset)}
+                          className="border border-ink-mid bg-ink px-2.5 py-1 font-mono text-[10px] uppercase text-slate transition-colors hover:border-signal/60 hover:text-white hover:bg-signal/5"
+                          title={preset.description}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Aggregates Table */}
+                  {aggregates.length === 0 ? (
+                    <div className="border border-dashed border-ink-mid p-6 text-center">
+                      <p className="text-xs text-slate">
+                        No constituent aggregates or material constants added yet.
+                      </p>
+                      <p className="mt-1 font-mono text-[11px] text-slate-light">
+                        Load a standard mix preset above (e.g. Concrete Grade 20) or add custom ingredients per {rate.unit || "unit"}.
+                      </p>
+                      <div className="mt-4 flex flex-wrap justify-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => applyAggregatePreset(AGGREGATE_PRESETS[0])}
+                          className="inline-flex items-center gap-1.5 border border-signal/40 bg-signal/10 px-3 py-1.5 font-mono text-xs text-signal transition-colors hover:bg-signal/20"
+                        >
+                          <Sparkles className="h-3.5 w-3.5" />
+                          Load Concrete Mix (1:2:4)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => addAggregate()}
+                          className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink-light px-3 py-1.5 font-mono text-xs text-white transition-colors hover:border-signal/50"
+                        >
+                          <Plus className="h-3.5 w-3.5 text-signal" />
+                          + Add First Aggregate
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-ink-mid bg-ink-light font-mono text-[10px] uppercase tracking-wider text-slate">
+                            <th className="p-2.5">Constituent Material / Aggregate</th>
+                            <th className="p-2.5 w-28">Agg. Unit</th>
+                            <th className="p-2.5 w-36">
+                              Constant (Qty / {rate.unit || "unit"})
+                            </th>
+                            <th className="p-2.5 w-32">Unit Price ({rate.currency})</th>
+                            <th className="p-2.5 w-32 text-right">
+                              Subtotal ({rate.currency}/{rate.unit || "unit"})
+                            </th>
+                            <th className="p-2.5 w-12 text-center"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-ink-mid/40 font-mono">
+                          {aggregates.map((item) => {
+                            const subtotal = toNumber(item.constant) * toNumber(item.unit_cost);
+                            return (
+                              <tr key={item.id} className="transition-colors hover:bg-ink-light/40">
+                                <td className="p-2">
+                                  <input
+                                    type="text"
+                                    value={item.name}
+                                    placeholder="e.g. River Sand / Cement / Water / Stone"
+                                    onChange={(e) => updateAggregate(item.id, "name", e.target.value)}
+                                    className="h-8 w-full border border-ink-mid bg-ink px-2 text-xs font-sans text-white outline-none focus:border-signal/50"
+                                  />
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="text"
+                                    value={item.unit}
+                                    placeholder="e.g. bags, m3, L"
+                                    onChange={(e) => updateAggregate(item.id, "unit", e.target.value)}
+                                    className="h-8 w-full border border-ink-mid bg-ink px-2 text-xs text-paper outline-none focus:border-signal/50"
+                                  />
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    value={item.constant}
+                                    onChange={(e) => updateAggregate(item.id, "constant", e.target.value)}
+                                    className="h-8 w-full border border-ink-mid bg-ink px-2 text-xs text-right text-paper outline-none focus:border-signal/50"
+                                  />
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={item.unit_cost}
+                                    onChange={(e) => updateAggregate(item.id, "unit_cost", e.target.value)}
+                                    className="h-8 w-full border border-ink-mid bg-ink px-2 text-xs text-right text-paper outline-none focus:border-signal/50"
+                                  />
+                                </td>
+                                <td className="p-2 text-right font-semibold text-white">
+                                  {money(subtotal, rate.currency)}
+                                </td>
+                                <td className="p-2 text-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => removeAggregate(item.id)}
+                                    className="p-1 text-slate hover:text-red-400 transition-colors"
+                                    title="Remove aggregate line"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr className="border-t border-ink-mid bg-ink-light/80 font-mono">
+                            <td colSpan={4} className="p-2.5 font-semibold text-right uppercase text-[11px] text-slate-light">
+                              Total Calculated Material Rate per {rate.unit || "unit"}:
+                            </td>
+                            <td className="p-2.5 text-right font-bold text-sm text-signal">
+                              {money(aggregateMaterialTotal, rate.currency)}
+                            </td>
+                            <td></td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Actions & Live Status */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pt-1">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => addAggregate()}
+                        className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink-light px-3 py-1.5 font-mono text-xs font-semibold text-paper transition-all hover:border-signal/50 hover:text-white"
+                      >
+                        <Plus className="h-3.5 w-3.5 text-signal" />
+                        + Add Aggregate / Constant
+                      </button>
+                    </div>
+
+                    <div className="font-mono text-xs">
+                      {breakdownMode ? (
+                        <div className="flex items-center gap-2 text-slate-light">
+                          <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+                          <span>
+                            Directly driving Material Rate: <strong className="text-white">{money(aggregates.length > 0 ? aggregateMaterialTotal : rate.material_rate, rate.currency)}</strong> per {rate.unit || "unit"}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 text-amber-300">
+                          <span className="inline-block h-2 w-2 rounded-full bg-amber-400" />
+                          <span>Manual override active: using flat {money(rate.material_rate, rate.currency)}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-3 border border-ink-mid bg-ink p-4 md:grid-cols-4">
@@ -602,16 +1055,42 @@ function Field({
   );
 }
 
-function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+function NumberField({
+  label,
+  value,
+  onChange,
+  readOnly = false,
+  badge,
+  className = "",
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  readOnly?: boolean;
+  badge?: string;
+  className?: string;
+}) {
   return (
-    <label>
-      <span className="font-mono text-[10px] uppercase tracking-widest text-slate">{label}</span>
+    <label className={`block ${className}`}>
+      <div className="flex items-center justify-between gap-1">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-slate">{label}</span>
+        {badge && (
+          <span className="truncate rounded border border-signal/30 bg-signal/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-signal">
+            {badge}
+          </span>
+        )}
+      </div>
       <input
         type="number"
         step="0.01"
         value={value}
+        readOnly={readOnly}
         onChange={(event) => onChange(toNumber(event.target.value))}
-        className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-xs text-paper outline-none transition-colors focus:border-signal/50"
+        className={`mt-2 h-10 w-full border px-3 text-xs outline-none transition-colors ${
+          readOnly
+            ? "border-signal/40 bg-ink font-mono font-semibold text-signal cursor-default"
+            : "border-ink-mid bg-ink text-paper focus:border-signal/50"
+        }`}
       />
     </label>
   );

@@ -77,6 +77,11 @@ async def create_leave_request(
     """
     Create a new leave request in hr.leave_requests.
     """
+    if payload.days_requested <= 0:
+        raise HTTPException(status_code=400, detail="Days requested must be greater than zero.")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="End date must be on or after start date.")
+
     # Verify employee
     emp = (
         await db.execute(
@@ -97,8 +102,8 @@ async def create_leave_request(
                 organization_id, employee_id, leave_type, start_date, end_date,
                 days_requested, reason, status, submitted_by, calendar_status, calendar_title, created_by
             ) VALUES (
-                :org_id, :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
-                :days_requested, :reason, 'pending', :user_id, 'pending', :calendar_title, :user_id
+                CAST(:org_id AS uuid), :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
+                :days_requested, :reason, 'pending', CAST(:user_id AS uuid), 'pending', :calendar_title, CAST(:user_id AS uuid)
             ) RETURNING id
         """),
                 {
@@ -109,21 +114,24 @@ async def create_leave_request(
                     "end_date": payload.end_date,
                     "days_requested": payload.days_requested,
                     "reason": payload.reason,
-                    "calendar_title": f"{emp.employee_name} - {payload.leave_type}",
+                    "calendar_title": f"{emp.employee_name} - {payload.leave_type}"[:200],
                     "user_id": user["user_id"],
                 },
             )
         ).scalar()
-        await emit_role_notification(
-            db,
-            org_id=user["org_id"],
-            role_names=["HR Manager", "HR Officer"],
-            title="New leave request",
-            message=f"{emp.employee_name} requested {payload.days_requested} day(s) of {payload.leave_type} leave ({payload.start_date} to {payload.end_date}).",
-            notification_type="hr_leave_request",
-            action_url="/dashboard/hr",
-            metadata={"leave_id": str(leave_id), "employee_id": str(payload.employee_id)},
-        )
+        try:
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["HR Manager", "HR Officer"],
+                title="New leave request",
+                message=f"{emp.employee_name} requested {payload.days_requested} day(s) of {payload.leave_type} leave ({payload.start_date} to {payload.end_date}).",
+                notification_type="hr_leave_request",
+                action_url="/dashboard/hr",
+                metadata={"leave_id": str(leave_id), "employee_id": str(payload.employee_id)},
+            )
+        except Exception:
+            pass
         await db.commit()
         return ok({"id": str(leave_id)}, "Leave request submitted.")
     except Exception as e:
@@ -274,6 +282,11 @@ async def create_my_leave_request(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    if payload.days_requested <= 0:
+        raise HTTPException(status_code=400, detail="Days requested must be greater than zero.")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="End date must be on or after start date.")
+
     employee_id = await resolve_own_employee_id(db, org_id=user["org_id"], user_id=user["user_id"])
     if not employee_id:
         raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
@@ -285,8 +298,8 @@ async def create_my_leave_request(
                 organization_id, employee_id, leave_type, start_date, end_date,
                 days_requested, reason, status, submitted_by, calendar_status, calendar_title, created_by
             ) VALUES (
-                :org_id, :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
-                :days_requested, :reason, 'pending', :user_id, 'pending', :calendar_title, :user_id
+                CAST(:org_id AS uuid), :employee_id, :leave_type, CAST(:start_date AS date), CAST(:end_date AS date),
+                :days_requested, :reason, 'pending', CAST(:user_id AS uuid), 'pending', :calendar_title, CAST(:user_id AS uuid)
             ) RETURNING id
         """),
                 {
@@ -297,21 +310,24 @@ async def create_my_leave_request(
                     "end_date": payload.end_date,
                     "days_requested": payload.days_requested,
                     "reason": payload.reason,
-                    "calendar_title": f"{user['email']} - {payload.leave_type}",
+                    "calendar_title": f"{user['email']} - {payload.leave_type}"[:200],
                     "user_id": user["user_id"],
                 },
             )
         ).scalar()
-        await emit_role_notification(
-            db,
-            org_id=user["org_id"],
-            role_names=["HR Manager", "HR Officer"],
-            title="New leave request",
-            message=f"{user['email']} requested {payload.days_requested} day(s) of {payload.leave_type} leave ({payload.start_date} to {payload.end_date}).",
-            notification_type="hr_leave_request",
-            action_url="/dashboard/hr",
-            metadata={"leave_id": str(leave_id), "employee_id": str(employee_id)},
-        )
+        try:
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["HR Manager", "HR Officer"],
+                title="New leave request",
+                message=f"{user['email']} requested {payload.days_requested} day(s) of {payload.leave_type} leave ({payload.start_date} to {payload.end_date}).",
+                notification_type="hr_leave_request",
+                action_url="/dashboard/hr",
+                metadata={"leave_id": str(leave_id), "employee_id": str(employee_id)},
+            )
+        except Exception:
+            pass
         await db.commit()
         return ok({"id": str(leave_id)}, "Leave request submitted.")
     except Exception as e:

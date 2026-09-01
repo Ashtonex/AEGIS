@@ -59,3 +59,27 @@ def test_hr_operations_api_and_ui_are_wired():
     ]:
         assert marker in HR_PAGE
     assert "Submit leave from your account" in PROFILE_PAGE
+
+
+def test_hr_leave_permissions_and_robustness():
+    migration_174 = (ROOT / "migrations" / "174_hr_leave_and_attendance_permission_repair.sql").read_text(encoding="utf-8")
+    for role_grant in [
+        "('Executive (Admin)', 'hr.leave.create')",
+        "('Executive (Admin)', 'hr.leave.approve')",
+        "('Executive (Admin)', 'hr.attendance.record')",
+        "('Managing Director', 'hr.leave.create')",
+        "('Managing Director', 'hr.leave.approve')",
+        "('Managing Director', 'hr.attendance.record')",
+        "('HR Manager', 'hr.leave.create')",
+        "('Project Manager', 'hr.leave.create')",
+    ]:
+        assert role_grant in migration_174
+
+    assert "Days requested must be greater than zero." in HR_RECORDS
+    assert "End date must be on or after start date." in HR_RECORDS
+    assert "CAST(:org_id AS uuid)" in HR_RECORDS
+    assert "CAST(:user_id AS uuid)" in HR_RECORDS
+
+    assert "clean || fallback" in HR_PAGE
+    assert "End date must be on or after start date." in HR_PAGE
+    assert "Days requested must be greater than zero." in HR_PAGE

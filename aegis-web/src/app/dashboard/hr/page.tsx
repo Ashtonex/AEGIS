@@ -88,10 +88,11 @@ function loadFailureMessage(reason: unknown) {
 
 function normalizeActionError(reason: unknown, fallback: string) {
   const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
-  if (/aborted|cancelled|timed out|network error|fetch failed|not found/i.test(rawMessage)) {
+  if (/aborted|cancelled|timed out|network error|fetch failed/i.test(rawMessage)) {
     return fallback;
   }
-  return fallback;
+  const clean = rawMessage.trim();
+  return clean || fallback;
 }
 
 function formatCell(value: unknown) {
@@ -352,11 +353,27 @@ function HRWorkspace() {
 
   const handleCreateLeaveRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!leaveForm.employee_id || !leaveForm.start_date || !leaveForm.end_date) return;
+    if (!leaveForm.employee_id) {
+      setNotice("Please select an employee.");
+      return;
+    }
+    if (!leaveForm.start_date || !leaveForm.end_date) {
+      setNotice("Please specify start and end dates.");
+      return;
+    }
+    if (leaveForm.end_date < leaveForm.start_date) {
+      setNotice("End date must be on or after start date.");
+      return;
+    }
+    const days = Number(leaveForm.days_requested);
+    if (!days || days <= 0 || Number.isNaN(days)) {
+      setNotice("Days requested must be greater than zero.");
+      return;
+    }
     try {
       await createHRLeaveRequest({
         ...leaveForm,
-        days_requested: Number(leaveForm.days_requested)
+        days_requested: days
       });
       setNotice("Leave request submitted successfully.");
       setShowLeaveModal(false);
@@ -918,6 +935,8 @@ function HRWorkspace() {
                   <label className="block text-xs font-mono uppercase text-slate mb-1">Days Requested</label>
                   <input
                     type="number"
+                    min="0.5"
+                    step="0.5"
                     required
                     value={leaveForm.days_requested}
                     onChange={(e) => setLeaveForm({ ...leaveForm, days_requested: e.target.value })}
@@ -932,7 +951,15 @@ function HRWorkspace() {
                     type="date"
                     required
                     value={leaveForm.start_date}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, start_date: e.target.value })}
+                    onChange={(e) => {
+                      const nextStart = e.target.value;
+                      let days = leaveForm.days_requested;
+                      if (nextStart && leaveForm.end_date && leaveForm.end_date >= nextStart) {
+                        const diff = Math.round((new Date(leaveForm.end_date).getTime() - new Date(nextStart).getTime()) / 86400000) + 1;
+                        days = String(Math.max(1, diff));
+                      }
+                      setLeaveForm({ ...leaveForm, start_date: nextStart, days_requested: days });
+                    }}
                     className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
                   />
                 </div>
@@ -941,8 +968,17 @@ function HRWorkspace() {
                   <input
                     type="date"
                     required
+                    min={leaveForm.start_date || undefined}
                     value={leaveForm.end_date}
-                    onChange={(e) => setLeaveForm({ ...leaveForm, end_date: e.target.value })}
+                    onChange={(e) => {
+                      const nextEnd = e.target.value;
+                      let days = leaveForm.days_requested;
+                      if (leaveForm.start_date && nextEnd && nextEnd >= leaveForm.start_date) {
+                        const diff = Math.round((new Date(nextEnd).getTime() - new Date(leaveForm.start_date).getTime()) / 86400000) + 1;
+                        days = String(Math.max(1, diff));
+                      }
+                      setLeaveForm({ ...leaveForm, end_date: nextEnd, days_requested: days });
+                    }}
                     className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
                   />
                 </div>
