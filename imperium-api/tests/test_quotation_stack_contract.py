@@ -79,6 +79,23 @@ class QuotationStackContractTests(unittest.TestCase):
         self.assertIn("_load_org_assemblies", QUOTATION_ROUTER)
         self.assertIn("QuotationBrain.evaluate_project(payload, rate_benchmarks=org_rate_benchmarks)", QUOTATION_ROUTER)
 
+    def test_rate_intelligence_preserves_scope_supply_mode_and_material_breakdown(self):
+        migration = (ROOT / "migrations" / "175_rate_intelligence_scope_and_supply_mode.sql").read_text(encoding="utf-8")
+        for marker in [
+            "source_type",
+            "source_id",
+            "rate_group",
+            "supply_mode",
+            "material_contribution_pct",
+            "material_reference_rate",
+            "materials_breakdown",
+            "labour_only_client_materials",
+        ]:
+            self.assertIn(marker, migration)
+            self.assertIn(marker, QUOTATION_ROUTER)
+        self.assertIn("COALESCE(source_type, 'global') = 'global'", QUOTATION_ROUTER)
+        self.assertIn("source_type = :source_type", QUOTATION_ROUTER)
+
     def test_ccb_control_file_pdf_export_endpoint_exists(self):
         self.assertIn('@router.post("/intelligence/export-pdf")', QUOTATION_ROUTER)
         self.assertIn("CommercialControlPDFRenderer().render_pdf", QUOTATION_ROUTER)

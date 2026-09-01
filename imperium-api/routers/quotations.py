@@ -388,21 +388,60 @@ def _rate_row_to_dict(row: Any) -> Dict[str, Any]:
         "last_po_rate": float(row.last_po_rate),
         "currency": row.currency,
         "escalation_pct": float(row.escalation_pct),
+        "source_type": getattr(row, "source_type", "global"),
+        "source_id": str(row.source_id) if getattr(row, "source_id", None) else None,
+        "rate_group": getattr(row, "rate_group", None),
+        "supply_mode": getattr(row, "supply_mode", "full_supply"),
+        "material_contribution_pct": float(getattr(row, "material_contribution_pct", 0)),
+        "material_reference_rate": float(getattr(row, "material_reference_rate", row.supplier_rate)),
+        "materials_breakdown": getattr(row, "materials_breakdown", []),
     }
 
 
-async def _load_org_rate_benchmarks(db: AsyncSession, org_id: str) -> Dict[str, Dict[str, Any]]:
-    """Merges org-specific rows from finance.rate_intelligence over RATE_BENCHMARKS."""
+async def _load_org_rate_benchmarks(
+    db: AsyncSession,
+    org_id: str,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+    rate_group: Optional[str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Merges global org rates, then matching scoped/grouped rates, over seeded defaults."""
+    normalized_source_type = (source_type or "global").strip().lower() or "global"
+    normalized_rate_group = (rate_group or "").strip()
     result = await db.execute(
         text(
             """
             SELECT item_code, category, description, unit, target_rate, supplier_rate,
-                   subcontractor_rate, last_po_rate, currency, escalation_pct
+                   subcontractor_rate, last_po_rate, currency, escalation_pct,
+                   source_type, source_id, rate_group, supply_mode,
+                   material_contribution_pct, material_reference_rate, materials_breakdown
             FROM finance.rate_intelligence
-            WHERE organization_id = :org_id AND is_deleted = false
+            WHERE organization_id = :org_id
+              AND is_deleted = false
+              AND (
+                    COALESCE(source_type, 'global') = 'global'
+                    OR (:rate_group <> '' AND rate_group = :rate_group)
+                    OR (
+                        source_type = :source_type
+                        AND (:source_id IS NULL OR source_id = :source_id)
+                    )
+              )
+            ORDER BY
+              CASE
+                WHEN source_type = :source_type AND :source_id IS NOT NULL AND source_id = :source_id THEN 3
+                WHEN :rate_group <> '' AND rate_group = :rate_group THEN 2
+                WHEN COALESCE(source_type, 'global') = 'global' THEN 1
+                ELSE 0
+              END,
+              updated_at
             """
         ),
-        {"org_id": org_id},
+        {
+            "org_id": org_id,
+            "source_type": normalized_source_type,
+            "source_id": source_id,
+            "rate_group": normalized_rate_group,
+        },
     )
     merged = dict(RATE_BENCHMARKS)
     for row in result:
@@ -1082,11 +1121,20 @@ async def delete_construction_assembly(
 async def benchmark_rate(
     item_code: str,
     rate: float,
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+    rate_group: Optional[str] = None,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Benchmarks a requested item rate against internal target, supplier, subby market, and last PO rates."""
-    org_rate_benchmarks = await _load_org_rate_benchmarks(db, user["org_id"])
+    org_rate_benchmarks = await _load_org_rate_benchmarks(
+        db,
+        user["org_id"],
+        source_type=source_type,
+        source_id=source_id,
+        rate_group=rate_group,
+    )
     result = RateIntelligenceEngine.evaluate_rate(item_code, rate, benchmarks=org_rate_benchmarks)
     return {
         "success": True,
@@ -1106,10 +1154,12 @@ async def list_rate_benchmarks(
         text(
             """
             SELECT id, item_code, category, description, unit, target_rate, supplier_rate,
-                   subcontractor_rate, last_po_rate, currency, escalation_pct
+                   subcontractor_rate, last_po_rate, currency, escalation_pct,
+                   source_type, source_id, rate_group, supply_mode,
+                   material_contribution_pct, material_reference_rate, materials_breakdown
             FROM finance.rate_intelligence
             WHERE organization_id = :org_id AND is_deleted = false
-            ORDER BY item_code
+            ORDER BY COALESCE(rate_group, ''), source_type, item_code
             """
         ),
         {"org_id": user["org_id"]},
@@ -1133,6 +1183,17 @@ async def create_rate_benchmark(
     item_code = str(payload.get("item_code", "")).strip().upper()
     if not item_code:
         raise HTTPException(status_code=400, detail="item_code is required.")
+    source_type = str(payload.get("source_type") or "global").strip().lower() or "global"
+    if source_type not in {"global", "project", "tender", "opportunity", "task", "custom"}:
+        raise HTTPException(status_code=400, detail="source_type is invalid.")
+    source_id = payload.get("source_id") or None
+    rate_group = str(payload.get("rate_group") or "").strip() or None
+    supply_mode = str(payload.get("supply_mode") or "full_supply").strip().lower() or "full_supply"
+    if supply_mode not in {"full_supply", "labour_only_client_materials"}:
+        raise HTTPException(status_code=400, detail="supply_mode is invalid.")
+    material_contribution_pct = float(payload.get("material_contribution_pct", 0))
+    material_reference_rate = float(payload.get("material_reference_rate", payload.get("supplier_rate", 0)))
+    materials_breakdown = payload.get("materials_breakdown", [])
 
     await db.execute(
         text(
@@ -1141,10 +1202,21 @@ async def create_rate_benchmark(
             SET is_deleted = true, updated_at = NOW()
             WHERE organization_id = :org_id
               AND item_code = :item_code
+              AND COALESCE(source_type, 'global') = :source_type
+              AND COALESCE(source_id, '') = COALESCE(:source_id, '')
+              AND COALESCE(rate_group, '') = COALESCE(:rate_group, '')
+              AND COALESCE(supply_mode, 'full_supply') = :supply_mode
               AND is_deleted = false
             """
         ),
-        {"org_id": user["org_id"], "item_code": item_code},
+        {
+            "org_id": user["org_id"],
+            "item_code": item_code,
+            "source_type": source_type,
+            "source_id": source_id,
+            "rate_group": rate_group,
+            "supply_mode": supply_mode,
+        },
     )
 
     result = await db.execute(
@@ -1152,10 +1224,14 @@ async def create_rate_benchmark(
             """
             INSERT INTO finance.rate_intelligence (
                 organization_id, item_code, category, description, unit,
-                target_rate, supplier_rate, subcontractor_rate, last_po_rate, currency, escalation_pct
+                target_rate, supplier_rate, subcontractor_rate, last_po_rate, currency, escalation_pct,
+                source_type, source_id, rate_group, supply_mode,
+                material_contribution_pct, material_reference_rate, materials_breakdown
             ) VALUES (
                 :org_id, :item_code, :category, :description, :unit,
-                :target_rate, :supplier_rate, :subcontractor_rate, :last_po_rate, :currency, :escalation_pct
+                :target_rate, :supplier_rate, :subcontractor_rate, :last_po_rate, :currency, :escalation_pct,
+                :source_type, :source_id, :rate_group, :supply_mode,
+                :material_contribution_pct, :material_reference_rate, CAST(:materials_breakdown AS jsonb)
             )
             RETURNING id
             """
@@ -1172,6 +1248,13 @@ async def create_rate_benchmark(
             "last_po_rate": float(payload.get("last_po_rate", 0)),
             "currency": payload.get("currency", "USD"),
             "escalation_pct": float(payload.get("escalation_pct", 0)),
+            "source_type": source_type,
+            "source_id": source_id,
+            "rate_group": rate_group,
+            "supply_mode": supply_mode,
+            "material_contribution_pct": material_contribution_pct,
+            "material_reference_rate": material_reference_rate,
+            "materials_breakdown": json.dumps(materials_breakdown if isinstance(materials_breakdown, list) else []),
         },
     )
     await db.commit()

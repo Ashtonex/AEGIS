@@ -44,6 +44,13 @@ type RateBenchmark = {
   last_po_rate?: number | string;
   currency?: string;
   escalation_pct?: number | string;
+  source_type?: string;
+  source_id?: string | null;
+  rate_group?: string | null;
+  supply_mode?: string;
+  material_contribution_pct?: number | string;
+  material_reference_rate?: number | string;
+  materials_breakdown?: unknown;
 };
 
 export type MaterialAggregate = {
@@ -155,6 +162,11 @@ type RateInput = {
   profit_pct: number;
   escalation_pct: number;
   last_po_rate: number;
+  source_type: "global" | "project" | "tender" | "opportunity" | "task" | "custom";
+  source_id: string;
+  rate_group: string;
+  supply_mode: "full_supply" | "labour_only_client_materials";
+  material_contribution_pct: number;
   aggregates?: MaterialAggregate[];
 };
 
@@ -175,6 +187,11 @@ const blankRate: RateInput = {
   profit_pct: 15,
   escalation_pct: 0,
   last_po_rate: 0,
+  source_type: "global",
+  source_id: "",
+  rate_group: "Company Standard",
+  supply_mode: "full_supply",
+  material_contribution_pct: 5,
   aggregates: [],
 };
 
@@ -194,6 +211,7 @@ const examples: RateInput[] = [
     overhead_pct: 8,
     profit_pct: 14,
     last_po_rate: 195.0,
+    rate_group: "Concrete Works",
     aggregates: [
       { id: "agg-ex-1", name: "Portland Cement 42.5N (50kg bags)", unit: "bags", constant: 7.14, unit_cost: 12.50 },
       { id: "agg-ex-2", name: "Washed River Sand", unit: "m3", constant: 0.714, unit_cost: 22.00 },
@@ -215,6 +233,9 @@ const examples: RateInput[] = [
     overhead_pct: 10,
     profit_pct: 16,
     last_po_rate: 12.50,
+    supply_mode: "labour_only_client_materials",
+    material_contribution_pct: 5,
+    rate_group: "Finishes Labour",
     aggregates: [
       { id: "agg-ex-5", name: "Portland Cement (50kg bags)", unit: "bags", constant: 0.12, unit_cost: 12.50 },
       { id: "agg-ex-6", name: "Plaster Pit Sand", unit: "m3", constant: 0.02, unit_cost: 24.00 },
@@ -244,8 +265,17 @@ function pct(value: unknown): string {
 }
 
 function buildRate(input: RateInput) {
+  const materialReferenceRate = input.material_rate;
+  const materialContributionRate =
+    input.supply_mode === "labour_only_client_materials"
+      ? materialReferenceRate * (input.material_contribution_pct / 100)
+      : 0;
+  const billableMaterialRate =
+    input.supply_mode === "labour_only_client_materials"
+      ? materialContributionRate
+      : materialReferenceRate;
   const directRate =
-    input.material_rate +
+    billableMaterialRate +
     input.labour_rate +
     input.equipment_rate +
     input.subcontractor_rate +
@@ -265,6 +295,9 @@ function buildRate(input: RateInput) {
     escalationAllowance,
     profitAllowance,
     targetRate,
+    materialReferenceRate,
+    materialContributionRate,
+    billableMaterialRate,
   };
 }
 
@@ -410,6 +443,7 @@ export default function RateBuildUpPage() {
   const applyBenchmark = (item: RateBenchmark) => {
     setBenchmarkResult(null);
     setSuccessMsg("");
+    const savedBreakdown = Array.isArray(item.materials_breakdown) ? item.materials_breakdown : [];
     setRate((current) => ({
       ...current,
       item_code: item.item_code || current.item_code,
@@ -417,15 +451,31 @@ export default function RateBuildUpPage() {
       category: item.category || current.category,
       unit: item.unit || current.unit,
       currency: item.currency || current.currency,
-      material_rate: toNumber(item.supplier_rate),
+      material_rate: toNumber(item.material_reference_rate, toNumber(item.supplier_rate)),
       subcontractor_rate: toNumber(item.subcontractor_rate),
       escalation_pct: toNumber(item.escalation_pct),
       last_po_rate: toNumber(item.last_po_rate),
+      source_type: (item.source_type as RateInput["source_type"]) || current.source_type,
+      source_id: item.source_id || "",
+      rate_group: item.rate_group || current.rate_group,
+      supply_mode: (item.supply_mode as RateInput["supply_mode"]) || "full_supply",
+      material_contribution_pct: toNumber(item.material_contribution_pct, 5),
       profit_pct: current.profit_pct,
       overhead_pct: current.overhead_pct,
     }));
-    setAggregates([]);
-    setBreakdownMode(false);
+    if (savedBreakdown.length > 0) {
+      setAggregates(savedBreakdown.map((entry: any, index) => ({
+        id: `agg-saved-${item.id}-${index}`,
+        name: String(entry.material || entry.name || ""),
+        unit: String(entry.unit || "unit"),
+        constant: toNumber(entry.constant_per_rate_unit ?? entry.constant, 0),
+        unit_cost: toNumber(entry.unit_cost, 0),
+      })));
+      setBreakdownMode(true);
+    } else {
+      setAggregates([]);
+      setBreakdownMode(false);
+    }
   };
 
   const applyExample = (example: RateInput) => {
@@ -446,8 +496,16 @@ export default function RateBuildUpPage() {
       item_code: rate.item_code,
       description: rate.description,
       unit: rate.unit,
+      source_type: rate.source_type,
+      source_id: rate.source_id || null,
+      rate_group: rate.rate_group,
+      supply_mode: rate.supply_mode,
       target_rate: Number(calculated.targetRate.toFixed(2)),
-      material_rate: rate.material_rate,
+      material_reference_rate: Number(calculated.materialReferenceRate.toFixed(2)),
+      billable_material_rate: Number(calculated.billableMaterialRate.toFixed(2)),
+      material_contribution_pct: rate.material_contribution_pct,
+      material_contribution_rate: Number(calculated.materialContributionRate.toFixed(2)),
+      material_rate: Number(calculated.billableMaterialRate.toFixed(2)),
       labour_rate: rate.labour_rate,
       equipment_rate: rate.equipment_rate,
       subcontractor_rate: rate.subcontractor_rate,
@@ -478,7 +536,11 @@ export default function RateBuildUpPage() {
     setErrorMsg("");
     setBenchmarkResult(null);
     try {
-      const response = await benchmarkRate(rate.item_code, Number(calculated.targetRate.toFixed(2)));
+      const response = await benchmarkRate(rate.item_code, Number(calculated.targetRate.toFixed(2)), {
+        source_type: rate.source_type,
+        source_id: rate.source_id || undefined,
+        rate_group: rate.rate_group || undefined,
+      });
       if (response.success) {
         setBenchmarkResult(response.data);
       } else {
@@ -506,11 +568,24 @@ export default function RateBuildUpPage() {
         description: rate.description,
         unit: rate.unit || "unit",
         target_rate: Number(calculated.targetRate.toFixed(2)),
-        supplier_rate: Number((rate.material_rate + rate.equipment_rate + rate.prelim_rate).toFixed(2)),
+        supplier_rate: Number((calculated.billableMaterialRate + rate.equipment_rate + rate.prelim_rate).toFixed(2)),
         subcontractor_rate: Number(rate.subcontractor_rate.toFixed(2)),
         last_po_rate: Number(rate.last_po_rate.toFixed(2)),
         currency: rate.currency || "USD",
         escalation_pct: Number(rate.escalation_pct.toFixed(2)),
+        source_type: rate.source_type,
+        source_id: rate.source_id.trim() || null,
+        rate_group: rate.rate_group.trim() || null,
+        supply_mode: rate.supply_mode,
+        material_contribution_pct: Number(rate.material_contribution_pct.toFixed(2)),
+        material_reference_rate: Number(calculated.materialReferenceRate.toFixed(2)),
+        materials_breakdown: aggregates.map((item) => ({
+          material: item.name,
+          unit: item.unit,
+          constant_per_rate_unit: item.constant,
+          unit_cost: item.unit_cost,
+          subtotal_per_rate_unit: Number((item.constant * item.unit_cost).toFixed(2)),
+        })),
       });
       if (response.success) {
         setSuccessMsg("Company standard rate saved. New quotation checks will use this benchmark.");
@@ -633,6 +708,21 @@ export default function RateBuildUpPage() {
               <Field label="Category" value={rate.category} onChange={(value) => updateRate("category", value)} />
               <Field label="Task Context" value={rate.task_context} onChange={(value) => updateRate("task_context", value)} className="md:col-span-2" />
               <Field label="Currency" value={rate.currency} onChange={(value) => updateRate("currency", value.toUpperCase())} />
+              <SelectField
+                label="Rate Scope"
+                value={rate.source_type}
+                onChange={(value) => updateRate("source_type", value as RateInput["source_type"])}
+                options={[
+                  ["global", "Reusable Global"],
+                  ["project", "Project / Job"],
+                  ["tender", "Tender"],
+                  ["opportunity", "Opportunity"],
+                  ["task", "CRM Task"],
+                  ["custom", "Custom Scope"],
+                ]}
+              />
+              <Field label="Scope ID" value={rate.source_id} onChange={(value) => updateRate("source_id", value)} />
+              <Field label="Rate Group" value={rate.rate_group} onChange={(value) => updateRate("rate_group", value)} className="md:col-span-2" />
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
@@ -657,6 +747,45 @@ export default function RateBuildUpPage() {
               <NumberField label="Profit %" value={rate.profit_pct} onChange={(value) => updateRate("profit_pct", value)} />
               <NumberField label="Escalation %" value={rate.escalation_pct} onChange={(value) => updateRate("escalation_pct", value)} />
               <NumberField label="Last PO Rate" value={rate.last_po_rate} onChange={(value) => updateRate("last_po_rate", value)} />
+            </div>
+
+            <div className="mt-6 border border-ink-mid bg-ink p-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h3 className="font-display text-sm font-semibold text-white">Supply Mode</h3>
+                  <p className="mt-1 text-xs text-slate">
+                    Labour-only keeps the full material build-up visible, but charges only a contribution on client-supplied materials.
+                  </p>
+                </div>
+                <div className="inline-flex border border-ink-mid bg-ink-light p-0.5 text-[11px] font-mono">
+                  <button
+                    type="button"
+                    onClick={() => updateRate("supply_mode", "full_supply")}
+                    className={`px-3 py-1.5 transition-all ${rate.supply_mode === "full_supply" ? "bg-signal font-semibold text-ink" : "text-slate hover:text-white"}`}
+                  >
+                    Labour + Materials
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateRate("supply_mode", "labour_only_client_materials")}
+                    className={`px-3 py-1.5 transition-all ${rate.supply_mode === "labour_only_client_materials" ? "bg-signal font-semibold text-ink" : "text-slate hover:text-white"}`}
+                  >
+                    Labour Only
+                  </button>
+                </div>
+              </div>
+              {rate.supply_mode === "labour_only_client_materials" && (
+                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-4">
+                  <NumberField
+                    label="Material Contribution %"
+                    value={rate.material_contribution_pct}
+                    onChange={(value) => updateRate("material_contribution_pct", value)}
+                  />
+                  <BreakdownLine label="Material reference" value={calculated.materialReferenceRate} currency={rate.currency} />
+                  <BreakdownLine label={`${pct(rate.material_contribution_pct)} material contribution`} value={calculated.materialContributionRate} currency={rate.currency} />
+                  <BreakdownLine label="Material charged in rate" value={calculated.billableMaterialRate} currency={rate.currency} />
+                </div>
+              )}
             </div>
 
             {/* --- MATERIAL CONSTANTS & AGGREGATES BREAKDOWN --- */}
@@ -884,7 +1013,7 @@ export default function RateBuildUpPage() {
                         <div className="flex items-center gap-2 text-slate-light">
                           <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
                           <span>
-                            Directly driving Material Rate: <strong className="text-white">{money(aggregates.length > 0 ? aggregateMaterialTotal : rate.material_rate, rate.currency)}</strong> per {rate.unit || "unit"}
+                            Material reference: <strong className="text-white">{money(aggregates.length > 0 ? aggregateMaterialTotal : rate.material_rate, rate.currency)}</strong> per {rate.unit || "unit"}
                           </span>
                         </div>
                       ) : (
@@ -900,7 +1029,7 @@ export default function RateBuildUpPage() {
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-3 border border-ink-mid bg-ink p-4 md:grid-cols-4">
-              <BreakdownLine label="Direct rate" value={calculated.directRate} currency={rate.currency} />
+              <BreakdownLine label="Direct billed rate" value={calculated.directRate} currency={rate.currency} />
               <BreakdownLine label="Waste allowance" value={calculated.wasteAllowance} currency={rate.currency} />
               <BreakdownLine label="Overhead" value={calculated.overheadAllowance} currency={rate.currency} />
               <BreakdownLine label="Profit" value={calculated.profitAllowance} currency={rate.currency} />
@@ -923,7 +1052,7 @@ export default function RateBuildUpPage() {
                 className="inline-flex items-center gap-2 border border-emerald-500/40 bg-emerald-950/20 px-4 py-2 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-950/35 disabled:opacity-40"
               >
                 {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                Save Company Standard
+                Save Rate
               </button>
               <button
                 type="button"
@@ -956,7 +1085,7 @@ export default function RateBuildUpPage() {
               <div>
                 <h2 className="font-display text-lg font-semibold text-white">Owner Standard Control</h2>
                 <p className="mt-1 text-xs text-slate">
-                  Saved rates become organisation benchmarks for the same item code. Quotation checks and outlier warnings read from this library before falling back to seeded defaults.
+                  Saved rates can be global, grouped, or tied to a specific job. Labour-only rates keep the material reference separate from what is actually billed.
                 </p>
               </div>
             </div>
@@ -1009,6 +1138,8 @@ export default function RateBuildUpPage() {
                       <span>Unit {item.unit || "unit"}</span>
                       <span>Supplier {money(item.supplier_rate, item.currency || "USD")}</span>
                       <span>Sub {money(item.subcontractor_rate, item.currency || "USD")}</span>
+                      <span>{item.source_type || "global"}</span>
+                      <span>{item.rate_group || "Ungrouped"}</span>
                     </div>
                   </div>
                 ))}
@@ -1051,6 +1182,37 @@ function Field({
         onChange={(event) => onChange(event.target.value)}
         className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-xs text-paper outline-none transition-colors focus:border-signal/50"
       />
+    </label>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<[string, string]>;
+  className?: string;
+}) {
+  return (
+    <label className={className}>
+      <span className="font-mono text-[10px] uppercase tracking-widest text-slate">{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-xs text-paper outline-none transition-colors focus:border-signal/50"
+      >
+        {options.map(([optionValue, labelText]) => (
+          <option key={optionValue} value={optionValue}>
+            {labelText}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }

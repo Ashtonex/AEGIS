@@ -5003,8 +5003,19 @@ export async function calculateAssemblyBreakdown(assemblyCode: string, quantity:
   });
 }
 
-export async function benchmarkRate(itemCode: string, rate: number): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/rates/benchmark?item_code=${encodeURIComponent(itemCode)}&rate=${rate}`, {
+export async function benchmarkRate(
+  itemCode: string,
+  rate: number,
+  scope?: { source_type?: string; source_id?: string; rate_group?: string }
+): Promise<ApiResponse<any>> {
+  const query = new URLSearchParams({
+    item_code: itemCode,
+    rate: String(rate),
+  });
+  if (scope?.source_type) query.set('source_type', scope.source_type);
+  if (scope?.source_id) query.set('source_id', scope.source_id);
+  if (scope?.rate_group) query.set('rate_group', scope.rate_group);
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/rates/benchmark?${query.toString()}`, {
     cache: 'no-store',
     allowFallback: false,
   });
