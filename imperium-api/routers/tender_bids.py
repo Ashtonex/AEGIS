@@ -124,12 +124,12 @@ async def _record_tender_closeout(
     if "closeout_recorded_at" in tender_columns:
         set_clauses.append("closeout_recorded_at = NOW()")
     if "winning_contractor" in tender_columns:
-        set_clauses.append("winning_contractor = CASE WHEN :status = 'lost' THEN :winning_contractor ELSE winning_contractor END")
+        set_clauses.append("winning_contractor = CASE WHEN :status_wc = 'lost' THEN :winning_contractor ELSE winning_contractor END")
     if "recycling_status" in tender_columns:
         set_clauses.append(
             """recycling_status = CASE
-                    WHEN :status = 'lost' AND COALESCE(:winning_contractor, '') <> '' THEN 'winner_identified'
-                    WHEN :status = 'lost' THEN 'not_started'
+                    WHEN :status_rc = 'lost' AND COALESCE(:winning_contractor_rc, '') <> '' THEN 'winner_identified'
+                    WHEN :status_rc = 'lost' THEN 'not_started'
                     ELSE recycling_status
                 END"""
         )
@@ -146,9 +146,12 @@ async def _record_tender_closeout(
         {
             "stage": stage,
             "status": status,
+            "status_wc": status,
+            "status_rc": status,
             "reason": reason.strip(),
             "next_steps": json.dumps(clean_steps),
             "winning_contractor": winning_contractor.strip() if winning_contractor else None,
+            "winning_contractor_rc": winning_contractor.strip() if winning_contractor else None,
             "user_id": user_id,
             "recorded_user_id": recorded_user_id,
             "tender_id": tender_id,
