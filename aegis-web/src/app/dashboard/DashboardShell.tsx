@@ -195,7 +195,10 @@ const MODULE_GROUPS: ModuleGroup[] = [
     allowedRoles: ["Executive (Admin)", "HR Manager", "Project Manager"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "workforce.read",
-    subItems: [{ name: "Overview", href: "/dashboard/workforce", icon: Users }],
+    subItems: [
+      { name: "Overview", href: "/dashboard/workforce", icon: Users },
+      { name: "People Register", href: "/dashboard/workforce/people", icon: Users },
+    ],
   },
   {
     name: "Fleet",
@@ -255,6 +258,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     requiredPermission: "finance.cost.read",
     subItems: [
       { name: "Finance & Cost Control", href: "/dashboard/finance", icon: LayoutDashboard },
+      { name: "Financial Data Room", href: "/dashboard/finance/data-room", icon: FileText },
       { name: "Project Financials", href: "/dashboard/finance/project-financials", icon: DollarSign },
       { name: "Cost Codes", href: "/dashboard/finance/cost-codes", icon: FileText },
       { name: "Variations", href: "/dashboard/finance/variations", icon: BarChart },

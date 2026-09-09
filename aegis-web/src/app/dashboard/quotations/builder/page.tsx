@@ -936,7 +936,7 @@ export default function QuotationBuilder() {
           <input
             ref={boqFileInputRef}
             type="file"
-            accept=".xlsx,.xls,.csv"
+            accept=".xlsx,.xlsm,.xltx,.xls,.csv,.tsv,.txt"
             className="hidden"
             onChange={handleBoqFileImport}
           />

@@ -17,6 +17,7 @@ import { HistoricalEntryPanel } from "./HistoricalEntryPanel";
 import { FinancialStatementsPanel } from "./FinancialStatementsPanel";
 import { EarnedValuePanel } from "./EarnedValuePanel";
 import { FinalAccountPanel } from "./FinalAccountPanel";
+import { DataRoomPanel } from "./DataRoomPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -38,7 +39,7 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -60,6 +61,7 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   "client-payments": "/dashboard/finance/client-payments",
   "historical-entry": "/dashboard/finance/historical-entry",
   "financial-statements": "/dashboard/finance/financial-statements",
+  "data-room": "/dashboard/finance/data-room",
 };
 
 function normalizeTab(value: string | null | undefined): FinanceTab {
@@ -408,6 +410,17 @@ function FinanceWorkspace() {
               </button>
             ))}
           </div>
+          <button
+            onClick={() => setActiveTab(activeTab === "data-room" ? "project-financials" : "data-room")}
+            className={`flex items-center space-x-1.5 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+              activeTab === "data-room"
+                ? "bg-signal text-ink border-signal font-semibold"
+                : "border-signal/40 bg-signal/10 text-signal hover:bg-signal/20"
+            }`}
+          >
+            <ShieldCheck className="h-4 w-4" />
+            <span>SNC Data Room</span>
+          </button>
           {activeTab === "cost-codes" && (
             <button
               onClick={() => setShowCostCodeModal(true)}
@@ -480,8 +493,11 @@ function FinanceWorkspace() {
       </div>
 
       {/* Tab Panels */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
+      {activeTab === "data-room" ? (
+        <DataRoomPanel />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
           {operationalTabs.includes(activeTab) && (
             <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll"} projects={projects} departmentId={departmentId} />
           )}
@@ -853,6 +869,7 @@ function FinanceWorkspace() {
           </div>
         </div>
       </div>
+      )}
 
       {/* Cost Code Modal */}
       {showCostCodeModal && (

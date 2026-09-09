@@ -144,5 +144,6 @@ webencodings==0.5.1
 websockets==15.0.1
 win32_setctime==1.2.0
 wrapt==2.2.2
+xlrd==2.0.2
 xlsxwriter==3.2.9
 yarl==1.24.5

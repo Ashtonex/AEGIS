@@ -73,6 +73,9 @@ function isQueueableRequest(request) {
   if (!url.pathname.startsWith("/api/")) return false;
   if (url.pathname.startsWith("/api/v1/auth/")) return false;
   if (url.pathname.startsWith("/api/v1/pwa/")) return false;
+  // Workforce writes require an online receipt until the dedicated capture
+  // queue is available. This includes compatibility routes and decisions.
+  if (url.pathname === "/api/v1/workforce" || url.pathname.startsWith("/api/v1/workforce/")) return false;
 
   const contentType = request.headers.get("content-type") || "";
   if (contentType.includes("multipart/form-data")) return false;
@@ -295,4 +298,3 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
-

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ComplianceFoundation from "./ComplianceFoundation";
 import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw, Search,
@@ -92,6 +93,8 @@ function normalizeActionError(reason: unknown, fallback: string) {
 }
 
 export default function ComplianceDashboard() {
+  const params = useSearchParams();
+  if (!params?.get("tab") || params.get("tab") === "obligations") return <ComplianceFoundation />;
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
       <ComplianceWorkspace />

@@ -2,7 +2,6 @@
 
 from datetime import date, datetime
 from decimal import Decimal
-import json
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -15,52 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
-from app.shared.sql import safe_payload_columns, update_tenant_row_sql
 from app.shared.hr_self_service import resolve_own_employee_id
+
+from schemas.workforce_foundation import (
+    PersonCreate as EmployeeCreate,
+    PersonUpdate as EmployeeUpdate,
+)
+from routers.workforce_foundation import (
+    DB,
+    CommandKey,
+    create_person as register_worker,
+    update_person as revise_worker,
+)
 
 router = APIRouter()
 
 
 class Payload(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-
-class EmployeeCreate(Payload):
-    employee_name: str = Field(min_length=1, max_length=255)
-    job_title: Optional[str] = Field(default=None, max_length=100)
-    employee_number: Optional[str] = Field(default=None, max_length=80)
-    linked_user_id: Optional[UUID] = None
-    employment_status: Literal["active", "on_leave", "suspended", "terminated"] = (
-        "active"
-    )
-    employment_type: Optional[str] = Field(default=None, max_length=32)
-    department: Optional[str] = Field(default=None, max_length=120)
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
-    work_location: Optional[str] = Field(default=None, max_length=255)
-    emergency_contact: Optional[dict] = None
-
-    @model_validator(mode="after")
-    def valid_dates(self):
-        if self.start_date and self.end_date and self.end_date < self.start_date:
-            raise ValueError("end_date cannot precede start_date")
-        return self
-
-
-class EmployeeUpdate(Payload):
-    employee_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    job_title: Optional[str] = Field(default=None, max_length=100)
-    employee_number: Optional[str] = Field(default=None, max_length=80)
-    linked_user_id: Optional[UUID] = None
-    employment_status: Optional[
-        Literal["active", "on_leave", "suspended", "terminated"]
-    ] = None
-    employment_type: Optional[str] = Field(default=None, max_length=32)
-    department: Optional[str] = Field(default=None, max_length=120)
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
-    work_location: Optional[str] = Field(default=None, max_length=255)
-    emergency_contact: Optional[dict] = None
 
 
 class SkillPayload(Payload):
@@ -127,6 +98,8 @@ class TimesheetPayload(Payload):
     def has_hours(self):
         if self.regular_hours + self.overtime_hours <= 0:
             raise ValueError("at least one worked hour is required")
+        if self.regular_hours + self.overtime_hours > 24:
+            raise ValueError("total worked hours cannot exceed 24")
         return self
 
 
@@ -148,10 +121,26 @@ class UniversalAttendancePayload(Payload):
     # Record-based (new format)
     project_id: Optional[UUID] = None
     attendance_date: Optional[date] = None
-    status: Optional[str] = "present"
-    regular_hours: Optional[Decimal] = Decimal("8")
-    overtime_hours: Optional[Decimal] = Decimal("0")
+    status: Literal[
+        "present", "absent", "late", "half_day", "on_leave", "public_holiday"
+    ] = "present"
+    regular_hours: Decimal = Field(default=Decimal("8"), ge=0, le=24)
+    overtime_hours: Decimal = Field(default=Decimal("0"), ge=0, le=24)
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def valid_record(self):
+        if self.attendance_date is not None:
+            if self.event_type is not None:
+                raise ValueError("Send either an attendance record or a clock event")
+            if self.regular_hours + self.overtime_hours > 24:
+                raise ValueError("total worked hours cannot exceed 24")
+            if (
+                self.status in ("absent", "on_leave")
+                and self.regular_hours + self.overtime_hours
+            ):
+                raise ValueError("Absent and on-leave records must have zero hours")
+        return self
 
 
 def result(data, message: str, total: Optional[int] = None):
@@ -191,7 +180,9 @@ async def list_employees(
 ):
     rows = await db.execute(
         text("""
-        SELECT e.*, COUNT(c.id) FILTER (WHERE c.expires_on < CURRENT_DATE AND c.is_deleted = false) AS expired_certifications
+        SELECT e.id,e.employee_name,e.employee_number,e.job_title,e.employment_status,
+               e.employment_type,e.department,e.start_date,e.end_date,e.work_location,
+               COUNT(c.id) FILTER (WHERE c.expires_on < CURRENT_DATE AND c.is_deleted = false) AS expired_certifications
         FROM hr.employees e LEFT JOIN hr.employee_certifications c ON c.employee_id = e.id AND c.organization_id = e.organization_id
         WHERE e.organization_id = :org_id AND e.is_deleted = false
         GROUP BY e.id ORDER BY e.employee_name LIMIT 250
@@ -205,83 +196,31 @@ async def list_employees(
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_employee(
     payload: EmployeeCreate,
-    user: dict = Depends(require_permission("workforce.create")),
-    db: AsyncSession = Depends(get_db),
+    db: DB,
+    key: CommandKey,
+    user: dict = Depends(require_permission("workforce.people.create")),
 ):
-    values = payload.model_dump()
-    values["emergency_contact"] = (
-        json.dumps(values["emergency_contact"])
-        if values["emergency_contact"] is not None
-        else None
-    )
-    query = text("""INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, employee_number, linked_user_id,
-       employment_status, employment_type, department, start_date, end_date, work_location, emergency_contact)
-       VALUES (:org_id, :user_id, :employee_name, :job_title, :employee_number, :linked_user_id, :employment_status,
-       :employment_type, :department, :start_date, :end_date, :work_location, CAST(:emergency_contact AS jsonb)) RETURNING id""")
-    try:
-        new_id = (
-            await db.execute(
-                query, {**values, "org_id": user["org_id"], "user_id": user["sub"]}
-            )
-        ).scalar()
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise HTTPException(
-            status_code=409, detail="Employee number or linked account already exists"
-        ) from exc
-    return result({"id": str(new_id)}, "Employee created.")
+    """Compatibility route with the same receipts and guards as foundation (INSERT INTO hr.employees)."""
+    return await register_worker(payload=payload, db=db, key=key, user=user)
 
 
 @router.put("/{employee_id}")
 async def update_employee(
     employee_id: UUID,
     payload: EmployeeUpdate,
-    user: dict = Depends(require_permission("workforce.update")),
-    db: AsyncSession = Depends(get_db),
+    db: DB,
+    key: CommandKey,
+    user: dict = Depends(require_permission("workforce.people.update")),
 ):
-    await employee_or_404(db, employee_id, user["org_id"])
-    values = payload.model_dump(exclude_unset=True)
-    if not values:
-        return result({"id": str(employee_id)}, "No fields to update.")
-    if (
-        values.get("start_date")
-        and values.get("end_date")
-        and values["end_date"] < values["start_date"]
-    ):
-        raise HTTPException(
-            status_code=422, detail="end_date cannot precede start_date"
-        )
-    allowed = set(EmployeeUpdate.model_fields)
-    safe_keys = safe_payload_columns(values.keys())
-    try:
-        await db.execute(
-            update_tenant_row_sql(
-                "hr.employees",
-                safe_keys,
-                allowed,
-                id_param="employee_id",
-                require_not_deleted=False,
-            ),
-            {
-                **{key: values[key] for key in safe_keys},
-                "employee_id": employee_id,
-                "org_id": user["org_id"],
-            },
-        )
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise HTTPException(
-            status_code=409, detail="Employee number or linked account already exists"
-        ) from exc
-    return result({"id": str(employee_id)}, "Employee updated.")
+    return await revise_worker(
+        employee_id=employee_id, payload=payload, db=db, key=key, user=user
+    )
 
 
 @router.get("/{employee_id}/skills")
 async def list_skills(
     employee_id: UUID,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_permission("workforce.read")),
     db: AsyncSession = Depends(get_db),
 ):
     await employee_or_404(db, employee_id, user["org_id"])
@@ -476,6 +415,40 @@ async def create_allocation(
     )
 
 
+@router.get("/timesheets")
+async def list_timesheets(
+    date_from: date,
+    date_to: date,
+    project_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("workforce.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    if date_to < date_from or (date_to - date_from).days > 31:
+        raise HTTPException(
+            status_code=422, detail="Choose a period of at most 32 days"
+        )
+    rows = await db.execute(
+        text("""
+        SELECT t.*, e.employee_name, p.name AS project_name
+        FROM hr.timesheets t
+        JOIN hr.employees e ON e.id=t.employee_id AND e.organization_id=t.organization_id
+        LEFT JOIN projects.projects p ON p.id=t.project_id AND p.organization_id=t.organization_id
+        WHERE t.organization_id=:org_id AND t.is_deleted=false
+          AND t.work_date BETWEEN :date_from AND :date_to
+          AND (CAST(:project_id AS uuid) IS NULL OR t.project_id=CAST(:project_id AS uuid))
+        ORDER BY t.work_date DESC, e.employee_name
+    """),
+        {
+            "org_id": user["org_id"],
+            "date_from": date_from,
+            "date_to": date_to,
+            "project_id": project_id,
+        },
+    )
+    items = [dict(row._mapping) for row in rows]
+    return result(items, "Timesheets listed.", len(items))
+
+
 @router.post("/timesheets", status_code=status.HTTP_201_CREATED)
 async def create_timesheet(
     payload: TimesheetPayload,
@@ -527,6 +500,55 @@ async def decide_timesheet(
     user: dict = Depends(require_permission("workforce.update")),
     db: AsyncSession = Depends(get_db),
 ):
+    # Serialize decisions and require a reviewer independent of worker and author.
+    existing = await db.execute(
+        text("""
+        SELECT t.*, e.linked_user_id FROM hr.timesheets t
+        JOIN hr.employees e ON e.id=t.employee_id AND e.organization_id=t.organization_id
+        WHERE t.id=:id AND t.organization_id=:org_id AND t.is_deleted=false
+        FOR UPDATE OF t
+    """),
+        {"id": timesheet_id, "org_id": user["org_id"]},
+    )
+    sheet = existing.mappings().first()
+    if not sheet or sheet["status"] != "submitted":
+        raise HTTPException(
+            status_code=409, detail="Only submitted timesheets can be decided"
+        )
+    if str(user["sub"]) in (str(sheet["created_by"]), str(sheet["linked_user_id"])):
+        raise HTTPException(
+            status_code=403, detail="A separate reviewer must decide this timesheet"
+        )
+    if payload.status == "approved":
+        if not sheet["project_id"] or not (sheet["description"] or "").strip():
+            raise HTTPException(
+                status_code=409,
+                detail="Project and activity evidence are required before approval",
+            )
+        evidence = await db.execute(
+            text("""
+            SELECT regular_hours, overtime_hours FROM hr.attendance_records
+            WHERE organization_id=:org_id AND employee_id=:employee_id
+              AND project_id=:project_id AND attendance_date=:work_date
+              AND is_deleted=false AND status IN ('present', 'late', 'half_day', 'public_holiday')
+            FOR SHARE
+        """),
+            {
+                "org_id": user["org_id"],
+                "employee_id": sheet["employee_id"],
+                "project_id": sheet["project_id"],
+                "work_date": sheet["work_date"],
+            },
+        )
+        attendance = evidence.mappings().first()
+        if not attendance or any(
+            Decimal(sheet[key]) > Decimal(attendance[key])
+            for key in ("regular_hours", "overtime_hours")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Recorded attendance must support both ordinary and overtime hours before approval",
+            )
     row = await db.execute(
         text("""UPDATE hr.timesheets SET status=:status, approved_at=NOW(), approved_by=:user_id, updated_at=NOW()
         WHERE id=:id AND organization_id=:org_id AND is_deleted=false AND status='submitted' RETURNING id"""),
@@ -585,41 +607,45 @@ async def record_attendance(
 ):
     await employee_or_404(db, payload.employee_id, user["org_id"])
 
+    if payload.project_id:
+        await project_or_404(db, payload.project_id, user["org_id"])
+
     # If attendance_date is provided, it's the new record-based format
     if payload.attendance_date is not None:
         work_date = payload.attendance_date
-        check_in = datetime.combine(work_date, datetime.min.time())  # start of day
-        check_out = datetime.combine(
-            work_date, datetime.max.time()
-        )  # end of day if present
+        # Manual registers do not provide clock evidence; leave timestamps unset.
 
         row = await db.execute(
             text("""
             INSERT INTO hr.attendance_records (
-                organization_id, employee_id, project_id, work_date, check_in, check_out,
-                status, regular_hours, overtime_hours, notes, created_by
+                organization_id, employee_id, project_id, attendance_date,
+                status, regular_hours, overtime_hours, notes, recorded_by
             ) VALUES (
-                :org_id, :employee_id, :project_id, :work_date, :check_in, :check_out,
+                :org_id, :employee_id, :project_id, :work_date,
                 :status, :regular_hours, :overtime_hours, :notes, :user_id
-            ) RETURNING id
+            ) ON CONFLICT (organization_id, employee_id, attendance_date) DO NOTHING RETURNING id
         """),
             {
                 "org_id": user["org_id"],
                 "employee_id": payload.employee_id,
                 "project_id": payload.project_id,
                 "work_date": work_date,
-                "check_in": check_in,
-                "check_out": check_out,
                 "status": payload.status,
                 "regular_hours": payload.regular_hours,
                 "overtime_hours": payload.overtime_hours,
                 "notes": payload.notes,
-                "user_id": user["user_id"],
+                "user_id": user["sub"],
             },
         )
+        attendance_id = row.scalar()
+        if not attendance_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Attendance already exists for this worker and date; existing evidence was preserved",
+            )
         await db.commit()
         return result(
-            {"id": str(row.scalar())}, "HR Attendance record logged successfully."
+            {"id": str(attendance_id)}, "HR Attendance record logged successfully."
         )
 
     # Otherwise, it's the event-based coordinate clock in/out format
@@ -643,7 +669,7 @@ async def record_attendance(
             "location_label": payload.location_label,
             "latitude": payload.latitude,
             "longitude": payload.longitude,
-            "user_id": user["user_id"],
+            "user_id": user["sub"],
         },
     )
     await db.commit()
@@ -658,9 +684,13 @@ async def list_my_attendance(
     """Self-service: the caller's own attendance history. No require_permission -
     scoped entirely by resolve_own_employee_id, never a client-supplied
     employee_id, so nobody can read anyone else's attendance through this."""
-    employee_id = await resolve_own_employee_id(db, org_id=user["org_id"], user_id=user["user_id"])
+    employee_id = await resolve_own_employee_id(
+        db, org_id=user["org_id"], user_id=user["user_id"]
+    )
     if not employee_id:
-        raise HTTPException(status_code=404, detail="Employee identity is not provisioned.")
+        raise HTTPException(
+            status_code=404, detail="Employee identity is not provisioned."
+        )
     rows = await db.execute(
         text("""
             SELECT * FROM hr.attendance_records
@@ -681,7 +711,8 @@ async def get_employee(
 ):
     row = await db.execute(
         text("""
-            SELECT e.*
+            SELECT e.id,e.employee_name,e.employee_number,e.job_title,e.employment_status,
+                   e.employment_type,e.department,e.start_date,e.end_date,e.work_location
             FROM hr.employees e
             WHERE e.id = :employee_id
               AND e.organization_id = :org_id

@@ -1,0 +1,14 @@
+Validated 181 migration files in G:\work\ATMCAPPROJECTS\Mudekwa\AEGIS\imperium-api\migrations.
+INFO: 004_crm_leads_assignment.sql, 004_fix_audit_trigger.sql: multiple migrations share order prefix 004; runner order remains deterministic by full filename
+INFO: 005_crm_entities_expansion.sql, 005_project_executive_detail.sql: multiple migrations share order prefix 005; runner order remains deterministic by full filename
+INFO: 024_banking_and_payroll.sql, 024_equipment_finance_integration.sql: multiple migrations share order prefix 024; runner order remains deterministic by full filename
+INFO: 032_crm_communication_ledger.sql, 032_employee_onboarding_tour.sql: multiple migrations share order prefix 032; runner order remains deterministic by full filename
+INFO: 033_managed_account_password_reset.sql, 033_system_notifications.sql, 033_user_theme_preference.sql: multiple migrations share order prefix 033; runner order remains deterministic by full filename
+INFO: 034_finance_treasury_payroll.sql, 034_pwa_push_subscriptions.sql: multiple migrations share order prefix 034; runner order remains deterministic by full filename
+INFO: 038_quotation_intelligence_engine.sql, 038_superadmin_ashton_crafting.sql: multiple migrations share order prefix 038; runner order remains deterministic by full filename
+INFO: 041_crm_completion_phases_1_6.sql, 041_crm_schema_stabilization_and_hardening.sql: multiple migrations share order prefix 041; runner order remains deterministic by full filename
+INFO: 009_identity_profiles_and_rbac_hardening.sql:24: references user-editable auth metadata for display/provisioning data; authorization still must use app metadata or database assignments
+WARN: 058_user_roles_audit_trigger.sql:20: SECURITY DEFINER function should explicitly revoke PUBLIC/anon/authenticated execute where callable
+WARN: 067_automation_runs_missing_columns.sql:4: created table was has no same-file GRANT/REVOKE review marker for Supabase Data API exposure
+WARN: 069_fix_user_roles_audit_trigger.sql:17: SECURITY DEFINER function should explicitly revoke PUBLIC/anon/authenticated execute where callable
+Summary: 0 error(s), 3 warning(s), 9 info finding(s).

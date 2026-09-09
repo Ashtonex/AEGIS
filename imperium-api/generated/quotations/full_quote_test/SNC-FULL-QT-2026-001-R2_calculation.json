@@ -8,14 +8,14 @@
   "subtotal": "196134.45",
   "discount_amount": "2500.00",
   "taxable_amount": "193634.45",
-  "tax_amount": "29045.17",
-  "grand_total": "222679.62",
+  "tax_amount": "30013.34",
+  "grand_total": "223647.79",
   "breakdown_log": {
     "boq_item_count": 7,
     "overhead_percentage": "7.500%",
     "contingency_percentage": "6.500%",
     "profit_percentage": "12.00%",
-    "tax_percentage": "15.00%",
+    "tax_percentage": "15.500%",
     "margin_policy_violated": false,
     "margin_alerts": [
       "Pricing represents historical rates and has not been inflation-adjusted for current material price fluctuations. Recommend review against cost catalog."
@@ -28,6 +28,12 @@
       "transport": "0.00",
       "waste_allowance": "0.00"
     },
+    "boq_section_totals": [
+      {
+        "section": "Measured Works",
+        "amount": "134257.50"
+      }
+    ],
     "estimation_controls": {
       "built_area_sqm": "0",
       "finished_price_per_sqm": "0",
@@ -48,7 +54,7 @@
     "Client-side professional fees and third-party inspections.",
     "Foreign exchange variation after quote validity period."
   ],
-  "audit_trail_hash": "e75b99239ebf5317b23882c64f8ed16865772bd304b04960f707a6279bb66b7f",
+  "audit_trail_hash": "1b14783d1440c39dae2154cbbd478c31f910c1e063d9ce84205680ae0d879ee8",
   "built_area_sqm": "0",
   "price_validity_days": 30,
   "is_inflation_adjusted": false

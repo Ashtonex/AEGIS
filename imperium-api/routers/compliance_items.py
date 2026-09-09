@@ -153,7 +153,7 @@ async def list_obligations(
                 "category": r.get("category") or "statutory",
                 "responsible_person": r.get("responsible_person") or "Compliance Officer",
                 "due_date": r.get("expiry_date"),
-                "status": r.get("status") or "compliant",
+                "status": "unverified_legacy",
                 "notes": r.get("notes"),
                 "issue_date": r.get("issue_date"),
                 "reference": r.get("reference"),
@@ -163,50 +163,13 @@ async def list_obligations(
     return ok(data, "Compliance obligations listed.")
 
 
-@router.post("/obligations", status_code=status.HTTP_201_CREATED)
+@router.post("/obligations", status_code=410)
 async def create_obligation(
     payload: ObligationCreate,
-    user: dict = Depends(
-        require_permission("finance.budget.create")
-    ),  # general compliance auth
-    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_permission("compliance.foundation.manage")),
 ):
-    """
-    Add a new obligation item to core.compliance_items. Persists every
-    field the payload actually accepts - category/responsible_person/notes
-    used to be silently dropped here even though the request model always
-    took them.
-    """
-    try:
-        item_id = (
-            await db.execute(
-                text("""
-            INSERT INTO core.compliance_items (
-                organization_id, certificate_name, expiry_date, authority, category,
-                responsible_person, notes, status, is_deleted
-            )
-            VALUES (
-                :org_id, :title, CAST(:due_date AS date), :authority, :category,
-                :responsible_person, :notes, 'compliant', false
-            )
-            RETURNING id
-        """),
-                {
-                    "org_id": user["org_id"],
-                    "title": payload.title,
-                    "due_date": payload.due_date,
-                    "authority": payload.authority,
-                    "category": payload.category,
-                    "responsible_person": payload.responsible_person,
-                    "notes": payload.notes,
-                },
-            )
-        ).scalar()
-        await db.commit()
-        return ok({"id": str(item_id)}, "Compliance obligation recorded.")
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+    """Legacy shape lacks source, rule and ownership; never invent compliant proof."""
+    raise HTTPException(410, "Use /api/v1/compliance/foundation/obligations with a verified source and versioned rule")
 
 
 @router.get("/employee-credentials")

@@ -49,6 +49,21 @@ def _schema_for(table_ref: str) -> str:
     return table_ref.split(".", 1)[0] if "." in table_ref else "public"
 
 
+def _without_comments(content: str) -> str:
+    """Keep offsets and quoted SQL text while excluding prose from DDL checks."""
+    token = re.compile(
+        r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--[^\n]*|/\*.*?\*/", re.DOTALL
+    )
+    return token.sub(
+        lambda match: (
+            re.sub(r"[^\n]", " ", match.group())
+            if match.group().startswith(("--", "/*"))
+            else match.group()
+        ),
+        content,
+    )
+
+
 def _has_dynamic_rls(lower: str, schema: str) -> bool:
     return (
         "enable row level security" in lower
@@ -67,13 +82,10 @@ def _has_dynamic_policy(lower: str, schema: str) -> bool:
 
 
 def _has_policy_for(lower: str, table_ref: str) -> bool:
-    return (
-        "create policy" in lower
-        and (
-            f" on {table_ref} " in lower
-            or f" on {table_ref}\n" in lower
-            or f" on {table_ref}\r\n" in lower
-        )
+    return "create policy" in lower and (
+        f" on {table_ref} " in lower
+        or f" on {table_ref}\n" in lower
+        or f" on {table_ref}\r\n" in lower
     )
 
 
@@ -112,6 +124,21 @@ def _legacy_security_definer_is_hardened(path: Path, corpus_lower: str) -> bool:
             and "set search_path = pg_catalog, core, public" in corpus_lower
             and "revoke execute on function core.process_audit_log()" in corpus_lower
         )
+    if path.name in {
+        "058_user_roles_audit_trigger.sql",
+        "069_fix_user_roles_audit_trigger.sql",
+    }:
+        return (
+            "create or replace function core.process_user_roles_audit_log()"
+            in corpus_lower
+            and "set search_path" in path.read_text(encoding="utf-8").lower()
+            and bool(
+                re.search(
+                    r"revoke\s+execute\s+on\s+function\s+core\.process_user_roles_audit_log\(\)\s+from\s+public\s*,\s*anon\s*,\s*authenticated",
+                    corpus_lower,
+                )
+            )
+        )
     return False
 
 
@@ -145,7 +172,7 @@ def validate_filenames(files: list[Path]) -> list[Issue]:
 
 
 def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list[Issue]:
-    content = path.read_text(encoding="utf-8")
+    content = _without_comments(path.read_text(encoding="utf-8"))
     lower = content.lower()
     issues: list[Issue] = []
     auth_profile_trigger = _is_auth_profile_trigger(content)
@@ -154,7 +181,13 @@ def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list
         issues.append(Issue("ERROR", path.name, "migration is empty"))
 
     if "_seed_" in path.name and include_seed:
-        issues.append(Issue("ERROR", path.name, "seed migration included in production validation set"))
+        issues.append(
+            Issue(
+                "ERROR",
+                path.name,
+                "seed migration included in production validation set",
+            )
+        )
 
     if re.search(r"\binsert\s+into\s+(auth\.|core\.user_roles|public\.users)", lower):
         issues.append(
@@ -175,7 +208,13 @@ def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list
         )
 
     if re.search(r"\b(create|alter)\s+user\b|\bcreate\s+role\b", lower):
-        issues.append(Issue("ERROR", path.name, "production migration creates or alters database users/roles"))
+        issues.append(
+            Issue(
+                "ERROR",
+                path.name,
+                "production migration creates or alters database users/roles",
+            )
+        )
 
     if "raw_user_meta_data" in lower or "user_metadata" in lower:
         issues.append(
@@ -206,7 +245,10 @@ def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list
                     "SECURITY DEFINER function lacks an explicit search_path in this file",
                 )
             )
-        if "revoke execute on function" not in lower and "revoke all on function" not in lower:
+        if (
+            "revoke execute on function" not in lower
+            and "revoke all on function" not in lower
+        ):
             issues.append(
                 Issue(
                     "WARN",
@@ -221,7 +263,7 @@ def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list
             issues.append(
                 Issue(
                     "WARN",
-                    f"{path.name}:{content[:match.start()].count(chr(10)) + 1}",
+                    f"{path.name}:{content[: match.start()].count(chr(10)) + 1}",
                     f"view {match.group('view')} should use security_invoker=true or be kept out of exposed schemas",
                 )
             )
@@ -278,8 +320,16 @@ def validate_sql_file(path: Path, include_seed: bool, corpus_lower: str) -> list
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate production SQL migrations.")
-    parser.add_argument("--include-seed", action="store_true", help="Include seed files; production validation should not use this.")
-    parser.add_argument("--fail-on-warn", action="store_true", help="Treat warnings as release-blocking.")
+    parser.add_argument(
+        "--include-seed",
+        action="store_true",
+        help="Include seed files; production validation should not use this.",
+    )
+    parser.add_argument(
+        "--fail-on-warn",
+        action="store_true",
+        help="Treat warnings as release-blocking.",
+    )
     args = parser.parse_args()
 
     files = discover_files(include_seed=args.include_seed)

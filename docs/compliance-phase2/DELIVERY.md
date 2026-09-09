@@ -1,0 +1,7 @@
+# Phase 2 — Compliance foundation
+
+Architecture approved by the user on resumption. Scope: domains, authorities, source verification, obligation/rule versions, human applicability, assignments, scoped permissions, Core approval/audit/event integration and connected foundation UI. Calendar, credential/evidence acceptance, operational gates and later-phase dashboards remain outside this phase. No foundation record is labelled compliant merely because an obligation is active.
+
+Implementation uses the existing restricted transaction role, Core command receipts and WorkflowService. Shared workforce helpers remain intact; Compliance adds its own request adapter and extends tenant policies only for the required tables. New files: migration 177 and matching CLI-generated Supabase migration, schemas/compliance.py, app/services/compliance_foundation.py, routers/compliance_foundation.py, focused database/API tests and ComplianceFoundation.tsx. Existing main.py, compliance_items.py, api.ts and compliance routing receive narrow integration edits. No existing master data is duplicated.
+
+Acceptance: two-tenant DB/API denial; author cannot approve own version or N/A; stale version/duplicate command tests; source must be independently verified; revision retains previous versions; audit and events commit atomically; UI persists via real APIs and handles loading/errors/denial/mobile; relevant tests, lint, types and build succeed. Release remains pending until evidence is recorded here.

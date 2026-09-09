@@ -74,7 +74,7 @@ export type AggregatePreset = {
   }>;
 };
 
-export const AGGREGATE_PRESETS: AggregatePreset[] = [
+const AGGREGATE_PRESETS: AggregatePreset[] = [
   {
     label: "Concrete Grade 20 (1:2:4)",
     category: "Concrete",

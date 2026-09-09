@@ -1,4 +1,5 @@
 from pathlib import Path
+import ast
 import unittest
 
 
@@ -13,11 +14,24 @@ WORKFORCE_PAGE = (
 class WorkforceSecurityContractTests(unittest.TestCase):
     """Prevent regressions in the workforce tenant and SQL-input boundary."""
 
-    def test_workforce_router_is_centrally_action_authorized(self):
+    def test_workforce_router_has_authentication_and_explicit_action_permissions(self):
         self.assertIn(
-            'include_router(workforce.router, prefix="/api/v1/workforce", tags=["Workforce"], dependencies=[Depends(require_resource_permission("workforce"))])',
+            'include_router(workforce.router, prefix="/api/v1/workforce", tags=["Workforce"], dependencies=[Depends(get_current_user)])',
             MAIN,
         )
+        module = ast.parse(WORKFORCE_ROUTER)
+        for node in module.body:
+            if isinstance(node, ast.AsyncFunctionDef) and node.decorator_list:
+                if node.name == "list_my_attendance":
+                    self.assertIn("resolve_own_employee_id", ast.unparse(node))
+                    continue
+                self.assertTrue(
+                    any(
+                        "require_permission(" in ast.unparse(default)
+                        for default in node.args.defaults
+                    ),
+                    node.name,
+                )
         self.assertIn('@router.get("/{employee_id}")', WORKFORCE_ROUTER)
         self.assertIn("Employee retrieved.", WORKFORCE_ROUTER)
         self.assertLess(
@@ -28,13 +42,18 @@ class WorkforceSecurityContractTests(unittest.TestCase):
     def test_all_record_access_is_organization_scoped(self):
         # List, lookup, update, and soft-delete must all carry the authenticated org predicate.
         self.assertGreaterEqual(WORKFORCE_ROUTER.count("organization_id=:org_id"), 4)
-        self.assertIn("organization_id, created_by", WORKFORCE_ROUTER)
+        self.assertIn(
+            "return await register_worker(payload=payload, db=db, key=key, user=user)",
+            WORKFORCE_ROUTER,
+        )
         self.assertIn('"org_id": user["org_id"]', WORKFORCE_ROUTER)
 
     def test_dynamic_columns_are_validated_before_sql_construction(self):
         self.assertIn("class Payload(BaseModel):", WORKFORCE_ROUTER)
         self.assertIn('ConfigDict(extra="forbid"', WORKFORCE_ROUTER)
-        self.assertIn("allowed = set(EmployeeUpdate.model_fields)", WORKFORCE_ROUTER)
+        self.assertIn("PersonUpdate as EmployeeUpdate", WORKFORCE_ROUTER)
+        self.assertIn("return await revise_worker", WORKFORCE_ROUTER)
+        self.assertIn("key: CommandKey", WORKFORCE_ROUTER)
         self.assertNotIn("payload: dict", WORKFORCE_ROUTER)
 
     def test_workforce_page_degrades_optional_sources_without_aborting_register(self):

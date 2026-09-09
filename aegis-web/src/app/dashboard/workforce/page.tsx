@@ -6,6 +6,8 @@ import {
   CircleAlert, FileText, Loader2, MapPin, RefreshCw, Search, ShieldCheck,
   Users, X,
 } from "lucide-react";
+import WorkforceOperations from "./WorkforceOperations";
+import Link from "next/link";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { getComplianceDeploymentGateChecks, getComplianceItems, getHrRecords, getWorkforce } from "@/lib/api";
 
@@ -47,12 +49,12 @@ function employeeRole(employee: Employee) {
 }
 
 function employeeLocation(employee: Employee) {
-  return stringValue(employee.location ?? employee.project_name ?? employee.site ?? employee.assigned_location, "Unassigned");
+  return stringValue(employee.work_location ?? employee.location ?? employee.project_name ?? employee.site ?? employee.assigned_location, "Unassigned");
 }
 
 function statusClass(status: unknown) {
   const normalized = stringValue(status, "unknown").toLowerCase();
-  if (/(active|on shift|available|deployed)/.test(normalized)) return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
+  if (["active", "on shift", "available", "deployed", "passed"].includes(normalized)) return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
   if (/(leave|inactive|suspended|unavailable)/.test(normalized)) return "border-amber-500/30 bg-amber-950/20 text-amber-300";
   return "border-slate-500/30 bg-slate-950/20 text-slate-300";
 }
@@ -121,14 +123,14 @@ function WorkforceWorkspace() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const statuses = useMemo(() => Array.from(new Set(employees.map((employee) => stringValue(employee.status, "unknown").toLowerCase()))).sort(), [employees]);
+  const statuses = useMemo(() => Array.from(new Set(employees.map((employee) => stringValue((employee.employment_status ?? employee.status), "unknown").toLowerCase()))).sort(), [employees]);
   const filteredEmployees = useMemo(() => employees.filter((employee) => {
-    const matchingText = [employeeName(employee), employeeRole(employee), employeeLocation(employee), stringValue(employee.status, "")]
+    const matchingText = [employeeName(employee), employeeRole(employee), employeeLocation(employee), stringValue((employee.employment_status ?? employee.status), "")]
       .some((value) => value.toLowerCase().includes(query.trim().toLowerCase()));
-    return matchingText && (status === "all" || stringValue(employee.status, "unknown").toLowerCase() === status);
+    return matchingText && (status === "all" || stringValue((employee.employment_status ?? employee.status), "unknown").toLowerCase() === status);
   }), [employees, query, status]);
   const metrics = useMemo(() => {
-    const knownStatus = employees.filter((employee) => Boolean(employee.status)).length;
+    const knownStatus = employees.filter((employee) => Boolean((employee.employment_status ?? employee.status))).length;
     const assigned = employees.filter((employee) => employeeLocation(employee) !== "Unassigned").length;
     const expiring = compliance.filter((item) => {
       const state = complianceState(item);
@@ -147,6 +149,7 @@ function WorkforceWorkspace() {
           <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal"><Users className="h-4 w-4" />People operations</p>
           <h1 className="font-display text-3xl font-bold">Workforce Command</h1>
           <p className="mt-1 text-sm text-slate-light">Live employee register, documented assignments, and compliance evidence.</p>
+          <Link href="/dashboard/workforce/people" className="mt-3 inline-block text-sm text-signal underline">Manage people and organisation</Link>
         </div>
         <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
@@ -154,8 +157,8 @@ function WorkforceWorkspace() {
       </header>
 
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Employee register" value={loading ? "..." : String(employees.length)} detail="Active employee records" icon={Users} />
-        <Metric label="Recorded assignments" value={loading ? "..." : String(metrics.assigned)} detail="Location or project field present" icon={MapPin} />
+        <Metric label="Employee register" value={loading ? "..." : String(employees.length)} detail="Registered workers (up to 250)" icon={Users} />
+        <Metric label="Base locations recorded" value={loading ? "..." : String(metrics.assigned)} detail="Profile location; see deployments below" icon={MapPin} />
         <Metric label="Status captured" value={loading ? "..." : `${metrics.knownStatus}/${employees.length}`} detail="Records with an operational status" icon={CheckCircle2} />
         <Metric label="Compliance attention" value={loading ? "..." : String(metrics.expiring)} detail="Expired or due within 60 days" icon={ShieldCheck} tone={metrics.expiring ? "text-amber-300" : "text-slate-light"} />
         <Metric label="Blocked deployments" value={loading ? "..." : String(metrics.blocked)} detail="Latest compliance gate failures" icon={AlertTriangle} tone={metrics.blocked ? "text-red-300" : "text-slate-light"} />
@@ -163,6 +166,8 @@ function WorkforceWorkspace() {
 
       {error ? <section className="mb-6 flex gap-3 border border-red-500/30 bg-red-950/20 p-4 text-sm text-red-200"><CircleAlert className="h-5 w-5 shrink-0" />{error}</section> : null}
       {sourceWarnings.length > 0 ? <section className="mb-6 space-y-2">{sourceWarnings.map((warning) => <div key={warning} className="flex gap-3 border border-amber-500/30 bg-amber-950/20 p-3 text-sm text-amber-100"><AlertTriangle className="h-4 w-4 shrink-0 text-amber-300" />{warning}</div>)}</section> : null}
+
+      <WorkforceOperations employees={employees} />
 
       <section className="border border-ink-mid bg-ink">
         <div className="flex flex-col gap-3 border-b border-ink-mid p-4 lg:flex-row lg:items-center lg:justify-between">
@@ -173,7 +178,7 @@ function WorkforceWorkspace() {
           </div>
         </div>
         {loading ? <LoadingBlock label="Loading workforce register" /> : filteredEmployees.length === 0 ? <EmptyBlock title="No employee records match this view" detail={employees.length ? "Adjust the search or status filter." : "No active employee records have been created for this organisation."} /> : (
-          <div className="overflow-x-auto"><table className="min-w-[800px] w-full text-left"><thead className="border-b border-ink-mid font-mono text-[10px] uppercase tracking-widest text-slate"><tr><th className="px-4 py-3 font-normal">Employee</th><th className="px-4 py-3 font-normal">Role</th><th className="px-4 py-3 font-normal">Assignment</th><th className="px-4 py-3 font-normal">Status</th><th className="px-4 py-3" /></tr></thead><tbody>{filteredEmployees.map((employee) => <tr key={employee.id} className="border-b border-ink-mid/60 hover:bg-ink-light/70"><td className="px-4 py-3"><p className="text-sm text-paper">{employeeName(employee)}</p><p className="mt-1 font-mono text-[10px] text-slate">{employee.id}</p></td><td className="px-4 py-3 text-sm text-slate-light">{employeeRole(employee)}</td><td className="px-4 py-3 text-sm text-slate-light">{employeeLocation(employee)}</td><td className="px-4 py-3"><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${statusClass(employee.status)}`}>{stringValue(employee.status, "Status not recorded")}</span></td><td className="px-4 py-3 text-right"><button onClick={() => setSelected(employee)} className="inline-flex items-center gap-1 font-mono text-xs uppercase tracking-wider text-signal hover:text-paper">Inspect <ChevronRight className="h-4 w-4" /></button></td></tr>)}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="min-w-[800px] w-full text-left"><thead className="border-b border-ink-mid font-mono text-[10px] uppercase tracking-widest text-slate"><tr><th className="px-4 py-3 font-normal">Employee</th><th className="px-4 py-3 font-normal">Role</th><th className="px-4 py-3 font-normal">Assignment</th><th className="px-4 py-3 font-normal">Status</th><th className="px-4 py-3" /></tr></thead><tbody>{filteredEmployees.map((employee) => <tr key={employee.id} className="border-b border-ink-mid/60 hover:bg-ink-light/70"><td className="px-4 py-3"><p className="text-sm text-paper">{employeeName(employee)}</p><p className="mt-1 font-mono text-[10px] text-slate">{stringValue(employee.employee_number, employee.id)}</p></td><td className="px-4 py-3 text-sm text-slate-light">{employeeRole(employee)}</td><td className="px-4 py-3 text-sm text-slate-light">{employeeLocation(employee)}</td><td className="px-4 py-3"><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${statusClass((employee.employment_status ?? employee.status))}`}>{stringValue((employee.employment_status ?? employee.status), "Status not recorded")}</span></td><td className="px-4 py-3 text-right"><button onClick={() => setSelected(employee)} className="inline-flex items-center gap-1 font-mono text-xs uppercase tracking-wider text-signal hover:text-paper">Inspect <ChevronRight className="h-4 w-4" /></button></td></tr>)}</tbody></table></div>
         )}
       </section>
 
@@ -221,6 +226,6 @@ function LoadingBlock({ label }: { label: string }) { return <div className="fle
 function EmptyBlock({ title, detail }: { title: string; detail: string }) { return <div className="flex min-h-48 flex-col items-center justify-center p-6 text-center"><AlertTriangle className="h-7 w-7 text-slate" /><p className="mt-3 text-sm text-paper">{title}</p><p className="mt-1 max-w-lg text-xs text-slate-light">{detail}</p></div>; }
 
 function EmployeeDrawer({ employee, records, gateChecks, onClose }: { employee: Employee; records: RecordData[]; gateChecks: RecordData[]; onClose: () => void }) {
-  const attributes = Object.entries(employee).filter(([key, value]) => !["id", "organization_id", "created_by", "is_deleted"].includes(key) && value !== null && value !== "");
+  const attributes = Object.entries(employee).filter(([key, value]) => ["employee_number", "employee_name", "job_title", "employment_status", "employment_type", "department", "start_date", "end_date", "work_location"].includes(key) && value !== null && value !== "");
   return <div className="fixed inset-0 z-50 flex justify-end bg-black/60" role="dialog" aria-modal="true" aria-label="Employee record"><aside className="h-full w-full max-w-2xl overflow-y-auto border-l border-ink-mid bg-ink shadow-2xl"><header className="sticky top-0 flex items-start justify-between gap-4 border-b border-ink-mid bg-ink p-5"><div><p className="font-mono text-[10px] uppercase tracking-widest text-signal">Employee record</p><h2 className="mt-1 font-display text-2xl text-paper">{employeeName(employee)}</h2><p className="mt-1 text-sm text-slate-light">{employeeRole(employee)}</p></div><button onClick={onClose} aria-label="Close employee record" className="p-2 text-slate hover:text-paper"><X className="h-5 w-5" /></button></header><div className="space-y-6 p-5"><section><h3 className="font-mono text-xs uppercase tracking-widest text-slate">Stored workforce fields</h3><dl className="mt-3 grid gap-px border border-ink-mid bg-ink-mid sm:grid-cols-2">{attributes.map(([key, value]) => <div key={key} className="bg-ink p-3"><dt className="font-mono text-[10px] uppercase tracking-wider text-slate">{key.replace(/_/g, " ")}</dt><dd className="mt-1 break-words text-sm text-paper">{typeof value === "object" ? JSON.stringify(value) : String(value)}</dd></div>)}</dl></section><section><h3 className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-slate"><ShieldCheck className="h-4 w-4" />Deployment gate evidence</h3>{gateChecks.length ? <div className="mt-3 divide-y divide-ink-mid border border-ink-mid">{gateChecks.map((gate) => { const missing = Array.isArray(gate.missing_requirements) ? gate.missing_requirements : []; return <div key={String(gate.id)} className="p-3"><p className="text-sm text-paper">{stringValue(gate.gate_type, "Deployment gate").replaceAll("_", " ")}</p><p className="mt-1 text-xs text-slate-light">Result: {stringValue(gate.status, "pending")} · {missing.length ? missing.map((item: RecordData) => stringValue(item.certification_name ?? item.reason, "Missing requirement")).join(", ") : "requirements satisfied"}</p></div>; })}</div> : <p className="mt-3 text-sm text-slate-light">No deployment gate checks are linked to this employee yet.</p>}</section><section><h3 className="flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-slate"><FileText className="h-4 w-4" />Related HR records</h3>{records.length ? <div className="mt-3 divide-y divide-ink-mid border border-ink-mid">{records.map((record) => <div key={String(record.id)} className="p-3"><p className="text-sm text-paper">{stringValue(record.document_type ?? record.title ?? record.name, "HR record")}</p><p className="mt-1 text-xs text-slate-light">Created: {dateValue(record.created_at)}</p></div>)}</div> : <p className="mt-3 text-sm text-slate-light">No HR records are linked to this employee in the ERP.</p>}</section></div></aside></div>;
 }

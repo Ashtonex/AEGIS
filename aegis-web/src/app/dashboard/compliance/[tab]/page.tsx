@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
 const TAB_ROUTES: Record<string, string> = {
-  obligations: "/dashboard/compliance?tab=obligations",
+  obligations: "/dashboard/compliance",
   employees: "/dashboard/compliance?tab=employees",
   equipment: "/dashboard/compliance?tab=equipment",
   "deployment-gates": "/dashboard/compliance?tab=deployment-gates",

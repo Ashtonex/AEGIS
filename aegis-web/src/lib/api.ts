@@ -544,6 +544,33 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
   }
 }
 
+export type WorkforceFoundationResponse<T> = {
+  success: boolean;
+  data: T;
+  message: string;
+  meta: { next_cursor?: string | null; queued?: boolean };
+};
+
+export async function workforceFoundation<T>(path: string, command?: { method: "POST" | "PATCH"; key: string; payload: object }): Promise<WorkforceFoundationResponse<T>> {
+  const result = await fetchApi<WorkforceFoundationResponse<T>>(`/api/v1/workforce/foundation/${path}`, {
+    allowFallback: false,
+    cache: "no-store",
+    ...(command ? { method: command.method, headers: { "Idempotency-Key": command.key }, body: JSON.stringify(command.payload) } : {}),
+  });
+  if (result.meta?.queued) throw new ApiError(503, "No server receipt received. Reconnect and retry this command.");
+  return result;
+}
+
+export type ComplianceResponse<T> = { success: boolean; data: T; message: string; meta: { next_cursor?: string | null; queued?: boolean } };
+export async function complianceFoundation<T>(path: string, command?: { key: string; payload: object }): Promise<ComplianceResponse<T>> {
+  const result = await fetchApi<ComplianceResponse<T>>(`/api/v1/compliance/foundation/${path}`, {
+    allowFallback: false, cache: "no-store",
+    ...(command ? { method: "POST", headers: { "Idempotency-Key": command.key }, body: JSON.stringify(command.payload) } : {}),
+  });
+  if (result.meta?.queued) throw new ApiError(503, "No server receipt. Reconnect and retry the same command.");
+  return result;
+}
+
 // --- PROJECTS ---
 export async function getProjects(params?: { featured?: boolean; limit?: number; category?: string }): Promise<PaginatedResponse<Project>> {
   const searchParams = new URLSearchParams();
@@ -3058,7 +3085,7 @@ export async function completeModuleTour(moduleKey: string): Promise<ApiResponse
 }
 
 export async function getWorkforce(): Promise<ApiResponse<any[]>> {
-  return await fetchApi<ApiResponse<any[]>>('/api/v1/workforce/', { cache: 'no-store' });
+  return await fetchApi<ApiResponse<any[]>>('/api/v1/workforce/', { cache: 'no-store', allowFallback: false });
 }
 
 /** Fleet register. This endpoint intentionally has no demo-data fallback. */
@@ -4493,6 +4520,42 @@ export async function getHRAttendance(params?: { date?: string; project_id?: str
   return fetchApi<ApiResponse<any[]>>(`/api/v1/workforce/attendance${qs}`, { cache: 'no-store', allowFallback: false });
 }
 
+export async function getWorkforceAllocations(params?: { project_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.project_id) search.set('project_id', params.project_id);
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/workforce/allocations${qs}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createWorkforceAllocation(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/workforce/allocations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export type WorkforceTimeRecord = {
+  id: string; employee_id: string; employee_name?: string; project_id?: string;
+  project_name?: string; work_date: string; regular_hours: number | string;
+  overtime_hours: number | string; description?: string; status: string;
+  created_by?: string; approved_by?: string; approved_at?: string;
+};
+
+export async function getWorkforceTimesheets(date: string): Promise<ApiResponse<WorkforceTimeRecord[]>> {
+  return fetchApi(`/api/v1/workforce/timesheets?date_from=${encodeURIComponent(date)}&date_to=${encodeURIComponent(date)}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createWorkforceTimesheet(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi('/api/v1/workforce/timesheets', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function transitionWorkforceTimesheet(id: string, decision: 'submit' | 'approved' | 'rejected'): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi(`/api/v1/workforce/timesheets/${encodeURIComponent(id)}/${decision === 'submit' ? 'submit' : 'decision'}`, {
+    method: 'POST', ...(decision === 'submit' ? {} : { body: JSON.stringify({ status: decision }) }), allowFallback: false,
+  });
+}
+
 export async function recordHRAttendance(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/workforce/attendance', {
     method: 'POST',
@@ -5247,4 +5310,148 @@ export async function createPayrollRun(payload: Record<string, unknown>): Promis
     body: JSON.stringify(payload),
     allowFallback: false,
   });
+}
+
+// ----------------------------------------------------------------------------
+// SNC Financial Data Room & Bankability Engine
+// ----------------------------------------------------------------------------
+
+export async function getDataRoomTree(): Promise<ApiResponse<{
+  folders: any[];
+  standard_sections: any[];
+  readiness: { score_pct: number; verified_items: number; total_items: number; in_progress_items: number };
+}>> {
+  return fetchApi('/api/v1/finance/data-room/tree', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getDataRoomDocuments(params?: {
+  folder_path?: string;
+  section_code?: string;
+  audit_code?: string;
+  project_id?: string;
+  search?: string;
+  verification_status?: string;
+}): Promise<ApiResponse<any[]>> {
+  const query = new URLSearchParams();
+  if (params?.folder_path) query.set('folder_path', params.folder_path);
+  if (params?.section_code) query.set('section_code', params.section_code);
+  if (params?.audit_code) query.set('audit_code', params.audit_code);
+  if (params?.project_id) query.set('project_id', params.project_id);
+  if (params?.search) query.set('search', params.search);
+  if (params?.verification_status) query.set('verification_status', params.verification_status);
+
+  const qs = query.toString();
+  return fetchApi(`/api/v1/finance/data-room/documents${qs ? `?${qs}` : ''}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function classifyDataRoomUpload(payload: {
+  title: string;
+  file_name?: string;
+  project_id?: string;
+  document_date?: string;
+}): Promise<ApiResponse<{
+  suggested_folder_path: string;
+  section_code: string;
+  project_id: string | null;
+  project_name: string | null;
+  project_code: string | null;
+  fiscal_year: number;
+  audit_code: string | null;
+  audit_subitem: string | null;
+  category: string;
+}>> {
+  return fetchApi('/api/v1/finance/data-room/classify', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function issueDataRoomUploadPath(payload: {
+  file_name: string;
+}): Promise<ApiResponse<{ storage_path: string }>> {
+  return fetchApi('/api/v1/finance/data-room/upload-path', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function uploadDataRoomDocument(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string; folder_path: string }>> {
+  return fetchApi('/api/v1/finance/data-room/upload', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function createDataRoomFolder(payload: {
+  folder_name: string;
+  parent_path?: string;
+  section_code?: string;
+  project_id?: string;
+}): Promise<ApiResponse<{ folder_path: string }>> {
+  return fetchApi('/api/v1/finance/data-room/create-folder', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getDataRoomDocumentSignedUrl(id: string): Promise<ApiResponse<{
+  url: string;
+  file_name: string;
+  mime_type: string;
+  expires_in: number;
+}>> {
+  return fetchApi(`/api/v1/finance/data-room/documents/${id}/signed-url`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function updateDataRoomDocumentStatus(id: string, payload: {
+  verification_status: string;
+  audit_notes?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/finance/data-room/documents/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDataRoomDocument(id: string): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/finance/data-room/documents/${id}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function getBankabilityMatrix(): Promise<ApiResponse<{
+  categories: any[];
+  overall_readiness_pct: number;
+  total_items: number;
+  verified_items: number;
+}>> {
+  return fetchApi('/api/v1/finance/data-room/bankability-matrix', { cache: 'no-store', allowFallback: false });
+}
+
+export async function verifyBankabilityItem(id: string, payload: {
+  status: string;
+  notes?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi(`/api/v1/finance/data-room/bankability-matrix/${id}/verify`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export function getDataRoomExportUrl(folderPath?: string, projectId?: string): string {
+  const query = new URLSearchParams();
+  if (folderPath) query.set('folder_path', folderPath);
+  if (projectId) query.set('project_id', projectId);
+  const qs = query.toString();
+  return `/api/v1/finance/data-room/export${qs ? `?${qs}` : ''}`;
 }

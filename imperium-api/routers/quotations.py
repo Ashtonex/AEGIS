@@ -474,10 +474,10 @@ async def import_boq(
     db: AsyncSession = Depends(get_db),
 ):
     extension = Path(file.filename or "").suffix.lower()
-    if extension not in {".xlsx", ".xls", ".csv"}:
+    if extension not in {".xlsx", ".xlsm", ".xltx", ".xls", ".csv", ".tsv", ".txt"}:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported BOQ file type. Upload .xlsx, .xls, or .csv.",
+            detail="Unsupported BOQ file type. Upload .xlsx, .xlsm, .xltx, .xls, .csv, .tsv, or .txt.",
         )
 
     content = await file.read()
@@ -485,12 +485,10 @@ async def import_boq(
         raise HTTPException(
             status_code=413, detail="BOQ file exceeds configured upload size limit."
         )
-
     # BOQImporter already recovers from a bad/corrupt file for the initial
-    # pandas read, but nothing previously guarded the per-row parse loop -
-    # one malformed cell (an overflowing number, an unexpected Excel type)
-    # could raise straight out of this handler as a bare 500 with a
-    # non-JSON body, which the frontend has no way to show as anything but
+    # pandas read, but a malformed cell (an overflowing number, an unexpected
+    # Excel type) could raise straight out of this handler as a bare 500 with
+    # a non-JSON body, which the frontend has no way to show as anything but
     # a generic "import failed" message. Never let that escape uncaught.
     try:
         result = BOQImporter.import_boq(content, extension)

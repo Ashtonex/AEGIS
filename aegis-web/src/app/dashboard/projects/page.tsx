@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { 
   AlertTriangle, 
@@ -30,7 +30,14 @@ import {
   Building2,
   Calendar,
   ClipboardCheck,
-  Trash2
+  Trash2,
+  Users,
+  FileText,
+  Receipt,
+  Banknote,
+  Save,
+  Calculator,
+  UserPlus
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import {
@@ -42,6 +49,9 @@ import {
   updateProjectPreMobilisationCheck, approveProjectPreMobilisation,
   getProjectCommercialReadiness, updateProjectCommercialReadiness, clearProjectCommercialReadiness,
   getCrmOrganizations, getCrmContacts,
+  getHRAttendance, getProcurementRfqs, getSiteGrns, getSiteVariances, getFinanceVariations, getFinanceBudgets, getBoqProgressSummary,
+  getHREmployees, getWorkforceAllocations, createWorkforceAllocation, createDailySiteReport, createFinanceVariation,
+  importBoqFile,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -92,6 +102,9 @@ type Detail = Record<string, unknown> & {
   procurement_orders?: Record<string, unknown>[]; 
   tenders?: Record<string, unknown>[]; 
   subcontractors?: Record<string, unknown>[];
+  milestones?: Record<string, unknown>[];
+  changes?: Record<string, unknown>[];
+  risks?: Record<string, unknown>[];
   pre_mobilisation?: PreMobilisationReadiness;
   commercial_readiness?: CommercialReadiness;
 };
@@ -133,17 +146,22 @@ type CommercialReadiness = {
   cleared_by?: string;
 };
 
-type ProjectTab = "overview" | "schedule" | "financials" | "materials";
+type ProjectTab = "dashboard" | "overview" | "schedule" | "financials" | "materials" | "documents" | "assign" | "controls";
+type ProjectCommand = "workforce" | "siteReports" | "rfqs" | "variations" | "budget" | "documents" | "progress" | "controls" | "materials";
 
 const TAB_ROUTES: Record<ProjectTab, string> = {
+  dashboard: "/dashboard/projects/dashboard",
   overview: "/dashboard/projects/overview",
   schedule: "/dashboard/projects/schedule",
   financials: "/dashboard/projects/financials",
   materials: "/dashboard/projects/materials",
+  documents: "/dashboard/projects/documents",
+  assign: "/dashboard/projects/assign",
+  controls: "/dashboard/projects/controls",
 };
 
 function normalizeTab(value: string | null | undefined): ProjectTab {
-  return value && value in TAB_ROUTES ? (value as ProjectTab) : "overview";
+  return value && value in TAB_ROUTES ? (value as ProjectTab) : "dashboard";
 }
 
 const activeStatuses = new Set(["active", "in progress", "ongoing", "live", "execution"]);
@@ -153,13 +171,27 @@ function text(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value : fallback; 
 }
 
-function number(value: unknown) { 
-  const parsed = typeof value === "number" ? value : Number(value); 
+function number(value: unknown) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    if (!value.trim()) return null;
+    const cleaned = value
+      .replace(/[,$\s]/g, "")
+      .replace(/^\((.*)\)$/, "-$1");
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : null; 
 }
 
 function title(project: Project) { 
   return text(project.name ?? project.project_name ?? project.project_code ?? project.id); 
+}
+
+function codePrefix(value: unknown, fallback = "PRJ") {
+  const raw = text(value, fallback).toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return raw ? raw.slice(0, 18) : fallback;
 }
 
 function contactLabel(contact: ClientContact) {
@@ -180,6 +212,30 @@ function projectDetailRefs(project: Project): string[] {
     .map((value) => value.trim());
   return Array.from(new Set(candidates));
 }
+
+const PROJECT_MODULE_CAPABILITIES = [
+  { title: "WBS planning", description: "Break contracts into phases, work packages, tasks and accountable owners.", icon: Layers },
+  { title: "Gantt scheduling", description: "Maintain baseline, forecast and actual milestone dates with owner tracking.", icon: CalendarDays },
+  { title: "Critical path", description: "Surface blocked, delayed and dependency-sensitive work before it hits site output.", icon: Activity },
+  { title: "Resource control", description: "Connect labour, plant, materials and subcontract packages to project cost codes.", icon: Package },
+  { title: "Dashboards", description: "Compare progress, cost, workload, missing evidence and risk from live AEGIS records.", icon: TrendingUp },
+  { title: "Approvals", description: "Gate commercial readiness, deposit confirmation and mobilisation authorisation.", icon: ShieldCheck },
+  { title: "Documents", description: "Keep drawings, BOQs, contracts, instructions, certificates and revisions attached.", icon: ClipboardCheck },
+  { title: "Audit trail", description: "Preserve system-of-record evidence for decisions, changes and exceptions.", icon: AlertCircle },
+];
+
+const CONSTRUCTION_WORKFLOW_STEPS = [
+  "Scope",
+  "Budget",
+  "WBS",
+  "Programme",
+  "Documents",
+  "Resources",
+  "Mobilise",
+  "Report",
+  "Control",
+  "Handover",
+];
 
 export default function ProjectsDashboard() {
   return (
@@ -325,7 +381,12 @@ function ProjectsWorkspace() {
     const active = projects.filter((project) => activeStatuses.has(text(project.status, "").toLowerCase())).length;
     const attention = projects.filter((project) => riskStatuses.has(text(project.health ?? project.status, "").toLowerCase())).length;
     const value = projects.reduce((sum, project) => sum + (number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0), 0);
-    return { active, attention, value };
+    const withClient = projects.filter((project) => text(project.client_org_id ?? project.client_id ?? project.client_name ?? project.client, "")).length;
+    const withManager = projects.filter((project) => text(project.project_manager ?? project.manager, "")).length;
+    const withProgrammeEnd = projects.filter((project) => text(project.end_date ?? project.planned_completion_date, "")).length;
+    const withBudget = projects.filter((project) => (number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0) > 0).length;
+    const mobilisationQueue = projects.filter((project) => text(project.status, "").toLowerCase() === "pre_mobilisation").length;
+    return { active, attention, value, withClient, withManager, withProgrammeEnd, withBudget, mobilisationQueue };
   }, [projects]);
 
   const filtered = useMemo(() => projects.filter((project) => {
@@ -392,6 +453,13 @@ function ProjectsWorkspace() {
         <Metric label="Attention required" value={loading ? "..." : String(metrics.attention)} detail="At-risk, critical, blocked or delayed" tone={metrics.attention ? "text-amber-300" : "text-slate-light"} />
         <Metric label="Recorded portfolio value" value={metrics.value ? formatCurrency(metrics.value) : "Not recorded"} detail="Contract/budget fields where present" />
       </section>
+
+      <PortfolioCommandDashboard
+        projects={projects}
+        loading={loading}
+        metrics={metrics}
+        onSelect={(project) => void openProject(project)}
+      />
 
       {error ? (
         <section className="mb-6 flex gap-3 border border-red-500/30 bg-red-950/20 p-4 text-sm text-red-200">
@@ -490,6 +558,7 @@ function ProjectsWorkspace() {
       {selected ? (
         <ProjectDetail
           project={selected}
+          initialTab={activeTab}
           departments={departments}
           clientOrganizations={clientOrganizations}
           clientContacts={clientContacts}
@@ -525,6 +594,206 @@ const PIPELINE_STAGE_LABELS: Record<string, string> = {
   completed: "Completed",
   cancelled: "Cancelled",
 };
+
+function percent(numerator: number, denominator: number): number {
+  if (!denominator) return 0;
+  return Math.min(100, Math.max(0, Math.round((numerator / denominator) * 100)));
+}
+
+function projectProgress(project: Project): number {
+  return percent(
+    number(project.progress ?? project.progress_pct ?? project.completion_percent ?? project.percent_complete) ?? 0,
+    100,
+  );
+}
+
+function PortfolioCommandDashboard({
+  projects,
+  loading,
+  metrics,
+  onSelect,
+}: {
+  projects: Project[];
+  loading: boolean;
+  metrics: {
+    active: number;
+    attention: number;
+    value: number;
+    withClient: number;
+    withManager: number;
+    withProgrammeEnd: number;
+    withBudget: number;
+    mobilisationQueue: number;
+  };
+  onSelect: (project: Project) => void;
+}) {
+  type HealthState = "ok" | "warn" | "gap";
+  const healthRows = useMemo(() => projects.slice(0, 7).map((project) => {
+    const status = text(project.status, "unknown").toLowerCase();
+    const health = text(project.health ?? project.status, "unknown").toLowerCase();
+    const progress = projectProgress(project);
+    const value = number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0;
+    return {
+      project,
+      name: title(project),
+      time: (status.includes("delayed") || health.includes("delay") || health.includes("critical") ? "warn" : "ok") as HealthState,
+      cost: (value > 0 ? "ok" : "gap") as HealthState,
+      workload: (text(project.project_manager ?? project.manager, "") ? "ok" : "gap") as HealthState,
+      tasks: number(project.task_count ?? project.open_tasks ?? project.tasks_total) ?? 0,
+      progress,
+    };
+  }), [projects]);
+
+  const completed = projects.filter((project) => text(project.status, "").toLowerCase() === "completed").length;
+  const blocked = projects.filter((project) => riskStatuses.has(text(project.health ?? project.status, "").toLowerCase())).length;
+  const taskTotal = projects.reduce((sum, project) => sum + (number(project.task_count ?? project.open_tasks ?? project.tasks_total) ?? 0), 0);
+  const dataCompleteness = percent(
+    metrics.withClient + metrics.withManager + metrics.withProgrammeEnd + metrics.withBudget,
+    Math.max(projects.length * 4, 1),
+  );
+  const avgProgress = projects.length
+    ? Math.round(projects.reduce((sum, project) => sum + projectProgress(project), 0) / projects.length)
+    : 0;
+  const topProgress = [...projects]
+    .sort((a, b) => projectProgress(b) - projectProgress(a))
+    .slice(0, 5);
+
+  return (
+    <section className="mb-6 border border-ink-mid bg-ink-light/20">
+      <div className="grid gap-0 xl:grid-cols-[1.15fr_0.85fr]">
+        <div className="border-b border-ink-mid p-4 xl:border-b-0 xl:border-r">
+          <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Construction system of record</p>
+              <h2 className="mt-1 font-display text-2xl font-semibold text-paper">Portfolio command dashboard</h2>
+              <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-light">
+                Live project signals from AEGIS only: register fields, linked clients, responsible owners, budgets, programme dates and status. Missing values are shown as gaps instead of being filled with redacted or sample data.
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-4 md:min-w-[420px]">
+              <div className="border border-ink-mid bg-ink p-3">
+                <p className="text-slate">Data</p>
+                <p className="mt-1 text-lg font-bold text-signal">{loading ? "..." : `${dataCompleteness}%`}</p>
+              </div>
+              <div className="border border-ink-mid bg-ink p-3">
+                <p className="text-slate">Progress</p>
+                <p className="mt-1 text-lg font-bold text-paper">{loading ? "..." : `${avgProgress}%`}</p>
+              </div>
+              <div className="border border-ink-mid bg-ink p-3">
+                <p className="text-slate">Gate queue</p>
+                <p className="mt-1 text-lg font-bold text-amber-300">{loading ? "..." : metrics.mobilisationQueue}</p>
+              </div>
+              <div className="border border-ink-mid bg-ink p-3">
+                <p className="text-slate">Tasks</p>
+                <p className="mt-1 text-lg font-bold text-cyan-300">{loading ? "..." : taskTotal}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[1fr_260px]">
+            <div className="overflow-x-auto border border-ink-mid bg-ink">
+              <table className="w-full min-w-[680px] text-left font-mono text-[10px]">
+                <thead>
+                  <tr className="border-b border-ink-mid text-slate">
+                    <th className="px-3 py-2">Project</th>
+                    <th className="px-3 py-2 text-center">Time</th>
+                    <th className="px-3 py-2 text-center">Cost</th>
+                    <th className="px-3 py-2 text-center">Owner</th>
+                    <th className="px-3 py-2 text-right">Tasks</th>
+                    <th className="px-3 py-2 text-right">Progress</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink-mid/60">
+                  {loading ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center text-slate-light">Loading portfolio health</td>
+                    </tr>
+                  ) : healthRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center text-slate-light">No project records returned.</td>
+                    </tr>
+                  ) : healthRows.map((row) => (
+                    <tr key={row.project.id} className="cursor-pointer hover:bg-ink-light/40" onClick={() => onSelect(row.project)}>
+                      <td className="px-3 py-2 font-sans text-xs font-semibold text-paper">{row.name}</td>
+                      <td className="px-3 py-2 text-center"><HealthDot state={row.time} /></td>
+                      <td className="px-3 py-2 text-center"><HealthDot state={row.cost} /></td>
+                      <td className="px-3 py-2 text-center"><HealthDot state={row.workload} /></td>
+                      <td className="px-3 py-2 text-right text-slate-light">{row.tasks}</td>
+                      <td className="px-3 py-2 text-right text-paper">{row.progress}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="border border-ink-mid bg-ink p-4">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Portfolio status</p>
+              <div className="mt-4 flex items-center justify-center">
+                <div
+                  className="grid h-40 w-40 place-items-center rounded-full"
+                  style={{ background: `conic-gradient(#21d963 0 ${percent(metrics.active, Math.max(projects.length, 1))}%, #0ea5e9 ${percent(metrics.active, Math.max(projects.length, 1))}% ${percent(metrics.active + completed, Math.max(projects.length, 1))}%, #f59e0b ${percent(metrics.active + completed, Math.max(projects.length, 1))}% ${percent(metrics.active + completed + blocked, Math.max(projects.length, 1))}%, #27344a 0)` }}
+                >
+                  <div className="grid h-28 w-28 place-items-center rounded-full bg-ink text-center">
+                    <span>
+                      <strong className="block text-2xl text-paper">{projects.length}</strong>
+                      <span className="font-mono text-[9px] uppercase text-slate">projects</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-3 gap-2 text-center font-mono text-[9px] uppercase">
+                <span className="text-emerald-300">Active {metrics.active}</span>
+                <span className="text-sky-300">Done {completed}</span>
+                <span className="text-amber-300">Risk {blocked}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-2 md:grid-cols-5">
+            {topProgress.map((project) => (
+              <button key={project.id} onClick={() => onSelect(project)} className="border border-ink-mid bg-ink p-3 text-left hover:border-signal">
+                <p className="truncate text-xs font-semibold text-paper">{title(project)}</p>
+                <div className="mt-2 h-2 bg-ink-mid">
+                  <div className="h-full bg-signal" style={{ width: `${projectProgress(project)}%` }} />
+                </div>
+                <p className="mt-1 font-mono text-[10px] text-slate-light">{projectProgress(project)}% complete</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="p-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {PROJECT_MODULE_CAPABILITIES.map((item) => (
+              <div key={item.title} className="border border-ink-mid bg-ink p-3">
+                <item.icon className="h-5 w-5 text-signal" />
+                <h3 className="mt-2 text-sm font-semibold text-paper">{item.title}</h3>
+                <p className="mt-1 text-xs leading-5 text-slate-light">{item.description}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 border border-ink-mid bg-ink p-3">
+            <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Construction workflow</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {CONSTRUCTION_WORKFLOW_STEPS.map((step, index) => (
+                <div key={step} className="border border-ink-mid bg-ink-light/40 px-2 py-2 text-center">
+                  <span className="block font-mono text-[9px] text-signal">{String(index + 1).padStart(2, "0")}</span>
+                  <span className="text-[11px] font-semibold text-paper">{step}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HealthDot({ state }: { state: "ok" | "warn" | "gap" }) {
+  const cls = state === "ok" ? "bg-emerald-400" : state === "warn" ? "bg-amber-400" : "bg-slate-600";
+  const label = state === "ok" ? "Recorded" : state === "warn" ? "Needs attention" : "Missing";
+  return <span title={label} className={`inline-block h-2.5 w-2.5 rounded-full ${cls}`} />;
+}
 
 function ProjectPipeline({
   projects,
@@ -651,7 +920,7 @@ function CreateProjectModal({
         : undefined;
       await createInternalProject({
         name: form.name.trim(),
-        project_code: form.project_code || undefined,
+        project_code: form.project_code || codePrefix(form.name, "PRJ"),
         project_type: form.project_type || undefined,
         client_org_id: initiatedBy === "client" && clientType === "organization" ? (form.client_org_id || undefined) : undefined,
         client_id: initiatedBy === "client" && clientType === "individual" ? (form.client_org_id || undefined) : undefined,
@@ -1656,6 +1925,1076 @@ function PreMobilisationPanel({
   );
 }
 
+function ProjectControlsPanel({ project, detail }: { project: Project; detail: Detail | null }) {
+  const source = detail?.project ?? project;
+  const viability = detail?.viability?.[0];
+  const commercial = detail?.commercial_readiness;
+  const preMob = detail?.pre_mobilisation;
+  const checks = [
+    {
+      label: "Project identity and contract information",
+      ready: Boolean(text(source.name ?? source.project_name ?? source.project_code, "")),
+      evidence: text(source.project_code ?? source.name ?? source.project_name, "Missing project identity"),
+    },
+    {
+      label: "Client and consultant details",
+      ready: Boolean(text(source.client_org_id ?? source.client_id ?? source.client_name ?? source.client, "")),
+      evidence: text(source.client_name ?? source.client ?? source.client_org_id ?? source.client_id, "No linked CRM client"),
+    },
+    {
+      label: "Contract value and payment terms",
+      ready: (number(source.contract_value ?? source.budget ?? source.budget_value) ?? 0) > 0 || Boolean(commercial?.clearance_statement),
+      evidence: (number(source.contract_value ?? source.budget ?? source.budget_value) ?? 0) > 0
+        ? formatCurrency(number(source.contract_value ?? source.budget ?? source.budget_value) ?? 0)
+        : text(commercial?.status, "No commercial baseline returned"),
+    },
+    {
+      label: "Master BOQ and approved budget",
+      ready: Boolean(detail?.quotations?.length || viability?.budget_amount || source.budget_amount || source.budget),
+      evidence: detail?.quotations?.length ? `${detail.quotations.length} quotation/BOQ record(s)` : text(viability?.budget_amount ?? source.budget_amount ?? source.budget, "No BOQ/budget evidence"),
+    },
+    {
+      label: "Cost codes and work breakdown structure",
+      ready: Boolean(source.department_id || detail?.milestones?.length),
+      evidence: source.department_id ? "Department/cost owner assigned" : detail?.milestones?.length ? `${detail.milestones.length} WBS milestone(s)` : "No WBS evidence returned",
+    },
+    {
+      label: "Baseline programme and milestones",
+      ready: Boolean(detail?.milestones?.length || source.end_date || source.planned_completion_date),
+      evidence: detail?.milestones?.length ? `${detail.milestones.length} milestone(s)` : text(source.end_date ?? source.planned_completion_date, "No programme dates returned"),
+    },
+    {
+      label: "Drawings, specifications and revisions",
+      ready: Boolean(detail?.tests_and_checks?.length),
+      evidence: detail?.tests_and_checks?.length ? `${detail.tests_and_checks.length} technical check(s)` : "No drawing/spec revision evidence returned",
+    },
+    {
+      label: "Labour plan",
+      ready: Boolean(source.project_manager ?? source.manager),
+      evidence: text(source.project_manager ?? source.manager, "No responsible delivery owner"),
+    },
+    {
+      label: "Material procurement schedule",
+      ready: Boolean(detail?.material_records?.length || detail?.procurement_orders?.length),
+      evidence: detail?.procurement_orders?.length ? `${detail.procurement_orders.length} procurement order(s)` : detail?.material_records?.length ? `${detail.material_records.length} material line(s)` : "No procurement/material evidence returned",
+    },
+    {
+      label: "Plant and equipment plan",
+      ready: Boolean((source as Record<string, unknown>).plant_plan_reference || (source as Record<string, unknown>).equipment_plan_reference),
+      evidence: text((source as Record<string, unknown>).plant_plan_reference ?? (source as Record<string, unknown>).equipment_plan_reference, "No plant plan field returned"),
+    },
+    {
+      label: "Subcontractor packages",
+      ready: Boolean(detail?.subcontractors?.length),
+      evidence: detail?.subcontractors?.length ? `${detail.subcontractors.length} subcontractor record(s)` : "No subcontract package returned",
+    },
+    {
+      label: "Risk and issue register",
+      ready: Boolean(detail?.risks?.length || riskStatuses.has(text(source.health ?? source.status, "").toLowerCase())),
+      evidence: detail?.risks?.length ? `${detail.risks.length} risk record(s)` : text(source.health, "No risk register evidence returned"),
+    },
+    {
+      label: "Inspection, quality and HSE documentation",
+      ready: Boolean(detail?.tests_and_checks?.length || preMob?.checks?.length),
+      evidence: detail?.tests_and_checks?.length ? `${detail.tests_and_checks.length} QA/HSE check(s)` : preMob?.checks?.length ? `${preMob.checks.length} pre-start check(s)` : "No inspection/HSE evidence returned",
+    },
+    {
+      label: "Daily and weekly site records",
+      ready: Boolean(detail?.site_reports?.length),
+      evidence: detail?.site_reports?.length ? `${detail.site_reports.length} site report(s)` : "No daily site report returned",
+    },
+    {
+      label: "Variations and instructions",
+      ready: Boolean(detail?.changes?.length),
+      evidence: detail?.changes?.length ? `${detail.changes.length} change record(s)` : "No variation/change record returned",
+    },
+    {
+      label: "Payment certificates and valuations",
+      ready: Boolean((source as Record<string, unknown>).payment_certificate_count || (source as Record<string, unknown>).valuation_count),
+      evidence: text((source as Record<string, unknown>).payment_certificate_count ?? (source as Record<string, unknown>).valuation_count, "No payment certificate evidence returned"),
+    },
+    {
+      label: "Practical-completion and handover records",
+      ready: Boolean(text(source.status, "").toLowerCase() === "completed" || (source as Record<string, unknown>).handover_reference),
+      evidence: text((source as Record<string, unknown>).handover_reference ?? source.status, "No handover evidence returned"),
+    },
+  ];
+
+  const readyCount = checks.filter((item) => item.ready).length;
+  const readiness = percent(readyCount, checks.length);
+  const mobilisationReady = Boolean(preMob?.ready || source.mobilisation_approved_at);
+
+  return (
+    <div className="space-y-5 animate-fade-in">
+      <section className="border border-ink-mid bg-ink-light/20 p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Controlled project record</p>
+            <h3 className="mt-1 font-display text-xl font-semibold text-paper">Construction readiness map</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-light">
+              This checklist maps the requested SNC construction project structure to fields and linked records returned by AEGIS. Missing items are left visible so mobilisation, finance, procurement and site teams do not operate from hidden assumptions.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 font-mono text-[10px] uppercase tracking-wider text-slate-light">
+            <div className="border border-ink-mid bg-ink p-3 text-center">
+              <p>Ready</p>
+              <p className="mt-1 text-lg font-bold text-signal">{readyCount}/{checks.length}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink p-3 text-center">
+              <p>Score</p>
+              <p className="mt-1 text-lg font-bold text-paper">{readiness}%</p>
+            </div>
+            <div className="border border-ink-mid bg-ink p-3 text-center">
+              <p>Mobilise</p>
+              <p className={`mt-1 text-lg font-bold ${mobilisationReady ? "text-emerald-300" : "text-amber-300"}`}>{mobilisationReady ? "Open" : "Gate"}</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-2">
+        {checks.map((item) => (
+          <div key={item.label} className="border border-ink-mid bg-ink p-3">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm font-semibold text-paper">{item.label}</p>
+              <span className={`shrink-0 border px-2 py-1 font-mono text-[9px] uppercase tracking-wider ${item.ready ? "border-emerald-500/30 text-emerald-300" : "border-amber-500/30 text-amber-300"}`}>
+                {item.ready ? "Recorded" : "Gap"}
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-slate-light">{item.evidence}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="grid gap-3 lg:grid-cols-3">
+        <div className="border border-amber-500/30 bg-amber-950/10 p-4">
+          <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-amber-300">Pre-start gate</h4>
+          <p className="mt-2 text-xs leading-5 text-slate-light">
+            Mobilisation remains blocked until commercial readiness, required evidence and final authorisation are complete.
+          </p>
+        </div>
+        <div className="border border-ink-mid bg-ink p-4">
+          <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Separation of duties</h4>
+          <p className="mt-2 text-xs leading-5 text-slate-light">
+            Finance, Commercial/QS, project delivery and executive authorisations remain separated through the existing AEGIS role checks and approval endpoints.
+          </p>
+        </div>
+        <div className="border border-ink-mid bg-ink p-4">
+          <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Audit trail</h4>
+          <p className="mt-2 text-xs leading-5 text-slate-light">
+            The panel reads project lifecycle, document, site, procurement and finance-linked records; it does not create local-only browser state for project control decisions.
+          </p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+type ProjectSignalState = {
+  attendance: Record<string, unknown>[];
+  rfqs: Record<string, unknown>[];
+  siteVariances: Record<string, unknown>[];
+  grns: Record<string, unknown>[];
+  financeVariations: Record<string, unknown>[];
+  budgets: Record<string, unknown>[];
+  boqSummary: Record<string, unknown> | null;
+};
+
+const EMPTY_PROJECT_SIGNALS: ProjectSignalState = {
+  attendance: [],
+  rfqs: [],
+  siteVariances: [],
+  grns: [],
+  financeVariations: [],
+  budgets: [],
+  boqSummary: null,
+};
+
+function sumField(rows: Record<string, unknown>[], fields: string[]): number {
+  return rows.reduce((sum, row) => {
+    const value = fields.map((field) => number(row[field])).find((item): item is number => item !== null);
+    return sum + (value ?? 0);
+  }, 0);
+}
+
+function countUnique(rows: Record<string, unknown>[], fields: string[]): number {
+  const values = new Set<string>();
+  for (const row of rows) {
+    const value = fields.map((field) => row[field]).find((item) => item !== undefined && item !== null && String(item).trim());
+    if (value !== undefined && value !== null) values.add(String(value));
+  }
+  return values.size;
+}
+
+function statusCount(rows: { status?: unknown }[], status: string): number {
+  return rows.filter((row) => text(row.status, "").toLowerCase() === status).length;
+}
+
+function latestDate(rows: Record<string, unknown>[], fields: string[]): string {
+  const dates = rows
+    .flatMap((row) => fields.map((field) => row[field]))
+    .map((value) => (value ? new Date(String(value)) : null))
+    .filter((date): date is Date => !!date && !Number.isNaN(date.getTime()))
+    .sort((a, b) => b.getTime() - a.getTime());
+  return dates[0] ? formatDate(dates[0].toISOString()) : "Not recorded";
+}
+
+function localDateInput(offsetDays = 0): string {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+}
+
+const BUDGET_FIELD_ALIASES: Record<"cost_code" | "description" | "quantity" | "unit" | "rate" | "amount", string[]> = {
+  cost_code: ["cost_code", "cost code", "code", "item_code", "boq_code", "boq code", "work_package", "wbs", "section"],
+  description: ["description", "desc", "item", "item_description", "work_item", "activity", "particulars", "name"],
+  quantity: ["quantity", "qty", "qnty", "measure", "measured_qty"],
+  unit: ["unit", "uom", "unit_of_measure"],
+  rate: ["rate", "unit_rate", "unit cost", "unit_cost", "price"],
+  amount: ["amount", "total", "total_amount", "budget", "cost", "value", "line_total"],
+};
+
+type BudgetColumnMap = Record<keyof typeof BUDGET_FIELD_ALIASES, string>;
+
+const EMPTY_BUDGET_COLUMN_MAP: BudgetColumnMap = {
+  cost_code: "",
+  description: "",
+  quantity: "",
+  unit: "",
+  rate: "",
+  amount: "",
+};
+
+function normaliseHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function splitBudgetLine(line: string, delimiter: string): string[] {
+  if (delimiter === "whitespace") return line.trim().split(/\s{2,}|\t+/).map((value) => value.trim());
+  return line.split(delimiter).map((value) => value.trim().replace(/^"|"$/g, ""));
+}
+
+function inferBudgetDelimiter(lines: string[]): string {
+  const candidates = [",", "\t", ";", "|"];
+  const best = candidates
+    .map((delimiter) => ({
+      delimiter,
+      score: lines.slice(0, 10).reduce((sum, line) => sum + splitBudgetLine(line, delimiter).length, 0),
+    }))
+    .sort((a, b) => b.score - a.score)[0];
+  return best && best.score > lines.slice(0, 10).length ? best.delimiter : "whitespace";
+}
+
+function inferBudgetColumnMap(columns: string[]): BudgetColumnMap {
+  const normalised = columns.map((column) => ({ raw: column, normalised: normaliseHeader(column) }));
+  return (Object.keys(BUDGET_FIELD_ALIASES) as (keyof typeof BUDGET_FIELD_ALIASES)[]).reduce((acc, field) => {
+    const match = normalised.find((column) => BUDGET_FIELD_ALIASES[field].some((alias) => column.normalised === normaliseHeader(alias) || column.normalised.includes(normaliseHeader(alias))));
+    acc[field] = match?.raw ?? "";
+    return acc;
+  }, { ...EMPTY_BUDGET_COLUMN_MAP });
+}
+
+function budgetHeaderFields(cells: string[]): Set<keyof BudgetColumnMap> {
+  return cells.reduce<Set<keyof BudgetColumnMap>>((fields, cell) => {
+    const normalised = normaliseHeader(cell);
+    if (!normalised) return fields;
+    (Object.keys(BUDGET_FIELD_ALIASES) as (keyof BudgetColumnMap)[]).forEach((field) => {
+      if (BUDGET_FIELD_ALIASES[field].some((alias) => {
+        const normalisedAlias = normaliseHeader(alias);
+        return normalised === normalisedAlias || normalised.includes(normalisedAlias);
+      })) {
+        fields.add(field);
+      }
+    });
+    return fields;
+  }, new Set<keyof BudgetColumnMap>());
+}
+
+function parseBudgetMatrix(matrix: unknown[][]) {
+  const sourceRows = matrix
+    .map((row) => row.map((cell) => String(cell ?? "").trim()))
+    .filter((row) => row.some(Boolean));
+
+  if (!sourceRows.length) return { rows: [] as Record<string, string>[], columns: [] as string[], map: EMPTY_BUDGET_COLUMN_MAP };
+
+  const headerIndex = sourceRows.findIndex((row) => budgetHeaderFields(row).size >= 2);
+  const firstDataRow = headerIndex >= 0 ? headerIndex + 1 : 0;
+  const rawColumns = headerIndex >= 0 ? sourceRows[headerIndex] : sourceRows[0].map((_, index) => `Column ${index + 1}`);
+  const columnCount = Math.max(rawColumns.length, ...sourceRows.slice(firstDataRow).map((row) => row.length));
+  const columns = Array.from({ length: columnCount }, (_, index) => rawColumns[index] || `Column ${index + 1}`);
+  const dataRows = sourceRows
+    .slice(firstDataRow)
+    .filter((row) => row.some((cell) => number(cell) !== null) || row.filter(Boolean).length > 1);
+
+  const rows = dataRows.map((cells) => columns.reduce<Record<string, string>>((acc, column, index) => {
+    acc[column] = cells[index] ?? "";
+    return acc;
+  }, {}));
+  const inferred = inferBudgetColumnMap(columns);
+
+  if (headerIndex < 0 && columns.length) {
+    inferred.description = columns[0];
+    inferred.amount = columns[columns.length - 1];
+    if (columns.length >= 4) {
+      inferred.quantity = columns[columns.length - 3];
+      inferred.rate = columns[columns.length - 2];
+    }
+  }
+
+  return { rows, columns, map: inferred };
+}
+
+function parseBudgetText(raw: string) {
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!lines.length) return { rows: [] as Record<string, string>[], columns: [] as string[], map: EMPTY_BUDGET_COLUMN_MAP };
+  const delimiter = inferBudgetDelimiter(lines);
+  const first = splitBudgetLine(lines[0], delimiter);
+  const firstLooksLikeHeader = budgetHeaderFields(first).size >= 2 || (first.length > 1 && first.every((cell) => number(cell) === null));
+  const columns = firstLooksLikeHeader ? first.map((cell, index) => cell || `Column ${index + 1}`) : first.map((_, index) => `Column ${index + 1}`);
+  const dataLines = firstLooksLikeHeader ? lines.slice(1) : lines;
+  const rows = dataLines.map((line) => {
+    const cells = splitBudgetLine(line, delimiter);
+    return columns.reduce<Record<string, string>>((acc, column, index) => {
+      acc[column] = cells[index] ?? "";
+      return acc;
+    }, {});
+  });
+  const inferred = inferBudgetColumnMap(columns);
+  if (!firstLooksLikeHeader && columns.length) {
+    inferred.description = columns[0];
+    inferred.amount = columns[columns.length - 1];
+    if (columns.length >= 4) {
+      inferred.quantity = columns[columns.length - 3];
+      inferred.rate = columns[columns.length - 2];
+    }
+  }
+  return { rows, columns, map: inferred };
+}
+
+function normaliseBudgetRows(rows: Record<string, string>[], map: BudgetColumnMap, project: Project) {
+  const prefix = codePrefix(project.project_code ?? project.name ?? project.project_name, "PRJ");
+  return rows.map((row, index) => {
+    const qty = number(row[map.quantity]) ?? 0;
+    const rate = number(row[map.rate]) ?? 0;
+    const mappedAmount = number(row[map.amount]);
+    const amount = mappedAmount ?? (qty > 0 && rate > 0 ? qty * rate : 0);
+    const description = text(row[map.description], `Budget line ${index + 1}`);
+    return {
+      source_line: String(index + 1),
+      cost_code: text(row[map.cost_code], `${prefix}-${String(index + 1).padStart(3, "0")}`),
+      description,
+      quantity: map.quantity ? text(row[map.quantity], "") : "",
+      unit: map.unit ? text(row[map.unit], "") : "",
+      rate: map.rate ? text(row[map.rate], "") : "",
+      amount: amount > 0 ? String(amount) : "",
+      review_note: amount > 0 ? "Accepted" : "Excluded: no positive amount",
+    };
+  });
+}
+
+function ProjectDashboardPanel({
+  project,
+  detail,
+  signals,
+  loading,
+  onOpenTab,
+  onOpenCommand,
+}: {
+  project: Project;
+  detail: Detail | null;
+  signals: ProjectSignalState;
+  loading: boolean;
+  onOpenTab: (tab: ProjectTab) => void;
+  onOpenCommand: (command: ProjectCommand) => void;
+}) {
+  const source = detail?.project ?? project;
+  const siteReports = detail?.site_reports ?? [];
+  const materialRecords = detail?.material_records ?? [];
+  const procurementOrders = detail?.procurement_orders ?? [];
+  const contractValue = number(source.contract_value ?? source.budget ?? source.budget_value) ?? 0;
+  const actualCost = number(source.actual_cost ?? source.actual_cost_to_date ?? source.cost_to_date) ?? 0;
+  const committedCost = number(source.committed_cost ?? source.commitments ?? source.purchase_commitments) ?? 0;
+  const budgetAmount = number(signals.boqSummary?.contract_value ?? signals.boqSummary?.budget_amount ?? source.budget_amount ?? source.budget) ?? contractValue;
+  const earnedValue = number(signals.boqSummary?.earned_value ?? signals.boqSummary?.claimable_value) ?? 0;
+  const progressPct = number(signals.boqSummary?.percent_complete ?? signals.boqSummary?.progress_pct ?? source.progress ?? source.progress_pct) ?? 0;
+  const validatedHours = sumField(signals.attendance, ["validated_hours", "hours_validated", "approved_hours", "hours_worked", "total_hours"]);
+  const payrollDue = sumField(signals.attendance, ["salary_due", "gross_pay", "pay_due", "validated_pay", "amount_due"]);
+  const workerCount = countUnique(signals.attendance, ["employee_id", "worker_id", "user_id", "employee_name", "full_name"]);
+  const materialCost = materialRecords.reduce((sum, row) => sum + ((number(row.quantity_used) ?? 0) * (number(row.unit_cost) ?? 0)), 0);
+  const openRfqs = signals.rfqs.filter((row) => !["awarded", "closed", "cancelled"].includes(text(row.status, "").toLowerCase())).length;
+  const openVariations = signals.financeVariations.filter((row) => !["approved", "rejected", "closed"].includes(text(row.status, "").toLowerCase())).length;
+  const exposure = actualCost + committedCost;
+  const costPressurePct = budgetAmount > 0 ? Math.round((exposure / budgetAmount) * 100) : 0;
+  const costSignals = [
+    workerCount === 0 ? "No validated labour allocation has been returned for this project." : `${workerCount} worker(s) have attendance linked to this project.`,
+    openRfqs === 0 ? "No open RFQs are competing current project buying." : `${openRfqs} open RFQ(s) can be used to pressure-test supplier pricing.`,
+    signals.siteVariances.length === 0 ? "No site variance records returned." : `${signals.siteVariances.length} site variance record(s) need cost control review.`,
+    budgetAmount <= 0 ? "No approved budget baseline returned." : `Cost exposure is ${costPressurePct}% of the current budget baseline.`,
+  ];
+
+  const quickLinks = [
+    { label: "Assign team", icon: Users, action: () => onOpenCommand("workforce") },
+    { label: "Documents", icon: FileText, action: () => onOpenCommand("documents") },
+    { label: "Progress", icon: TrendingUp, action: () => onOpenCommand("progress") },
+    { label: "Budget", icon: Banknote, action: () => onOpenCommand("budget") },
+    { label: "Controls", icon: ShieldCheck, action: () => onOpenCommand("controls") },
+    { label: "Materials", icon: Package, action: () => onOpenCommand("materials") },
+  ];
+
+  const commandCards = [
+    { label: "Workforce roster", command: "workforce" as const, icon: Users, detail: "Assign and review people connected to this project." },
+    { label: "Site reports", command: "siteReports" as const, icon: ClipboardCheck, detail: "Log days, hours, material usage and engineer validations." },
+    { label: "Procurement RFQs", command: "rfqs" as const, icon: Receipt, detail: "Compare suppliers before cost is committed." },
+    { label: "Finance variations", command: "variations" as const, icon: DollarSign, detail: "Track variations, claims and commercial exposure." },
+  ];
+
+  return (
+    <div className="space-y-5 animate-fade-in">
+      <section className="border border-ink-mid bg-ink-light/20 p-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Project command dashboard</p>
+            <h3 className="mt-1 font-display text-2xl font-semibold text-paper">{title(source)}</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-light">
+              This popup is the project control room. It reads linked AEGIS records for labour, site reports, budget, procurement, receipts, variations and documents so project decisions stay tied to retained system data.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-4 xl:min-w-[520px]">
+            <Metric label="Progress" value={`${Math.round(progressPct)}%`} detail="BOQ/project progress" tone="text-signal" />
+            <Metric label="Cost exposure" value={budgetAmount > 0 ? `${costPressurePct}%` : "No budget"} detail="Actual plus committed" tone={costPressurePct > 90 ? "text-amber-300" : "text-paper"} />
+            <Metric label="Labour hours" value={loading ? "..." : validatedHours.toLocaleString()} detail="Validated attendance" tone="text-cyan-300" />
+            <Metric label="Payroll due" value={payrollDue > 0 ? formatCurrency(payrollDue) : "Pending"} detail="From attendance/pay fields" tone="text-emerald-300" />
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {quickLinks.map((item) => (
+          <button key={item.label} type="button" onClick={item.action} className="border border-ink-mid bg-ink p-3 text-left hover:border-signal hover:bg-ink-light/40">
+            <item.icon className="h-5 w-5 text-signal" />
+            <span className="mt-2 block text-xs font-semibold text-paper">{item.label}</span>
+          </button>
+        ))}
+      </section>
+
+      <section className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <div className="border border-ink-mid bg-ink p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Live project ledger</h4>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin text-signal" /> : null}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Info label="Site reports" value={String(siteReports.length)} />
+            <Info label="Budget records" value={String(signals.budgets.length)} />
+            <Info label="RFQs" value={String(signals.rfqs.length)} />
+            <Info label="Receipts / GRNs" value={String(signals.grns.length)} />
+            <Info label="Variations" value={String(signals.financeVariations.length)} />
+            <Info label="Procurement orders" value={String(procurementOrders.length)} />
+            <Info label="Material consumption" value={formatCurrency(materialCost)} />
+            <Info label="Earned value" value={earnedValue > 0 ? formatCurrency(earnedValue) : "Not recorded"} />
+          </div>
+        </div>
+
+        <div className="border border-ink-mid bg-ink p-4">
+          <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Cost-saving checks</h4>
+          <div className="mt-3 space-y-2">
+            {costSignals.map((signal) => (
+              <div key={signal} className="border border-ink-mid bg-ink-light/25 p-3 text-xs leading-5 text-slate-light">
+                {signal}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {commandCards.map((item) => (
+          <button key={item.label} type="button" onClick={() => onOpenCommand(item.command)} className="border border-ink-mid bg-ink p-4 text-left hover:border-signal hover:bg-ink-light/40">
+            <item.icon className="h-5 w-5 text-signal" />
+            <h4 className="mt-3 text-sm font-semibold text-paper">{item.label}</h4>
+            <p className="mt-1 text-xs leading-5 text-slate-light">{item.detail}</p>
+          </button>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function ProjectCommandModal({
+  command,
+  project,
+  detail,
+  signals,
+  onClose,
+  onRefresh,
+}: {
+  command: ProjectCommand;
+  project: Project;
+  detail: Detail | null;
+  signals: ProjectSignalState;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [employees, setEmployees] = useState<Record<string, unknown>[]>([]);
+  const [allocations, setAllocations] = useState<Record<string, unknown>[]>([]);
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
+  const [roleByEmployee, setRoleByEmployee] = useState<Record<string, string>>({});
+  const [accountRoleByEmployee, setAccountRoleByEmployee] = useState<Record<string, string>>({});
+  const [allocationWindow, setAllocationWindow] = useState({
+    starts_on: localDateInput(),
+    ends_on: localDateInput(30),
+    allocation_percent: "100",
+  });
+  const [siteReport, setSiteReport] = useState({
+    report_date: localDateInput(),
+    shift: "day",
+    planned_work: "",
+    actual_work: "",
+    delays: "",
+    safety_notes: "",
+    cost_exposure: "0",
+    labour_count_completed: true,
+    toolbox_talk_completed: true,
+    ppe_check_completed: true,
+  });
+  const [variation, setVariation] = useState({
+    variation_number: `VAR-${Date.now().toString().slice(-6)}`,
+    title: "",
+    description: "",
+    initiated_by: "site",
+    cost_impact: "0",
+    time_impact_days: "0",
+  });
+  const [budgetForm, setBudgetForm] = useState({ total: "", notes: "", fileName: "", pastedText: "" });
+  const [budgetSourceRows, setBudgetSourceRows] = useState<Record<string, string>[]>([]);
+  const [budgetColumns, setBudgetColumns] = useState<string[]>([]);
+  const [budgetColumnMap, setBudgetColumnMap] = useState<BudgetColumnMap>(EMPTY_BUDGET_COLUMN_MAP);
+  const [budgetStage, setBudgetStage] = useState<"master" | "execution">("master");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (command !== "workforce") return;
+    let active = true;
+    Promise.allSettled([
+      getHREmployees({ status: "all" }),
+      getWorkforceAllocations({ project_id: project.id }),
+    ]).then(([employeeResult, allocationResult]) => {
+      if (!active) return;
+      setEmployees(employeeResult.status === "fulfilled" ? employeeResult.value.data ?? [] : []);
+      setAllocations(allocationResult.status === "fulfilled" ? allocationResult.value.data ?? [] : []);
+    });
+    return () => { active = false; };
+  }, [command, project.id]);
+
+  const titleByCommand: Record<ProjectCommand, string> = {
+    workforce: "Assign workforce",
+    siteReports: "Site reports",
+    rfqs: "Procurement RFQs",
+    variations: "Finance variations",
+    budget: "Budget baseline",
+    documents: "Project documents",
+    progress: "Progress control",
+    controls: "Project controls",
+    materials: "Material control",
+  };
+
+  const commandDescription: Record<ProjectCommand, string> = {
+    workforce: "Read the live workforce register, tick available people, assign role/account fit, and save allocations against this project.",
+    siteReports: "Inspect retained site reports and add a new day record without leaving the project dashboard.",
+    rfqs: "Compare project RFQs and supplier responses so buying decisions stay tied to the project.",
+    variations: "Review and create commercial variations that feed finance controls and project cost exposure.",
+    budget: "Create or upload a budget baseline, identify errors and risk flags, then save the protected project budget.",
+    documents: "Open the project document surface inside this same command context.",
+    progress: "Review schedule and earned-value progress signals for this project.",
+    controls: "Inspect mobilisation readiness, separation of duties, and control gaps before cost is committed.",
+    materials: "Review material consumption, wastage and cheap-buying opportunities for this project.",
+  };
+
+  const allocatedIds = new Set(allocations.map((row) => String(row.employee_id ?? "")));
+  const activeEmployees = employees.filter((employee) => !["terminated", "suspended"].includes(text(employee.employment_status ?? employee.status, "").toLowerCase()));
+  const selectedRows = activeEmployees.filter((employee) => selectedEmployeeIds.includes(String(employee.id)));
+  const budgetRows = normaliseBudgetRows(budgetSourceRows, budgetColumnMap, project);
+  const acceptedBudgetRows = budgetRows.filter((row) => (number(row.amount) ?? 0) > 0);
+  const excludedBudgetRows = budgetRows.filter((row) => (number(row.amount) ?? 0) <= 0);
+  const budgetUploadTotal = acceptedBudgetRows.reduce((sum, row) => sum + (number(row.amount) ?? 0), 0);
+  const budgetTotal = number(budgetForm.total) ?? budgetUploadTotal;
+  const budgetErrors = budgetRows.length && !acceptedBudgetRows.length ? ["No valid budget lines with a positive amount were found. Match the Amount column or enter a manual total."] : [];
+  const budgetRisks = [
+    !budgetColumnMap.cost_code && budgetRows.length ? "Upload had no cost-code column; AEGIS generated uniform project cost codes for review." : "",
+    budgetRows.some((row) => row.description.startsWith("Budget line ")) ? "Some descriptions were generated because no description column was matched." : "",
+    excludedBudgetRows.length ? `${excludedBudgetRows.length} uploaded row(s) were excluded from the baseline total because no positive amount was found. Review them before final approval.` : "",
+    budgetUploadTotal > 0 && (number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0) > 0 && budgetUploadTotal > (number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0) ? "Uploaded budget is above recorded contract value." : "",
+    signals.financeVariations.some((row) => text(row.status, "").toLowerCase() === "pending") ? "Pending variations exist; protect baseline before accepting new cost exposure." : "",
+  ].filter(Boolean);
+
+  const parseBudgetFile = async (file: File) => {
+    setError("");
+    setMessage("");
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const excelOrCsv = new Set(["xlsx", "xlsm", "xltx", "xls", "csv", "tsv"]);
+    const unsupportedBinary = new Set(["pdf", "doc", "docx"]);
+
+    try {
+      if (excelOrCsv.has(extension)) {
+        const res = await importBoqFile(file, {
+          source_type: "project",
+          source_id: project.id,
+        });
+
+        const items = res.data?.items || [];
+        if (items.length > 0) {
+          const cols = ["Item No", "Section", "Description", "Quantity", "Unit", "Rate", "Amount"];
+          const colMap: BudgetColumnMap = {
+            description: "Description",
+            quantity: "Quantity",
+            unit: "Unit",
+            rate: "Rate",
+            amount: "Amount",
+            cost_code: "Item No",
+          };
+          const rows = items.map((it: any) => {
+            const q = Number(it.quantity) || 0;
+            const r = Number(it.rate) || 0;
+            const lineTotal = q > 0 && r > 0 ? (q * r).toFixed(2) : "";
+            return {
+              "Item No": it.item_no || "",
+              "Section": it.section || "",
+              "Description": it.description || "",
+              "Quantity": String(it.quantity ?? ""),
+              "Unit": it.unit || "item",
+              "Rate": String(it.rate ?? ""),
+              "Amount": lineTotal,
+            };
+          });
+
+          setBudgetSourceRows(rows);
+          setBudgetColumns(cols);
+          setBudgetColumnMap(colMap);
+          const totalDirect = res.data?.summary?.total_direct_costs;
+          setBudgetForm((current) => ({
+            ...current,
+            fileName: file.name,
+            total: totalDirect ? String(totalDirect) : current.total,
+          }));
+          setMessage(`Successfully imported ${items.length} item(s) across ${res.data?.summary?.section_count || 1} section(s) from ${file.name}.`);
+          return;
+        } else if (res.data?.warnings?.length) {
+          setError(res.data.warnings.join(" "));
+          return;
+        }
+      }
+
+      if (unsupportedBinary.has(extension)) {
+        setError("For Word or PDF budgets, please save/export as Excel (.xlsx/.xls) or CSV, or paste the table text into this popup.");
+        setBudgetSourceRows([]);
+        setBudgetColumns([]);
+        setBudgetColumnMap(EMPTY_BUDGET_COLUMN_MAP);
+        setBudgetForm((current) => ({ ...current, fileName: file.name, total: "" }));
+        return;
+      }
+
+      const parsed = parseBudgetText(await file.text());
+      if (!parsed.rows.length || parsed.columns.length <= 1) {
+        setError("AEGIS could not find a structured budget table in that file. Check that the sheet contains columns such as Description, Qty, Rate and Amount, or paste the table text below.");
+      }
+      setBudgetSourceRows(parsed.rows);
+      setBudgetColumns(parsed.columns);
+      setBudgetColumnMap(parsed.map);
+      setBudgetForm((current) => ({ ...current, fileName: file.name, total: "" }));
+    } catch (importError) {
+      setError(importError instanceof Error ? `Budget upload could not be read: ${importError.message}` : "Budget upload could not be read.");
+    }
+  };
+
+  const parsePastedBudget = () => {
+    setError("");
+    setMessage("");
+    const parsed = parseBudgetText(budgetForm.pastedText);
+    if (!parsed.rows.length) {
+      setError("Paste budget lines with at least a description and amount.");
+      return;
+    }
+    setBudgetSourceRows(parsed.rows);
+    setBudgetColumns(parsed.columns);
+    setBudgetColumnMap(parsed.map);
+    setBudgetForm((current) => ({ ...current, fileName: "pasted budget", total: "" }));
+  };
+
+  const toggleEmployee = (employeeId: string) => {
+    setSelectedEmployeeIds((current) => current.includes(employeeId) ? current.filter((id) => id !== employeeId) : [...current, employeeId]);
+  };
+
+  const saveAllocations = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      for (const employee of selectedRows) {
+        const employeeId = String(employee.id);
+        await createWorkforceAllocation({
+          employee_id: employeeId,
+          project_id: project.id,
+          role_on_project: roleByEmployee[employeeId] || text(employee.job_title ?? employee.role ?? employee.position, "Project worker"),
+          allocation_percent: Number(allocationWindow.allocation_percent || 100),
+          starts_on: allocationWindow.starts_on,
+          ends_on: allocationWindow.ends_on,
+          status: "active",
+          notes: accountRoleByEmployee[employeeId] ? `Account role: ${accountRoleByEmployee[employeeId]}` : null,
+        });
+      }
+      const refreshed = await getWorkforceAllocations({ project_id: project.id });
+      setAllocations(refreshed.data ?? []);
+      setSelectedEmployeeIds([]);
+      setMessage("Workforce allocation saved to the project.");
+      onRefresh();
+    } catch (allocationError) {
+      setError(allocationError instanceof Error ? allocationError.message : "Workforce allocation could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveSiteReport = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await createDailySiteReport({
+        project_id: project.id,
+        report_date: siteReport.report_date,
+        shift: siteReport.shift,
+        planned_work: siteReport.planned_work || null,
+        actual_work: siteReport.actual_work || null,
+        delays: siteReport.delays || null,
+        safety_notes: siteReport.safety_notes || null,
+        cost_exposure: Number(siteReport.cost_exposure || 0),
+        labour_count_completed: siteReport.labour_count_completed,
+        toolbox_talk_completed: siteReport.toolbox_talk_completed,
+        ppe_check_completed: siteReport.ppe_check_completed,
+      });
+      setMessage("Site report saved to this project.");
+      onRefresh();
+    } catch (reportError) {
+      setError(reportError instanceof Error ? reportError.message : "Site report could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveVariation = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await createFinanceVariation({
+        project_id: project.id,
+        variation_number: variation.variation_number,
+        title: variation.title,
+        description: variation.description || null,
+        initiated_by: variation.initiated_by,
+        cost_impact: Number(variation.cost_impact || 0),
+        time_impact_days: Math.trunc(Number(variation.time_impact_days || 0)),
+      });
+      setMessage("Variation created and linked to project finance.");
+      onRefresh();
+    } catch (variationError) {
+      setError(variationError instanceof Error ? variationError.message : "Variation could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveBudget = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      if (!budgetTotal || budgetTotal <= 0) throw new Error("Enter or upload a budget total greater than zero.");
+      if (budgetErrors.length) throw new Error("Correct budget upload errors before protecting the baseline.");
+      if (budgetStage === "execution") {
+        setMessage("Execution budget staged for review against the protected master baseline. Attach the execution-budget source file below so it is retained and downloadable; a dedicated execution-budget save endpoint is still needed before it can become the live site allowance.");
+        return;
+      }
+      await setProjectBudget(project.id, budgetTotal, [
+        budgetForm.notes,
+        `Master budget baseline total: ${formatCurrency(budgetTotal)}.`,
+        budgetRows.length ? `Uploaded master budget: ${budgetForm.fileName || "budget file"} with ${acceptedBudgetRows.length} accepted line(s) and ${excludedBudgetRows.length} excluded line(s).` : "",
+        budgetRisks.length ? `Risk flags: ${budgetRisks.join(" ")}` : "",
+      ].filter(Boolean).join("\n"));
+      setBudgetStage("execution");
+      setBudgetSourceRows([]);
+      setBudgetColumns([]);
+      setBudgetColumnMap(EMPTY_BUDGET_COLUMN_MAP);
+      setBudgetForm((current) => ({ ...current, total: "", fileName: "", pastedText: "" }));
+      setMessage("Master budget baseline saved. Upload the execution budget next so site allowances can be reviewed against the protected baseline.");
+      onRefresh();
+    } catch (budgetError) {
+      setError(budgetError instanceof Error ? budgetError.message : "Budget baseline could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-3" role="dialog" aria-modal="true" aria-label={titleByCommand[command]}>
+      <section className="max-h-[88vh] w-full max-w-5xl overflow-y-auto border border-ink-mid bg-ink shadow-2xl">
+        <header className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-ink-mid bg-ink p-5">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Project command popup</p>
+            <h3 className="mt-1 font-display text-2xl font-semibold text-paper">{titleByCommand[command]}</h3>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-light">{commandDescription[command]}</p>
+          </div>
+          <button onClick={onClose} className="border border-ink-mid bg-ink-light p-2 text-slate-light hover:border-signal hover:text-paper" aria-label="Close project command">
+            <X className="h-5 w-5" />
+          </button>
+        </header>
+        <div className="space-y-5 p-5">
+          {message ? <div className="border border-emerald-500/30 bg-emerald-950/20 p-3 text-sm text-emerald-200">{message}</div> : null}
+          {error ? <div className="border border-red-500/30 bg-red-950/20 p-3 text-sm text-red-200">{error}</div> : null}
+
+          {command === "workforce" ? (
+            <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+              <section className="border border-ink-mid">
+                <div className="flex items-center justify-between border-b border-ink-mid p-3">
+                  <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Available employees</h4>
+                  <span className="font-mono text-[10px] text-slate-light">{selectedEmployeeIds.length} selected</span>
+                </div>
+                <div className="max-h-[420px] overflow-y-auto">
+                  {activeEmployees.map((employee) => {
+                    const employeeId = String(employee.id);
+                    const selected = selectedEmployeeIds.includes(employeeId);
+                    return (
+                      <label key={employeeId} className="grid cursor-pointer gap-3 border-b border-ink-mid/60 p-3 hover:bg-ink-light/40 sm:grid-cols-[24px_1fr_180px]">
+                        <input type="checkbox" checked={selected} onChange={() => toggleEmployee(employeeId)} className="mt-1 h-4 w-4" />
+                        <span>
+                          <span className="block text-sm font-semibold text-paper">{text(employee.employee_name ?? employee.name ?? employee.full_name, "Unnamed employee")}</span>
+                          <span className="mt-1 block text-xs text-slate-light">{text(employee.job_title ?? employee.role ?? employee.position, "Role not recorded")} · {allocatedIds.has(employeeId) ? "Already allocated to this project" : "Available for allocation"}</span>
+                        </span>
+                        <span className="text-xs text-slate-light">{text(employee.department ?? employee.work_location ?? employee.location, "No department")}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+              <section className="space-y-3 border border-ink-mid p-4">
+                <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Allocation details</h4>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label="Start"><input type="date" value={allocationWindow.starts_on} onChange={(e) => setAllocationWindow({ ...allocationWindow, starts_on: e.target.value })} className="field" /></Field>
+                  <Field label="End"><input type="date" value={allocationWindow.ends_on} onChange={(e) => setAllocationWindow({ ...allocationWindow, ends_on: e.target.value })} className="field" /></Field>
+                  <Field label="Capacity %"><input value={allocationWindow.allocation_percent} onChange={(e) => setAllocationWindow({ ...allocationWindow, allocation_percent: e.target.value })} className="field" /></Field>
+                </div>
+                {selectedRows.map((employee) => {
+                  const employeeId = String(employee.id);
+                  return (
+                    <div key={employeeId} className="grid gap-2 border border-ink-mid bg-ink-light/20 p-3">
+                      <p className="text-sm font-semibold text-paper">{text(employee.employee_name ?? employee.name ?? employee.full_name, "Unnamed employee")}</p>
+                      <input value={roleByEmployee[employeeId] ?? ""} onChange={(e) => setRoleByEmployee({ ...roleByEmployee, [employeeId]: e.target.value })} placeholder="Project role: Engineer, Foreman, Clerk..." className="field" />
+                      <input value={accountRoleByEmployee[employeeId] ?? ""} onChange={(e) => setAccountRoleByEmployee({ ...accountRoleByEmployee, [employeeId]: e.target.value })} placeholder="Account match or manual note" className="field" />
+                    </div>
+                  );
+                })}
+                <button onClick={() => void saveAllocations()} disabled={busy || selectedRows.length === 0} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Save workforce allocation
+                </button>
+                <RecordList title="Current allocations" records={allocations} columns={["employee_name", "role_on_project", "allocation_percent", "starts_on", "ends_on", "status"]} />
+              </section>
+            </div>
+          ) : null}
+
+          {command === "siteReports" ? (
+            <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+              <RecordList title="Retained site reports" records={detail?.site_reports ?? []} columns={["report_date", "shift", "status", "actual_work", "delays", "cost_exposure"]} />
+              <section className="space-y-3 border border-ink-mid p-4">
+                <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Add site report</h4>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Date"><input type="date" value={siteReport.report_date} onChange={(e) => setSiteReport({ ...siteReport, report_date: e.target.value })} className="field" /></Field>
+                  <Field label="Shift"><select value={siteReport.shift} onChange={(e) => setSiteReport({ ...siteReport, shift: e.target.value })} className="field"><option value="day">Day</option><option value="night">Night</option><option value="double">Double</option></select></Field>
+                </div>
+                <Field label="Planned work"><textarea rows={3} value={siteReport.planned_work} onChange={(e) => setSiteReport({ ...siteReport, planned_work: e.target.value })} className="textarea" /></Field>
+                <Field label="Actual work"><textarea rows={3} value={siteReport.actual_work} onChange={(e) => setSiteReport({ ...siteReport, actual_work: e.target.value })} className="textarea" /></Field>
+                <Field label="Delays"><textarea rows={2} value={siteReport.delays} onChange={(e) => setSiteReport({ ...siteReport, delays: e.target.value })} className="textarea" /></Field>
+                <Field label="Safety notes"><textarea rows={2} value={siteReport.safety_notes} onChange={(e) => setSiteReport({ ...siteReport, safety_notes: e.target.value })} className="textarea" /></Field>
+                <Field label="Cost exposure"><input value={siteReport.cost_exposure} onChange={(e) => setSiteReport({ ...siteReport, cost_exposure: e.target.value })} className="field" /></Field>
+                <button onClick={() => void saveSiteReport()} disabled={busy} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save site report
+                </button>
+              </section>
+            </div>
+          ) : null}
+
+          {command === "rfqs" ? (
+            <div className="space-y-4">
+              <RecordList title="Project RFQs" records={signals.rfqs} columns={["rfq_number", "title", "status", "closing_date", "requisition_number"]} />
+              <section className="border border-ink-mid p-4">
+                <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Supplier price pressure</h4>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  {signals.rfqs.flatMap((rfq) => Array.isArray(rfq.responses) ? rfq.responses.map((response: Record<string, unknown>) => ({ rfq, response })) : []).slice(0, 8).map(({ rfq, response }) => (
+                    <div key={`${String(rfq.id)}-${String(response.id)}`} className="border border-ink-mid bg-ink-light/20 p-3">
+                      <p className="text-sm font-semibold text-paper">{text(response.supplier_name, "Supplier")}</p>
+                      <p className="mt-1 text-xs text-slate-light">{text(rfq.title ?? rfq.rfq_number, "RFQ")} · {formatCurrency(number(response.total_amount) ?? 0)} · {text(response.delivery_days, "No")} days</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-xs leading-5 text-slate-light">New RFQs must still start from an approved requisition and current weekly budget gate. This popup exposes the project RFQ evidence without bypassing that control.</p>
+              </section>
+            </div>
+          ) : null}
+
+          {command === "variations" ? (
+            <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+              <RecordList title="Project variations" records={signals.financeVariations} columns={["variation_number", "title", "status", "cost_impact", "time_impact_days", "initiated_by"]} />
+              <section className="space-y-3 border border-ink-mid p-4">
+                <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Create variation</h4>
+                <Field label="Variation number"><input value={variation.variation_number} onChange={(e) => setVariation({ ...variation, variation_number: e.target.value })} className="field" /></Field>
+                <Field label="Title"><input value={variation.title} onChange={(e) => setVariation({ ...variation, title: e.target.value })} className="field" /></Field>
+                <Field label="Description"><textarea rows={3} value={variation.description} onChange={(e) => setVariation({ ...variation, description: e.target.value })} className="textarea" /></Field>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label="Initiated by"><input value={variation.initiated_by} onChange={(e) => setVariation({ ...variation, initiated_by: e.target.value })} className="field" /></Field>
+                  <Field label="Cost impact"><input value={variation.cost_impact} onChange={(e) => setVariation({ ...variation, cost_impact: e.target.value })} className="field" /></Field>
+                  <Field label="Time days"><input value={variation.time_impact_days} onChange={(e) => setVariation({ ...variation, time_impact_days: e.target.value })} className="field" /></Field>
+                </div>
+                <button onClick={() => void saveVariation()} disabled={busy || !variation.title} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save variation
+                </button>
+              </section>
+            </div>
+          ) : null}
+
+          {command === "budget" ? (
+            <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+              <section className="space-y-3 border border-ink-mid p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">{budgetStage === "master" ? "Protect master budget baseline" : "Upload execution budget"}</h4>
+                  <span className="border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-signal">{budgetStage === "master" ? "Step 1 / Master" : "Step 2 / Execution"}</span>
+                </div>
+                <p className="text-xs leading-5 text-slate-light">
+                  {budgetStage === "master"
+                    ? "Upload the master budget first. Rows without a positive amount are excluded for review, but valid budget rows can still protect the baseline."
+                    : "Upload the execution budget after the master baseline. This is the site-facing allowance review that should be checked against the protected master budget."}
+                </p>
+                <Field label="Manual total"><input value={budgetForm.total} onChange={(e) => setBudgetForm({ ...budgetForm, total: e.target.value })} placeholder={budgetStage === "master" ? "Total approved master budget" : "Total execution budget"} className="field" /></Field>
+                <Field label="Upload budget"><input type="file" accept=".csv,.txt,.tsv,.xls,.xlsx,.pdf,.doc,.docx" onChange={(e) => { const file = e.target.files?.[0]; if (file) void parseBudgetFile(file); }} className="block w-full text-sm text-slate-light file:mr-3 file:border-0 file:bg-signal file:px-3 file:py-2 file:font-mono file:text-xs file:uppercase file:text-ink" /></Field>
+                <Field label="Paste table text"><textarea rows={4} value={budgetForm.pastedText} onChange={(e) => setBudgetForm({ ...budgetForm, pastedText: e.target.value })} placeholder="Paste from Excel, Word, or a PDF table: cost code, description, qty, rate, amount" className="textarea" /></Field>
+                <button type="button" onClick={parsePastedBudget} disabled={!budgetForm.pastedText.trim()} className="inline-flex h-9 w-full items-center justify-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+                  Match pasted budget
+                </button>
+                {budgetColumns.length ? (
+                  <section className="border border-ink-mid bg-ink-light/20 p-3">
+                    <h5 className="font-mono text-[10px] font-bold uppercase tracking-wider text-paper">Match uploaded columns</h5>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      {(Object.keys(EMPTY_BUDGET_COLUMN_MAP) as (keyof BudgetColumnMap)[]).map((field) => (
+                        <Field key={field} label={field.replace(/_/g, " ")}>
+                          <select value={budgetColumnMap[field]} onChange={(e) => setBudgetColumnMap({ ...budgetColumnMap, [field]: e.target.value })} className="field">
+                            <option value="">Auto / not supplied</option>
+                            {budgetColumns.map((column) => <option key={column} value={column}>{column}</option>)}
+                          </select>
+                        </Field>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                <Field label="Baseline notes"><textarea rows={4} value={budgetForm.notes} onChange={(e) => setBudgetForm({ ...budgetForm, notes: e.target.value })} className="textarea" /></Field>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Info label="Parsed lines" value={String(budgetRows.length)} />
+                  <Info label="Accepted lines" value={String(acceptedBudgetRows.length)} />
+                  <Info label="Baseline total" value={budgetTotal > 0 ? formatCurrency(budgetTotal) : "Not calculated"} />
+                </div>
+                <button onClick={() => void saveBudget()} disabled={busy || !budgetTotal || budgetErrors.length > 0} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />} {budgetStage === "master" ? "Save master baseline" : "Stage execution budget review"}
+                </button>
+                {budgetStage === "execution" ? (
+                  <button type="button" onClick={() => setBudgetStage("master")} className="inline-flex h-9 w-full items-center justify-center border border-ink-mid px-3 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper">
+                    Back to master budget
+                  </button>
+                ) : null}
+              </section>
+              <section className="space-y-4">
+                <RecordList title="Existing budget records" records={signals.budgets} columns={["label", "status", "budget_version", "total_amount", "effective_date"]} />
+                <section className="border border-ink-mid p-4">
+                  <h4 className="mb-3 font-mono text-xs font-bold uppercase tracking-wider text-paper">Budget source document</h4>
+                  <EntityDocumentsPanel entityType="project" entityId={project.id} />
+                </section>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <RiskList title="Upload errors" tone="red" items={budgetErrors} empty="No blocking upload errors detected." />
+                  <RiskList title="Risk flags" tone="amber" items={budgetRisks} empty="No immediate baseline risks detected." />
+                </div>
+                <RecordList title="Accepted budget lines" records={acceptedBudgetRows} columns={["source_line", "cost_code", "description", "quantity", "unit", "amount"]} />
+                {excludedBudgetRows.length ? <RecordList title="Excluded rows for review" records={excludedBudgetRows} columns={["source_line", "cost_code", "description", "quantity", "unit", "amount", "review_note"]} /> : null}
+              </section>
+            </div>
+          ) : null}
+
+          {command === "documents" ? <EntityDocumentsPanel entityType="project" entityId={project.id} /> : null}
+          {command === "progress" ? <RecordList title="Progress and milestones" records={[...(detail?.milestones ?? []), ...(signals.boqSummary ? [signals.boqSummary] : [])]} columns={["name", "status", "percent_complete", "earned_value", "forecast_date", "actual_date"]} /> : null}
+          {command === "controls" ? <ProjectControlsPanel project={project} detail={detail} /> : null}
+          {command === "materials" ? <RecordList title="Material consumption and receipts" records={[...(detail?.material_records ?? []), ...signals.grns]} columns={["item_name", "description", "quantity_used", "received_quantity", "unit_cost", "wastage_quantity", "status"]} /> : null}
+        </div>
+        <style jsx>{`.field{height:2.5rem;width:100%;border:1px solid rgb(47 55 69);background:#09111f;padding:0 .75rem;font-size:.875rem;color:#f8fafc;outline:none}.textarea{width:100%;resize:vertical;border:1px solid rgb(47 55 69);background:#09111f;padding:.75rem;font-size:.875rem;color:#f8fafc;outline:none}`}</style>
+      </section>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function RecordList({ title: listTitle, records, columns }: { title: string; records: Record<string, unknown>[]; columns: string[] }) {
+  const moneyFields = new Set(["amount", "budget", "cost", "cost_exposure", "cost_impact", "earned_value", "planned_cost", "total_amount", "unit_cost", "value"]);
+  return (
+    <section className="border border-ink-mid">
+      <div className="flex items-center justify-between border-b border-ink-mid p-3">
+        <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">{listTitle}</h4>
+        <span className="font-mono text-[10px] text-slate-light">{records.length} record(s)</span>
+      </div>
+      {records.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-left text-xs">
+            <thead className="border-b border-ink-mid font-mono uppercase tracking-wider text-slate">
+              <tr>{columns.map((column) => <th key={column} className="px-3 py-2 font-normal">{column.replace(/_/g, " ")}</th>)}</tr>
+            </thead>
+            <tbody>
+              {records.slice(0, 25).map((record, index) => (
+                <tr key={String(record.id ?? index)} className="border-b border-ink-mid/60">
+                  {columns.map((column) => {
+                    const value = record[column];
+                    const display = moneyFields.has(column) ? formatCurrency(number(value) ?? 0) : text(value, "-");
+                    return <td key={column} className="px-3 py-2 text-slate-light">{display}</td>;
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="p-4 text-sm text-slate-light">No records are currently linked to this project.</p>
+      )}
+    </section>
+  );
+}
+
+function RiskList({ title: riskTitle, items, empty, tone }: { title: string; items: string[]; empty: string; tone: "red" | "amber" }) {
+  const toneClass = tone === "red" ? "border-red-500/30 bg-red-950/20 text-red-200" : "border-amber-500/30 bg-amber-950/20 text-amber-100";
+  return (
+    <section className="border border-ink-mid p-4">
+      <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">{riskTitle}</h4>
+      <div className="mt-3 space-y-2">
+        {(items.length ? items : [empty]).map((item) => (
+          <div key={item} className={`border p-3 text-xs leading-5 ${items.length ? toneClass : "border-ink-mid bg-ink-light/20 text-slate-light"}`}>{item}</div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 interface GanttMilestone {
   id: string;
   name: string;
@@ -1763,6 +3102,7 @@ function AddMilestoneForm({ projectId, onClose, onAdded }: { projectId: string; 
 
 function ProjectDetail({
   project,
+  initialTab,
   detail,
   loading,
   error,
@@ -1776,6 +3116,7 @@ function ProjectDetail({
   onDeleted,
 }: {
   project: Project;
+  initialTab: ProjectTab;
   detail: Detail | null;
   loading: boolean;
   error: string | null;
@@ -1934,7 +3275,11 @@ function ProjectDetail({
     }
   }, [coords, project.id, onProjectUpdated]);
 
-  const [activeTab, setActiveTab] = useState<"overview" | "schedule" | "financials" | "materials" | "documents" | "assign">("overview");
+  const [activeTab, setActiveTab] = useState<ProjectTab>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab, project.id]);
 
   // Source-backed financial parameters. Missing finance fields must not be replaced with generated values.
   const contractVal = useMemo(() => {
@@ -1992,6 +3337,7 @@ function ProjectDetail({
   // ----------------------------------------------------
   const [scheduleTimelineFilter, setScheduleTimelineFilter] = useState<"comparison" | "baseline" | "forecast" | "actual">("comparison");
   const [scheduleStatusFilter, setScheduleStatusFilter] = useState<"all" | "complete" | "in_progress" | "blocked" | "not_started">("all");
+  const [activeCommand, setActiveCommand] = useState<ProjectCommand | null>(null);
 
   // Real milestones, fetched from the lifecycle endpoint - no fabricated
   // schedule data or placeholder owners. Empty until someone actually logs one.
@@ -2104,6 +3450,113 @@ function ProjectDetail({
   const materialSummaryRows = Array.from(materialSummary.values()).sort((a, b) => b.cost - a.cost);
   const materialTotalCost = materialSummaryRows.reduce((sum, row) => sum + row.cost, 0);
   const materialTotalWastage = materialSummaryRows.reduce((sum, row) => sum + row.wastage, 0);
+
+  const [projectSignals, setProjectSignals] = useState<ProjectSignalState>(EMPTY_PROJECT_SIGNALS);
+  const [projectSignalsLoading, setProjectSignalsLoading] = useState(false);
+
+  const loadProjectSignals = useCallback(async () => {
+    if (!project.id) return;
+    setProjectSignalsLoading(true);
+    const [
+      attendance,
+      rfqs,
+      siteVariances,
+      grns,
+      financeVariations,
+      budgets,
+      boqSummary,
+    ] = await Promise.allSettled([
+      getHRAttendance({ project_id: project.id }),
+      getProcurementRfqs({ project_id: project.id }),
+      getSiteVariances({ projectId: project.id }),
+      getSiteGrns({ projectId: project.id }),
+      getFinanceVariations({ project_id: project.id }),
+      getFinanceBudgets({ project_id: project.id }),
+      getBoqProgressSummary(project.id),
+    ]);
+
+    setProjectSignals({
+      attendance: attendance.status === "fulfilled" ? attendance.value.data ?? [] : [],
+      rfqs: rfqs.status === "fulfilled" ? rfqs.value.data ?? [] : [],
+      siteVariances: siteVariances.status === "fulfilled" ? siteVariances.value.data ?? [] : [],
+      grns: grns.status === "fulfilled" ? grns.value.data ?? [] : [],
+      financeVariations: financeVariations.status === "fulfilled" ? financeVariations.value.data ?? [] : [],
+      budgets: budgets.status === "fulfilled" ? budgets.value.data ?? [] : [],
+      boqSummary: boqSummary.status === "fulfilled" ? boqSummary.value.data ?? null : null,
+    });
+    setProjectSignalsLoading(false);
+  }, [project.id]);
+
+  useEffect(() => {
+    void loadProjectSignals();
+  }, [loadProjectSignals]);
+
+  const overviewEvidenceRows = useMemo(() => {
+    const rows = [
+      { area: "Viability", records: detail?.viability?.length ?? 0, latest: latestDate(detail?.viability ?? [], ["updated_at", "created_at"]) },
+      { area: "Tests and checks", records: detail?.tests_and_checks?.length ?? 0, latest: latestDate(detail?.tests_and_checks ?? [], ["updated_at", "created_at"]) },
+      { area: "Site reports", records: detail?.site_reports?.length ?? 0, latest: latestDate(detail?.site_reports ?? [], ["report_date", "date", "created_at"]) },
+      { area: "Quotations", records: detail?.quotations?.length ?? 0, latest: latestDate(detail?.quotations ?? [], ["quote_date", "created_at"]) },
+      { area: "Procurement orders", records: detail?.procurement_orders?.length ?? 0, latest: latestDate(detail?.procurement_orders ?? [], ["order_date", "created_at"]) },
+      { area: "Tender records", records: detail?.tenders?.length ?? 0, latest: latestDate(detail?.tenders ?? [], ["submission_date", "created_at"]) },
+      { area: "Subcontractors", records: detail?.subcontractors?.length ?? 0, latest: latestDate(detail?.subcontractors ?? [], ["updated_at", "created_at"]) },
+    ];
+    return rows.map((row) => ({ ...row, status: row.records > 0 ? "recorded" : "missing" }));
+  }, [detail]);
+
+  const overviewSetupGaps = useMemo(() => {
+    const gaps: string[] = [];
+    if (!title(source) || title(source) === "Untitled Project") gaps.push("Project name is missing.");
+    if (!text(source.location, "")) gaps.push("Project location is not recorded.");
+    if (!contractVal && text(viability?.initiated_by as string | undefined ?? (source as Record<string, unknown>).initiated_by, "client") !== "company") gaps.push("Contract value is not recorded.");
+    if (!budgetedCost && !projectSignals.boqSummary) gaps.push("Approved budget or BOQ baseline is not linked.");
+    if (!text(viability?.delivery_manager ?? source.project_manager ?? source.manager, "")) gaps.push("Project manager is not recorded.");
+    if (!projectAssignment?.assigned_team_name && !projectAssignment?.assigned_user_name) gaps.push("No responsible team or user is assigned.");
+    if (!text(source.start_date, "")) gaps.push("Project start date is not set.");
+    if (!text(viability?.planned_end_date ?? source.end_date, "")) gaps.push("Programme end date is not set.");
+    return gaps;
+  }, [source, viability, contractVal, budgetedCost, projectSignals.boqSummary, projectAssignment]);
+
+  const scheduleSummaryRows = useMemo(() => {
+    const rows = [
+      { status: "complete", count: statusCount(milestones, "complete") },
+      { status: "in_progress", count: statusCount(milestones, "in_progress") },
+      { status: "blocked", count: statusCount(milestones, "blocked") },
+      { status: "not_started", count: statusCount(milestones, "not_started") },
+      { status: "cancelled", count: statusCount(milestones, "cancelled") },
+    ];
+    return rows.filter((row) => row.count > 0);
+  }, [milestones]);
+
+  const nextForecastMilestone = useMemo(() => {
+    const dated = rawMilestones
+      .map((row) => ({ name: text(row.name, "Untitled milestone"), date: row.forecast_date ? new Date(String(row.forecast_date)) : null }))
+      .filter((row): row is { name: string; date: Date } => !!row.date && !Number.isNaN(row.date.getTime()))
+      .sort((a, b) => a.date.getTime() - b.date.getTime());
+    const next = dated.find((row) => row.date.getTime() >= Date.now()) ?? dated[0];
+    return next ? `${next.name} - ${formatDate(next.date.toISOString())}` : "No forecast date recorded";
+  }, [rawMilestones]);
+
+  const financeExposure = actualCost + committedCost;
+  const approvedVariationValue = sumField(projectSignals.financeVariations.filter((row) => text(row.status, "").toLowerCase() === "approved"), ["amount", "approved_amount", "cost_impact", "value"]);
+  const openVariationCount = projectSignals.financeVariations.filter((row) => !["approved", "rejected", "closed", "cancelled"].includes(text(row.status, "").toLowerCase())).length;
+  const financeWarnings = [
+    budgetedCost > 0 && forecastCost > budgetedCost ? `Forecast cost is ${formatCurrency(forecastCost - budgetedCost)} above the approved baseline.` : "",
+    budgetedCost > 0 && financeExposure > budgetedCost ? `Actual plus committed cost is ${formatCurrency(financeExposure - budgetedCost)} above budget.` : "",
+    contractVal > 0 && forecastNetProfit < 0 ? `Forecast net profit is negative at ${formatCurrency(forecastNetProfit)}.` : "",
+    openVariationCount > 0 ? `${openVariationCount} variation record(s) remain open and need commercial action.` : "",
+  ].filter(Boolean);
+
+  const grnValue = sumField(projectSignals.grns, ["total_amount", "amount", "value", "received_value", "cost"]);
+  const grnQuantity = sumField(projectSignals.grns, ["quantity", "qty", "received_quantity", "quantity_received"]);
+  const materialWastageRate = materialSummaryRows.reduce((sum, row) => sum + row.quantity, 0) > 0
+    ? (materialTotalWastage / materialSummaryRows.reduce((sum, row) => sum + row.quantity, 0)) * 100
+    : 0;
+  const materialExceptions = [
+    materialTotalWastage > 0 ? `Recorded wastage is ${materialTotalWastage.toLocaleString()} units across daily site report material lines.` : "",
+    projectSignals.grns.length === 0 ? "No GRN receipt records are linked to this project." : "",
+    projectSignals.rfqs.length > 0 ? `${projectSignals.rfqs.length} RFQ record(s) can be checked against consumed material rates.` : "",
+  ].filter(Boolean);
 
   // ----------------------------------------------------
   // FINANCIAL WATERFALL CHART PARAMS (SVG)
@@ -2241,7 +3694,17 @@ function ProjectDetail({
         {deleteError && <p className="mt-2 text-xs text-red-300">{deleteError}</p>}
 
         {/* Tab Navigation */}
-        <nav className="my-4 flex border-b border-ink-mid">
+        <nav className="my-4 flex overflow-x-auto border-b border-ink-mid">
+          <button
+            onClick={() => setActiveTab("dashboard")}
+            className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
+              activeTab === "dashboard"
+                ? "border-signal text-signal bg-ink-light/40 font-bold"
+                : "border-transparent text-slate hover:text-paper"
+            }`}
+          >
+            Project Dashboard
+          </button>
           <button
             onClick={() => setActiveTab("overview")}
             className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
@@ -2283,6 +3746,16 @@ function ProjectDetail({
             Material Consumption
           </button>
           <button
+            onClick={() => setActiveTab("controls")}
+            className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
+              activeTab === "controls"
+                ? "border-signal text-signal bg-ink-light/40 font-bold"
+                : "border-transparent text-slate hover:text-paper"
+            }`}
+          >
+            Controls
+          </button>
+          <button
             onClick={() => setActiveTab("documents")}
             className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
               activeTab === "documents"
@@ -2314,12 +3787,52 @@ function ProjectDetail({
           </div>
         ) : (
           <div className="py-2 space-y-6">
+            {/* ---------------------------------------------------- */}
+            {/* PROJECT DASHBOARD TAB */}
+            {/* ---------------------------------------------------- */}
+            {activeTab === "dashboard" && (
+              <ProjectDashboardPanel
+                project={source}
+                detail={detail}
+                signals={projectSignals}
+                loading={projectSignalsLoading}
+                onOpenTab={setActiveTab}
+                onOpenCommand={setActiveCommand}
+              />
+            )}
             
             {/* ---------------------------------------------------- */}
             {/* OVERVIEW & EVIDENCE TAB */}
             {/* ---------------------------------------------------- */}
             {activeTab === "overview" && (
               <div className="space-y-6 animate-fade-in">
+                <section className="border border-ink-mid bg-ink-light/20 p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Project overview dashboard</p>
+                      <h3 className="mt-1 font-display text-xl font-semibold text-paper">Identity, readiness and evidence position</h3>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-light">
+                        This tab checks whether the project record has enough source data for QS, site and management teams to operate against a controlled baseline.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-3 lg:min-w-[460px]">
+                      <Metric label="Evidence areas" value={`${overviewEvidenceRows.filter((row) => row.records > 0).length}/7`} detail="ERP-linked sources" tone="text-signal" />
+                      <Metric label="Setup gaps" value={String(overviewSetupGaps.length)} detail="Missing control fields" tone={overviewSetupGaps.length ? "text-amber-300" : "text-emerald-300"} />
+                      <Metric label="Assignment" value={projectAssignment?.assigned_team_name || projectAssignment?.assigned_user_name ? "Set" : "Open"} detail="Responsible owner" tone={projectAssignment?.assigned_team_name || projectAssignment?.assigned_user_name ? "text-emerald-300" : "text-amber-300"} />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-[1fr_0.8fr]">
+                  <RecordList title="Project evidence matrix" records={overviewEvidenceRows} columns={["area", "records", "latest", "status"]} />
+                  <RiskList
+                    title="Setup gaps to close"
+                    items={overviewSetupGaps}
+                    empty="No setup gaps detected from the project fields currently returned."
+                    tone="amber"
+                  />
+                </section>
+
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <Info label="Status" value={text(source.status)} />
                   {text(viability?.initiated_by as string | undefined ?? (source as Record<string, unknown>).initiated_by, "client") === "company" ? (
@@ -2423,6 +3936,36 @@ function ProjectDetail({
             {/* ---------------------------------------------------- */}
             {activeTab === "schedule" && (
               <div className="space-y-5 animate-fade-in">
+                <section className="border border-ink-mid bg-ink-light/20 p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Schedule control dashboard</p>
+                      <h3 className="mt-1 font-display text-xl font-semibold text-paper">Milestone status, next forecast and programme evidence</h3>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-light">
+                        This view separates planned dates, forecast dates and actual progress so weekly delays can be tied to real milestone records.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-4 lg:min-w-[540px]">
+                      <Metric label="Milestones" value={String(milestones.length)} detail="Lifecycle records" tone="text-paper" />
+                      <Metric label="Complete" value={String(statusCount(milestones, "complete"))} detail="Closed milestones" tone="text-emerald-300" />
+                      <Metric label="Blocked" value={String(statusCount(milestones, "blocked"))} detail="Delayed items" tone={statusCount(milestones, "blocked") ? "text-red-300" : "text-slate-light"} />
+                      <Metric label="No forecast" value={String(milestones.filter((row) => !row.forecastWeek).length)} detail="Missing forecast week" tone="text-amber-300" />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-[0.85fr_1fr]">
+                  <RecordList title="Milestone status breakdown" records={scheduleSummaryRows} columns={["status", "count"]} />
+                  <div className="border border-ink-mid bg-ink p-4">
+                    <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Next schedule checkpoint</h4>
+                    <p className="mt-3 text-sm text-slate-light">{nextForecastMilestone}</p>
+                    <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                      <Info label="Project start" value={formatDate(text(source.start_date, ""))} />
+                      <Info label="Site reports" value={String(detail?.site_reports?.length ?? 0)} />
+                      <Info label="BOQ progress" value={projectSignals.boqSummary ? "Linked" : "Not linked"} />
+                    </div>
+                  </div>
+                </section>
                 
                 {/* Gantt Timeline Filters */}
                 <div className="flex flex-wrap items-center justify-between gap-4 bg-ink-light/35 border border-ink-mid p-3.5">
@@ -2629,6 +4172,43 @@ function ProjectDetail({
             {/* ---------------------------------------------------- */}
             {activeTab === "financials" && (
               <div className="space-y-6 animate-fade-in">
+                <section className="border border-ink-mid bg-ink-light/20 p-5">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Financial control dashboard</p>
+                      <h3 className="mt-1 font-display text-xl font-semibold text-paper">Budget baseline, exposure and variation position</h3>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-light">
+                        This tab shows the commercial position from returned project finance fields, budget records, site variances and formal variation records.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-3 xl:min-w-[620px]">
+                      <Metric label="Budget records" value={String(projectSignals.budgets.length)} detail="Finance budget rows" tone="text-paper" />
+                      <Metric label="Exposure" value={formatCurrency(financeExposure)} detail="Actual plus committed" tone={budgetedCost > 0 && financeExposure > budgetedCost ? "text-red-300" : "text-signal"} />
+                      <Metric label="Open variations" value={String(openVariationCount)} detail="Commercial action required" tone={openVariationCount ? "text-amber-300" : "text-emerald-300"} />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-[1fr_0.8fr]">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Info label="Contract value" value={formatCurrency(contractVal)} />
+                    <Info label="Budget baseline" value={formatCurrency(budgetedCost)} />
+                    <Info label="Approved variations" value={formatCurrency(approvedVariationValue)} />
+                    <Info label="Site variance records" value={String(projectSignals.siteVariances.length)} />
+                  </div>
+                  <RiskList
+                    title="Finance warnings"
+                    items={financeWarnings}
+                    empty="No financial warning triggered by the values currently returned."
+                    tone="amber"
+                  />
+                </section>
+
+                <section className="grid gap-4 xl:grid-cols-2">
+                  <RecordList title="Budget ledger" records={projectSignals.budgets} columns={["cost_code", "description", "amount", "status"]} />
+                  <RecordList title="Variation ledger" records={projectSignals.financeVariations} columns={["variation_number", "description", "cost_impact", "status"]} />
+                </section>
+
                 {!hasFinanceEvidence && (
                   <div className="border border-amber-500/25 bg-amber-500/10 p-4 rounded-sm text-amber-100">
                     <div className="flex items-start gap-3">
@@ -2904,6 +4484,34 @@ function ProjectDetail({
             {/* ---------------------------------------------------- */}
             {activeTab === "materials" && (
               <div className="space-y-6 animate-fade-in">
+                <section className="border border-ink-mid bg-ink-light/20 p-5">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Material control dashboard</p>
+                      <h3 className="mt-1 font-display text-xl font-semibold text-paper">Consumption, GRN receipts and wastage evidence</h3>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-light">
+                        This view connects daily material usage to receipt and buying records so wastage, missing GRNs and supplier exposure are visible.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-4 xl:min-w-[640px]">
+                      <Metric label="Usage lines" value={String(materialRecords.length)} detail="Site report material rows" tone="text-paper" />
+                      <Metric label="GRNs" value={String(projectSignals.grns.length)} detail="Receipt records" tone={projectSignals.grns.length ? "text-emerald-300" : "text-amber-300"} />
+                      <Metric label="GRN value" value={formatCurrency(grnValue)} detail={`${grnQuantity.toLocaleString()} received units`} tone="text-signal" />
+                      <Metric label="Wastage rate" value={`${materialWastageRate.toFixed(1)}%`} detail="Wastage vs used quantity" tone={materialWastageRate > 5 ? "text-red-300" : "text-amber-300"} />
+                    </div>
+                  </div>
+                </section>
+
+                <section className="grid gap-4 lg:grid-cols-[1fr_0.8fr]">
+                  <RecordList title="GRN receipt ledger" records={projectSignals.grns} columns={["grn_number", "supplier_name", "item_name", "quantity", "total_amount", "status"]} />
+                  <RiskList
+                    title="Material control checks"
+                    items={materialExceptions}
+                    empty="No material control exception triggered by the records currently returned."
+                    tone="amber"
+                  />
+                </section>
+
                 <div className="border border-ink-mid bg-ink-light/20 p-5 rounded-sm">
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
@@ -3004,6 +4612,13 @@ function ProjectDetail({
             )}
 
             {/* ---------------------------------------------------- */}
+            {/* CONTROLS TAB */}
+            {/* ---------------------------------------------------- */}
+            {activeTab === "controls" && (
+              <ProjectControlsPanel project={source} detail={detail} />
+            )}
+
+            {/* ---------------------------------------------------- */}
             {/* DOCUMENTS TAB */}
             {/* ---------------------------------------------------- */}
             {activeTab === "documents" && (
@@ -3023,6 +4638,19 @@ function ProjectDetail({
 
           </div>
         )}
+        {activeCommand ? (
+          <ProjectCommandModal
+            command={activeCommand}
+            project={source}
+            detail={detail}
+            signals={projectSignals}
+            onClose={() => setActiveCommand(null)}
+            onRefresh={() => {
+              void loadProjectSignals();
+              onRefresh();
+            }}
+          />
+        ) : null}
       </aside>
     </div>
   );

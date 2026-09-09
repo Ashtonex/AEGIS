@@ -7,10 +7,12 @@ from fastapi.responses import JSONResponse
 from core.config import settings
 from core.database import check_database_health
 from core.logging import logger, setup_logging
-from core.security import require_resource_permission
+from core.security import get_current_user, require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
 from routers import auth, users, projects, site_operations, site_reports, workforce, fleet, equipment_assets, procurement, inventory, inventory_items, budgets, financial_performance, quotations, hr_records, hr_operations, hr_verification, compliance_items, hse_incidents, documents, crm_contacts, crm_leads, client_portal_tickets, supplier_records, internal_messages, kpi_metrics, bi_reports, risk_register, tender_bids, maintenance_schedules, automated_reports, executive, crm, crm_lifecycle, crm_organizations, crm_activities, crm_communications, crm_automations, crm_integrations, public_intake, profiles, portals, notifications, settings as settings_router, analytics_ml, bank_accounts, bank_transactions, payments, payroll_runs, payslips, pwa, crm_import_export, drawings, sop_compliance, finance_departments, finance_transfers, finance_statutory, boq_progress, final_accounts, teams, assignments, crm_tasks, pursuits, pursuit_teams  # fmt: skip
+from routers import workforce_foundation
 from routers import finance_ccb_findings  # fmt: skip
+from routers import data_room
 
 
 def create_app() -> FastAPI:
@@ -39,7 +41,6 @@ def create_app() -> FastAPI:
     )
 
     from core.rate_limit import limiter, rate_limit_exceeded_handler
-    from slowapi import _rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
     from slowapi.middleware import SlowAPIMiddleware
     app.state.limiter = limiter
@@ -98,7 +99,10 @@ def create_app() -> FastAPI:
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"], dependencies=[Depends(require_resource_permission("projects"))])  # fmt: skip
     app.include_router(site_reports.router, prefix="/api/v1/site-operations", tags=["Site Operations"])  # fmt: skip
     app.include_router(site_operations.router, prefix="/api/v1/site-operations", tags=["Site Operations"], dependencies=[Depends(require_resource_permission("site_operations"))])  # fmt: skip
-    app.include_router(workforce.router, prefix="/api/v1/workforce", tags=["Workforce"], dependencies=[Depends(require_resource_permission("workforce"))])  # fmt: skip
+    app.include_router(workforce_foundation.router, prefix="/api/v1/workforce/foundation", tags=["Workforce Foundation"])
+    # Workforce actions carry explicit dependencies; POST decisions need update,
+    # and self-service resolves the worker from the authenticated identity.
+    app.include_router(workforce.router, prefix="/api/v1/workforce", tags=["Workforce"], dependencies=[Depends(get_current_user)])  # fmt: skip
     app.include_router(fleet.router, prefix="/api/v1/fleet", tags=["Fleet"], dependencies=[Depends(require_resource_permission("fleet"))])  # fmt: skip
     app.include_router(equipment_assets.router, prefix="/api/v1/equipment-assets", tags=["Equipment Assets"], dependencies=[Depends(require_resource_permission("equipment_assets"))])  # fmt: skip
     app.include_router(
@@ -114,6 +118,8 @@ def create_app() -> FastAPI:
     app.include_router(hr_records.router, prefix="/api/v1/hr-records", tags=["Hr Records"])  # fmt: skip
     app.include_router(hr_operations.router, prefix="/api/v1/hr/operations", tags=["Hr Operations"])
     app.include_router(hr_verification.router, prefix="/api/v1/hr/vendor-verification", tags=["Hr Vendor Verification"])
+    from routers import compliance_foundation
+    app.include_router(compliance_foundation.router, prefix="/api/v1/compliance/foundation", tags=["Compliance foundation"])
     app.include_router(compliance_items.router, prefix="/api/v1/compliance-items", tags=["Compliance Items"], dependencies=[Depends(require_resource_permission("compliance_items"))])  # fmt: skip
     app.include_router(hse_incidents.router, prefix="/api/v1/hse-incidents", tags=["Hse Incidents"], dependencies=[Depends(require_resource_permission("hse_incidents"))])  # fmt: skip
     app.include_router(documents.router, prefix="/api/v1/documents", tags=["Documents"], dependencies=[Depends(require_resource_permission("documents"))])  # fmt: skip
@@ -165,6 +171,7 @@ def create_app() -> FastAPI:
     app.include_router(finance_ccb_findings.router, prefix="/api/v1/finance/ccb-findings", tags=["Finance CCB Findings"])
     app.include_router(boq_progress.router, prefix="/api/v1/boq-progress", tags=["BOQ Progress"])
     app.include_router(final_accounts.router, prefix="/api/v1/final-accounts", tags=["Final Accounts"])
+    app.include_router(data_room.router, prefix="/api/v1/finance/data-room", tags=["Finance Data Room"])
 
     return app
 

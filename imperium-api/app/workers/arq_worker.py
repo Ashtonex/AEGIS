@@ -21,6 +21,25 @@ from app.services.finance.ccb_monitor import (
     run_requisition_budget_breach_check,
     run_variance_staleness_check,
 )
+from app.services.workforce_events import dispatch_workforce_events
+from app.events.bus import EventBus
+
+
+async def dispatch_compliance_events_job(ctx):
+    bus = EventBus(settings.REDIS_URL)
+    try:
+        return await dispatch_workforce_events(AsyncSessionLocal, bus,
+            event_filter="event_type LIKE 'compliance.%'", transport="redis:compliance:v1", stream="compliance.events")
+    finally:
+        await bus.disconnect()
+
+
+async def dispatch_workforce_events_job(ctx):
+    bus = EventBus(settings.REDIS_URL)
+    try:
+        return await dispatch_workforce_events(AsyncSessionLocal, bus)
+    finally:
+        await bus.disconnect()
 
 
 # 1. Retry Policy Helper
@@ -128,7 +147,11 @@ async def send_notification_job(
 
 
 async def compliance_check_reminder_job(
-    ctx, item_id: str, document_type: str, expiry_date: str, correlation_id: str | None = None
+    ctx,
+    item_id: str,
+    document_type: str,
+    expiry_date: str,
+    correlation_id: str | None = None,
 ):
     """
     Background worker job for checking HSE/regulatory compliance reminders.
@@ -158,7 +181,10 @@ async def poll_ticket_sla_triggers_job(ctx):
     fired = 0
     try:
         async with AsyncSessionLocal() as db:
-            rows = (await db.execute(text("""
+            rows = (
+                (
+                    await db.execute(
+                        text("""
                 SELECT id, organization_id, assigned_to, resolution_due_at
                 FROM crm.support_tickets
                 WHERE is_deleted = false
@@ -166,18 +192,32 @@ async def poll_ticket_sla_triggers_job(ctx):
                   AND resolution_due_at IS NOT NULL
                   AND resolution_due_at < NOW() + INTERVAL '2 hours'
                 LIMIT 500
-            """))).mappings().all()
+            """)
+                    )
+                )
+                .mappings()
+                .all()
+            )
 
             for row in rows:
                 ticket_id = str(row["id"])
                 org_id = str(row["organization_id"])
-                trigger_type = "ticket_overdue" if row["resolution_due_at"] < time_now() else "ticket_sla_near_breach"
-                dedupe_key = f"aegis:automation:{trigger_type}:{ticket_id}:{time_today()}"
+                trigger_type = (
+                    "ticket_overdue"
+                    if row["resolution_due_at"] < time_now()
+                    else "ticket_sla_near_breach"
+                )
+                dedupe_key = (
+                    f"aegis:automation:{trigger_type}:{ticket_id}:{time_today()}"
+                )
                 if await redis_pool.get(dedupe_key):
                     continue
                 await evaluate_and_run_automations(
-                    db, org_id, str(row["assigned_to"]) if row["assigned_to"] else None,
-                    trigger_type, {"id": ticket_id, "ticket_id": ticket_id},
+                    db,
+                    org_id,
+                    str(row["assigned_to"]) if row["assigned_to"] else None,
+                    trigger_type,
+                    {"id": ticket_id, "ticket_id": ticket_id},
                 )
                 await redis_pool.setex(dedupe_key, 86400, "true")
                 fired += 1
@@ -258,6 +298,7 @@ async def run_ccb_variance_staleness_check_job(ctx):
 
 def time_now():
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc)
 
 
@@ -316,6 +357,8 @@ else:
 
 class WorkerSettings:
     functions = [
+        dispatch_compliance_events_job,
+        dispatch_workforce_events_job,
         generate_quotation_documents_job,
         send_notification_job,
         compliance_check_reminder_job,
@@ -325,10 +368,24 @@ class WorkerSettings:
         run_ccb_variance_staleness_check_job,
     ]
     cron_jobs = [
-        cron(poll_ticket_sla_triggers_job, minute={0, 15, 30, 45}, run_at_startup=False),
+        cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
+        cron(dispatch_workforce_events_job, second=15, run_at_startup=False),
+        cron(
+            poll_ticket_sla_triggers_job, minute={0, 15, 30, 45}, run_at_startup=False
+        ),
         cron(run_ccb_budget_overrun_check_job, hour=3, minute=0, run_at_startup=False),
-        cron(run_ccb_requisition_breach_check_job, hour=3, minute=15, run_at_startup=False),
-        cron(run_ccb_variance_staleness_check_job, hour=3, minute=30, run_at_startup=False),
+        cron(
+            run_ccb_requisition_breach_check_job,
+            hour=3,
+            minute=15,
+            run_at_startup=False,
+        ),
+        cron(
+            run_ccb_variance_staleness_check_job,
+            hour=3,
+            minute=30,
+            run_at_startup=False,
+        ),
     ]
     redis_settings = redis_settings
     on_startup = startup

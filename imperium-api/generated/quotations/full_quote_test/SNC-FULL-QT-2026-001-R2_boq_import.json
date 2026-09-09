@@ -3,9 +3,11 @@
   "items": [
     {
       "description": "Site establishment and setting out",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "1",
       "unit": "item",
-      "rate": "2500.0",
+      "rate": "2500",
       "material_rate": "0",
       "labour_rate": "0",
       "equipment_rate": "0",
@@ -15,6 +17,8 @@
     },
     {
       "description": "Bulk earthworks and cart-away",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "850",
       "unit": "m3",
       "rate": "12.75",
@@ -27,9 +31,11 @@
     },
     {
       "description": "Reinforced concrete foundations",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "120",
       "unit": "m3",
-      "rate": "185.5",
+      "rate": "185.50",
       "material_rate": "0",
       "labour_rate": "0",
       "equipment_rate": "0",
@@ -39,9 +45,11 @@
     },
     {
       "description": "Structural steel supply and installation",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "18",
       "unit": "ton",
-      "rate": "1420.0",
+      "rate": "1420",
       "material_rate": "0",
       "labour_rate": "0",
       "equipment_rate": "0",
@@ -51,6 +59,8 @@
     },
     {
       "description": "Roof sheeting and flashings",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "2200",
       "unit": "m2",
       "rate": "18.25",
@@ -63,9 +73,11 @@
     },
     {
       "description": "Electrical first fix and distribution",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "1",
       "unit": "item",
-      "rate": "18750.0",
+      "rate": "18750",
       "material_rate": "0",
       "labour_rate": "0",
       "equipment_rate": "0",
@@ -75,9 +87,11 @@
     },
     {
       "description": "Plumbing and drainage installation",
+      "section": "Measured Works",
+      "item_no": "",
       "quantity": "1",
       "unit": "item",
-      "rate": "14200.0",
+      "rate": "14200",
       "material_rate": "0",
       "labour_rate": "0",
       "equipment_rate": "0",
@@ -88,8 +102,9 @@
   ],
   "warnings": [],
   "summary": {
-    "total_rows_processed": 7,
+    "total_rows_processed": 8,
     "valid_items_imported": 7,
+    "section_count": 1,
     "total_direct_costs": "134257.50"
   }
 }

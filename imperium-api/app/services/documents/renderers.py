@@ -652,47 +652,96 @@ class QuotationPDFRenderer(DocumentRenderer):
                 story.append(Spacer(1, 10))
 
                 table_data = [
-                    ["Item Description", "Unit", "Quantity", "Rate ($)", "Total ($)"]
+                    ["Item No", "Item Description", "Unit", "Quantity", "Rate ($)", "Total ($)"]
+                ]
+                custom_table_styles = [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                    ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                    ("ALIGN", (2, 0), (2, -1), "CENTER"),
+                    ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
                 ]
 
+                # Group items by section
+                items_by_section: Dict[str, List[Dict[str, Any]]] = {}
                 for item in data.get("items", []):
-                    qty = float(item.get("quantity", item.get("qty", 0)))
-                    rate = float(item.get("rate", 0))
-                    total = qty * rate
-                    table_data.append(
-                        [
-                            item.get("description", "Unspecified task"),
+                    sec = item.get("section") or "Measured Works"
+                    if sec not in items_by_section:
+                        items_by_section[sec] = []
+                    items_by_section[sec].append(item)
+
+                for sec_idx, (section_name, sec_items) in enumerate(items_by_section.items(), start=1):
+                    sec_row_idx = len(table_data)
+                    table_data.append([
+                        f"{sec_idx}.0",
+                        Paragraph(f"<b>{section_name.upper()}</b>", cell_style),
+                        "", "", "", ""
+                    ])
+                    custom_table_styles.extend([
+                        ("SPAN", (1, sec_row_idx), (-1, sec_row_idx)),
+                        ("BACKGROUND", (0, sec_row_idx), (-1, sec_row_idx), colors.HexColor("#F1F5F9")),
+                        ("FONTNAME", (0, sec_row_idx), (-1, sec_row_idx), "Helvetica-Bold"),
+                    ])
+
+                    sec_subtotal = 0.0
+                    for it_idx, item in enumerate(sec_items, start=1):
+                        qty = float(item.get("quantity", item.get("qty", 0)))
+                        rate = float(item.get("rate", 0))
+                        total = qty * rate
+                        sec_subtotal += total
+                        default_item_no = f"{sec_idx}.{it_idx}"
+                        item_no = str(item.get("item_no") or default_item_no)
+                        table_data.append([
+                            item_no,
+                            Paragraph(item.get("description", "Unspecified task"), cell_style),
                             item.get("unit", "item"),
                             f"{qty:,.2f}",
                             f"{rate:,.2f}",
                             f"{total:,.2f}",
-                        ]
-                    )
+                        ])
 
-                table_data.append(["", "", "", "Direct Costs:", f"${float(data.get('direct_costs', 0)):,.2f}"])
-                table_data.append(["", "", "", "Preliminaries:", f"${float(data.get('preliminaries', 0)):,.2f}"])
-                table_data.append(["", "", "", "Overheads:", f"${float(data.get('overhead_amount', 0)):,.2f}"])
-                table_data.append(["", "", "", "Contingency:", f"${float(data.get('contingency_amount', 0)):,.2f}"])
-                table_data.append(["", "", "", "Profit Margin:", f"${float(data.get('profit_amount', 0)):,.2f}"])
-                table_data.append(["", "", "", "ZIMRA VAT:", f"${float(data.get('tax_amount', 0)):,.2f}"])
-                table_data.append(["", "", "", "GRAND TOTAL:", f"${float(data.get('grand_total', 0)):,.2f}"])
+                    sub_row_idx = len(table_data)
+                    table_data.append([
+                        "",
+                        Paragraph(f"<b>{section_name} Subtotal</b>", cell_style),
+                        "", "", "",
+                        f"${sec_subtotal:,.2f}"
+                    ])
+                    custom_table_styles.extend([
+                        ("SPAN", (1, sub_row_idx), (4, sub_row_idx)),
+                        ("FONTNAME", (1, sub_row_idx), (-1, sub_row_idx), "Helvetica-Bold"),
+                        ("BACKGROUND", (1, sub_row_idx), (-1, sub_row_idx), colors.HexColor("#F8FAFC")),
+                    ])
 
-                boq_table = Table(table_data, colWidths=[200, 50, 70, 100, 100])
-                boq_table.setStyle(
-                    TableStyle(
-                        [
-                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
-                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                            ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
-                            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                            ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
-                            ("GRID", (0, 0), (-1, -8), 0.5, colors.HexColor("#CBD5E1")),
-                            ("FONTNAME", (3, -7), (-1, -1), "Helvetica-Bold"),
-                            ("LINEABOVE", (3, -7), (-1, -1), 1, colors.HexColor("#0F172A")),
-                        ]
-                    )
-                )
+                totals_start = len(table_data)
+                table_data.append(["", "", "", "", "Direct Costs:", f"${float(data.get('direct_costs', 0)):,.2f}"])
+                table_data.append(["", "", "", "", "Preliminaries:", f"${float(data.get('preliminaries', 0)):,.2f}"])
+                table_data.append(["", "", "", "", "Overheads:", f"${float(data.get('overhead_amount', 0)):,.2f}"])
+                table_data.append(["", "", "", "", "Contingency:", f"${float(data.get('contingency_amount', 0)):,.2f}"])
+                table_data.append(["", "", "", "", "Profit Margin:", f"${float(data.get('profit_amount', 0)):,.2f}"])
+                table_data.append(["", "", "", "", "ZIMRA VAT:", f"${float(data.get('tax_amount', 0)):,.2f}"])
+                table_data.append(["", "", "", "", "GRAND TOTAL:", f"${float(data.get('grand_total', 0)):,.2f}"])
+
+                totals_end = len(table_data) - 1
+                for r in range(totals_start, totals_end + 1):
+                    custom_table_styles.append(("SPAN", (0, r), (3, r)))
+
+                custom_table_styles.extend([
+                    ("FONTNAME", (4, totals_start), (-1, -1), "Helvetica-Bold"),
+                    ("LINEABOVE", (4, totals_start), (-1, totals_start), 1, colors.HexColor("#0F172A")),
+                    ("BACKGROUND", (0, totals_end), (-1, totals_end), colors.HexColor("#FEF08A")),
+                    ("FONTNAME", (0, totals_end), (-1, totals_end), "Helvetica-Bold"),
+                ])
+
+                boq_table = Table(table_data, colWidths=[40, 200, 45, 60, 80, 75])
+                boq_table.setStyle(TableStyle(custom_table_styles))
                 story.append(boq_table)
                 story.append(Spacer(1, 10))
 
@@ -758,89 +807,231 @@ class QuotationExcelExporter(ExcelExporter):
             workbook = xlsxwriter.Workbook(output_path)
             worksheet = workbook.add_worksheet("Quotation BOQ")
 
-            # Branded Header Formats
-            header_format = workbook.add_format(
-                {
-                    "bold": True,
-                    "font_color": "white",
-                    "bg_color": "#0F172A",
-                    "border": 1,
-                }
-            )
-            currency_format = workbook.add_format({"num_format": "$#,##0.00"})
-            bold_format = workbook.add_format({"bold": True})
+            # Page setup for printing
+            worksheet.set_paper(9)  # A4
+            worksheet.fit_to_pages(1, 0)
+            worksheet.set_margins(left=0.5, right=0.5, top=0.5, bottom=0.5)
+
+            # Branded Formats
+            header_format = workbook.add_format({
+                "bold": True,
+                "font_color": "white",
+                "bg_color": "#0F172A",
+                "border": 1,
+                "align": "center",
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 11,
+            })
+            desc_header_format = workbook.add_format({
+                "bold": True,
+                "font_color": "white",
+                "bg_color": "#0F172A",
+                "border": 1,
+                "align": "left",
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 11,
+            })
+            section_format = workbook.add_format({
+                "bold": True,
+                "font_color": "#0F172A",
+                "bg_color": "#E2E8F0",
+                "border": 1,
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 11,
+            })
+            subtotal_label_format = workbook.add_format({
+                "bold": True,
+                "font_color": "#1E293B",
+                "bg_color": "#F8FAFC",
+                "border": 1,
+                "align": "right",
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 10,
+            })
+            subtotal_num_format = workbook.add_format({
+                "bold": True,
+                "font_color": "#1E293B",
+                "bg_color": "#F8FAFC",
+                "border": 1,
+                "num_format": "$#,##0.00",
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 10,
+            })
+            currency_format = workbook.add_format({
+                "num_format": "$#,##0.00",
+                "border": 1,
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 10,
+            })
+            qty_format = workbook.add_format({
+                "num_format": "#,##0.00",
+                "border": 1,
+                "align": "right",
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 10,
+            })
+            text_format = workbook.add_format({
+                "border": 1,
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 10,
+            })
+            center_format = workbook.add_format({
+                "border": 1,
+                "align": "center",
+                "valign": "vcenter",
+                "font_name": "Calibri",
+                "font_size": 10,
+            })
+            bold_format = workbook.add_format({
+                "bold": True,
+                "font_name": "Calibri",
+                "font_size": 11,
+            })
+            title_format = workbook.add_format({
+                "bold": True,
+                "font_size": 14,
+                "font_color": "#0F172A",
+                "font_name": "Calibri",
+            })
+            grand_total_label = workbook.add_format({
+                "bold": True,
+                "font_color": "#0F172A",
+                "bg_color": "#FEF08A",
+                "border": 2,
+                "align": "right",
+                "valign": "vcenter",
+                "font_size": 11,
+                "font_name": "Calibri",
+            })
+            grand_total_num = workbook.add_format({
+                "bold": True,
+                "font_color": "#0F172A",
+                "bg_color": "#FEF08A",
+                "border": 2,
+                "num_format": "$#,##0.00",
+                "valign": "vcenter",
+                "font_size": 11,
+                "font_name": "Calibri",
+            })
+
+            # Column Widths
+            worksheet.set_column(0, 0, 12)  # Item No
+            worksheet.set_column(1, 1, 48)  # Description
+            worksheet.set_column(2, 2, 10)  # Unit
+            worksheet.set_column(3, 3, 14)  # Quantity
+            worksheet.set_column(4, 4, 16)  # Rate
+            worksheet.set_column(5, 5, 18)  # Amount
 
             # Title block
-            worksheet.write(0, 0, "SIX NINE CONSTRUCTION (PVT) LTD", bold_format)
-            worksheet.write(1, 0, f"Client: {data.get('client_name')}")
-            worksheet.write(2, 0, f"Project: {data.get('project_title')}")
+            worksheet.write(0, 0, "SIX NINE CONSTRUCTION (PVT) LTD", title_format)
+            worksheet.write(1, 0, f"Client: {data.get('client_name', 'Client')}")
+            worksheet.write(2, 0, f"Project: {data.get('project_title', 'Project')}")
             worksheet.write(
                 3,
                 0,
-                f"Quotation ID: {data.get('quotation_id')} | Revision: {data.get('revision_number', 1)}",
+                f"Quotation ID: {data.get('quotation_id', 'SNC-QT')} | Revision: {data.get('revision_number', 1)}",
             )
 
-            # Headers
-            headers = ["Description", "Unit", "Quantity", "Rate", "Total"]
+            # Table Headers
+            headers = ["Item No", "Description", "Unit", "Quantity", "Rate ($)", "Amount ($)"]
             for col, header in enumerate(headers):
-                worksheet.write(5, col, header, header_format)
+                fmt = desc_header_format if col == 1 else header_format
+                worksheet.write(5, col, header, fmt)
 
-            # Write rows
-            row = 6
+            # Group items by section
+            items_by_section: Dict[str, List[Dict[str, Any]]] = {}
             for item in data.get("items", []):
-                qty = float(item.get("quantity", 0))
-                rate = float(item.get("rate", 0))
-                worksheet.write(row, 0, item.get("description", ""))
-                worksheet.write(row, 1, item.get("unit", "m"))
-                worksheet.write(row, 2, qty)
-                worksheet.write(row, 3, rate, currency_format)
-                # Excel formula for line item total
-                worksheet.write_formula(
-                    row, 4, f"=C{row + 1}*D{row + 1}", currency_format
-                )
+                sec = item.get("section") or "Measured Works"
+                if sec not in items_by_section:
+                    items_by_section[sec] = []
+                items_by_section[sec].append(item)
+
+            row = 6
+            subtotal_rows: List[int] = []
+
+            for sec_idx, (section_name, sec_items) in enumerate(items_by_section.items(), start=1):
+                # Section Header banner
+                worksheet.merge_range(row, 0, row, 5, f"{sec_idx}.0  {section_name.upper()}", section_format)
+                row += 1
+                sec_start_row = row + 1
+
+                for it_idx, item in enumerate(sec_items, start=1):
+                    qty = float(item.get("quantity", item.get("qty", 0)))
+                    rate = float(item.get("rate", 0))
+                    default_item_no = f"{sec_idx}.{it_idx}"
+                    item_no = str(item.get("item_no") or default_item_no)
+
+                    worksheet.write(row, 0, item_no, center_format)
+                    worksheet.write(row, 1, item.get("description", ""), text_format)
+                    worksheet.write(row, 2, item.get("unit", "item"), center_format)
+                    worksheet.write(row, 3, qty, qty_format)
+                    worksheet.write(row, 4, rate, currency_format)
+                    # Line item formula: =Quantity * Rate
+                    worksheet.write_formula(row, 5, f"=D{row + 1}*E{row + 1}", currency_format)
+                    row += 1
+
+                sec_end_row = row
+                # Section Subtotal
+                worksheet.write(row, 4, f"{section_name} Subtotal:", subtotal_label_format)
+                worksheet.write_formula(row, 5, f"=SUM(F{sec_start_row}:F{sec_end_row})", subtotal_num_format)
+                subtotal_rows.append(row + 1)
                 row += 1
 
             # Totals Block
-            worksheet.write(row, 3, "Direct Costs:", bold_format)
-            worksheet.write(row, 4, float(data.get("direct_costs", 0)), currency_format)
             row += 1
-            worksheet.write(row, 3, "Preliminaries:", bold_format)
-            worksheet.write(
-                row, 4, float(data.get("preliminaries", 0)), currency_format
-            )
-            row += 1
-            worksheet.write(row, 3, "Overheads:", bold_format)
-            worksheet.write(
-                row, 4, float(data.get("overhead_amount", 0)), currency_format
-            )
-            row += 1
-            worksheet.write(row, 3, "Contingency:", bold_format)
-            worksheet.write(
-                row, 4, float(data.get("contingency_amount", 0)), currency_format
-            )
-            row += 1
-            worksheet.write(row, 3, "Profit Margin:", bold_format)
-            worksheet.write(
-                row, 4, float(data.get("profit_amount", 0)), currency_format
-            )
-            row += 1
-            worksheet.write(row, 3, "Provisional Sums:", bold_format)
-            worksheet.write(
-                row, 4, float(data.get("provisional_sums", 0)), currency_format
-            )
-            row += 1
-            worksheet.write(row, 3, "Discounts:", bold_format)
-            worksheet.write(
-                row, 4, float(data.get("discount_amount", 0)), currency_format
-            )
-            row += 1
-            worksheet.write(row, 3, "ZIMRA VAT:", bold_format)
-            worksheet.write(row, 4, float(data.get("tax_amount", 0)), currency_format)
-            row += 1
-            worksheet.write(row, 3, "GRAND TOTAL:", bold_format)
-            worksheet.write(row, 4, float(data.get("grand_total", 0)), currency_format)
+            if subtotal_rows:
+                subtotal_refs = "+".join(f"F{r}" for r in subtotal_rows)
+                direct_cost_formula = f"={subtotal_refs}"
+            else:
+                direct_cost_formula = None
 
-            # Write assumptions & exclusions below the totals block
+            worksheet.write(row, 4, "Direct Costs:", bold_format)
+            if direct_cost_formula:
+                worksheet.write_formula(row, 5, direct_cost_formula, currency_format)
+            else:
+                worksheet.write(row, 5, float(data.get("direct_costs", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "Preliminaries:", bold_format)
+            worksheet.write(row, 5, float(data.get("preliminaries", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "Overheads:", bold_format)
+            worksheet.write(row, 5, float(data.get("overhead_amount", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "Contingency:", bold_format)
+            worksheet.write(row, 5, float(data.get("contingency_amount", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "Profit Margin:", bold_format)
+            worksheet.write(row, 5, float(data.get("profit_amount", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "Provisional Sums:", bold_format)
+            worksheet.write(row, 5, float(data.get("provisional_sums", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "Discounts:", bold_format)
+            worksheet.write(row, 5, float(data.get("discount_amount", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "ZIMRA VAT:", bold_format)
+            worksheet.write(row, 5, float(data.get("tax_amount", 0)), currency_format)
+            row += 1
+
+            worksheet.write(row, 4, "GRAND TOTAL:", grand_total_label)
+            worksheet.write(row, 5, float(data.get("grand_total", 0)), grand_total_num)
+
+            # Assumptions & Exclusions
             row += 2
             assumptions = data.get("assumptions", [])
             exclusions = data.get("exclusions", [])
@@ -848,23 +1039,21 @@ class QuotationExcelExporter(ExcelExporter):
             if assumptions:
                 worksheet.write(row, 0, "Assumptions:", bold_format)
                 row += 1
-                for item in assumptions:
-                    worksheet.write(row, 0, f"- {item}")
+                for it in assumptions:
+                    worksheet.write(row, 0, f"• {it}")
                     row += 1
                 row += 1
 
             if exclusions:
                 worksheet.write(row, 0, "Exclusions:", bold_format)
                 row += 1
-                for item in exclusions:
-                    worksheet.write(row, 0, f"- {item}")
+                for it in exclusions:
+                    worksheet.write(row, 0, f"• {it}")
                     row += 1
                 row += 1
 
             # Audit Signature
-            worksheet.write(
-                row, 0, "Audit Trail Hash (Pricing Integrity Key):", bold_format
-            )
+            worksheet.write(row, 0, "Audit Integrity Key:", bold_format)
             worksheet.write(row, 1, data.get("audit_trail_hash", "N/A"))
 
             workbook.close()
