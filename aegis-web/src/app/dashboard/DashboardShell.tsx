@@ -278,6 +278,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Historical Entry", href: "/dashboard/finance/historical-entry", icon: BookMarked },
       { name: "Financial Statements", href: "/dashboard/finance/financial-statements", icon: FileText },
       { name: "General Ledger", href: "/dashboard/finance/general-ledger", icon: Scale },
+      { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
     ],
   },
   {

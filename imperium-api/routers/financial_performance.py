@@ -19,6 +19,7 @@ from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
 from app.services.finance import gl_bridge
 from app.services.finance.general_ledger import GeneralLedgerError
+from app.services.finance.cash_position import compute_cash_runway
 from routers.payroll_runs import _compute_gross
 
 router = APIRouter()
@@ -590,31 +591,10 @@ async def get_financial_statements(
     else:
         segment = pnl["consolidated"]
 
-    cash_row = (
-        await db.execute(
-            text("""
-            SELECT COALESCE(SUM(current_balance), 0) AS total_cash
-            FROM finance.cash_accounts
-            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
-        """),
-            {"org_id": user["org_id"]},
-        )
-    ).first()
-    total_cash = float(cash_row.total_cash) if cash_row else 0.0
-
-    burn_row = (
-        await db.execute(
-            text("""
-            SELECT COALESCE(SUM(amount), 0) AS total_outflow
-            FROM finance.cashbook_transactions
-            WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
-              AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
-        """),
-            {"org_id": user["org_id"]},
-        )
-    ).first()
-    monthly_burn = (float(burn_row.total_outflow) / 3.0) if burn_row else 0.0
-    runway_months = round(total_cash / monthly_burn, 1) if monthly_burn > 0 else None
+    # Shared with routers/cash_forecast.py and (planned) routers/executive.py's
+    # /financial-runway - one calculation, not two independently-computed
+    # copies that could silently drift apart.
+    cash_position = await compute_cash_runway(db, user["org_id"])
 
     return ok(
         {
@@ -622,11 +602,7 @@ async def get_financial_statements(
             "departments": pnl["departments"],
             "consolidated": pnl["consolidated"],
             "segment": segment,
-            "cash_position": {
-                "total_cash": total_cash,
-                "trailing_monthly_burn": round(monthly_burn, 2),
-                "runway_months": runway_months,
-            },
+            "cash_position": cash_position,
         },
         "Financial statement retrieved.",
     )

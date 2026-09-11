@@ -22,6 +22,7 @@ const TAB_ROUTES: Record<string, string> = {
   "financial-statements": "/dashboard/finance?tab=financial-statements",
   "data-room": "/dashboard/finance?tab=data-room",
   "general-ledger": "/dashboard/finance?tab=general-ledger",
+  "cash-forecast": "/dashboard/finance?tab=cash-forecast",
 };
 
 export default async function FinanceTabPage({

@@ -20,6 +20,7 @@ import { FinalAccountPanel } from "./FinalAccountPanel";
 import { DataRoomPanel } from "./DataRoomPanel";
 import { GeneralLedgerPanel } from "./GeneralLedgerPanel";
 import { CompanyBudgetPanel } from "./CompanyBudgetPanel";
+import { CashForecastPanel } from "./CashForecastPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -41,7 +42,7 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -65,6 +66,7 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   "financial-statements": "/dashboard/finance/financial-statements",
   "data-room": "/dashboard/finance/data-room",
   "general-ledger": "/dashboard/finance/general-ledger",
+  "cash-forecast": "/dashboard/finance/cash-forecast",
 };
 
 function normalizeTab(value: string | null | undefined): FinanceTab {
@@ -525,6 +527,8 @@ function FinanceWorkspace() {
           {activeTab === "financial-statements" && <FinancialStatementsPanel />}
 
           {activeTab === "general-ledger" && <GeneralLedgerPanel />}
+
+          {activeTab === "cash-forecast" && <CashForecastPanel />}
 
           {activeTab === "project-financials" && (
             <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">

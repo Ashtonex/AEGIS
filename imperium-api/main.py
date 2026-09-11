@@ -16,6 +16,7 @@ from routers import data_room
 from routers import general_ledger
 from routers import gl_bridge
 from routers import company_budgets
+from routers import cash_forecast
 
 
 def create_app() -> FastAPI:
@@ -178,6 +179,7 @@ def create_app() -> FastAPI:
     app.include_router(general_ledger.router, prefix="/api/v1/finance/gl", tags=["Finance General Ledger"])
     app.include_router(gl_bridge.router, prefix="/api/v1/finance/gl/bridge", tags=["Finance GL Bridge"])
     app.include_router(company_budgets.router, prefix="/api/v1/finance/company-budgets", tags=["Finance Company Budgets"])
+    app.include_router(cash_forecast.router, prefix="/api/v1/finance/cash-forecast", tags=["Finance Cash Forecast"])
 
     return app
 

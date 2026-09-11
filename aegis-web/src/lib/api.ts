@@ -4364,6 +4364,15 @@ export async function getDepartmentBudgetVariance(departmentId: string, fiscalYe
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/variance/department/${departmentId}?fiscal_year=${fiscalYear}`, { cache: 'no-store', allowFallback: false });
 }
 
+/** Cash Position Command Centre (Phase 6A): multi-horizon Committed/Probable cash forecast, built from zero new schema. */
+export async function getCashForecast(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/cash-forecast', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getCashRunway(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/cash-forecast/runway', { cache: 'no-store', allowFallback: false });
+}
+
 // --- BOQ PROGRESS (measured-quantity earned value) ---
 
 /** Priced BOQ line items for a project, with measured qty/% complete/earned value. */
