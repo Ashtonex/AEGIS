@@ -19,6 +19,7 @@ import { EarnedValuePanel } from "./EarnedValuePanel";
 import { FinalAccountPanel } from "./FinalAccountPanel";
 import { DataRoomPanel } from "./DataRoomPanel";
 import { GeneralLedgerPanel } from "./GeneralLedgerPanel";
+import { CompanyBudgetPanel } from "./CompanyBudgetPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -163,6 +164,7 @@ function FinanceWorkspace() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
   const [departmentId, setDepartmentId] = useState<string>("");
+  const [budgetsSubView, setBudgetsSubView] = useState<"project" | "company">("project");
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -732,44 +734,55 @@ function FinanceWorkspace() {
           {activeTab === "close-out" && <FinalAccountPanel />}
 
           {activeTab === "budgets" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
-                <span className="font-mono text-xs tracking-wider uppercase text-slate">Project Approved Budgets</span>
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 border-b border-ink-mid">
+                <button onClick={() => setBudgetsSubView("project")} className={`px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px ${budgetsSubView === "project" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}>Project Budgets</button>
+                <button onClick={() => setBudgetsSubView("company")} className={`px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px ${budgetsSubView === "company" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}>Company &amp; Department</button>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
-                      <th className="p-4">Project</th>
-                      <th className="p-4">Budget Version</th>
-                      <th className="p-4">Effective Date</th>
-                      <th className="p-4 text-right">Total Amount</th>
-                      <th className="p-4">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {budgets.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="p-4 text-center text-slate">No budgets registered.</td>
-                      </tr>
-                    ) : (
-                      budgets.map((b) => (
-                        <tr key={b.id} className="hover:bg-ink-mid/10">
-                          <td className="p-4 text-paper font-medium">{b.project_name || b.project_id}</td>
-                          <td className="p-4 font-mono text-slate-light">v{b.budget_version}</td>
-                          <td className="p-4 text-slate-light">{new Date(b.effective_date).toLocaleDateString()}</td>
-                          <td className="p-4 text-right text-paper font-semibold">{money(b.allocated_amount || b.total_amount)}</td>
-                          <td className="p-4">
-                            <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(b.status)}`}>
-                              {b.status}
-                            </span>
-                          </td>
+
+              {budgetsSubView === "project" && (
+                <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
+                  <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
+                    <span className="font-mono text-xs tracking-wider uppercase text-slate">Project Approved Budgets</span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-sm">
+                      <thead>
+                        <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
+                          <th className="p-4">Project</th>
+                          <th className="p-4">Budget Version</th>
+                          <th className="p-4">Effective Date</th>
+                          <th className="p-4 text-right">Total Amount</th>
+                          <th className="p-4">Status</th>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                      </thead>
+                      <tbody className="divide-y divide-ink-mid">
+                        {budgets.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="p-4 text-center text-slate">No budgets registered.</td>
+                          </tr>
+                        ) : (
+                          budgets.map((b) => (
+                            <tr key={b.id} className="hover:bg-ink-mid/10">
+                              <td className="p-4 text-paper font-medium">{b.project_name || b.project_id}</td>
+                              <td className="p-4 font-mono text-slate-light">v{b.budget_version}</td>
+                              <td className="p-4 text-slate-light">{new Date(b.effective_date).toLocaleDateString()}</td>
+                              <td className="p-4 text-right text-paper font-semibold">{money(b.allocated_amount || b.total_amount)}</td>
+                              <td className="p-4">
+                                <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(b.status)}`}>
+                                  {b.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {budgetsSubView === "company" && <CompanyBudgetPanel />}
             </div>
           )}
 

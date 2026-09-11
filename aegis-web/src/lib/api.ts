@@ -4306,6 +4306,64 @@ export async function getFinanceBudgets(params?: { project_id?: string; departme
   });
 }
 
+/** Company & Department Budgeting (Phase 5A): a fresh, richer versioning layer separate from project budgets above. */
+export async function getCompanyBudgets(fiscalYear?: number): Promise<ApiResponse<any[]>> {
+  const query = fiscalYear ? `?fiscal_year=${fiscalYear}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/company-budgets${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createCompanyBudget(payload: { fiscal_year: number; label: string; notes?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/company-budgets', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function getCompanyBudget(budgetId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function replaceCompanyBudgetLines(budgetId: string, lines: Record<string, unknown>[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/lines`, { method: 'PUT', body: JSON.stringify({ lines }), allowFallback: false });
+}
+
+export async function submitCompanyBudget(budgetId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/submit`, { method: 'POST', allowFallback: false });
+}
+
+export async function startCompanyBudgetReview(budgetId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/start-review`, { method: 'POST', allowFallback: false });
+}
+
+export async function approveCompanyBudget(budgetId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/approve`, { method: 'POST', allowFallback: false });
+}
+
+export async function rejectCompanyBudget(budgetId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/reject`, { method: 'POST', body: JSON.stringify({ reason }), allowFallback: false });
+}
+
+export async function cancelCompanyBudget(budgetId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/cancel`, { method: 'POST', allowFallback: false });
+}
+
+export async function freezeCompanyBudget(budgetId: string, reason?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/freeze`, { method: 'POST', body: JSON.stringify({ reason: reason ?? null }), allowFallback: false });
+}
+
+export async function reopenCompanyBudget(budgetId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/reopen`, { method: 'POST', body: JSON.stringify({ reason }), allowFallback: false });
+}
+
+export async function createCompanyBudgetRevision(budgetId: string, label?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/${budgetId}/revise`, { method: 'POST', body: JSON.stringify({ label: label ?? null }), allowFallback: false });
+}
+
+export async function getCompanyBudgetVariance(fiscalYear: number): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/variance/company?fiscal_year=${fiscalYear}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getDepartmentBudgetVariance(departmentId: string, fiscalYear: number): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/company-budgets/variance/department/${departmentId}?fiscal_year=${fiscalYear}`, { cache: 'no-store', allowFallback: false });
+}
+
 // --- BOQ PROGRESS (measured-quantity earned value) ---
 
 /** Priced BOQ line items for a project, with measured qty/% complete/earned value. */

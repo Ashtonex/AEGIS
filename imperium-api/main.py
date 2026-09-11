@@ -15,6 +15,7 @@ from routers import finance_ccb_findings  # fmt: skip
 from routers import data_room
 from routers import general_ledger
 from routers import gl_bridge
+from routers import company_budgets
 
 
 def create_app() -> FastAPI:
@@ -176,6 +177,7 @@ def create_app() -> FastAPI:
     app.include_router(data_room.router, prefix="/api/v1/finance/data-room", tags=["Finance Data Room"])
     app.include_router(general_ledger.router, prefix="/api/v1/finance/gl", tags=["Finance General Ledger"])
     app.include_router(gl_bridge.router, prefix="/api/v1/finance/gl/bridge", tags=["Finance GL Bridge"])
+    app.include_router(company_budgets.router, prefix="/api/v1/finance/company-budgets", tags=["Finance Company Budgets"])
 
     return app
 
