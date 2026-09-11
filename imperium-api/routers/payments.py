@@ -21,6 +21,8 @@ from app.shared.events import emit_notification
 from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, require_permission
+from app.services.finance import gl_bridge
+from app.services.finance.general_ledger import GeneralLedgerError
 
 router = APIRouter()
 
@@ -355,8 +357,22 @@ async def decide_payment_batch(
             """),
             {"status": target_status, "batch_id": str(batch_id), "org_id": org_id, **extra_params},
         )
+
+        gl_proposal_warning = None
+        if action == "post":
+            # Phase 3A GL bridge: propose the cash-clearing journal (Debit
+            # Accounts Payable / Credit Cash) for review. Never blocks the
+            # payment posting itself - same rationale as the Phase 2 hooks.
+            try:
+                await gl_bridge.propose_journal_for_supplier_payment(db, org_id=org_id, user_id=user_id, payment_batch_id=batch_id)
+            except GeneralLedgerError as exc:
+                gl_proposal_warning = str(exc)
+
         await db.commit()
-        return ok({"id": str(batch_id), "status": target_status}, f"Payment batch {action}d successfully.")
+        response = {"id": str(batch_id), "status": target_status}
+        if gl_proposal_warning:
+            response["gl_proposal_warning"] = gl_proposal_warning
+        return ok(response, f"Payment batch {action}d successfully.")
     except HTTPException:
         raise
     except Exception as exc:

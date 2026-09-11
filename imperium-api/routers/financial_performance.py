@@ -17,6 +17,8 @@ from app.shared.pagination import ok
 from app.services.finance.payroll_tax import compute_statutory
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
+from app.services.finance import gl_bridge
+from app.services.finance.general_ledger import GeneralLedgerError
 from routers.payroll_runs import _compute_gross
 
 router = APIRouter()
@@ -1560,8 +1562,22 @@ async def certify_progress_claim(
             basis={"claim_number": claim_row["claim_number"]},
         )
 
+    # Phase 2 GL bridge: propose a revenue-recognition journal (Debit AR +
+    # Retention Receivable / Credit Certified Revenue) for a human to review
+    # and post. This must never block certification itself - a missing GL
+    # account mapping becomes a visible gap in the reconciliation view
+    # rather than a failed billing action.
+    gl_proposal_warning = None
+    try:
+        await gl_bridge.propose_journal_for_progress_claim(db, org_id=user["org_id"], user_id=user["sub"], claim_id=claim_id)
+    except GeneralLedgerError as exc:
+        gl_proposal_warning = str(exc)
+
     await db.commit()
-    return ok({"id": str(claim_id), "certified_amount": amount, "vat_amount": vat_amount}, "Progress claim certified.")
+    response = {"id": str(claim_id), "certified_amount": amount, "vat_amount": vat_amount}
+    if gl_proposal_warning:
+        response["gl_proposal_warning"] = gl_proposal_warning
+    return ok(response, "Progress claim certified.")
 
 
 @router.get("/cash-accounts")

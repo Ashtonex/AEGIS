@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -42,7 +44,15 @@ SUPPLIER_EDIT_COLUMNS = {
     "compliance_status",
     "performance_score",
     "on_time_delivery_pct",
+    "bank_name",
+    "bank_account_number",
+    "bank_branch_code",
 }
+
+# Editing any of these is a vendor-fraud/BEC-relevant change (Phase 3A) -
+# stamped with who/when so procurement_verification.check_supplier_bank_changed
+# can flag a payment approved after a bank-detail edit made post-PO-issuance.
+SUPPLIER_BANK_COLUMNS = {"bank_name", "bank_account_number", "bank_branch_code"}
 
 DOCUMENTS_BUCKET = "documents"
 SIGNED_URL_TTL_SECONDS = 300
@@ -685,6 +695,11 @@ async def update_item(
     params = {k: payload[k] for k in safe_keys}
     params["item_id"] = item_id
     params["org_id"] = user["org_id"]
+
+    if SUPPLIER_BANK_COLUMNS.intersection(safe_keys):
+        safe_keys = [*safe_keys, "bank_updated_at", "bank_updated_by"]
+        params["bank_updated_at"] = datetime.now(timezone.utc)
+        params["bank_updated_by"] = user["sub"]
 
     query = update_returning_id_sql("procurement.suppliers", safe_keys, safe_keys)
 

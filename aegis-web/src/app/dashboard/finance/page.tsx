@@ -18,6 +18,7 @@ import { FinancialStatementsPanel } from "./FinancialStatementsPanel";
 import { EarnedValuePanel } from "./EarnedValuePanel";
 import { FinalAccountPanel } from "./FinalAccountPanel";
 import { DataRoomPanel } from "./DataRoomPanel";
+import { GeneralLedgerPanel } from "./GeneralLedgerPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -39,7 +40,7 @@ import {
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -62,6 +63,7 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   "historical-entry": "/dashboard/finance/historical-entry",
   "financial-statements": "/dashboard/finance/financial-statements",
   "data-room": "/dashboard/finance/data-room",
+  "general-ledger": "/dashboard/finance/general-ledger",
 };
 
 function normalizeTab(value: string | null | undefined): FinanceTab {
@@ -519,6 +521,8 @@ function FinanceWorkspace() {
           {activeTab === "historical-entry" && <HistoricalEntryPanel />}
 
           {activeTab === "financial-statements" && <FinancialStatementsPanel />}
+
+          {activeTab === "general-ledger" && <GeneralLedgerPanel />}
 
           {activeTab === "project-financials" && (
             <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">

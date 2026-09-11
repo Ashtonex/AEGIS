@@ -277,6 +277,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Client Payments", href: "/dashboard/finance/client-payments", icon: Banknote },
       { name: "Historical Entry", href: "/dashboard/finance/historical-entry", icon: BookMarked },
       { name: "Financial Statements", href: "/dashboard/finance/financial-statements", icon: FileText },
+      { name: "General Ledger", href: "/dashboard/finance/general-ledger", icon: Scale },
     ],
   },
   {

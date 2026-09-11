@@ -16,6 +16,8 @@ from core.database import get_db
 from core.security import require_permission
 from app.services import inventory_service
 from app.services.finance.ccb_monitor import record_requisition_budget_breach
+from app.services.finance import procurement_verification, gl_bridge
+from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 from app.shared.events import emit_notification, emit_role_notification
 from app.shared.project_setup import ensure_project_operational_setup
@@ -2092,6 +2094,10 @@ async def create_invoice(
         project_id=po["project_id"],
         payload={"invoice_number": invoice_no, "total_amount": total},
     )
+    # Phase 3A procurement verification: advisory anomaly flags only - never
+    # blocks invoice registration itself. See procurement_verification.py.
+    await procurement_verification.check_invoice_at_creation(db, org_id=user["org_id"], invoice_id=invoice_id)
+    await procurement_verification.check_line_level_match(db, org_id=user["org_id"], invoice_id=invoice_id)
     await db.commit()
     return ok(
         {"id": str(invoice_id), "invoice_number": invoice_no},
@@ -2288,8 +2294,21 @@ async def payment_decision(
         project_id=inv["project_id"],
         payload=payload.model_dump(mode="json"),
     )
+    gl_proposal_warning = None
+    if status_value == "approved":
+        # Phase 3A: advisory bank-change/supplier-status flag, then the GL
+        # bridge proposal (Debit Accrued Project Costs / Credit Accounts
+        # Payable). Neither ever blocks the payment decision itself.
+        await procurement_verification.check_supplier_bank_changed(db, org_id=user["org_id"], invoice_id=invoice_id)
+        try:
+            await gl_bridge.propose_journal_for_supplier_invoice_approval(db, org_id=user["org_id"], user_id=user["user_id"], invoice_id=invoice_id)
+        except GeneralLedgerError as exc:
+            gl_proposal_warning = str(exc)
     await db.commit()
+    response = {"id": str(invoice_id), "status": status_value}
+    if gl_proposal_warning:
+        response["gl_proposal_warning"] = gl_proposal_warning
     return ok(
-        {"id": str(invoice_id), "status": status_value},
+        response,
         f"Invoice payment {status_value}.",
     )

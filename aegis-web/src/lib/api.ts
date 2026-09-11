@@ -3757,6 +3757,147 @@ export async function saveFinanceTransferRule(payload: Record<string, unknown>):
   return fetchApi<ApiResponse<any>>('/api/v1/finance/transfers/rules', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
 }
 
+/** General Ledger: Chart of Accounts. */
+export async function getChartOfAccounts(params?: { category?: string; active_only?: boolean }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.category) search.set('category', params.category);
+  if (params?.active_only) search.set('active_only', 'true');
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/accounts${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createChartOfAccount(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/gl/accounts', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function updateChartOfAccount(accountId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/accounts/${accountId}`, { method: 'PATCH', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function getAccountLedger(accountId: string, params?: { date_from?: string; date_to?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.date_from) search.set('date_from', params.date_from);
+  if (params?.date_to) search.set('date_to', params.date_to);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/accounts/${accountId}/ledger${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getTrialBalance(params?: { as_of_date?: string; period_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.as_of_date) search.set('as_of_date', params.as_of_date);
+  if (params?.period_id) search.set('period_id', params.period_id);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/trial-balance${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+/** General Ledger: Accounting Periods. */
+export async function getAccountingPeriods(status?: string): Promise<ApiResponse<any[]>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/periods${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createAccountingPeriod(payload: { period_start: string; period_end: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/gl/periods', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function softCloseAccountingPeriod(periodId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/periods/${periodId}/soft-close`, { method: 'POST', allowFallback: false });
+}
+
+export async function closeAccountingPeriod(periodId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/periods/${periodId}/close`, { method: 'POST', allowFallback: false });
+}
+
+export async function reopenAccountingPeriod(periodId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/periods/${periodId}/reopen`, { method: 'POST', body: JSON.stringify({ reason }), allowFallback: false });
+}
+
+export async function lockAccountingPeriod(periodId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/periods/${periodId}/lock`, { method: 'POST', allowFallback: false });
+}
+
+/** General Ledger: Journal Entries. */
+export async function getJournalEntries(params?: { period_id?: string; status?: string; project_id?: string; page?: number; page_size?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.period_id) search.set('period_id', params.period_id);
+  if (params?.status) search.set('status', params.status);
+  if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.page) search.set('page', String(params.page));
+  if (params?.page_size) search.set('page_size', String(params.page_size));
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/journals${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getJournalEntry(journalId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/journals/${journalId}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function createJournalEntry(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/gl/journals', { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function updateJournalEntry(journalId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/journals/${journalId}`, { method: 'PATCH', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function deleteJournalEntry(journalId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/journals/${journalId}`, { method: 'DELETE', allowFallback: false });
+}
+
+export async function postJournalEntry(journalId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/journals/${journalId}/post`, { method: 'POST', allowFallback: false });
+}
+
+export async function reverseJournalEntry(journalId: string, payload: { reversal_date: string; reason: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/journals/${journalId}/reverse`, { method: 'POST', body: JSON.stringify(payload), allowFallback: false });
+}
+
+export async function getJournalAuditHistory(journalId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/journals/${journalId}/audit-history`, { cache: 'no-store', allowFallback: false });
+}
+
+/** GL Bridge: turns existing project cost/revenue records into human-reviewed proposed GL journals. */
+export async function getGlBridgeMappings(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/gl/bridge/mappings', { cache: 'no-store', allowFallback: false });
+}
+
+export async function updateGlBridgeMapping(mappingKey: string, accountId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/bridge/mappings/${encodeURIComponent(mappingKey)}`, { method: 'PATCH', body: JSON.stringify({ account_id: accountId }), allowFallback: false });
+}
+
+export async function getGlBridgeProposals(status: string = 'pending_review'): Promise<ApiResponse<any[]>> {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/bridge/proposals${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function proposeGlJournalForCostTransaction(costTransactionId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/bridge/cost-transactions/${costTransactionId}/propose`, { method: 'POST', allowFallback: false });
+}
+
+export async function syncProjectToGlBridge(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/bridge/projects/${projectId}/sync`, { method: 'POST', allowFallback: false });
+}
+
+export async function approveGlBridgeProposal(journalId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/bridge/proposals/${journalId}/approve`, { method: 'POST', allowFallback: false });
+}
+
+export async function rejectGlBridgeProposal(journalId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/bridge/proposals/${journalId}/reject`, { method: 'POST', body: JSON.stringify({ reason }), allowFallback: false });
+}
+
+export async function getProjectGlLedger(projectId: string, params?: { date_from?: string; date_to?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.date_from) search.set('date_from', params.date_from);
+  if (params?.date_to) search.set('date_to', params.date_to);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/bridge/projects/${projectId}/ledger${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getProjectGlReconciliation(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/bridge/projects/${projectId}/reconciliation`, { cache: 'no-store', allowFallback: false });
+}
+
 /** Revenue and cost per department, plus a consolidated whole-business total. */
 export async function getFinanceDepartmentPnl(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/departments/pnl', { cache: 'no-store', allowFallback: false });
@@ -3974,6 +4115,20 @@ export async function getFinanceStatements(params?: FinancialStatementParams): P
 
 export async function getFinancialRunway(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/financial-runway', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getSafetyIndex(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/executive/hse/ltifr', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function getPendingApprovals(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/executive/approvals/pending', {
     cache: 'no-store',
     allowFallback: false,
   });
@@ -4533,6 +4688,19 @@ export async function createWorkforceAllocation(payload: Record<string, unknown>
     body: JSON.stringify(payload),
     allowFallback: false,
   });
+}
+
+export type ProjectTeamMember = {
+  allocation_id: string; employee_id: string; role_on_project?: string; allocation_percent?: number | string;
+  starts_on?: string; ends_on?: string; status?: string; notes?: string; created_at?: string;
+  employee_name?: string; employee_number?: string; job_title?: string; employment_type?: string; employment_status?: string;
+  category_name?: string; payroll_eligible?: boolean;
+  position_name?: string; trade?: string; grade?: string;
+  assigned_by_email?: string; is_current?: boolean;
+};
+
+export async function getProjectTeam(projectRef: string): Promise<ApiResponse<ProjectTeamMember[]>> {
+  return fetchApi<ApiResponse<ProjectTeamMember[]>>(`/api/v1/projects/${projectRef}/team`, { cache: 'no-store', allowFallback: false });
 }
 
 export type WorkforceTimeRecord = {

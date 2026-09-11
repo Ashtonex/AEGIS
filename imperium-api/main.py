@@ -13,6 +13,8 @@ from routers import auth, users, projects, site_operations, site_reports, workfo
 from routers import workforce_foundation
 from routers import finance_ccb_findings  # fmt: skip
 from routers import data_room
+from routers import general_ledger
+from routers import gl_bridge
 
 
 def create_app() -> FastAPI:
@@ -172,6 +174,8 @@ def create_app() -> FastAPI:
     app.include_router(boq_progress.router, prefix="/api/v1/boq-progress", tags=["BOQ Progress"])
     app.include_router(final_accounts.router, prefix="/api/v1/final-accounts", tags=["Final Accounts"])
     app.include_router(data_room.router, prefix="/api/v1/finance/data-room", tags=["Finance Data Room"])
+    app.include_router(general_ledger.router, prefix="/api/v1/finance/gl", tags=["Finance General Ledger"])
+    app.include_router(gl_bridge.router, prefix="/api/v1/finance/gl/bridge", tags=["Finance GL Bridge"])
 
     return app
 

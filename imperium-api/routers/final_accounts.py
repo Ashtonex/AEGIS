@@ -24,6 +24,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.finance.project_forecast import compute_project_financials, derive_forecast_metrics
+from app.services.finance import gl_bridge
+from app.services.finance.general_ledger import GeneralLedgerError
 from app.shared.pagination import ok
 from core.database import get_db
 from core.security import require_permission
@@ -401,8 +403,9 @@ async def close_final_account(
         {"user_id": user["user_id"], "release_amount": release_amount, "id": final_account_id, "org_id": user["org_id"]},
     )
 
+    gl_proposal_warning = None
     if release_amount > 0:
-        await db.execute(
+        retention_row = await db.execute(
             text("""
                 INSERT INTO finance.retention_ledger (
                     organization_id, project_id, source_type, source_id,
@@ -410,7 +413,7 @@ async def close_final_account(
                 ) VALUES (
                     :org_id, :project_id, 'final_completion', :final_account_id,
                     'released', :amount, CURRENT_DATE, 'Retention released on final account close-out.', :user_id
-                )
+                ) RETURNING id
             """),
             {
                 "org_id": user["org_id"],
@@ -420,6 +423,17 @@ async def close_final_account(
                 "user_id": user["user_id"],
             },
         )
+        retention_ledger_id = retention_row.scalar()
+
+        # Phase 2 GL bridge: propose the reclassification journal (Debit AR /
+        # Credit Retention Receivable) for review. Never blocks the close-out
+        # itself - see the identical rationale in certify_progress_claim.
+        try:
+            await gl_bridge.propose_journal_for_retention_release(
+                db, org_id=user["org_id"], user_id=user["user_id"], retention_ledger_id=retention_ledger_id
+            )
+        except GeneralLedgerError as exc:
+            gl_proposal_warning = str(exc)
 
     await db.execute(
         text("""
@@ -432,7 +446,10 @@ async def close_final_account(
     )
 
     await db.commit()
-    return ok({"id": str(final_account_id), "retention_released": release_amount}, "Final account closed and retention released.")
+    response = {"id": str(final_account_id), "retention_released": release_amount}
+    if gl_proposal_warning:
+        response["gl_proposal_warning"] = gl_proposal_warning
+    return ok(response, "Final account closed and retention released.")
 
 
 @router.get("/{final_account_id}/report")
