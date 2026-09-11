@@ -4577,6 +4577,58 @@ export async function postFinanceCashbookTransaction(payload: Record<string, unk
   });
 }
 
+/** Bank Reconciliation (Phase 4): matches an uploaded bank statement CSV against finance.cashbook_transactions. */
+export async function uploadBankStatementImport(params: { cashAccountId: string; file: File; columnMapping: Record<string, string> }): Promise<ApiResponse<any>> {
+  const form = new FormData();
+  form.set("cash_account_id", params.cashAccountId);
+  form.set("column_mapping", JSON.stringify(params.columnMapping));
+  form.set("file", params.file);
+  const headers = new Headers();
+  const token = await getSupabaseAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(resolveApiUrl("/api/v1/bank-transactions/reconciliation/imports"), {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data?.detail || "Failed to upload bank statement.");
+  return data;
+}
+
+export async function getBankStatementImports(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>("/api/v1/bank-transactions/reconciliation/imports", { cache: "no-store", allowFallback: false });
+}
+
+export async function getBankStatementImport(importId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function runBankStatementMatching(importId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}/run-matching`, { method: "POST", allowFallback: false });
+}
+
+export async function getBankStatementLines(importId: string, matchStatus?: string): Promise<ApiResponse<any[]>> {
+  const query = matchStatus ? `?match_status=${encodeURIComponent(matchStatus)}` : "";
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}/lines${query}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function confirmBankStatementMatch(lineId: string, cashbookTransactionId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/confirm`, { method: "POST", body: JSON.stringify({ cashbook_transaction_id: cashbookTransactionId }), allowFallback: false });
+}
+
+export async function rejectBankStatementMatch(lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/reject`, { method: "POST", allowFallback: false });
+}
+
+export async function reopenBankStatementMatch(lineId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/reopen`, { method: "POST", body: JSON.stringify({ reason }), allowFallback: false });
+}
+
+export async function createCashbookEntryFromBankLine(lineId: string, payload: { transaction_type: string; project_id?: string | null; description?: string }): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/create-cashbook-entry`, { method: "POST", body: JSON.stringify(payload), allowFallback: false });
+}
+
 export async function allocateFinanceReceipt(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/receipts/allocate", {
     method: "POST",

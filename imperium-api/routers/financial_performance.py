@@ -1735,14 +1735,11 @@ async def post_cashbook_transaction(
                 },
             )
         ).scalar()
-        
-        # Update account balance
-        balance_adj = payload.amount if payload.direction == "inflow" else -payload.amount
-        await db.execute(
-            text("UPDATE finance.cash_accounts SET current_balance = current_balance + :adj WHERE id = :id"),
-            {"adj": balance_adj, "id": payload.cash_account_id},
-        )
-        
+
+        # current_balance is maintained by the finance.cashbook_transactions_sync_balance
+        # trigger (migration 037/192) - it fires on this INSERT automatically. A manual
+        # update here used to double-count every receipt/payment (fixed in Phase 4).
+
         await db.commit()
         return ok({"id": str(tx_id)}, "Cashbook transaction posted.")
     except IntegrityError:
@@ -1896,10 +1893,9 @@ async def post_supplier_payment_batch(
                   }
               )
 
-            await db.execute(
-                text("UPDATE finance.cash_accounts SET current_balance = current_balance - :amount WHERE id = :id"),
-                {"amount": item.amount, "id": payload.cash_account_id},
-            )
+            # current_balance is maintained by the cashbook_transactions_sync_balance
+            # trigger, which already fired on the INSERT above - a manual update here
+            # used to double-count every batch item (fixed in Phase 4).
 
         await db.commit()
         return ok({"id": str(batch_id)}, "Supplier payment batch posted successfully.")
@@ -2256,10 +2252,9 @@ async def post_payroll_run(
         {"tx_id": tx_id, "run_id": run_id}
     )
 
-    await db.execute(
-        text("UPDATE finance.cash_accounts SET current_balance = current_balance - :amount WHERE id = :id"),
-        {"amount": run_data["net_pay"], "id": cash_account_id},
-    )
+    # current_balance is maintained by the cashbook_transactions_sync_balance trigger,
+    # which already fired on the INSERT above - a manual update here used to
+    # double-count the payroll disbursement (fixed in Phase 4).
 
     # Accrue PAYE/NSSA into the statutory liability ledger - same as the
     # payroll_runs.py posting path, so it doesn't matter which of the two

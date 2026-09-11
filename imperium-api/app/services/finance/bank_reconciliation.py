@@ -1,0 +1,462 @@
+"""
+Bank Reconciliation - matches an uploaded bank statement (CSV) against
+finance.cashbook_transactions ("our books" side).
+
+Per the master spec ("AI may suggest matches. Human approval is required
+for ambiguous matches"): only an exact same-account/same-amount match within
+a 1-day window is auto-marked `matched` by run_matching. Every other
+candidate becomes `suggested` (or `duplicate`/`difference`) and needs an
+explicit human confirm_match/reject_match decision - nothing here writes to
+finance.cashbook_transactions.reconciliation_status without either that
+tight auto-match rule or a human action.
+
+Known, flagged simplification: the raw uploaded file is parsed immediately
+and not retained in core.documents/Storage (bank_statement_imports.document_id
+stays NULL) - no existing code path in this app does a server-side Storage
+upload to copy, and building one is out of scope for proving the matching
+engine itself. Only the parsed rows persist.
+"""
+
+import csv
+import io
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from typing import Any, Optional
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.finance.general_ledger import GeneralLedgerError
+
+EXACT_MATCH_WINDOW_DAYS = 1
+SUGGESTED_MATCH_WINDOW_DAYS = 7
+DUPLICATE_DATE_WINDOW_DAYS = 2
+
+
+def parse_csv_rows(csv_content: str, column_mapping: dict[str, str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Returns (parsed_rows, row_errors). Never raises on a bad row - a
+    malformed line is collected as an error, not a fatal exception, so one
+    bad row never kills the whole import."""
+    date_col = column_mapping.get("date")
+    description_col = column_mapping.get("description")
+    reference_col = column_mapping.get("reference")
+    amount_col = column_mapping.get("amount")
+    debit_col = column_mapping.get("debit")
+    credit_col = column_mapping.get("credit")
+
+    if not date_col or not (amount_col or (debit_col and credit_col)):
+        raise GeneralLedgerError(
+            "column_mapping must include 'date' and either 'amount' or both 'debit' and 'credit'.",
+            status_code=422,
+        )
+
+    reader = csv.DictReader(io.StringIO(csv_content))
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for line_number, raw_row in enumerate(reader, start=1):
+        try:
+            raw_date = (raw_row.get(date_col) or "").strip()
+            transaction_date = _parse_date(raw_date)
+
+            if amount_col:
+                amount = Decimal((raw_row.get(amount_col) or "0").replace(",", "").strip() or "0")
+            else:
+                debit = Decimal((raw_row.get(debit_col) or "0").replace(",", "").strip() or "0")
+                credit = Decimal((raw_row.get(credit_col) or "0").replace(",", "").strip() or "0")
+                amount = credit - debit
+
+            if amount == 0:
+                raise ValueError("amount is zero")
+
+            rows.append({
+                "line_number": line_number,
+                "transaction_date": transaction_date,
+                "description": (raw_row.get(description_col) or "").strip() if description_col else None,
+                "reference": (raw_row.get(reference_col) or "").strip() if reference_col else None,
+                "amount": amount,
+            })
+        except (ValueError, InvalidOperation, KeyError) as exc:
+            errors.append({"line_number": line_number, "row": raw_row, "error": str(exc)})
+
+    return rows, errors
+
+
+def _parse_date(raw: str) -> date:
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"unrecognized date format: '{raw}'")
+
+
+async def create_import(
+    db: AsyncSession, *, org_id: str, user_id: str, cash_account_id: UUID,
+    filename: str, csv_content: str, column_mapping: dict[str, str],
+) -> dict:
+    account = await db.execute(
+        text("SELECT id FROM finance.cash_accounts WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": cash_account_id, "org_id": org_id},
+    )
+    if not account.first():
+        raise GeneralLedgerError("Cash account not found.", status_code=404)
+
+    rows, row_errors = parse_csv_rows(csv_content, column_mapping)
+    if not rows:
+        raise GeneralLedgerError("No valid rows could be parsed from this file.", status_code=422)
+
+    dates = [r["transaction_date"] for r in rows]
+    import_id = (
+        await db.execute(
+            text("""
+                INSERT INTO finance.bank_statement_imports (
+                    organization_id, cash_account_id, file_name, column_mapping,
+                    statement_period_start, statement_period_end, status, total_lines, uploaded_by
+                ) VALUES (
+                    :org_id, :cash_account_id, :file_name, CAST(:column_mapping AS jsonb),
+                    :period_start, :period_end, 'parsed', :total_lines, :user_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id, "cash_account_id": cash_account_id, "file_name": filename,
+                "column_mapping": _to_json(column_mapping),
+                "period_start": min(dates), "period_end": max(dates),
+                "total_lines": len(rows), "user_id": user_id,
+            },
+        )
+    ).scalar()
+
+    for row in rows:
+        await db.execute(
+            text("""
+                INSERT INTO finance.bank_statement_lines (
+                    organization_id, import_id, cash_account_id, line_number,
+                    transaction_date, description, reference, amount
+                ) VALUES (
+                    :org_id, :import_id, :cash_account_id, :line_number,
+                    :transaction_date, :description, :reference, :amount
+                )
+            """),
+            {
+                "org_id": org_id, "import_id": import_id, "cash_account_id": cash_account_id,
+                "line_number": row["line_number"], "transaction_date": row["transaction_date"],
+                "description": row["description"], "reference": row["reference"], "amount": row["amount"],
+            },
+        )
+
+    return {
+        "import_id": str(import_id),
+        "total_lines": len(rows),
+        "row_errors": row_errors,
+    }
+
+
+def _to_json(value: dict) -> str:
+    import json
+    return json.dumps(value)
+
+
+async def _next_transaction_number(db: AsyncSession, org_id: str, prefix: str) -> str:
+    row = await db.execute(
+        text("""
+            INSERT INTO core.sequences (organization_id, sequence_name, last_value)
+            VALUES (:org_id, 'cashbook_transaction', 1)
+            ON CONFLICT (organization_id, sequence_name)
+            DO UPDATE SET last_value = core.sequences.last_value + 1, updated_at = NOW()
+            RETURNING last_value
+        """),
+        {"org_id": org_id},
+    )
+    return f"{prefix}-{int(row.scalar()):06d}"
+
+
+async def _reconcile_cashbook_row(db: AsyncSession, *, cashbook_transaction_id: UUID, user_id: Optional[str]) -> None:
+    await db.execute(
+        text("""
+            UPDATE finance.cashbook_transactions
+            SET reconciliation_status = 'reconciled', reconciled_at = NOW(), reconciled_by = :user_id
+            WHERE id = :id
+        """),
+        {"id": cashbook_transaction_id, "user_id": user_id},
+    )
+
+
+async def run_matching(db: AsyncSession, *, org_id: str, user_id: str, import_id: UUID) -> dict:
+    import_row = await db.execute(
+        text("SELECT id, cash_account_id FROM finance.bank_statement_imports WHERE id = :id AND organization_id = :org_id"),
+        {"id": import_id, "org_id": org_id},
+    )
+    imp = import_row.mappings().first()
+    if not imp:
+        raise GeneralLedgerError("Bank statement import not found.", status_code=404)
+
+    lines = await db.execute(
+        text("""
+            SELECT id, transaction_date, amount, description
+            FROM finance.bank_statement_lines
+            WHERE import_id = :import_id AND organization_id = :org_id AND match_status = 'unmatched'
+        """),
+        {"import_id": import_id, "org_id": org_id},
+    )
+
+    counts = {"matched": 0, "suggested": 0, "unmatched": 0, "duplicate": 0}
+    for line in lines.mappings().all():
+        # Duplicate check first: does this import already contain another
+        # line with the same account/date/amount/description?
+        dup = await db.execute(
+            text("""
+                SELECT 1 FROM finance.bank_statement_lines
+                WHERE import_id = :import_id AND id != :line_id AND transaction_date = :date
+                  AND amount = :amount AND COALESCE(description, '') = COALESCE(:description, '')
+                LIMIT 1
+            """),
+            {"import_id": import_id, "line_id": line["id"], "date": line["transaction_date"],
+             "amount": line["amount"], "description": line["description"]},
+        )
+        if dup.first():
+            await _set_line_status(db, line["id"], "duplicate")
+            counts["duplicate"] += 1
+            continue
+
+        exact = await db.execute(
+            text("""
+                SELECT id FROM finance.cashbook_transactions
+                WHERE organization_id = :org_id AND cash_account_id = :cash_account_id
+                  AND is_deleted = false AND reconciliation_status = 'unreconciled'
+                  AND amount = ABS(:amount) AND ABS(transaction_date - :date) <= :window
+                  AND (CASE WHEN :amount > 0 THEN transaction_type IN ('receipt', 'transfer_in')
+                            ELSE transaction_type IN ('payment', 'transfer_out', 'bank_charge') END)
+                LIMIT 2
+            """),
+            {"org_id": org_id, "cash_account_id": imp["cash_account_id"], "amount": line["amount"],
+             "date": line["transaction_date"], "window": EXACT_MATCH_WINDOW_DAYS},
+        )
+        exact_rows = exact.all()
+        if len(exact_rows) == 1:
+            await _set_line_status(db, line["id"], "matched", matched_cashbook_transaction_id=exact_rows[0].id, confidence=100)
+            await _reconcile_cashbook_row(db, cashbook_transaction_id=exact_rows[0].id, user_id=user_id)
+            counts["matched"] += 1
+            continue
+
+        suggested = await db.execute(
+            text("""
+                SELECT id FROM finance.cashbook_transactions
+                WHERE organization_id = :org_id AND cash_account_id = :cash_account_id
+                  AND is_deleted = false AND reconciliation_status = 'unreconciled'
+                  AND amount = ABS(:amount) AND ABS(transaction_date - :date) <= :window
+                LIMIT 5
+            """),
+            {"org_id": org_id, "cash_account_id": imp["cash_account_id"], "amount": line["amount"],
+             "date": line["transaction_date"], "window": SUGGESTED_MATCH_WINDOW_DAYS},
+        )
+        suggested_rows = suggested.all()
+        if suggested_rows:
+            await _set_line_status(db, line["id"], "suggested", matched_cashbook_transaction_id=suggested_rows[0].id, confidence=60)
+            counts["suggested"] += 1
+            continue
+
+        await _set_line_status(db, line["id"], "unmatched")
+        counts["unmatched"] += 1
+
+    await db.execute(
+        text("""
+            UPDATE finance.bank_statement_imports
+            SET status = 'reviewing', matched_count = matched_count + :matched,
+                suggested_count = suggested_count + :suggested, unmatched_count = :unmatched,
+                duplicate_count = duplicate_count + :duplicate, updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"id": import_id, **counts},
+    )
+    return counts
+
+
+async def _set_line_status(
+    db: AsyncSession, line_id: UUID, status: str, *,
+    matched_cashbook_transaction_id: Optional[UUID] = None, confidence: Optional[float] = None,
+) -> None:
+    await db.execute(
+        text("""
+            UPDATE finance.bank_statement_lines
+            SET match_status = :status, matched_cashbook_transaction_id = :matched_id, match_confidence = :confidence
+            WHERE id = :id
+        """),
+        {"id": line_id, "status": status, "matched_id": matched_cashbook_transaction_id, "confidence": confidence},
+    )
+
+
+async def confirm_match(db: AsyncSession, *, org_id: str, user_id: str, line_id: UUID, cashbook_transaction_id: UUID) -> dict:
+    line = await db.execute(
+        text("SELECT * FROM finance.bank_statement_lines WHERE id = :id AND organization_id = :org_id"),
+        {"id": line_id, "org_id": org_id},
+    )
+    line_row = line.mappings().first()
+    if not line_row:
+        raise GeneralLedgerError("Bank statement line not found.", status_code=404)
+    if line_row["match_status"] not in ("suggested", "unmatched", "difference"):
+        raise GeneralLedgerError(f"Line is already '{line_row['match_status']}'.", status_code=409)
+
+    cashbook = await db.execute(
+        text("""
+            SELECT id FROM finance.cashbook_transactions
+            WHERE id = :id AND organization_id = :org_id AND reconciliation_status = 'unreconciled'
+        """),
+        {"id": cashbook_transaction_id, "org_id": org_id},
+    )
+    if not cashbook.first():
+        raise GeneralLedgerError("Cashbook transaction not found or already reconciled.", status_code=404)
+
+    await _set_line_status(db, line_id, "matched", matched_cashbook_transaction_id=cashbook_transaction_id, confidence=100)
+    await _reconcile_cashbook_row(db, cashbook_transaction_id=cashbook_transaction_id, user_id=user_id)
+    return {"line_id": str(line_id), "cashbook_transaction_id": str(cashbook_transaction_id), "status": "matched"}
+
+
+async def reject_match(db: AsyncSession, *, org_id: str, line_id: UUID) -> dict:
+    line = await db.execute(
+        text("SELECT match_status FROM finance.bank_statement_lines WHERE id = :id AND organization_id = :org_id"),
+        {"id": line_id, "org_id": org_id},
+    )
+    row = line.first()
+    if not row:
+        raise GeneralLedgerError("Bank statement line not found.", status_code=404)
+    if row.match_status not in ("suggested", "duplicate"):
+        raise GeneralLedgerError(f"Only a suggested or duplicate line can be rejected (currently '{row.match_status}').", status_code=409)
+
+    await _set_line_status(db, line_id, "unmatched")
+    return {"line_id": str(line_id), "status": "unmatched"}
+
+
+async def reopen_match(db: AsyncSession, *, org_id: str, user_id: str, line_id: UUID, reason: str) -> dict:
+    if not reason or not reason.strip():
+        raise GeneralLedgerError("A reason is required to reopen a confirmed match.")
+
+    line = await db.execute(
+        text("SELECT match_status, matched_cashbook_transaction_id FROM finance.bank_statement_lines WHERE id = :id AND organization_id = :org_id"),
+        {"id": line_id, "org_id": org_id},
+    )
+    row = line.mappings().first()
+    if not row:
+        raise GeneralLedgerError("Bank statement line not found.", status_code=404)
+    if row["match_status"] != "matched":
+        raise GeneralLedgerError("Only a matched line can be reopened.", status_code=409)
+
+    await db.execute(
+        text("""
+            UPDATE finance.bank_statement_lines
+            SET match_status = 'unmatched', matched_cashbook_transaction_id = NULL, match_confidence = NULL,
+                reviewed_by = :user_id, reviewed_at = NOW()
+            WHERE id = :id
+        """),
+        {"id": line_id, "user_id": user_id},
+    )
+    if row["matched_cashbook_transaction_id"]:
+        await db.execute(
+            text("""
+                UPDATE finance.cashbook_transactions
+                SET reconciliation_status = 'unreconciled', reconciled_at = NULL, reconciled_by = NULL
+                WHERE id = :id
+            """),
+            {"id": row["matched_cashbook_transaction_id"]},
+        )
+    return {"line_id": str(line_id), "status": "unmatched", "reopen_reason": reason}
+
+
+async def create_cashbook_entry_from_line(
+    db: AsyncSession, *, org_id: str, user_id: str, line_id: UUID,
+    transaction_type: str, project_id: Optional[UUID] = None, description: Optional[str] = None,
+) -> dict:
+    line = await db.execute(
+        text("""
+            SELECT bsl.*, bsi.cash_account_id
+            FROM finance.bank_statement_lines bsl
+            JOIN finance.bank_statement_imports bsi ON bsi.id = bsl.import_id
+            WHERE bsl.id = :id AND bsl.organization_id = :org_id
+        """),
+        {"id": line_id, "org_id": org_id},
+    )
+    line_row = line.mappings().first()
+    if not line_row:
+        raise GeneralLedgerError("Bank statement line not found.", status_code=404)
+    if line_row["match_status"] not in ("unmatched", "suggested"):
+        raise GeneralLedgerError(f"Line is already '{line_row['match_status']}'.", status_code=409)
+
+    amount = abs(Decimal(str(line_row["amount"])))
+    direction = "inflow" if line_row["amount"] > 0 else "outflow"
+    tx_number = await _next_transaction_number(db, org_id, "BR")
+
+    tx_id = (
+        await db.execute(
+            text("""
+                INSERT INTO finance.cashbook_transactions (
+                    organization_id, cash_account_id, transaction_number, transaction_date,
+                    transaction_type, direction, amount, currency, description,
+                    project_id, source_type, source_id, reconciliation_status, reconciled_at, reconciled_by, posted_by
+                ) VALUES (
+                    :org_id, :cash_account_id, :tx_number, :transaction_date,
+                    :transaction_type, :direction, :amount, 'USD', :description,
+                    :project_id, 'bank_statement_line', :line_id, 'reconciled', NOW(), :user_id, :user_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": org_id, "cash_account_id": line_row["cash_account_id"], "tx_number": tx_number,
+                "transaction_date": line_row["transaction_date"], "transaction_type": transaction_type,
+                "direction": direction, "amount": amount,
+                "description": description or line_row["description"] or "Created from bank statement line",
+                "project_id": project_id, "line_id": line_id, "user_id": user_id,
+            },
+        )
+    ).scalar()
+
+    await _set_line_status(db, line_id, "matched", matched_cashbook_transaction_id=tx_id, confidence=100)
+    return {"line_id": str(line_id), "cashbook_transaction_id": str(tx_id), "status": "matched"}
+
+
+async def get_import_summary(db: AsyncSession, *, org_id: str, import_id: UUID) -> Optional[dict]:
+    row = await db.execute(
+        text("""
+            SELECT bsi.*, ca.account_code, ca.account_name
+            FROM finance.bank_statement_imports bsi
+            JOIN finance.cash_accounts ca ON ca.id = bsi.cash_account_id
+            WHERE bsi.id = :id AND bsi.organization_id = :org_id
+        """),
+        {"id": import_id, "org_id": org_id},
+    )
+    result = row.mappings().first()
+    return dict(result) if result else None
+
+
+async def list_imports(db: AsyncSession, *, org_id: str) -> list[dict]:
+    rows = await db.execute(
+        text("""
+            SELECT bsi.*, ca.account_code, ca.account_name
+            FROM finance.bank_statement_imports bsi
+            JOIN finance.cash_accounts ca ON ca.id = bsi.cash_account_id
+            WHERE bsi.organization_id = :org_id
+            ORDER BY bsi.uploaded_at DESC
+        """),
+        {"org_id": org_id},
+    )
+    return [dict(r._mapping) for r in rows]
+
+
+async def list_lines(db: AsyncSession, *, org_id: str, import_id: UUID, match_status: Optional[str] = None) -> list[dict]:
+    filters = ["bsl.import_id = :import_id", "bsl.organization_id = :org_id"]
+    params: dict = {"import_id": import_id, "org_id": org_id}
+    if match_status:
+        filters.append("bsl.match_status = :match_status")
+        params["match_status"] = match_status
+    where = " AND ".join(filters)
+    rows = await db.execute(
+        text(f"""
+            SELECT bsl.*, ct.transaction_number AS matched_transaction_number,
+                   ct.description AS matched_description, ct.transaction_date AS matched_transaction_date
+            FROM finance.bank_statement_lines bsl
+            LEFT JOIN finance.cashbook_transactions ct ON ct.id = bsl.matched_cashbook_transaction_id
+            WHERE {where}
+            ORDER BY bsl.line_number
+        """),
+        params,
+    )
+    return [dict(r._mapping) for r in rows]

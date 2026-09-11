@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, TrendingUp, TrendingDown, Users, X, BarChart3, Receipt,
-  FileText, ClipboardList, CheckCircle2, AlertCircle, CircleHelp
+  FileText, ClipboardList, CheckCircle2, CircleHelp
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
@@ -773,21 +773,6 @@ function FinanceWorkspace() {
             </div>
           )}
 
-          {activeTab === "banking" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
-                <span className="font-mono text-xs tracking-wider uppercase text-slate">Company Bank Accounts</span>
-              </div>
-              <div className="p-6 text-center text-slate">
-                <AlertCircle className="h-8 w-8 text-signal/50 mx-auto mb-2" />
-                <p className="text-sm font-medium text-paper">Manual Banking is Active</p>
-                <p className="text-xs mt-1">Bank accounts and transactions are currently managed manually via the ledger.</p>
-                <button className="mt-4 px-4 py-2 bg-signal text-ink text-sm font-semibold rounded hover:bg-signal/90">
-                  Manage Bank Accounts
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Project Detail Right Sidebar / Panel */}

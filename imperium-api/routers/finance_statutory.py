@@ -350,10 +350,9 @@ async def settle_liability(
                 },
             )
         ).scalar()
-        await db.execute(
-            text("UPDATE finance.cash_accounts SET current_balance = current_balance - :amount WHERE id = :id"),
-            {"amount": payload.amount, "id": payload.cash_account_id},
-        )
+        # current_balance is maintained by the cashbook_transactions_sync_balance
+        # trigger, which already fired on the INSERT above - a manual update here
+        # used to double-count every statutory settlement (fixed in Phase 4).
 
     settlement_id = (
         await db.execute(

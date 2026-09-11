@@ -31,13 +31,12 @@ class CashAccountCreate(BaseModel):
 
     account_code: str = Field(min_length=1, max_length=30)
     account_name: str = Field(min_length=1, max_length=160)
-    account_type: str = Field(default="bank", pattern=r"^(bank|petty_cash|savings|money_market)$")
+    account_type: str = Field(default="bank", pattern=r"^(bank|cash|mobile_money)$")
     bank_name: Optional[str] = Field(default=None, max_length=160)
     branch_name: Optional[str] = Field(default=None, max_length=160)
     account_number: Optional[str] = Field(default=None, max_length=80)
     currency: str = Field(default="USD", min_length=3, max_length=3)
     opening_balance: float = Field(default=0.0, ge=0)
-    notes: Optional[str] = Field(default=None, max_length=1000)
 
 
 class CashAccountUpdate(BaseModel):
@@ -47,7 +46,6 @@ class CashAccountUpdate(BaseModel):
     bank_name: Optional[str] = Field(default=None, max_length=160)
     branch_name: Optional[str] = Field(default=None, max_length=160)
     account_number: Optional[str] = Field(default=None, max_length=80)
-    notes: Optional[str] = Field(default=None, max_length=1000)
     is_active: Optional[bool] = None
 
 
@@ -138,11 +136,11 @@ async def create_cash_account(
                 INSERT INTO finance.cash_accounts (
                     organization_id, account_code, account_name, account_type,
                     bank_name, branch_name, account_number, currency,
-                    opening_balance, notes, created_by
+                    opening_balance, current_balance, created_by
                 ) VALUES (
                     :org_id, :account_code, :account_name, :account_type,
                     :bank_name, :branch_name, :account_number, :currency,
-                    :opening_balance, :notes, :user_id
+                    :opening_balance, :opening_balance, :user_id
                 )
                 RETURNING id, account_code, account_name, account_type, currency, opening_balance
             """),
@@ -156,7 +154,6 @@ async def create_cash_account(
                 "account_number": payload.account_number,
                 "currency": payload.currency.upper(),
                 "opening_balance": payload.opening_balance,
-                "notes": payload.notes,
                 "user_id": user.get("sub"),
             },
         )
