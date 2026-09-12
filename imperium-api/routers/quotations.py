@@ -3,11 +3,12 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -16,8 +17,10 @@ from app.services.documents.renderers import (
     QuotationExcelExporter,
     QuotationPDFRenderer,
 )
+from app.services.quotations.boq_ai_analysis import analyze_boq, compute_input_hash
 from app.services.quotations.boq_importer import BOQImporter
 from app.services.quotations.calculator import (
+    BOQItem,
     QuotationCalculator,
     build_calc_input_from_metadata,
     sum_buildup_by_type,
@@ -37,7 +40,7 @@ from app.services.quotations.intelligence_engine import (
     DEFAULT_ASSEMBLIES,
     RATE_BENCHMARKS,
 )
-from app.shared.events import emit_role_notification
+from app.shared.events import emit_event, emit_role_notification
 from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
     refresh_project_forecast,
@@ -204,6 +207,8 @@ def _boq_import_items_for_metadata(result: Any) -> list[Dict[str, Any]]:
             "rate": raw.get("rate") or 0,
             "buildup": raw.get("buildup") or [],
             "autonomous_source": "uploaded_boq",
+            "source_sheet": raw.get("source_sheet"),
+            "source_row": raw.get("source_row"),
         })
     return items
 
@@ -1485,6 +1490,345 @@ async def list_guard_audits(
         "data": jsonable_encoder(items),
         "message": "Commercial guard audit history retrieved.",
         "meta": {"total": len(items)},
+    }
+
+
+# ---------------------------------------------------------------------------
+# AI-assisted BOQ analysis ("analyse an existing BOQ" — Path B). Deterministic
+# checks (duplicates, blank/zero rates, unit mismatches, rate-outlier reuse)
+# always run; Perplexity findings are merged in only when PERPLEXITY_API_KEY
+# is configured. See app/services/quotations/boq_ai_analysis.py.
+# ---------------------------------------------------------------------------
+
+class BoqAiAnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quotation_id: str
+    project_scope_text: Optional[str] = Field(default=None, max_length=20000)
+    force_refresh: bool = False
+
+
+class BoqAnalysisReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accepted", "rejected"]
+
+
+async def _load_boq_items_from_quotation(
+    db: AsyncSession, org_id: str, quotation_id: str
+) -> tuple[List[BOQItem], Optional[str]]:
+    """Loads a quotation's metadata->'items' and reconstructs BOQItem objects,
+    carrying through any evidence-anchor fields (source_sheet/source_row) that
+    survived _boq_import_items_for_metadata. Returns (items, project_id)."""
+    result = await db.execute(
+        text("""
+            SELECT project_id, metadata FROM finance.quotations
+            WHERE id = :quotation_id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"quotation_id": quotation_id, "org_id": org_id},
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+
+    metadata = row.metadata or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    raw_items = metadata.get("items") or []
+
+    items: List[BOQItem] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            items.append(BOQItem(
+                section=raw.get("section") or "Measured Works",
+                item_no=raw.get("item_no") or "",
+                description=raw.get("description") or "",
+                quantity=raw.get("quantity") or raw.get("qty") or 0,
+                unit=raw.get("unit") or "item",
+                rate=raw.get("rate") or 0,
+                source_sheet=raw.get("source_sheet"),
+                source_row=raw.get("source_row"),
+            ))
+        except Exception:
+            continue
+
+    if not items:
+        raise HTTPException(
+            status_code=400,
+            detail="This quotation has no BOQ line items to analyse. Import a BOQ first.",
+        )
+
+    return items, str(row.project_id) if row.project_id else None
+
+
+async def _find_cached_boq_analysis_run(
+    db: AsyncSession, org_id: str, quotation_id: str, input_hash: str
+) -> Optional[Dict[str, Any]]:
+    result = await db.execute(
+        text("""
+            SELECT id FROM finance.boq_analysis_runs
+            WHERE organization_id = :org_id AND quotation_id = :quotation_id
+              AND input_hash = :input_hash AND status IN ('completed', 'deterministic_only')
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"org_id": org_id, "quotation_id": quotation_id, "input_hash": input_hash},
+    )
+    row = result.first()
+    return {"id": str(row.id)} if row else None
+
+
+async def _fetch_boq_analysis_run_with_findings(
+    db: AsyncSession, org_id: str, run_id: str
+) -> Optional[Dict[str, Any]]:
+    run_result = await db.execute(
+        text("""
+            SELECT * FROM finance.boq_analysis_runs
+            WHERE id = :run_id AND organization_id = :org_id
+        """),
+        {"run_id": run_id, "org_id": org_id},
+    )
+    run_row = run_result.first()
+    if not run_row:
+        return None
+    findings_result = await db.execute(
+        text("""
+            SELECT * FROM finance.boq_analysis_findings
+            WHERE run_id = :run_id ORDER BY created_at ASC
+        """),
+        {"run_id": run_id},
+    )
+    findings = [dict(row._mapping) for row in findings_result]
+    run = dict(run_row._mapping)
+    run["findings"] = findings
+    return run
+
+
+@router.post("/boq/ai-analysis")
+async def run_boq_ai_analysis(
+    payload: BoqAiAnalysisRequest,
+    user: dict = Depends(require_permission("quotations.ai_boq_analysis.use")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Analyses an already-imported BOQ: deterministic checks always run,
+    Perplexity findings are added when configured. Never overwrites the BOQ —
+    findings are a separate, reviewable record. Idempotent on unchanged BOQ
+    content unless force_refresh is set."""
+    items, project_id = await _load_boq_items_from_quotation(db, user["org_id"], payload.quotation_id)
+    input_hash = compute_input_hash(items, payload.project_scope_text)
+
+    if not payload.force_refresh:
+        cached = await _find_cached_boq_analysis_run(db, user["org_id"], payload.quotation_id, input_hash)
+        if cached:
+            run = await _fetch_boq_analysis_run_with_findings(db, user["org_id"], cached["id"])
+            return {
+                "success": True,
+                "data": jsonable_encoder(run),
+                "message": "Returned a cached analysis — this BOQ hasn't changed since the last run. Pass force_refresh to re-run.",
+                "meta": {"cached": True},
+            }
+
+    rate_benchmarks = await _load_org_rate_benchmarks(db, user["org_id"])
+    result = await analyze_boq(
+        items,
+        rate_benchmarks,
+        project_scope_text=payload.project_scope_text,
+        perplexity_configured=bool(settings.PERPLEXITY_API_KEY),
+    )
+
+    run_id = None
+    persistence_failed = False
+    try:
+        insert_result = await db.execute(
+            text("""
+                INSERT INTO finance.boq_analysis_runs (
+                    organization_id, quotation_id, project_id, requested_by, provider, model,
+                    prompt_version, status, input_hash, latency_ms, token_usage, error
+                ) VALUES (
+                    :org_id, :quotation_id, :project_id, :requested_by, :provider, :model,
+                    :prompt_version, :status, :input_hash, :latency_ms, CAST(:token_usage AS jsonb), :error
+                )
+                RETURNING id
+            """),
+            {
+                "org_id": user["org_id"],
+                "quotation_id": payload.quotation_id,
+                "project_id": project_id,
+                "requested_by": user["user_id"],
+                "provider": result.provider,
+                "model": result.model,
+                "prompt_version": "v1",
+                "status": result.status,
+                "input_hash": input_hash,
+                "latency_ms": result.latency_ms,
+                "token_usage": json.dumps(result.token_usage, default=str) if result.token_usage else None,
+                "error": result.error,
+            },
+        )
+        run_id = str(insert_result.scalar())
+
+        for finding in result.findings:
+            await db.execute(
+                text("""
+                    INSERT INTO finance.boq_analysis_findings (
+                        run_id, organization_id, finding_type, item_ref, original_value,
+                        proposed_value, variance, unit, reason, evidence_text, citations,
+                        confidence, value_class
+                    ) VALUES (
+                        :run_id, :org_id, :finding_type, CAST(:item_ref AS jsonb), :original_value,
+                        :proposed_value, :variance, :unit, :reason, :evidence_text, CAST(:citations AS jsonb),
+                        :confidence, :value_class
+                    )
+                """),
+                {
+                    "run_id": run_id,
+                    "org_id": user["org_id"],
+                    "finding_type": finding["finding_type"],
+                    "item_ref": json.dumps(finding.get("item_ref"), default=str),
+                    "original_value": finding.get("original_value"),
+                    "proposed_value": finding.get("proposed_value"),
+                    "variance": finding.get("variance"),
+                    "unit": finding.get("unit"),
+                    "reason": finding["reason"],
+                    "evidence_text": finding.get("evidence_text"),
+                    "citations": json.dumps(finding.get("citations") or [], default=str),
+                    "confidence": finding.get("confidence"),
+                    "value_class": finding["value_class"],
+                },
+            )
+
+        high_confidence_issues = sum(
+            1 for f in result.findings
+            if f.get("confidence") is not None and f["confidence"] >= 0.7
+        )
+        await emit_event(
+            db,
+            user=user,
+            event_type="estimate.boq_analysis.completed.v1",
+            aggregate_type="quotation",
+            aggregate_id=payload.quotation_id,
+            project_id=project_id,
+            event_data={
+                "run_id": run_id,
+                "status": result.status,
+                "finding_count": len(result.findings),
+                "high_confidence_issue_count": high_confidence_issues,
+            },
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "Failed to persist BOQ AI analysis run for quotation %s", payload.quotation_id
+        )
+        run_id = None
+        persistence_failed = True
+
+    run = await _fetch_boq_analysis_run_with_findings(db, user["org_id"], run_id) if run_id else None
+    return {
+        "success": True,
+        "data": jsonable_encoder(run) if run else {
+            "status": result.status,
+            "findings": result.findings,
+            "provider": result.provider,
+            "model": result.model,
+            "error": result.error,
+        },
+        "message": (
+            "BOQ analysis complete."
+            if not persistence_failed
+            else "BOQ analysis complete, but the run FAILED TO SAVE — these findings are not recorded."
+        ),
+        "meta": {
+            "run_id": run_id,
+            "persistence_failed": persistence_failed,
+            "persisted": not persistence_failed,
+            "cached": False,
+        },
+    }
+
+
+@router.get("/boq/ai-analysis/{run_id}")
+async def get_boq_ai_analysis_run(
+    run_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns one BOQ analysis run with its findings."""
+    run = await _fetch_boq_analysis_run_with_findings(db, user["org_id"], run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="BOQ analysis run not found.")
+    return {
+        "success": True,
+        "data": jsonable_encoder(run),
+        "message": "BOQ analysis run retrieved.",
+        "meta": {"finding_count": len(run["findings"])},
+    }
+
+
+@router.get("/boq/ai-analysis")
+async def list_boq_ai_analysis_runs(
+    quotation_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns BOQ analysis run history (headers only, not findings), most recent first."""
+    result = await db.execute(
+        text("""
+            SELECT * FROM finance.boq_analysis_runs
+            WHERE organization_id = :org_id
+              AND (CAST(:quotation_id AS uuid) IS NULL OR quotation_id = CAST(:quotation_id AS uuid))
+            ORDER BY created_at DESC
+            LIMIT 50
+        """),
+        {"org_id": user["org_id"], "quotation_id": quotation_id},
+    )
+    items = [dict(row._mapping) for row in result]
+    return {
+        "success": True,
+        "data": jsonable_encoder(items),
+        "message": "BOQ analysis run history retrieved.",
+        "meta": {"total": len(items)},
+    }
+
+
+@router.patch("/boq/ai-analysis/findings/{finding_id}")
+async def review_boq_ai_analysis_finding(
+    finding_id: str,
+    payload: BoqAnalysisReviewRequest,
+    user: dict = Depends(require_permission("quotations.ai_boq_analysis.review")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Records a reviewer's accept/reject decision on one finding. This is a
+    record of the review only — it never mutates the BOQ or the quotation
+    itself; correcting the BOQ in response to an accepted finding remains a
+    separate, deliberate edit by the user."""
+    result = await db.execute(
+        text("""
+            UPDATE finance.boq_analysis_findings
+            SET reviewer_decision = :decision, reviewed_by = :user_id, reviewed_at = NOW()
+            WHERE id = :finding_id AND organization_id = :org_id
+            RETURNING id, run_id
+        """),
+        {
+            "decision": payload.decision,
+            "user_id": user["user_id"],
+            "finding_id": finding_id,
+            "org_id": user["org_id"],
+        },
+    )
+    row = result.first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Finding not found.")
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": str(row.id), "run_id": str(row.run_id), "reviewer_decision": payload.decision},
+        "message": f"Finding marked {payload.decision}.",
+        "meta": {"user_id": user["user_id"]},
     }
 
 

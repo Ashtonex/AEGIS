@@ -1,5 +1,5 @@
 from decimal import Decimal, ROUND_HALF_UP
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import hashlib
 import json
 from pydantic import BaseModel, Field, ConfigDict
@@ -22,6 +22,13 @@ class BOQItem(BaseModel):
     subcontractor_rate: Decimal = Field(default=Decimal("0"))
     transport_rate: Decimal = Field(default=Decimal("0"))
     waste_allowance_rate: Decimal = Field(default=Decimal("0"))
+
+    # Evidence anchor back to the imported source file, so downstream
+    # findings (e.g. app/services/quotations/boq_ai_analysis.py) can cite
+    # "Sheet X, Row Y" instead of nothing. Populated by boq_importer.py;
+    # optional because manually-entered/API-built items have no source cell.
+    source_sheet: Optional[str] = None
+    source_row: Optional[int] = None
 
 
 class QuotationCalculationInput(BaseModel):

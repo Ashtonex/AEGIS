@@ -460,6 +460,8 @@ class BOQImporter:
                 quantity=qty,
                 unit=unit,
                 rate=rate,
+                source_sheet=sheet_title or None,
+                source_row=row_num,
             )
             items.append(item)
             if sections_seen is not None:

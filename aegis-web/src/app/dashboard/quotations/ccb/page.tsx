@@ -44,10 +44,13 @@ import {
   getConstructionAssemblies,
   getDocumentChangeHistory,
   getGuardAuditHistory,
+  getBoqAiAnalysisHistory,
   getInternalProjects,
   getQuotations,
   getRecommendedSubcontractors,
   listRateBenchmarks,
+  reviewBoqAiAnalysisFinding,
+  runBoqAiAnalysis,
   saveCcbOverride,
   simulateCcbScenario,
   watchDocumentRevision,
@@ -386,7 +389,7 @@ export default function CommercialControlBrainPage() {
   const [scopeText, setScopeText] = useState("");
   const [generatingQuote, setGeneratingQuote] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<"controls" | "scenarios" | "rates" | "vendors" | "guard" | "watcher">("controls");
+  const [activeTab, setActiveTab] = useState<"controls" | "scenarios" | "rates" | "vendors" | "guard" | "watcher" | "boqAi">("controls");
 
   const [brain, setBrain] = useState<BrainResult | null>(null);
   const [breakdowns, setBreakdowns] = useState<AssemblyBreakdown[]>([]);
@@ -434,6 +437,12 @@ export default function CommercialControlBrainPage() {
   const [docRevisedCost, setDocRevisedCost] = useState(118400);
   const [docWatchResult, setDocWatchResult] = useState<any>(null);
   const [docChangesLog, setDocChangesLog] = useState<any[]>([]);
+
+  const [boqAiScopeText, setBoqAiScopeText] = useState("");
+  const [boqAiRunning, setBoqAiRunning] = useState(false);
+  const [boqAiResult, setBoqAiResult] = useState<any>(null);
+  const [boqAiRunsLog, setBoqAiRunsLog] = useState<any[]>([]);
+  const [boqAiReviewingId, setBoqAiReviewingId] = useState<string | null>(null);
 
   const [overridingFlag, setOverridingFlag] = useState<string | null>(null);
 
@@ -783,6 +792,53 @@ export default function CommercialControlBrainPage() {
     }
   };
 
+  const handleRunBoqAiAnalysis = async (forceRefresh = false) => {
+    if (!selectedQuote?.id) {
+      setErrorMsg("Select a quotation with an imported BOQ first.");
+      return;
+    }
+    setBoqAiRunning(true);
+    try {
+      const res = await runBoqAiAnalysis({
+        quotation_id: selectedQuote.id,
+        project_scope_text: boqAiScopeText || undefined,
+        force_refresh: forceRefresh,
+      });
+      if (res.success) {
+        setBoqAiResult(res.data);
+        const historyRes = await getBoqAiAnalysisHistory(selectedQuote.id);
+        if (historyRes.success && Array.isArray(historyRes.data)) setBoqAiRunsLog(historyRes.data);
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "BOQ AI analysis failed.");
+    } finally {
+      setBoqAiRunning(false);
+    }
+  };
+
+  const handleReviewBoqAiFinding = async (findingId: string, decision: "accepted" | "rejected") => {
+    setBoqAiReviewingId(findingId);
+    try {
+      const res = await reviewBoqAiAnalysisFinding(findingId, decision);
+      if (res.success) {
+        setBoqAiResult((prev: any) =>
+          prev
+            ? {
+                ...prev,
+                findings: (prev.findings || []).map((f: any) =>
+                  f.id === findingId ? { ...f, reviewer_decision: decision } : f
+                ),
+              }
+            : prev
+        );
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Could not record review decision — you may not hold the review permission.");
+    } finally {
+      setBoqAiReviewingId(null);
+    }
+  };
+
   const handleCreateAssembly = async () => {
     if (!newAssembly.assembly_code.trim() || !newAssembly.name.trim()) {
       setAssemblyAdminError("Assembly code and name are required.");
@@ -1027,6 +1083,16 @@ export default function CommercialControlBrainPage() {
         >
           <FileText className="h-4 w-4" />
           6. Scope Watcher
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("boqAi")}
+          className={`flex items-center gap-2 px-4 py-3 border-b-2 font-semibold transition-colors shrink-0 ${
+            activeTab === "boqAi" ? "border-signal text-signal bg-ink-light" : "border-transparent text-slate hover:text-white"
+          }`}
+        >
+          <ShieldAlert className="h-4 w-4" />
+          7. AI BOQ Analysis
         </button>
       </div>
 
@@ -1990,6 +2056,133 @@ export default function CommercialControlBrainPage() {
                           <p className="text-slate">Delta: {money(toNumber(log.margin_impact_amount))}</p>
                         </div>
                         <span className="font-mono text-[10px] text-signal uppercase">{log.approval_level_required}</span>
+                      </div>
+                    ))}
+                  </div>
+                </Panel>
+              )}
+            </div>
+          )}
+
+          {/* TAB 7: AI BOQ ANALYSIS */}
+          {activeTab === "boqAi" && (
+            <div className="space-y-6">
+              <Panel title="AI-Assisted BOQ Analysis" icon={ShieldAlert}>
+                <div className="space-y-4">
+                  <p className="text-sm text-slate">
+                    Deterministic checks (duplicate lines, blank/zero rates, unit mismatches, rate
+                    outliers) always run against this quotation&apos;s imported BOQ. Missing scope,
+                    unsupported lump sums, and market-rate context are added only when the
+                    Perplexity research provider is configured — every finding stays a proposal
+                    until a reviewer accepts or rejects it; the BOQ itself is never changed here.
+                  </p>
+                  <div>
+                    <label className="font-mono text-[10px] uppercase text-slate">
+                      Scope of Works (optional — improves missing-scope detection)
+                    </label>
+                    <textarea
+                      value={boqAiScopeText}
+                      onChange={(e) => setBoqAiScopeText(e.target.value)}
+                      rows={4}
+                      className="mt-1 w-full border border-ink-mid bg-ink-light px-2 py-2 text-xs text-white"
+                      placeholder="Paste the scope of works / brief text here..."
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      disabled={boqAiRunning || !selectedQuote?.id}
+                      onClick={() => void handleRunBoqAiAnalysis(false)}
+                      className="bg-signal text-ink text-xs font-semibold px-4 py-2 hover:bg-signal-hover transition-colors disabled:opacity-50"
+                    >
+                      {boqAiRunning ? "Analyzing..." : "Analyze BOQ"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={boqAiRunning || !selectedQuote?.id}
+                      onClick={() => void handleRunBoqAiAnalysis(true)}
+                      className="border border-ink-mid text-slate text-xs font-semibold px-4 py-2 hover:text-white transition-colors disabled:opacity-50"
+                    >
+                      Force Re-run
+                    </button>
+                  </div>
+
+                  {boqAiResult && (
+                    <div className="space-y-3">
+                      <div className="border border-ink-mid bg-ink p-3 text-xs flex items-center justify-between">
+                        <span className="font-mono uppercase text-slate">
+                          Status: <span className="text-white">{boqAiResult.status}</span>
+                          {boqAiResult.model ? ` · ${boqAiResult.model}` : ""}
+                        </span>
+                        <span className="text-slate">{(boqAiResult.findings || []).length} finding(s)</span>
+                      </div>
+                      {boqAiResult.status === "deterministic_only" && (
+                        <p className="text-[11px] text-slate">
+                          Perplexity is not configured for this environment — showing deterministic checks only.
+                        </p>
+                      )}
+                      {boqAiResult.status === "degraded" && (
+                        <p className="text-[11px] text-amber-300">
+                          AI research failed this run ({boqAiResult.error || "unknown error"}) — showing deterministic checks only.
+                        </p>
+                      )}
+                      {(boqAiResult.findings || []).map((finding: any, idx: number) => (
+                        <div key={finding.id || idx} className="border border-ink-mid bg-ink-light p-3 text-xs space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono uppercase text-signal">{finding.finding_type}</span>
+                            <span className="font-mono text-[10px] uppercase text-slate">
+                              {finding.value_class} · confidence {finding.confidence != null ? Math.round(finding.confidence * 100) : "?"}%
+                            </span>
+                          </div>
+                          <p className="text-paper">{finding.reason}</p>
+                          {finding.evidence_text && <p className="text-slate italic">&quot;{finding.evidence_text}&quot;</p>}
+                          {finding.id && (
+                            <div className="flex items-center gap-2 pt-1">
+                              {finding.reviewer_decision && finding.reviewer_decision !== "pending" ? (
+                                <span className={`font-mono text-[10px] uppercase ${finding.reviewer_decision === "accepted" ? "text-emerald-300" : "text-red-300"}`}>
+                                  Reviewer: {finding.reviewer_decision}
+                                </span>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={boqAiReviewingId === finding.id}
+                                    onClick={() => void handleReviewBoqAiFinding(finding.id, "accepted")}
+                                    className="border border-emerald-500/40 text-emerald-300 text-[10px] font-mono uppercase px-2 py-1 hover:bg-emerald-950/20 disabled:opacity-50"
+                                  >
+                                    Accept
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={boqAiReviewingId === finding.id}
+                                    onClick={() => void handleReviewBoqAiFinding(finding.id, "rejected")}
+                                    className="border border-red-500/40 text-red-300 text-[10px] font-mono uppercase px-2 py-1 hover:bg-red-950/20 disabled:opacity-50"
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Panel>
+
+              {boqAiRunsLog.length > 0 && (
+                <Panel title="Recent AI BOQ Analysis Runs" icon={History}>
+                  <div className="space-y-2">
+                    {boqAiRunsLog.slice(0, 5).map((run) => (
+                      <div key={run.id} className="border border-ink-mid bg-ink p-3 text-xs flex justify-between items-center">
+                        <div>
+                          <p className="font-semibold text-white">{new Date(run.created_at).toLocaleString()}</p>
+                          <p className="text-slate">{run.provider} {run.model ? `· ${run.model}` : ""}</p>
+                        </div>
+                        <span className="font-mono px-2 py-0.5 text-[10px] uppercase border border-ink-mid text-slate">
+                          {run.status}
+                        </span>
                       </div>
                     ))}
                   </div>
