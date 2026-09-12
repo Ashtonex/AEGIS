@@ -19,6 +19,9 @@ import {
   updateCcbFinding,
   getCommercialBaselineHistory,
   getModulesStatus,
+  getFinancialRunway,
+  getSafetyIndex,
+  getPendingApprovals,
   ApiError,
 } from "@/lib/api";
 
@@ -316,6 +319,11 @@ function ExecutiveCommandCentreWorkspace() {
       </button>)}
     </section>
 
+    <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <CashRunwayPanel />
+      <SafetyIndexPanel />
+    </section>
+
     <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <ModuleGateway modules={modules} />
 
@@ -325,6 +333,7 @@ function ExecutiveCommandCentreWorkspace() {
     <OperationalControlLedger stats={stats} />
     <CCBCommercialGovernanceWidget />
     <CCBAutomatedFindingsPanel />
+    <PendingApprovalsPanel />
     <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricDetailGrid rows={metricDetailRows(selectedCard.key, kpis, stats, activeProjects, dataHealth)} />}</Modal>}
@@ -687,6 +696,18 @@ const CCB_FINDING_CHECK_TYPE_LABELS: Record<string, string> = {
   budget_boq_overrun: "Budget Overrun",
   requisition_budget_breach: "Requisition Breach",
   variance_stale_approval: "Approval Overdue",
+  weekly_boq_pace_variance: "Weekly Pace Variance",
+  invoice_line_price_variance: "Invoice Price Variance",
+  invoice_line_quantity_variance: "Invoice Quantity Variance",
+  invoice_missing_po_or_grn: "Invoice Missing PO/GRN",
+  duplicate_invoice_suspected: "Duplicate Invoice Suspected",
+  invoice_unapproved_supplier: "Unapproved Supplier Invoice",
+  supplier_bank_changed: "Supplier Bank Changed",
+  input_vat_rate_mismatch: "Input VAT Rate Mismatch",
+  gl_proposal_stale_review: "GL Review Overdue",
+  labour_headcount_mismatch: "Headcount Mismatch",
+  fuel_hours_variance: "Fuel Variance",
+  stock_consumption_variance: "Stock Variance",
 };
 
 const CCB_FINDING_SEVERITY_CLASSES: Record<string, string> = {
@@ -701,6 +722,26 @@ const CCB_FINDING_STATUS_CLASSES: Record<string, string> = {
   acknowledged: "border-amber-500/40 text-amber-300",
   resolved: "border-emerald-500/40 text-emerald-300",
 };
+
+// Truth-state badge shared by any panel that reports a metric's
+// truth_status (SYSTEM_GENERATED = computed from real records this run,
+// ESTIMATED = a disclosed assumption stood in for missing real data,
+// UNKNOWN = neither exists - never silently shown as zero or a guess).
+const TRUTH_STATUS_CLASSES: Record<string, string> = {
+  SYSTEM_GENERATED: "border-emerald-500/40 text-emerald-300 bg-emerald-950/20",
+  VERIFIED: "border-emerald-500/40 text-emerald-300 bg-emerald-950/20",
+  ESTIMATED: "border-amber-500/40 text-amber-300 bg-amber-950/20",
+  UNKNOWN: "border-red-500/40 text-red-300 bg-red-950/20",
+};
+
+function TruthBadge({ status }: { status: unknown }) {
+  const key = String(status || "UNKNOWN").toUpperCase();
+  return (
+    <span className={`font-mono text-[9px] uppercase px-1.5 py-0.5 border rounded ${TRUTH_STATUS_CLASSES[key] || TRUTH_STATUS_CLASSES.UNKNOWN}`}>
+      {key.replace(/_/g, " ")}
+    </span>
+  );
+}
 
 function daysAgoLabel(iso: unknown) {
   if (typeof iso !== "string" || !iso) return "unknown";
@@ -830,6 +871,199 @@ function CCBAutomatedFindingsPanel() {
                 )}
               </div>
             </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+// Cash runway and safety index share one fetch/render shape: both endpoints
+// were recently fixed to never fabricate a number when the real data isn't
+// there (a hardcoded $3,500/employee payroll guess and an 85,000-man-hour
+// safety baseline respectively) - so both panels lead with a TruthBadge and
+// show the stated `reason` whenever the backend reports UNKNOWN, instead of
+// quietly rendering nothing or a plausible-looking zero.
+function CashRunwayPanel() {
+  const [data, setData] = useState<ApiData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getFinancialRunway();
+        if (!cancelled) setData((res.data as ApiData) || {});
+      } catch {
+        if (!cancelled) setData(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const truthStatus = String(data?.truth_status || "UNKNOWN");
+  const isUnknown = truthStatus === "UNKNOWN";
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Cash Runway</h2>
+          <p className="text-xs text-slate-light mt-1">Real cash reserves against trailing cashbook burn, or a disclosed estimate when no burn history exists yet.</p>
+        </div>
+        {data && <TruthBadge status={data.truth_status} />}
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading cash runway...</div>
+      ) : !data ? (
+        <p className="text-xs text-slate py-6">Cash runway could not be loaded.</p>
+      ) : isUnknown ? (
+        <div className="py-4">
+          <p className="font-mono text-2xl text-paper">UNKNOWN</p>
+          <p className="text-xs text-slate-light mt-2">{displayValue(data.reason)}</p>
+        </div>
+      ) : (
+        <div className="py-2">
+          <div className="flex items-baseline gap-2">
+            <p className="font-mono text-3xl text-paper">{displayValue(data.runway_months)}<span className="text-sm text-slate-light ml-1">months</span></p>
+            <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${data.status === "critical" ? "border-red-500/40 text-red-300 bg-red-950/20" : "border-emerald-500/40 text-emerald-300 bg-emerald-950/20"}`}>{displayValue(data.status)}</span>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <div><p className="text-slate">Cash Reserves</p><p className="font-mono text-paper mt-0.5">{currencyValue(data.cash_reserves)}</p></div>
+            <div><p className="text-slate">Monthly Burn</p><p className="font-mono text-paper mt-0.5">{currencyValue(data.total_burn_monthly)}</p></div>
+          </div>
+          <p className="font-mono text-[10px] text-slate mt-2 uppercase">Source: {displayValue(data.burn_source)}</p>
+          {Array.isArray(data.estimation_basis) && data.estimation_basis.length > 0 && (
+            <ul className="mt-3 space-y-1 border-t border-ink-mid pt-2">
+              {(data.estimation_basis as unknown[]).map((line, index) => (
+                <li key={index} className="text-[11px] text-amber-300/80">· {displayValue(line)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SafetyIndexPanel() {
+  const [data, setData] = useState<ApiData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getSafetyIndex();
+        if (!cancelled) setData((res.data as ApiData) || {});
+      } catch {
+        if (!cancelled) setData(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const truthStatus = String(data?.truth_status || "UNKNOWN");
+  const isUnknown = truthStatus === "UNKNOWN";
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Safety Index (LTIFR)</h2>
+          <p className="text-xs text-slate-light mt-1">Lost Time Injury Frequency Rate per million hours, from real HSE incidents and timesheet hours only.</p>
+        </div>
+        {data && <TruthBadge status={data.truth_status} />}
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading safety index...</div>
+      ) : !data ? (
+        <p className="text-xs text-slate py-6">Safety index could not be loaded.</p>
+      ) : isUnknown ? (
+        <div className="py-4">
+          <p className="font-mono text-2xl text-paper">UNKNOWN</p>
+          <p className="text-xs text-slate-light mt-2">{displayValue(data.reason)}</p>
+        </div>
+      ) : (
+        <div className="py-2">
+          <div className="flex items-baseline gap-2">
+            <p className="font-mono text-3xl text-paper">{displayValue(data.ltifr)}</p>
+            <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${data.status === "compliant" ? "border-emerald-500/40 text-emerald-300 bg-emerald-950/20" : "border-red-500/40 text-red-300 bg-red-950/20"}`}>{displayValue(data.status)}</span>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <div><p className="text-slate">Critical HSE Incidents</p><p className="font-mono text-paper mt-0.5">{displayValue(data.critical_hse_incidents)}</p></div>
+            <div><p className="text-slate">Man-Hours Recorded</p><p className="font-mono text-paper mt-0.5">{displayValue(data.total_man_hours)}</p></div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Decision Queue: read-only aggregation of items genuinely awaiting a
+// decision in their own authoritative module (procurement.purchase_orders
+// today - see GET /executive/approvals/pending). Deliberately has no
+// approve/reject button of its own: the real approval rule (segregation of
+// duties, self-approval blocked) lives in routers/procurement.py, so this
+// panel links out to where the decision is actually made rather than
+// duplicating that logic a second, drifting time.
+function PendingApprovalsPanel() {
+  const [items, setItems] = useState<ApiData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getPendingApprovals();
+        if (!cancelled) {
+          setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
+          setMessage(String(res.message || ""));
+        }
+      } catch {
+        if (!cancelled) setItems([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-center border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Decisions Awaiting Approval</h2>
+          <p className="text-xs text-slate-light mt-1">Only items genuinely in a pending state in their own module - decide them there, not here.</p>
+        </div>
+        <span className="font-mono text-[10px] text-slate">{items.length} PENDING</span>
+      </div>
+      <div className="mt-4 space-y-2">
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading pending approvals...</div>
+        ) : items.length === 0 ? (
+          <p className="text-xs text-slate py-4">{message || "No items currently awaiting executive-visible approval."}</p>
+        ) : (
+          items.map((item) => (
+            <Link
+              key={String(item.id)}
+              href={String(item.action_url || "/dashboard/procurement")}
+              className="block border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal transition-colors"
+            >
+              <div className="flex flex-wrap justify-between items-start gap-3">
+                <div className="min-w-0">
+                  <span className="font-mono text-[10px] uppercase text-signal">{titleCase(String(item.type || "item"))}</span>
+                  <p className="font-semibold text-paper text-sm mt-1.5">{displayValue(item.reference)}</p>
+                  <p className="text-slate-light text-xs mt-1">{displayValue(item.reason)}</p>
+                </div>
+                <p className="font-mono text-sm text-paper shrink-0">{currencyValue(item.amount)}</p>
+              </div>
+            </Link>
           ))
         )}
       </div>

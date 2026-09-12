@@ -23,7 +23,23 @@ from core.security import require_permission
 router = APIRouter()
 
 _VALID_STATUSES = {"open", "acknowledged", "resolved"}
-_VALID_CHECK_TYPES = {"budget_boq_overrun", "requisition_budget_breach", "variance_stale_approval"}
+_VALID_CHECK_TYPES = {
+    "budget_boq_overrun",
+    "requisition_budget_breach",
+    "variance_stale_approval",
+    "weekly_boq_pace_variance",
+    "invoice_line_price_variance",
+    "invoice_line_quantity_variance",
+    "invoice_missing_po_or_grn",
+    "duplicate_invoice_suspected",
+    "invoice_unapproved_supplier",
+    "supplier_bank_changed",
+    "input_vat_rate_mismatch",
+    "gl_proposal_stale_review",
+    "labour_headcount_mismatch",
+    "fuel_hours_variance",
+    "stock_consumption_variance",
+}
 
 
 class FindingActionPayload(BaseModel):

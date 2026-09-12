@@ -21,6 +21,10 @@ from app.services.finance.ccb_monitor import (
     run_requisition_budget_breach_check,
     run_variance_staleness_check,
     run_weekly_boq_pace_variance_check,
+    run_gl_proposal_stale_review_check,
+    run_labour_headcount_mismatch_check,
+    run_fuel_hours_variance_check,
+    run_stock_consumption_variance_check,
 )
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
 from app.services.workforce_events import dispatch_workforce_events
@@ -319,6 +323,78 @@ async def run_ccb_weekly_boq_pace_variance_check_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def run_ccb_gl_proposal_stale_review_check_job(ctx):
+    """Daily cron (CCB automation Phase 10A): flags system-proposed GL
+    journals (gl_bridge.py) stuck in pending_review for 5+ days.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_gl_proposal_stale_review_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB GL proposal staleness check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def run_ccb_labour_headcount_mismatch_check_job(ctx):
+    """Daily cron (CCB automation Phase 10A): compares posted-payroll
+    headcount against approved-timesheet headcount per project/period.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_labour_headcount_mismatch_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB labour headcount mismatch check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def run_ccb_fuel_hours_variance_check_job(ctx):
+    """Daily cron (CCB automation Phase 10A): flags fuel transactions whose
+    already-computed variance against expected consumption exceeds 15%.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_fuel_hours_variance_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB fuel-vs-hours variance check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def run_ccb_stock_consumption_variance_check_job(ctx):
+    """Daily cron (CCB automation Phase 10A): compares stock issued to a
+    project against reported material usage+wastage per project/item/week.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_stock_consumption_variance_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB stock-vs-consumption variance check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def check_tax_deadline_alerts_job(ctx):
     """Daily cron (Phase 8C): staged tax-deadline alerts at 30/14/7/3/1 days
     out and overdue, for every organization. Unlike poll_ticket_sla_triggers_job's
@@ -424,6 +500,10 @@ class WorkerSettings:
         run_ccb_variance_staleness_check_job,
         run_ccb_weekly_boq_pace_variance_check_job,
         check_tax_deadline_alerts_job,
+        run_ccb_gl_proposal_stale_review_check_job,
+        run_ccb_labour_headcount_mismatch_check_job,
+        run_ccb_fuel_hours_variance_check_job,
+        run_ccb_stock_consumption_variance_check_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -451,6 +531,30 @@ class WorkerSettings:
             run_at_startup=False,
         ),
         cron(check_tax_deadline_alerts_job, hour=4, minute=0, run_at_startup=False),
+        cron(
+            run_ccb_gl_proposal_stale_review_check_job,
+            hour=3,
+            minute=50,
+            run_at_startup=False,
+        ),
+        cron(
+            run_ccb_labour_headcount_mismatch_check_job,
+            hour=3,
+            minute=55,
+            run_at_startup=False,
+        ),
+        cron(
+            run_ccb_fuel_hours_variance_check_job,
+            hour=4,
+            minute=5,
+            run_at_startup=False,
+        ),
+        cron(
+            run_ccb_stock_consumption_variance_check_job,
+            hour=4,
+            minute=10,
+            run_at_startup=False,
+        ),
     ]
     redis_settings = redis_settings
     on_startup = startup

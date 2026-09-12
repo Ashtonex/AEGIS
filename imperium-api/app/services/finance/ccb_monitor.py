@@ -13,6 +13,7 @@ app/workers/arq_worker.py's poll_ticket_sla_triggers_job.
 """
 
 import json
+from datetime import date, timedelta
 from typing import Any, Dict, Optional
 
 from sqlalchemy import text
@@ -580,5 +581,782 @@ async def run_variance_staleness_check(db: AsyncSession, org_id: Optional[str] =
     logger.info(
         f"CCB variance staleness check: {checked} stale change(s) evaluated, "
         f"{findings_open} open, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+# ---------------------------------------------------------------------------
+# Weekly BOQ pace-variance check (Phase 5). projects.weekly_budget_items
+# already carries a planned_qty per BOQ line for a given week, and
+# finance.boq_measurement_entries already carries dated, approved measured
+# quantities against that same BOQ line - but nothing compared the two.
+# This check closes that gap: for every approved weekly budget whose week
+# has started, it sums approved measurements dated within that week against
+# the line's planned quantity, and separately checks whether any daily site
+# report exists for the project during that week as supporting evidence.
+# Deliberately does not touch daily_site_reports' planned_work/actual_work
+# text fields - those aren't linked to a BOQ line or cost code anywhere in
+# the schema, so "evidence exists" here means "at least one report was filed
+# that week," not "the report corroborates this specific quantity."
+# ---------------------------------------------------------------------------
+
+_PACE_LOOKBACK_DAYS = 60
+_OVER_PACE_RATIO = 1.5
+_UNDER_PACE_RATIO = 0.5
+
+
+def _weekly_pace_natural_key(project_id: str, weekly_budget_item_id: str) -> str:
+    return f"{project_id}:weekly_boq_pace_variance:{weekly_budget_item_id}"
+
+
+async def _find_weekly_pace_candidates(db: AsyncSession, org_id: Optional[str]):
+    rows = (
+        await db.execute(
+            text("""
+                SELECT
+                    wbi.id AS weekly_budget_item_id,
+                    wbi.organization_id AS org_id,
+                    wbi.project_id,
+                    p.name AS project_title,
+                    wb.week_start,
+                    bli.description AS boq_description,
+                    bli.unit,
+                    wbi.planned_qty,
+                    wbi.planned_amount,
+                    COALESCE(m.actual_qty, 0) AS actual_qty,
+                    COALESCE(dr.report_count, 0) AS daily_report_count
+                FROM projects.weekly_budget_items wbi
+                JOIN projects.weekly_budgets wb
+                    ON wb.id = wbi.weekly_budget_id AND wb.organization_id = wbi.organization_id
+                   AND wb.status = 'approved' AND wb.is_deleted = false
+                JOIN projects.projects p
+                    ON p.id = wbi.project_id AND p.organization_id = wbi.organization_id
+                   AND p.is_deleted = false
+                JOIN finance.boq_line_items bli
+                    ON bli.id = wbi.boq_line_item_id AND bli.organization_id = wbi.organization_id
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(me.qty_this_period), 0) AS actual_qty
+                    FROM finance.boq_measurement_entries me
+                    WHERE me.boq_line_item_id = wbi.boq_line_item_id
+                      AND me.organization_id = wbi.organization_id
+                      AND me.status = 'approved'
+                      AND me.measurement_date BETWEEN wb.week_start AND (wb.week_start + INTERVAL '6 days')
+                ) m ON true
+                LEFT JOIN LATERAL (
+                    SELECT COUNT(*) AS report_count
+                    FROM projects.daily_site_reports dsr
+                    WHERE dsr.project_id = wbi.project_id
+                      AND dsr.organization_id = wbi.organization_id
+                      AND dsr.report_date BETWEEN wb.week_start AND (wb.week_start + INTERVAL '6 days')
+                ) dr ON true
+                WHERE wbi.is_deleted = false
+                  AND wbi.boq_line_item_id IS NOT NULL
+                  AND wbi.planned_qty > 0
+                  AND wb.week_start BETWEEN CURRENT_DATE - make_interval(days => :lookback_days) AND CURRENT_DATE
+                  AND (CAST(:org_id AS uuid) IS NULL OR wbi.organization_id = CAST(:org_id AS uuid))
+            """),
+            {"org_id": org_id, "lookback_days": _PACE_LOOKBACK_DAYS},
+        )
+    ).mappings().all()
+    return rows
+
+
+def _weekly_pace_finding(row) -> Optional[Dict[str, Any]]:
+    """Returns None when nothing about this row is worth flagging (caller
+    should resolve any existing finding), otherwise a dict of
+    {severity, summary} describing the one most relevant condition. Never
+    labels a condition as fraud - only as a pattern worth review, consistent
+    with the rest of this module's findings."""
+    planned = float(row["planned_qty"] or 0)
+    actual = float(row["actual_qty"] or 0)
+    reports = int(row["daily_report_count"] or 0)
+    week_start = row["week_start"]
+    week_end = week_start + timedelta(days=6)
+    week_fully_elapsed = week_end < date.today()
+    unit = row["unit"] or "unit(s)"
+    desc = row["boq_description"] or "BOQ line"
+
+    if actual > planned * _OVER_PACE_RATIO:
+        ratio = actual / planned if planned else 0
+        if reports == 0:
+            severity = "critical" if ratio >= 2.5 else "high"
+            summary = (
+                f"{desc}: {actual:,.2f} {unit} measured and approved for the week of {week_start} "
+                f"against a plan of {planned:,.2f} {unit} ({ratio:.1f}x plan), with no daily site "
+                f"report on file for that week as supporting evidence. Unusual pattern - recommend "
+                f"verifying the measurement before it is relied on for a progress claim."
+            )
+        else:
+            severity = "medium"
+            summary = (
+                f"{desc}: {actual:,.2f} {unit} measured and approved for the week of {week_start} "
+                f"against a plan of {planned:,.2f} {unit} ({ratio:.1f}x plan). {reports} daily site "
+                f"report(s) exist for that week. Materially ahead of the weekly plan - worth a quick "
+                f"review of the measurement and the plan."
+            )
+        return {"severity": severity, "summary": summary}
+
+    if week_fully_elapsed and actual == 0:
+        if reports == 0:
+            severity = "high"
+            summary = (
+                f"{desc}: {planned:,.2f} {unit} was planned for the week of {week_start} but no "
+                f"measurement was approved and no daily site report was filed for that week - both "
+                f"the planned progress and its supporting evidence are missing."
+            )
+        else:
+            severity = "medium"
+            summary = (
+                f"{desc}: {planned:,.2f} {unit} was planned for the week of {week_start} but no "
+                f"measurement has been submitted/approved against this BOQ line yet, even though "
+                f"{reports} daily site report(s) exist for that week - a measurement recording lag "
+                f"worth following up."
+            )
+        return {"severity": severity, "summary": summary}
+
+    if week_fully_elapsed and 0 < actual < planned * _UNDER_PACE_RATIO:
+        pct = (actual / planned * 100) if planned else 0
+        severity = "low"
+        summary = (
+            f"{desc}: only {actual:,.2f} of {planned:,.2f} {unit} planned for the week of "
+            f"{week_start} was measured and approved ({pct:.0f}% of plan) - behind the weekly pace."
+        )
+        return {"severity": severity, "summary": summary}
+
+    return None
+
+
+async def run_weekly_boq_pace_variance_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Daily cron (CCB automation Phase 5): cross-checks planned weekly BOQ
+    quantities (projects.weekly_budget_items) against approved measured
+    progress for the same week (finance.boq_measurement_entries) and against
+    daily site report presence (projects.daily_site_reports), flagging
+    material over-pace, under-pace and missing-evidence patterns.
+    """
+    candidates = await _find_weekly_pace_candidates(db, org_id)
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in candidates:
+        checked += 1
+        project_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        item_id = str(row["weekly_budget_item_id"])
+        natural_key = _weekly_pace_natural_key(project_id, item_id)
+
+        finding = _weekly_pace_finding(row)
+        if finding is None:
+            await _resolve_finding(db, org_id=project_org_id, natural_key=natural_key)
+            continue
+
+        findings_open += 1
+        project_title = row["project_title"] or "Project"
+
+        newly_open = await _upsert_finding(
+            db,
+            org_id=project_org_id,
+            project_id=project_id,
+            check_type="weekly_boq_pace_variance",
+            natural_key=natural_key,
+            severity=finding["severity"],
+            summary=finding["summary"],
+            evidence={
+                "weekly_budget_item_id": item_id,
+                "week_start": str(row["week_start"]),
+                "boq_description": row["boq_description"],
+                "unit": row["unit"],
+                "planned_qty": float(row["planned_qty"] or 0),
+                "actual_qty": float(row["actual_qty"] or 0),
+                "daily_report_count": int(row["daily_report_count"] or 0),
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=project_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: weekly BOQ pace variance on {project_title}",
+                message=finding["summary"],
+                notification_type="ccb_weekly_boq_pace_variance",
+                priority="urgent" if finding["severity"] == "critical" else "high",
+                action_url="/dashboard/finance",
+                metadata={
+                    "project_id": project_id,
+                    "weekly_budget_item_id": item_id,
+                    "check_type": "weekly_boq_pace_variance",
+                },
+            )
+
+    logger.info(
+        f"CCB weekly BOQ pace-variance check: {checked} weekly line(s) evaluated, "
+        f"{findings_open} flagged, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+# ---------------------------------------------------------------------------
+# Cross-module anomaly checks (Phase 10A). Each mirrors the exact
+# candidate-finder -> per-row _upsert_finding/_resolve_finding ->
+# emit_role_notification shape used by every check above. Every finding here
+# still has a real, non-null project_id (the table's own constraint) - a
+# company-wide event with no project association is simply out of scope for
+# these checks rather than being force-fitted to one.
+# ---------------------------------------------------------------------------
+
+_GL_PROPOSAL_STALE_DAYS = 5
+_LABOUR_HEADCOUNT_MISMATCH_THRESHOLD = 1
+_FUEL_VARIANCE_RATIO = 0.15
+_STOCK_CONSUMPTION_TOLERANCE_RATIO = 0.10
+
+
+def _gl_proposal_natural_key(project_id: str, journal_id: str) -> str:
+    return f"{project_id}:gl_proposal_stale_review:{journal_id}"
+
+
+async def _find_stale_gl_proposals(db: AsyncSession, org_id: Optional[str]):
+    """System-proposed journals still pending_review after 5+ days, scoped
+    to journals with at least one project-tagged line - a company-wide
+    proposal (e.g. a VAT settlement) has no project to attach the finding
+    to and is deliberately excluded rather than assigned an arbitrary one."""
+    rows = (
+        await db.execute(
+            text("""
+                SELECT DISTINCT ON (je.id)
+                    je.id AS journal_id,
+                    je.organization_id AS org_id,
+                    jl.project_id,
+                    p.name AS project_title,
+                    je.journal_number,
+                    je.description,
+                    je.source_type,
+                    je.total_debit,
+                    je.created_at,
+                    EXTRACT(DAY FROM NOW() - je.created_at)::int AS days_pending
+                FROM finance.journal_entries je
+                JOIN finance.journal_lines jl
+                    ON jl.journal_entry_id = je.id AND jl.organization_id = je.organization_id
+                   AND jl.project_id IS NOT NULL
+                JOIN projects.projects p
+                    ON p.id = jl.project_id AND p.organization_id = je.organization_id
+                   AND p.is_deleted = false
+                WHERE je.origination = 'system_proposed'
+                  AND je.proposal_status = 'pending_review'
+                  AND je.created_at < NOW() - make_interval(days => :threshold_days)
+                  AND (CAST(:org_id AS uuid) IS NULL OR je.organization_id = CAST(:org_id AS uuid))
+                ORDER BY je.id, jl.line_number
+            """),
+            {"org_id": org_id, "threshold_days": _GL_PROPOSAL_STALE_DAYS},
+        )
+    ).mappings().all()
+    return rows
+
+
+async def run_gl_proposal_stale_review_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Daily cron (CCB automation Phase 10A): flags system-proposed GL
+    journals (Phase 2+'s gl_bridge.py) that have sat in pending_review for
+    5+ days without a human approving or rejecting them - a growing backlog
+    here means the books are drifting out of date, not that fraud is
+    occurring.
+    """
+    still_pending = await _find_stale_gl_proposals(db, org_id)
+    still_pending_keys = {
+        _gl_proposal_natural_key(str(row["project_id"]), str(row["journal_id"])) for row in still_pending
+    }
+
+    # Resolve any previously-open finding whose journal is no longer stale
+    # (approved/rejected, or the journal-line project changed) by comparing
+    # against every currently-open finding of this check_type.
+    open_findings = (
+        await db.execute(
+            text("""
+                SELECT organization_id AS org_id, natural_key
+                FROM finance.ccb_monitor_findings
+                WHERE check_type = 'gl_proposal_stale_review'
+                  AND status IN ('open', 'acknowledged')
+                  AND (CAST(:org_id AS uuid) IS NULL OR organization_id = CAST(:org_id AS uuid))
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+    for finding in open_findings:
+        if finding["natural_key"] not in still_pending_keys:
+            await _resolve_finding(db, org_id=str(finding["org_id"]), natural_key=finding["natural_key"])
+
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in still_pending:
+        checked += 1
+        proposal_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        journal_id = str(row["journal_id"])
+        project_title = row["project_title"] or "Project"
+        days_pending = int(row["days_pending"])
+        natural_key = _gl_proposal_natural_key(project_id, journal_id)
+        severity = "critical" if days_pending >= 14 else ("high" if days_pending >= 10 else "medium")
+        summary = (
+            f"GL journal {row['journal_number']} on {project_title} ({row['source_type'] or 'manual'}, "
+            f"${float(row['total_debit'] or 0):,.2f}) has been pending review for {days_pending} day(s) - "
+            "worth reviewing so the ledger reflects the current position."
+        )
+
+        findings_open += 1
+        newly_open = await _upsert_finding(
+            db,
+            org_id=proposal_org_id,
+            project_id=project_id,
+            check_type="gl_proposal_stale_review",
+            natural_key=natural_key,
+            severity=severity,
+            summary=summary,
+            evidence={
+                "journal_id": journal_id,
+                "journal_number": row["journal_number"],
+                "source_type": row["source_type"],
+                "total_debit": float(row["total_debit"] or 0),
+                "days_pending": days_pending,
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=proposal_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: GL proposal overdue for review on {project_title}",
+                message=summary,
+                notification_type="ccb_gl_proposal_stale_review",
+                priority="urgent" if severity == "critical" else "high",
+                action_url="/dashboard/finance",
+                metadata={
+                    "project_id": project_id,
+                    "journal_id": journal_id,
+                    "check_type": "gl_proposal_stale_review",
+                },
+            )
+
+    logger.info(
+        f"CCB GL proposal staleness check: {checked} pending proposal(s) evaluated, "
+        f"{findings_open} flagged, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+def _labour_headcount_natural_key(project_id: str, payroll_run_id: str) -> str:
+    return f"{project_id}:labour_headcount_mismatch:{payroll_run_id}"
+
+
+async def _find_labour_headcount_candidates(db: AsyncSession, org_id: Optional[str]):
+    """Per posted payroll run, per project it touches (via the item's own
+    project_id or an explicit allocation split), compares paid headcount
+    against approved-timesheet headcount for the same project/period.
+    hr.timesheets is used (not attendance_records/attendance_events)
+    because it is the only one of the three attendance shapes with a real
+    approval workflow - see Phase 7A's audit."""
+    rows = (
+        await db.execute(
+            text("""
+                WITH item_projects AS (
+                    SELECT DISTINCT
+                        pr.id AS payroll_run_id,
+                        pr.organization_id AS org_id,
+                        pr.period_start,
+                        pr.period_end,
+                        COALESCE(pia.project_id, pi.project_id) AS project_id,
+                        pi.employee_id
+                    FROM finance.payroll_runs pr
+                    JOIN finance.payroll_items pi
+                        ON pi.payroll_run_id = pr.id AND pi.organization_id = pr.organization_id
+                    LEFT JOIN finance.payroll_item_allocations pia
+                        ON pia.payroll_item_id = pi.id AND pia.organization_id = pr.organization_id
+                    WHERE pr.status = 'posted'
+                      AND COALESCE(pia.project_id, pi.project_id) IS NOT NULL
+                      AND (CAST(:org_id AS uuid) IS NULL OR pr.organization_id = CAST(:org_id AS uuid))
+                )
+                SELECT
+                    ip.payroll_run_id,
+                    ip.org_id,
+                    ip.project_id,
+                    p.name AS project_title,
+                    ip.period_start,
+                    ip.period_end,
+                    COUNT(DISTINCT ip.employee_id) AS paid_headcount,
+                    COUNT(DISTINCT ts.employee_id) AS timesheet_headcount
+                FROM item_projects ip
+                JOIN projects.projects p
+                    ON p.id = ip.project_id AND p.organization_id = ip.org_id AND p.is_deleted = false
+                LEFT JOIN hr.timesheets ts
+                    ON ts.project_id = ip.project_id AND ts.organization_id = ip.org_id
+                   AND ts.status = 'approved'
+                   AND ts.work_date BETWEEN ip.period_start AND ip.period_end
+                GROUP BY ip.payroll_run_id, ip.org_id, ip.project_id, p.name, ip.period_start, ip.period_end
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+    return rows
+
+
+async def run_labour_headcount_mismatch_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Daily cron (CCB automation Phase 10A): compares posted-payroll
+    headcount against approved-timesheet headcount per project/period.
+    Deliberately soft/advisory - HQ staff, casual labour, and legitimately
+    un-timesheeted work are all real reasons this can differ without
+    anything being wrong, so only a >1-employee gap is flagged, and always
+    framed as worth reviewing rather than an accusation.
+    """
+    candidates = await _find_labour_headcount_candidates(db, org_id)
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in candidates:
+        checked += 1
+        run_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        payroll_run_id = str(row["payroll_run_id"])
+        natural_key = _labour_headcount_natural_key(project_id, payroll_run_id)
+        paid = int(row["paid_headcount"] or 0)
+        timesheeted = int(row["timesheet_headcount"] or 0)
+        gap = abs(paid - timesheeted)
+
+        if gap <= _LABOUR_HEADCOUNT_MISMATCH_THRESHOLD:
+            await _resolve_finding(db, org_id=run_org_id, natural_key=natural_key)
+            continue
+
+        findings_open += 1
+        project_title = row["project_title"] or "Project"
+        severity = "high" if gap >= 5 else "medium"
+        summary = (
+            f"{project_title}: {paid} employee(s) paid for the period {row['period_start']} to "
+            f"{row['period_end']} but only {timesheeted} have an approved timesheet on this project "
+            f"for that period ({gap} difference). Worth a quick review - may be HQ/overhead staff or "
+            "un-timesheeted work, not necessarily an error."
+        )
+
+        newly_open = await _upsert_finding(
+            db,
+            org_id=run_org_id,
+            project_id=project_id,
+            check_type="labour_headcount_mismatch",
+            natural_key=natural_key,
+            severity=severity,
+            summary=summary,
+            evidence={
+                "payroll_run_id": payroll_run_id,
+                "period_start": str(row["period_start"]),
+                "period_end": str(row["period_end"]),
+                "paid_headcount": paid,
+                "timesheet_headcount": timesheeted,
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=run_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: labour headcount mismatch on {project_title}",
+                message=summary,
+                notification_type="ccb_labour_headcount_mismatch",
+                priority="high" if severity == "high" else "normal",
+                action_url="/dashboard/finance",
+                metadata={
+                    "project_id": project_id,
+                    "payroll_run_id": payroll_run_id,
+                    "check_type": "labour_headcount_mismatch",
+                },
+            )
+
+    logger.info(
+        f"CCB labour headcount mismatch check: {checked} project-period(s) evaluated, "
+        f"{findings_open} flagged, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+def _fuel_hours_natural_key(project_id: str, fuel_transaction_id: str) -> str:
+    return f"{project_id}:fuel_hours_variance:{fuel_transaction_id}"
+
+
+async def _find_fuel_variance_candidates(db: AsyncSession, org_id: Optional[str]):
+    """Sweeps fleet.fuel_transactions rows that already carry a computed
+    expected_consumption_litres/variance_litres (set at record-fuel time,
+    see routers/fleet.py) - this check reuses those figures, it does not
+    recompute them."""
+    rows = (
+        await db.execute(
+            text("""
+                SELECT
+                    ft.id AS fuel_transaction_id,
+                    ft.organization_id AS org_id,
+                    ft.project_id,
+                    p.name AS project_title,
+                    ft.transaction_at,
+                    ft.quantity_litres,
+                    ft.expected_consumption_litres,
+                    ft.variance_litres,
+                    COALESCE(f.asset_code, f.vehicle_registration, 'Vehicle/plant') AS fleet_name
+                FROM fleet.fuel_transactions ft
+                JOIN projects.projects p
+                    ON p.id = ft.project_id AND p.organization_id = ft.organization_id
+                   AND p.is_deleted = false
+                LEFT JOIN fleet.fleet f
+                    ON f.id = ft.fleet_id AND f.organization_id = ft.organization_id
+                WHERE ft.is_deleted = false
+                  AND ft.project_id IS NOT NULL
+                  AND ft.expected_consumption_litres IS NOT NULL
+                  AND ft.expected_consumption_litres > 0
+                  AND ft.variance_litres IS NOT NULL
+                  AND ABS(ft.variance_litres) > (ft.expected_consumption_litres * :variance_ratio)
+                  AND ft.transaction_at > NOW() - INTERVAL '60 days'
+                  AND (CAST(:org_id AS uuid) IS NULL OR ft.organization_id = CAST(:org_id AS uuid))
+            """),
+            {"org_id": org_id, "variance_ratio": _FUEL_VARIANCE_RATIO},
+        )
+    ).mappings().all()
+    return rows
+
+
+async def run_fuel_hours_variance_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Daily cron (CCB automation Phase 10A): flags fuel transactions whose
+    already-computed variance against expected consumption exceeds 15% -
+    one finding per transaction (a point-in-time event, matching Phase 3A's
+    per-invoice finding shape), not an aggregated rollup.
+    """
+    candidates = await _find_fuel_variance_candidates(db, org_id)
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in candidates:
+        checked += 1
+        txn_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        txn_id = str(row["fuel_transaction_id"])
+        natural_key = _fuel_hours_natural_key(project_id, txn_id)
+        expected = float(row["expected_consumption_litres"] or 0)
+        variance = float(row["variance_litres"] or 0)
+        ratio = (variance / expected) if expected else 0
+        project_title = row["project_title"] or "Project"
+        fleet_name = row["fleet_name"] or "Vehicle/plant"
+        direction = "over" if variance > 0 else "under"
+        severity = "high" if abs(ratio) >= 0.30 else "medium"
+        summary = (
+            f"{fleet_name} on {project_title}: {float(row['quantity_litres']):,.1f}L recorded on "
+            f"{row['transaction_at']} against an expected {expected:,.1f}L ({direction}-consumption by "
+            f"{abs(ratio) * 100:.0f}%) - worth reviewing against usage records."
+        )
+
+        findings_open += 1
+        newly_open = await _upsert_finding(
+            db,
+            org_id=txn_org_id,
+            project_id=project_id,
+            check_type="fuel_hours_variance",
+            natural_key=natural_key,
+            severity=severity,
+            summary=summary,
+            evidence={
+                "fuel_transaction_id": txn_id,
+                "quantity_litres": float(row["quantity_litres"] or 0),
+                "expected_consumption_litres": expected,
+                "variance_litres": variance,
+                "variance_ratio": ratio,
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=txn_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: fuel variance on {project_title}",
+                message=summary,
+                notification_type="ccb_fuel_hours_variance",
+                priority="high" if severity == "high" else "normal",
+                action_url="/dashboard/finance",
+                metadata={
+                    "project_id": project_id,
+                    "fuel_transaction_id": txn_id,
+                    "check_type": "fuel_hours_variance",
+                },
+            )
+
+    logger.info(
+        f"CCB fuel-vs-hours variance check: {checked} transaction(s) evaluated, "
+        f"{findings_open} flagged, {notified} newly notified."
+    )
+    return {"checked": checked, "findings_open": findings_open, "notified": notified}
+
+
+def _stock_consumption_natural_key(project_id: str, item_id: str, week_start: str) -> str:
+    return f"{project_id}:stock_consumption_variance:{item_id}:{week_start}"
+
+
+async def _find_stock_consumption_candidates(db: AsyncSession, org_id: Optional[str]):
+    """Per project/item/week, compares stock issued (procurement.stock_ledger,
+    movement_type='issue') against material usage reported on site
+    (projects.daily_report_materials, joined via daily_site_reports for
+    project_id/report_date)."""
+    rows = (
+        await db.execute(
+            text("""
+                WITH issued AS (
+                    SELECT
+                        sl.organization_id AS org_id,
+                        sl.project_id,
+                        sl.item_id,
+                        date_trunc('week', sl.movement_at)::date AS week_start,
+                        SUM(sl.quantity) AS issued_qty
+                    FROM procurement.stock_ledger sl
+                    WHERE sl.movement_type = 'issue'
+                      AND sl.project_id IS NOT NULL
+                      AND sl.movement_at > NOW() - INTERVAL '60 days'
+                      AND (CAST(:org_id AS uuid) IS NULL OR sl.organization_id = CAST(:org_id AS uuid))
+                    GROUP BY sl.organization_id, sl.project_id, sl.item_id, date_trunc('week', sl.movement_at)
+                ),
+                used AS (
+                    SELECT
+                        dsr.organization_id AS org_id,
+                        dsr.project_id,
+                        drm.item_id,
+                        date_trunc('week', dsr.report_date)::date AS week_start,
+                        SUM(drm.quantity_used + drm.wastage_quantity) AS used_qty
+                    FROM projects.daily_report_materials drm
+                    JOIN projects.daily_site_reports dsr
+                        ON dsr.id = drm.report_id AND dsr.organization_id = drm.organization_id
+                    WHERE dsr.report_date > CURRENT_DATE - INTERVAL '60 days'
+                      AND (CAST(:org_id AS uuid) IS NULL OR dsr.organization_id = CAST(:org_id AS uuid))
+                    GROUP BY dsr.organization_id, dsr.project_id, drm.item_id, date_trunc('week', dsr.report_date)
+                )
+                SELECT
+                    COALESCE(i.org_id, u.org_id) AS org_id,
+                    COALESCE(i.project_id, u.project_id) AS project_id,
+                    COALESCE(i.item_id, u.item_id) AS item_id,
+                    COALESCE(i.week_start, u.week_start) AS week_start,
+                    COALESCE(i.issued_qty, 0) AS issued_qty,
+                    COALESCE(u.used_qty, 0) AS used_qty,
+                    p.name AS project_title,
+                    ii.item_name AS item_name,
+                    ii.unit_of_measure AS item_unit
+                FROM issued i
+                FULL OUTER JOIN used u
+                    ON u.org_id = i.org_id AND u.project_id = i.project_id
+                   AND u.item_id = i.item_id AND u.week_start = i.week_start
+                JOIN projects.projects p
+                    ON p.id = COALESCE(i.project_id, u.project_id)
+                   AND p.organization_id = COALESCE(i.org_id, u.org_id) AND p.is_deleted = false
+                JOIN procurement.inventory_items ii
+                    ON ii.id = COALESCE(i.item_id, u.item_id)
+                   AND ii.organization_id = COALESCE(i.org_id, u.org_id)
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+    return rows
+
+
+async def run_stock_consumption_variance_check(db: AsyncSession, org_id: Optional[str] = None) -> Dict[str, int]:
+    """Weekly-cadence cron (CCB automation Phase 10A): compares stock
+    issued to a project against reported material usage+wastage for the
+    same project/item/week, flagging a real gap in either direction -
+    issued exceeding used+wastage by more than 10% (the direction most
+    worth reviewing for waste or misallocation) or used+wastage exceeding
+    issued (a likely data-entry/tracking gap) - both phrased as worth
+    reviewing, not as an accusation.
+    """
+    candidates = await _find_stock_consumption_candidates(db, org_id)
+    checked = 0
+    findings_open = 0
+    notified = 0
+
+    for row in candidates:
+        checked += 1
+        issued = float(row["issued_qty"] or 0)
+        used = float(row["used_qty"] or 0)
+        row_org_id = str(row["org_id"])
+        project_id = str(row["project_id"])
+        item_id = str(row["item_id"])
+        week_start = str(row["week_start"])
+        natural_key = _stock_consumption_natural_key(project_id, item_id, week_start)
+
+        if issued <= 0 and used <= 0:
+            await _resolve_finding(db, org_id=row_org_id, natural_key=natural_key)
+            continue
+
+        tolerance = max(issued, used) * _STOCK_CONSUMPTION_TOLERANCE_RATIO
+        gap = issued - used
+
+        if abs(gap) <= tolerance:
+            await _resolve_finding(db, org_id=row_org_id, natural_key=natural_key)
+            continue
+
+        project_title = row["project_title"] or "Project"
+        item_name = row["item_name"] or "Material"
+        unit = row["item_unit"] or "unit(s)"
+        ratio = (abs(gap) / issued) if issued else 1.0
+        severity = "high" if ratio >= 0.30 else "medium"
+
+        if gap > 0:
+            summary = (
+                f"{item_name} on {project_title}: {issued:,.2f} {unit} issued for the week of "
+                f"{week_start} but only {used:,.2f} {unit} of usage/wastage was reported - a gap of "
+                f"{gap:,.2f} {unit} worth reviewing."
+            )
+        else:
+            summary = (
+                f"{item_name} on {project_title}: {used:,.2f} {unit} of usage/wastage reported for the "
+                f"week of {week_start} against only {issued:,.2f} {unit} issued - likely a stock-issue "
+                "recording gap worth following up."
+            )
+
+        findings_open += 1
+        newly_open = await _upsert_finding(
+            db,
+            org_id=row_org_id,
+            project_id=project_id,
+            check_type="stock_consumption_variance",
+            natural_key=natural_key,
+            severity=severity,
+            summary=summary,
+            evidence={
+                "item_id": item_id,
+                "week_start": week_start,
+                "issued_qty": issued,
+                "used_qty": used,
+                "gap": gap,
+            },
+        )
+
+        if newly_open:
+            notified += 1
+            await emit_role_notification(
+                db,
+                org_id=row_org_id,
+                role_names=COMMERCIAL_ALERT_ROLES,
+                title=f"CCB: stock consumption variance on {project_title}",
+                message=summary,
+                notification_type="ccb_stock_consumption_variance",
+                priority="high" if severity == "high" else "normal",
+                action_url="/dashboard/finance",
+                metadata={
+                    "project_id": project_id,
+                    "item_id": item_id,
+                    "week_start": week_start,
+                    "check_type": "stock_consumption_variance",
+                },
+            )
+
+    logger.info(
+        f"CCB stock-vs-consumption variance check: {checked} project-item-week(s) evaluated, "
+        f"{findings_open} flagged, {notified} newly notified."
     )
     return {"checked": checked, "findings_open": findings_open, "notified": notified}
