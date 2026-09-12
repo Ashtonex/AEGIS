@@ -456,6 +456,128 @@ async def vat_net_position(
 
 
 # ---------------------------------------------------------------------------
+# Statutory profile (Phase 8B) - org-level config, single row, no lifecycle.
+# finance.statutory_profile (migration 080) had no read/write endpoint at
+# all until this phase - Phase 8A's net-position view could only ever read
+# vat_filing_frequency, never set it.
+# ---------------------------------------------------------------------------
+
+class StatutoryProfileUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    vat_registration_number: Optional[str] = Field(default=None, max_length=60)
+    zimra_bp_number: Optional[str] = Field(default=None, max_length=60)
+    nssa_employer_number: Optional[str] = Field(default=None, max_length=60)
+    vat_filing_frequency: Optional[str] = Field(default=None, max_length=20)
+    vat_filing_day: Optional[int] = None
+    paye_filing_day: Optional[int] = None
+    nssa_filing_day: Optional[int] = None
+    vat_basis: str = Field(default="invoice", pattern=r"^(invoice|payments)$")
+    fiscal_device_serial: Optional[str] = Field(default=None, max_length=60)
+    fiscal_device_model: Optional[str] = Field(default=None, max_length=100)
+    fiscal_device_registered_at: Optional[date] = None
+
+
+@router.get("/profile")
+async def get_statutory_profile(
+    user: dict = Depends(require_permission("finance.statutory.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        text("SELECT * FROM finance.statutory_profile WHERE organization_id = :org_id"),
+        {"org_id": user["org_id"]},
+    )
+    row = result.mappings().first()
+    return ok(dict(row) if row else {"organization_id": user["org_id"]}, "Statutory profile retrieved.")
+
+
+@router.put("/profile")
+async def update_statutory_profile(
+    payload: StatutoryProfileUpdate,
+    user: dict = Depends(require_permission("finance.statutory.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    await db.execute(
+        text("""
+            INSERT INTO finance.statutory_profile (
+                organization_id, vat_registration_number, zimra_bp_number, nssa_employer_number,
+                vat_filing_frequency, vat_filing_day, paye_filing_day, nssa_filing_day, vat_basis,
+                fiscal_device_serial, fiscal_device_model, fiscal_device_registered_at, updated_at
+            ) VALUES (
+                :org_id, :vat_registration_number, :zimra_bp_number, :nssa_employer_number,
+                :vat_filing_frequency, :vat_filing_day, :paye_filing_day, :nssa_filing_day, :vat_basis,
+                :fiscal_device_serial, :fiscal_device_model, :fiscal_device_registered_at, NOW()
+            )
+            ON CONFLICT (organization_id) DO UPDATE SET
+                vat_registration_number = EXCLUDED.vat_registration_number,
+                zimra_bp_number = EXCLUDED.zimra_bp_number,
+                nssa_employer_number = EXCLUDED.nssa_employer_number,
+                vat_filing_frequency = EXCLUDED.vat_filing_frequency,
+                vat_filing_day = EXCLUDED.vat_filing_day,
+                paye_filing_day = EXCLUDED.paye_filing_day,
+                nssa_filing_day = EXCLUDED.nssa_filing_day,
+                vat_basis = EXCLUDED.vat_basis,
+                fiscal_device_serial = EXCLUDED.fiscal_device_serial,
+                fiscal_device_model = EXCLUDED.fiscal_device_model,
+                fiscal_device_registered_at = EXCLUDED.fiscal_device_registered_at,
+                updated_at = NOW()
+        """),
+        {"org_id": user["org_id"], **payload.model_dump()},
+    )
+    await db.commit()
+    return ok({"organization_id": user["org_id"]}, "Statutory profile updated.")
+
+
+@router.get("/fiscal-compliance/summary")
+async def fiscal_compliance_summary(
+    user: dict = Depends(require_permission("finance.statutory.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Live-computed compliance view, not a stored finding - a claim
+    missing its fiscal invoice is a standing gap, not a discrete event, and
+    staged/time-based alerting on it is the tax calendar's job (Phase 8C),
+    not this endpoint's."""
+    result = await db.execute(
+        text("""
+            SELECT pc.id, pc.claim_number, pc.certified_amount, pc.certified_at, p.name AS project_name,
+                   EXTRACT(DAY FROM NOW() - pc.certified_at)::int AS days_since_certified
+            FROM finance.progress_claims pc
+            JOIN projects.projects p ON p.id = pc.project_id
+            WHERE pc.organization_id = :org_id AND pc.is_deleted = false
+              AND pc.status = 'certified' AND pc.fiscal_invoice_number IS NULL
+            ORDER BY pc.certified_at
+        """),
+        {"org_id": user["org_id"]},
+    )
+    missing = [dict(r._mapping) for r in result]
+
+    totals = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) FILTER (WHERE status IN ('certified', 'invoiced', 'paid')) AS total_certified_or_later,
+                COUNT(*) FILTER (WHERE status IN ('invoiced', 'paid') OR fiscal_invoice_number IS NOT NULL) AS total_with_fiscal_invoice
+            FROM finance.progress_claims
+            WHERE organization_id = :org_id AND is_deleted = false
+        """),
+        {"org_id": user["org_id"]},
+    )
+    total_row = totals.mappings().first() or {"total_certified_or_later": 0, "total_with_fiscal_invoice": 0}
+    total = int(total_row["total_certified_or_later"] or 0)
+    compliant = int(total_row["total_with_fiscal_invoice"] or 0)
+    compliance_pct = round((compliant / total) * 100, 1) if total > 0 else None
+
+    return ok(
+        {
+            "missing_fiscal_invoice": missing,
+            "missing_count": len(missing),
+            "total_certified_or_later": total,
+            "total_with_fiscal_invoice": compliant,
+            "compliance_pct": compliance_pct,
+        },
+        "Fiscal compliance summary retrieved.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Recompute - the idempotent reconciler
 # ---------------------------------------------------------------------------
 

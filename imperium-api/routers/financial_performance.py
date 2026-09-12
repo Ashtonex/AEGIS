@@ -1556,6 +1556,50 @@ async def certify_progress_claim(
     return ok(response, "Progress claim certified.")
 
 
+class FiscalInvoiceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    fiscal_invoice_number: str = Field(min_length=1, max_length=80)
+
+
+@router.post("/progress-claims/{claim_id}/record-fiscal-invoice")
+async def record_progress_claim_fiscal_invoice(
+    claim_id: UUID,
+    payload: FiscalInvoiceRecord,
+    user: dict = Depends(require_permission("finance.claim.certify")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Records the fiscal invoice number Finance's own external fiscal device
+    already issued for this certified claim - AEGIS never generates this
+    number or talks to a fiscal device itself, it only tracks compliance.
+    This is the claim's certified -> invoiced transition (a status the
+    schema has always allowed but nothing ever used). Purely a compliance-
+    status change: certified_amount and the GL journal posted at
+    certification are completely untouched.
+    """
+    claim = await db.execute(
+        text("""
+            SELECT id FROM finance.progress_claims
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false AND status = 'certified'
+        """),
+        {"id": claim_id, "org_id": user["org_id"]},
+    )
+    if not claim.first():
+        raise HTTPException(status_code=404, detail="Certified progress claim not found.")
+
+    await db.execute(
+        text("""
+            UPDATE finance.progress_claims
+            SET fiscal_invoice_number = :fiscal_invoice_number, fiscal_invoice_issued_at = NOW(),
+                fiscal_invoice_issued_by = :user_id, status = 'invoiced', updated_at = NOW()
+            WHERE id = :id
+        """),
+        {"fiscal_invoice_number": payload.fiscal_invoice_number, "user_id": user["sub"], "id": claim_id},
+    )
+    await db.commit()
+    return ok({"id": str(claim_id), "status": "invoiced"}, "Fiscal invoice recorded.")
+
+
 @router.get("/cash-accounts")
 async def get_cash_accounts(
     user: dict = Depends(require_permission("finance.cash.read")),

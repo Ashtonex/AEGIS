@@ -48,16 +48,21 @@ def _current_period(vat_filing_frequency: Optional[str], today: date) -> tuple[d
 async def get_vat_net_position(
     db: AsyncSession, *, org_id: str, period_start: Optional[date] = None, period_end: Optional[date] = None
 ) -> dict:
-    is_fallback_period = period_start is None or period_end is None
+    period_not_specified = period_start is None or period_end is None
     filing_frequency = None
+    is_fallback_period = False
 
-    if is_fallback_period:
+    if period_not_specified:
         profile_row = await db.execute(
             text("SELECT vat_filing_frequency FROM finance.statutory_profile WHERE organization_id = :org_id"),
             {"org_id": org_id},
         )
         profile = profile_row.first()
         filing_frequency = profile.vat_filing_frequency if profile else None
+        # "Fallback" specifically means no filing profile exists to derive a
+        # real period from - a configured profile (even the default monthly
+        # cadence) is not a fallback, it's the correct, honestly-sourced period.
+        is_fallback_period = filing_frequency is None
         period_start, period_end = _current_period(filing_frequency, date.today())
 
     totals = await db.execute(

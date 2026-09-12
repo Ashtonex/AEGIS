@@ -1,5 +1,6 @@
 "use client";
 
+import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCw, ShieldAlert } from "lucide-react";
 import {
@@ -12,6 +13,9 @@ import {
   createFinanceRateTable,
   deactivateFinanceRateTable,
   getVatNetPosition,
+  getFiscalComplianceSummary,
+  getStatutoryProfile,
+  updateStatutoryProfile,
 } from "@/lib/api";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 
@@ -52,6 +56,10 @@ export function StatutoryPanel() {
   const [liabilities, setLiabilities] = useState<RecordData[]>([]);
   const [rateTables, setRateTables] = useState<RecordData[]>([]);
   const [vatPosition, setVatPosition] = useState<RecordData | null>(null);
+  const [fiscalCompliance, setFiscalCompliance] = useState<RecordData | null>(null);
+  const [statutoryProfile, setStatutoryProfile] = useState<RecordData | null>(null);
+  const [showFiscalDeviceForm, setShowFiscalDeviceForm] = useState(false);
+  const [fiscalDeviceForm, setFiscalDeviceForm] = useState({ fiscal_device_serial: "", fiscal_device_model: "", fiscal_device_registered_at: "" });
   const [showRecompute, setShowRecompute] = useState(false);
   const [recomputeForm, setRecomputeForm] = useState({ period_start: monthStart(), period_end: today() });
   const [showNewRateTable, setShowNewRateTable] = useState(false);
@@ -62,16 +70,28 @@ export function StatutoryPanel() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [summaryRes, liabilitiesRes, rateTablesRes, vatPositionRes] = await Promise.allSettled([
+    const [summaryRes, liabilitiesRes, rateTablesRes, vatPositionRes, fiscalComplianceRes, profileRes] = await Promise.allSettled([
       getFinanceStatutorySummary(),
       getFinanceStatutoryLiabilities(),
       getFinanceRateTables(),
       getVatNetPosition(),
+      getFiscalComplianceSummary(),
+      getStatutoryProfile(),
     ]);
     if (summaryRes.status === "fulfilled") setSummary(summaryRes.value.data || []);
     if (liabilitiesRes.status === "fulfilled") setLiabilities(liabilitiesRes.value.data || []);
     if (rateTablesRes.status === "fulfilled") setRateTables(rateTablesRes.value.data || []);
     if (vatPositionRes.status === "fulfilled") setVatPosition(vatPositionRes.value.data || null);
+    if (fiscalComplianceRes.status === "fulfilled") setFiscalCompliance(fiscalComplianceRes.value.data || null);
+    if (profileRes.status === "fulfilled") {
+      const profile = profileRes.value.data || {};
+      setStatutoryProfile(profile);
+      setFiscalDeviceForm({
+        fiscal_device_serial: profile.fiscal_device_serial || "",
+        fiscal_device_model: profile.fiscal_device_model || "",
+        fiscal_device_registered_at: profile.fiscal_device_registered_at || "",
+      });
+    }
     setLoading(false);
   }, []);
 
@@ -162,6 +182,27 @@ export function StatutoryPanel() {
     }
   };
 
+  const handleSaveFiscalDevice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await updateStatutoryProfile({
+        ...statutoryProfile,
+        organization_id: undefined,
+        updated_at: undefined,
+        ...fiscalDeviceForm,
+        fiscal_device_registered_at: fiscalDeviceForm.fiscal_device_registered_at || null,
+      });
+      setNotice("Fiscal device registration saved.");
+      setShowFiscalDeviceForm(false);
+      await loadData();
+    } catch {
+      setNotice("Failed to save fiscal device registration.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (loading) {
     return <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-8 flex items-center justify-center text-slate"><Loader2 className="h-5 w-5 animate-spin" /></div>;
   }
@@ -209,6 +250,47 @@ export function StatutoryPanel() {
               <p className={`text-lg font-semibold mt-1 ${Number(vatPosition.net_vat_payable) > 0 ? "text-amber-400" : "text-emerald-400"}`}>{money(vatPosition.net_vat_payable)}</p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Fiscal Invoice Compliance */}
+      {fiscalCompliance && (
+        <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Fiscal Invoice Compliance</p>
+            <button onClick={() => setShowFiscalDeviceForm(true)} className="text-xs text-signal hover:underline">
+              {statutoryProfile?.fiscal_device_serial ? "Edit Fiscal Device" : "Register Fiscal Device"}
+            </button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
+            <div>
+              <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Compliant Claims</p>
+              <p className={`text-lg font-semibold mt-1 ${fiscalCompliance.compliance_pct === null || Number(fiscalCompliance.compliance_pct) >= 100 ? "text-emerald-400" : "text-amber-400"}`}>
+                {fiscalCompliance.compliance_pct === null ? "—" : `${fiscalCompliance.compliance_pct}%`}
+              </p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Missing Fiscal Invoice</p>
+              <p className={`text-lg font-semibold mt-1 ${fiscalCompliance.missing_count > 0 ? "text-amber-400" : "text-paper"}`}>{fiscalCompliance.missing_count}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Fiscal Device</p>
+              <p className="text-sm text-paper mt-1.5">{statutoryProfile?.fiscal_device_serial || "Not registered"}</p>
+            </div>
+          </div>
+          {fiscalCompliance.missing_fiscal_invoice?.length > 0 && (
+            <div className="border-t border-ink-mid pt-3 space-y-1.5">
+              {fiscalCompliance.missing_fiscal_invoice.map((c: RecordData) => (
+                <div key={c.id} className="flex items-center justify-between text-xs">
+                  <span className="text-paper">{c.claim_number} — {c.project_name}</span>
+                  <span className="text-slate-light">{money(c.certified_amount)} · certified {c.days_since_certified}d ago</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="text-[10px] text-slate mt-3">
+            Records the fiscal invoice number your own fiscal device issued for each certified claim. AEGIS does not generate fiscal invoice numbers or connect to a fiscal device.
+          </p>
         </div>
       )}
 
@@ -387,6 +469,24 @@ export function StatutoryPanel() {
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setShowNewRateTable(false)} className="px-3 py-2 text-slate-light hover:text-paper text-sm">Cancel</button>
                 <button type="submit" disabled={busy} className={buttonClass}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Create Rate Table</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showFiscalDeviceForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-6 w-full max-w-sm space-y-4">
+            <h3 className="font-mono text-sm uppercase text-signal">Register Fiscal Device</h3>
+            <p className="text-xs text-slate">Record your fiscal device details for reference. AEGIS does not connect to or configure fiscal devices.</p>
+            <form onSubmit={handleSaveFiscalDevice} className="space-y-3">
+              <input className={inputClass} placeholder="Serial number" value={fiscalDeviceForm.fiscal_device_serial} onChange={(e) => setFiscalDeviceForm({ ...fiscalDeviceForm, fiscal_device_serial: e.target.value })} />
+              <input className={inputClass} placeholder="Model" value={fiscalDeviceForm.fiscal_device_model} onChange={(e) => setFiscalDeviceForm({ ...fiscalDeviceForm, fiscal_device_model: e.target.value })} />
+              <input type="date" className={inputClass} value={fiscalDeviceForm.fiscal_device_registered_at} onChange={(e) => setFiscalDeviceForm({ ...fiscalDeviceForm, fiscal_device_registered_at: e.target.value })} />
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setShowFiscalDeviceForm(false)} className="px-3 py-2 text-slate-light hover:text-paper text-sm">Cancel</button>
+                <button type="submit" disabled={busy} className={buttonClass}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Save</button>
               </div>
             </form>
           </div>

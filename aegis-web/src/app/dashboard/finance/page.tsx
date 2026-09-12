@@ -36,6 +36,7 @@ import {
   getFinanceProgressClaims,
   createFinanceProgressClaim,
   certifyFinanceProgressClaim,
+  recordProgressClaimFiscalInvoice,
   getFinanceBudgets,
   getFinanceDepartmentPnl,
   getInternalProjects
@@ -139,7 +140,7 @@ function normalizeActionError(reason: unknown, fallback: string) {
 
 function statusClass(status: string) {
   const normalized = String(status || "").toLowerCase();
-  if (["approved", "certified", "paid", "incorporated", "matched"].includes(normalized)) {
+  if (["approved", "certified", "invoiced", "paid", "incorporated", "matched"].includes(normalized)) {
     return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
   }
   if (["submitted", "pending", "matching", "partial_match"].includes(normalized)) {
@@ -306,6 +307,18 @@ function FinanceWorkspace() {
       await loadData();
     } catch (err) {
       setNotice(normalizeActionError(err, "Failed to certify claim."));
+    }
+  };
+
+  const handleRecordFiscalInvoice = async (claimId: string) => {
+    const fiscalInvoiceNumber = window.prompt("Fiscal invoice number issued by your fiscal device for this claim:");
+    if (!fiscalInvoiceNumber) return;
+    try {
+      await recordProgressClaimFiscalInvoice(claimId, fiscalInvoiceNumber);
+      setNotice("Fiscal invoice recorded.");
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to record fiscal invoice."));
     }
   };
 
@@ -695,13 +708,14 @@ function FinanceWorkspace() {
                       <th className="p-4 text-right">Net Claim</th>
                       <th className="p-4 text-right">Certified</th>
                       <th className="p-4">Status</th>
+                      <th className="p-4">Fiscal Invoice #</th>
                       <th className="p-4"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-mid">
                     {claims.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="p-4 text-center text-slate">No progress claims recorded.</td>
+                        <td colSpan={9} className="p-4 text-center text-slate">No progress claims recorded.</td>
                       </tr>
                     ) : (
                       claims.map((c) => (
@@ -717,10 +731,16 @@ function FinanceWorkspace() {
                               {c.status}
                             </span>
                           </td>
-                          <td className="p-4 text-right">
+                          <td className="p-4 text-slate-light font-mono text-xs">{c.fiscal_invoice_number || "—"}</td>
+                          <td className="p-4 text-right whitespace-nowrap">
                             {c.status === "submitted" && (
                               <button onClick={() => void handleCertifyClaim(c.id)} className="text-xs text-signal hover:underline">
                                 Certify
+                              </button>
+                            )}
+                            {c.status === "certified" && (
+                              <button onClick={() => void handleRecordFiscalInvoice(c.id)} className="text-xs text-signal hover:underline">
+                                Record Fiscal Invoice
                               </button>
                             )}
                           </td>

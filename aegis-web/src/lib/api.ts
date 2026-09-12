@@ -4046,6 +4046,20 @@ export async function getVatNetPosition(params?: { period_start?: string; period
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/vat/net-position${query}`, { cache: 'no-store', allowFallback: false });
 }
 
+export async function getStatutoryProfile(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/profile', { cache: 'no-store', allowFallback: false });
+}
+
+export async function updateStatutoryProfile(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/profile', {
+    method: 'PUT', body: JSON.stringify(payload), allowFallback: false,
+  });
+}
+
+export async function getFiscalComplianceSummary(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/fiscal-compliance/summary', { cache: 'no-store', allowFallback: false });
+}
+
 export async function recomputeFinanceStatutory(payload: { period_start: string; period_end: string; currency?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/recompute', {
     method: 'POST', body: JSON.stringify(payload), allowFallback: false,
@@ -4375,6 +4389,14 @@ export async function certifyFinanceProgressClaim(claimId: string, certifiedAmou
   const query = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/progress-claims/${claimId}/certify${query}`, {
     method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function recordProgressClaimFiscalInvoice(claimId: string, fiscalInvoiceNumber: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/progress-claims/${claimId}/record-fiscal-invoice`, {
+    method: 'POST',
+    body: JSON.stringify({ fiscal_invoice_number: fiscalInvoiceNumber }),
     allowFallback: false,
   });
 }
