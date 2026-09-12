@@ -316,6 +316,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
     restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Compliance Overview", href: "/dashboard/compliance", icon: LayoutDashboard },
+      { name: "Corporate Credentials", href: "/dashboard/compliance/corporate-credentials", icon: BookMarked },
       { name: "Obligation Register", href: "/dashboard/compliance/obligations", icon: ShieldCheck },
       { name: "Employee Credentials", href: "/dashboard/compliance/employees", icon: Users },
       { name: "Equipment Licenses", href: "/dashboard/compliance/equipment", icon: Wrench },

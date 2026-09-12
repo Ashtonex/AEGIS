@@ -973,6 +973,83 @@ export async function convertTenderRequirementToTask(
   });
 }
 
+// --- Compliance Matrix (requirements library, vault matching, readiness) --- //
+
+export interface TenderComplianceSummary {
+  applicable_count: number;
+  satisfied_count: number;
+  percent: number | null;
+  fatal_open: number;
+  critical_open: number;
+  missing: number;
+  expired: number;
+  expiring: number;
+  unverified: number;
+  status: 'GREEN' | 'AMBER' | 'RED' | 'GREY';
+  bid_gate_signal: 'BID' | 'REVIEW' | 'HOLD';
+  is_compliance_only: true;
+}
+
+export async function getTenderComplianceSummary(tenderId: string): Promise<ApiResponse<TenderComplianceSummary>> {
+  return await fetchApi<ApiResponse<TenderComplianceSummary>>(`/api/v1/tender-bids/${tenderId}/compliance-summary`, { cache: 'no-store' });
+}
+
+export async function updateTenderRequirement(tenderId: string, requirementId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/requirements/${requirementId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function seedTenderRequirementsFromLibrary(tenderId: string, categories?: string[]): Promise<ApiResponse<{ created: number; skipped: number }>> {
+  return await fetchApi<ApiResponse<{ created: number; skipped: number }>>(`/api/v1/tender-bids/${tenderId}/requirements/seed-from-library`, {
+    method: 'POST',
+    body: JSON.stringify(categories?.length ? { categories } : {})
+  });
+}
+
+export async function matchTenderRequirementCredential(tenderId: string, requirementId: string): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/tender-bids/${tenderId}/requirements/${requirementId}/match-credential`, {
+    method: 'POST'
+  });
+}
+
+export async function getTenderRequirementsLibrary(category?: string): Promise<ApiResponse<any[]>> {
+  const qs = category ? `?category=${encodeURIComponent(category)}` : '';
+  return await fetchApi<ApiResponse<any[]>>(`/api/v1/tenders/requirements-library${qs}`, { cache: 'no-store' });
+}
+
+// --- Corporate Credentials Vault --- //
+
+export async function getCorporateCredentials(params?: { category?: string; status?: string; expiring_within_days?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.category) search.set('category', params.category);
+  if (params?.status) search.set('status', params.status);
+  if (typeof params?.expiring_within_days === 'number') search.set('expiring_within_days', String(params.expiring_within_days));
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return await fetchApi<ApiResponse<any[]>>(`/api/v1/compliance/corporate-credentials${qs}`, { cache: 'no-store' });
+}
+
+export async function createCorporateCredential(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>('/api/v1/compliance/corporate-credentials', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function updateCorporateCredential(id: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/compliance/corporate-credentials/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function deleteCorporateCredential(id: string): Promise<ApiResponse<any>> {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/compliance/corporate-credentials/${id}`, {
+    method: 'DELETE'
+  });
+}
+
 export async function getCrmLeads(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.department_id) search.set('department_id', params.department_id);
@@ -3961,6 +4038,14 @@ export async function getFinanceStatutorySummary(): Promise<ApiResponse<any[]>> 
   return fetchApi<ApiResponse<any[]>>('/api/v1/finance/statutory/summary', { cache: 'no-store', allowFallback: false });
 }
 
+export async function getVatNetPosition(params?: { period_start?: string; period_end?: string }): Promise<ApiResponse<any>> {
+  const search = new URLSearchParams();
+  if (params?.period_start) search.set('period_start', params.period_start);
+  if (params?.period_end) search.set('period_end', params.period_end);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/statutory/vat/net-position${query}`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function recomputeFinanceStatutory(payload: { period_start: string; period_end: string; currency?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/recompute', {
     method: 'POST', body: JSON.stringify(payload), allowFallback: false,
@@ -4731,39 +4816,6 @@ export async function upsertFinancePayrollProfile(payload: Record<string, unknow
   });
 }
 
-export async function getFinancePayrollRuns(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
-  const search = new URLSearchParams();
-  if (params?.department_id) search.set("department_id", params.department_id);
-  const query = search.toString() ? `?${search.toString()}` : "";
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/payroll/runs${query}`, { cache: "no-store", allowFallback: false });
-}
-
-export async function getFinancePayrollRunItems(runId: string): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/payroll/runs/${runId}/items`, { cache: "no-store", allowFallback: false });
-}
-
-export async function createFinancePayrollRun(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>("/api/v1/financial-performance/payroll/runs", {
-    method: "POST",
-    body: JSON.stringify(payload),
-    allowFallback: false,
-  });
-}
-
-export async function decideFinancePayrollRun(runId: string, status: "approved" | "cancelled"): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/payroll/runs/${runId}/decision`, {
-    method: "POST",
-    body: JSON.stringify({ status }),
-    allowFallback: false,
-  });
-}
-
-export async function postFinancePayrollRun(runId: string): Promise<ApiResponse<any>> {
-  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/payroll/runs/${runId}/post`, {
-    method: "POST",
-    allowFallback: false,
-  });
-}
 // --- HR & WORKFORCE --- //
 
 export async function getHREmployees(params?: { status?: string; department?: string }): Promise<ApiResponse<any[]>> {
@@ -5587,14 +5639,51 @@ export async function createBankTransaction(payload: Record<string, unknown>): P
   });
 }
 
-export async function getPayrollRuns(): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/payroll-runs/', { cache: 'no-store', allowFallback: false });
+export async function getPayrollRuns(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.department_id) search.set('department_id', params.department_id);
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/payroll-runs/${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getPayrollRun(runId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/payroll-runs/${runId}`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function createPayrollRun(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/payroll-runs/', {
     method: 'POST',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function decidePayrollRun(runId: string, action: "approve" | "post" | "cancel", notes?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/payroll-runs/${runId}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ action, notes }),
+    allowFallback: false,
+  });
+}
+
+export async function proposePayrollRunGlJournal(runId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/payroll-runs/${runId}/propose-gl`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getPayrollItemAllocations(itemId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/payroll-runs/items/${itemId}/allocations`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function putPayrollItemAllocations(
+  itemId: string,
+  allocations: Array<{ project_id?: string | null; department_id?: string | null; allocation_pct: number }>,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/payroll-runs/items/${itemId}/allocations`, {
+    method: 'PUT',
+    body: JSON.stringify({ allocations }),
     allowFallback: false,
   });
 }

@@ -23,6 +23,11 @@ import {
   createTenderRequirement,
   toggleTenderRequirement,
   deleteTenderRequirement,
+  updateTenderRequirement,
+  seedTenderRequirementsFromLibrary,
+  matchTenderRequirementCredential,
+  getTenderComplianceSummary,
+  TenderComplianceSummary,
   getDocuments,
   createDocument,
   getDocumentSignedUrl,
@@ -93,6 +98,17 @@ interface TenderRequirement {
   is_satisfied: boolean;
   sort_order: number;
   satisfied_document_id?: string | null;
+  // Compliance matrix fields (migration 199) - optional so rows created
+  // before this upgrade still render sensibly with unknown values.
+  category?: string | null;
+  severity?: 'FATAL' | 'CRITICAL' | 'MAJOR' | 'MINOR' | 'INFORMATIONAL' | null;
+  status?: string | null;
+  mandatory?: boolean;
+  credential_id?: string | null;
+  valid_through_closing?: boolean | null;
+  verified?: boolean;
+  responsible_user_id?: string | null;
+  due_date?: string | null;
 }
 
 interface TenderEngineInsights {
@@ -133,10 +149,13 @@ export default function TendersCommand() {
   const [closeoutWinningContractor, setCloseoutWinningContractor] = useState('');
   const [isClosingOut, setIsClosingOut] = useState(false);
 
-  // Requirements checklist state
+  // Requirements / compliance matrix state
   const [requirements, setRequirements] = useState<TenderRequirement[]>([]);
   const [isLoadingRequirements, setIsLoadingRequirements] = useState(false);
   const [newRequirementLabel, setNewRequirementLabel] = useState('');
+  const [complianceSummary, setComplianceSummary] = useState<TenderComplianceSummary | null>(null);
+  const [isSeedingLibrary, setIsSeedingLibrary] = useState(false);
+  const [matchingRequirementId, setMatchingRequirementId] = useState<string | null>(null);
 
   // Tender documents state
   const [tenderDocuments, setTenderDocuments] = useState<any[]>([]);
@@ -658,9 +677,20 @@ export default function TendersCommand() {
     }
   };
 
+  const refreshComplianceSummary = useCallback(async (tenderId: string) => {
+    try {
+      const res = await getTenderComplianceSummary(tenderId);
+      setComplianceSummary(res.success ? (res.data as TenderComplianceSummary) : null);
+    } catch (err) {
+      console.error('Failed to load compliance summary:', err);
+      setComplianceSummary(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (!selectedTenderId) {
       setRequirements([]);
+      setComplianceSummary(null);
       return;
     }
     setIsLoadingRequirements(true);
@@ -668,7 +698,8 @@ export default function TendersCommand() {
       .then(res => setRequirements(res.success ? (res.data as TenderRequirement[]) : []))
       .catch(() => setRequirements([]))
       .finally(() => setIsLoadingRequirements(false));
-  }, [selectedTenderId]);
+    void refreshComplianceSummary(selectedTenderId);
+  }, [selectedTenderId, refreshComplianceSummary]);
 
   const handleAddRequirement = async () => {
     const label = newRequirementLabel.trim();
@@ -693,6 +724,8 @@ export default function TendersCommand() {
       const res = await toggleTenderRequirement(selectedTenderId, req.id, newVal);
       if (!res.success) {
         setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, is_satisfied: req.is_satisfied } : r));
+      } else {
+        void refreshComplianceSummary(selectedTenderId);
       }
     } catch (err) {
       console.error('Failed to toggle requirement:', err);
@@ -707,10 +740,71 @@ export default function TendersCommand() {
       const res = await deleteTenderRequirement(selectedTenderId, req.id);
       if (!res.success) {
         setRequirements(prev => [...prev, req]);
+      } else {
+        void refreshComplianceSummary(selectedTenderId);
       }
     } catch (err) {
       console.error('Failed to delete requirement:', err);
       setRequirements(prev => [...prev, req]);
+    }
+  };
+
+  const handleSeedRequirementsFromLibrary = async () => {
+    if (!selectedTenderId) return;
+    setIsSeedingLibrary(true);
+    try {
+      const res = await seedTenderRequirementsFromLibrary(selectedTenderId);
+      if (res.success) {
+        const refreshed = await getTenderRequirements(selectedTenderId);
+        setRequirements(refreshed.success ? (refreshed.data as TenderRequirement[]) : []);
+        void refreshComplianceSummary(selectedTenderId);
+      }
+    } catch (err) {
+      console.error('Failed to seed requirements from library:', err);
+      alert(describeActionError(err, "You don't have permission to edit this tender.", 'Failed to seed requirements from the library.'));
+    } finally {
+      setIsSeedingLibrary(false);
+    }
+  };
+
+  const handleMatchRequirementCredential = async (req: TenderRequirement) => {
+    if (!selectedTenderId) return;
+    setMatchingRequirementId(req.id);
+    try {
+      const res = await matchTenderRequirementCredential(selectedTenderId, req.id);
+      if (res.success) {
+        setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, ...(res.data as Partial<TenderRequirement>) } : r));
+        void refreshComplianceSummary(selectedTenderId);
+      }
+    } catch (err) {
+      console.error('Failed to match requirement against the credentials vault:', err);
+      alert(describeActionError(err, "You don't have permission to edit this tender.", err instanceof ApiError ? err.message : 'This requirement has no associated credential type to check against the vault.'));
+    } finally {
+      setMatchingRequirementId(null);
+    }
+  };
+
+  const handleRequirementSeverityChange = async (req: TenderRequirement, severity: string) => {
+    if (!selectedTenderId) return;
+    setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, severity: severity as TenderRequirement['severity'] } : r));
+    try {
+      await updateTenderRequirement(selectedTenderId, req.id, { severity });
+      void refreshComplianceSummary(selectedTenderId);
+    } catch (err) {
+      console.error('Failed to update requirement severity:', err);
+      setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, severity: req.severity } : r));
+    }
+  };
+
+  const handleRequirementStatusChange = async (req: TenderRequirement, status: string) => {
+    if (!selectedTenderId) return;
+    setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, status } : r));
+    try {
+      await updateTenderRequirement(selectedTenderId, req.id, { status });
+      void refreshComplianceSummary(selectedTenderId);
+    } catch (err) {
+      console.error('Failed to update requirement status:', err);
+      setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, status: req.status } : r));
     }
   };
 
@@ -1464,7 +1558,51 @@ export default function TendersCommand() {
 
             {/* Drawer Body */}
             <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
-              
+
+              {/* Compliance readiness banner - deliberately labeled
+                  "Compliance Readiness", not "Overall Readiness": this is
+                  one dimension (documents/registrations), not the full
+                  technical/financial/commercial/submission engine. A FATAL
+                  gap always forces RED regardless of the percentage. */}
+              {complianceSummary && (
+                <div className={`space-y-2 border p-4 rounded-sm ${
+                  complianceSummary.status === 'RED' ? 'bg-red-500/5 border-red-500/30' :
+                  complianceSummary.status === 'AMBER' ? 'bg-amber-500/5 border-amber-500/30' :
+                  complianceSummary.status === 'GREEN' ? 'bg-emerald-500/5 border-emerald-500/30' :
+                  'bg-white/[0.01] border-white/5'
+                }`}>
+                  <div className="flex justify-between items-center">
+                    <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Compliance Readiness</span>
+                    <span className={`font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-sm border ${
+                      complianceSummary.status === 'RED' ? 'text-red-300 border-red-500/40' :
+                      complianceSummary.status === 'AMBER' ? 'text-amber-300 border-amber-500/40' :
+                      complianceSummary.status === 'GREEN' ? 'text-emerald-300 border-emerald-500/40' :
+                      'text-slate-light border-white/10'
+                    }`}>
+                      {complianceSummary.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-lg font-bold text-paper tabular-nums">
+                      {complianceSummary.percent === null ? 'No verified data available.' : `${complianceSummary.percent}%`}
+                    </span>
+                    <span className="text-[9px] font-mono uppercase text-slate-light">
+                      Bid Gate Signal: <span className="text-paper">{complianceSummary.bid_gate_signal}</span> (compliance only)
+                    </span>
+                  </div>
+                  {(complianceSummary.fatal_open > 0 || complianceSummary.critical_open > 0 || complianceSummary.expired > 0 || complianceSummary.missing > 0) && (
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[9px] font-mono uppercase pt-1 border-t border-white/5">
+                      {complianceSummary.fatal_open > 0 && <span className="text-red-300">🔴 {complianceSummary.fatal_open} Fatal Open</span>}
+                      {complianceSummary.critical_open > 0 && <span className="text-amber-300">🟠 {complianceSummary.critical_open} Critical Open</span>}
+                      {complianceSummary.missing > 0 && <span className="text-slate-light">{complianceSummary.missing} Missing</span>}
+                      {complianceSummary.expired > 0 && <span className="text-red-300">{complianceSummary.expired} Expired</span>}
+                      {complianceSummary.expiring > 0 && <span className="text-amber-300">{complianceSummary.expiring} Expiring</span>}
+                      {complianceSummary.unverified > 0 && <span className="text-blue-300">{complianceSummary.unverified} Unverified</span>}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* EDIT FORM BLOCK */}
               {editForm && (
                 <form onSubmit={handleUpdateTenderDetails} className="space-y-4 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
@@ -1707,10 +1845,13 @@ export default function TendersCommand() {
                 </div>
               </div>
 
-              {/* Freeform requirements checklist */}
+              {/* Compliance Matrix - structured requirements (migration 199),
+                  replacing the old freeform label+checkbox list. Each row
+                  can be seeded from the Zimbabwe Requirements Library and
+                  matched against the Corporate Credentials Vault. */}
               <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
                 <div className="flex justify-between items-center mb-1">
-                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Tender Requirements</span>
+                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Compliance Matrix</span>
                   {requirements.length > 0 && (
                     <span className="font-mono text-[10px] text-[#D4AF37] tabular-nums font-bold">
                       {requirements.filter(r => r.is_satisfied).length}/{requirements.length}
@@ -1735,6 +1876,14 @@ export default function TendersCommand() {
                   >
                     <Plus className="w-4 h-4" />
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleSeedRequirementsFromLibrary}
+                    disabled={isSeedingLibrary}
+                    className="px-3 bg-white/5 border border-white/10 rounded-sm text-[9px] font-mono uppercase text-slate-light hover:text-paper hover:bg-white/10 transition-colors disabled:opacity-40 whitespace-nowrap"
+                  >
+                    {isSeedingLibrary ? 'Seeding...' : 'Seed From Library'}
+                  </button>
                 </div>
 
                 {isLoadingRequirements ? (
@@ -1743,42 +1892,87 @@ export default function TendersCommand() {
                   <div className="text-[10px] font-mono text-slate-light">No requirements logged yet.</div>
                 ) : (
                   <div className="space-y-2">
-                    {requirements.map(req => (
-                      <div
-                        key={req.id}
-                        className={`flex items-center justify-between p-2.5 border rounded-sm transition-all ${
-                          req.is_satisfied
-                            ? 'bg-[#D4AF37]/5 border-[#D4AF37]/30'
-                            : 'bg-black border-white/5'
-                        }`}
-                      >
-                        <span
-                          onClick={() => handleToggleRequirement(req)}
-                          className={`text-xs font-sans cursor-pointer flex-1 pr-2 ${req.is_satisfied ? 'text-[#D4AF37] line-through' : 'text-paper'}`}
+                    {requirements.map(req => {
+                      const severity = req.severity || 'MAJOR';
+                      const status = req.status || (req.is_satisfied ? 'SATISFIED' : 'PENDING');
+                      const isOpenGap = !['SATISFIED', 'PRESENT', 'NOT_APPLICABLE'].includes(status);
+                      const severityColor =
+                        severity === 'FATAL' ? 'text-red-300 border-red-500/40' :
+                        severity === 'CRITICAL' ? 'text-amber-300 border-amber-500/40' :
+                        severity === 'MAJOR' ? 'text-blue-300 border-blue-500/40' :
+                        'text-slate-light border-white/10';
+                      const statusColor =
+                        status === 'SATISFIED' || status === 'PRESENT' ? 'text-emerald-300 border-emerald-500/40' :
+                        status === 'NOT_APPLICABLE' ? 'text-slate-light border-white/10' :
+                        status === 'MISSING' || status === 'EXPIRED' || status === 'WRONG_CATEGORY' || status === 'WRONG_CLASSIFICATION' ? 'text-red-300 border-red-500/40' :
+                        status === 'EXPIRING' ? 'text-amber-300 border-amber-500/40' :
+                        'text-blue-300 border-blue-500/40';
+                      return (
+                        <div
+                          key={req.id}
+                          className={`space-y-2 p-2.5 border rounded-sm transition-all ${
+                            isOpenGap && (severity === 'FATAL' || severity === 'CRITICAL')
+                              ? 'bg-red-500/5 border-red-500/20'
+                              : req.is_satisfied ? 'bg-[#D4AF37]/5 border-[#D4AF37]/30' : 'bg-black border-white/5'
+                          }`}
                         >
-                          {req.label}
-                        </span>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {req.satisfied_document_id && (
-                            <span className="text-[8px] font-mono uppercase tracking-wider text-[#D4AF37] border border-[#D4AF37]/30 px-1 py-0.5 shrink-0">Auto</span>
-                          )}
-                          <div onClick={() => handleToggleRequirement(req)} className="cursor-pointer">
-                            {req.is_satisfied ? (
-                              <ToggleRight className="w-6 h-6 text-[#D4AF37]" />
-                            ) : (
-                              <ToggleLeft className="w-6 h-6 text-slate" />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-xs font-sans flex-1 pr-2 ${req.is_satisfied ? 'text-[#D4AF37]' : 'text-paper'}`}>
+                              {req.label}
+                              {req.category && <span className="ml-2 text-[8px] font-mono uppercase text-slate-light">{req.category.replaceAll('_', ' ')}</span>}
+                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {req.satisfied_document_id && (
+                                <span className="text-[8px] font-mono uppercase tracking-wider text-[#D4AF37] border border-[#D4AF37]/30 px-1 py-0.5 shrink-0">Auto</span>
+                              )}
+                              <div onClick={() => handleToggleRequirement(req)} className="cursor-pointer" title="Toggle satisfied">
+                                {req.is_satisfied ? (
+                                  <ToggleRight className="w-6 h-6 text-[#D4AF37]" />
+                                ) : (
+                                  <ToggleLeft className="w-6 h-6 text-slate" />
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRequirement(req)}
+                                className="text-slate hover:text-red-500 transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <select
+                              value={severity}
+                              onChange={e => handleRequirementSeverityChange(req, e.target.value)}
+                              className={`bg-black border rounded-sm px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-wider outline-none ${severityColor}`}
+                            >
+                              {['FATAL', 'CRITICAL', 'MAJOR', 'MINOR', 'INFORMATIONAL'].map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                            <select
+                              value={status}
+                              onChange={e => handleRequirementStatusChange(req, e.target.value)}
+                              className={`bg-black border rounded-sm px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-wider outline-none ${statusColor}`}
+                            >
+                              {['PRESENT', 'MISSING', 'EXPIRED', 'EXPIRING', 'WRONG_CATEGORY', 'WRONG_CLASSIFICATION', 'UNVERIFIED', 'PENDING', 'SATISFIED', 'NOT_APPLICABLE'].map(s => (
+                                <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => handleMatchRequirementCredential(req)}
+                              disabled={matchingRequirementId === req.id}
+                              className="text-[8px] font-mono uppercase text-slate-light hover:text-[#D4AF37] border border-white/10 hover:border-[#D4AF37]/40 rounded-sm px-1.5 py-0.5 transition-colors disabled:opacity-40"
+                            >
+                              {matchingRequirementId === req.id ? 'Matching...' : req.credential_id ? 'Matched ✓' : 'Match Vault Credential'}
+                            </button>
+                            {req.valid_through_closing === false && (
+                              <span className="text-[8px] font-mono uppercase text-red-300">Expires before closing</span>
                             )}
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteRequirement(req)}
-                            className="text-slate hover:text-red-500 transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

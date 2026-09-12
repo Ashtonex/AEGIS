@@ -21,7 +21,7 @@ from app.services.finance.project_forecast import (
     seed_project_budget_from_quotation,
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
-from app.shared.events import emit_event, emit_notification
+from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
@@ -31,6 +31,8 @@ from app.shared.sql import (
     tenant_reference_sql,
     update_returning_id_sql,
 )
+from app.services.tenders.compliance_matching import match_requirement_to_credential
+from app.services.tenders.compliance_readiness import compute_compliance_readiness
 
 """
 Module: tender_bids
@@ -51,6 +53,16 @@ async def _single_row(db: AsyncSession, sql: str, params: Dict[str, Any]) -> Opt
 # this table's one timestamptz column unless parsed here first.
 _TIMESTAMPTZ_COLUMNS = {"submission_deadline", "site_visit_at"}
 TENDER_RESOLVED_STAGES = {"Awarded", "Lost", "Awarded/Lost"}
+
+# Compliance matrix (migration 199) vocabulary - see
+# app/services/tenders/compliance_readiness.py for the readiness rules.
+_REQUIREMENT_STATUSES = {
+    "PRESENT", "MISSING", "EXPIRED", "EXPIRING", "WRONG_CATEGORY",
+    "WRONG_CLASSIFICATION", "UNVERIFIED", "PENDING", "SATISFIED", "NOT_APPLICABLE",
+}
+_REQUIREMENT_SEVERITIES = {"FATAL", "CRITICAL", "MAJOR", "MINOR", "INFORMATIONAL"}
+_REQUIREMENT_CLOSED_STATUSES = {"SATISFIED", "PRESENT", "NOT_APPLICABLE"}
+_REQUIREMENT_URGENT_STATUSES = {"MISSING", "EXPIRED", "EXPIRING"}
 
 
 def _coerce_timestamptz_columns(params: dict) -> None:
@@ -1024,14 +1036,43 @@ async def create_requirement(
 
     await _require_tender(db, tender_id, user["org_id"])
 
-    query = insert_returning_id_sql(
-        "crm.tender_requirements",
-        ["tender_id", "label"],
-        ["tender_id", "label"],
-    )
+    severity = payload.get("severity") or "MAJOR"
+    if severity not in _REQUIREMENT_SEVERITIES:
+        raise HTTPException(status_code=400, detail="Invalid severity.")
+    # Never invent a status for a brand-new row - PENDING is the honest
+    # "not yet assessed" state, distinct from MISSING (confirmed absent).
+    status_value = payload.get("status") or "PENDING"
+    if status_value not in _REQUIREMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status.")
+
     result = await db.execute(
-        query,
-        {"tender_id": tender_id, "label": label, "org_id": user["org_id"], "user_id": user["sub"]},
+        text("""
+            INSERT INTO crm.tender_requirements (
+                organization_id, tender_id, label, category, tender_clause_reference,
+                mandatory, severity, status, required_category, required_classification,
+                requirement_template_id, responsible_user_id, due_date, source, created_by
+            ) VALUES (
+                :org_id, :tender_id, :label, :category, :tender_clause_reference,
+                :mandatory, :severity, :status, :required_category, :required_classification,
+                :requirement_template_id, :responsible_user_id, :due_date, 'MANUAL', :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": user["org_id"],
+            "tender_id": tender_id,
+            "label": label,
+            "category": payload.get("category"),
+            "tender_clause_reference": payload.get("tender_clause_reference"),
+            "mandatory": bool(payload.get("mandatory", True)),
+            "severity": severity,
+            "status": status_value,
+            "required_category": payload.get("required_category"),
+            "required_classification": payload.get("required_classification"),
+            "requirement_template_id": payload.get("requirement_template_id"),
+            "responsible_user_id": payload.get("responsible_user_id"),
+            "due_date": payload.get("due_date"),
+            "user_id": user["sub"],
+        },
     )
     await db.commit()
 
@@ -1039,6 +1080,197 @@ async def create_requirement(
         "success": True,
         "data": {"id": str(result.scalar())},
         "message": "Requirement added.",
+        "meta": {},
+    }
+
+
+@router.post("/{tender_id}/requirements/seed-from-library")
+async def seed_requirements_from_library(
+    tender_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("tender_bids.update")),
+):
+    """Bulk-creates compliance-matrix rows from the active Zimbabwe
+    Requirements Library templates (crm.tender_requirement_templates, 199),
+    skipping any template already represented on this tender so it is safe
+    to call repeatedly (e.g. after the library gains a new template)."""
+    body = await request.body()
+    payload = json.loads(body) if body else {}
+    categories = payload.get("categories") or None
+
+    await _require_tender(db, tender_id, user["org_id"])
+
+    # Single set-based INSERT...SELECT rather than one round-trip per
+    # template (the library runs ~80 rows deep) - a per-row Python loop
+    # here turned "seed from library" into ~80 sequential awaited queries,
+    # which is needlessly slow even under normal latency and outright times
+    # out under this deployment's slower pooler connections.
+    filters = [
+        "tpl.is_deleted = false",
+        "tpl.is_active = true",
+        "(tpl.organization_id IS NULL OR tpl.organization_id = :org_id)",
+    ]
+    params: Dict[str, Any] = {"org_id": user["org_id"], "tender_id": tender_id, "user_id": user["sub"]}
+    if categories:
+        filters.append("tpl.category = ANY(:categories)")
+        params["categories"] = categories
+    where_clause = " AND ".join(filters)
+
+    total_matching = (
+        await db.execute(
+            text(f"SELECT COUNT(*) FROM crm.tender_requirement_templates tpl WHERE {where_clause}"),  # nosec B608
+            params,
+        )
+    ).scalar_one()
+
+    inserted_ids = (
+        await db.execute(
+            text(f"""
+                INSERT INTO crm.tender_requirements (
+                    organization_id, tender_id, label, category, severity, status,
+                    mandatory, requirement_template_id, source, created_by
+                )
+                SELECT :org_id, :tender_id, tpl.requirement_name, tpl.category, tpl.default_severity,
+                       'PENDING', true, tpl.id, 'TEMPLATE_SEEDED', :user_id
+                FROM crm.tender_requirement_templates tpl
+                WHERE {where_clause}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM crm.tender_requirements r
+                      WHERE r.tender_id = :tender_id AND r.organization_id = :org_id
+                        AND r.requirement_template_id = tpl.id AND r.is_deleted = false
+                  )
+                RETURNING id
+            """),  # nosec B608 - where_clause built from static column checks above, not user input
+            params,
+        )
+    ).scalars().all()
+
+    await db.commit()
+    created = len(inserted_ids)
+    return {
+        "success": True,
+        "data": {"created": created, "skipped": total_matching - created},
+        "message": f"Seeded {created} requirement(s) from the library.",
+        "meta": {},
+    }
+
+
+@router.post("/{tender_id}/requirements/{requirement_id}/match-credential")
+async def match_requirement_credential(
+    tender_id: str,
+    requirement_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("tender_bids.update")),
+):
+    """Matches one compliance-matrix row against the Corporate Credentials
+    Vault. Only credentials whose credential_type matches the requirement's
+    (or its template's) maps_to_credential_type are considered - PRAZ,
+    CIFOZ and ZBCA are never treated as interchangeable. See
+    app/services/tenders/compliance_matching.py for the matching rules."""
+    tender = await _single_row(
+        db,
+        "SELECT id, submission_deadline FROM crm.tenders WHERE id = :id AND organization_id = :org_id AND is_deleted = false",
+        {"id": tender_id, "org_id": user["org_id"]},
+    )
+    if not tender:
+        raise HTTPException(status_code=404, detail="Tender not found")
+
+    requirement = await _single_row(
+        db,
+        """
+        SELECT r.*, tpl.maps_to_credential_type AS template_maps_to_credential_type
+        FROM crm.tender_requirements r
+        LEFT JOIN crm.tender_requirement_templates tpl ON tpl.id = r.requirement_template_id
+        WHERE r.id = :id AND r.tender_id = :tender_id AND r.organization_id = :org_id AND r.is_deleted = false
+        """,
+        {"id": requirement_id, "tender_id": tender_id, "org_id": user["org_id"]},
+    )
+    if not requirement:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+
+    credential_type = requirement.get("maps_to_credential_type") or requirement.get("template_maps_to_credential_type")
+    if not credential_type:
+        raise HTTPException(
+            status_code=400,
+            detail="This requirement has no associated credential type to check against the vault.",
+        )
+    requirement["maps_to_credential_type"] = credential_type
+
+    candidates = (
+        await db.execute(
+            text("""
+                SELECT * FROM compliance.corporate_credentials
+                WHERE organization_id = :org_id AND is_deleted = false AND credential_type = :credential_type
+            """),
+            {"org_id": user["org_id"], "credential_type": credential_type},
+        )
+    ).mappings().all()
+
+    match = match_requirement_to_credential(dict(requirement), dict(tender), [dict(c) for c in candidates])
+
+    result = await db.execute(
+        text("""
+            UPDATE crm.tender_requirements
+            SET credential_id = :credential_id, valid_through_closing = :valid_through_closing,
+                correct_category = :correct_category, correct_classification = :correct_classification,
+                status = :status, is_satisfied = :is_satisfied, updated_at = NOW()
+            WHERE id = :id AND tender_id = :tender_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING *
+        """),
+        {
+            **match,
+            "is_satisfied": match["status"] in _REQUIREMENT_CLOSED_STATUSES,
+            "id": requirement_id,
+            "tender_id": tender_id,
+            "org_id": user["org_id"],
+        },
+    )
+    updated_row = result.mappings().first()
+    if not updated_row:
+        raise HTTPException(status_code=404, detail="Requirement not found")
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": dict(updated_row),
+        "message": "Requirement matched against the corporate credentials vault.",
+        "meta": {},
+    }
+
+
+@router.get("/{tender_id}/compliance-summary")
+async def get_tender_compliance_summary(
+    tender_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("tender_bids.read")),
+):
+    """Compliance-only readiness summary for one tender - NOT the full
+    multi-dimension readiness engine (administrative/technical/plant/
+    financial/commercial/submission) from the target Tender Intelligence
+    spec; those dimensions have no data model yet. See
+    app/services/tenders/compliance_readiness.py."""
+    await _require_tender(db, tender_id, user["org_id"])
+    rows = (
+        await db.execute(
+            text("""
+                SELECT status, severity FROM crm.tender_requirements
+                WHERE tender_id = :tender_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"tender_id": tender_id, "org_id": user["org_id"]},
+        )
+    ).mappings().all()
+
+    summary = compute_compliance_readiness([dict(row) for row in rows])
+    summary["is_compliance_only"] = True
+
+    return {
+        "success": True,
+        "data": summary,
+        "message": "Compliance readiness computed." if summary["applicable_count"] else "No verified data available.",
         "meta": {},
     }
 
@@ -1145,32 +1377,120 @@ async def update_requirement(
     _: dict = Depends(require_permission("tender_bids.update")),
 ):
     payload = await request.json()
-    if "is_satisfied" not in payload:
-        raise HTTPException(status_code=400, detail="is_satisfied is required.")
+    if not payload:
+        raise HTTPException(status_code=400, detail="No fields to update.")
 
-    query = text("""
-        UPDATE crm.tender_requirements
-        SET is_satisfied = :is_satisfied, updated_at = NOW()
-        WHERE id = :requirement_id AND tender_id = :tender_id
-          AND organization_id = :org_id AND is_deleted = false
-        RETURNING id
-    """)
+    # Backward-compatible shortcut for the original toggle-only callers.
+    if "is_satisfied" in payload and "status" not in payload:
+        payload["status"] = "SATISFIED" if payload["is_satisfied"] else "PENDING"
+
+    updates: Dict[str, Any] = {}
+    for field in (
+        "label", "category", "tender_clause_reference", "mandatory", "severity",
+        "status", "credential_id", "required_category", "required_classification",
+        "correct_category", "correct_classification", "valid_through_closing",
+        "responsible_user_id", "due_date", "included_in_final_submission",
+        "reviewer_user_id", "review_date",
+    ):
+        if field in payload:
+            updates[field] = payload[field]
+
+    if "severity" in updates and updates["severity"] not in _REQUIREMENT_SEVERITIES:
+        raise HTTPException(status_code=400, detail="Invalid severity.")
+    if "status" in updates and updates["status"] not in _REQUIREMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status.")
+    if "status" in updates:
+        # Never override a FATAL/CRITICAL open item's is_satisfied by
+        # accident - is_satisfied always mirrors the status truthfully.
+        updates["is_satisfied"] = updates["status"] in _REQUIREMENT_CLOSED_STATUSES
+
+    if payload.get("verified") is True:
+        updates["verified"] = True
+        updates["verified_by_user_id"] = user["sub"]
+        updates["verified_at"] = datetime.utcnow()
+    elif payload.get("verified") is False:
+        updates["verified"] = False
+        updates["verified_by_user_id"] = None
+        updates["verified_at"] = None
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No recognised fields to update.")
+
+    set_clause = ", ".join(f"{column} = :{column}" for column in updates)
     result = await db.execute(
-        query,
-        {
-            "is_satisfied": bool(payload["is_satisfied"]),
-            "requirement_id": requirement_id,
-            "tender_id": tender_id,
-            "org_id": user["org_id"],
-        },
+        text(f"""
+            UPDATE crm.tender_requirements
+            SET {set_clause}, updated_at = NOW()
+            WHERE id = :requirement_id AND tender_id = :tender_id
+              AND organization_id = :org_id AND is_deleted = false
+            RETURNING *
+        """),  # nosec B608 - `updates` keys are drawn from the fixed allowlist above, not user input
+        {**updates, "requirement_id": requirement_id, "tender_id": tender_id, "org_id": user["org_id"]},
     )
-    if not result.first():
+    updated_row = result.mappings().first()
+    if not updated_row:
         raise HTTPException(status_code=404, detail="Requirement not found")
+    updated = dict(updated_row)
+
+    # Only fires when this PATCH is what pushed a mandatory item into an
+    # open FATAL/CRITICAL state - not on every unrelated field edit.
+    became_urgent_gap = (
+        ("severity" in updates or "status" in updates)
+        and updated.get("mandatory")
+        and updated.get("severity") in ("FATAL", "CRITICAL")
+        and updated.get("status") in _REQUIREMENT_URGENT_STATUSES
+    )
+    if became_urgent_gap:
+        priority = "urgent" if updated["severity"] == "FATAL" else "high"
+        message = f'"{updated["label"]}" is {updated["severity"].lower()} and {updated["status"].lower()} on this tender.'
+        action_url = f"/dashboard/crm/tenders?tender={tender_id}"
+        if updated.get("responsible_user_id"):
+            await emit_notification(
+                db,
+                org_id=user["org_id"],
+                user_id=str(updated["responsible_user_id"]),
+                title="Tender compliance gap needs attention",
+                message=message,
+                notification_type="compliance",
+                priority="urgent" if priority == "urgent" else "normal",
+                action_url=action_url,
+            )
+        else:
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["Compliance Officer", "Tender / Bid Manager"],
+                title="Tender compliance gap needs attention",
+                message=message,
+                notification_type="compliance",
+                priority="urgent" if priority == "urgent" else "normal",
+                action_url=action_url,
+            )
+        await db.execute(
+            text("""
+                INSERT INTO crm.tasks (
+                    organization_id, title, entity_type, entity_id,
+                    assigned_to_user_id, due_date, priority, created_by
+                ) VALUES (
+                    :org_id, :title, 'tender_requirement', :entity_id,
+                    :assigned_to_user_id, :due_date, :priority, :user_id
+                )
+            """),
+            {
+                "org_id": user["org_id"],
+                "title": f'Resolve: {updated["label"]}',
+                "entity_id": requirement_id,
+                "assigned_to_user_id": updated.get("responsible_user_id"),
+                "due_date": updated.get("due_date"),
+                "priority": priority,
+                "user_id": user["sub"],
+            },
+        )
 
     await db.commit()
     return {
         "success": True,
-        "data": {"id": requirement_id},
+        "data": updated,
         "message": "Requirement updated.",
         "meta": {},
     }

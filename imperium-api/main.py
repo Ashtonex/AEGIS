@@ -17,6 +17,8 @@ from routers import general_ledger
 from routers import gl_bridge
 from routers import company_budgets
 from routers import cash_forecast
+from routers import corporate_credentials
+from routers import tender_requirement_templates
 
 
 def create_app() -> FastAPI:
@@ -136,6 +138,8 @@ def create_app() -> FastAPI:
     app.include_router(bi_reports.router, prefix="/api/v1/bi-reports", tags=["Bi Reports"], dependencies=[Depends(require_resource_permission("bi_reports"))])  # fmt: skip
     app.include_router(risk_register.router, prefix="/api/v1/risk-register", tags=["Risk Register"], dependencies=[Depends(require_resource_permission("risk_register"))])  # fmt: skip
     app.include_router(tender_bids.router, prefix="/api/v1/tender-bids", tags=["Tender Bids"], dependencies=[Depends(require_resource_permission("tender_bids"))])  # fmt: skip
+    app.include_router(corporate_credentials.router, prefix="/api/v1/compliance/corporate-credentials", tags=["Corporate Credentials Vault"], dependencies=[Depends(get_current_user)])  # fmt: skip
+    app.include_router(tender_requirement_templates.router, prefix="/api/v1/tenders/requirements-library", tags=["Tender Requirements Library"], dependencies=[Depends(get_current_user)])  # fmt: skip
     app.include_router(maintenance_schedules.router, prefix="/api/v1/maintenance-schedules", tags=["Maintenance Schedules"], dependencies=[Depends(require_resource_permission("maintenance_schedules"))])  # fmt: skip
     app.include_router(automated_reports.router, prefix="/api/v1/automated-reports", tags=["Automated Reports"], dependencies=[Depends(require_resource_permission("automated_reports"))])  # fmt: skip
 
