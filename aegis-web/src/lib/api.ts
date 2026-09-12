@@ -4238,6 +4238,29 @@ export async function getFinanceStatements(params?: FinancialStatementParams): P
   });
 }
 
+/** Core GL-sourced financial statements (Phase 11A) - additive alongside getFinanceStatements' operational-table department P&L, never replacing it. */
+export async function getIncomeStatement(periodStart: string, periodEnd: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/income-statement?period_start=${periodStart}&period_end=${periodEnd}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getBalanceSheet(asOfDate: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/balance-sheet?as_of_date=${asOfDate}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getCashMovementStatement(periodStart: string, periodEnd: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/cash-movement?period_start=${periodStart}&period_end=${periodEnd}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getArAging(asOfDate?: string): Promise<ApiResponse<any>> {
+  const query = asOfDate ? `?as_of_date=${asOfDate}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/ar-aging${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getApAging(asOfDate?: string): Promise<ApiResponse<any>> {
+  const query = asOfDate ? `?as_of_date=${asOfDate}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/ap-aging${query}`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function getFinancialRunway(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/financial-runway', {
     cache: 'no-store',
@@ -5608,6 +5631,37 @@ export async function getDocumentChangeHistory(projectId?: string): Promise<ApiR
   const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/documents/changes${qs}`, {
     cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function runBoqAiAnalysis(payload: {
+  quotation_id: string;
+  project_scope_text?: string;
+  force_refresh?: boolean;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/boq/ai-analysis', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getBoqAiAnalysisHistory(quotationId?: string): Promise<ApiResponse<any[]>> {
+  const qs = quotationId ? `?quotation_id=${encodeURIComponent(quotationId)}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/quotations/boq/ai-analysis${qs}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function reviewBoqAiAnalysisFinding(
+  findingId: string,
+  decision: 'accepted' | 'rejected'
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/boq/ai-analysis/findings/${findingId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ decision }),
     allowFallback: false,
   });
 }

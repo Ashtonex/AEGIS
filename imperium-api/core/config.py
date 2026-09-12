@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     FINANCE_ASSISTANT_MODEL: str = "gpt-4o"
 
+    # Quotations BOQ AI analysis - Perplexity's chat-completions API is
+    # OpenAI-SDK-compatible, reached via base_url=https://api.perplexity.ai.
+    # Unset by default: analysis runs deterministic-only (status=
+    # "deterministic_only") rather than failing, per app/services/quotations/
+    # boq_ai_analysis.py's fail-closed design.
+    PERPLEXITY_API_KEY: Optional[str] = None
+    QUOTATION_AI_ANALYSIS_MODEL: str = "sonar-reasoning-pro"
+
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
