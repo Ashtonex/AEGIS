@@ -69,6 +69,7 @@ const SLOW_DOMAIN_PREFIXES = [
   "/api/v1/crm-automations/",
   "/api/v1/crm-lifecycle/",
   "/api/v1/tender-bids/",
+  "/api/v1/finance/assistant/",
 ];
 
 function defaultTimeoutFor(endpoint: string): number {
@@ -4503,6 +4504,22 @@ export async function getCashForecast(): Promise<ApiResponse<any>> {
 
 export async function getCashRunway(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/finance/cash-forecast/runway', { cache: 'no-store', allowFallback: false });
+}
+
+/** AI Financial Control Assistant (Phase 10B): read-only, tool-calling Q&A over existing finance data. Never posts/approves/deletes anything. */
+export async function askFinanceAssistant(
+  question: string,
+  history: { role: "user" | "assistant"; content: string }[] = []
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/assistant/ask', {
+    method: 'POST',
+    body: JSON.stringify({ question, history }),
+    allowFallback: false,
+  });
+}
+
+export async function getFinanceAssistantAuditLog(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/assistant/audit-log', { cache: 'no-store', allowFallback: false });
 }
 
 // --- BOQ PROGRESS (measured-quantity earned value) ---

@@ -18,7 +18,7 @@ import {
   BarChart, PieChart, Settings, LogOut, ChevronDown, ChevronRight,
   Target, Handshake, Building2, BookOpen, Inbox, Zap, MapPin,
   LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit,
-  Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Scale, Menu, X
+  Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Scale, Menu, X, Bot
 } from "lucide-react";
 
 type ModuleNavItem = {
@@ -279,6 +279,7 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Financial Statements", href: "/dashboard/finance/financial-statements", icon: FileText },
       { name: "General Ledger", href: "/dashboard/finance/general-ledger", icon: Scale },
       { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
+      { name: "AI Assistant", href: "/dashboard/finance/ai-assistant", icon: Bot },
     ],
   },
   {

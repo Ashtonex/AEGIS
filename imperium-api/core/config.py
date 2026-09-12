@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     RESEND_API_KEY: Optional[str] = None
     EMAIL_FROM_ADDRESS: Optional[str] = None
 
+    # AI Financial Control Assistant (Phase 10B) - read-only, tool-calling
+    # only against the allow-list in app/services/finance/ai_assistant_tools.py.
+    # Unset by default: the assistant endpoint fails closed with a clear
+    # "not configured" error rather than pretending to answer.
+    OPENAI_API_KEY: Optional[str] = None
+    FINANCE_ASSISTANT_MODEL: str = "gpt-4o"
+
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
