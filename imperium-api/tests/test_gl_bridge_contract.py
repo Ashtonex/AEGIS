@@ -99,8 +99,13 @@ class GlBridgeServiceContractTests(unittest.TestCase):
         self.assertIn('"cost_transaction.credit_control"', SERVICE)
 
     def test_progress_claim_retention_math_matches_certified_amount_times_retention_pct(self):
-        self.assertIn('Decimal(str(certified_amount)) * Decimal(str(claim["retention_pct"])) / Decimal("100")', SERVICE)
-        self.assertIn("receivable_portion = round(certified_amount - retention_portion, 2)", SERVICE)
+        # Phase 8A: retention applies to revenue_base (the VAT-exclusive
+        # certified amount), not the raw VAT-inclusive total owed - the two
+        # are identical whenever a claim has no VAT (revenue_base ==
+        # certified_amount when vat_amount == 0), so this is still the same
+        # formula for every claim that predates VAT support.
+        self.assertIn('Decimal(str(revenue_base)) * Decimal(str(claim["retention_pct"])) / Decimal("100")', SERVICE)
+        self.assertIn("receivable_portion = round(total_owed - retention_portion, 2)", SERVICE)
 
     def test_retention_release_reclassifies_from_retention_receivable_to_receivable(self):
         self.assertIn("propose_journal_for_retention_release", SERVICE)

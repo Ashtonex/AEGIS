@@ -16,7 +16,7 @@ from core.database import get_db
 from core.security import require_permission
 from app.services import inventory_service
 from app.services.finance.ccb_monitor import record_requisition_budget_breach
-from app.services.finance import procurement_verification, gl_bridge
+from app.services.finance import procurement_verification, gl_bridge, vat_engine
 from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 from app.shared.events import emit_notification, emit_role_notification
@@ -142,6 +142,12 @@ class SupplierInvoicePayload(Payload):
     tax_amount: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=15, decimal_places=2
     )
+    # Whether this invoice is a valid fiscal tax invoice from a VAT-registered
+    # supplier and its VAT is genuinely reclaimable - not inferred from the
+    # supplier's own is_vat_registered flag, since a specific invoice can
+    # still lack a valid tax invoice even from a registered supplier. Drives
+    # real-time input-VAT accrual (see vat_engine.py).
+    input_vat_claimable: bool = False
     notes: Optional[str] = None
 
 
@@ -2056,10 +2062,10 @@ async def create_invoice(
                 text("""
             INSERT INTO procurement.supplier_invoices (
                 organization_id, invoice_number, supplier_invoice_ref, supplier_id, po_id, grn_id, project_id,
-                invoice_date, due_date, subtotal, tax_amount, total_amount, notes, created_by
+                invoice_date, due_date, subtotal, tax_amount, total_amount, input_vat_claimable, notes, created_by
             ) VALUES (
                 :org_id, :invoice_number, :supplier_invoice_ref, :supplier_id, :po_id, :grn_id, :project_id,
-                :invoice_date, :due_date, :subtotal, :tax_amount, :total_amount, :notes, :user_id
+                :invoice_date, :due_date, :subtotal, :tax_amount, :total_amount, :input_vat_claimable, :notes, :user_id
             ) RETURNING id
         """),
                 {
@@ -2075,6 +2081,7 @@ async def create_invoice(
                     "subtotal": payload.subtotal,
                     "tax_amount": payload.tax_amount,
                     "total_amount": total,
+                    "input_vat_claimable": payload.input_vat_claimable,
                     "notes": payload.notes,
                     "user_id": user["user_id"],
                 },
@@ -2098,6 +2105,11 @@ async def create_invoice(
     # blocks invoice registration itself. See procurement_verification.py.
     await procurement_verification.check_invoice_at_creation(db, org_id=user["org_id"], invoice_id=invoice_id)
     await procurement_verification.check_line_level_match(db, org_id=user["org_id"], invoice_id=invoice_id)
+    # Phase 8A VAT engine: real-time input VAT accrual + a non-blocking
+    # compliance flag, same advisory/never-blocking shape as the checks
+    # above. See vat_engine.py.
+    await vat_engine.accrue_input_vat(db, org_id=user["org_id"], invoice_id=invoice_id)
+    await vat_engine.check_input_vat_rate_mismatch(db, org_id=user["org_id"], invoice_id=invoice_id)
     await db.commit()
     return ok(
         {"id": str(invoice_id), "invoice_number": invoice_no},

@@ -22,6 +22,8 @@ from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok
 from app.services.finance.statutory_accrual import accrue_liability_line
+from app.services.finance import statutory_gl_bridge, vat_engine
+from app.services.finance.general_ledger import GeneralLedgerError
 
 router = APIRouter()
 
@@ -383,8 +385,21 @@ async def settle_liability(
         {"amount": payload.amount, "id": liability_id},
     )
 
+    # Phase 8A: bridge a VAT settlement with a real cash leg into a proposed
+    # GL journal - never blocks the settlement itself on a mapping error.
+    gl_warning = None
+    try:
+        await statutory_gl_bridge.propose_journal_for_vat_settlement(
+            db, org_id=user["org_id"], user_id=user["sub"], settlement_id=settlement_id
+        )
+    except GeneralLedgerError as exc:
+        gl_warning = str(exc)
+
     await db.commit()
-    return ok({"id": str(settlement_id)}, "Settlement recorded.")
+    result = {"id": str(settlement_id)}
+    if gl_warning:
+        result["gl_proposal_warning"] = gl_warning
+    return ok(result, "Settlement recorded.")
 
 
 @router.get("/summary")
@@ -419,6 +434,25 @@ async def statutory_summary(
         params,
     )
     return ok([dict(r._mapping) for r in result], "Statutory summary retrieved.")
+
+
+@router.get("/vat/net-position")
+async def vat_net_position(
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    user: dict = Depends(require_permission("finance.statutory.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Output/input/net VAT for a filing period - defaults to the current
+    period computed from finance.statutory_profile.vat_filing_frequency
+    (or a plain calendar month if no profile is configured yet, clearly
+    labeled as a fallback rather than silently guessed). Reads figures that
+    already accrue correctly today (see vat_engine.py); this is a read-only
+    view, not a new computation."""
+    position = await vat_engine.get_vat_net_position(
+        db, org_id=user["org_id"], period_start=period_start, period_end=period_end
+    )
+    return ok(position, "VAT net position retrieved.")
 
 
 # ---------------------------------------------------------------------------

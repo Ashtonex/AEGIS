@@ -8,21 +8,23 @@ import {
   confirmBankStatementMatch,
   createCashbookEntryFromBankLine,
   createFinanceCashAccount,
-  createFinancePayrollRun,
-  decideFinancePayrollRun,
+  createPayrollRun,
+  decidePayrollRun,
   getBankStatementImports,
   getBankStatementLines,
   getFinanceCashAccounts,
   getFinanceCashbook,
   getFinancePayrollProfiles,
-  getFinancePayrollRuns,
   getFinanceProgressClaims,
   getFinanceSupplierPayments,
   getHREmployees,
+  getPayrollItemAllocations,
+  getPayrollRun,
+  getPayrollRuns,
   getProcurementInvoices,
   postFinanceCashbookTransaction,
-  postFinancePayrollRun,
   postFinanceSupplierPaymentBatch,
+  putPayrollItemAllocations,
   rejectBankStatementMatch,
   reopenBankStatementMatch,
   runBankStatementMatching,
@@ -66,6 +68,8 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   const [selectedProfileIds, setSelectedProfileIds] = useState<Record<string, boolean>>({});
   const [profileHours, setProfileHours] = useState<Record<string, { regular_hours: string; overtime_hours: string }>>({});
   const [claims, setClaims] = useState<RecordData[]>([]);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [expandedRunItems, setExpandedRunItems] = useState<RecordData[]>([]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -76,7 +80,7 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
       getProcurementInvoices({ status: "approved", match_status: "all" }),
       getHREmployees({ status: "active" }),
       getFinancePayrollProfiles(),
-      getFinancePayrollRuns({ department_id: departmentId || undefined }),
+      getPayrollRuns({ department_id: departmentId || undefined }),
       getFinanceProgressClaims({ department_id: departmentId || undefined }),
     ]);
     if (accountRes.status === "fulfilled") setAccounts(accountRes.value.data || []);
@@ -159,16 +163,25 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
         other_deduction: 0,
       };
     });
-    const runNumber = `PAY-${payrollRun.period_start.replace(/-/g, "").slice(0, 6)}-${String(Math.floor(Math.random() * 900) + 100)}`;
-    void runAction(() => createFinancePayrollRun({
-      run_number: runNumber,
+    void runAction(() => createPayrollRun({
       period_start: payrollRun.period_start,
       period_end: payrollRun.period_end,
       payment_date: payrollRun.payment_date,
-      cash_account_id: payrollRun.cash_account_id || null,
+      cash_account_id: payrollRun.cash_account_id,
       items,
     }), "Payroll run created.");
     setSelectedProfileIds({});
+  };
+
+  const toggleRunExpanded = async (runId: string) => {
+    if (expandedRunId === runId) {
+      setExpandedRunId(null);
+      setExpandedRunItems([]);
+      return;
+    }
+    setExpandedRunId(runId);
+    const res = await getPayrollRun(runId);
+    setExpandedRunItems(res.data?.items || []);
   };
 
   if (loading) {
@@ -291,7 +304,33 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
               <button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Create Run</button>
             </form>
             <div className="space-y-2">
-              {payrollRuns.map(run => <div key={run.id} className="flex flex-wrap items-center justify-between gap-3 border border-ink-mid bg-ink/30 px-3 py-2 text-sm"><span className="text-paper">{run.run_number} {money(run.net_pay)} <span className="text-slate">{run.status}</span></span><div className="flex gap-2">{run.status === "draft" && <button className="text-xs text-signal" onClick={() => void runAction(() => decideFinancePayrollRun(run.id, "approved"), "Payroll run approved.")}>Approve</button>}{run.status === "approved" && <button className="text-xs text-signal" onClick={() => void runAction(() => postFinancePayrollRun(run.id), "Payroll posted.")}>Post</button>}</div></div>)}
+              {payrollRuns.map(run => (
+                <div key={run.id} className="border border-ink-mid bg-ink/30 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
+                    <button className="text-paper hover:text-signal" onClick={() => void toggleRunExpanded(run.id)}>
+                      {run.run_number} {money(run.net_pay)} <span className="text-slate">{run.status}</span>
+                    </button>
+                    <div className="flex gap-2">
+                      {run.status === "draft" && <button className="text-xs text-signal" onClick={() => void runAction(() => decidePayrollRun(run.id, "approve"), "Payroll run approved.")}>Approve</button>}
+                      {run.status === "approved" && <button className="text-xs text-signal" onClick={() => void runAction(() => decidePayrollRun(run.id, "post"), "Payroll posted.")}>Post</button>}
+                    </div>
+                  </div>
+                  {expandedRunId === run.id && (
+                    <div className="border-t border-ink-mid px-3 py-2 space-y-2">
+                      {expandedRunItems.length === 0 && <p className="text-xs text-slate">No items.</p>}
+                      {expandedRunItems.map(item => (
+                        <PayrollItemAllocationRow
+                          key={item.id}
+                          item={item}
+                          projects={projects}
+                          editable={run.status === "draft" || run.status === "approved"}
+                          onSaved={() => setNotice("Allocation saved.")}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </Panel>
         </section>
@@ -312,6 +351,89 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 function SelectAccount({ accounts, value, onChange }: { accounts: RecordData[]; value: string; onChange: (value: string) => void }) {
   return <select className={inputClass} value={value} onChange={e => onChange(e.target.value)} required><option value="">Cash account</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.account_name} - {money(account.current_balance)}</option>)}</select>;
+}
+
+function PayrollItemAllocationRow({ item, projects, editable, onSaved }: { item: RecordData; projects: RecordData[]; editable: boolean; onSaved: () => void }) {
+  const [rows, setRows] = useState<Array<{ project_id: string; allocation_pct: string }>>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPayrollItemAllocations(item.id).then(res => {
+      if (cancelled) return;
+      const existing = res.data?.allocations || [];
+      setRows(
+        existing.length > 0
+          ? existing.map((a: RecordData) => ({ project_id: a.project_id || "", allocation_pct: String(a.allocation_pct) }))
+          : [{ project_id: item.project_id || "", allocation_pct: "100" }]
+      );
+      setLoaded(true);
+    });
+    return () => { cancelled = true; };
+  }, [item.id, item.project_id]);
+
+  const total = rows.reduce((sum, r) => sum + (Number(r.allocation_pct) || 0), 0);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await putPayrollItemAllocations(item.id, rows.map(r => ({ project_id: r.project_id || null, allocation_pct: Number(r.allocation_pct) || 0 })));
+      onSaved();
+    } catch (err: any) {
+      setError(err?.message || "Failed to save allocation.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!loaded) return <div className="text-xs text-slate">{item.employee_name || item.employee_number}...</div>;
+
+  return (
+    <div className="border border-ink-mid rounded px-3 py-2 space-y-1.5">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-paper">{item.employee_name || item.employee_number} - {money(item.gross_pay)} gross</span>
+        {!editable && <span className="text-slate">Locked (run posted)</span>}
+      </div>
+      {rows.map((row, idx) => (
+        <div key={idx} className="flex items-center gap-2">
+          <select
+            className={`${inputClass} flex-1 py-1`}
+            disabled={!editable}
+            value={row.project_id}
+            onChange={e => setRows(prev => prev.map((r, i) => (i === idx ? { ...r, project_id: e.target.value } : r)))}
+          >
+            <option value="">HQ / no project</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <input
+            className={`${inputClass} w-20 py-1`}
+            disabled={!editable}
+            value={row.allocation_pct}
+            onChange={e => setRows(prev => prev.map((r, i) => (i === idx ? { ...r, allocation_pct: e.target.value } : r)))}
+          />
+          <span className="text-xs text-slate">%</span>
+          {editable && rows.length > 1 && (
+            <button className="text-xs text-red-300" onClick={() => setRows(prev => prev.filter((_, i) => i !== idx))}>
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      ))}
+      {editable && (
+        <div className="flex items-center justify-between">
+          <button className="text-xs text-signal" onClick={() => setRows(prev => [...prev, { project_id: "", allocation_pct: "0" }])}>+ Add project</button>
+          <div className="flex items-center gap-2">
+            <span className={`text-xs ${Math.abs(total - 100) > 0.01 ? "text-red-300" : "text-slate"}`}>{total}%</span>
+            <button disabled={saving} className="text-xs text-signal font-semibold" onClick={() => void save()}>Save Split</button>
+          </div>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+    </div>
+  );
 }
 
 function CashbookForm({ accounts, projects, cashTx, setCashTx, onSubmit, busy }: { accounts: RecordData[]; projects: RecordData[]; cashTx: RecordData; setCashTx: (value: any) => void; onSubmit: (event: React.FormEvent) => void; busy: boolean }) {

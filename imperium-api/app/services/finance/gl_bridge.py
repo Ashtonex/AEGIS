@@ -14,6 +14,27 @@ three existing, pre-Phase-1 tables:
     auto-proposed inline from routers/financial_performance.py)
   - finance.retention_ledger 'released' movements (1 writer, auto-proposed
     inline from routers/final_accounts.py)
+  - procurement.supplier_invoices approval-for-payment, and posted supplier
+    payment batches (1 writer each, auto-proposed inline from
+    routers/procurement.py / routers/payments.py)
+  - finance.payroll_runs 'posted' status (1 writer, auto-proposed inline
+    from routers/payroll_runs.py) - see propose_journal_for_payroll_run.
+    The journal balances by construction from finance.payroll_items' own
+    granular columns (gross_pay, paye_amount, nssa_employee/employer_amount,
+    aids_levy_amount, other_deduction, net_pay), split by project/HQ per
+    finance.payroll_item_allocations (falling back to the item's own single
+    project_id/department_id when unallocated).
+
+VAT (Phase 8A): propose_journal_for_progress_claim and
+propose_journal_for_supplier_invoice_approval each read progress_claims.vat_amount
+/supplier_invoices.tax_amount directly (columns they already select from) and
+add a line crediting/debiting statutory.vat_payable (account 8000) when VAT
+is present - additive, byte-identical output for any VAT-free record. This
+module still never reaches into the parallel statutory shadow ledger at all
+(no accrual reads or writes of any kind) - the settlement side of VAT
+(clearing 8000 when a liability is actually paid) lives in the separate
+app/services/finance/statutory_gl_bridge.py instead, which is the only
+module that talks to that ledger.
 
 Deliberately NOT bridged here: finance.commitments and finance.variations.
 Both represent exposure/budget-ceiling changes, not realized transactions -
@@ -191,10 +212,25 @@ async def propose_journal_for_progress_claim(
     if certified_amount <= 0:
         raise GeneralLedgerError("Progress claim has no certified amount - nothing to propose.", status_code=422)
 
+    # VAT (Phase 8A): certify_progress_claim computes vat_amount as
+    # additional to certified_amount by default (is_vat_inclusive=false,
+    # the only path any live writer uses today) - VAT is due immediately in
+    # full, never subject to retention. revenue_base/total_owed collapse
+    # back to certified_amount when vat_amount=0, so a VAT-free claim
+    # produces byte-identical lines to before this phase.
+    vat_amount = float(claim["vat_amount"] or 0)
+    is_vat_inclusive = bool(claim["is_vat_inclusive"])
+    if is_vat_inclusive:
+        revenue_base = round(certified_amount - vat_amount, 2)
+        total_owed = certified_amount
+    else:
+        revenue_base = certified_amount
+        total_owed = round(certified_amount + vat_amount, 2)
+
     retention_portion = float(
-        (Decimal(str(certified_amount)) * Decimal(str(claim["retention_pct"])) / Decimal("100")).quantize(Decimal("0.01"))
+        (Decimal(str(revenue_base)) * Decimal(str(claim["retention_pct"])) / Decimal("100")).quantize(Decimal("0.01"))
     )
-    receivable_portion = round(certified_amount - retention_portion, 2)
+    receivable_portion = round(total_owed - retention_portion, 2)
 
     receivable_account_id = await get_account_mapping(db, org_id, "progress_claim.receivable")
     retention_account_id = await get_account_mapping(db, org_id, "progress_claim.retention_receivable")
@@ -206,7 +242,10 @@ async def propose_journal_for_progress_claim(
     lines = [{"account_id": receivable_account_id, "debit_amount": receivable_portion, "project_id": claim["project_id"]}]
     if retention_portion > 0:
         lines.append({"account_id": retention_account_id, "debit_amount": retention_portion, "project_id": claim["project_id"]})
-    lines.append({"account_id": revenue_account_id, "credit_amount": certified_amount, "project_id": claim["project_id"]})
+    lines.append({"account_id": revenue_account_id, "credit_amount": revenue_base, "project_id": claim["project_id"]})
+    if vat_amount > 0:
+        vat_payable_account_id = await get_account_mapping(db, org_id, "statutory.vat_payable")
+        lines.append({"account_id": vat_payable_account_id, "credit_amount": vat_amount, "project_id": claim["project_id"]})
 
     journal = await general_ledger.create_journal(
         db,
@@ -280,7 +319,7 @@ async def propose_journal_for_supplier_invoice_approval(
 
     row = await db.execute(
         text("""
-            SELECT id, project_id, total_amount, invoice_date, supplier_invoice_ref
+            SELECT id, project_id, total_amount, subtotal, tax_amount, input_vat_claimable, invoice_date, supplier_invoice_ref
             FROM procurement.supplier_invoices
             WHERE id = :id AND organization_id = :org_id AND is_deleted = false AND status = 'approved'
         """),
@@ -294,9 +333,23 @@ async def propose_journal_for_supplier_invoice_approval(
     if amount <= 0:
         raise GeneralLedgerError("Supplier invoice has a zero amount - nothing to propose.", status_code=422)
 
+    # VAT (Phase 8A): claimable input VAT reduces net VAT owed rather than
+    # being expensed as project cost - split the debit only when the
+    # invoice is actually VAT-claimable; otherwise byte-identical to before
+    # this phase (the whole total_amount debits the cost account, as it
+    # always has for non-claimable invoices).
+    input_vat = float(invoice["tax_amount"] or 0) if invoice["input_vat_claimable"] else 0.0
+    cost_portion = round(amount - input_vat, 2) if input_vat > 0 else amount
+
     accrued_account_id = await get_account_mapping(db, org_id, "cost_transaction.credit_control")
     payable_account_id = await get_account_mapping(db, org_id, "supplier_invoice.accounts_payable")
     period_id = await _find_period_for_date(db, org_id, invoice["invoice_date"])
+
+    lines = [{"account_id": accrued_account_id, "debit_amount": cost_portion, "project_id": invoice["project_id"]}]
+    if input_vat > 0:
+        vat_payable_account_id = await get_account_mapping(db, org_id, "statutory.vat_payable")
+        lines.append({"account_id": vat_payable_account_id, "debit_amount": input_vat, "project_id": invoice["project_id"]})
+    lines.append({"account_id": payable_account_id, "credit_amount": amount, "project_id": invoice["project_id"]})
 
     journal = await general_ledger.create_journal(
         db,
@@ -305,10 +358,7 @@ async def propose_journal_for_supplier_invoice_approval(
         period_id=period_id,
         entry_date=invoice["invoice_date"],
         description=f"Supplier invoice {invoice['supplier_invoice_ref']} approved for payment",
-        lines=[
-            {"account_id": accrued_account_id, "debit_amount": amount, "project_id": invoice["project_id"]},
-            {"account_id": payable_account_id, "credit_amount": amount, "project_id": invoice["project_id"]},
-        ],
+        lines=lines,
         source_type="supplier_invoice_approval",
         source_id=invoice_id,
     )
@@ -358,6 +408,150 @@ async def propose_journal_for_supplier_payment(
         ],
         source_type="supplier_payment_batch",
         source_id=payment_batch_id,
+    )
+    await _mark_system_proposed(db, journal["id"])
+    return await general_ledger.get_journal(db, org_id=org_id, journal_id=journal["id"])
+
+
+async def propose_journal_for_payroll_run(
+    db: AsyncSession, *, org_id: str, user_id: str, payroll_run_id: UUID
+) -> Optional[dict]:
+    """Payroll run posted -> a journal that balances by construction from
+    finance.payroll_items' own granular columns:
+
+      Debit  payroll.project_labour / payroll.hq_salaries  (per allocation)  = SUM(gross_pay)
+      Debit  payroll.employer_statutory_contributions                       = SUM(nssa_employer_amount)
+      Credit payroll.paye_payable / payroll.aids_levy_payable (often the same account) = SUM(paye_amount) + SUM(aids_levy_amount)
+      Credit payroll.nssa_payable                                           = SUM(nssa_employee_amount + nssa_employer_amount)
+      Credit payroll.other_deductions_payable (omitted if zero)             = SUM(other_deduction)
+      Credit payroll.net_pay_cash                                          = run.net_pay
+
+    Balances because net_pay = gross_pay - paye_amount - nssa_employee_amount
+    - aids_levy_amount - other_deduction per item (routers/payroll_runs.py's
+    own compute_statutory-based arithmetic), and the employer contribution
+    debit is mirrored by an equal amount folded into the NSSA payable credit.
+
+    Known, flagged simplification: employer statutory contributions are
+    booked to a single non-project account rather than pro-rated across each
+    employee's project allocations - immaterial at the project level for a
+    per-employee lump sum, not worth the added complexity here.
+
+    Each employee's gross/net pay is split across finance.journal_lines by
+    finance.payroll_item_allocations; an item with no allocation rows falls
+    back to its own single project_id/department_id at 100%, so an ordinary
+    single-project run needs no extra step.
+    """
+    if await _already_proposed(db, org_id, "payroll_run", payroll_run_id):
+        raise GeneralLedgerError("A GL journal has already been proposed for this payroll run.", status_code=409)
+
+    run_row = await db.execute(
+        text("""
+            SELECT id, run_number, payment_date, net_pay
+            FROM finance.payroll_runs
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false AND status = 'posted'
+        """),
+        {"id": payroll_run_id, "org_id": org_id},
+    )
+    run = run_row.mappings().first()
+    if not run:
+        raise GeneralLedgerError("Posted payroll run not found.", status_code=404)
+
+    items_rows = await db.execute(
+        text("""
+            SELECT id, project_id, department_id, gross_pay, net_pay,
+                   paye_amount, nssa_employee_amount, nssa_employer_amount, aids_levy_amount, other_deduction
+            FROM finance.payroll_items WHERE payroll_run_id = :run_id AND organization_id = :org_id
+        """),
+        {"run_id": payroll_run_id, "org_id": org_id},
+    )
+    items = [dict(r._mapping) for r in items_rows]
+    if not items:
+        raise GeneralLedgerError("Payroll run has no items - nothing to propose.", status_code=422)
+
+    alloc_rows = await db.execute(
+        text("""
+            SELECT payroll_item_id, project_id, department_id, allocation_pct
+            FROM finance.payroll_item_allocations
+            WHERE organization_id = :org_id
+              AND payroll_item_id = ANY(:item_ids)
+        """),
+        {"org_id": org_id, "item_ids": [i["id"] for i in items]},
+    )
+    allocations_by_item: dict[Any, list[dict]] = {}
+    for r in alloc_rows.mappings():
+        allocations_by_item.setdefault(r["payroll_item_id"], []).append(dict(r))
+
+    project_labour_account = await get_account_mapping(db, org_id, "payroll.project_labour")
+    hq_salaries_account = await get_account_mapping(db, org_id, "payroll.hq_salaries")
+    employer_stat_account = await get_account_mapping(db, org_id, "payroll.employer_statutory_contributions")
+    paye_account = await get_account_mapping(db, org_id, "payroll.paye_payable")
+    aids_levy_account = await get_account_mapping(db, org_id, "payroll.aids_levy_payable")
+    nssa_account = await get_account_mapping(db, org_id, "payroll.nssa_payable")
+    other_deductions_account = await get_account_mapping(db, org_id, "payroll.other_deductions_payable")
+    net_pay_cash_account = await get_account_mapping(db, org_id, "payroll.net_pay_cash")
+
+    debit_wage_lines: dict[tuple, Decimal] = {}
+    employer_stat_total = Decimal("0")
+    paye_total = Decimal("0")
+    aids_levy_total = Decimal("0")
+    nssa_total = Decimal("0")
+    other_deductions_total = Decimal("0")
+
+    for item in items:
+        item_allocations = allocations_by_item.get(item["id"]) or [
+            {"project_id": item["project_id"], "department_id": item["department_id"], "allocation_pct": Decimal("100")}
+        ]
+        gross = Decimal(str(item["gross_pay"] or 0))
+        for alloc in item_allocations:
+            pct = Decimal(str(alloc["allocation_pct"]))
+            amount = (gross * pct / Decimal("100")).quantize(Decimal("0.01"))
+            account_id = project_labour_account if alloc.get("project_id") else hq_salaries_account
+            key = (account_id, alloc.get("project_id"), alloc.get("department_id"))
+            debit_wage_lines[key] = debit_wage_lines.get(key, Decimal("0")) + amount
+
+        employer_stat_total += Decimal(str(item["nssa_employer_amount"] or 0))
+        paye_total += Decimal(str(item["paye_amount"] or 0))
+        aids_levy_total += Decimal(str(item["aids_levy_amount"] or 0))
+        nssa_total += Decimal(str(item["nssa_employee_amount"] or 0)) + Decimal(str(item["nssa_employer_amount"] or 0))
+        other_deductions_total += Decimal(str(item["other_deduction"] or 0))
+
+    lines: list[dict] = [
+        {"account_id": account_id, "debit_amount": float(amount), "project_id": project_id, "department_id": department_id}
+        for (account_id, project_id, department_id), amount in debit_wage_lines.items()
+        if amount > 0
+    ]
+    if employer_stat_total > 0:
+        lines.append({"account_id": employer_stat_account, "debit_amount": float(employer_stat_total)})
+
+    # PAYE and AIDS Levy often share the same account (8100) by default -
+    # combine into one credit line per distinct account rather than two.
+    credit_totals: dict[Any, Decimal] = {}
+    for account_id, amount in (
+        (paye_account, paye_total),
+        (aids_levy_account, aids_levy_total),
+        (nssa_account, nssa_total),
+        (other_deductions_account, other_deductions_total),
+        (net_pay_cash_account, Decimal(str(run["net_pay"] or 0))),
+    ):
+        if amount > 0:
+            credit_totals[account_id] = credit_totals.get(account_id, Decimal("0")) + amount
+
+    lines.extend(
+        {"account_id": account_id, "credit_amount": float(amount)} for account_id, amount in credit_totals.items()
+    )
+
+    period_id = await _find_period_for_date(db, org_id, run["payment_date"])
+
+    journal = await general_ledger.create_journal(
+        db,
+        org_id=org_id,
+        user_id=user_id,
+        period_id=period_id,
+        entry_date=run["payment_date"],
+        description=f"Payroll run {run['run_number']} posted",
+        lines=lines,
+        source_type="payroll_run",
+        source_id=payroll_run_id,
     )
     await _mark_system_proposed(db, journal["id"])
     return await general_ledger.get_journal(db, org_id=org_id, journal_id=journal["id"])

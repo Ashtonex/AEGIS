@@ -75,6 +75,11 @@ class FinanceTreasuryPayrollContractTests(unittest.TestCase):
         self.assertNotIn('@router.get("/{item_id}")', ROUTER)
 
     def test_frontend_calls_real_finance_endpoints_without_fallbacks(self):
+        # Payroll run create/decision/post moved to payroll_runs.py in Phase
+        # 7A - it has the correct gross-pay/statutory logic and is where the
+        # GL bridge and multi-project allocation hooks live. Profile CRUD
+        # stays on financial-performance/payroll/profiles (not deprecated,
+        # no equivalent on payroll_runs.py).
         for helper in [
             "getFinanceCashAccounts",
             "createFinanceCashAccount",
@@ -85,10 +90,12 @@ class FinanceTreasuryPayrollContractTests(unittest.TestCase):
             "postFinanceSupplierPaymentBatch",
             "getFinancePayrollProfiles",
             "upsertFinancePayrollProfile",
-            "getFinancePayrollRuns",
-            "createFinancePayrollRun",
-            "decideFinancePayrollRun",
-            "postFinancePayrollRun",
+            "getPayrollRuns",
+            "getPayrollRun",
+            "createPayrollRun",
+            "decidePayrollRun",
+            "getPayrollItemAllocations",
+            "putPayrollItemAllocations",
         ]:
             self.assertIn(helper, WEB_API)
         for path in [
@@ -97,10 +104,15 @@ class FinanceTreasuryPayrollContractTests(unittest.TestCase):
             "/api/v1/financial-performance/receipts/allocate",
             "/api/v1/financial-performance/supplier-payments",
             "/api/v1/financial-performance/payroll/profiles",
-            "/api/v1/financial-performance/payroll/runs",
+            "/api/v1/payroll-runs/",
         ]:
             self.assertIn(path, WEB_API)
         self.assertIn("allowFallback: false", WEB_API)
+        # Regression guard: the deprecated payroll-run wrappers must not
+        # come back once superseded - re-adding them would recreate the
+        # exact duplicate-logic problem the Phase 7A audit flagged.
+        for stale_helper in ["getFinancePayrollRuns", "createFinancePayrollRun", "decideFinancePayrollRun", "postFinancePayrollRun"]:
+            self.assertNotIn(stale_helper, WEB_API)
 
     def test_finance_dashboard_surfaces_operational_tabs(self):
         for tab in ["cash-accounts", "cashbook", "supplier-payments", "payroll"]:
@@ -112,8 +124,8 @@ class FinanceTreasuryPayrollContractTests(unittest.TestCase):
             "allocateFinanceReceipt",
             "postFinanceSupplierPaymentBatch",
             "upsertFinancePayrollProfile",
-            "createFinancePayrollRun",
-            "postFinancePayrollRun",
+            "createPayrollRun",
+            "decidePayrollRun",
         ]:
             self.assertIn(workflow, OPS_PANEL)
 

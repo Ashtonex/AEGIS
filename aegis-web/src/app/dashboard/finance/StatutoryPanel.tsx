@@ -11,6 +11,7 @@ import {
   getFinanceRateTables,
   createFinanceRateTable,
   deactivateFinanceRateTable,
+  getVatNetPosition,
 } from "@/lib/api";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 
@@ -50,6 +51,7 @@ export function StatutoryPanel() {
   const [summary, setSummary] = useState<RecordData[]>([]);
   const [liabilities, setLiabilities] = useState<RecordData[]>([]);
   const [rateTables, setRateTables] = useState<RecordData[]>([]);
+  const [vatPosition, setVatPosition] = useState<RecordData | null>(null);
   const [showRecompute, setShowRecompute] = useState(false);
   const [recomputeForm, setRecomputeForm] = useState({ period_start: monthStart(), period_end: today() });
   const [showNewRateTable, setShowNewRateTable] = useState(false);
@@ -60,14 +62,16 @@ export function StatutoryPanel() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [summaryRes, liabilitiesRes, rateTablesRes] = await Promise.allSettled([
+    const [summaryRes, liabilitiesRes, rateTablesRes, vatPositionRes] = await Promise.allSettled([
       getFinanceStatutorySummary(),
       getFinanceStatutoryLiabilities(),
       getFinanceRateTables(),
+      getVatNetPosition(),
     ]);
     if (summaryRes.status === "fulfilled") setSummary(summaryRes.value.data || []);
     if (liabilitiesRes.status === "fulfilled") setLiabilities(liabilitiesRes.value.data || []);
     if (rateTablesRes.status === "fulfilled") setRateTables(rateTablesRes.value.data || []);
+    if (vatPositionRes.status === "fulfilled") setVatPosition(vatPositionRes.value.data || null);
     setLoading(false);
   }, []);
 
@@ -181,6 +185,32 @@ export function StatutoryPanel() {
           );
         })}
       </div>
+
+      {/* VAT Net Position */}
+      {vatPosition && (
+        <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[10px] uppercase font-mono tracking-widest text-slate">VAT Net Position — {vatPosition.period_start} → {vatPosition.period_end}</p>
+            {vatPosition.is_fallback_period && (
+              <span className="text-[10px] text-amber-400">No VAT filing profile configured — showing calendar month</span>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Output VAT</p>
+              <p className="text-lg font-semibold text-paper mt-1">{money(vatPosition.output_vat)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Input VAT</p>
+              <p className="text-lg font-semibold text-paper mt-1">{money(vatPosition.input_vat)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Net VAT Payable</p>
+              <p className={`text-lg font-semibold mt-1 ${Number(vatPosition.net_vat_payable) > 0 ? "text-amber-400" : "text-emerald-400"}`}>{money(vatPosition.net_vat_payable)}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-2 border-b border-ink-mid">
         <button onClick={() => setView("liabilities")} className={`px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px ${view === "liabilities" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}>Liabilities</button>
