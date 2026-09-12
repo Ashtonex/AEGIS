@@ -4060,6 +4060,10 @@ export async function getFiscalComplianceSummary(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/fiscal-compliance/summary', { cache: 'no-store', allowFallback: false });
 }
 
+export async function getTaxCalendar(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/statutory/tax-calendar', { cache: 'no-store', allowFallback: false });
+}
+
 export async function recomputeFinanceStatutory(payload: { period_start: string; period_end: string; currency?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/finance/statutory/recompute', {
     method: 'POST', body: JSON.stringify(payload), allowFallback: false,

@@ -20,7 +20,9 @@ from app.services.finance.ccb_monitor import (
     run_budget_overrun_check,
     run_requisition_budget_breach_check,
     run_variance_staleness_check,
+    run_weekly_boq_pace_variance_check,
 )
+from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
 from app.services.workforce_events import dispatch_workforce_events
 from app.events.bus import EventBus
 
@@ -296,6 +298,60 @@ async def run_ccb_variance_staleness_check_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def run_ccb_weekly_boq_pace_variance_check_job(ctx):
+    """Daily cron (CCB automation Phase 5): cross-checks planned weekly BOQ
+    quantities against approved measured progress for the same week and
+    against daily site report presence, same daily cadence rationale as the
+    other CCB sweeps above - a week's pace doesn't meaningfully change
+    hour to hour.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await run_weekly_boq_pace_variance_check(db)
+            await db.commit()
+        return result
+    except Exception as exc:
+        logger.exception(f"CCB weekly BOQ pace-variance check failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def check_tax_deadline_alerts_job(ctx):
+    """Daily cron (Phase 8C): staged tax-deadline alerts at 30/14/7/3/1 days
+    out and overdue, for every organization. Unlike poll_ticket_sla_triggers_job's
+    per-day dedupe key, a liability's due_date is fixed once accrued, so each
+    (liability_id, stage) pair mathematically matches on exactly one calendar
+    day - the dedupe key here is long-lived (no date component) so a stage
+    can never re-fire for the same liability once it has.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    redis_pool = ctx["redis"]
+    notified = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            candidates = await list_deadline_candidates(db, org_id=None)
+            for candidate in candidates:
+                dedupe_key = f"aegis:tax_deadline:{candidate['id']}:{candidate['stage']}"
+                if await redis_pool.get(dedupe_key):
+                    continue
+                await notify_deadline(db, candidate=candidate)
+                await redis_pool.setex(dedupe_key, 180 * 86400, "true")
+                notified += 1
+            await db.commit()
+        if notified:
+            logger.info(f"Tax deadline alert sweep notified {notified} liabilit(y/ies).")
+        return {"checked": len(candidates), "notified": notified}
+    except Exception as exc:
+        logger.exception(f"Tax deadline alert sweep failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 def time_now():
     from datetime import datetime, timezone
 
@@ -366,6 +422,8 @@ class WorkerSettings:
         run_ccb_budget_overrun_check_job,
         run_ccb_requisition_breach_check_job,
         run_ccb_variance_staleness_check_job,
+        run_ccb_weekly_boq_pace_variance_check_job,
+        check_tax_deadline_alerts_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -386,6 +444,13 @@ class WorkerSettings:
             minute=30,
             run_at_startup=False,
         ),
+        cron(
+            run_ccb_weekly_boq_pace_variance_check_job,
+            hour=3,
+            minute=45,
+            run_at_startup=False,
+        ),
+        cron(check_tax_deadline_alerts_job, hour=4, minute=0, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

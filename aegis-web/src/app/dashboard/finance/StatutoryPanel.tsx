@@ -16,6 +16,7 @@ import {
   getFiscalComplianceSummary,
   getStatutoryProfile,
   updateStatutoryProfile,
+  getTaxCalendar,
 } from "@/lib/api";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 
@@ -57,6 +58,7 @@ export function StatutoryPanel() {
   const [rateTables, setRateTables] = useState<RecordData[]>([]);
   const [vatPosition, setVatPosition] = useState<RecordData | null>(null);
   const [fiscalCompliance, setFiscalCompliance] = useState<RecordData | null>(null);
+  const [taxCalendar, setTaxCalendar] = useState<RecordData[]>([]);
   const [statutoryProfile, setStatutoryProfile] = useState<RecordData | null>(null);
   const [showFiscalDeviceForm, setShowFiscalDeviceForm] = useState(false);
   const [fiscalDeviceForm, setFiscalDeviceForm] = useState({ fiscal_device_serial: "", fiscal_device_model: "", fiscal_device_registered_at: "" });
@@ -70,19 +72,21 @@ export function StatutoryPanel() {
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [summaryRes, liabilitiesRes, rateTablesRes, vatPositionRes, fiscalComplianceRes, profileRes] = await Promise.allSettled([
+    const [summaryRes, liabilitiesRes, rateTablesRes, vatPositionRes, fiscalComplianceRes, profileRes, taxCalendarRes] = await Promise.allSettled([
       getFinanceStatutorySummary(),
       getFinanceStatutoryLiabilities(),
       getFinanceRateTables(),
       getVatNetPosition(),
       getFiscalComplianceSummary(),
       getStatutoryProfile(),
+      getTaxCalendar(),
     ]);
     if (summaryRes.status === "fulfilled") setSummary(summaryRes.value.data || []);
     if (liabilitiesRes.status === "fulfilled") setLiabilities(liabilitiesRes.value.data || []);
     if (rateTablesRes.status === "fulfilled") setRateTables(rateTablesRes.value.data || []);
     if (vatPositionRes.status === "fulfilled") setVatPosition(vatPositionRes.value.data || null);
     if (fiscalComplianceRes.status === "fulfilled") setFiscalCompliance(fiscalComplianceRes.value.data || null);
+    if (taxCalendarRes.status === "fulfilled") setTaxCalendar(taxCalendarRes.value.data || []);
     if (profileRes.status === "fulfilled") {
       const profile = profileRes.value.data || {};
       setStatutoryProfile(profile);
@@ -291,6 +295,28 @@ export function StatutoryPanel() {
           <p className="text-[10px] text-slate mt-3">
             Records the fiscal invoice number your own fiscal device issued for each certified claim. AEGIS does not generate fiscal invoice numbers or connect to a fiscal device.
           </p>
+        </div>
+      )}
+
+      {/* Upcoming Tax Deadlines */}
+      {taxCalendar.length > 0 && (
+        <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+          <p className="text-[10px] uppercase font-mono tracking-widest text-slate mb-3">Upcoming Tax Deadlines</p>
+          <div className="space-y-1.5">
+            {taxCalendar.map((d) => {
+              const days = Number(d.days_until_due);
+              const colorClass = days < 0 || days <= 3 ? "text-red-400" : days <= 14 ? "text-amber-400" : "text-paper";
+              const label = days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? "Due today" : `Due in ${days}d`;
+              return (
+                <div key={d.id} className="flex items-center justify-between text-xs border-b border-ink-mid/50 pb-1.5 last:border-0 last:pb-0">
+                  <span className="text-paper uppercase font-mono">{d.authority} - {String(d.liability_type).replace(/_/g, " ")}</span>
+                  <span className="text-slate-light">{money(d.outstanding_amount)}</span>
+                  <span className="text-slate-light">{d.due_date}</span>
+                  <span className={`font-semibold ${colorClass}`}>{label}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

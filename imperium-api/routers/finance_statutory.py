@@ -22,7 +22,7 @@ from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok
 from app.services.finance.statutory_accrual import accrue_liability_line
-from app.services.finance import statutory_gl_bridge, vat_engine
+from app.services.finance import statutory_gl_bridge, vat_engine, tax_calendar
 from app.services.finance.general_ledger import GeneralLedgerError
 
 router = APIRouter()
@@ -575,6 +575,19 @@ async def fiscal_compliance_summary(
         },
         "Fiscal compliance summary retrieved.",
     )
+
+
+@router.get("/tax-calendar")
+async def tax_calendar_upcoming_deadlines(
+    user: dict = Depends(require_permission("finance.statutory.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every unpaid liability with a known due_date, ordered soonest first.
+    A plain live list - the staged 30/14/7/3/1-day/overdue alerting itself
+    runs as a daily cron job (see app/workers/arq_worker.py's
+    check_tax_deadline_alerts_job), not from this endpoint."""
+    deadlines = await tax_calendar.get_upcoming_deadlines(db, org_id=user["org_id"])
+    return ok(deadlines, "Tax calendar retrieved.")
 
 
 # ---------------------------------------------------------------------------
