@@ -4171,6 +4171,8 @@ export async function createHistoricalRevenue(payload: {
   amount: number;
   historical_date: string;
   description?: string;
+  evidence_quality: "A" | "B" | "C" | "D" | "E";
+  document_id?: string;
 }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/historical/revenue', {
     method: 'POST',
@@ -4186,12 +4188,31 @@ export async function createHistoricalCostActivity(payload: {
   amount: number;
   historical_date: string;
   paid?: boolean;
+  evidence_quality: "A" | "B" | "C" | "D" | "E";
+  document_id?: string;
 }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/historical/cost-activities', {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,
   });
+}
+
+export async function setHistoricalReconciliationBaseline(payload: {
+  project_id: string;
+  category: "revenue" | "cost";
+  expected_amount: number;
+  source_description?: string;
+}): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/financial-performance/historical/reconciliation-baseline', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getHistoricalReconciliation(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/financial-performance/historical/reconciliation', { cache: 'no-store', allowFallback: false });
 }
 
 export interface FinancialStatementParams {

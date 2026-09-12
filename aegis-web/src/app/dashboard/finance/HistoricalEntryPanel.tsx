@@ -11,7 +11,9 @@ import {
   getCrmOrganizations,
   getFinanceCashAccounts,
   getFinanceDepartments,
+  getHistoricalReconciliation,
   getInternalProjects,
+  setHistoricalReconciliationBaseline,
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
@@ -31,6 +33,14 @@ const labelClass = "block text-xs font-mono uppercase text-slate mb-1";
 
 const COST_CATEGORIES = ["labour", "equipment", "materials", "subcontract", "overhead", "other"] as const;
 
+const EVIDENCE_GRADES = [
+  { value: "A", label: "A - Verified, source document attached" },
+  { value: "B", label: "B - Verified against a secondary record" },
+  { value: "C", label: "C - Corroborated recollection" },
+  { value: "D", label: "D - Single-source best estimate" },
+  { value: "E", label: "E - Unverified / unknown provenance" },
+] as const;
+
 export function HistoricalEntryPanel() {
   const [projects, setProjects] = useState<RecordData[]>([]);
   const [departments, setDepartments] = useState<RecordData[]>([]);
@@ -39,6 +49,11 @@ export function HistoricalEntryPanel() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const [view, setView] = useState<"entry" | "reconciliation">("entry");
+  const [reconciliation, setReconciliation] = useState<RecordData[]>([]);
+  const [reconciliationLoading, setReconciliationLoading] = useState(false);
+  const [baselineForm, setBaselineForm] = useState<Record<string, { revenue: string; cost: string }>>({});
 
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [showNewProject, setShowNewProject] = useState(false);
@@ -51,9 +66,10 @@ export function HistoricalEntryPanel() {
   const [cashAccountForm, setCashAccountForm] = useState({
     account_code: "", account_name: "Main Account", account_type: "bank", opening_balance: "0",
   });
-  const [revenueForm, setRevenueForm] = useState({ amount: "", historical_date: today(), description: "" });
+  const [revenueForm, setRevenueForm] = useState({ amount: "", historical_date: today(), description: "", evidence_quality: "" as string, document_id: "" });
   const [costForm, setCostForm] = useState({
     cost_category: "materials" as (typeof COST_CATEGORIES)[number], description: "", amount: "", historical_date: today(), paid: true,
+    evidence_quality: "" as string, document_id: "",
   });
 
   const load = useCallback(async () => {
@@ -144,6 +160,10 @@ export function HistoricalEntryPanel() {
       setNotice("Select a project and enter an amount.");
       return;
     }
+    if (!revenueForm.evidence_quality) {
+      setNotice("Choose an evidence-quality grade before recording this revenue.");
+      return;
+    }
     setBusy("revenue");
     setNotice(null);
     try {
@@ -152,9 +172,11 @@ export function HistoricalEntryPanel() {
         amount: Number(revenueForm.amount),
         historical_date: revenueForm.historical_date,
         description: revenueForm.description || undefined,
+        evidence_quality: revenueForm.evidence_quality as "A" | "B" | "C" | "D" | "E",
+        document_id: revenueForm.document_id || undefined,
       });
       setNotice(`Historical revenue of ${money(Number(revenueForm.amount))} recorded and marked paid.`);
-      setRevenueForm({ amount: "", historical_date: today(), description: "" });
+      setRevenueForm({ amount: "", historical_date: today(), description: "", evidence_quality: "", document_id: "" });
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Could not record historical revenue.");
     } finally {
@@ -168,6 +190,10 @@ export function HistoricalEntryPanel() {
       setNotice("Select a project, description, and amount are required.");
       return;
     }
+    if (!costForm.evidence_quality) {
+      setNotice("Choose an evidence-quality grade before recording this activity.");
+      return;
+    }
     setBusy("cost");
     setNotice(null);
     try {
@@ -178,13 +204,44 @@ export function HistoricalEntryPanel() {
         amount: Number(costForm.amount),
         historical_date: costForm.historical_date,
         paid: costForm.paid,
+        evidence_quality: costForm.evidence_quality as "A" | "B" | "C" | "D" | "E",
+        document_id: costForm.document_id || undefined,
       });
       setNotice(`Activity "${costForm.description}" recorded${costForm.paid ? " and posted to cash." : "."}`);
-      setCostForm((c) => ({ ...c, description: "", amount: "" }));
+      setCostForm((c) => ({ ...c, description: "", amount: "", evidence_quality: "", document_id: "" }));
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "Could not record the activity.");
     } finally {
       setBusy(null);
+    }
+  }
+
+  const loadReconciliation = useCallback(async () => {
+    setReconciliationLoading(true);
+    try {
+      const res = await getHistoricalReconciliation();
+      setReconciliation(res.data ?? []);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not load the reconciliation dashboard.");
+    } finally {
+      setReconciliationLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view === "reconciliation") void loadReconciliation();
+  }, [view, loadReconciliation]);
+
+  async function saveBaseline(projectId: string, category: "revenue" | "cost") {
+    const form = baselineForm[projectId];
+    const amountStr = category === "revenue" ? form?.revenue : form?.cost;
+    if (!amountStr) return;
+    try {
+      await setHistoricalReconciliationBaseline({ project_id: projectId, category, expected_amount: Number(amountStr) });
+      setNotice("Reconciliation baseline saved.");
+      await loadReconciliation();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Could not save the baseline.");
     }
   }
 
@@ -208,6 +265,79 @@ export function HistoricalEntryPanel() {
 
       {notice && <p className="rounded border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper">{notice}</p>}
 
+      <div className="flex items-center gap-2 border-b border-ink-mid">
+        <button onClick={() => setView("entry")} className={`px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px ${view === "entry" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}>Entry</button>
+        <button onClick={() => setView("reconciliation")} className={`px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px ${view === "reconciliation" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}>Reconciliation</button>
+      </div>
+
+      {view === "reconciliation" && (
+        <div className="space-y-4">
+          {reconciliationLoading ? (
+            <div className="flex items-center justify-center p-8 text-slate"><Loader2 className="h-5 w-5 animate-spin" /></div>
+          ) : reconciliation.length === 0 ? (
+            <p className="rounded border border-ink-mid bg-ink-light px-4 py-6 text-center text-sm text-slate">No historical projects recorded yet.</p>
+          ) : (
+            reconciliation.map((r) => (
+              <div key={r.project_id} className="rounded-sm border border-ink-mid bg-ink-light p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-paper">{r.project_name} {r.project_code ? <span className="text-slate-light font-mono text-xs">({r.project_code})</span> : null}</p>
+                  {r.has_unverified_entries && <span className="rounded-sm border border-amber-500/30 bg-amber-950/20 px-2 py-0.5 text-[10px] uppercase font-mono text-amber-300">Has unverified entries</span>}
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <p className="text-[10px] uppercase font-mono text-slate">Recorded Revenue</p>
+                    <p className="text-paper font-semibold">{money(r.recorded_revenue)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-mono text-slate">Expected Revenue</p>
+                    <p className="text-slate-light">{r.expected_revenue === null ? "No baseline set" : money(r.expected_revenue)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-mono text-slate">Recorded Cost</p>
+                    <p className="text-paper font-semibold">{money(r.recorded_cost)}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-mono text-slate">Expected Cost</p>
+                    <p className="text-slate-light">{r.expected_cost === null ? "No baseline set" : money(r.expected_cost)}</p>
+                  </div>
+                </div>
+                {(r.revenue_variance !== null || r.cost_variance !== null) && (
+                  <div className="flex gap-4 text-xs">
+                    {r.revenue_variance !== null && (
+                      <span className={r.revenue_variance === 0 ? "text-emerald-400" : "text-amber-400"}>Revenue variance: {money(r.revenue_variance)}</span>
+                    )}
+                    {r.cost_variance !== null && (
+                      <span className={r.cost_variance === 0 ? "text-emerald-400" : "text-amber-400"}>Cost variance: {money(r.cost_variance)}</span>
+                    )}
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-1.5">
+                  {(["A", "B", "C", "D", "E"] as const).map((g) => (
+                    <span key={g} className="rounded-sm border border-ink-mid px-2 py-0.5 text-[10px] font-mono text-slate-light">
+                      {g}: {r.evidence_quality_counts?.[g] ?? 0}
+                    </span>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-end gap-2 border-t border-ink-mid pt-3">
+                  <div>
+                    <label className={labelClass}>Set expected revenue</label>
+                    <input type="number" step="0.01" className={`${inputClass} w-36`} value={baselineForm[r.project_id]?.revenue ?? ""} onChange={(e) => setBaselineForm((f) => ({ ...f, [r.project_id]: { revenue: e.target.value, cost: f[r.project_id]?.cost ?? "" } }))} />
+                  </div>
+                  <button type="button" onClick={() => void saveBaseline(r.project_id, "revenue")} className="text-xs text-signal hover:underline">Save</button>
+                  <div>
+                    <label className={labelClass}>Set expected cost</label>
+                    <input type="number" step="0.01" className={`${inputClass} w-36`} value={baselineForm[r.project_id]?.cost ?? ""} onChange={(e) => setBaselineForm((f) => ({ ...f, [r.project_id]: { revenue: f[r.project_id]?.revenue ?? "", cost: e.target.value } }))} />
+                  </div>
+                  <button type="button" onClick={() => void saveBaseline(r.project_id, "cost")} className="text-xs text-signal hover:underline">Save</button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {view === "entry" && (
+      <>
       {/* Opening cash balance */}
       <form onSubmit={createOpeningBalance} className="rounded-sm border border-ink-mid bg-ink-light">
         <div className="flex items-center gap-2 border-b border-ink-mid bg-ink/30 px-4 py-3">
@@ -362,6 +492,17 @@ export function HistoricalEntryPanel() {
                 <label className={labelClass}>Description (optional)</label>
                 <input value={revenueForm.description} onChange={(e) => setRevenueForm((c) => ({ ...c, description: e.target.value }))} className={inputClass} placeholder="e.g. Full contract value, paid on completion" />
               </div>
+              <div className="md:col-span-2">
+                <label className={labelClass}>Evidence quality (required)</label>
+                <select value={revenueForm.evidence_quality} onChange={(e) => setRevenueForm((c) => ({ ...c, evidence_quality: e.target.value }))} className={inputClass}>
+                  <option value="">Select a grade</option>
+                  {EVIDENCE_GRADES.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className={labelClass}>Source document ID (optional)</label>
+                <input value={revenueForm.document_id} onChange={(e) => setRevenueForm((c) => ({ ...c, document_id: e.target.value }))} className={inputClass} placeholder="Paste an existing document's ID" />
+              </div>
               <div className="md:col-span-4">
                 <button type="submit" disabled={busy === "revenue"} className={buttonClass}>
                   {busy === "revenue" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Banknote className="h-4 w-4" />}
@@ -406,6 +547,17 @@ export function HistoricalEntryPanel() {
                   Already paid (affects cash position)
                 </label>
               </div>
+              <div className="md:col-span-3">
+                <label className={labelClass}>Evidence quality (required)</label>
+                <select value={costForm.evidence_quality} onChange={(e) => setCostForm((c) => ({ ...c, evidence_quality: e.target.value }))} className={inputClass}>
+                  <option value="">Select a grade</option>
+                  {EVIDENCE_GRADES.map((g) => <option key={g.value} value={g.value}>{g.label}</option>)}
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className={labelClass}>Source document ID (optional)</label>
+                <input value={costForm.document_id} onChange={(e) => setCostForm((c) => ({ ...c, document_id: e.target.value }))} className={inputClass} placeholder="Paste an existing document's ID" />
+              </div>
               <div className="md:col-span-5">
                 <button type="submit" disabled={busy === "cost"} className={buttonClass}>
                   {busy === "cost" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
@@ -415,6 +567,8 @@ export function HistoricalEntryPanel() {
             </div>
           </form>
         </>
+      )}
+      </>
       )}
     </div>
   );

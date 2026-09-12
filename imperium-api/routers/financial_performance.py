@@ -1065,6 +1065,11 @@ class HistoricalRevenueCreate(BaseModel):
     amount: float = Field(gt=0)
     historical_date: date
     description: Optional[str] = Field(default=None, max_length=500)
+    # Phase 9: a required, honest self-assessment - A (verified against an
+    # attached source document) down to E (unverified/unknown provenance) -
+    # never presented as fully verified without the preparer saying so.
+    evidence_quality: str = Field(pattern=r"^[A-E]$")
+    document_id: Optional[UUID] = None
 
 
 class HistoricalCostActivityCreate(BaseModel):
@@ -1076,6 +1081,30 @@ class HistoricalCostActivityCreate(BaseModel):
     amount: float = Field(gt=0)
     historical_date: date
     paid: bool = True
+    evidence_quality: str = Field(pattern=r"^[A-E]$")
+    document_id: Optional[UUID] = None
+
+
+async def _link_historical_evidence_document(
+    db: AsyncSession, *, org_id: str, document_id: UUID, entity_type: str, entity_id: UUID, user_id: str
+) -> None:
+    """Same raw core.document_links insert pattern already used by the live
+    client-payment-request clearing flow (entity_type='client_payment_request')
+    - bypasses the generic /documents/{id}/links endpoint's hardcoded
+    entity-type allow-list rather than extending it for this narrow case."""
+    doc = await db.execute(
+        text("SELECT 1 FROM core.documents WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": str(document_id), "org_id": org_id},
+    )
+    if not doc.first():
+        raise HTTPException(status_code=404, detail="Document not found.")
+    await db.execute(
+        text("""
+            INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, link_role, linked_by)
+            VALUES (:org_id, :document_id, :entity_type, :entity_id, 'evidence', :user_id)
+        """),
+        {"org_id": org_id, "document_id": str(document_id), "entity_type": entity_type, "entity_id": str(entity_id), "user_id": user_id},
+    )
 
 
 @router.post("/historical/projects", status_code=status.HTTP_201_CREATED)
@@ -1148,11 +1177,11 @@ async def create_historical_project(
             text("""
             INSERT INTO projects.projects (
                 organization_id, created_by, name, status, project_code, project_type,
-                client_name, start_date, client_org_id, department_id
+                client_name, start_date, client_org_id, department_id, is_historical
             ) VALUES (
                 :org_id, :user_id, :name, 'active', :project_code, :project_type,
-                :client_name, :start_date, :client_org_id, :department_id
-            ) RETURNING id, name, status, project_code, department_id, client_org_id
+                :client_name, :start_date, :client_org_id, :department_id, true
+            ) RETURNING id, name, status, project_code, department_id, client_org_id, is_historical
         """),
             {
                 "org_id": org_id, "user_id": user["user_id"], "name": payload.name,
@@ -1213,12 +1242,12 @@ async def create_historical_revenue(
                 organization_id, claim_number, project_id, claim_period_start, claim_period_end,
                 contract_value, this_claim_amount, retention_pct, retention_amount, net_claim_amount,
                 status, submitted_by, submitted_at, certified_amount, certified_by, certified_at,
-                vat_amount, vat_rate_table_id, notes, created_by
+                vat_amount, vat_rate_table_id, notes, created_by, evidence_quality
             ) VALUES (
                 :org_id, :claim_number, :project_id, :historical_date, :historical_date,
                 :amount, :amount, 0, 0, :amount,
                 'certified', :user_id, :historical_timestamp, :amount, :user_id, :historical_timestamp,
-                :vat_amount, :rate_table_id, :notes, :user_id
+                :vat_amount, :rate_table_id, :notes, :user_id, :evidence_quality
             ) RETURNING id, project_id
         """),
             {
@@ -1228,10 +1257,17 @@ async def create_historical_revenue(
                 "amount": payload.amount,
                 "user_id": user["user_id"], "vat_amount": vat_amount, "rate_table_id": rate_table_id,
                 "notes": f"{description} (historical backfill, recorded {date.today().isoformat()})",
+                "evidence_quality": payload.evidence_quality,
             },
         )
     ).first()
     claim_id = claim_row.id
+
+    if payload.document_id:
+        await _link_historical_evidence_document(
+            db, org_id=org_id, document_id=payload.document_id, entity_type="historical_revenue",
+            entity_id=claim_id, user_id=user["user_id"],
+        )
 
     if vat_amount > 0:
         dept_row = (
@@ -1283,16 +1319,27 @@ async def create_historical_revenue(
             "project_id": str(payload.project_id), "amount": payload.amount, "user_id": user["user_id"],
         },
     )
+    # Phase 9: propose the revenue-recognition GL journal while the claim is
+    # still 'certified' (propose_journal_for_progress_claim requires that
+    # status) - the exact gap the audit found: historical revenue used to
+    # never reach the GL bridge at all, unlike historical cost activities.
+    # Non-blocking, matching every other auto-propose hook in this initiative.
+    gl_proposal_warning = None
+    try:
+        await gl_bridge.propose_journal_for_progress_claim(db, org_id=org_id, user_id=user["user_id"], claim_id=claim_id)
+    except GeneralLedgerError as exc:
+        gl_proposal_warning = str(exc)
+
     await db.execute(
         text("UPDATE finance.progress_claims SET status = 'paid', updated_at = NOW() WHERE id = :id"),
         {"id": str(claim_id)},
     )
 
     await db.commit()
-    return ok(
-        {"id": str(claim_id), "claim_number": claim_number, "status": "paid", "amount": payload.amount, "vat_amount": vat_amount},
-        "Historical revenue recorded.",
-    )
+    response = {"id": str(claim_id), "claim_number": claim_number, "status": "paid", "amount": payload.amount, "vat_amount": vat_amount}
+    if gl_proposal_warning:
+        response["gl_proposal_warning"] = gl_proposal_warning
+    return ok(response, "Historical revenue recorded.")
 
 
 @router.post("/historical/cost-activities", status_code=status.HTTP_201_CREATED)
@@ -1323,22 +1370,30 @@ async def create_historical_cost_activity(
         raise HTTPException(status_code=404, detail="Project not found.")
 
     source_id = uuid4()
-    await db.execute(
+    cost_transaction_row = await db.execute(
         text("""
         INSERT INTO finance.cost_transactions (
             organization_id, project_id, source_type, source_id, cost_category,
-            description, amount, transaction_date, status, posted_by, posted_at
+            description, amount, transaction_date, status, posted_by, posted_at, evidence_quality
         ) VALUES (
             :org_id, :project_id, 'historical_backfill', :source_id, :cost_category,
-            :description, :amount, :historical_date, 'posted', :user_id, NOW()
-        )
+            :description, :amount, :historical_date, 'posted', :user_id, NOW(), :evidence_quality
+        ) RETURNING id
     """),
         {
             "org_id": org_id, "project_id": str(payload.project_id), "source_id": str(source_id),
             "cost_category": payload.cost_category, "description": payload.description,
             "amount": payload.amount, "historical_date": payload.historical_date, "user_id": user["user_id"],
+            "evidence_quality": payload.evidence_quality,
         },
     )
+    cost_transaction_id = cost_transaction_row.scalar()
+
+    if payload.document_id:
+        await _link_historical_evidence_document(
+            db, org_id=org_id, document_id=payload.document_id, entity_type="historical_cost_activity",
+            entity_id=cost_transaction_id, user_id=user["user_id"],
+        )
 
     cashbook_id = None
     if payload.paid:
@@ -1372,6 +1427,154 @@ async def create_historical_cost_activity(
         {"source_id": str(source_id), "cashbook_transaction_id": cashbook_id, "paid": payload.paid},
         "Historical cost activity recorded.",
     )
+
+
+class HistoricalReconciliationBaselineSet(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: UUID
+    category: str = Field(pattern=r"^(revenue|cost)$")
+    expected_amount: float = Field(ge=0)
+    source_description: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.put("/historical/reconciliation-baseline", status_code=status.HTTP_201_CREATED)
+async def set_historical_reconciliation_baseline(
+    payload: HistoricalReconciliationBaselineSet,
+    user: dict = Depends(require_permission("finance.historical_entry.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """What the old paper/bank records say a historical project's revenue or
+    cost total should be - separate from what's actually been entered into
+    AEGIS so far via the historical-entry tool. One row per (project,
+    category); upserting replaces the prior figure rather than accumulating."""
+    org_id = user["org_id"]
+    project = await db.execute(
+        text("SELECT 1 FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false AND is_historical = true"),
+        {"id": str(payload.project_id), "org_id": org_id},
+    )
+    if not project.first():
+        raise HTTPException(status_code=404, detail="Historical project not found.")
+
+    await db.execute(
+        text("""
+            INSERT INTO finance.historical_reconciliation_baselines (
+                organization_id, project_id, category, expected_amount, source_description, created_by
+            ) VALUES (:org_id, :project_id, :category, :expected_amount, :source_description, :user_id)
+            ON CONFLICT (organization_id, project_id, category) DO UPDATE SET
+                expected_amount = EXCLUDED.expected_amount,
+                source_description = EXCLUDED.source_description,
+                updated_at = NOW()
+        """),
+        {
+            "org_id": org_id, "project_id": str(payload.project_id), "category": payload.category,
+            "expected_amount": payload.expected_amount, "source_description": payload.source_description,
+            "user_id": user["user_id"],
+        },
+    )
+    await db.commit()
+    return ok({"project_id": str(payload.project_id), "category": payload.category}, "Reconciliation baseline saved.")
+
+
+@router.get("/historical/reconciliation")
+async def get_historical_reconciliation(
+    user: dict = Depends(require_permission("finance.historical_entry.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per historical project: what's been recorded so far, what the old
+    records say it should total (if a baseline was ever set), the resulting
+    variance, and an evidence-quality breakdown. Never fabricates a
+    variance when no baseline exists - that shows as null, not zero."""
+    org_id = user["org_id"]
+
+    projects_rows = await db.execute(
+        text("""
+            SELECT id, name, project_code
+            FROM projects.projects
+            WHERE organization_id = :org_id AND is_deleted = false AND is_historical = true
+            ORDER BY name
+        """),
+        {"org_id": org_id},
+    )
+    projects_list = [dict(r._mapping) for r in projects_rows]
+    if not projects_list:
+        return ok([], "No historical projects recorded yet.")
+
+    project_ids = [p["id"] for p in projects_list]
+
+    revenue_rows = await db.execute(
+        text("""
+            SELECT project_id, COALESCE(SUM(certified_amount), 0) AS recorded_revenue,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'A') AS a_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'B') AS b_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'C') AS c_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'D') AS d_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'E') AS e_count
+            FROM finance.progress_claims
+            WHERE organization_id = :org_id AND is_deleted = false AND project_id = ANY(:project_ids)
+            GROUP BY project_id
+        """),
+        {"org_id": org_id, "project_ids": project_ids},
+    )
+    revenue_by_project = {r["project_id"]: dict(r) for r in revenue_rows.mappings()}
+
+    cost_rows = await db.execute(
+        text("""
+            SELECT project_id, COALESCE(SUM(amount), 0) AS recorded_cost,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'A') AS a_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'B') AS b_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'C') AS c_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'D') AS d_count,
+                   COUNT(*) FILTER (WHERE evidence_quality = 'E') AS e_count
+            FROM finance.cost_transactions
+            WHERE organization_id = :org_id AND source_type = 'historical_backfill' AND project_id = ANY(:project_ids)
+            GROUP BY project_id
+        """),
+        {"org_id": org_id, "project_ids": project_ids},
+    )
+    cost_by_project = {r["project_id"]: dict(r) for r in cost_rows.mappings()}
+
+    baseline_rows = await db.execute(
+        text("""
+            SELECT project_id, category, expected_amount, source_description
+            FROM finance.historical_reconciliation_baselines
+            WHERE organization_id = :org_id AND project_id = ANY(:project_ids)
+        """),
+        {"org_id": org_id, "project_ids": project_ids},
+    )
+    baselines_by_project: dict = {}
+    for r in baseline_rows.mappings():
+        baselines_by_project.setdefault(r["project_id"], {})[r["category"]] = dict(r)
+
+    results = []
+    for p in projects_list:
+        pid = p["id"]
+        rev = revenue_by_project.get(pid, {})
+        cost = cost_by_project.get(pid, {})
+        baselines = baselines_by_project.get(pid, {})
+        recorded_revenue = float(rev.get("recorded_revenue", 0) or 0)
+        recorded_cost = float(cost.get("recorded_cost", 0) or 0)
+        expected_revenue = baselines.get("revenue", {}).get("expected_amount")
+        expected_cost = baselines.get("cost", {}).get("expected_amount")
+
+        evidence_counts = {
+            grade: int(rev.get(f"{grade.lower()}_count", 0) or 0) + int(cost.get(f"{grade.lower()}_count", 0) or 0)
+            for grade in ("A", "B", "C", "D", "E")
+        }
+
+        results.append({
+            "project_id": str(pid), "project_name": p["name"], "project_code": p["project_code"],
+            "recorded_revenue": recorded_revenue,
+            "recorded_cost": recorded_cost,
+            "expected_revenue": float(expected_revenue) if expected_revenue is not None else None,
+            "expected_cost": float(expected_cost) if expected_cost is not None else None,
+            "revenue_variance": round(recorded_revenue - float(expected_revenue), 2) if expected_revenue is not None else None,
+            "cost_variance": round(recorded_cost - float(expected_cost), 2) if expected_cost is not None else None,
+            "evidence_quality_counts": evidence_counts,
+            "has_unverified_entries": evidence_counts["D"] > 0 or evidence_counts["E"] > 0,
+        })
+
+    return ok(results, "Historical reconciliation retrieved.")
 
 
 @router.get("/progress-claims")
