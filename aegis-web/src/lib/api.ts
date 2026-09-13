@@ -4261,6 +4261,61 @@ export async function getApAging(asOfDate?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/ap-aging${query}`, { cache: 'no-store', allowFallback: false });
 }
 
+/** Management Accounts pack lifecycle + Project Portfolio/Health (Phase 11B). */
+export async function createManagementAccountsPack(periodStart: string, periodEnd: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/finance/management-accounts/packs', {
+    method: 'POST',
+    body: JSON.stringify({ period_start: periodStart, period_end: periodEnd }),
+    allowFallback: false,
+  });
+}
+
+export async function getManagementAccountsPacks(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/management-accounts/packs', { cache: 'no-store', allowFallback: false });
+}
+
+export async function getManagementAccountsPack(packId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/management-accounts/packs/${packId}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function recomputeManagementAccountsPack(packId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/management-accounts/packs/${packId}/recompute`, { method: 'POST', allowFallback: false });
+}
+
+export async function submitManagementAccountsPackForReview(packId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/management-accounts/packs/${packId}/submit-review`, { method: 'POST', allowFallback: false });
+}
+
+export async function approveManagementAccountsPack(packId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/management-accounts/packs/${packId}/approve`, { method: 'POST', allowFallback: false });
+}
+
+export async function lockManagementAccountsPack(packId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/management-accounts/packs/${packId}/lock`, { method: 'POST', allowFallback: false });
+}
+
+export async function reopenManagementAccountsPack(packId: string, reason: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/management-accounts/packs/${packId}/reopen`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+    allowFallback: false,
+  });
+}
+
+export async function exportManagementAccountsPackPdf(packId: string): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/finance/management-accounts/packs/${packId}/export-pdf`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: 'GET', headers });
+  if (!response.ok) {
+    throw await buildApiError(response);
+  }
+  return response.blob();
+}
+
+export async function getProjectPortfolio(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/finance/management-accounts/portfolio', { cache: 'no-store', allowFallback: false });
+}
+
 export async function getFinancialRunway(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/financial-runway', {
     cache: 'no-store',

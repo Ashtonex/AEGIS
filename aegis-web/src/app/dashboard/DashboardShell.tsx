@@ -280,6 +280,8 @@ const MODULE_GROUPS: ModuleGroup[] = [
       { name: "General Ledger", href: "/dashboard/finance/general-ledger", icon: Scale },
       { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
       { name: "AI Assistant", href: "/dashboard/finance/ai-assistant", icon: Bot },
+      { name: "Management Accounts", href: "/dashboard/finance/management-accounts", icon: FileText },
+      { name: "Project Portfolio", href: "/dashboard/finance/project-portfolio", icon: Layers },
     ],
   },
   {
