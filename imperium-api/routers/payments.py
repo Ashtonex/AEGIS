@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.shared.events import emit_notification
 from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, is_self_certification, require_permission
 from app.services.finance import gl_bridge
 from app.services.finance.general_ledger import GeneralLedgerError
 
@@ -278,7 +278,7 @@ async def decide_payment_batch(
     user_id = user.get("sub")
 
     batch = await db.execute(
-        text("SELECT id, status, cash_account_id, payment_date, payment_method FROM finance.supplier_payment_batches WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        text("SELECT id, status, cash_account_id, payment_date, payment_method, created_by FROM finance.supplier_payment_batches WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
         {"id": str(batch_id), "org_id": org_id},
     )
     batch_row = batch.first()
@@ -298,6 +298,11 @@ async def decide_payment_batch(
         raise HTTPException(status_code=409, detail=f"Cannot {action} a batch in '{current_status}' state.")
     if allowed_from and current_status != allowed_from:
         raise HTTPException(status_code=409, detail=f"Batch must be '{allowed_from}' to {action}. Currently '{current_status}'.")
+    if action == "approve" and is_self_certification(user_id, batch_row.created_by):
+        raise HTTPException(
+            status_code=409,
+            detail="The same person who created this payment batch cannot also approve it - have another authorized user approve it.",
+        )
 
     try:
         extra_sets = ""

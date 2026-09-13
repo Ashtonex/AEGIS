@@ -72,6 +72,7 @@ _DOCUMENT_LINK_ENTITY_TABLES = {
     "supplier": "procurement.suppliers",
     "client_contact": "crm.contacts",
     "client_organization": "crm.organizations",
+    "journal_entry": "finance.journal_entries",
 }
 
 
@@ -586,7 +587,7 @@ async def get_signed_url(
         except GraphNotConfiguredError:
             raise HTTPException(status_code=503, detail="Microsoft Graph is not configured on the server.")
         except GraphError as exc:
-            logger.warning("microsoft_graph.download_url_failed", extra={"document_id": str(document_id), "error": str(exc)})
+            logger.warning("microsoft_graph.download_url_failed", document_id=str(document_id), error=str(exc))
             raise HTTPException(status_code=502, detail=f"Could not generate a SharePoint download link: {exc}")
         return ok(
             {
@@ -674,7 +675,7 @@ async def get_access(
     except GraphNotConfiguredError:
         raise HTTPException(status_code=503, detail="Microsoft Graph is not configured on the server.")
     except GraphError as exc:
-        logger.warning("microsoft_graph.access_links_failed", extra={"document_id": str(document_id), "error": str(exc)})
+        logger.warning("microsoft_graph.access_links_failed", document_id=str(document_id), error=str(exc))
         raise HTTPException(status_code=502, detail=f"Could not generate SharePoint access links: {exc}")
     return ok(access, "Document access links generated.")
 
@@ -743,7 +744,7 @@ async def get_versions(
         except GraphNotConfiguredError:
             raise HTTPException(status_code=503, detail="Microsoft Graph is not configured on the server.")
         except GraphError as exc:
-            logger.warning("microsoft_graph.version_history_failed", extra={"document_id": str(document_id), "error": str(exc)})
+            logger.warning("microsoft_graph.version_history_failed", document_id=str(document_id), error=str(exc))
             raise HTTPException(status_code=502, detail=f"Could not retrieve SharePoint version history: {exc}")
         return ok(versions, "Document versions retrieved.")
 

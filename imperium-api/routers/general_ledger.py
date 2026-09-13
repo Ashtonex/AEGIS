@@ -409,15 +409,5 @@ async def journal_audit_history(
     user: dict = Depends(require_permission("finance.gl.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    from sqlalchemy import text as sql_text
-
-    rows = await db.execute(
-        sql_text("""
-            SELECT id, table_name, record_id, action, old_data, new_data, created_by, created_at
-            FROM core.audit_log
-            WHERE table_name = 'finance.journal_entries' AND record_id = :id
-            ORDER BY created_at
-        """),
-        {"id": journal_id},
-    )
-    return ok([dict(r._mapping) for r in rows], "Journal audit history retrieved.")
+    rows = await gl.get_audit_history(db, table_name="finance.journal_entries", record_id=journal_id)
+    return ok(rows, "Journal audit history retrieved.")

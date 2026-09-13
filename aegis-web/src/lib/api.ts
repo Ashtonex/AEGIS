@@ -4316,6 +4316,25 @@ export async function getProjectPortfolio(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>('/api/v1/finance/management-accounts/portfolio', { cache: 'no-store', allowFallback: false });
 }
 
+/** Audit & Bankability Controls (Phase 12): month-end close readiness + auditor drill-down. */
+export async function getCloseReadiness(periodId?: string): Promise<ApiResponse<any>> {
+  const query = periodId ? `?period_id=${periodId}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/audit/close-readiness${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getJournalDrillDown(journalId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/audit/journals/${journalId}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getJournals(params?: { status?: string; page?: number; pageSize?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.status) search.set('status', params.status);
+  if (params?.page) search.set('page', String(params.page));
+  if (params?.pageSize) search.set('page_size', String(params.pageSize));
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/journals${query}`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function getFinancialRunway(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/financial-runway', {
     cache: 'no-store',

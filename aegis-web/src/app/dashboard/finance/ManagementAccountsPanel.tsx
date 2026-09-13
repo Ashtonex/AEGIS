@@ -5,7 +5,7 @@ import { AlertTriangle, CheckCircle2, Download, Loader2, Lock, Plus, RefreshCw, 
 import {
   getManagementAccountsPacks, createManagementAccountsPack, recomputeManagementAccountsPack,
   submitManagementAccountsPackForReview, approveManagementAccountsPack, lockManagementAccountsPack,
-  reopenManagementAccountsPack, exportManagementAccountsPackPdf,
+  reopenManagementAccountsPack, exportManagementAccountsPackPdf, getCloseReadiness,
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
@@ -27,6 +27,68 @@ const STATUS_CLASSES: Record<string, string> = {
 };
 
 const inputClass = "w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50";
+
+const READINESS_CLASSES: Record<string, string> = {
+  ready: "border-emerald-500/40 text-emerald-300 bg-emerald-950/20",
+  caution: "border-amber-500/40 text-amber-300 bg-amber-950/20",
+  not_ready: "border-red-500/40 text-red-300 bg-red-950/20",
+};
+
+const FACTOR_LABELS: Record<string, string> = {
+  unposted_journals: "Unposted Journals",
+  unreconciled_bank_activity: "Unreconciled Bank Activity",
+  open_ccb_findings: "Open CCB Findings",
+  cash_advances_outstanding: "Cash Advances (GL balance)",
+};
+
+function CloseReadinessCard() {
+  const [readiness, setReadiness] = useState<RecordData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await getCloseReadiness();
+      setReadiness(res.data ?? null);
+    } catch {
+      setReadiness(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (loading) {
+    return <div className="flex items-center gap-2 rounded-sm border border-ink-mid bg-ink-light p-4 text-xs text-slate-light"><Loader2 className="h-4 w-4 animate-spin" /> Loading close readiness...</div>;
+  }
+  if (!readiness) return null;
+
+  return (
+    <div className="rounded-sm border border-ink-mid bg-ink-light p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="font-mono text-xs uppercase tracking-wider text-slate">Month-End Close Readiness</p>
+        <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded-sm ${READINESS_CLASSES[readiness.readiness_level] || ""}`}>
+          {readiness.readiness_level?.replace("_", " ")}
+        </span>
+      </div>
+      <div className="space-y-1.5 text-xs">
+        {Object.entries(readiness.factors || {}).map(([name, factor]: [string, any]) => (
+          <div key={name} className="flex items-start justify-between gap-3 border-b border-ink-mid/50 py-1 last:border-0">
+            <div>
+              <span className="text-paper">{FACTOR_LABELS[name] || name}</span>
+              {factor.truth_status === "INCOMPLETE" && (
+                <span className="ml-2 font-mono text-[9px] uppercase text-slate-light">Incomplete</span>
+              )}
+              <p className="mt-0.5 text-[10px] text-slate-light">{factor.note}</p>
+            </div>
+            <span className="shrink-0 text-paper">{factor.value ?? "-"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function ManagementAccountsPanel() {
   const [packs, setPacks] = useState<RecordData[]>([]);
@@ -111,6 +173,8 @@ export function ManagementAccountsPanel() {
           Monthly packs freeze the GL-sourced financial statements at a point in time - Draft → Reviewed → Approved → Locked.
         </p>
       </div>
+
+      <CloseReadinessCard />
 
       {error && (
         <div className="flex items-center gap-2 rounded border border-red-500/30 bg-red-950/20 px-3 py-2 text-sm text-red-200">

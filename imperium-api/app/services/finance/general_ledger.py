@@ -24,6 +24,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.security import is_self_certification
+
 
 class GeneralLedgerError(Exception):
     """Raised for validation failures the router should surface as 4xx."""
@@ -609,6 +611,27 @@ async def post_journal(db: AsyncSession, *, org_id: str, user_id: str, journal_i
         raise GeneralLedgerError(
             f"Journal does not balance: debit {journal['total_debit']} vs credit {journal['total_credit']}."
         )
+    # Scoped to manually-drafted, non-reversal journals only:
+    # - a system-proposed journal's created_by is whoever's business action
+    #   triggered the proposal (e.g. certifying a claim), not a manual
+    #   drafter awaiting review - blocking that person from ever approving
+    #   their own routine proposals would break the non-blocking, inline-hook
+    #   design every GL-bridge integration since Phase 2 depends on.
+    # - reverse_journal() creates and posts its reversal atomically as one
+    #   authorized, reasoned action (a reason is already required to call
+    #   it) - it is not a create-then-separately-approve workflow, so there
+    #   is no second party to segregate against. Confirmed live: without
+    #   this exclusion, reverse_journal's own internal post_journal call
+    #   fails with this exact check, since a reversal is origination='manual'.
+    if (
+        journal["origination"] == "manual"
+        and journal["journal_type"] != "reversal"
+        and is_self_certification(user_id, journal["created_by"])
+    ):
+        raise GeneralLedgerError(
+            "The same person who created this journal cannot also post it - have another authorized user review and post it.",
+            status_code=409,
+        )
     await _assert_period_open_for_posting(db, org_id=org_id, period_id=journal["period_id"])
 
     result = await db.execute(
@@ -685,3 +708,27 @@ async def reverse_journal(
         {"reversal_id": reversal["id"], "id": journal_id},
     )
     return await get_journal(db, org_id=org_id, journal_id=reversal["id"])
+
+
+_AUDIT_HISTORY_TABLE_ALLOW_LIST = {"finance.journal_entries"}
+
+
+async def get_audit_history(db: AsyncSession, *, table_name: str, record_id: UUID) -> list[dict]:
+    """Row-level change history for one record, from core.audit_log.
+    table_name is checked against a small allow-list (never an arbitrary
+    caller-supplied table) - used today only for finance.journal_entries
+    (both the existing GET /journals/{id}/audit-history endpoint and
+    Phase 12's auditor drill-down), extracted here so neither duplicates
+    the query."""
+    if table_name not in _AUDIT_HISTORY_TABLE_ALLOW_LIST:
+        raise GeneralLedgerError(f"Audit history is not available for '{table_name}'.", status_code=400)
+    rows = await db.execute(
+        text("""
+            SELECT id, table_name, record_id, action, old_data, new_data, created_by, created_at
+            FROM core.audit_log
+            WHERE table_name = :table_name AND record_id = :record_id
+            ORDER BY created_at
+        """),
+        {"table_name": table_name, "record_id": record_id},
+    )
+    return [dict(r._mapping) for r in rows]

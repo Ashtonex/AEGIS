@@ -25,6 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.finance import financial_statements
+from core.security import is_self_certification
 
 
 class ManagementAccountsError(Exception):
@@ -139,6 +140,11 @@ async def approve_pack(db: AsyncSession, *, org_id: str, user_id: Optional[str],
     pack = await _get_pack(db, org_id=org_id, pack_id=pack_id)
     if pack["status"] != "reviewed":
         raise ManagementAccountsError(f"Pack is {pack['status']}, not reviewed - cannot approve.")
+    if is_self_certification(user_id, pack["created_by"]):
+        raise ManagementAccountsError(
+            "The same person who created this pack cannot also approve it - have another authorized user approve it.",
+            status_code=409,
+        )
     result = await db.execute(
         text("""
             UPDATE finance.management_accounts_packs
@@ -154,6 +160,11 @@ async def lock_pack(db: AsyncSession, *, org_id: str, user_id: Optional[str], pa
     pack = await _get_pack(db, org_id=org_id, pack_id=pack_id)
     if pack["status"] != "approved":
         raise ManagementAccountsError(f"Pack is {pack['status']} - must be approved before locking.")
+    if is_self_certification(user_id, pack["approved_by"]):
+        raise ManagementAccountsError(
+            "The same person who approved this pack cannot also lock it - have another authorized user lock it.",
+            status_code=409,
+        )
     result = await db.execute(
         text("""
             UPDATE finance.management_accounts_packs
