@@ -99,9 +99,36 @@ class Settings(BaseSettings):
     WHATSAPP_APP_SECRET: Optional[str] = None
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
+    # Per-user delegated OAuth2 (authorization-code flow) used only by CRM's
+    # "connect your own Outlook mailbox" feature - see routers/crm_integrations.py
+    # provider="outlook"/"microsoft_calendar". Deliberately a SEPARATE Entra
+    # App Registration from MICROSOFT_GRAPH_* below: this one only ever needs
+    # delegated Mail.Read/Send + Calendars.ReadWrite scoped to the consenting
+    # user's own mailbox, and must never be granted the application-level
+    # Sites.Selected access the SharePoint integration needs - mixing the two
+    # would silently widen this one's blast radius past least privilege.
     MICROSOFT_CLIENT_ID: Optional[str] = None
     MICROSOFT_CLIENT_SECRET: Optional[str] = None
     CRM_OAUTH_REDIRECT_URL: Optional[str] = None
+
+    # Application-only (client-credentials) Microsoft Graph access used by the
+    # AEGIS <-> SharePoint/Calendar integration (app/services/microsoft/) -
+    # see docs/microsoft365-phase1/SETUP_GUIDE.md. This is a service-principal
+    # identity with NO signed-in user; it only ever holds the specific
+    # Sites.Selected grant to one SharePoint site plus a shared calendar's
+    # Calendars.ReadWrite, never delegated mailbox access. Unset by default:
+    # every Graph call fails closed with "not configured" rather than
+    # pretending to succeed.
+    MICROSOFT_GRAPH_TENANT_ID: Optional[str] = None
+    MICROSOFT_GRAPH_CLIENT_ID: Optional[str] = None
+    MICROSOFT_GRAPH_CLIENT_SECRET: Optional[str] = None
+    MICROSOFT_GRAPH_BASE_URL: str = "https://graph.microsoft.com/v1.0"
+    # Fallback identifiers used only when an organisation has no row yet in
+    # core.organisation_integrations (e.g. during initial setup/testing).
+    # Once connected via the setup wizard, the database row takes priority.
+    MICROSOFT_SNC_SITE_ID: Optional[str] = None
+    MICROSOFT_CALENDAR_OWNER_ID: Optional[str] = None
+    MICROSOFT_CALENDAR_ID: Optional[str] = None
     MAPS_API_KEY: Optional[str] = None
     ACCOUNTING_PROVIDER_API_KEY: Optional[str] = None
     TWILIO_ACCOUNT_SID: Optional[str] = None

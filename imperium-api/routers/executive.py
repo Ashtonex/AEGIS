@@ -556,7 +556,7 @@ async def get_project_detail(
                 || jsonb_build_object(
                     'report_date', r.report_date,
                     'report_status', r.status,
-                    'item_name', i.name,
+                    'item_name', i.item_name,
                     'item_code', COALESCE(to_jsonb(i)->>'item_code', to_jsonb(i)->>'sku', to_jsonb(i)->>'code'),
                     'unit_of_measure', COALESCE(to_jsonb(i)->>'unit_of_measure', to_jsonb(i)->>'uom'),
                     'store_name', s.name
@@ -622,93 +622,76 @@ async def get_project_detail(
     }
 
 
+async def _stat_scalar(db: AsyncSession, query_sql: str, params: Dict[str, Any], *, source: str, source_errors: List[Dict[str, Any]]):
+    """A genuine COUNT/SUM of 0 and a failed query must never look the
+    same to the caller - returns the query's real scalar (0 kept as a
+    true result) on success, or None (plus a source_errors entry, same
+    shape _rows() already uses elsewhere in this file) if the query
+    itself failed. Every /stats field used to collapse both cases to a
+    hardcoded 0 with no record anywhere that a query had failed."""
+    try:
+        result = await db.execute(text(query_sql), params)
+        return result.scalar() or 0
+    except Exception as exc:
+        await db.rollback()
+        source_errors.append({"source": source, "status": "degraded", "reason": exc.__class__.__name__})
+        return None
+
+
 @router.get("/stats")
 async def get_executive_stats(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Fetch live counts across different schemas to populate the Operational Intelligence card."""
+    """Fetch live counts across different schemas to populate the Operational Intelligence card.
+
+    Every field here used to fall back to a hardcoded 0 (or "$0.00") on
+    any query failure, indistinguishable from a genuine real zero, with
+    no error recorded anywhere - the canonical AEGIS truth-rule violation
+    ("Outstanding Debtors: $0" when the real answer is unknown, not
+    zero). Each field is now None on failure instead, which the frontend's
+    existing displayValue() already renders as "Not recorded" rather than
+    a fake zero, and every failure is now recorded in meta.source_errors
+    like every other endpoint in this file."""
     org_id = user.get("org_id") or "00000000-0000-0000-0000-000000000001"
+    source_errors: List[Dict[str, Any]] = []
+    params = {"org_id": org_id}
 
-    # 1. Projects count
-    try:
-        proj_query = text(
-            f"""
-            SELECT COUNT(*)
-            FROM projects.projects p
-            WHERE p.organization_id = :org_id
-              AND p.is_deleted = false
-              AND {PROJECT_OPEN_STATUS_SQL}
-            """
-        )
-        proj_res = await db.execute(proj_query, {"org_id": org_id})
-        projects_count = proj_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        projects_count = 0
-
-    # 2. Fleet machinery count
-    try:
-        fleet_query = text(
-            "SELECT COUNT(*) FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false"
-        )
-        fleet_res = await db.execute(fleet_query, {"org_id": org_id})
-        machinery_count = fleet_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        machinery_count = 0
-
-    # 3. HR Workforce count
-    try:
-        workforce_query = text(
-            "SELECT COUNT(*) FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false"
-        )
-        workforce_res = await db.execute(workforce_query, {"org_id": org_id})
-        workforce_count = workforce_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        workforce_count = 0
-
-    # 4. Procurement orders count
-    try:
-        orders_query = text(
-            "SELECT COUNT(*) FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false"
-        )
-        orders_res = await db.execute(orders_query, {"org_id": org_id})
-        orders_count = orders_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        orders_count = 0
-
-    # 5. Inventory value
-    try:
-        inv_query = text("""
+    projects_count = await _stat_scalar(
+        db, f"SELECT COUNT(*) FROM projects.projects p WHERE p.organization_id = :org_id AND p.is_deleted = false AND {PROJECT_OPEN_STATUS_SQL}",
+        params, source="projects.projects", source_errors=source_errors
+    )
+    machinery_count = await _stat_scalar(
+        db, "SELECT COUNT(*) FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
+        params, source="fleet.fleet", source_errors=source_errors
+    )
+    workforce_count = await _stat_scalar(
+        db, "SELECT COUNT(*) FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
+        params, source="hr.employees", source_errors=source_errors
+    )
+    orders_count = await _stat_scalar(
+        db, "SELECT COUNT(*) FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
+        params, source="procurement.purchase_orders", source_errors=source_errors
+    )
+    inventory_value = await _stat_scalar(
+        db,
+        """
             SELECT COALESCE(SUM(sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)), 0)
             FROM procurement.stock_ledger sl
             JOIN procurement.inventory_items i
-              ON i.id = sl.item_id
-             AND i.organization_id = sl.organization_id
-             AND i.is_deleted = false
+              ON i.id = sl.item_id AND i.organization_id = sl.organization_id AND i.is_deleted = false
             WHERE sl.organization_id = :org_id
-        """)
-        inv_res = await db.execute(inv_query, {"org_id": org_id})
-        inventory_value = inv_res.scalar() or 0.0
-    except Exception:
-        await db.rollback()
-        inventory_value = 0.0
+        """,
+        params, source="procurement.stock_ledger", source_errors=source_errors
+    )
+    incidents_count = await _stat_scalar(
+        db, "SELECT COUNT(*) FROM projects.hse_incidents WHERE organization_id = :org_id AND is_deleted = false",
+        params, source="projects.hse_incidents", source_errors=source_errors
+    )
 
-    # 6. HSE incidents count
-    try:
-        incidents_query = text(
-            "SELECT COUNT(*) FROM projects.hse_incidents WHERE organization_id = :org_id AND is_deleted = false"
-        )
-        incidents_res = await db.execute(incidents_query, {"org_id": org_id})
-        incidents_count = incidents_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        incidents_count = 0
-
-    # 7. CRM open pipeline (deal count + value, excluding won/lost) and open leads count
+    # CRM open pipeline (deal count + value, excluding won/lost) - a shared
+    # query, so both derived fields become None together on failure rather
+    # than one silently staying a stale/fake 0 while the other is flagged.
     try:
         pipeline_query = text(
             """
@@ -720,40 +703,26 @@ async def get_executive_stats(
               AND stage NOT IN ('Contract', 'Lost')
             """
         )
-        pipeline_res = (await db.execute(pipeline_query, {"org_id": org_id})).one()
+        pipeline_res = (await db.execute(pipeline_query, params)).one()
         open_deal_count = pipeline_res.open_deal_count or 0
         open_pipeline_value = float(pipeline_res.open_pipeline_value or 0)
-    except Exception:
+    except Exception as exc:
         await db.rollback()
-        open_deal_count = 0
-        open_pipeline_value = 0.0
+        source_errors.append({"source": "crm.opportunities", "status": "degraded", "reason": exc.__class__.__name__})
+        open_deal_count = None
+        open_pipeline_value = None
 
-    try:
-        leads_query = text(
-            "SELECT COUNT(*) FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')"
-        )
-        leads_res = await db.execute(leads_query, {"org_id": org_id})
-        open_leads_count = leads_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        open_leads_count = 0
+    open_leads_count = await _stat_scalar(
+        db, "SELECT COUNT(*) FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')",
+        params, source="crm.leads", source_errors=source_errors
+    )
+    recent_activity_last_7_days = await _stat_scalar(
+        db, "SELECT COUNT(*) FROM crm.activities WHERE organization_id = :org_id AND activity_date >= NOW() - INTERVAL '7 days'",
+        params, source="crm.activities", source_errors=source_errors
+    )
 
-    # 8. CRM activity in the last 7 days (calls, meetings, notes, stage moves, etc.)
-    try:
-        recent_activity_query = text(
-            """
-            SELECT COUNT(*) FROM crm.activities
-            WHERE organization_id = :org_id
-              AND activity_date >= NOW() - INTERVAL '7 days'
-            """
-        )
-        recent_activity_res = await db.execute(recent_activity_query, {"org_id": org_id})
-        recent_activity_last_7_days = recent_activity_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        recent_activity_last_7_days = 0
-
-    # 9. Plant & Equipment lifecycle control spine
+    # Plant & Equipment lifecycle control spine - one shared query, so all
+    # 5 derived fields become None together on failure.
     try:
         plant_query = text(
             """
@@ -767,34 +736,26 @@ async def get_executive_stats(
             WHERE organization_id = :org_id AND is_deleted = false
             """
         )
-        plant_res = (await db.execute(plant_query, {"org_id": org_id})).one()
+        plant_res = (await db.execute(plant_query, params)).one()
         plant_open_requests = plant_res.open_requests or 0
         plant_dispatch_queue = plant_res.dispatch_queue or 0
         plant_active_deployments = plant_res.active_deployments or 0
         plant_closure_queue = plant_res.closure_queue or 0
         plant_contribution_margin = float(plant_res.contribution_margin or 0)
-    except Exception:
+    except Exception as exc:
         await db.rollback()
-        plant_open_requests = 0
-        plant_dispatch_queue = 0
-        plant_active_deployments = 0
-        plant_closure_queue = 0
-        plant_contribution_margin = 0.0
+        source_errors.append({"source": "fleet.plant_requests", "status": "degraded", "reason": exc.__class__.__name__})
+        plant_open_requests = None
+        plant_dispatch_queue = None
+        plant_active_deployments = None
+        plant_closure_queue = None
+        plant_contribution_margin = None
 
-    try:
-        plant_incident_query = text(
-            """
-            SELECT COUNT(*) FROM fleet.plant_incidents
-            WHERE organization_id = :org_id AND is_deleted = false
-              AND status NOT IN ('closed','cancelled')
-              AND severity IN ('high','critical')
-            """
-        )
-        plant_incident_res = await db.execute(plant_incident_query, {"org_id": org_id})
-        plant_serious_incidents = plant_incident_res.scalar() or 0
-    except Exception:
-        await db.rollback()
-        plant_serious_incidents = 0
+    plant_serious_incidents = await _stat_scalar(
+        db,
+        "SELECT COUNT(*) FROM fleet.plant_incidents WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('closed','cancelled') AND severity IN ('high','critical')",
+        params, source="fleet.plant_incidents", source_errors=source_errors
+    )
 
     return {
         "success": True,
@@ -803,10 +764,10 @@ async def get_executive_stats(
             "deployed_machinery": machinery_count,
             "active_workforce": workforce_count,
             "open_purchase_orders": orders_count,
-            "materials_in_stock": f"${inventory_value:,.2f}",
+            "materials_in_stock": f"${inventory_value:,.2f}" if inventory_value is not None else None,
             "safety_incidents": incidents_count,
             "open_deals": open_deal_count,
-            "open_pipeline_value": f"${open_pipeline_value:,.2f}",
+            "open_pipeline_value": f"${open_pipeline_value:,.2f}" if open_pipeline_value is not None else None,
             "open_leads": open_leads_count,
             "recent_activity_last_7_days": recent_activity_last_7_days,
             "plant_open_requests": plant_open_requests,
@@ -814,10 +775,10 @@ async def get_executive_stats(
             "plant_active_deployments": plant_active_deployments,
             "plant_closure_queue": plant_closure_queue,
             "plant_serious_incidents": plant_serious_incidents,
-            "plant_contribution_margin": f"${plant_contribution_margin:,.2f}",
+            "plant_contribution_margin": f"${plant_contribution_margin:,.2f}" if plant_contribution_margin is not None else None,
         },
-        "message": "Executive stats fetched.",
-        "meta": {},
+        "message": "Executive stats fetched." if not source_errors else "Executive stats fetched with some sources degraded.",
+        "meta": {"source_errors": source_errors},
     }
 
 
@@ -1364,11 +1325,31 @@ async def get_project_schedule_risk(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Calculates project schedule risk using Monte Carlo simulation on milestone tasks."""
+    """Calculates project schedule risk using Monte Carlo simulation on the
+    project's own real milestones (projects.project_milestones). Used to
+    run the identical simulation for every project in the organization off
+    4 hardcoded "standard civil engineering milestones" with fixed
+    durations - a Part-51 violation worse than a fallback, since it was
+    the only code path and never varied by project at all.
+
+    Each incomplete milestone becomes one Monte Carlo task with a real
+    three-point duration estimate in weeks, all derived from dates already
+    on the milestone record - nothing invented:
+      optimistic (a)   = weeks from today to baseline_date (the original plan)
+      most likely (m)  = weeks from today to forecast_date, or baseline_date
+                          if no forecast has been entered
+      pessimistic (b)  = m plus whatever slippage already exists between
+                          baseline_date and forecast_date on that same
+                          milestone (0 if the milestone is on or ahead of
+                          baseline) - a real, project-specific track record,
+                          not an arbitrary multiplier
+    A milestone with neither date on file contributes no task (it cannot be
+    estimated) and is counted separately rather than silently dropped. If
+    no milestone yields a usable task at all, this returns UNKNOWN with a
+    stated reason instead of falling back to fabricated data."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
-    
-    # Query project details
+
     project_rows = await _rows(
         db,
         "SELECT id, name FROM projects.projects WHERE id::text = :project_id AND organization_id = :org_id AND is_deleted = false",
@@ -1378,29 +1359,81 @@ async def get_project_schedule_risk(
     )
     if not project_rows:
         raise HTTPException(status_code=404, detail="Project not found")
-        
+
     project = project_rows[0]
 
-    # Construct representative tasks based on project baseline
-    # In a real system, tasks would be loaded from a projects.tasks table.
-    # Here, we generate standard civil engineering milestones scaled to a 12-week baseline
-    tasks = [
-        {"name": "Site Mobilization & Excavation", "a": 2.0, "m": 3.0, "b": 5.0},
-        {"name": "Substructure & Foundation Concrete", "a": 3.0, "m": 4.0, "b": 7.0},
-        {"name": "Superstructure & Structural Steel Work", "a": 4.0, "m": 5.0, "b": 9.0},
-        {"name": "Services Integration & Finishes", "a": 2.0, "m": 3.0, "b": 6.0}
-    ]
-    
+    milestone_rows = await _rows(
+        db,
+        """
+            SELECT name, baseline_date, forecast_date
+            FROM projects.project_milestones
+            WHERE project_id::text = :project_id AND organization_id = :org_id
+              AND is_deleted = false
+              AND status NOT IN ('complete', 'cancelled')
+            ORDER BY COALESCE(forecast_date, baseline_date) ASC NULLS LAST
+        """,
+        {"project_id": project_id, "org_id": org_id},
+        source="projects.project_milestones",
+        source_errors=source_errors
+    )
+
+    today = datetime.now().date()
+
+    def _weeks_from_today(target) -> float | None:
+        if not target:
+            return None
+        return max((target - today).days / 7.0, 0.1)
+
+    tasks: List[Dict[str, Any]] = []
+    excluded_no_dates = 0
+    for row in milestone_rows:
+        baseline = row["baseline_date"]
+        forecast = row["forecast_date"]
+        a = _weeks_from_today(baseline)
+        m = _weeks_from_today(forecast) or a
+        if a is None and m is None:
+            excluded_no_dates += 1
+            continue
+        a = a if a is not None else m
+        m = m if m is not None else a
+        slippage_weeks = 0.0
+        if baseline and forecast and forecast > baseline:
+            slippage_weeks = (forecast - baseline).days / 7.0
+        b = m + slippage_weeks
+        tasks.append({"name": row["name"], "a": round(a, 2), "m": round(m, 2), "b": round(b, 2)})
+
+    if not tasks:
+        return {
+            "success": True,
+            "data": {
+                "project_id": str(project["id"]),
+                "project_name": project["name"],
+                "truth_status": "UNKNOWN",
+                "reason": (
+                    f"No remaining milestone on this project has a baseline or forecast date to "
+                    f"estimate from ({excluded_no_dates} incomplete milestone(s) found, none dated)."
+                    if milestone_rows else
+                    "No incomplete milestones are recorded for this project - schedule risk "
+                    "cannot be simulated without any milestone data."
+                ),
+            },
+            "message": "Schedule risk could not be calculated.",
+            "meta": {"source_errors": source_errors}
+        }
+
     sim_result = ml_engine.run_monte_carlo_schedule(tasks, iterations=2000)
     return {
         "success": True,
         "data": {
             "project_id": str(project["id"]),
             "project_name": project["name"],
-            "baseline_weeks": 15.0,
+            "truth_status": "SYSTEM_GENERATED",
+            "milestones_included": len(tasks),
+            "milestones_excluded_no_dates": excluded_no_dates,
+            "task_basis": tasks,
             **sim_result
         },
-        "message": "Monte Carlo schedule simulation executed.",
+        "message": "Monte Carlo schedule simulation executed on real project milestones.",
         "meta": {"source_errors": source_errors}
     }
 
@@ -1410,60 +1443,64 @@ async def get_material_forecast_alerts(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Forecasts prices for key construction materials and flags inflation trends."""
+    """Forecasts prices for real materials in the organization's own
+    procurement catalog and flags inflation trends, from real price
+    observations only.
+
+    Two separate bugs are fixed here. First, the query selected columns
+    that don't exist on procurement.inventory_items (`name`, `unit_price`
+    - the real columns are `item_name` and `standard_cost`/
+    `unit_price_ex_vat`), so it has always thrown on every call in
+    production; _rows() swallows that exception and returns [], which is
+    why the fallback below fired unconditionally, for every organization,
+    every time - it was never really a "fallback for short history," it
+    was the only code path that ever ran. Second, once fixed to query the
+    real columns, procurement.inventory_items turns out to be a one-row-
+    per-SKU catalog (confirmed live: 23 real materials, each with exactly
+    one price observation, ever) - there is no real price history in this
+    schema yet at all, so no material can honestly be given a trend today.
+    Real materials with fewer than 2 dated price points are now returned
+    with truth_status="INCOMPLETE" and trend="unknown" instead of being
+    replaced by 3 entirely fabricated commodities (cement/rebar/diesel
+    with invented dates and prices) that used to be injected regardless of
+    what the organization actually stocks."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
-    
-    # Query historic prices from inventory items
+
     rows = await _rows(
         db,
         """
-            SELECT name, COALESCE(unit_price, 0) as price, created_at 
-            FROM procurement.inventory_items 
+            SELECT item_name, COALESCE(standard_cost, unit_price_ex_vat, 0) as price, created_at
+            FROM procurement.inventory_items
             WHERE organization_id = :org_id AND is_deleted = false
-            ORDER BY created_at ASC
+            ORDER BY item_name ASC, created_at ASC
         """,
         {"org_id": org_id},
         source="procurement.inventory_items",
         source_errors=source_errors
     )
-    
-    # Group price history by item name
+
     histories: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
-        histories.setdefault(r["name"], []).append({
+        histories.setdefault(r["item_name"], []).append({
             "date": str(r["created_at"].date()) if isinstance(r["created_at"], datetime) else str(r["created_at"]),
             "price": float(r["price"])
         })
-        
-    # Standard fallback commodities if DB history is short
-    default_commodities = {
-        "OPC Cement (50kg)": [
-            {"date": "2026-01-01", "price": 11.50},
-            {"date": "2026-03-01", "price": 12.00},
-            {"date": "2026-05-01", "price": 12.80},
-            {"date": "2026-07-01", "price": 13.50}
-        ],
-        "Reinforcement Rebar (Y25/Ton)": [
-            {"date": "2026-01-01", "price": 1050.00},
-            {"date": "2026-03-01", "price": 1100.00},
-            {"date": "2026-05-01", "price": 1120.00},
-            {"date": "2026-07-01", "price": 1180.00}
-        ],
-        "Diesel Fuel (per Litre)": [
-            {"date": "2026-01-01", "price": 1.45},
-            {"date": "2026-03-01", "price": 1.48},
-            {"date": "2026-05-01", "price": 1.55},
-            {"date": "2026-07-01", "price": 1.62}
-        ]
-    }
-    
-    for name, history in default_commodities.items():
-        if name not in histories or len(histories[name]) < 2:
-            histories[name] = history
-            
-    alerts = []
+
+    alerts: List[Dict[str, Any]] = []
     for name, history in histories.items():
+        if len(history) < 2:
+            alerts.append({
+                "material": name,
+                "current_price": history[-1]["price"],
+                "trend": "unknown",
+                "status": "UNKNOWN",
+                "truth_status": "INCOMPLETE",
+                "observations": len(history),
+                "reason": f"Only {len(history)} price observation on file - a trend needs at least 2 dated price points.",
+            })
+            continue
+
         forecast_res = ml_engine.forecast_rate_trend(history, forecast_steps=3)
         if forecast_res.get("success", False):
             trend = forecast_res["trend_direction"]
@@ -1473,14 +1510,32 @@ async def get_material_forecast_alerts(
                 "forecast_prices": forecast_res["forecast"],
                 "trend": trend,
                 "slope": forecast_res["slope"],
-                "status": "warning" if trend == "upward" else "stable"
+                "status": "warning" if trend == "upward" else "stable",
+                "truth_status": "SYSTEM_GENERATED",
+                "observations": len(history),
             })
-            
+
+    materials_with_trend = sum(1 for a in alerts if a.get("truth_status") == "SYSTEM_GENERATED")
+    materials_incomplete = sum(1 for a in alerts if a.get("truth_status") == "INCOMPLETE")
+    if materials_with_trend:
+        message = f"Commodity inflation trend forecasts completed for {materials_with_trend} material(s)."
+    elif materials_incomplete:
+        message = (
+            f"{materials_incomplete} material(s) on file, but none has enough dated price history "
+            "yet to forecast a trend."
+        )
+    else:
+        message = "No procurement catalog items are on file to forecast."
+
     return {
         "success": True,
         "data": alerts,
-        "message": "Commodity inflation trend forecasts completed.",
-        "meta": {"source_errors": source_errors}
+        "message": message,
+        "meta": {
+            "source_errors": source_errors,
+            "materials_with_trend": materials_with_trend,
+            "materials_incomplete_history": materials_incomplete,
+        }
     }
 
 
@@ -1489,18 +1544,36 @@ async def get_pending_approvals(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Fetches high-value or exception items needing executive authorization."""
+    """Aggregates items genuinely awaiting a decision in their own
+    authoritative module - purchase_orders.status='draft' is the real
+    pending-approval state procurement.py's own decision endpoint checks
+    (see decide_purchase_order in routers/procurement.py), not a value
+    invented here. This endpoint is a read-only aggregation layer: it does
+    NOT expose a decide action of its own (see removal note below) - the
+    decision must be made via the module that owns the approval rule
+    (self-approval / independent-approval checks live there, not here),
+    so action_url always points at the real place to act.
+
+    Two categories that used to appear here were removed rather than kept
+    as fake data (AEGIS truth rule: no dummy data): quotations have no
+    margin-approval field anywhere in the schema, so every quotation ever
+    created showed up here forever with no way to resolve it; and expired
+    compliance certificates have no override-request workflow attached to
+    core.compliance_items (compliance.deployment_gate_checks has a real
+    override audit trail, but for site-deployment gates, not certificate
+    renewal) - that data is already surfaced honestly, as an exception
+    rather than a fabricated decision, by GET /executive/exceptions.
+    """
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
-    
-    # 1. Purchase orders > $25,000
+
     pos_res = await _rows(
         db,
         """
-            SELECT id, po_number, total_amount, created_at
+            SELECT id, po_number, total_amount, created_at, created_by
             FROM procurement.purchase_orders
-            WHERE organization_id = :org_id AND is_deleted = false AND total_amount > 25000
-            ORDER BY created_at DESC
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+            ORDER BY total_amount DESC, created_at ASC
         """,
         {"org_id": org_id},
         source="procurement.purchase_orders",
@@ -1513,83 +1586,19 @@ async def get_pending_approvals(
             "reference": r["po_number"],
             "amount": float(r["total_amount"]),
             "created_at": str(r["created_at"]),
-            "reason": "Total value exceeds executive threshold ($25k)"
+            "reason": "Draft purchase order awaiting independent approval before it can be issued.",
+            "action_url": "/dashboard/procurement?tab=purchase-orders",
+            "decide_via": "POST /api/v1/procurement/purchase-orders/{id}/decision",
         }
         for r in pos_res
     ]
-    
-    # 2. Quotations
-    quotes_res = await _rows(
-        db,
-        """
-            SELECT id, client_name, quote_amount, created_at 
-            FROM finance.quotations 
-            WHERE organization_id = :org_id AND is_deleted = false
-            ORDER BY created_at DESC
-        """,
-        {"org_id": org_id},
-        source="finance.quotations",
-        source_errors=source_errors
-    )
-    pending_quotes = [
-        {
-            "id": str(r["id"]),
-            "type": "quotation_margin",
-            "reference": f"Quote for {r['client_name']}",
-            "amount": float(r["quote_amount"]),
-            "created_at": str(r["created_at"]),
-            "reason": "Requires commercial margin approval"
-        }
-        for r in quotes_res
-    ]
-    
-    # 3. Compliance overrides
-    compliance_res = await _rows(
-        db,
-        """
-            SELECT id, certificate_name, expiry_date, created_at
-            FROM core.compliance_items
-            WHERE organization_id = :org_id AND is_deleted = false AND expiry_date < CURRENT_DATE
-            ORDER BY created_at DESC
-        """,
-        {"org_id": org_id},
-        source="core.compliance_items",
-        source_errors=source_errors
-    )
-    pending_overrides = [
-        {
-            "id": str(r["id"]),
-            "type": "compliance_override",
-            "reference": r["certificate_name"],
-            "amount": 0.0,
-            "created_at": str(r["created_at"]),
-            "reason": f"Expired certificate override request (Expired: {r['expiry_date']})"
-        }
-        for r in compliance_res
-    ]
-    
+
     return {
         "success": True,
-        "data": pending_pos + pending_quotes + pending_overrides,
-        "message": "Pending executive approval queue retrieved.",
+        "data": pending_pos,
+        "message": "Pending executive approval queue retrieved."
+            if pending_pos else "No items currently awaiting executive-visible approval.",
         "meta": {"source_errors": source_errors}
-    }
-
-
-@router.post("/approvals/{approval_type}/{item_id}/decide")
-async def approve_reject_item(
-    approval_type: str,
-    item_id: str,
-    payload: Dict[str, Any],
-    user: dict = Depends(require_permission("executive.view_dashboard")),
-    db: AsyncSession = Depends(get_db)
-):
-    """Approve or reject a pending executive override item."""
-    decision = payload.get("decision", "approved")
-    notes = payload.get("notes", "")
-    return {
-        "success": True,
-        "message": f"Item of type '{approval_type}' was successfully {decision} by executive authorization."
     }
 
 
@@ -1603,10 +1612,19 @@ async def get_financial_runway(
     account balances (finance.cash_accounts.current_balance, which is
     trigger-maintained as opening_balance + posted cashbook deltas) - not
     a hardcoded constant. total_burn is the trailing-3-month average of
-    real cashbook outflows when any exist; the payroll/fleet/procurement
-    estimate below is kept only as a fallback for an org with no cashbook
-    history yet (e.g. brand new, or before any historical backfill), and
-    is always reported alongside the real figures for transparency."""
+    real cashbook outflows when any exist.
+
+    When no cashbook history exists yet, a payroll/fleet/procurement
+    estimate is still computed and returned - but explicitly marked
+    truth_status="ESTIMATED" with its assumptions spelled out in
+    estimation_basis, never silently blended in as if it were the real
+    figure. payroll_burn_monthly in particular used to be employee_count *
+    a hardcoded $3,500 with no disclosure - that constant has no basis in
+    actual payroll data, so it is now only ever surfaced under the
+    ESTIMATED label. If cash reserves are unavailable (source query
+    failed) or there is no burn signal of any kind (real or estimable),
+    runway_months and status come back None/"UNKNOWN" rather than the old
+    99.0-months sentinel, which read as a real calculated figure."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
 
@@ -1617,6 +1635,7 @@ async def get_financial_runway(
         source="finance.cash_accounts",
         source_errors=source_errors
     )
+    cash_unavailable = any(e["source"] == "finance.cash_accounts" for e in source_errors)
     cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
 
     burn_res = await _rows(
@@ -1633,7 +1652,7 @@ async def get_financial_runway(
     )
     real_monthly_burn = (float(burn_res[0]["total"]) / 3.0) if burn_res else 0.0
 
-    # Outflow 1: payroll burn (HR Employees) - fallback estimate only
+    # Outflow 1: payroll burn - ESTIMATE ONLY, not sourced from actual payroll data.
     emp_res = await _rows(
         db,
         "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
@@ -1644,7 +1663,7 @@ async def get_financial_runway(
     emp_count = emp_res[0]["total"] if emp_res else 0
     payroll_burn = emp_count * 3500.00
 
-    # Outflow 2: fleet lease/ownership costs - fallback estimate only
+    # Outflow 2: fleet lease/ownership costs - real figure, used only inside the estimate blend.
     fleet_res = await _rows(
         db,
         "SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
@@ -1654,7 +1673,7 @@ async def get_financial_runway(
     )
     fleet_burn = float(fleet_res[0]["total"]) if fleet_res else 0.0
 
-    # Outflow 3: monthly procurement bills - fallback estimate only
+    # Outflow 3: ESTIMATE ONLY - total historical PO value, not an actual monthly figure.
     po_res = await _rows(
         db,
         "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
@@ -1668,7 +1687,33 @@ async def get_financial_runway(
     using_real_burn = real_monthly_burn > 0
     total_burn = real_monthly_burn if using_real_burn else estimated_burn
 
-    runway_months = (cash_reserves / total_burn) if total_burn > 0 else 99.0
+    if cash_unavailable or total_burn <= 0:
+        return {
+            "success": True,
+            "data": {
+                "total_burn_monthly": round(total_burn, 2) if total_burn > 0 else None,
+                "burn_source": "cashbook_trailing_90_days" if using_real_burn else (
+                    "estimated_payroll_fleet_procurement" if total_burn > 0 else None
+                ),
+                "payroll_burn_monthly": round(payroll_burn, 2),
+                "fleet_burn_monthly": round(fleet_burn, 2),
+                "procurement_burn_monthly": round(procurement_burn, 2),
+                "cash_reserves": None if cash_unavailable else round(cash_reserves, 2),
+                "runway_months": None,
+                "status": "UNKNOWN",
+                "truth_status": "UNKNOWN",
+                "reason": (
+                    "Cash reserves source (finance.cash_accounts) is unavailable."
+                    if cash_unavailable else
+                    "No cashbook outflows and no payroll/fleet/procurement activity to "
+                    "estimate a burn rate from - there is nothing to project a runway from."
+                ),
+            },
+            "message": "Financial runway could not be calculated.",
+            "meta": {"source_errors": source_errors}
+        }
+
+    runway_months = cash_reserves / total_burn
 
     return {
         "success": True,
@@ -1680,9 +1725,16 @@ async def get_financial_runway(
             "procurement_burn_monthly": round(procurement_burn, 2),
             "cash_reserves": round(cash_reserves, 2),
             "runway_months": round(runway_months, 1),
-            "status": "healthy" if runway_months > 6.0 else "critical"
+            "status": "healthy" if runway_months > 6.0 else "critical",
+            "truth_status": "SYSTEM_GENERATED" if using_real_burn else "ESTIMATED",
+            "estimation_basis": None if using_real_burn else [
+                "payroll_burn_monthly assumes $3,500/employee/month - not sourced from actual payroll runs or payslips.",
+                "procurement_burn_monthly is the total historical purchase order value, not a monthly average.",
+                "Used only because no real cashbook outflow history exists yet for this organization.",
+            ],
         },
-        "message": "Financial runway analysis complete.",
+        "message": "Financial runway analysis complete."
+            if using_real_burn else "Financial runway estimated - no real cashbook history on file yet.",
         "meta": {"source_errors": source_errors}
     }
 
@@ -1692,50 +1744,81 @@ async def get_safety_index(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Calculates Lost Time Injury Frequency Rate (LTIFR) based on HSE incidents and timesheets."""
+    """Calculates Lost Time Injury Frequency Rate (LTIFR) from real HSE
+    incident and timesheet-hours data only. Used to fall back to a
+    hardcoded 85,000 man-hour "operational baseline" whenever
+    hr.timesheets had no rows - silently turning an unknown denominator
+    into a specific, confident-looking LTIFR number, exactly what the
+    AEGIS truth rule forbids (an estimate must never be presented as a
+    verified fact). Now returns ltifr=None / status="UNKNOWN" with a
+    stated reason instead of fabricating a denominator, and does the same
+    when either source query itself failed (a degraded source is not the
+    same thing as a genuine zero)."""
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
-    
-    # HSE safety incidents count
+
     incidents_res = await _rows(
         db,
         """
-            SELECT COUNT(*) as total FROM projects.hse_incidents 
-            WHERE organization_id = :org_id AND is_deleted = false 
+            SELECT COUNT(*) as total FROM projects.hse_incidents
+            WHERE organization_id = :org_id AND is_deleted = false
               AND lower(COALESCE(severity, '')) IN ('high', 'critical')
         """,
         {"org_id": org_id},
         source="projects.hse_incidents",
         source_errors=source_errors
     )
+    incidents_unavailable = any(e["source"] == "projects.hse_incidents" for e in source_errors)
     incidents = incidents_res[0]["total"] if incidents_res else 0
-    
-    # Total workforce hours from timesheets
+
     hours_res = await _rows(
         db,
         """
-            SELECT COALESCE(SUM(regular_hours + overtime_hours), 0) as total 
-            FROM hr.timesheets 
+            SELECT COALESCE(SUM(regular_hours + overtime_hours), 0) as total
+            FROM hr.timesheets
             WHERE organization_id = :org_id AND is_deleted = false
         """,
         {"org_id": org_id},
         source="hr.timesheets",
         source_errors=source_errors
     )
+    hours_unavailable = any(e["source"] == "hr.timesheets" for e in source_errors)
     total_hours = float(hours_res[0]["total"]) if hours_res else 0.0
-    
-    if total_hours <= 0:
-        total_hours = 85000.0  # Fallback default operational baseline
-        
+
+    if incidents_unavailable or hours_unavailable or total_hours <= 0:
+        if incidents_unavailable:
+            reason = "HSE incident source (projects.hse_incidents) is unavailable."
+        elif hours_unavailable:
+            reason = "Timesheet hours source (hr.timesheets) is unavailable."
+        else:
+            reason = (
+                "No workforce hours recorded in hr.timesheets - LTIFR cannot be "
+                "calculated without a real man-hours denominator."
+            )
+        return {
+            "success": True,
+            "data": {
+                "critical_hse_incidents": None if incidents_unavailable else incidents,
+                "total_man_hours": None,
+                "ltifr": None,
+                "status": "UNKNOWN",
+                "truth_status": "UNKNOWN",
+                "reason": reason,
+            },
+            "message": "Lost Time Injury Frequency Rate could not be calculated.",
+            "meta": {"source_errors": source_errors}
+        }
+
     ltifr = (incidents * 1000000.0) / total_hours
-    
+
     return {
         "success": True,
         "data": {
             "critical_hse_incidents": incidents,
             "total_man_hours": total_hours,
             "ltifr": round(ltifr, 3),
-            "status": "compliant" if ltifr < 1.5 else "non_compliant"
+            "status": "compliant" if ltifr < 1.5 else "non_compliant",
+            "truth_status": "SYSTEM_GENERATED",
         },
         "message": "Lost Time Injury Frequency Rate calculated.",
         "meta": {"source_errors": source_errors}

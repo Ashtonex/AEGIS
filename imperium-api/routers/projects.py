@@ -1114,6 +1114,42 @@ async def get_project(
     return _result(await _project_ref_or_404(db, project_id, user["org_id"]), "Project retrieved.")
 
 
+@router.get("/{project_id}/team")
+async def get_project_team(
+    project_id: str,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
+):
+    """Live roster of everyone allocated to this project, sourced directly
+    from hr.project_allocations (the same table the workforce-assignment
+    action writes to) and enriched with each employee's real position/trade
+    and category from HR master data."""
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    rows = await db.execute(
+        text("""
+        SELECT
+          a.id AS allocation_id, a.employee_id, a.role_on_project, a.allocation_percent,
+          a.starts_on, a.ends_on, a.status, a.notes, a.created_at,
+          e.employee_name, e.employee_number, e.job_title, e.employment_type, e.employment_status,
+          wc.name AS category_name, wc.payroll_eligible,
+          pos.name AS position_name, pos.trade, pos.grade,
+          cu.email AS assigned_by_email,
+          (a.status IN ('planned','active') AND (a.ends_on IS NULL OR a.ends_on >= CURRENT_DATE)) AS is_current
+        FROM hr.project_allocations a
+        JOIN hr.employees e ON e.id = a.employee_id AND e.organization_id = a.organization_id
+        LEFT JOIN hr.worker_categories wc ON wc.id = e.category_id AND wc.organization_id = a.organization_id
+        LEFT JOIN hr.positions pos ON pos.id = e.position_id AND pos.organization_id = a.organization_id
+        LEFT JOIN core.users cu ON cu.id = a.created_by
+        WHERE a.organization_id = :org_id AND a.project_id = :project_id AND a.is_deleted = false
+        ORDER BY is_current DESC, a.starts_on DESC
+        """),
+        {"org_id": user["org_id"], "project_id": project["id"]},
+    )
+    team = [dict(row._mapping) for row in rows]
+    return _result(team, "Project team retrieved.")
+
+
 @router.post("/{project_id}/submit-registration", status_code=201)
 async def submit_project_registration(
     project_id: UUID,

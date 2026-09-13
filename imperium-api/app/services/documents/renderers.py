@@ -1334,3 +1334,122 @@ class PyMuPDFMergeService(PDFMergeService):
                             f_out.write(f_in.read())
                             f_out.write("\n--- PAGE BREAK ---\n")
             return True
+
+
+class ManagementAccountsPackPDFRenderer(DocumentRenderer):
+    """Renders a Management Accounts pack (Phase 11B) from its already-
+    frozen JSONB snapshot only - never re-queries live data, so a Locked
+    pack's PDF always matches exactly what was locked, regardless of
+    what has happened in the GL since."""
+
+    def render_pdf(self, data: Dict[str, Any], output_path: str) -> bool:
+        logging.info(f"Rendering Management Accounts pack PDF to {output_path}")
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+            def money(value: Any) -> str:
+                try:
+                    return f"${float(value):,.2f}"
+                except (TypeError, ValueError):
+                    return "$0.00"
+
+            doc = SimpleDocTemplate(
+                output_path, pagesize=A4, rightMargin=36, leftMargin=36, topMargin=54, bottomMargin=45
+            )
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(name="MAPTitle", parent=styles["Heading1"], fontSize=18, spaceAfter=6)
+            section_style = ParagraphStyle(name="MAPSection", parent=styles["Heading2"], fontSize=12, spaceBefore=14, spaceAfter=6)
+            body_style = ParagraphStyle(name="MAPBody", parent=styles["Normal"], fontSize=9, spaceAfter=4)
+            cell_style = ParagraphStyle(name="MAPCell", parent=styles["Normal"], fontSize=7.5, leading=9.5)
+
+            def page_header_footer(canvas, doc_obj):
+                canvas.saveState()
+                width, height = A4
+                canvas.setFillColor(colors.HexColor("#0F172A"))
+                canvas.rect(0, height - 42, width, 42, fill=1, stroke=0)
+                canvas.setFillColor(colors.white)
+                canvas.setFont("Helvetica-Bold", 8)
+                canvas.drawString(36, height - 24, "MANAGEMENT ACCOUNTS PACK")
+                canvas.setFont("Helvetica", 7)
+                canvas.drawRightString(width - 36, height - 24, f"{data.get('period_start', '')} to {data.get('period_end', '')} | Page {doc_obj.page}")
+                canvas.restoreState()
+
+            def build_table(rows, col_widths):
+                formatted = [[Paragraph(str(cell), cell_style) for cell in row] for row in rows]
+                t = Table(formatted, colWidths=col_widths)
+                t.setStyle(TableStyle([
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#CBD5E1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0F172A")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ]))
+                return t
+
+            story = [
+                Paragraph("Management Accounts Pack", title_style),
+                Paragraph(f"Period: {data.get('period_start', '')} to {data.get('period_end', '')} | Status: {str(data.get('status', '')).upper()}", body_style),
+                Spacer(1, 8),
+            ]
+
+            income = data.get("income_statement") or {}
+            story.append(Paragraph("Income Statement", section_style))
+            story.append(build_table([
+                ["Line", "Amount"],
+                ["Revenue", money(income.get("total_revenue"))],
+                ["Direct project cost", money(income.get("total_direct_cost"))],
+                ["Gross profit", money(income.get("gross_profit"))],
+                ["Operating expense", money(income.get("total_operating_expense"))],
+                ["Net income", money(income.get("net_income"))],
+            ], [300, 150]))
+
+            bs = data.get("balance_sheet") or {}
+            story.append(Paragraph("Balance Sheet", section_style))
+            story.append(build_table([
+                ["Line", "Amount"],
+                ["Total assets", money(bs.get("total_assets"))],
+                ["Total liabilities", money(bs.get("total_liabilities"))],
+                ["Retained earnings (current + prior)", money(bs.get("retained_earnings_current_and_prior"))],
+                ["Total liabilities + equity", money(bs.get("total_liabilities_and_equity"))],
+                ["Balanced", "Yes" if bs.get("is_balanced") else "NO - REVIEW"],
+            ], [300, 150]))
+
+            cm = data.get("cash_movement") or {}
+            story.append(Paragraph("Cash Movement", section_style))
+            story.append(build_table([
+                ["Line", "Amount"],
+                ["Opening balance", money(cm.get("opening_balance"))],
+                ["Inflows", money(cm.get("inflows"))],
+                ["Outflows", money(cm.get("outflows"))],
+                ["Closing balance", money(cm.get("closing_balance"))],
+            ], [300, 150]))
+
+            ar_rows = data.get("ar_aging") or []
+            story.append(Paragraph("AR Aging", section_style))
+            if ar_rows:
+                table_rows = [["Project", "Outstanding", "Bucket"]]
+                for r in ar_rows[:30]:
+                    table_rows.append([r.get("project_name", ""), money(r.get("outstanding_amount")), r.get("bucket", "")])
+                story.append(build_table(table_rows, [250, 120, 80]))
+            else:
+                story.append(Paragraph("No outstanding certified claims.", body_style))
+
+            ap_rows = data.get("ap_aging") or []
+            story.append(Paragraph("AP Aging", section_style))
+            if ap_rows:
+                table_rows = [["Supplier", "Outstanding", "Bucket"]]
+                for r in ap_rows[:30]:
+                    table_rows.append([r.get("supplier_name", ""), money(r.get("outstanding_amount")), r.get("bucket", "")])
+                story.append(build_table(table_rows, [250, 120, 80]))
+            else:
+                story.append(Paragraph("No outstanding supplier invoices.", body_style))
+
+            doc.build(story, onFirstPage=page_header_footer, onLaterPages=page_header_footer)
+            return True
+        except ImportError:
+            logging.warning("ReportLab not available. Writing plain text fallback for Management Accounts pack.")
+            with open(output_path, "w", encoding="utf-8") as fallback:
+                fallback.write(f"MANAGEMENT ACCOUNTS PACK\n{data.get('period_start', '')} to {data.get('period_end', '')}\nStatus: {data.get('status', '')}\n")
+            return True

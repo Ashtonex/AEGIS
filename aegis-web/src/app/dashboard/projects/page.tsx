@@ -51,6 +51,7 @@ import {
   getCrmOrganizations, getCrmContacts,
   getHRAttendance, getProcurementRfqs, getSiteGrns, getSiteVariances, getFinanceVariations, getFinanceBudgets, getBoqProgressSummary,
   getHREmployees, getWorkforceAllocations, createWorkforceAllocation, createDailySiteReport, createFinanceVariation,
+  getProjectTeam, type ProjectTeamMember,
   importBoqFile,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -146,12 +147,13 @@ type CommercialReadiness = {
   cleared_by?: string;
 };
 
-type ProjectTab = "dashboard" | "overview" | "schedule" | "financials" | "materials" | "documents" | "assign" | "controls";
+type ProjectTab = "dashboard" | "overview" | "team" | "schedule" | "financials" | "materials" | "documents" | "assign" | "controls";
 type ProjectCommand = "workforce" | "siteReports" | "rfqs" | "variations" | "budget" | "documents" | "progress" | "controls" | "materials";
 
 const TAB_ROUTES: Record<ProjectTab, string> = {
   dashboard: "/dashboard/projects/dashboard",
   overview: "/dashboard/projects/overview",
+  team: "/dashboard/projects/team",
   schedule: "/dashboard/projects/schedule",
   financials: "/dashboard/projects/financials",
   materials: "/dashboard/projects/materials",
@@ -3281,6 +3283,30 @@ function ProjectDetail({
     setActiveTab(initialTab);
   }, [initialTab, project.id]);
 
+  const [teamRows, setTeamRows] = useState<ProjectTeamMember[]>([]);
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [teamError, setTeamError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== "team") return;
+    let active = true;
+    setTeamLoading(true);
+    setTeamError(null);
+    getProjectTeam(project.id)
+      .then((res) => {
+        if (!active) return;
+        setTeamRows(res.data ?? []);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setTeamError(err instanceof Error ? err.message : "Project team could not be loaded.");
+      })
+      .finally(() => {
+        if (active) setTeamLoading(false);
+      });
+    return () => { active = false; };
+  }, [activeTab, project.id]);
+
   // Source-backed financial parameters. Missing finance fields must not be replaced with generated values.
   const contractVal = useMemo(() => {
     const apiVal = number(source.contract_value ?? source.budget ?? source.budget_value);
@@ -3716,6 +3742,16 @@ function ProjectDetail({
             Overview & Evidence
           </button>
           <button
+            onClick={() => setActiveTab("team")}
+            className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
+              activeTab === "team"
+                ? "border-signal text-signal bg-ink-light/40 font-bold"
+                : "border-transparent text-slate hover:text-paper"
+            }`}
+          >
+            Team
+          </button>
+          <button
             onClick={() => setActiveTab("schedule")}
             className={`px-4 py-2.5 font-mono text-xs uppercase tracking-wider border-b-2 transition-all ${
               activeTab === "schedule" 
@@ -3928,6 +3964,57 @@ function ProjectDetail({
                     Any modifications to contract values, site reports, or purchase records are tracked via core audit triggers.
                   </p>
                 </div>
+              </div>
+            )}
+
+            {/* ---------------------------------------------------- */}
+            {/* TEAM TAB */}
+            {/* ---------------------------------------------------- */}
+            {activeTab === "team" && (
+              <div className="space-y-5 animate-fade-in">
+                <section className="border border-ink-mid bg-ink-light/20 p-5">
+                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Project team</p>
+                      <h3 className="mt-1 font-display text-xl font-semibold text-paper">Who is on this project, and what they do</h3>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-light">
+                        Read directly from the workforce allocation record created via &quot;Assign workforce&quot; - not a separate list, so this is always the same source of truth as Workforce.
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-start gap-2 lg:items-end">
+                      <Info label="Project Manager" value={text(viability?.delivery_manager ?? source.project_manager ?? source.manager)} />
+                      <button
+                        onClick={() => setActiveCommand("workforce")}
+                        className="inline-flex h-9 items-center gap-2 border border-signal bg-signal/10 px-3 font-mono text-[11px] font-bold uppercase tracking-wider text-signal hover:bg-signal/20"
+                      >
+                        <UserPlus className="h-3.5 w-3.5" /> Assign workforce
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
+                {teamLoading ? (
+                  <div className="flex h-32 items-center justify-center gap-3 text-slate-light">
+                    <Loader2 className="h-5 w-5 animate-spin text-signal" />Loading project team
+                  </div>
+                ) : teamError ? (
+                  <div className="border border-amber-500/30 bg-amber-950/20 p-4 text-sm text-amber-100 flex gap-2">
+                    <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400" />{teamError}
+                  </div>
+                ) : (
+                  <>
+                    <RecordList
+                      title="Current team"
+                      records={teamRows.filter((row) => row.is_current).map((row) => ({ ...row, allocation_percent: row.allocation_percent != null ? `${row.allocation_percent}%` : undefined }))}
+                      columns={["employee_name", "role_on_project", "position_name", "category_name", "allocation_percent", "starts_on", "ends_on", "status"]}
+                    />
+                    <RecordList
+                      title="Past assignments"
+                      records={teamRows.filter((row) => !row.is_current).map((row) => ({ ...row, allocation_percent: row.allocation_percent != null ? `${row.allocation_percent}%` : undefined }))}
+                      columns={["employee_name", "role_on_project", "position_name", "category_name", "allocation_percent", "starts_on", "ends_on", "status"]}
+                    />
+                  </>
+                )}
               </div>
             )}
 

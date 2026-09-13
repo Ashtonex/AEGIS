@@ -13,7 +13,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 2
     },
     {
       "description": "Bulk earthworks and cart-away",
@@ -27,7 +29,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 3
     },
     {
       "description": "Reinforced concrete foundations",
@@ -41,7 +45,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 4
     },
     {
       "description": "Structural steel supply and installation",
@@ -55,7 +61,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 5
     },
     {
       "description": "Roof sheeting and flashings",
@@ -69,7 +77,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 6
     },
     {
       "description": "Electrical first fix and distribution",
@@ -83,7 +93,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 7
     },
     {
       "description": "Plumbing and drainage installation",
@@ -97,7 +109,9 @@
       "equipment_rate": "0",
       "subcontractor_rate": "0",
       "transport_rate": "0",
-      "waste_allowance_rate": "0"
+      "waste_allowance_rate": "0",
+      "source_sheet": "Measured Works",
+      "source_row": 8
     }
   ],
   "warnings": [],
