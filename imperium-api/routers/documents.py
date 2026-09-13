@@ -13,8 +13,14 @@ from core.database import get_db, supabase
 from core.logging import logger
 from core.security import require_permission
 from app.shared.pagination import ok
-from app.services.microsoft.document_service import MicrosoftIntegrationNotReady, upload_document
-from app.services.microsoft.errors import GraphError
+from app.services.microsoft.document_service import (
+    MicrosoftIntegrationNotReady,
+    get_document_access,
+    get_download_url as get_sharepoint_download_url,
+    list_version_history as get_sharepoint_version_history,
+    upload_document,
+)
+from app.services.microsoft.errors import GraphError, GraphNotConfiguredError
 from app.services.microsoft.routing import RoutingDenied
 
 router = APIRouter()
@@ -533,15 +539,25 @@ async def get_signed_url(
     user: dict = Depends(require_permission("documents.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mints a short-lived signed URL for this document's stored file.
-    Deliberately server-side: the 'documents' bucket has no SELECT policy
-    for authenticated clients, so this permission check (and the org
-    match below) is the only gate on who can actually read the bytes -
-    a client can't fetch the object directly even knowing its path."""
+    """Mints a short-lived link for this document's stored file - Supabase
+    Storage signed URL for provider='supabase', a Microsoft Graph download
+    URL for provider='sharepoint'. Deliberately server-side either way: for
+    Supabase, the 'documents' bucket has no SELECT policy for authenticated
+    clients; for SharePoint, only this app's own service-principal token can
+    call Graph at all. Either way, THIS permission check (and the org match
+    below) is the only gate on who can actually read the bytes - a client
+    can't fetch the object directly even knowing its path/item ID.
+
+    Kept to the same {url, file_name, mime_type, expires_in} response shape
+    used by every existing caller (leads/opportunities/tenders/projects/
+    fleet/machinery panels) regardless of provider, so a SharePoint-backed
+    document is downloadable/previewable with zero frontend changes. See
+    GET /{document_id}/access for the fuller SharePoint-specific payload
+    (web_url, preview_url, office_open_url)."""
     row = (
         await db.execute(
             text("""
-        SELECT fa.storage_path, fa.mime_type, fa.file_name
+        SELECT fa.id AS file_attachment_id, fa.provider, fa.storage_path, fa.mime_type, fa.file_name
         FROM core.documents d
         JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
         WHERE d.id = :id AND d.organization_id = :org_id AND d.is_deleted = false
@@ -560,6 +576,29 @@ async def get_signed_url(
         raise HTTPException(
             status_code=404,
             detail="This document was registered without an uploaded file, so there is nothing to download.",
+        )
+
+    if row["provider"] == "sharepoint":
+        try:
+            download_url = await get_sharepoint_download_url(
+                db, organization_id=user["org_id"], file_attachment_id=row["file_attachment_id"]
+            )
+        except GraphNotConfiguredError:
+            raise HTTPException(status_code=503, detail="Microsoft Graph is not configured on the server.")
+        except GraphError as exc:
+            logger.warning("microsoft_graph.download_url_failed", extra={"document_id": str(document_id), "error": str(exc)})
+            raise HTTPException(status_code=502, detail=f"Could not generate a SharePoint download link: {exc}")
+        return ok(
+            {
+                "url": download_url,
+                "file_name": row["file_name"],
+                "mime_type": row["mime_type"],
+                # Graph does not document a fixed TTL for @microsoft.graph.downloadUrl;
+                # this is a conservative estimate for a client that wants to
+                # know when to re-request rather than a guaranteed expiry.
+                "expires_in": 3600,
+            },
+            "SharePoint download URL generated.",
         )
 
     try:
@@ -583,6 +622,61 @@ async def get_signed_url(
         },
         "Signed download URL generated.",
     )
+
+
+@router.get("/{document_id}/access")
+async def get_access(
+    document_id: UUID,
+    user: dict = Depends(require_permission("documents.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Phase 9's full toolbar payload - 'Open in AEGIS' (download_url),
+    'Open in SharePoint' (web_url), 'Open in Word/Excel/PowerPoint'
+    (office_open_url, only for a recognised Office file extension) and
+    'Preview' (preview_url, an embeddable Office Online link - null if
+    Graph couldn't generate one, which callers should treat as 'preview
+    unavailable', not an error). Only meaningful for provider='sharepoint';
+    a provider='supabase' document gets a smaller, provider-appropriate
+    payload built from the same signed URL used by /signed-url above."""
+    row = (
+        await db.execute(
+            text("""
+        SELECT fa.id AS file_attachment_id, fa.provider, fa.storage_path, fa.mime_type, fa.file_name
+        FROM core.documents d
+        JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
+        WHERE d.id = :id AND d.organization_id = :org_id AND d.is_deleted = false
+    """),
+            {"id": document_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found, or was registered without an uploaded file.")
+
+    if row["provider"] != "sharepoint":
+        try:
+            signed = supabase.storage.from_(DOCUMENTS_BUCKET).create_signed_url(row["storage_path"], SIGNED_URL_TTL_SECONDS)
+        except Exception:
+            logger.exception("Failed to create signed URL for document", document_id=str(document_id))
+            raise HTTPException(status_code=502, detail="Could not generate a download link for this file. Try again.")
+        signed_url = signed.get("signedURL")
+        if not signed_url:
+            raise HTTPException(status_code=502, detail="Could not generate a download link for this file. Try again.")
+        return ok(
+            {
+                "provider": "supabase", "file_name": row["file_name"], "mime_type": row["mime_type"],
+                "download_url": signed_url, "web_url": None, "preview_url": signed_url, "office_open_url": None,
+            },
+            "Document access links generated.",
+        )
+
+    try:
+        access = await get_document_access(db, organization_id=user["org_id"], file_attachment_id=row["file_attachment_id"])
+    except GraphNotConfiguredError:
+        raise HTTPException(status_code=503, detail="Microsoft Graph is not configured on the server.")
+    except GraphError as exc:
+        logger.warning("microsoft_graph.access_links_failed", extra={"document_id": str(document_id), "error": str(exc)})
+        raise HTTPException(status_code=502, detail=f"Could not generate SharePoint access links: {exc}")
+    return ok(access, "Document access links generated.")
 
 
 @router.patch("/{document_id}/status")
@@ -614,13 +708,21 @@ async def get_versions(
     user: dict = Depends(require_permission("documents.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    """Phase 10: for a provider='sharepoint' document, this surfaces
+    SharePoint's own version history (real versions, real authors) instead
+    of the audit-log-reconstructed history built below for provider=
+    'supabase' documents - AEGIS never reimplements versioning SharePoint
+    already provides. Same {version, updated_at, author, notes, source}
+    response shape either way."""
     document = (
         (
             await db.execute(
                 text("""
         SELECT d.id, d.title, d.file_name, d.created_at, d.updated_at, d.created_by,
+               fa.id AS file_attachment_id, fa.provider,
                u.full_name AS author_name, u.email AS author_email
         FROM core.documents d
+        LEFT JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
         LEFT JOIN core.users u ON u.id=d.created_by AND u.organization_id=d.organization_id
         WHERE d.id=:id AND d.organization_id=:org_id AND d.is_deleted=false
     """),
@@ -632,6 +734,18 @@ async def get_versions(
     )
     if not document:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+    if document["provider"] == "sharepoint":
+        try:
+            versions = await get_sharepoint_version_history(
+                db, organization_id=user["org_id"], file_attachment_id=document["file_attachment_id"]
+            )
+        except GraphNotConfiguredError:
+            raise HTTPException(status_code=503, detail="Microsoft Graph is not configured on the server.")
+        except GraphError as exc:
+            logger.warning("microsoft_graph.version_history_failed", extra={"document_id": str(document_id), "error": str(exc)})
+            raise HTTPException(status_code=502, detail=f"Could not retrieve SharePoint version history: {exc}")
+        return ok(versions, "Document versions retrieved.")
 
     audit_rows = (
         (

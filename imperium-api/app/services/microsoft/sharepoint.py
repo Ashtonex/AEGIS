@@ -175,6 +175,20 @@ async def get_download_url(client: GraphClient, drive_id: str, item_id: str) -> 
     return url
 
 
+async def get_preview_url(client: GraphClient, drive_id: str, item_id: str) -> str:
+    """Short-lived, embeddable Office Online preview URL (Graph's
+    `preview` action) - unlike get_download_url, this renders inside an
+    <iframe> for file types a browser can't natively display (docx, xlsx,
+    pptx), so 'Preview' can work for Office documents and not just
+    images/PDFs. Falls back to a driveItem-not-found error if the item was
+    deleted/renamed upstream."""
+    body = await client.post(f"drives/{drive_id}/items/{item_id}/preview", json={})
+    url = body.get("getUrl")
+    if not url:
+        raise RuntimeError("Graph did not return a preview URL for this item")
+    return url
+
+
 async def list_version_history(client: GraphClient, drive_id: str, item_id: str) -> list[dict]:
     """Raw Graph version entries (id, lastModifiedDateTime, lastModifiedBy) -
     Phase 10 deliberately does not reimplement SharePoint's own versioning,

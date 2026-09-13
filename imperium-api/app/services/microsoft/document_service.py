@@ -238,15 +238,19 @@ async def upload_document(
     return dict(row)
 
 
-async def get_download_url(db: AsyncSession, *, organization_id: UUID, file_attachment_id: UUID) -> str:
-    """Phase 9: caller must already have verified the requesting user's AEGIS
-    permission for the owning entity before calling this - this only proves
-    the attachment belongs to the caller's organisation, not that the
-    specific user may see it."""
+_OFFICE_PROTOCOL_EXTENSIONS = {
+    ".doc": "ms-word", ".docx": "ms-word", ".docm": "ms-word", ".dotx": "ms-word",
+    ".xls": "ms-excel", ".xlsx": "ms-excel", ".xlsm": "ms-excel", ".xltx": "ms-excel",
+    ".ppt": "ms-powerpoint", ".pptx": "ms-powerpoint", ".pptm": "ms-powerpoint",
+}
+
+
+async def _load_sharepoint_attachment(db: AsyncSession, *, organization_id: UUID, file_attachment_id: UUID) -> dict:
     row = (
         await db.execute(
             text("""
-                SELECT provider, provider_drive_id, provider_item_id, tenant_id
+                SELECT fa.provider, fa.provider_drive_id, fa.provider_item_id, fa.file_name,
+                       fa.mime_type, fa.sharepoint_web_url, oi.tenant_id
                 FROM core.file_attachments fa
                 LEFT JOIN core.organisation_integrations oi
                     ON oi.organization_id = fa.organization_id AND oi.provider = 'microsoft365' AND oi.is_deleted = false
@@ -257,7 +261,87 @@ async def get_download_url(db: AsyncSession, *, organization_id: UUID, file_atta
     ).mappings().first()
     if not row or row["provider"] != "sharepoint":
         raise ValueError("Document is not a SharePoint-backed attachment.")
+    return dict(row)
 
+
+async def get_download_url(db: AsyncSession, *, organization_id: UUID, file_attachment_id: UUID) -> str:
+    """Phase 9: caller must already have verified the requesting user's AEGIS
+    permission for the owning entity before calling this - this only proves
+    the attachment belongs to the caller's organisation, not that the
+    specific user may see it."""
+    row = await _load_sharepoint_attachment(db, organization_id=organization_id, file_attachment_id=file_attachment_id)
     tenant_id = row["tenant_id"] or settings.MICROSOFT_GRAPH_TENANT_ID
     client = GraphClient(tenant_id=tenant_id)
     return await sharepoint.get_download_url(client, row["provider_drive_id"], row["provider_item_id"])
+
+
+async def get_document_access(db: AsyncSession, *, organization_id: UUID, file_attachment_id: UUID) -> dict:
+    """Phase 9's full access payload: everything a document toolbar needs to
+    offer 'Open in AEGIS' (download_url), 'Open in SharePoint' (web_url),
+    'Open in Word/Excel/PowerPoint' (the office_open_url deep link, only
+    populated for a recognised Office extension) and 'Preview'
+    (preview_url - best-effort; a failure there degrades to null rather than
+    failing the whole call, since download/open-in-SharePoint still work
+    without it).
+
+    Caller must already have verified the requesting user's AEGIS permission
+    for the owning entity before calling this, same as get_download_url."""
+    row = await _load_sharepoint_attachment(db, organization_id=organization_id, file_attachment_id=file_attachment_id)
+    tenant_id = row["tenant_id"] or settings.MICROSOFT_GRAPH_TENANT_ID
+    client = GraphClient(tenant_id=tenant_id)
+    drive_id, item_id = row["provider_drive_id"], row["provider_item_id"]
+
+    download_url = await sharepoint.get_download_url(client, drive_id, item_id)
+
+    try:
+        preview_url = await sharepoint.get_preview_url(client, drive_id, item_id)
+    except GraphError as exc:
+        logger.warning("microsoft_graph.preview_url_failed", extra={"file_attachment_id": str(file_attachment_id), "error": str(exc)})
+        preview_url = None
+
+    extension = (row["file_name"] or "").rsplit(".", 1)
+    office_protocol = _OFFICE_PROTOCOL_EXTENSIONS.get(f".{extension[1].lower()}") if len(extension) == 2 else None
+    office_open_url = f"{office_protocol}:ofe|u|{row['sharepoint_web_url']}" if office_protocol and row["sharepoint_web_url"] else None
+
+    return {
+        "provider": "sharepoint",
+        "file_name": row["file_name"],
+        "mime_type": row["mime_type"],
+        "download_url": download_url,
+        "web_url": row["sharepoint_web_url"],
+        "preview_url": preview_url,
+        "office_open_url": office_open_url,
+    }
+
+
+async def list_version_history(db: AsyncSession, *, organization_id: UUID, file_attachment_id: UUID) -> list[dict]:
+    """Phase 10: surfaces SharePoint's own version history rather than
+    reimplementing one. Normalised to the same {version, updated_at, author,
+    notes, source} shape routers/documents.py already returns for
+    provider='supabase' documents (built there from core.audit_log), so a
+    version-history UI component doesn't need a provider-specific branch -
+    it just reads `source` if it wants to show where an entry came from.
+
+    Caller must already have verified the requesting user's AEGIS permission
+    for the owning entity before calling this, same as get_download_url."""
+    row = await _load_sharepoint_attachment(db, organization_id=organization_id, file_attachment_id=file_attachment_id)
+    tenant_id = row["tenant_id"] or settings.MICROSOFT_GRAPH_TENANT_ID
+    client = GraphClient(tenant_id=tenant_id)
+    raw_versions = await sharepoint.list_version_history(client, row["provider_drive_id"], row["provider_item_id"])
+
+    versions = []
+    for entry in raw_versions:
+        modified_by = (entry.get("lastModifiedBy") or {}).get("user") or {}
+        versions.append({
+            "version": entry.get("id"),
+            "updated_at": entry.get("lastModifiedDateTime"),
+            "author": modified_by.get("displayName") or modified_by.get("email") or "Unknown",
+            "notes": f"SharePoint version {entry.get('id')}",
+            "source": "sharepoint",
+            "size_bytes": entry.get("size"),
+        })
+    # Graph's documented order for this endpoint is not guaranteed
+    # newest-first for every drive type - sort explicitly so this matches
+    # the provider='supabase' path's ORDER BY created_at DESC.
+    versions.sort(key=lambda v: v["updated_at"] or "", reverse=True)
+    return versions
