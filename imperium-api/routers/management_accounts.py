@@ -157,6 +157,7 @@ async def reopen_pack(
         )
         await db.commit()
     except ManagementAccountsError as exc:
+        await db.rollback()
         _handle(exc)
     return ok(result, "Management accounts pack reopened.")
 

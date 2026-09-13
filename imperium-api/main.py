@@ -21,6 +21,7 @@ from routers import corporate_credentials
 from routers import tender_requirement_templates
 from routers import finance_assistant
 from routers import financial_statements
+from routers import management_accounts
 from routers import integrations_microsoft
 
 
@@ -189,6 +190,7 @@ def create_app() -> FastAPI:
     app.include_router(cash_forecast.router, prefix="/api/v1/finance/cash-forecast", tags=["Finance Cash Forecast"])
     app.include_router(finance_assistant.router, prefix="/api/v1/finance/assistant", tags=["Finance AI Assistant"])
     app.include_router(financial_statements.router, prefix="/api/v1/finance/financial-statements", tags=["Finance Financial Statements"])
+    app.include_router(management_accounts.router, prefix="/api/v1/finance/management-accounts", tags=["Finance Management Accounts"])
     app.include_router(integrations_microsoft.router, prefix="/api/v1/integrations/microsoft", tags=["Microsoft 365 Integration"])  # fmt: skip
 
     return app

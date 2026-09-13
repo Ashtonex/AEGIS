@@ -1,14 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import mimetypes
+from pathlib import Path as FilePath
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Optional
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.config import settings
 from core.database import get_db, supabase
 from core.logging import logger
 from core.security import require_permission
 from app.shared.pagination import ok
+from app.services.microsoft.document_service import MicrosoftIntegrationNotReady, upload_document
+from app.services.microsoft.errors import GraphError
+from app.services.microsoft.routing import RoutingDenied
 
 router = APIRouter()
 
@@ -319,6 +326,176 @@ async def create_document(
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sharepoint-upload", status_code=status.HTTP_201_CREATED)
+async def upload_to_sharepoint(
+    file: UploadFile = File(...),
+    module: str = Form(..., min_length=1, max_length=60),
+    title: str = Form(..., min_length=1, max_length=255),
+    category: str = Form(default="other", max_length=100),
+    confidentiality_level: str = Form(default="internal", max_length=30),
+    entity_type: Optional[str] = Form(default=None, max_length=120),
+    entity_id: Optional[str] = Form(default=None),
+    project_id: Optional[str] = Form(default=None),
+    subfolder: Optional[str] = Form(default=None, max_length=160),
+    link_role: str = Form(default="evidence", max_length=80),
+    user: dict = Depends(require_permission("documents.microsoft.sync")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Phase 8's upload flow: the file's bytes go straight to SharePoint
+    (never staged in Supabase Storage first) via
+    app/services/microsoft/document_service.py, and the result is registered
+    in the SAME core.documents/core.file_attachments/core.document_links
+    tables routers/documents.py already uses for provider='supabase' rows -
+    so a SharePoint-backed document shows up in the existing per-entity
+    Documents panel (EntityDocumentsPanel.tsx) exactly like any other one,
+    with provider='sharepoint' on its file_attachments row as the only
+    difference a caller needs to branch on."""
+    extension = FilePath(file.filename or "").suffix.lower()
+    if extension not in settings.allowed_upload_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{extension}'. Allowed: {', '.join(settings.allowed_upload_extensions)}.",
+        )
+
+    entity_uuid: Optional[UUID] = None
+    entity_table = None
+    if entity_type:
+        entity_table = _DOCUMENT_LINK_ENTITY_TABLES.get(entity_type.strip().lower())
+        if not entity_table:
+            raise HTTPException(status_code=400, detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.")
+        if not entity_id:
+            raise HTTPException(status_code=400, detail="entity_id is required when entity_type is given.")
+        try:
+            entity_uuid = UUID(entity_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="entity_id must be a valid UUID.")
+        entity_check = await db.execute(
+            text(f"SELECT 1 FROM {entity_table} WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),  # nosec B608 - entity_table is from a fixed allowlist above, never user input
+            {"id": entity_uuid, "org_id": user["org_id"]},
+        )
+        if not entity_check.first():
+            raise HTTPException(status_code=404, detail=f"{entity_type} not found.")
+
+    project_uuid: Optional[UUID] = None
+    project_code = project_name = None
+    if project_id:
+        try:
+            project_uuid = UUID(project_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="project_id must be a valid UUID.")
+        project_row = (
+            await db.execute(
+                text("SELECT project_code, name FROM projects.projects WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+                {"id": project_uuid, "org_id": user["org_id"]},
+            )
+        ).mappings().first()
+        if not project_row:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        project_code, project_name = project_row["project_code"], project_row["name"]
+
+    if module.strip().lower() == "project" and not project_uuid:
+        raise HTTPException(status_code=400, detail="project_id is required for module='project'.")
+
+    content = await file.read()
+    if len(content) > settings.FILE_STORAGE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the configured upload size limit.")
+
+    mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+
+    try:
+        attachment = await upload_document(
+            db, organization_id=user["org_id"], uploaded_by=user["user_id"], module=module.strip().lower(),
+            file_name=file.filename or title, content=content, mime_type=mime_type,
+            confidentiality_level=confidentiality_level, project_id=project_uuid,
+            project_code=project_code, project_name=project_name, subfolder=subfolder,
+        )
+    except RoutingDenied as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    except MicrosoftIntegrationNotReady as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc))
+    except GraphError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"SharePoint upload failed: {exc}")
+
+    # Committed immediately, separately from the core.documents/document_links
+    # bookkeeping below: the physical file already exists in SharePoint at
+    # this point (upload_document() already made the Graph call) and cannot
+    # be un-uploaded by a local rollback, so the core.file_attachments row
+    # that points at it must survive even if the next step fails - otherwise
+    # a DB error here would leave a real SharePoint file with zero AEGIS
+    # record of its existence.
+    await db.commit()
+
+    try:
+        doc_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO core.documents (
+                        organization_id, title, category, opportunity_id, tender_id,
+                        file_name, file_size_bytes, file_attachment_id, created_by
+                    ) VALUES (
+                        :org_id, :title, :category,
+                        CASE WHEN :entity_type = 'opportunity' THEN :entity_id END,
+                        CASE WHEN :entity_type = 'tender' THEN :entity_id END,
+                        :file_name, :file_size_bytes, :file_attachment_id, :user_id
+                    ) RETURNING id
+                """),
+                {
+                    "org_id": user["org_id"], "title": title, "category": category,
+                    "entity_type": entity_type.strip().lower() if entity_type else None, "entity_id": entity_uuid,
+                    "file_name": attachment["file_name"], "file_size_bytes": attachment["size_bytes"],
+                    "file_attachment_id": attachment["id"], "user_id": user["user_id"],
+                },
+            )
+        ).scalar()
+
+        if entity_uuid and entity_type:
+            entity_key = entity_type.strip().lower()
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (organization_id, document_id, entity_type, entity_id, project_id, link_role, linked_by)
+                    VALUES (:org_id, :document_id, :entity_type, :entity_id, :project_id, :link_role, :user_id)
+                    ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role) DO NOTHING
+                """),
+                {
+                    "org_id": user["org_id"], "document_id": doc_id, "entity_type": entity_key,
+                    "entity_id": entity_uuid, "project_id": project_uuid, "link_role": link_role,
+                    "user_id": user["user_id"],
+                },
+            )
+            if entity_key == "tender":
+                await _auto_match_tender_requirements(
+                    db, org_id=user["org_id"], tender_id=entity_uuid, document_id=doc_id,
+                    file_name=attachment["file_name"], title=title,
+                )
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        # The SharePoint upload and its core.file_attachments row were
+        # already committed above - only the core.documents/document_links
+        # bookkeeping failed here. The file is not lost (it's in
+        # core.file_attachments with provider='sharepoint', findable by
+        # attachment["id"] even without a core.documents row yet); surfacing
+        # that distinction beats a generic 500 that implies the whole upload
+        # failed and should be retried from scratch (which would duplicate
+        # the SharePoint file).
+        raise HTTPException(
+            status_code=500,
+            detail=f"File uploaded to SharePoint (attachment id {attachment['id']}) but could not be registered as an AEGIS document: {e}",
+        )
+
+    return ok(
+        {
+            "id": str(doc_id),
+            "file_attachment_id": str(attachment["id"]),
+            "sharepoint_web_url": attachment["sharepoint_web_url"],
+        },
+        "Document uploaded to SharePoint and registered.",
+    )
 
 
 @router.delete("/{document_id}")
