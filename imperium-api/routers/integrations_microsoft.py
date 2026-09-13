@@ -155,7 +155,7 @@ async def test_connection(
     except GraphError as exc:
         error_message = str(exc)
         connection_status = "error"
-        logger.warning("microsoft_graph.test_connection_failed", extra={"organization_id": str(user["org_id"]), "error": error_message})
+        logger.warning("microsoft_graph.test_connection_failed", organization_id=str(user["org_id"]), error=error_message)
 
     if row:
         await db.execute(

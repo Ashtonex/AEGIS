@@ -7,9 +7,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db
+from core.logging import logger
 from core.security import SUPERADMIN_ROLE, get_current_user
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 from app.shared.events import emit_notification, emit_role_notification
+from app.services.microsoft.crm_calendar import cancel_activity, is_calendar_relevant, sync_activity
 
 router = APIRouter()
 
@@ -56,6 +58,74 @@ def _payload_values(payload: ActivityPayload) -> dict:
 
 def _is_management(role: Optional[str]) -> bool:
     return bool(role) and role.strip().upper() in MANAGEMENT_ROLES
+
+
+async def _fetch_activity_view(db: AsyncSession, item_id: str, org_id: str) -> Optional[dict]:
+    """Same joined shape as list_items/get_item - the calendar sync (Phase
+    15/16) needs the display names (contact/lead/opportunity/owner), not
+    just the raw foreign keys, to build a meaningful Microsoft event."""
+    row = (
+        await db.execute(
+            text("""
+                SELECT a.*,
+                       c.contact_name,
+                       l.company_name as lead_company,
+                       o.name as opportunity_name,
+                       u.full_name as owner_name
+                FROM crm.activities a
+                LEFT JOIN crm.contacts c ON a.contact_id = c.id
+                LEFT JOIN crm.leads l ON a.lead_id = l.id
+                LEFT JOIN crm.opportunities o ON a.opportunity_id = o.id
+                LEFT JOIN core.users u ON a.owner_user_id = u.id
+                WHERE a.id = :item_id AND a.organization_id = :org_id AND a.is_deleted = false
+            """),
+            {"item_id": item_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+async def _sync_calendar_for_activity(db: AsyncSession, *, org_id: str, item_id: str) -> None:
+    """Best-effort: re-reads the activity after commit and either upserts or
+    cancels its Microsoft Calendar mapping depending on current relevance.
+
+    Deliberately never lets anything escape to the caller - sync_activity/
+    cancel_activity already swallow Graph/config errors internally (see
+    app/services/microsoft/crm_calendar.py), but this also guards its own
+    SELECT/commit so a transient DB hiccup on the calendar-mapping write
+    can never turn an already-committed CRM activity into a 500 for the
+    caller (Phase 22 - Microsoft/calendar-sync trouble must never take the
+    core CRM write down with it)."""
+    try:
+        activity = await _fetch_activity_view(db, item_id, org_id)
+        if not activity:
+            return
+        if is_calendar_relevant(activity.get("type"), activity.get("status")):
+            await sync_activity(
+                db,
+                organization_id=org_id,
+                activity_id=activity["id"],
+                activity_type=activity["type"],
+                subject=activity["subject"],
+                description=activity.get("description"),
+                activity_date=activity["activity_date"],
+                owner_user_id=activity.get("owner_user_id"),
+                owner_name=activity.get("owner_name"),
+                contact_name=activity.get("contact_name"),
+                lead_company=activity.get("lead_company"),
+                opportunity_name=activity.get("opportunity_name"),
+            )
+        else:
+            # Handles the "was a scheduled Meeting/Call, edited into
+            # something else (retyped, or marked Completed after the fact)"
+            # case - if a Microsoft event was ever created for this
+            # activity, it no longer represents a real upcoming obligation
+            # and should be cancelled.
+            await cancel_activity(db, organization_id=org_id, activity_id=activity["id"])
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - see docstring; must never propagate
+        await db.rollback()
+        logger.warning("microsoft_graph.crm_activity_calendar_sync_errored", activity_id=item_id, error=str(exc))
 
 
 """
@@ -177,6 +247,12 @@ async def create_item(
             )
 
         await db.commit()
+
+        # Best-effort Microsoft Calendar sync (Phase 15/16) - runs only
+        # after the CRM write above has already committed, and never raises,
+        # so a Microsoft outage can never fail this create.
+        await _sync_calendar_for_activity(db, org_id=user["org_id"], item_id=str(new_id))
+
         return {
             "success": True,
             "data": {"id": str(new_id)},
@@ -306,6 +382,15 @@ async def update_item(
                 )
 
         await db.commit()
+
+        # Only re-touch Microsoft Calendar if a field it actually cares
+        # about changed - skips a Graph round-trip for e.g. a priority-only
+        # edit, which is by far the most common update on this endpoint
+        # (see the escalation logic above).
+        calendar_fields = {"type", "subject", "description", "activity_date", "status", "owner_user_id"}
+        if calendar_fields & set(safe_keys):
+            await _sync_calendar_for_activity(db, org_id=user["org_id"], item_id=item_id)
+
         return {
             "success": True,
             "data": {"id": item_id},
@@ -337,6 +422,16 @@ async def delete_item(
         raise HTTPException(status_code=404, detail="Item not found")
 
     await db.commit()
+
+    # Phase 17: deleting the AEGIS activity cancels its Microsoft event, if
+    # one was ever created. Best-effort - see crm_calendar.cancel_activity.
+    try:
+        await cancel_activity(db, organization_id=user["org_id"], activity_id=item_id)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - must never turn a successful delete into a 500
+        await db.rollback()
+        logger.warning("microsoft_graph.crm_activity_calendar_cancel_errored", activity_id=item_id, error=str(exc))
+
     return {
         "success": True,
         "data": None,

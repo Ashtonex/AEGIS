@@ -12,12 +12,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+from core.logging import logger
 from core.security import get_current_user, require_permission
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
 from app.shared.project_delete import find_project_blockers, hard_delete_project
 from app.shared.project_setup import ensure_project_operational_setup
+from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 
 router = APIRouter()
 
@@ -272,6 +274,48 @@ async def _project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> No
     )
     if not result.scalar():
         raise HTTPException(status_code=404, detail="Project not found")
+
+
+async def _project_name(db: AsyncSession, project_id: UUID, org_id: str) -> str:
+    """Display name for calendar subjects (Phase 15/16) - falls back to the
+    project code, then the raw ID, rather than ever syncing a blank subject."""
+    row = (
+        await db.execute(
+            text("SELECT name, project_code FROM projects.projects WHERE id = :project_id AND organization_id = :org_id"),
+            {"project_id": project_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    if not row:
+        return str(project_id)
+    return row["name"] or row["project_code"] or str(project_id)
+
+
+async def _sync_milestone_calendar(db: AsyncSession, *, org_id: str, project_id: UUID, milestone_id: UUID) -> None:
+    """Best-effort: re-reads the milestone after commit and upserts/cancels
+    its Microsoft event depending on current status/date. Never lets
+    anything escape to the caller (Phase 22)."""
+    try:
+        milestone = (
+            await db.execute(
+                text("""
+                    SELECT name, status, forecast_date, baseline_date FROM projects.project_milestones
+                    WHERE id = :milestone_id AND project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+                """),
+                {"milestone_id": milestone_id, "project_id": project_id, "org_id": org_id},
+            )
+        ).mappings().first()
+        if not milestone:
+            return
+        await sync_milestone(
+            db, organization_id=org_id, project_id=project_id, milestone_id=milestone_id,
+            milestone_name=milestone["name"], status=milestone["status"],
+            project_name=await _project_name(db, project_id, org_id),
+            milestone_date=milestone["forecast_date"] or milestone["baseline_date"],
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - must never propagate
+        await db.rollback()
+        logger.warning("microsoft_graph.project_milestone_calendar_sync_errored", milestone_id=str(milestone_id), error=str(exc))
 
 
 async def _project_ref_or_404(db: AsyncSession, project_ref: str, org_id: str) -> dict:
@@ -988,6 +1032,7 @@ async def add_milestone(
         )
     ).first()
     await db.commit()
+    await _sync_milestone_calendar(db, org_id=user["org_id"], project_id=project_id, milestone_id=row.id)
     return _result({"id": str(row.id)}, "Milestone created.")
 
 
@@ -1043,6 +1088,11 @@ async def update_milestone(
         await db.rollback()
         raise HTTPException(status_code=404, detail="Milestone not found.")
     await db.commit()
+
+    calendar_fields = {"name", "status", "baseline_date", "forecast_date"}
+    if calendar_fields & set(fields.keys()):
+        await _sync_milestone_calendar(db, org_id=user["org_id"], project_id=project_id, milestone_id=milestone_id)
+
     return _result({"id": str(row.id)}, "Milestone updated.")
 
 
@@ -1731,6 +1781,20 @@ async def approve_pre_mobilisation(
         },
     )
     await db.commit()
+
+    # Best-effort Microsoft Calendar sync (Phase 15/16) - never fails an
+    # already-authorised mobilisation.
+    try:
+        await sync_mobilisation(
+            db, organization_id=user["org_id"], project_id=project_id,
+            project_name=project.get("name") or project.get("project_code") or str(project_id),
+            project_code=project.get("project_code"), mobilisation_date=payload.mobilisation_date,
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.warning("microsoft_graph.project_mobilisation_calendar_errored", project_id=str(project_id), error=str(exc))
+
     return _result(
         {"id": str(project_id), "status": "active", "mobilisation_authorisation_number": auth_number},
         "Mobilisation authorised. Project is now active.",

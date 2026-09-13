@@ -89,7 +89,7 @@ async def _request_token(tenant_id: str) -> _CachedToken:
 
     if response.status_code != 200:
         detail = response.json().get("error_description", response.text) if response.content else response.text
-        logger.warning("microsoft_graph.token_request_failed", extra={"status_code": response.status_code})
+        logger.warning("microsoft_graph.token_request_failed", status_code=response.status_code)
         raise GraphAuthError(
             f"Microsoft Graph authentication failed: {detail}",
             status_code=response.status_code,

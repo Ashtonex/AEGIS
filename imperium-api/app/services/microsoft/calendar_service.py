@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,23 @@ from app.services.microsoft.errors import GraphError, GraphNotConfiguredError
 from app.services.microsoft.graph_client import GraphClient
 
 DEFAULT_TIMEZONE = "Africa/Harare"
+
+
+def _local_naive_iso(value: datetime, tz_name: str) -> str:
+    """Microsoft Graph's dateTimeTimeZone resource wants a LOCAL wall-clock
+    string with no UTC offset, paired with a separate `timeZone` field - a
+    string with an offset (e.g. from tz-aware_datetime.isoformat()) is
+    outside that contract and gets misinterpreted (Graph reads only the
+    naive portion, silently shifting the event by the zone's UTC offset).
+
+    A tz-aware `value` is a real absolute instant, so it's converted into
+    the target zone's wall-clock time first. A naive `value` is treated as
+    already being local wall-clock time in that zone (e.g. a bare `date`
+    combined with a deliberately-chosen time of day, which has no absolute
+    instant to convert from)."""
+    if value.tzinfo is not None:
+        value = value.astimezone(ZoneInfo(tz_name))
+    return value.replace(tzinfo=None).isoformat()
 
 
 @dataclass
@@ -126,7 +144,8 @@ async def upsert_event(
         )
     ).mappings().first()
 
-    start_iso, end_iso = start_at.isoformat(), end_at.isoformat()
+    start_iso = _local_naive_iso(start_at, connection.timezone)
+    end_iso = _local_naive_iso(end_at, connection.timezone)
 
     try:
         if existing and existing["microsoft_event_id"]:

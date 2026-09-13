@@ -33,6 +33,7 @@ from app.shared.sql import (
 )
 from app.services.tenders.compliance_matching import match_requirement_to_credential
 from app.services.tenders.compliance_readiness import compute_compliance_readiness
+from app.services.microsoft.tender_calendar import cancel_all_for_tender, sync_site_visit, sync_submission_deadline
 
 """
 Module: tender_bids
@@ -81,6 +82,46 @@ async def _crm_tender_columns(db: AsyncSession) -> set[str]:
         """)
     )
     return {str(row[0]) for row in result.fetchall()}
+
+
+async def _sync_tender_calendar(
+    db: AsyncSession, *, org_id: str, item_id: str, sync_submission: bool, sync_visit: bool
+) -> None:
+    """Phase 15/16: re-reads the tender after commit and upserts/cancels its
+    Microsoft events for whichever of submission_deadline/site_visit_at
+    actually changed. Never lets anything escape to the caller - a Microsoft
+    outage or a hiccup in the calendar-mapping write must never turn an
+    already-committed tender edit into a 500 (Phase 22)."""
+    if not sync_submission and not sync_visit:
+        return
+    try:
+        tender = await _single_row(
+            db,
+            """
+            SELECT id, tender_name, bid_number, region, submission_deadline, site_visit_at
+            FROM crm.tenders
+            WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+            """,
+            {"item_id": item_id, "org_id": org_id},
+        )
+        if not tender:
+            return
+        if sync_submission:
+            await sync_submission_deadline(
+                db, organization_id=org_id, tender_id=tender["id"], tender_name=tender["tender_name"],
+                bid_number=tender.get("bid_number"), region=tender.get("region"),
+                submission_deadline=tender.get("submission_deadline"),
+            )
+        if sync_visit:
+            await sync_site_visit(
+                db, organization_id=org_id, tender_id=tender["id"], tender_name=tender["tender_name"],
+                bid_number=tender.get("bid_number"), region=tender.get("region"),
+                site_visit_at=tender.get("site_visit_at"),
+            )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - see docstring; must never propagate
+        await db.rollback()
+        logger.warning("microsoft_graph.tender_calendar_sync_errored", tender_id=item_id, error=str(exc))
 
 
 class TenderCloseoutPayload(BaseModel):
@@ -308,6 +349,14 @@ async def create_item(
         result = await db.execute(query, params)
         await db.commit()
         new_id = str(result.scalar())
+
+        # Best-effort Microsoft Calendar sync (Phase 15/16) - only fires if
+        # the create payload actually set a deadline/visit date.
+        await _sync_tender_calendar(
+            db, org_id=user["org_id"], item_id=new_id,
+            sync_submission="submission_deadline" in safe_keys, sync_visit="site_visit_at" in safe_keys,
+        )
+
         return {
             "success": True,
             "data": {"id": new_id},
@@ -397,6 +446,11 @@ async def update_item(
 
         await db.commit()
 
+        await _sync_tender_calendar(
+            db, org_id=user["org_id"], item_id=item_id,
+            sync_submission="submission_deadline" in safe_keys, sync_visit="site_visit_at" in safe_keys,
+        )
+
         if stage_changed:
             try:
                 await supersede_entity_tasks(
@@ -459,6 +513,16 @@ async def delete_item(
 
     await db.commit()
     await cascade_delete_entity_tasks(db, org_id=user["org_id"], entity_type="tender", entity_id=item_id)
+
+    # Phase 17: deleting the tender cancels any Microsoft events mapped to
+    # it (submission deadline and/or site visit). Best-effort.
+    try:
+        await cancel_all_for_tender(db, organization_id=user["org_id"], tender_id=item_id)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - must never fail an already-completed delete
+        await db.rollback()
+        logger.warning("microsoft_graph.tender_calendar_delete_cancel_errored", tender_id=item_id, error=str(exc))
+
     return {
         "success": True,
         "data": None,
@@ -513,6 +577,16 @@ async def closeout_tender(
         create_followups=False,
     )
     await db.commit()
+
+    # A closed-out (lost) tender's submission deadline and site visit are no
+    # longer live obligations - cancel any Microsoft events, best-effort.
+    try:
+        await cancel_all_for_tender(db, organization_id=user["org_id"], tender_id=tender_id)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - must never fail an already-recorded closeout
+        await db.rollback()
+        logger.warning("microsoft_graph.tender_calendar_closeout_cancel_errored", tender_id=str(tender_id), error=str(exc))
+
     followup_warning = None
     try:
         await _record_tender_closeout(

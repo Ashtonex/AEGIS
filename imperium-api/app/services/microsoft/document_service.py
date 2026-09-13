@@ -189,7 +189,7 @@ async def upload_document(
         # wired up here. The caller (a future upload endpoint) should catch
         # GraphError and tell the user to retry, or queue the raw bytes
         # itself, until that fallback lands.
-        logger.error("microsoft_graph.document_upload_failed", extra={"organization_id": str(organization_id), "error": str(exc)})
+        logger.error("microsoft_graph.document_upload_failed", organization_id=str(organization_id), error=str(exc))
         raise
 
     checksum = hashlib.sha256(content).hexdigest()
@@ -296,7 +296,7 @@ async def get_document_access(db: AsyncSession, *, organization_id: UUID, file_a
     try:
         preview_url = await sharepoint.get_preview_url(client, drive_id, item_id)
     except GraphError as exc:
-        logger.warning("microsoft_graph.preview_url_failed", extra={"file_attachment_id": str(file_attachment_id), "error": str(exc)})
+        logger.warning("microsoft_graph.preview_url_failed", file_attachment_id=str(file_attachment_id), error=str(exc))
         preview_url = None
 
     extension = (row["file_name"] or "").rsplit(".", 1)
