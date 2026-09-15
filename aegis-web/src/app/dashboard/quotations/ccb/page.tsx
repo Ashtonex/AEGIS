@@ -1,10 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import {
   AlertTriangle,
-  ArrowLeft,
   Building2,
   BrainCircuit,
   CheckCircle2,
@@ -58,6 +56,7 @@ import {
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 const CCB_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -958,62 +957,51 @@ export default function CommercialControlBrainPage() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-8 p-8 text-paper">
-      {/* HEADER */}
-      <div className="flex flex-col gap-4 border-b border-ink-mid pb-6 lg:flex-row lg:items-end lg:justify-between">
-        <div className="space-y-3">
-          <Link href="/dashboard/quotations" className="inline-flex items-center gap-2 font-mono text-xs uppercase text-slate transition-colors hover:text-white">
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Quotations
-          </Link>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="flex items-center gap-3 font-display text-2xl font-bold tracking-tight text-white">
-                <BrainCircuit className="h-7 w-7 text-signal" />
-                Commercial Control Brain (CCB Enterprise)
-              </h1>
-              <button
-                onClick={ccbTour.openTour}
-                className="text-slate hover:text-paper transition-colors"
-                title="Replay CCB tour"
-                aria-label="Replay CCB tour"
-              >
-                <CircleHelp className="h-5 w-5" />
-              </button>
-            </div>
-            <p className="mt-1 max-w-3xl text-sm text-slate">
-              Deterministic calculation core, AI semantic classification, what-if scenario simulator, macro inflation forecaster, vendor matchmaker, site BS-detector, and MD governance.
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-col gap-3 sm:flex-row">
-          <button
-            type="button"
-            onClick={loadData}
-            className="inline-flex items-center justify-center gap-2 border border-ink-mid bg-ink px-4 py-2 text-xs font-semibold text-slate transition-colors hover:border-signal/50 hover:text-white"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin text-signal" : ""}`} />
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={exportControlFile}
-            disabled={!brain}
-            className="inline-flex items-center justify-center gap-2 border border-ink-mid bg-ink px-4 py-2 text-xs font-semibold text-slate transition-colors hover:border-signal/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <Download className="h-4 w-4" />
-            Export JSON
-          </button>
-          <button
-            type="button"
-            onClick={() => void exportControlFilePdf()}
-            disabled={!brain || exportingPdf}
-            className="inline-flex items-center justify-center gap-2 bg-signal px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-signal-hover disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {exportingPdf ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-            Export PDF Control File
-          </button>
-        </div>
-      </div>
+      <DashboardPageHeader
+        backHref="/dashboard/quotations"
+        backLabel="Quotations"
+        eyebrow={{ label: "Estimating & Quotations", icon: BrainCircuit }}
+        title="Commercial Control Brain (CCB Enterprise)"
+        subtitle="Deterministic calculation core, AI semantic classification, what-if scenario simulator, macro inflation forecaster, vendor matchmaker, site BS-detector, and MD governance."
+        actions={
+          <>
+            <button
+              onClick={ccbTour.openTour}
+              className="text-slate hover:text-paper transition-colors"
+              title="Replay CCB tour"
+              aria-label="Replay CCB tour"
+            >
+              <CircleHelp className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={loadData}
+              className="inline-flex items-center justify-center gap-2 border border-ink-mid bg-ink px-4 py-2 text-xs font-semibold text-slate transition-colors hover:border-signal/50 hover:text-white"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin text-signal" : ""}`} />
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={exportControlFile}
+              disabled={!brain}
+              className="inline-flex items-center justify-center gap-2 border border-ink-mid bg-ink px-4 py-2 text-xs font-semibold text-slate transition-colors hover:border-signal/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Download className="h-4 w-4" />
+              Export JSON
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportControlFilePdf()}
+              disabled={!brain || exportingPdf}
+              className="inline-flex items-center justify-center gap-2 bg-signal px-4 py-2 text-xs font-semibold text-ink transition-colors hover:bg-signal-hover disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {exportingPdf ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+              Export PDF Control File
+            </button>
+          </>
+        }
+      />
 
       {errorMsg && (
         <div className="flex items-center gap-3 border border-red-500/20 bg-red-950/20 p-4 text-sm text-red-300">

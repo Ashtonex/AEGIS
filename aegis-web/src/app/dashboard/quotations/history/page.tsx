@@ -3,9 +3,10 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Loader2, AlertCircle, BookOpen, Clock
+  Loader2, AlertCircle, BookOpen, Clock
 } from "lucide-react";
 import { getQuotations } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useAuth } from "@/lib/auth/AuthContext";
 
 export default function QuotationHistory() {
@@ -40,26 +41,12 @@ export default function QuotationHistory() {
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 text-paper">
 
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-ink-mid pb-6">
-        <div>
-          <div className="flex items-center space-x-2">
-            <Link
-              href="/dashboard/quotations"
-              className="text-xs font-mono text-slate hover:text-white flex items-center gap-1 uppercase transition-colors"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
-            </Link>
-          </div>
-          <h1 className="font-display text-2xl font-bold tracking-tight text-white mt-2 flex items-center gap-3">
-            <BookOpen className="w-6 h-6 text-signal" />
-            Cost Archives &amp; Export Command
-          </h1>
-          <p className="text-xs text-slate mt-1">
-            Audit log of every quotation revision and export.
-          </p>
-        </div>
-      </div>
+      <DashboardPageHeader
+        backHref="/dashboard/quotations"
+        eyebrow={{ label: "Estimating & Quotations", icon: BookOpen }}
+        title="Cost Archives & Export Command"
+        subtitle="Audit log of every quotation revision and export."
+      />
 
       {errorMsg && (
         <div className="p-4 border border-red-500/20 bg-red-950/20 rounded-sm flex items-center space-x-3 text-red-400 text-sm">

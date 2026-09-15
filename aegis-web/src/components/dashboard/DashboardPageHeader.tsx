@@ -1,10 +1,16 @@
 "use client";
 
 import { useEffect } from "react";
-import type { LucideIcon } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeft, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface DashboardPageHeaderProps {
+  /** Small back-link rendered above the eyebrow/title - for sub-routes that
+   * link back to their parent dashboard page (e.g. a quotations tool
+   * linking back to /dashboard/quotations). Omit for top-level pages. */
+  backHref?: string;
+  backLabel?: string;
   eyebrow?: { label: string; icon?: LucideIcon };
   /** String for the common case; a node (e.g. a dynamic greeting) when the
    * title itself needs to render something other than plain text - pass
@@ -29,6 +35,8 @@ interface DashboardPageHeaderProps {
  * content maps directly into these props.
  */
 export function DashboardPageHeader({
+  backHref,
+  backLabel = "Back to Dashboard",
   eyebrow,
   title,
   documentTitle,
@@ -57,6 +65,14 @@ export function DashboardPageHeader({
       )}
     >
       <div>
+        {backHref && (
+          <Link
+            href={backHref}
+            className="mb-2 inline-flex items-center gap-1 font-mono text-xs uppercase text-slate hover:text-paper transition-colors"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" /> {backLabel}
+          </Link>
+        )}
         {eyebrow && (
           <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal">
             {EyebrowIcon && <EyebrowIcon className="h-3.5 w-3.5" />}

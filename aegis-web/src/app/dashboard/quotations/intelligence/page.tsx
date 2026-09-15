@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import Link from "next/link";
 import {
   Brain, ShieldAlert, Cpu, Calculator, TrendingUp, Calendar, AlertTriangle,
   CheckCircle2, XCircle, FileSearch, ArrowRight, RefreshCw, Scale, Layers,
@@ -21,6 +20,7 @@ import {
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 const INTELLIGENCE_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -360,52 +360,34 @@ export default function QuotationIntelligencePage() {
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 text-paper font-sans">
       
-      {/* Top Header Banner */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-gradient-to-r from-ink-dark via-ink-light to-ink-mid p-6 border border-ink-mid rounded-lg shadow-xl">
-        <div>
-          <div className="flex items-center space-x-3">
-            <div className="p-2.5 bg-signal/10 border border-signal/30 rounded-md text-signal">
-              <Brain className="w-8 h-8 animate-pulse" />
-            </div>
-            <div>
-              <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                Quotation Intelligence Engine
-                <span className="text-xs font-mono px-2 py-0.5 rounded bg-signal/20 text-signal border border-signal/40 uppercase">
-                  Commercial Control Brain
-                </span>
-                <button
-                  onClick={intelligenceTour.openTour}
-                  className="text-slate hover:text-paper transition-colors"
-                  title="Replay Intelligence Engine tour"
-                  aria-label="Replay Intelligence Engine tour"
-                >
-                  <CircleHelp className="w-5 h-5" />
-                </button>
-              </h1>
-              <p className="text-xs text-slate mt-1">
-                Deterministic QS calculation core with automated document watching, rate benchmarking, spend forecasting, and BS anomaly detection.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center space-x-3">
-          <Link
-            href="/dashboard/quotations"
-            className="px-4 py-2 border border-ink-mid rounded text-xs font-semibold text-slate hover:text-white hover:border-signal/50 transition-colors"
-          >
-            &larr; Standard Quotes
-          </Link>
-          <button
-            onClick={handleEvaluateBrain}
-            disabled={loading || loadingQuotes || !selectedQuotation || selectedQuoteItems.length === 0}
-            className="flex items-center space-x-2 bg-signal text-ink px-4 py-2 text-xs font-semibold rounded hover:bg-signal-hover transition-all"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-            <span>Re-Evaluate Commercial Brain</span>
-          </button>
-        </div>
-      </div>
+      <DashboardPageHeader
+        className="mb-0 border-b-0 pb-0"
+        backHref="/dashboard/quotations"
+        backLabel="Standard Quotes"
+        eyebrow={{ label: "Estimating & Quotations", icon: Brain }}
+        title="Quotation Intelligence Engine"
+        subtitle="Deterministic QS calculation core with automated document watching, rate benchmarking, spend forecasting, and BS anomaly detection."
+        actions={
+          <>
+            <button
+              onClick={intelligenceTour.openTour}
+              className="text-slate hover:text-paper transition-colors"
+              title="Replay Intelligence Engine tour"
+              aria-label="Replay Intelligence Engine tour"
+            >
+              <CircleHelp className="w-5 h-5" />
+            </button>
+            <button
+              onClick={handleEvaluateBrain}
+              disabled={loading || loadingQuotes || !selectedQuotation || selectedQuoteItems.length === 0}
+              className="flex items-center space-x-2 bg-signal text-ink px-4 py-2 text-xs font-semibold rounded hover:bg-signal-hover transition-all"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+              <span>Re-Evaluate Commercial Brain</span>
+            </button>
+          </>
+        }
+      />
 
       {errorMsg && (
         <div className="p-4 border border-red-500/30 bg-red-950/30 text-red-400 text-xs rounded flex items-center space-x-2">

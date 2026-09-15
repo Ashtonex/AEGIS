@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 const DRAWINGS_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -275,17 +276,14 @@ export default function DrawingTakeoffPage() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8 text-paper">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div>
-            <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-              <Layers className="w-7 h-7 text-signal" />
-              Drawing Takeoff &amp; Change Control
-            </h1>
-            <p className="text-sm text-slate mt-1">
-              Upload a drawing, get a draft bill of quantities (AI vision, DXF/CAD parsing, or plain manual reference), then commit it as the baseline once the checklist is complete.
-            </p>
-          </div>
+      <DashboardPageHeader
+        className="mb-0 border-b-0 pb-0"
+        backHref="/dashboard/quotations"
+        backLabel="Quotations"
+        eyebrow={{ label: "Estimating & Quotations", icon: Layers }}
+        title="Drawing Takeoff & Change Control"
+        subtitle="Upload a drawing, get a draft bill of quantities (AI vision, DXF/CAD parsing, or plain manual reference), then commit it as the baseline once the checklist is complete."
+        actions={
           <button
             onClick={drawingsTour.openTour}
             className="text-slate hover:text-paper transition-colors"
@@ -294,8 +292,8 @@ export default function DrawingTakeoffPage() {
           >
             <CircleHelp className="w-5 h-5" />
           </button>
-        </div>
-      </div>
+        }
+      />
 
       {errorMsg && (
         <div className="p-4 border border-red-500/20 bg-red-950/20 rounded-sm flex items-center space-x-3 text-red-400 text-sm">
