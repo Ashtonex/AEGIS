@@ -187,6 +187,23 @@ function greetingForNow(date: Date) {
   return "Good evening";
 }
 
+// Owns the 60s tick itself so it re-renders only this heading, not the
+// whole ExecutiveCommandCentreWorkspace (which holds all the KPI/module/
+// region state) every minute.
+function GreetingHeading({ displayName, userRole }: { displayName: string; userRole: string }) {
+  const [currentTime, setCurrentTime] = useState(() => new Date());
+  useEffect(() => {
+    const interval = window.setInterval(() => setCurrentTime(new Date()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
+  return (
+    <div>
+      <h1 className="font-display text-3xl leading-[1.08] tracking-normal text-paper sm:text-4xl">{greetingForNow(currentTime)}, {displayName}.</h1>
+      <p className="mt-1 text-sm text-slate-light">{userRole} · Live ERP view</p>
+    </div>
+  );
+}
+
 export default function ExecutiveCommandCentre() {
   return (
     <RBACGuard allowedRoles={["Executive (Admin)"]}>
@@ -212,7 +229,6 @@ function ExecutiveCommandCentreWorkspace() {
   const [selectedProject, setSelectedProject] = useState<ApiData | null>(null);
   const [projectDetail, setProjectDetail] = useState<ApiData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [currentTime, setCurrentTime] = useState(() => new Date());
 
   const userEmail = session?.user?.email || "System User";
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -266,10 +282,6 @@ function ExecutiveCommandCentreWorkspace() {
   useLiveTable("crm.opportunities", () => { if (session) void loadDashboard(); });
   useLiveTable("projects.projects", () => { if (session) void loadDashboard(); });
   useLiveTable("projects.hse_incidents", () => { if (session) void loadDashboard(); });
-  useEffect(() => {
-    const interval = window.setInterval(() => setCurrentTime(new Date()), 60_000);
-    return () => window.clearInterval(interval);
-  }, []);
 
   const metricCards = useMemo(() => [
     { key: "cash_runway", label: "Cash Runway", value: metricWithUnit(kpis.cash_survival_days, " days"), source: "Executive KPI snapshot or treasury snapshot when available" },
@@ -306,7 +318,7 @@ function ExecutiveCommandCentreWorkspace() {
   const selectedCard = metricCards.find((card) => card.key === selectedMetric);
   return <div className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-7 sm:px-6 sm:pt-8 space-y-4">
     <header className="flex flex-wrap items-end justify-between gap-3">
-      <div><h1 className="font-display text-3xl leading-[1.08] tracking-normal text-paper sm:text-4xl">{greetingForNow(currentTime)}, {displayName}.</h1><p className="mt-1 text-sm text-slate-light">{userRole} · Live ERP view</p></div>
+      <GreetingHeading displayName={displayName} userRole={userRole} />
       <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
     </header>
 

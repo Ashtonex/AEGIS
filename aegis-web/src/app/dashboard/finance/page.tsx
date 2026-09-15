@@ -2,29 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, TrendingUp, TrendingDown, Users, X, BarChart3, Receipt,
   FileText, ClipboardList, CheckCircle2, CircleHelp
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
-import { FinanceOperationsPanel } from "./FinanceOperationsPanel";
-import { DepartmentTransfersPanel } from "./DepartmentTransfersPanel";
-import { StatutoryPanel } from "./StatutoryPanel";
-import { VendorPaymentsPanel } from "./VendorPaymentsPanel";
-import { ClientPaymentsPanel } from "./ClientPaymentsPanel";
-import { HistoricalEntryPanel } from "./HistoricalEntryPanel";
-import { FinancialStatementsPanel } from "./FinancialStatementsPanel";
-import { EarnedValuePanel } from "./EarnedValuePanel";
-import { FinalAccountPanel } from "./FinalAccountPanel";
-import { DataRoomPanel } from "./DataRoomPanel";
-import { GeneralLedgerPanel } from "./GeneralLedgerPanel";
-import { CompanyBudgetPanel } from "./CompanyBudgetPanel";
-import { CashForecastPanel } from "./CashForecastPanel";
-import { FinanceAssistantPanel } from "./FinanceAssistantPanel";
-import { ManagementAccountsPanel } from "./ManagementAccountsPanel";
-import { ProjectPortfolioPanel } from "./ProjectPortfolioPanel";
-import { AuditWorkspacePanel } from "./AuditWorkspacePanel";
+import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
@@ -45,6 +30,36 @@ import {
   getFinanceDepartmentPnl,
   getInternalProjects
 } from "@/lib/api";
+
+// Only the active tab's panel ships to the browser instead of all 17 at
+// once - each of these was previously a static import, so every visit to
+// /dashboard/finance loaded all 17 panels' code regardless of which tab
+// was open.
+function PanelLoading() {
+  return (
+    <div className="space-y-4 p-4">
+      <Skeleton className="h-8 w-1/3" />
+      <SkeletonTableRows rows={6} columns={4} />
+    </div>
+  );
+}
+const FinanceOperationsPanel = dynamic(() => import("./FinanceOperationsPanel").then((m) => m.FinanceOperationsPanel), { loading: PanelLoading });
+const DepartmentTransfersPanel = dynamic(() => import("./DepartmentTransfersPanel").then((m) => m.DepartmentTransfersPanel), { loading: PanelLoading });
+const StatutoryPanel = dynamic(() => import("./StatutoryPanel").then((m) => m.StatutoryPanel), { loading: PanelLoading });
+const VendorPaymentsPanel = dynamic(() => import("./VendorPaymentsPanel").then((m) => m.VendorPaymentsPanel), { loading: PanelLoading });
+const ClientPaymentsPanel = dynamic(() => import("./ClientPaymentsPanel").then((m) => m.ClientPaymentsPanel), { loading: PanelLoading });
+const HistoricalEntryPanel = dynamic(() => import("./HistoricalEntryPanel").then((m) => m.HistoricalEntryPanel), { loading: PanelLoading });
+const FinancialStatementsPanel = dynamic(() => import("./FinancialStatementsPanel").then((m) => m.FinancialStatementsPanel), { loading: PanelLoading });
+const EarnedValuePanel = dynamic(() => import("./EarnedValuePanel").then((m) => m.EarnedValuePanel), { loading: PanelLoading });
+const FinalAccountPanel = dynamic(() => import("./FinalAccountPanel").then((m) => m.FinalAccountPanel), { loading: PanelLoading });
+const DataRoomPanel = dynamic(() => import("./DataRoomPanel").then((m) => m.DataRoomPanel), { loading: PanelLoading });
+const GeneralLedgerPanel = dynamic(() => import("./GeneralLedgerPanel").then((m) => m.GeneralLedgerPanel), { loading: PanelLoading });
+const CompanyBudgetPanel = dynamic(() => import("./CompanyBudgetPanel").then((m) => m.CompanyBudgetPanel), { loading: PanelLoading });
+const CashForecastPanel = dynamic(() => import("./CashForecastPanel").then((m) => m.CashForecastPanel), { loading: PanelLoading });
+const FinanceAssistantPanel = dynamic(() => import("./FinanceAssistantPanel").then((m) => m.FinanceAssistantPanel), { loading: PanelLoading });
+const ManagementAccountsPanel = dynamic(() => import("./ManagementAccountsPanel").then((m) => m.ManagementAccountsPanel), { loading: PanelLoading });
+const ProjectPortfolioPanel = dynamic(() => import("./ProjectPortfolioPanel").then((m) => m.ProjectPortfolioPanel), { loading: PanelLoading });
+const AuditWorkspacePanel = dynamic(() => import("./AuditWorkspacePanel").then((m) => m.AuditWorkspacePanel), { loading: PanelLoading });
 
 type RecordData = Record<string, any>;
 type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace";

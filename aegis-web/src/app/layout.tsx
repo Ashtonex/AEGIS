@@ -3,14 +3,7 @@ import { constructMetadata } from "@/lib/metadata";
 import { NavigationWrapper } from "@/components/layout/NavigationWrapper";
 import { PwaRegistration } from "@/components/PwaRegistration";
 import { PwaRuntime } from "@/components/pwa/PwaRuntime";
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/500.css";
-import "@fontsource/inter/700.css";
-import "@fontsource/inter/900.css";
-import "@fontsource/archivo/700.css";
-import "@fontsource/archivo/900.css";
-import "@fontsource/jetbrains-mono/500.css";
-import "@fontsource/jetbrains-mono/600.css";
+import { bodyFont, displayFont, monoFont } from "@/fonts";
 import "@/styles/globals.css";
 import { cn } from "@/lib/utils";
 import { AuthProvider } from "@/lib/auth/AuthContext";
@@ -26,7 +19,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="scroll-smooth" data-theme="ink" suppressHydrationWarning>
+    <html
+      lang="en"
+      className={cn("scroll-smooth", bodyFont.variable, displayFont.variable, monoFont.variable)}
+      data-theme="ink"
+      suppressHydrationWarning
+    >
       <head>
         <meta name="theme-color" content="#040810" />
         <meta name="apple-mobile-web-app-capable" content="yes" />

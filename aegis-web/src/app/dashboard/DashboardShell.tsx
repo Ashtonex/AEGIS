@@ -390,12 +390,30 @@ const MODULE_GROUPS: ModuleGroup[] = [
   },
 ];
 
+// Renders the CAT clock and owns its own 1s tick, so that tick re-renders
+// only this small leaf instead of the entire DashboardShell (and everything
+// inside it - every /dashboard/* page) once a second.
+function HarareClock() {
+  const [time, setTime] = useState("");
+
+  useEffect(() => {
+    const updateTime = () => {
+      const now = new Date();
+      setTime(now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Harare' }) + ' CAT');
+    };
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return <>{time}</>;
+}
+
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { session, role, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
-  const [time, setTime] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [tourOpen, setTourOpen] = useState(false);
   const [tourReady, setTourReady] = useState(false);
@@ -507,16 +525,6 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      setTime(now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Harare' }) + ' CAT');
-    };
-    updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
   }, []);
 
   const portalHome = useMemo(() => {
@@ -843,7 +851,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           </button>
 
           <div className="hidden lg:block font-mono text-data-sm text-slate-light tracking-widest">
-            {time}
+            <HarareClock />
           </div>
 
           <div className="relative" ref={userMenuRef} data-tour="dashboard-profile">
