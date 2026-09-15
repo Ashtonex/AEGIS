@@ -50,14 +50,18 @@ const OPERATIONAL_DASHBOARD_PREFIXES = [
   "/api/v1/notifications/",
 ];
 
-// Settings, CRM, and tender-bids calls have been observed taking 8-45s
-// against this deployment's Supabase pooler even for simple single-table
-// reads/writes, and multi-step actions (e.g. inviting a user) can exceed
-// that. The default API_TIMEOUT_MS then fires on a request that actually
-// succeeded server-side, surfacing a false "timed out" error. Give every
-// call into these domains a generous budget by default instead of relying
-// on each call site to opt in individually.
-const SLOW_DOMAIN_TIMEOUT_MS = 120000;
+// Settings, CRM, and tender-bids calls were observed taking 8-45s against
+// this deployment's Supabase pooler even for simple single-table reads/
+// writes, which is what the 120s timeout this replaced was covering for.
+// The actual causes (per-request auth doing 3-4 sequential DB/network round
+// trips with no caching, and several endpoints running fully sequential
+// queries with no concurrency) were fixed directly - see core/security.py's
+// Redis-backed auth/permission cache and the asyncio.gather additions in
+// fleet.py/data_room.py/crm_tasks.py. This budget is still above the
+// default for these domains (multi-step actions like inviting a user
+// legitimately take longer than a single read), just no longer sized to
+// paper over multi-second round trips that shouldn't happen anymore.
+const SLOW_DOMAIN_TIMEOUT_MS = 20000;
 const SLOW_DOMAIN_PREFIXES = [
   "/api/v1/settings/",
   "/api/v1/crm/",
@@ -779,7 +783,9 @@ function bearerHeaders(accessToken?: string): HeadersInit | undefined {
   return accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined;
 }
 
-const EXECUTIVE_READ_TIMEOUT_MS = 120000;
+// Same rollback as SLOW_DOMAIN_TIMEOUT_MS above - was 120000 to paper over
+// the pre-fix auth/query latency, now sized to the fixed baseline instead.
+const EXECUTIVE_READ_TIMEOUT_MS = 20000;
 
 export async function getExecutiveKPIs(accessToken?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/kpis`, {
