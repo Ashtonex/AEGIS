@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   AlertTriangle,
   Building2,
@@ -96,31 +97,30 @@ export default function ClientPortalDashboardPage() {
 
   return (
     <div className="min-h-screen bg-ink text-paper p-6">
-      <section className="mb-8 flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p className="font-mono text-[10px] tracking-widest text-signal uppercase">Portal administration</p>
-          <h1 className="font-display text-4xl mt-2">Client Portal</h1>
-          <p className="text-slate-light mt-3 max-w-2xl">
-            View client-submitted requests and confirm the external portal is receiving source-backed records.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Requests</p>
-            <p className="text-2xl font-semibold">{tickets.length}</p>
+      <DashboardPageHeader
+        className="mb-8"
+        eyebrow={{ label: "Portal administration" }}
+        title="Client Portal"
+        subtitle="View client-submitted requests and confirm the external portal is receiving source-backed records."
+        actions={
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Requests</p>
+              <p className="text-2xl font-semibold">{tickets.length}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Clients</p>
+              <p className="text-2xl font-semibold">{clientCount}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink-light px-4 py-3 col-span-2 sm:col-span-1">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Access model</p>
+              <p className="text-sm font-semibold text-green-400 flex items-center gap-2 mt-1">
+                <ShieldCheck className="w-4 h-4" /> Provisioned
+              </p>
+            </div>
           </div>
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Clients</p>
-            <p className="text-2xl font-semibold">{clientCount}</p>
-          </div>
-          <div className="border border-ink-mid bg-ink-light px-4 py-3 col-span-2 sm:col-span-1">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Access model</p>
-            <p className="text-sm font-semibold text-green-400 flex items-center gap-2 mt-1">
-              <ShieldCheck className="w-4 h-4" /> Provisioned
-            </p>
-          </div>
-        </div>
-      </section>
+        }
+      />
 
       <section className="border border-ink-mid bg-ink-light">
         <div className="p-5 border-b border-ink-mid flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

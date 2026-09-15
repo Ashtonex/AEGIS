@@ -7,6 +7,7 @@ import {
   TrendingUp, Users, Truck, ShoppingCart, ShieldCheck
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   getAvailableReports,
   getScheduledReports,
@@ -211,11 +212,11 @@ function ReportsWorkspace() {
         </div>
       )}
 
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Automated Reporting</h1>
-        <p className="text-sm text-slate-light font-sans mt-0.5">SNC report generator, scheduled distribution lists, and PDF publish gates.</p>
-      </div>
+      <DashboardPageHeader
+        className="mb-0 border-b-0 pb-0"
+        title="Automated Reporting"
+        subtitle="SNC report generator, scheduled distribution lists, and PDF publish gates."
+      />
 
       {/* Category Card Grid */}
       <div>

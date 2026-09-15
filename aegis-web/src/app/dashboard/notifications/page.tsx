@@ -5,6 +5,7 @@ import { Bell, CheckCheck, Loader2, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useNotifications } from "@/hooks/useNotifications";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString("en-ZA", {
@@ -42,25 +43,24 @@ export default function NotificationsPage() {
 
   return (
     <div className="min-h-screen bg-ink p-6 text-paper">
-      <section className="mb-8 flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-widest text-signal">System-wide alerts</p>
-          <h1 className="mt-2 font-display text-4xl">Notifications</h1>
-          <p className="mt-3 max-w-2xl text-slate-light">
-            Live operational alerts from approvals, client portal messages, internal communication, compliance and site activity.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] uppercase text-slate-light">Unread</p>
-            <p className="text-2xl font-semibold">{unreadCount}</p>
+      <DashboardPageHeader
+        className="mb-8"
+        eyebrow={{ label: "System-wide alerts" }}
+        title="Notifications"
+        subtitle="Live operational alerts from approvals, client portal messages, internal communication, compliance and site activity."
+        actions={
+          <div className="grid grid-cols-2 gap-3">
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] uppercase text-slate-light">Unread</p>
+              <p className="text-2xl font-semibold">{unreadCount}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] uppercase text-slate-light">Loaded</p>
+              <p className="text-2xl font-semibold">{notifications.length}</p>
+            </div>
           </div>
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] uppercase text-slate-light">Loaded</p>
-            <p className="text-2xl font-semibold">{notifications.length}</p>
-          </div>
-        </div>
-      </section>
+        }
+      />
 
       <section className="border border-ink-mid bg-ink-light">
         <div className="flex flex-col gap-4 border-b border-ink-mid p-5 lg:flex-row lg:items-center lg:justify-between">

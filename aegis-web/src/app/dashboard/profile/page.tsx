@@ -5,6 +5,7 @@ import { CalendarDays, Loader2, Plus, Save, UserRound } from "lucide-react";
 import { createMyHRLeaveRequest, getMyHREmployeeRecord, getMyHRLeaveBalance, getMyHRLeaveRequests, getMyProfile, updateMyProfile } from "@/lib/api";
 import { useAppTheme } from "@/components/theme/AppThemeProvider";
 import { THEME_PREFERENCES, isThemePreference, type ThemePreference } from "@/lib/theme";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 type Profile = Record<string, any>;
 
@@ -120,15 +121,11 @@ export default function ProfilePage() {
 
   return (
     <main className="h-full max-w-5xl overflow-y-auto p-6">
-      <header className="mb-6 flex items-center gap-3 border-b border-ink-mid pb-5">
-        <div className="flex h-10 w-10 items-center justify-center border border-ink-mid bg-ink-light rounded-sm">
-          <UserRound className="h-5 w-5 text-signal" />
-        </div>
-        <div>
-          <h1 className="font-display text-3xl text-paper">My Profile</h1>
-          <p className="text-sm text-slate-light">{profile.email || "Employee account"}</p>
-        </div>
-      </header>
+      <DashboardPageHeader
+        eyebrow={{ label: "Account", icon: UserRound }}
+        title="My Profile"
+        subtitle={profile.email || "Employee account"}
+      />
 
       <form onSubmit={save} className="space-y-6">
         <section className="rounded-sm border border-ink-mid bg-ink p-5">

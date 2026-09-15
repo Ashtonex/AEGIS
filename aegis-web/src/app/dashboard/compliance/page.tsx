@@ -9,6 +9,7 @@ import {
   CalendarDays, Flame, Building, Users, Truck
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   getComplianceObligations,
@@ -366,60 +367,59 @@ function ComplianceWorkspace() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Compliance, Legal & Assurance</h1>
-          <p className="text-sm text-slate-light font-sans mt-0.5">SNC compliance gates, regulatory filings, corrective action plans and incident logs.</p>
-        </div>
-        <div className="flex space-x-2">
-          {activeTab === "obligations" && (
-            <button
-              onClick={() => setShowObligationModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Record Obligation</span>
-            </button>
-          )}
-          {activeTab === "corrective-actions" && (
-            <button
-              onClick={() => setShowActionModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Issue CAPA Action</span>
-            </button>
-          )}
-          {activeTab === "deployment-gates" && (
-            <button
-              onClick={() => setShowRequirementModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Add Gate Requirement</span>
-            </button>
-          )}
-          {activeTab === "equipment" && (
-            <button
-              onClick={() => setShowCredentialModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Record Credential</span>
-            </button>
-          )}
-          {activeTab === "incidents" && (
-            <button
-              onClick={() => setShowIncidentModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Log Incident</span>
-            </button>
-          )}
-        </div>
-      </div>
+      <DashboardPageHeader
+        title="Compliance, Legal & Assurance"
+        subtitle="SNC compliance gates, regulatory filings, corrective action plans and incident logs."
+        actions={
+          <>
+            {activeTab === "obligations" && (
+              <button
+                onClick={() => setShowObligationModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Record Obligation</span>
+              </button>
+            )}
+            {activeTab === "corrective-actions" && (
+              <button
+                onClick={() => setShowActionModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Issue CAPA Action</span>
+              </button>
+            )}
+            {activeTab === "deployment-gates" && (
+              <button
+                onClick={() => setShowRequirementModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Add Gate Requirement</span>
+              </button>
+            )}
+            {activeTab === "equipment" && (
+              <button
+                onClick={() => setShowCredentialModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Record Credential</span>
+              </button>
+            )}
+            {activeTab === "incidents" && (
+              <button
+                onClick={() => setShowIncidentModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Log Incident</span>
+              </button>
+            )}
+          </>
+        }
+      />
 
       {/* Compliance Stats strip */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">

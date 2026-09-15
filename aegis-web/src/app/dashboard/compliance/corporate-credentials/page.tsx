@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, BadgeCheck, Loader2, Plus, ShieldAlert, X } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   getCorporateCredentials,
   createCorporateCredential,
@@ -287,21 +288,19 @@ function CorporateCredentialsVault() {
         </div>
       )}
 
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Corporate Credentials Vault</h1>
-          <p className="text-sm text-slate-light font-sans mt-0.5">
-            SNC&apos;s permanent registrations, certifications, insurance and financial evidence. Tenders read from here instead of re-collecting the same evidence per tender.
-          </p>
-        </div>
-        <button
-          onClick={openCreateModal}
-          className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Add Credential</span>
-        </button>
-      </div>
+      <DashboardPageHeader
+        title="Corporate Credentials Vault"
+        subtitle="SNC's permanent registrations, certifications, insurance and financial evidence. Tenders read from here instead of re-collecting the same evidence per tender."
+        actions={
+          <button
+            onClick={openCreateModal}
+            className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            <span>Add Credential</span>
+          </button>
+        }
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-ink-light border border-ink-mid p-4 rounded-lg">

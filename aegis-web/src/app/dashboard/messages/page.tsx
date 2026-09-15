@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -182,33 +183,32 @@ export default function DashboardMessagesPage() {
 
   return (
     <div className="min-h-screen bg-ink text-paper p-6">
-      <section className="mb-8 flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p className="font-mono text-[10px] tracking-widest text-signal uppercase">AEGIS communications</p>
-          <h1 className="font-display text-4xl mt-2">Messages</h1>
-          <p className="text-slate-light mt-3 max-w-2xl">
-            One ledger for client portal messages, CRM outreach, and executive-to-employee communication.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Total</p>
-            <p className="text-2xl font-semibold">{messages.length}</p>
+      <DashboardPageHeader
+        className="mb-8"
+        eyebrow={{ label: "AEGIS communications" }}
+        title="Messages"
+        subtitle="One ledger for client portal messages, CRM outreach, and executive-to-employee communication."
+        actions={
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Total</p>
+              <p className="text-2xl font-semibold">{messages.length}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Internal</p>
+              <p className="text-2xl font-semibold">{messages.filter((item) => item.direction === "internal").length}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Portal</p>
+              <p className="text-2xl font-semibold">{messages.filter((item) => item.channel === "portal_message").length}</p>
+            </div>
+            <div className="border border-ink-mid bg-ink-light px-4 py-3">
+              <p className="font-mono text-[10px] text-slate-light uppercase">Portal inbox</p>
+              <p className="text-2xl font-semibold">{portalItems.length}</p>
+            </div>
           </div>
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Internal</p>
-            <p className="text-2xl font-semibold">{messages.filter((item) => item.direction === "internal").length}</p>
-          </div>
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Portal</p>
-            <p className="text-2xl font-semibold">{messages.filter((item) => item.channel === "portal_message").length}</p>
-          </div>
-          <div className="border border-ink-mid bg-ink-light px-4 py-3">
-            <p className="font-mono text-[10px] text-slate-light uppercase">Portal inbox</p>
-            <p className="text-2xl font-semibold">{portalItems.length}</p>
-          </div>
-        </div>
-      </section>
+        }
+      />
 
       {error && (
         <div className="mb-5 border border-red-500/30 bg-red-950/30 p-4 text-sm text-red-200 flex gap-3">

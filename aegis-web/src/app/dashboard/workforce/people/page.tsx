@@ -1,8 +1,8 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { getMyPermissions, workforceFoundation } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import WorkerPicker from "../WorkerPicker";
 import WorkforceEngagements from "../WorkforceEngagements";
 
@@ -131,11 +131,12 @@ export default function WorkforcePeople() {
   }
 
   return <main className="min-h-full space-y-6 bg-ink p-4 text-paper sm:p-6">
-    <header className="space-y-2 border-b border-ink-mid pb-5">
-      <Link className="text-sm text-signal underline" href="/dashboard/workforce">Back to Workforce Command</Link>
-      <h1 className="font-display text-3xl">People and organisation</h1>
-      <p className="max-w-3xl text-sm text-slate-light">Maintain the worker register, reporting authority and dated availability. Changes require an online server receipt.</p>
-    </header>
+    <DashboardPageHeader
+      backHref="/dashboard/workforce"
+      backLabel="Back to Workforce Command"
+      title="People and Organisation"
+      subtitle="Maintain the worker register, reporting authority and dated availability. Changes require an online server receipt."
+    />
     {error && <p role="alert" className="border border-red-500/40 p-3 text-red-200">{error}</p>}
     <p role="status" aria-live="polite" className="text-sm text-emerald-300">{message}</p>
     <section className="space-y-4" aria-label="Worker register">
