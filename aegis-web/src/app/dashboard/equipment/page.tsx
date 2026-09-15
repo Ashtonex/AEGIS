@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   ApiError,
@@ -1728,24 +1729,13 @@ function EquipmentDashboard() {
 
   return (
     <main className="flex min-h-screen flex-col bg-ink text-paper">
-      {/* Header */}
-      <header className="border-b border-ink-mid px-6 py-5">
-        <div className="mx-auto max-w-[1800px]">
-          <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
-            <div>
-              <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-slate">
-                <Cpu size={13} />
-                Operations / Equipment Intelligence
-              </div>
-              <h1 className="text-2xl font-semibold tracking-wide text-paper">
-                Equipment Intelligence
-              </h1>
-              <p className="mt-1 text-sm text-slate-light">
-                Asset profitability, utilization, and maintenance command center
-                for the full equipment register.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
+      <div className="mx-auto w-full max-w-[1800px] px-6 pt-5">
+        <DashboardPageHeader
+          eyebrow={{ label: "Operations / Equipment Intelligence", icon: Cpu }}
+          title="Equipment Intelligence"
+          subtitle="Asset profitability, utilization, and maintenance command center for the full equipment register."
+          actions={
+            <>
               {lastUpdated && (
                 <span className="font-mono text-[10px] uppercase tracking-wider text-slate">
                   Updated {lastUpdated.toLocaleTimeString()}
@@ -1768,10 +1758,10 @@ function EquipmentDashboard() {
                 <Plus size={13} />
                 Register Equipment
               </button>
-            </div>
-          </div>
-        </div>
-      </header>
+            </>
+          }
+        />
+      </div>
 
       <div className="mx-auto w-full max-w-[1800px] flex-1 px-6 py-6">
         {/* Error */}

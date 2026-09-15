@@ -9,6 +9,7 @@ import {
   FileText, ClipboardList, CheckCircle2, CircleHelp
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
@@ -418,80 +419,78 @@ function FinanceWorkspace() {
         </div>
       )}
 
-      {/* Title & Subtitle */}
-      <div className="flex justify-between items-center" data-tour="finance-title">
-        <div className="flex items-center gap-2">
-          <div>
-            <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Finance & Cost Control</h1>
-            <p className="text-sm text-slate-light font-sans mt-0.5">SNC authoritative financial ledger and budget controls.</p>
-          </div>
-          <button
-            onClick={financeTour.openTour}
-            className="text-slate hover:text-paper transition-colors"
-            title="Replay Finance tour"
-            aria-label="Replay Finance tour"
-          >
-            <CircleHelp className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="flex items-center space-x-2">
-          <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider" data-tour="finance-departments">
+      <DashboardPageHeader
+        title="Finance & Cost Control"
+        subtitle="SNC authoritative financial ledger and budget controls."
+        className="items-center"
+        actions={
+          <div className="flex items-center space-x-2" data-tour="finance-title">
             <button
-              onClick={() => setDepartmentId("")}
-              className={`px-3 py-2 transition-colors ${departmentId === "" ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
+              onClick={financeTour.openTour}
+              className="text-slate hover:text-paper transition-colors"
+              title="Replay Finance tour"
+              aria-label="Replay Finance tour"
             >
-              Consolidated
+              <CircleHelp className="w-5 h-5" />
             </button>
-            {departments.map((d) => (
+            <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider" data-tour="finance-departments">
               <button
-                key={d.id}
-                onClick={() => setDepartmentId(d.id)}
-                className={`px-3 py-2 border-l border-ink-mid transition-colors ${departmentId === d.id ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
+                onClick={() => setDepartmentId("")}
+                className={`px-3 py-2 transition-colors ${departmentId === "" ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
               >
-                {d.name}
+                Consolidated
               </button>
-            ))}
+              {departments.map((d) => (
+                <button
+                  key={d.id}
+                  onClick={() => setDepartmentId(d.id)}
+                  className={`px-3 py-2 border-l border-ink-mid transition-colors ${departmentId === d.id ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
+                >
+                  {d.name}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setActiveTab(activeTab === "data-room" ? "project-financials" : "data-room")}
+              className={`flex items-center space-x-1.5 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+                activeTab === "data-room"
+                  ? "bg-signal text-ink border-signal font-semibold"
+                  : "border-signal/40 bg-signal/10 text-signal hover:bg-signal/20"
+              }`}
+            >
+              <ShieldCheck className="h-4 w-4" />
+              <span>SNC Data Room</span>
+            </button>
+            {activeTab === "cost-codes" && (
+              <button
+                onClick={() => setShowCostCodeModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>New Cost Code</span>
+              </button>
+            )}
+            {activeTab === "variations" && (
+              <button
+                onClick={() => setShowVariationModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Record Variation</span>
+              </button>
+            )}
+            {activeTab === "progress-claims" && (
+              <button
+                onClick={() => setShowClaimModal(true)}
+                className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+              >
+                <Plus className="h-4 w-4" />
+                <span>New Claim</span>
+              </button>
+            )}
           </div>
-          <button
-            onClick={() => setActiveTab(activeTab === "data-room" ? "project-financials" : "data-room")}
-            className={`flex items-center space-x-1.5 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
-              activeTab === "data-room"
-                ? "bg-signal text-ink border-signal font-semibold"
-                : "border-signal/40 bg-signal/10 text-signal hover:bg-signal/20"
-            }`}
-          >
-            <ShieldCheck className="h-4 w-4" />
-            <span>SNC Data Room</span>
-          </button>
-          {activeTab === "cost-codes" && (
-            <button
-              onClick={() => setShowCostCodeModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>New Cost Code</span>
-            </button>
-          )}
-          {activeTab === "variations" && (
-            <button
-              onClick={() => setShowVariationModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Record Variation</span>
-            </button>
-          )}
-          {activeTab === "progress-claims" && (
-            <button
-              onClick={() => setShowClaimModal(true)}
-              className="flex items-center space-x-2 bg-signal text-ink font-medium px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              <span>New Claim</span>
-            </button>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4" data-tour="finance-kpis">

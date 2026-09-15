@@ -30,6 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   addInventoryItem,
   addInventoryStore,
@@ -424,52 +425,48 @@ function InventoryWorkspace() {
 
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5">
-        <div>
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal">
-            <Package className="h-4 w-4" /> Inventory &amp; Materials Control
-          </p>
-          <h1 className="font-display text-3xl font-bold uppercase tracking-tight">Stock Management</h1>
-          <p className="mt-1 max-w-3xl text-sm text-slate-light">
-            Real-time stock balances, catalogue management, store configuration and full movement ledger for all sites and warehouses.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowInvoice(true)}
-            className="inline-flex h-10 items-center gap-2 border border-blue-500/40 bg-blue-950/20 px-3 font-mono text-xs uppercase tracking-wider text-blue-300 hover:border-blue-400 hover:bg-blue-950/40"
-          >
-            <ReceiptText className="h-4 w-4" /> Bulk Store Invoice
-          </button>
-          <button
-            onClick={() => setShowReceive(true)}
-            className="inline-flex h-10 items-center gap-2 border border-emerald-500/40 bg-emerald-950/20 px-3 font-mono text-xs uppercase tracking-wider text-emerald-300 hover:border-emerald-400 hover:bg-emerald-950/40"
-          >
-            <PackagePlus className="h-4 w-4" /> Receive Stock
-          </button>
-          <button
-            onClick={() => setShowIssue(true)}
-            className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink"
-          >
-            <PackageMinus className="h-4 w-4" /> Issue Stock
-          </button>
-          <button
-            onClick={() => setShowTransfer(true)}
-            className="inline-flex h-10 items-center gap-2 border border-purple-500/40 bg-purple-950/20 px-3 font-mono text-xs uppercase tracking-wider text-purple-300 hover:border-purple-400 hover:bg-purple-950/40"
-          >
-            <ArrowLeftRight className="h-4 w-4" /> Transfer Stock
-          </button>
-          <button
-            onClick={() => setShowAdjust(true)}
-            className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
-          >
-            <ClipboardEdit className="h-4 w-4" /> Adjust Stock
-          </button>
-          <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
-          </button>
-        </div>
-      </header>
+      <DashboardPageHeader
+        eyebrow={{ label: "Inventory & Materials Control", icon: Package }}
+        title="Stock Management"
+        subtitle="Real-time stock balances, catalogue management, store configuration and full movement ledger for all sites and warehouses."
+        actions={
+          <>
+            <button
+              onClick={() => setShowInvoice(true)}
+              className="inline-flex h-10 items-center gap-2 border border-blue-500/40 bg-blue-950/20 px-3 font-mono text-xs uppercase tracking-wider text-blue-300 hover:border-blue-400 hover:bg-blue-950/40"
+            >
+              <ReceiptText className="h-4 w-4" /> Bulk Store Invoice
+            </button>
+            <button
+              onClick={() => setShowReceive(true)}
+              className="inline-flex h-10 items-center gap-2 border border-emerald-500/40 bg-emerald-950/20 px-3 font-mono text-xs uppercase tracking-wider text-emerald-300 hover:border-emerald-400 hover:bg-emerald-950/40"
+            >
+              <PackagePlus className="h-4 w-4" /> Receive Stock
+            </button>
+            <button
+              onClick={() => setShowIssue(true)}
+              className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink"
+            >
+              <PackageMinus className="h-4 w-4" /> Issue Stock
+            </button>
+            <button
+              onClick={() => setShowTransfer(true)}
+              className="inline-flex h-10 items-center gap-2 border border-purple-500/40 bg-purple-950/20 px-3 font-mono text-xs uppercase tracking-wider text-purple-300 hover:border-purple-400 hover:bg-purple-950/40"
+            >
+              <ArrowLeftRight className="h-4 w-4" /> Transfer Stock
+            </button>
+            <button
+              onClick={() => setShowAdjust(true)}
+              className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
+            >
+              <ClipboardEdit className="h-4 w-4" /> Adjust Stock
+            </button>
+            <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+            </button>
+          </>
+        }
+      />
 
       <section className="mb-6 grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <Metric icon={<Box />} label="Total SKUs" value={loading ? "..." : String(metrics.totalSKUs)} />

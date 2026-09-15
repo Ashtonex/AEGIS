@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AlertTriangle, Award, Building2, CheckCircle2, Database, Globe2, History, Image as ImageIcon, KeyRound, Loader2, LockKeyhole, Mail, Plus, PowerOff, RefreshCw, Save, Settings2, ShieldCheck, Trash2, Upload, UserCheck, UserPlus, Users, X } from "lucide-react";
 import * as QRCode from "qrcode";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   ApiError,
   assignSettingsUserRole,
@@ -487,7 +488,14 @@ export default function SettingsPage() {
   if (loading) return <div className="flex h-full items-center justify-center text-slate-light"><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading settings...</div>;
 
   return <main className="h-full overflow-y-auto p-6 space-y-6">
-    <header className="flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5"><div><p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal"><Settings2 className="h-3.5 w-3.5" /> System controls</p><h1 className="font-display text-3xl font-bold uppercase tracking-tight text-paper">System Settings</h1><p className="mt-1 text-sm text-slate-light">ERP configuration, access control, website content, integrations, and audit evidence.</p></div><button onClick={() => void load(true)} disabled={refreshing} className="inline-flex items-center gap-2 border border-ink-mid px-3 py-2 font-mono text-xs uppercase text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh</button></header>
+    <DashboardPageHeader
+      eyebrow={{ label: "System controls", icon: Settings2 }}
+      title="System Settings"
+      subtitle="ERP configuration, access control, website content, integrations, and audit evidence."
+      actions={
+        <button onClick={() => void load(true)} disabled={refreshing} className="inline-flex items-center gap-2 border border-ink-mid px-3 py-2 font-mono text-xs uppercase text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} /> Refresh</button>
+      }
+    />
     {error && <div className="flex gap-2 border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200"><AlertTriangle className="h-4 w-4 shrink-0" /> {error}</div>}
     {overview.source_warnings.length > 0 && <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0" /> Partial settings source availability</div><ul className="list-disc space-y-1 pl-5 text-xs">{overview.source_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
     {notice && <div className="flex gap-2 border border-signal/40 bg-signal/10 p-3 text-sm text-paper"><ShieldCheck className="h-4 w-4 shrink-0 text-signal" /> {notice}</div>}

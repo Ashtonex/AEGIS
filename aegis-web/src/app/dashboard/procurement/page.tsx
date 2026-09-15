@@ -34,6 +34,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -623,32 +624,27 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
-      {/* Header */}
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5">
-        <div>
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal">
-            <ClipboardList className="h-4 w-4" />Procurement Control Tower
-          </p>
-          <h1 className="font-display text-3xl font-bold uppercase tracking-tight">Procurement Pipeline</h1>
-          <p className="mt-1 max-w-3xl text-sm text-slate-light">
-            Procurement and inventory command view — what is in store, what moved, what is coming, and what needs action.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {tab === "suppliers" ? (
-            <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
-              <Plus className="h-4 w-4" />New Supplier
+      <DashboardPageHeader
+        eyebrow={{ label: "Procurement Control Tower", icon: ClipboardList }}
+        title="Procurement Pipeline"
+        subtitle="Procurement and inventory command view — what is in store, what moved, what is coming, and what needs action."
+        actions={
+          <>
+            {tab === "suppliers" ? (
+              <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+                <Plus className="h-4 w-4" />New Supplier
+              </button>
+            ) : (
+              <button onClick={() => setShowCreatePR(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+                <Plus className="h-4 w-4" />New Requisition
+              </button>
+            )}
+            <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
             </button>
-          ) : (
-            <button onClick={() => setShowCreatePR(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
-              <Plus className="h-4 w-4" />New Requisition
-            </button>
-          )}
-          <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
-          </button>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       {/* KPI Strip */}
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">

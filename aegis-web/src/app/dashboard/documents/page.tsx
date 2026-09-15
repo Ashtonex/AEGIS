@@ -7,6 +7,7 @@ import {
   FileCheck, Shield, ChevronRight, CheckCircle2
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { supabase } from "@/lib/supabase";
 import {
@@ -311,28 +312,27 @@ function DocumentsWorkspace() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Controlled Documents</h1>
-          <p className="text-sm text-slate-light font-sans mt-0.5">SNC enterprise document repository, drawings version log, and contract distributions.</p>
-        </div>
-        <div className="flex space-x-2">
-          <button
-            onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
-            className="p-2 bg-ink-light border border-ink-mid hover:bg-ink-mid/30 text-slate hover:text-paper rounded-sm transition-colors"
-          >
-            {viewMode === "grid" ? <List className="h-4 w-4" /> : <Grid className="h-4 w-4" />}
-          </button>
-          <button
-            onClick={() => setShowUploadModal(true)}
-            className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-          >
-            <Upload className="h-4 w-4" />
-            <span>Upload Document</span>
-          </button>
-        </div>
-      </div>
+      <DashboardPageHeader
+        title="Controlled Documents"
+        subtitle="SNC enterprise document repository, drawings version log, and contract distributions."
+        actions={
+          <>
+            <button
+              onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
+              className="p-2 bg-ink-light border border-ink-mid hover:bg-ink-mid/30 text-slate hover:text-paper rounded-sm transition-colors"
+            >
+              {viewMode === "grid" ? <List className="h-4 w-4" /> : <Grid className="h-4 w-4" />}
+            </button>
+            <button
+              onClick={() => setShowUploadModal(true)}
+              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+            >
+              <Upload className="h-4 w-4" />
+              <span>Upload Document</span>
+            </button>
+          </>
+        }
+      />
 
       {/* Main layout grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">

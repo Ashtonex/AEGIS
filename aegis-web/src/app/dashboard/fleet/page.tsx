@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests } from "@/lib/api";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
@@ -272,19 +273,19 @@ function FleetTrackerDashboard() {
   return (
     <main className="min-h-screen bg-ink p-4 text-paper md:p-7">
       <div className="mx-auto max-w-[1600px]">
-        <header className="mb-6 flex flex-col justify-between gap-4 border-b border-ink-mid pb-5 md:flex-row md:items-end">
-          <div>
-            <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-slate"><Truck size={14} /> Operations / Fleet register</div>
-            <h1 className="text-2xl font-semibold tracking-wide text-paper">Fleet Operations</h1>
-            <p className="mt-1 text-sm text-slate-light">Asset availability, service evidence, and operating exposure from the controlled fleet register.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            {lastUpdated && <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Read {lastUpdated.toLocaleTimeString()}</span>}
-            <button type="button" onClick={() => void loadFleet()} disabled={loading} className="inline-flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs font-medium text-paper hover:border-slate disabled:opacity-50"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh</button>
-            <button type="button" onClick={() => setModal("plant-request")} className="inline-flex items-center gap-2 border border-signal/60 bg-signal/10 px-3 py-2 text-xs font-semibold text-signal hover:bg-signal/15"><FilePlus2 size={14} /> New Plant Request</button>
-            <button type="button" onClick={() => setModal("register")} className="inline-flex items-center gap-2 bg-signal px-3 py-2 text-xs font-semibold text-ink hover:bg-signal/90"><Plus size={14} /> Register Vehicle</button>
-          </div>
-        </header>
+        <DashboardPageHeader
+          eyebrow={{ label: "Operations / Fleet register", icon: Truck }}
+          title="Fleet Operations"
+          subtitle="Asset availability, service evidence, and operating exposure from the controlled fleet register."
+          actions={
+            <>
+              {lastUpdated && <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Read {lastUpdated.toLocaleTimeString()}</span>}
+              <button type="button" onClick={() => void loadFleet()} disabled={loading} className="inline-flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs font-medium text-paper hover:border-slate disabled:opacity-50"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh</button>
+              <button type="button" onClick={() => setModal("plant-request")} className="inline-flex items-center gap-2 border border-signal/60 bg-signal/10 px-3 py-2 text-xs font-semibold text-signal hover:bg-signal/15"><FilePlus2 size={14} /> New Plant Request</button>
+              <button type="button" onClick={() => setModal("register")} className="inline-flex items-center gap-2 bg-signal px-3 py-2 text-xs font-semibold text-ink hover:bg-signal/90"><Plus size={14} /> Register Vehicle</button>
+            </>
+          }
+        />
 
         {notice && <div className="mb-5 flex items-start gap-3 border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-100"><CheckCircle2 size={18} className="mt-0.5 shrink-0" /><p>{notice}</p></div>}
         {errorMessage && <div className="mb-5 flex items-start gap-3 border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-100"><ShieldAlert size={18} className="mt-0.5 shrink-0" /><div><p className="font-semibold">Fleet register unavailable</p><p className="mt-1 text-red-100/80">{errorMessage}</p></div></div>}

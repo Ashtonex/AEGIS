@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import Link from "next/link";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -317,10 +318,13 @@ function ExecutiveCommandCentreWorkspace() {
 
   const selectedCard = metricCards.find((card) => card.key === selectedMetric);
   return <div className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-7 sm:px-6 sm:pt-8 space-y-4">
-    <header className="flex flex-wrap items-end justify-between gap-3">
-      <GreetingHeading displayName={displayName} userRole={userRole} />
-      <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
-    </header>
+    <DashboardPageHeader
+      title={<GreetingHeading displayName={displayName} userRole={userRole} />}
+      documentTitle="Executive Command Centre"
+      actions={
+        <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
+      }
+    />
 
     <DataConfidence sources={dataHealth} />
     <SourceWarnings warnings={loadWarnings} />

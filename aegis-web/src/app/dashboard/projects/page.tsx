@@ -40,6 +40,7 @@ import {
   UserPlus
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   ApiError, getExecutiveProjectDetail, getFinanceDepartments, getInternalProjects, getProject, updateInternalProject,
   submitProjectRegistration, decideProjectRegistration, setProjectBudget, confirmProjectDeposit, createInternalProject,
@@ -410,44 +411,42 @@ function ProjectsWorkspace() {
 
   return (
     <div className="min-h-full bg-ink p-4 text-paper sm:p-6">
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5">
-        <div>
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal">
-            <BriefcaseBusiness className="h-4 w-4" />Delivery portfolio
-          </p>
-          <h1 className="font-display text-3xl font-bold">Projects Command</h1>
-          <p className="mt-1 text-sm text-slate-light">Live project register and delivery evidence across the ERP.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex h-10 border border-ink-mid bg-ink-light">
+      <DashboardPageHeader
+        eyebrow={{ label: "Delivery portfolio", icon: BriefcaseBusiness }}
+        title="Projects Command"
+        subtitle="Live project register and delivery evidence across the ERP."
+        actions={
+          <>
+            <div className="flex h-10 border border-ink-mid bg-ink-light">
+              <button
+                onClick={() => setViewMode("list")}
+                className={`px-3 font-mono text-xs uppercase tracking-wider ${viewMode === "list" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+              >
+                List
+              </button>
+              <button
+                onClick={() => setViewMode("kanban")}
+                className={`px-3 font-mono text-xs uppercase tracking-wider ${viewMode === "kanban" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+              >
+                Pipeline
+              </button>
+            </div>
             <button
-              onClick={() => setViewMode("list")}
-              className={`px-3 font-mono text-xs uppercase tracking-wider ${viewMode === "list" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+              onClick={() => setIsCreateOpen(true)}
+              className="inline-flex h-10 items-center gap-2 border border-signal bg-signal/10 px-3 font-mono text-xs uppercase tracking-wider text-signal hover:bg-signal hover:text-ink"
             >
-              List
+              <Plus className="h-4 w-4" />New Project
             </button>
             <button
-              onClick={() => setViewMode("kanban")}
-              className={`px-3 font-mono text-xs uppercase tracking-wider ${viewMode === "kanban" ? "bg-signal text-ink" : "text-slate-light hover:text-paper"}`}
+              onClick={() => void load()}
+              disabled={loading}
+              className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
             >
-              Pipeline
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
             </button>
-          </div>
-          <button
-            onClick={() => setIsCreateOpen(true)}
-            className="inline-flex h-10 items-center gap-2 border border-signal bg-signal/10 px-3 font-mono text-xs uppercase tracking-wider text-signal hover:bg-signal hover:text-ink"
-          >
-            <Plus className="h-4 w-4" />New Project
-          </button>
-          <button
-            onClick={() => void load()}
-            disabled={loading}
-            className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
-          </button>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Registered projects" value={loading ? "..." : String(projects.length)} detail="Live project register" />
