@@ -1,5 +1,6 @@
 """Tenant-scoped fleet asset, dispatch, compliance and cost controls."""
 
+import asyncio
 from datetime import date, datetime
 from decimal import Decimal
 import json
@@ -12,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import get_db, AsyncSessionLocal
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
 from app.shared.sql import (
@@ -2445,6 +2446,34 @@ async def reserve_plant_asset(
     )
 
 
+async def _check_project_reference(project_id, org_id: str) -> None:
+    """Own short-lived session so it can run concurrently with
+    _check_reservation_reference and _count_critical_defects below -
+    SQLAlchemy's AsyncSession is not safe for concurrent use by multiple
+    coroutines sharing one session."""
+    async with AsyncSessionLocal() as s:
+        await tenant_reference(s, "projects.projects", project_id, org_id, "Project")
+
+
+async def _check_reservation_reference(reservation_id, org_id: str) -> None:
+    async with AsyncSessionLocal() as s:
+        await tenant_reference(s, "fleet.plant_reservations", reservation_id, org_id, "Reservation")
+
+
+async def _count_critical_defects(org_id: str, fleet_id) -> int:
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            text("""
+                SELECT COUNT(*) FROM fleet.fleet_defects
+                WHERE organization_id=:org_id AND fleet_id=:fleet_id AND is_deleted=false
+                  AND status IN ('open','triaged','in_repair')
+                  AND severity IN ('high','critical')
+            """),
+            {"org_id": org_id, "fleet_id": fleet_id},
+        )
+        return int(res.scalar() or 0)
+
+
 @router.post("/plant/requests/{plant_request_id}/dispatch", status_code=status.HTTP_201_CREATED)
 async def dispatch_plant_asset(
     plant_request_id: UUID,
@@ -2470,12 +2499,6 @@ async def dispatch_plant_asset(
         raise HTTPException(status_code=404, detail="Plant request not found")
     if request["status"] not in ("approved", "reserved", "ready_for_dispatch"):
         raise HTTPException(status_code=409, detail="Plant request is not approved for dispatch")
-    await tenant_reference(
-        db, "projects.projects", payload.project_id or request["project_id"], user["org_id"], "Project"
-    )
-    await tenant_reference(
-        db, "fleet.plant_reservations", payload.reservation_id, user["org_id"], "Reservation"
-    )
     pack_update = {}
     if isinstance(payload.dispatch_pack, dict):
         for key in ("readiness_pack", "readiness"):
@@ -2483,21 +2506,22 @@ async def dispatch_plant_asset(
             if isinstance(nested, dict):
                 pack_update.update(nested)
     readiness_pack = merge_plant_readiness_pack(request["readiness_pack"], pack_update)
+
+    # Three independent reads - neither reference check depends on the
+    # other's result, and the defect count depends on neither - so they run
+    # concurrently instead of one after another.
+    _, _, critical_defects_count = await asyncio.gather(
+        _check_project_reference(payload.project_id or request["project_id"], user["org_id"]),
+        _check_reservation_reference(payload.reservation_id, user["org_id"]),
+        _count_critical_defects(user["org_id"], payload.fleet_id),
+    )
+
     readiness_blockers = plant_readiness_blockers(
         readiness_pack,
         operator_required=bool(request["operator_required"]),
         has_operator=bool(payload.operator_employee_id) or bool(readiness_pack.get("operator_verified")),
     )
-    critical_defects = await db.execute(
-        text("""
-        SELECT COUNT(*) FROM fleet.fleet_defects
-        WHERE organization_id=:org_id AND fleet_id=:fleet_id AND is_deleted=false
-          AND status IN ('open','triaged','in_repair')
-          AND severity IN ('high','critical')
-    """),
-        {"org_id": user["org_id"], "fleet_id": payload.fleet_id},
-    )
-    if int(critical_defects.scalar() or 0) > 0:
+    if critical_defects_count > 0:
         readiness_blockers.append("Critical defects remain open")
     if readiness_blockers:
         await db.execute(

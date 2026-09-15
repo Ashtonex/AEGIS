@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -8,7 +9,7 @@ from uuid import UUID
 from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.database import get_db
+from core.database import get_db, AsyncSessionLocal
 from core.security import require_permission, user_has_permission
 from app.shared.events import emit_notification
 from app.shared.task_stacks import ENTITY_DEPARTMENT_CODE, generate_task_stack
@@ -668,6 +669,27 @@ async def create_task(
     return {"success": True, "data": {"id": str(task_id)}, "message": "Task created.", "meta": {}}
 
 
+async def _check_team_membership(team_id, user_id: str) -> bool:
+    """Own short-lived session so it can run concurrently with
+    _check_task_contributor below - SQLAlchemy's AsyncSession is not safe
+    for concurrent use by multiple coroutines sharing one session."""
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            text("SELECT 1 FROM core.team_members WHERE team_id = :team_id AND user_id = :user_id"),
+            {"team_id": team_id, "user_id": user_id},
+        )
+        return res.first() is not None
+
+
+async def _check_task_contributor(task_id, user_id: str) -> bool:
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            text("SELECT 1 FROM crm.task_contributors WHERE task_id = :task_id AND user_id = :user_id"),
+            {"task_id": task_id, "user_id": user_id},
+        )
+        return res.first() is not None
+
+
 @router.patch("/{task_id}")
 async def update_task(
     task_id: UUID,
@@ -698,27 +720,20 @@ async def update_task(
 
     has_org_wide_task_access = await user_has_permission(db, user, "crm_tasks.read_all")
     if not has_org_wide_task_access:
-        membership = None
+        # Both checks are independent reads (neither depends on the other's
+        # result), so they run concurrently instead of one after another.
         if current["assigned_to_team_id"]:
-            membership = (
-                await db.execute(
-                    text("""
-                        SELECT 1 FROM core.team_members
-                        WHERE team_id = :team_id AND user_id = :user_id
-                    """),
-                    {"team_id": current["assigned_to_team_id"], "user_id": user["user_id"]},
-                )
-            ).first()
-        contributor = (
-            await db.execute(
-                text("SELECT 1 FROM crm.task_contributors WHERE task_id = :task_id AND user_id = :user_id"),
-                {"task_id": task_id, "user_id": user["user_id"]},
+            is_member, is_contributor = await asyncio.gather(
+                _check_team_membership(current["assigned_to_team_id"], user["user_id"]),
+                _check_task_contributor(task_id, user["user_id"]),
             )
-        ).first()
+        else:
+            is_member = False
+            is_contributor = await _check_task_contributor(task_id, user["user_id"])
         can_work_task = (
             (current["assigned_to_user_id"] and str(current["assigned_to_user_id"]) == user["user_id"])
-            or bool(membership)
-            or bool(contributor)
+            or is_member
+            or is_contributor
             or (current["created_by"] and str(current["created_by"]) == user["user_id"])
         )
         if not can_work_task:

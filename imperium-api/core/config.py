@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     DATABASE_HOST_SUPPORTS_IPV6: bool = False
 
     DATABASE_URL: str
+    # Per-process pool against Supavisor's transaction-mode pooler (core/database.py
+    # rewrites DATABASE_URL to port 6543 for this). Defaults (10/10 = 20 total)
+    # match the single-process ceiling already proven stable in production;
+    # when running WEB_CONCURRENCY>1 uvicorn workers, size these down so
+    # (pool+overflow) x worker_count stays at or below that same proven total
+    # - deploy/digitalocean/docker-compose.yml does this for the container.
+    DB_POOL_SIZE: int = Field(default=10, ge=1)
+    DB_MAX_OVERFLOW: int = Field(default=10, ge=0)
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_KEY: str

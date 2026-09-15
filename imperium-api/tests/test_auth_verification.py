@@ -13,6 +13,16 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import security
+from core.cache import delete_sync as _cache_delete_sync
+
+
+def _clear_verified_token_cache(token: str) -> None:
+    """Test-only equivalent of the old _verified_token_cache.clear() - the
+    cache now has a local-process layer plus a Redis-backed layer (shared
+    across worker processes), so clearing it means clearing both for this
+    specific token's key."""
+    security._local_verified_token_cache.pop(security._token_cache_key(token), None)
+    _cache_delete_sync(f"auth:token:{security._token_cache_key(token)}")
 
 
 @dataclass
@@ -48,7 +58,7 @@ class _Client:
 
 
 def test_verify_token_uses_supabase_auth_payload(monkeypatch):
-    security._verified_token_cache.clear()
+    _clear_verified_token_cache("real-token")
     response = _Response(
         200,
         {
@@ -72,10 +82,10 @@ def test_verify_token_uses_supabase_auth_payload(monkeypatch):
 
 
 def test_verify_token_reuses_recently_verified_token_during_auth_outage(monkeypatch):
-    security._verified_token_cache.clear()
     breaker = security._supabase_auth_breaker
     breaker.record_success()
     token = _forged_superadmin_token()
+    _clear_verified_token_cache(token)
     verified_user = {
         "id": "user-123",
         "email": "ashton@admin.com",
@@ -98,7 +108,7 @@ def test_verify_token_reuses_recently_verified_token_during_auth_outage(monkeypa
         assert payload["email"] == "ashton@admin.com"
     finally:
         breaker.record_success()
-        security._verified_token_cache.clear()
+        _clear_verified_token_cache(token)
 
 
 def _forged_superadmin_token(secret: str = "attacker-guessed-or-wrong-secret") -> str:

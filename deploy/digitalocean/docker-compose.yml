@@ -34,6 +34,15 @@ services:
       BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
+      # 4 workers x (pool 3 + overflow 2) = 20 total DB connections for this
+      # service - the same aggregate ceiling core/database.py's pool_size=10,
+      # max_overflow=10 already proved stable at when it was one process.
+      # Override any of these three in the droplet's .env if load testing
+      # says otherwise; they're defaulted here so the deploy works without
+      # requiring that file to be touched.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
     expose:
       - "8000"
     healthcheck:

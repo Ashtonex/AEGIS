@@ -38,14 +38,20 @@ from core.config import settings
 # land on a different backend connection each time), so that part of
 # NullPool's old workaround is kept - but connection reuse via a real pool
 # still removes the dominant cost (the handshake, ~1.4s of the old ~2.6s).
+#
+# pool_size/max_overflow are read from settings (default 10/10, same 20
+# total proven above) rather than hardcoded, so a multi-worker deployment
+# can size each process's pool down and keep the same proven aggregate
+# ceiling across all workers combined - see DB_POOL_SIZE's docstring in
+# core/config.py.
 _APP_DATABASE_URL = settings.DATABASE_URL.replace(":5432/", ":6543/")
 
 engine = create_async_engine(
     _APP_DATABASE_URL,
     echo=(settings.ENVIRONMENT == "development" and settings.DEBUG),
     future=True,
-    pool_size=10,
-    max_overflow=10,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
     pool_recycle=180,
     connect_args={
         "statement_cache_size": 0,

@@ -12,6 +12,7 @@ from argon2.exceptions import VerifyMismatchError
 from core.database import get_db
 from core.config import settings
 from core.resilience import CircuitBreaker, CircuitBreakerOpen
+from core.cache import cache_get_json, cache_set_json, cache_get_json_sync, cache_set_json_sync
 
 security = HTTPBearer()
 
@@ -22,8 +23,24 @@ security = HTTPBearer()
 _supabase_auth_breaker = CircuitBreaker(
     "supabase_auth", failure_threshold=5, reset_timeout_seconds=30.0
 )
-_verified_token_cache: dict[str, tuple[float, dict]] = {}
 _VERIFIED_TOKEN_CACHE_MAX_SECONDS = 300
+
+# First-check, in-process layer in front of the Redis-backed token cache
+# below. Redis gives cross-worker sharing (the main win from Step 3's
+# multi-worker rollout); this local dict preserves the original resilience
+# property that a Supabase Auth outage alone - independent of Redis's own
+# health - can still be ridden out from a process that already verified this
+# token recently. Without it, a correlated Supabase+Redis outage would 503
+# every request instead of serving the last-known-good verification.
+_local_verified_token_cache: dict[str, tuple[float, dict]] = {}
+
+# Shared TTL for the Redis-cached identity/role bundle (get_current_user) and
+# permission-key sets (require_permission/require_resource_permission/
+# user_has_permission). Bounded staleness, not correctness: a role change,
+# permission grant, or account deactivation can take up to this long to take
+# effect for an already-cached user - the same trade-off already accepted
+# for the token-verification cache below.
+_AUTH_CACHE_TTL_SECONDS = 300
 
 
 @retry(
@@ -195,21 +212,23 @@ def _cache_verified_token(token: str, authenticated_user: dict) -> None:
         return
     now = time.time()
     ttl_expiry = min(exp, now + _VERIFIED_TOKEN_CACHE_MAX_SECONDS)
-    if ttl_expiry <= now:
+    ttl_seconds = int(ttl_expiry - now)
+    if ttl_seconds <= 0:
         return
-    _verified_token_cache[_token_cache_key(token)] = (ttl_expiry, authenticated_user)
+    key = _token_cache_key(token)
+    _local_verified_token_cache[key] = (ttl_expiry, authenticated_user)
+    cache_set_json_sync(f"auth:token:{key}", authenticated_user, ttl_seconds)
 
 
 def _read_verified_token_cache(token: str) -> dict | None:
     key = _token_cache_key(token)
-    cached = _verified_token_cache.get(key)
-    if not cached:
-        return None
-    expires_at, authenticated_user = cached
-    if expires_at <= time.time():
-        _verified_token_cache.pop(key, None)
-        return None
-    return authenticated_user
+    local = _local_verified_token_cache.get(key)
+    if local:
+        expires_at, authenticated_user = local
+        if expires_at > time.time():
+            return authenticated_user
+        _local_verified_token_cache.pop(key, None)
+    return cache_get_json_sync(f"auth:token:{key}")
 
 
 def _user_payload_from_supabase_user(authenticated_user: dict) -> dict:
@@ -262,7 +281,16 @@ def verify_token_str(token: str) -> dict:
             "role": payload.get("role") or "authenticated",
         }
 
-    # 2. Fallback to Supabase Auth verification endpoint. This call has the
+    # 2. Redis-cached result of a prior Supabase verification for this same
+    # token - the normal fast path once a token has been seen once, shared
+    # across every worker process (not just this one). Falls through to a
+    # live Supabase call below on a miss or expiry (same TTL as before,
+    # _VERIFIED_TOKEN_CACHE_MAX_SECONDS capped against the token's own exp).
+    cached_user = _read_verified_token_cache(token)
+    if cached_user:
+        return _user_payload_from_supabase_user(cached_user)
+
+    # 3. Fallback to Supabase Auth verification endpoint. This call has the
     # Supabase service validate the token's signature server-side, so it
     # remains secure even when local verification above can't confirm it.
     # Transient failures are retried (tenacity, up to 3 attempts) and a
@@ -373,78 +401,88 @@ async def get_current_user(
             detail="User ID not found in token.",
         )
 
-    identity = await db.execute(
-        text("""
-        SELECT organization_id, is_active, is_deleted FROM core.users
-        WHERE id = :user_id
-    """),
-        {"user_id": user_id},
-    )
-    identity_row = identity.fetchone()
+    # Redis-cached {organization_id, role} bundle - skips the core.users
+    # SELECT and resolve_primary_role's SELECT entirely on a hit, shared
+    # across every worker process. See _AUTH_CACHE_TTL_SECONDS for the
+    # staleness bound this accepts (deactivation/role-change lag).
+    identity_cache_key = f"auth:identity:{user_id}"
+    cached_identity = await cache_get_json(identity_cache_key)
 
-    # A row that exists but is deactivated/soft-deleted was deliberately
-    # revoked - reject it outright. Falling through to the auto-provisioning
-    # block below would silently reactivate it, since that block can't tell
-    # "revoked" apart from "never existed".
-    if identity_row and (not identity_row.is_active or identity_row.is_deleted):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive, unassigned, or revoked.",
+    if cached_identity:
+        database_org_id = cached_identity["organization_id"]
+    else:
+        identity = await db.execute(
+            text("""
+            SELECT organization_id, is_active, is_deleted FROM core.users
+            WHERE id = :user_id
+        """),
+            {"user_id": user_id},
         )
+        identity_row = identity.fetchone()
 
-    if not identity_row or not identity_row.organization_id:
-        default_org_id = "00000000-0000-0000-0000-000000000001"
-        org_check = await db.execute(
-            text("SELECT id FROM core.organizations WHERE id = :org_id AND is_deleted = false"),
-            {"org_id": default_org_id},
-        )
-        if org_check.fetchone():
-            # New/unrecognized identities are provisioned at the lowest
-            # privilege level (EMPLOYEE). Elevated roles must be granted
-            # explicitly by an admin afterwards, never auto-assigned here.
-            default_role = await db.execute(
-                text("""
-                    SELECT id FROM core.roles
-                    WHERE organization_id = :org_id AND name = 'EMPLOYEE' AND is_deleted = false
-                """),
-                {"org_id": default_org_id},
-            )
-            default_role_row = default_role.fetchone()
-            if not default_role_row:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="No default role configured for this organization.",
-                )
-            default_role_id = str(default_role_row.id)
-
-            email = payload.get("email") or f"{user_id}@aegis.local"
-            user_meta = _get_metadata(payload, "user_metadata")
-            full_name = user_meta.get("full_name") or email.split("@")[0]
-            await db.execute(
-                text("""
-                    INSERT INTO core.users (id, organization_id, email, full_name, is_active)
-                    VALUES (:user_id, :org_id, :email, :full_name, true)
-                    ON CONFLICT (id) DO UPDATE SET organization_id = EXCLUDED.organization_id, is_active = true
-                """),
-                {"user_id": user_id, "org_id": default_org_id, "email": email, "full_name": full_name},
-            )
-            await db.execute(
-                text("""
-                    INSERT INTO core.user_roles (user_id, role_id, organization_id)
-                    VALUES (:user_id, :role_id, :org_id)
-                    ON CONFLICT (user_id, role_id) DO NOTHING
-                """),
-                {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
-            )
-            await db.commit()
-            database_org_id = default_org_id
-        else:
+        # A row that exists but is deactivated/soft-deleted was deliberately
+        # revoked - reject it outright. Falling through to the auto-provisioning
+        # block below would silently reactivate it, since that block can't tell
+        # "revoked" apart from "never existed".
+        if identity_row and (not identity_row.is_active or identity_row.is_deleted):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive, unassigned, or revoked.",
             )
-    else:
-        database_org_id = str(identity_row.organization_id)
+
+        if not identity_row or not identity_row.organization_id:
+            default_org_id = "00000000-0000-0000-0000-000000000001"
+            org_check = await db.execute(
+                text("SELECT id FROM core.organizations WHERE id = :org_id AND is_deleted = false"),
+                {"org_id": default_org_id},
+            )
+            if org_check.fetchone():
+                # New/unrecognized identities are provisioned at the lowest
+                # privilege level (EMPLOYEE). Elevated roles must be granted
+                # explicitly by an admin afterwards, never auto-assigned here.
+                default_role = await db.execute(
+                    text("""
+                        SELECT id FROM core.roles
+                        WHERE organization_id = :org_id AND name = 'EMPLOYEE' AND is_deleted = false
+                    """),
+                    {"org_id": default_org_id},
+                )
+                default_role_row = default_role.fetchone()
+                if not default_role_row:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="No default role configured for this organization.",
+                    )
+                default_role_id = str(default_role_row.id)
+
+                email = payload.get("email") or f"{user_id}@aegis.local"
+                user_meta = _get_metadata(payload, "user_metadata")
+                full_name = user_meta.get("full_name") or email.split("@")[0]
+                await db.execute(
+                    text("""
+                        INSERT INTO core.users (id, organization_id, email, full_name, is_active)
+                        VALUES (:user_id, :org_id, :email, :full_name, true)
+                        ON CONFLICT (id) DO UPDATE SET organization_id = EXCLUDED.organization_id, is_active = true
+                    """),
+                    {"user_id": user_id, "org_id": default_org_id, "email": email, "full_name": full_name},
+                )
+                await db.execute(
+                    text("""
+                        INSERT INTO core.user_roles (user_id, role_id, organization_id)
+                        VALUES (:user_id, :role_id, :org_id)
+                        ON CONFLICT (user_id, role_id) DO NOTHING
+                    """),
+                    {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
+                )
+                await db.commit()
+                database_org_id = default_org_id
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account is inactive, unassigned, or revoked.",
+                )
+        else:
+            database_org_id = str(identity_row.organization_id)
 
     if org_id and str(org_id) != database_org_id:
         raise HTTPException(
@@ -453,11 +491,19 @@ async def get_current_user(
         )
     org_id = database_org_id
 
-    # The role assignment in core is authoritative. Nothing keeps Supabase's
-    # app_metadata.role claim in sync with core.user_roles once an admin
-    # assigns a functional role via Settings, so the actual role name is
-    # looked up here rather than trusted from the token.
-    resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id, fallback_role=role)
+    if cached_identity:
+        resolved_role = cached_identity["role"]
+    else:
+        # The role assignment in core is authoritative. Nothing keeps Supabase's
+        # app_metadata.role claim in sync with core.user_roles once an admin
+        # assigns a functional role via Settings, so the actual role name is
+        # looked up here rather than trusted from the token.
+        resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id, fallback_role=role)
+        await cache_set_json(
+            identity_cache_key,
+            {"organization_id": database_org_id, "role": resolved_role},
+            _AUTH_CACHE_TTL_SECONDS,
+        )
 
     # Makes the acting user visible to core.process_audit_log() (the DB
     # trigger backing core.audit_log) for the rest of this request's
@@ -495,11 +541,30 @@ async def user_has_permission(db: AsyncSession, user: dict, permission_key: str)
     """Ad-hoc permission check for business logic that can't be expressed as
     a static route dependency (e.g. a permission requirement that only
     applies to certain rows, not the whole endpoint). Shares the same
-    query as require_permission's dependency so the two never drift apart."""
+    cached check as require_permission's dependency so the two never drift
+    apart."""
     if user.get("role") == SUPERADMIN_ROLE:
         return True
     if not user.get("org_id"):
         return False
+    return await _check_permission_cached(db, user, permission_key)
+
+
+async def _check_permission_cached(db: AsyncSession, user: dict, permission_key: str) -> bool:
+    """Redis-cached wrapper around the same permission-existence query used
+    by require_permission, require_resource_permission, and
+    user_has_permission, so all three hit the DB at most once per (user,
+    org, permission_key) per _AUTH_CACHE_TTL_SECONDS window instead of once
+    per request. Deliberately mirrors the original inline query exactly
+    (same scalar-existence shape) rather than fetching the user's full
+    permission set, so a cache miss behaves identically to the pre-cache
+    code path. Callers must already have short-circuited SUPERADMIN."""
+    user_id = user.get("user_id")
+    org_id = user.get("org_id")
+    cache_key = f"auth:perm:{user_id}:{org_id}:{permission_key}"
+    cached = await cache_get_json(cache_key)
+    if cached is not None:
+        return bool(cached)
     result = await db.execute(
         text("""
             SELECT 1
@@ -511,9 +576,11 @@ async def user_has_permission(db: AsyncSession, user: dict, permission_key: str)
               AND ur.organization_id = :org_id
               AND p.key = :permission_key
         """),
-        {"user_id": user.get("user_id"), "org_id": user.get("org_id"), "permission_key": permission_key},
+        {"user_id": user_id, "org_id": org_id, "permission_key": permission_key},
     )
-    return bool(result.scalar())
+    has_permission = bool(result.scalar())
+    await cache_set_json(cache_key, has_permission, _AUTH_CACHE_TTL_SECONDS)
+    return has_permission
 
 
 async def get_user_permission_keys(db: AsyncSession, user: dict) -> set[str]:
@@ -561,29 +628,7 @@ def require_permission(permission_key: str):
                 detail="User does not belong to an organization.",
             )
 
-        # Execute query to verify permission link: users -> user_roles -> roles -> role_permissions -> permissions
-        # Table names qualified with 'core.' schema prefix
-        query = text("""
-            SELECT 1 
-            FROM core.permissions p
-            JOIN core.role_permissions rp ON p.id = rp.permission_id
-            JOIN core.user_roles ur ON rp.role_id = ur.role_id
-            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
-            WHERE ur.user_id = :user_id 
-              AND ur.organization_id = :org_id 
-              AND p.key = :permission_key
-        """)
-
-        result = await db.execute(
-            query,
-            {
-                "user_id": user.get("user_id"),
-                "org_id": user.get("org_id"),
-                "permission_key": permission_key,
-            },
-        )
-
-        if not result.scalar():
+        if not await _check_permission_cached(db, user, permission_key):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing required permission: {permission_key}",
@@ -618,21 +663,7 @@ def require_resource_permission(resource: str):
         if user.get("role") == SUPERADMIN_ROLE:
             return user
         permission_key = f"{resource}.{action}"
-        result = await db.execute(
-            text("""
-            SELECT 1 FROM core.permissions p
-            JOIN core.role_permissions rp ON rp.permission_id = p.id
-            JOIN core.user_roles ur ON ur.role_id = rp.role_id AND ur.user_id = :user_id AND ur.organization_id = :org_id
-            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
-            WHERE p.key = :permission_key
-        """),
-            {
-                "user_id": user["user_id"],
-                "org_id": user["org_id"],
-                "permission_key": permission_key,
-            },
-        )
-        if not result.scalar():
+        if not await _check_permission_cached(db, user, permission_key):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing required permission: {permission_key}",

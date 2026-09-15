@@ -37,12 +37,15 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         from core.realtime import start_listener, stop_listener
+        from core.cache import init_async_redis, close_async_redis
 
+        await init_async_redis()
         await start_listener()
         try:
             yield
         finally:
             await stop_listener()
+            await close_async_redis()
 
     app = FastAPI(
         title="Project Imperium API",

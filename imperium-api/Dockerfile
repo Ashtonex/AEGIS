@@ -47,4 +47,10 @@ EXPOSE 8000
 # (crm-leads, notifications, etc). imperium-api is only reachable from Caddy
 # on the internal compose network (not published to the host), so trusting
 # all forwarded-for IPs here is safe.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+#
+# --workers reads WEB_CONCURRENCY (default 4) so the process count is set
+# where it's deployed (docker-compose.yml), not baked into the image. Each
+# worker gets its own DB connection pool (core/database.py), so
+# WEB_CONCURRENCY changes must be paired with DB_POOL_SIZE/DB_MAX_OVERFLOW
+# to keep the aggregate connection ceiling the same - see core/config.py.
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=* --workers ${WEB_CONCURRENCY:-4}"]
