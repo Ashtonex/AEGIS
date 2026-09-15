@@ -2,7 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, AlertOctagon, CheckCircle2, Clock, Plus, Ticket } from "lucide-react";
+import { AlertOctagon, CheckCircle2, Clock, Plus, Ticket } from "lucide-react";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   createCrmSupportTicket,
   escalateCrmSupportTicket,
@@ -141,24 +142,20 @@ export default function CRMSupportPage() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-paper p-6">
-      <Link href="/dashboard/crm" className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-slate-light hover:text-signal">
-        <ArrowLeft className="h-4 w-4" /> Back to CRM
-      </Link>
-
-      <div className="mt-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div className="flex flex-col gap-2">
-          <h1 className="text-2xl font-black uppercase tracking-tight">CRM Support Desk</h1>
-          <p className="max-w-3xl text-sm text-slate-light">
-            Client issues, SLA visibility, lifecycle status, and post-sale support context linked back to organizations, contacts, opportunities, and projects.
-          </p>
-        </div>
-        <Link
-          href="/dashboard/crm/tickets"
-          className="inline-flex shrink-0 items-center gap-2 rounded border border-white/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-light hover:border-signal hover:text-signal"
-        >
-          <Ticket className="h-4 w-4" /> View Full Ticket List &amp; Comments
-        </Link>
-      </div>
+      <DashboardPageHeader
+        backHref="/dashboard/crm"
+        backLabel="Back to CRM"
+        title="CRM Support Desk"
+        subtitle="Client issues, SLA visibility, lifecycle status, and post-sale support context linked back to organizations, contacts, opportunities, and projects."
+        actions={
+          <Link
+            href="/dashboard/crm/tickets"
+            className="inline-flex shrink-0 items-center gap-2 rounded border border-white/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-light hover:border-signal hover:text-signal"
+          >
+            <Ticket className="h-4 w-4" /> View Full Ticket List &amp; Comments
+          </Link>
+        }
+      />
 
       {warnings.length > 0 && (
         <div className="mt-5 rounded border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">

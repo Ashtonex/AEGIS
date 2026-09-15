@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import Link from "next/link";
-import { ArrowLeft, FileText, Plus } from "lucide-react";
+import { FileText, Plus } from "lucide-react";
 import { createCrmMessageTemplate, getCrmMessageTemplates } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 export default function CrmTemplatesPage() {
   const [templates, setTemplates] = useState<any[]>([]);
@@ -53,17 +53,12 @@ export default function CrmTemplatesPage() {
   return (
     <div className="min-h-screen bg-ink text-paper">
       <main className="mx-auto flex max-w-container flex-col gap-5 px-6 py-6">
-        <Link href="/dashboard/crm/marketing" className="inline-flex items-center gap-2 text-xs font-mono uppercase text-slate hover:text-signal">
-          <ArrowLeft className="h-4 w-4" />
-          Back to marketing
-        </Link>
-        <header className="border-b border-ink-mid pb-4">
-          <div className="flex items-center gap-2 text-signal">
-            <FileText className="h-5 w-5" />
-            <span className="font-mono text-[10px] uppercase tracking-widest">CRM templates</span>
-          </div>
-          <h1 className="mt-2 text-2xl font-black uppercase">Message Templates</h1>
-        </header>
+        <DashboardPageHeader
+          backHref="/dashboard/crm/marketing"
+          backLabel="Back to marketing"
+          eyebrow={{ label: "CRM templates", icon: FileText }}
+          title="Message Templates"
+        />
         {error && <div className="border border-red-500/30 bg-red-950/20 p-3 text-sm text-red-200">{error}</div>}
         <form onSubmit={submitTemplate} className="grid gap-3 border border-ink-mid bg-ink-light p-4">
           <div className="grid gap-3 md:grid-cols-[1fr_180px]">

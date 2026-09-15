@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
-  ArrowLeft, Users, Mail, Phone, ExternalLink, Plus, Search,
+  Users, Mail, Phone, ExternalLink, Plus, Search,
   Linkedin, CheckCircle2, Loader2, MessageSquare, PlusSquare,
   Calendar, FileText, CheckSquare, Bell, Clock, Building2,
   Save, PhoneCall, Trash2, Edit2, AlertCircle, UploadCloud, Copy
@@ -21,6 +21,7 @@ import {
   describeActionError
 } from '@/lib/api';
 import { useApiQueries } from '@/hooks/useApiQueries';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
 
@@ -361,18 +362,14 @@ export default function ContactsRegistry() {
     <div className="min-h-screen bg-ink text-paper selection:bg-signal selection:text-ink">
       <div className="relative max-w-container mx-auto px-6 py-6 flex flex-col h-screen min-h-0 overflow-hidden">
         
-        {/* Header */}
-        <header className="shrink-0 mb-4">
-          <Link href="/dashboard/crm" className="inline-flex items-center text-[10px] font-mono text-slate hover:text-signal transition-colors mb-2">
-            <ArrowLeft className="w-3.5 h-3.5 mr-1" />
-            BACK TO CRM ENGINE
-          </Link>
-          <div className="flex justify-between items-end border-b border-ink-mid pb-3">
-            <div>
-              <h1 className="font-sans font-black text-xl tracking-wide uppercase text-paper">Key Account Contacts</h1>
-              <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase">Decision-Maker Directory & Interaction History</p>
-            </div>
-            <div className="flex items-center gap-2">
+        <DashboardPageHeader
+          className="mb-4 shrink-0 pb-3"
+          backHref="/dashboard/crm"
+          backLabel="Back to CRM Engine"
+          title="Key Account Contacts"
+          subtitle="Decision-Maker Directory & Interaction History"
+          actions={
+            <>
               <Link
                 href="/dashboard/crm/import"
                 className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
@@ -387,9 +384,9 @@ export default function ContactsRegistry() {
                 <Plus className="w-3.5 h-3.5" />
                 <span>ADD NEW CONTACT</span>
               </button>
-            </div>
-          </div>
-        </header>
+            </>
+          }
+        />
 
         {/* Toast Toast Notifications */}
         {notification && (

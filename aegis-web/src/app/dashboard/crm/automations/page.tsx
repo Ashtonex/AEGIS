@@ -1,12 +1,12 @@
 "use client";
 
 import React, { useCallback, useState, useEffect } from 'react';
-import Link from 'next/link';
-import { 
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
+import {
   Zap, Plus, Trash2, Check, X, AlertTriangle, Cpu, Play,
   Settings, Loader2, RefreshCw, Activity, ArrowRight, ToggleLeft, ToggleRight,
   Maximize2, Minimize2, ZoomIn, ZoomOut, CheckCircle2, ChevronRight, PlaySquare,
-  Sparkles, Layers, Sliders, Database, ArrowDown, HelpCircle, Save, ArrowLeft, Filter
+  Sparkles, Layers, Sliders, Database, ArrowDown, HelpCircle, Save, Filter
 } from 'lucide-react';
 import {
   getCrmAutomations,
@@ -402,38 +402,31 @@ export default function CRMAutomationsPage() {
   return (
     <div className="flex flex-col h-screen bg-[#050505] text-paper overflow-hidden p-6 relative">
 
-      {/* Header */}
-      <header className="shrink-0 mb-4 flex justify-between items-center border-b border-ink-mid pb-3">
-        <div>
-          <div className="flex items-center space-x-2">
-            <Link href="/dashboard/crm" className="inline-flex items-center text-[10px] font-mono text-slate hover:text-signal transition-colors mr-2">
-              <ArrowLeft className="w-3.5 h-3.5 mr-0.5" />
-              BACK
-            </Link>
-            <h1 className="font-sans font-black text-lg tracking-wide uppercase text-paper">CRM Automations Engine</h1>
-          </div>
-          <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase mt-0.5">
-            Visual Trigger-Action workflow designer mapping project signals to automatic alerts
-          </p>
-        </div>
-
-        <div className="flex space-x-2.5">
-          <button 
-            onClick={() => void fetchRules()}
-            className="p-1.5 border border-ink-mid bg-ink/60 hover:bg-ink-light hover:text-signal rounded-sm transition-all"
-            title="Sync Core Configurations"
-          >
-            <RefreshCw className="w-4 h-4 text-slate-light" />
-          </button>
-          <button
-            onClick={handleAddNewRule}
-            className="flex items-center space-x-1 px-3 py-1 bg-signal hover:bg-signal/85 text-ink font-mono text-xs font-bold"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>CREATE WORKFLOW</span>
-          </button>
-        </div>
-      </header>
+      <DashboardPageHeader
+        className="mb-4 shrink-0 pb-3"
+        backHref="/dashboard/crm"
+        backLabel="Back"
+        title="CRM Automations Engine"
+        subtitle="Visual Trigger-Action workflow designer mapping project signals to automatic alerts"
+        actions={
+          <>
+            <button
+              onClick={() => void fetchRules()}
+              className="p-1.5 border border-ink-mid bg-ink/60 hover:bg-ink-light hover:text-signal rounded-sm transition-all"
+              title="Sync Core Configurations"
+            >
+              <RefreshCw className="w-4 h-4 text-slate-light" />
+            </button>
+            <button
+              onClick={handleAddNewRule}
+              className="flex items-center space-x-1 px-3 py-1 bg-signal hover:bg-signal/85 text-ink font-mono text-xs font-bold"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>CREATE WORKFLOW</span>
+            </button>
+          </>
+        }
+      />
 
       {/* Notifications Toast */}
       {notification && (

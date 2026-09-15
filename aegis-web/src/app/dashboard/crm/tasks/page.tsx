@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, Calendar, CheckCircle2, ChevronDown, Circle, ClipboardCheck, FileSpreadsheet, FileText, Layers, Link2, Loader2, Lock, Mail, MessageSquare, Phone, Plus, ShieldCheck, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
+import { AlertTriangle, Calendar, CheckCircle2, ChevronDown, Circle, ClipboardCheck, FileSpreadsheet, FileText, Layers, Link2, Loader2, Lock, Mail, MessageSquare, Phone, Plus, ShieldCheck, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   getCrmTasks,
   createCrmTask,
@@ -503,33 +504,32 @@ export default function CrmTasksPage() {
   return (
     <div className="min-h-screen bg-ink px-4 py-6 text-paper sm:px-6 xl:px-8">
       <div className="mx-auto w-full max-w-[1500px] space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <Link href="/dashboard/crm" className="inline-flex items-center gap-1.5 text-xs text-slate-light hover:text-paper">
-              <ArrowLeft className="h-3.5 w-3.5" /> Back to CRM
-            </Link>
-            <h1 className="mt-2 font-display text-2xl font-semibold text-paper">Tasks</h1>
-            <p className="mt-1 text-sm text-slate-light">Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people.</p>
-          </div>
-          {canUseAssignmentTools && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => void handleBackfill()}
-                disabled={backfilling}
-                title="Generate task stacks for existing records that predate auto-generation"
-                className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
-              >
-                {backfilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />} Backfill Stacks
-              </button>
-              <button
-                onClick={() => setShowCreate(true)}
-                className="flex items-center gap-1.5 border border-signal bg-signal/10 px-4 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/20"
-              >
-                <Plus className="h-3.5 w-3.5" /> New Task
-              </button>
-            </div>
-          )}
-        </div>
+        <DashboardPageHeader
+          backHref="/dashboard/crm"
+          backLabel="Back to CRM"
+          title="Tasks"
+          subtitle="Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people."
+          actions={
+            canUseAssignmentTools ? (
+              <>
+                <button
+                  onClick={() => void handleBackfill()}
+                  disabled={backfilling}
+                  title="Generate task stacks for existing records that predate auto-generation"
+                  className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
+                >
+                  {backfilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />} Backfill Stacks
+                </button>
+                <button
+                  onClick={() => setShowCreate(true)}
+                  className="flex items-center gap-1.5 border border-signal bg-signal/10 px-4 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/20"
+                >
+                  <Plus className="h-3.5 w-3.5" /> New Task
+                </button>
+              </>
+            ) : undefined
+          }
+        />
 
         <div className="grid gap-3 md:grid-cols-4">
           <button

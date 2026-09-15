@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import Link from 'next/link';
-import { Target, Plus, Search, RefreshCw, X, Play, Settings, AlertTriangle, ArrowLeft } from 'lucide-react';
+import { Target, Plus, Search, RefreshCw, X, Play, Settings, AlertTriangle } from 'lucide-react';
 import { getCrmCampaigns } from '@/lib/api';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -26,18 +26,13 @@ export default function CampaignsPage() {
 
   return (
     <main className="min-h-screen bg-[#0A0D14] text-[#E2E8F0] p-4 lg:p-8 font-sans">
-      <div className="flex items-center gap-4 border-b border-[#1E293B] pb-6 mb-6">
-        <Link href="/dashboard/crm/marketing" className="p-2 rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-slate-400">
-          <ArrowLeft className="h-4 w-4" />
-        </Link>
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-            <Target className="h-6 w-6 text-[#3B82F6]" />
-            Marketing Campaigns
-          </h1>
-          <p className="text-slate-400 text-xs mt-1">Deploy, monitor, and scale outbound marketing initiatives.</p>
-        </div>
-      </div>
+      <DashboardPageHeader
+        backHref="/dashboard/crm/marketing"
+        backLabel="Marketing"
+        eyebrow={{ label: "CRM", icon: Target }}
+        title="Marketing Campaigns"
+        subtitle="Deploy, monitor, and scale outbound marketing initiatives."
+      />
 
       <div className="bg-[#111827]/40 border border-[#1E293B]/60 p-6 rounded-xl">
         <div className="flex justify-between items-center mb-6">

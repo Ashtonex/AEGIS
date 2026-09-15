@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, TrendingUp, DollarSign, Ticket, Building2 } from "lucide-react";
+import { TrendingUp, DollarSign, Ticket, Building2 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   getCrmMarketingReport,
   getCrmSalesReport,
@@ -106,16 +106,12 @@ function ReportsWorkspace() {
 
   return (
     <div className="min-h-screen bg-[#050505] p-6 text-paper">
-      <Link href="/dashboard/crm" className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-slate-light hover:text-signal">
-        <ArrowLeft className="h-4 w-4" /> Back to CRM
-      </Link>
-
-      <div className="mt-6">
-        <h1 className="text-2xl font-black uppercase tracking-tight">CRM Reports</h1>
-        <p className="mt-1 max-w-3xl text-sm text-slate-light">
-          Marketing, sales, support, and executive visibility across the CRM lifecycle.
-        </p>
-      </div>
+      <DashboardPageHeader
+        backHref="/dashboard/crm"
+        backLabel="Back to CRM"
+        title="CRM Reports"
+        subtitle="Marketing, sales, support, and executive visibility across the CRM lifecycle."
+      />
 
       {warnings.length > 0 && (
         <div className="mt-5 rounded border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">

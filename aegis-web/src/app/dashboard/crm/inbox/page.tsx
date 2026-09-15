@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import Link from 'next/link';
-import { 
-  Mail, 
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import {
+  Mail,
   MessageSquare, 
   Search, 
   Send, 
@@ -25,7 +25,6 @@ import {
   Paperclip,
   CheckCircle2,
   Bookmark,
-  ArrowLeft,
   Briefcase,
   UserCheck
 } from "lucide-react";
@@ -422,31 +421,19 @@ export default function CRMSalesInbox() {
   return (
     <div className="flex flex-col h-screen bg-[#050505] text-paper overflow-hidden p-6 relative">
 
-      {/* Header */}
-      <div className="flex justify-between items-center border-b border-ink-mid pb-3 shrink-0 mb-4">
-        <div>
-          <div className="flex items-center space-x-2">
-            <Link href="/dashboard/crm" className="inline-flex items-center text-[10px] font-mono text-slate hover:text-signal transition-colors mr-2">
-              <ArrowLeft className="w-3.5 h-3.5 mr-0.5" />
-              BACK
-            </Link>
-            <h1 className="font-sans font-black text-lg tracking-wide uppercase text-paper">
-              Sales Communications Hub
-            </h1>
-          </div>
-          <p className="font-mono text-[9px] text-slate-light tracking-widest uppercase mt-0.5">
-            Unified SMTP Mail & WhatsApp Business API gateway responder
-          </p>
-        </div>
-
-        {/* Telemetry Indicator */}
-        <div className="flex items-center space-x-4">
+      <DashboardPageHeader
+        className="pb-3 shrink-0 mb-4"
+        backHref="/dashboard/crm"
+        backLabel="Back"
+        title="Sales Communications Hub"
+        subtitle="Unified SMTP Mail & WhatsApp Business API gateway responder"
+        actions={
           <div className="flex items-center space-x-1 bg-green-500/10 px-2.5 py-0.5 border border-green-500/20 text-green-400 font-mono text-[9px] uppercase font-bold">
             <Wifi className="w-3 h-3 animate-pulse" />
             <span>Gateways Online</span>
           </div>
-        </div>
-      </div>
+        }
+      />
 
       {sourceWarnings.length > 0 && (
         <div className="mb-4 space-y-2 rounded border border-amber-500/20 bg-amber-950/20 px-4 py-3 text-sm text-amber-100">

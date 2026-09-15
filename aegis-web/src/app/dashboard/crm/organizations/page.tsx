@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import Link from 'next/link';
 import {
-  ArrowLeft, Building2, ExternalLink, Phone, Mail, Plus,
+  Building2, ExternalLink, Phone, Mail, Plus,
   Search, Filter, ShieldAlert, DollarSign, GitBranch,
   ChevronDown, ChevronRight, Loader2, CheckCircle2, Globe, MapPin,
   MessageSquare, Clock, PlusSquare, FileText, UserPlus, AlertCircle, Save, UploadCloud, Trash2
@@ -20,6 +20,7 @@ import {
   describeActionError
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 
 interface Organization {
   id: string;
@@ -429,18 +430,14 @@ export default function ClientOrganizationsRegistry() {
 
       <div className="relative max-w-container mx-auto px-6 py-6 flex flex-col h-screen min-h-0 overflow-hidden">
         
-        {/* Header */}
-        <header className="shrink-0 mb-4">
-          <Link href="/dashboard/crm" className="inline-flex items-center text-[10px] font-mono text-slate hover:text-signal transition-colors mb-2">
-            <ArrowLeft className="w-3.5 h-3.5 mr-1" />
-            BACK TO CRM ENGINE
-          </Link>
-          <div className="flex justify-between items-end border-b border-ink-mid pb-3">
-            <div>
-              <h1 className="font-sans font-black text-xl tracking-wide uppercase text-paper">Organizations & Corporate Accounts</h1>
-              <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase">Structured Account Tree, Credit Limit & Risk Telemetry</p>
-            </div>
-            <div className="flex items-center gap-2">
+        <DashboardPageHeader
+          className="mb-4 shrink-0 pb-3"
+          backHref="/dashboard/crm"
+          backLabel="Back to CRM Engine"
+          title="Organizations & Corporate Accounts"
+          subtitle="Structured Account Tree, Credit Limit & Risk Telemetry"
+          actions={
+            <>
               <Link
                 href="/dashboard/crm/import"
                 className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
@@ -455,9 +452,9 @@ export default function ClientOrganizationsRegistry() {
                 <Plus className="w-3.5 h-3.5" />
                 <span>REGISTER ACCOUNT</span>
               </button>
-            </div>
-          </div>
-        </header>
+            </>
+          }
+        />
 
         {/* Toast Toast Notifications */}
         {notification && (

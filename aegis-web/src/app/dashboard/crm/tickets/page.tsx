@@ -6,6 +6,7 @@ import {
   HelpCircle, Plus, RefreshCw, X, Clock,
   AlertTriangle, ShieldCheck, Send, Paperclip
 } from 'lucide-react';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import {
   getCrmSupportTickets, getCrmTicketComments, createCrmTicketComment,
   getCrmTicketAttachments, attachCrmTicketDocument, getCrmSupportDashboard,
@@ -118,19 +119,17 @@ export default function TicketsPage() {
     <main className="min-h-screen bg-[#0A0D14] text-[#E2E8F0] p-4 lg:p-8 font-sans flex relative overflow-hidden">
       {/* List / Dashboard Area */}
       <div className={`flex-1 transition-all duration-300 ${selectedTicketId ? 'pr-[450px]' : ''}`}>
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-[#1E293B] pb-6 mb-6">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-              <HelpCircle className="h-6 w-6 text-[#3B82F6]" />
-              Help Desk & Support Tickets
-            </h1>
-            <p className="text-slate-400 text-xs mt-1">Manage technical assistance requests, SLA deadlines, and client support logs.</p>
-          </div>
-          <Link href="/dashboard/crm/support" className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-white">
-            <Plus className="h-4 w-4" />
-            Create Support Ticket
-          </Link>
-        </div>
+        <DashboardPageHeader
+          eyebrow={{ label: "CRM", icon: HelpCircle }}
+          title="Help Desk & Support Tickets"
+          subtitle="Manage technical assistance requests, SLA deadlines, and client support logs."
+          actions={
+            <Link href="/dashboard/crm/support" className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] text-white">
+              <Plus className="h-4 w-4" />
+              Create Support Ticket
+            </Link>
+          }
+        />
 
         {loadError && (
           <div className="mb-6 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200">

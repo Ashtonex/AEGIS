@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   AlertTriangle,
   Briefcase,
@@ -669,33 +670,28 @@ export default function CRMDocumentsPage() {
   return (
     <div className="flex flex-col h-full bg-[#050505] text-paper overflow-hidden">
 
-      {/* ── Page Header ── */}
-      <div className="flex justify-between items-center border-b border-white/8 px-6 py-4 shrink-0">
-        <div>
-          <h1 className="font-sans font-extrabold text-xl tracking-wide uppercase text-paper">
-            Document Vault
-          </h1>
-          <p className="font-mono text-[10px] text-slate-500 tracking-widest uppercase mt-0.5">
-            Contract Management &amp; Proposal Registry
-          </p>
-        </div>
-        <div className="flex items-center space-x-3">
-          {/* Vault size pill */}
-          <div className="hidden sm:flex items-center space-x-1.5 bg-ink/40 border border-white/8 px-3 py-1.5 rounded-sm">
-            <Database className="w-3 h-3 text-[#3B82F6]" />
-            <span className="font-mono text-[10px] text-slate-400">Vault:</span>
-            <span className="font-mono text-[10px] text-[#3B82F6] font-bold tabular-nums">{formatBytes(totalSize)}</span>
-          </div>
+      <DashboardPageHeader
+        className="mb-0 border-b-0 pb-4 shrink-0"
+        title="Document Vault"
+        subtitle="Contract Management & Proposal Registry"
+        actions={
+          <>
+            <div className="hidden sm:flex items-center space-x-1.5 bg-ink/40 border border-white/8 px-3 py-1.5 rounded-sm">
+              <Database className="w-3 h-3 text-[#3B82F6]" />
+              <span className="font-mono text-[10px] text-slate-400">Vault:</span>
+              <span className="font-mono text-[10px] text-[#3B82F6] font-bold tabular-nums">{formatBytes(totalSize)}</span>
+            </div>
 
-          <button
-            onClick={() => { setShowUploadModal(true); setUploadSuccess(false); setScanPhase("idle"); }}
-            className="flex items-center space-x-1.5 bg-signal hover:bg-signal/85 active:scale-95 text-black px-3.5 py-1.5 text-xs font-mono font-bold tracking-wider rounded-sm transition-all"
-          >
-            <UploadCloud className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>UPLOAD DOCUMENT</span>
-          </button>
-        </div>
-      </div>
+            <button
+              onClick={() => { setShowUploadModal(true); setUploadSuccess(false); setScanPhase("idle"); }}
+              className="flex items-center space-x-1.5 bg-signal hover:bg-signal/85 active:scale-95 text-black px-3.5 py-1.5 text-xs font-mono font-bold tracking-wider rounded-sm transition-all"
+            >
+              <UploadCloud className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>UPLOAD DOCUMENT</span>
+            </button>
+          </>
+        }
+      />
 
       {loadError && (
         <div className="bg-red-950/20 border border-red-500/25 px-4 py-2.5 mx-6 mt-3 rounded-sm flex items-center space-x-2 text-red-300 shrink-0 font-mono text-xs">

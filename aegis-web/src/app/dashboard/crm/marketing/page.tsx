@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, BarChart3, Megaphone, Plus, Users, Workflow } from "lucide-react";
+import { BarChart3, Megaphone, Plus, Users, Workflow } from "lucide-react";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   createCrmCampaign,
   createCrmMessageTemplate,
@@ -165,16 +165,12 @@ export default function CRMMarketingPage() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-paper p-6">
-      <Link href="/dashboard/crm" className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-slate-light hover:text-signal">
-        <ArrowLeft className="h-4 w-4" /> Back to CRM
-      </Link>
-
-      <div className="mt-6 flex flex-col gap-2">
-        <h1 className="text-2xl font-black uppercase tracking-tight">CRM Marketing Command</h1>
-        <p className="max-w-3xl text-sm text-slate-light">
-          Campaign attribution, lead-source performance, and reusable outreach templates. This layer feeds the existing leads, opportunities, quotations, and communications modules.
-        </p>
-      </div>
+      <DashboardPageHeader
+        backHref="/dashboard/crm"
+        backLabel="Back to CRM"
+        title="CRM Marketing Command"
+        subtitle="Campaign attribution, lead-source performance, and reusable outreach templates. This layer feeds the existing leads, opportunities, quotations, and communications modules."
+      />
 
       {warnings.length > 0 && (
         <div className="mt-5 rounded border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">

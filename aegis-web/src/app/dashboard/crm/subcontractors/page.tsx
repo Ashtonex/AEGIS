@@ -1,15 +1,15 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from 'react';
-import Link from 'next/link';
 import {
-  ArrowLeft, CheckCircle2, AlertCircle, ShieldAlert, Loader2,
+  CheckCircle2, AlertCircle, ShieldAlert, Loader2,
   Search, Plus, ShieldCheck, Star, User, Phone, Mail,
   Briefcase, X, Save, Edit2, Grid, ClipboardList, BarChart2,
   Building2, Calendar, Award
 } from 'lucide-react';
 import { getSubcontractors, createSubcontractor, updateSubcontractor } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 
 // ---- Types ------------------------------------------------------------------
 
@@ -408,23 +408,19 @@ export default function SubcontractorRegistry() {
 
       <div className="relative max-w-[1600px] mx-auto px-4 md:px-6 py-6">
 
-        {/* Header */}
-        <header className="mb-6">
-          <Link href="/dashboard/crm" className="inline-flex items-center text-data-sm font-mono text-slate hover:text-signal transition-colors mb-4">
-            <ArrowLeft className="w-3.5 h-3.5 mr-2" />BACK TO CRM
-          </Link>
-          <div className="flex items-end justify-between border-b border-ink-mid pb-5">
-            <div>
-              <div className="font-mono text-[10px] text-signal tracking-widest mb-1">-- VENDOR INTELLIGENCE HUB</div>
-              <h1 className="font-display text-headline-xl tracking-tight text-paper">Vendor Registry</h1>
-              <p className="text-body-sm text-slate-light font-mono tracking-widest uppercase mt-1">Asset-Light Scale Infrastructure</p>
-            </div>
+        <DashboardPageHeader
+          backHref="/dashboard/crm"
+          backLabel="Back to CRM"
+          eyebrow={{ label: "Vendor Intelligence Hub" }}
+          title="Vendor Registry"
+          subtitle="Asset-Light Scale Infrastructure"
+          actions={
             <button onClick={openAddModal}
               className="inline-flex items-center gap-2 bg-signal text-ink font-mono text-data-sm font-bold px-4 py-2.5 hover:bg-yellow-500 transition-colors">
               <Plus className="w-4 h-4" />REGISTER SUBCONTRACTOR
             </button>
-          </div>
-        </header>
+          }
+        />
 
         <div className="mb-4 flex flex-wrap gap-2 border-b border-ink-mid">
           {[
