@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   addDailyReportEquipment,
@@ -326,14 +327,14 @@ function SiteOperationsWorkspace() {
 
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5">
-        <div>
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal"><ClipboardCheck className="h-4 w-4" /> Site Operations Command</p>
-          <h1 className="font-display text-3xl font-bold uppercase tracking-tight">Approved Daily Site Report</h1>
-          <p className="mt-1 max-w-3xl text-sm text-slate-light">Record labour, plant, materials and site evidence, then push the approved report into cost, inventory, reporting and executive intelligence.</p>
-        </div>
-        <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh</button>
-      </header>
+      <DashboardPageHeader
+        eyebrow={{ label: "Site Operations Command", icon: ClipboardCheck }}
+        title="Approved Daily Site Report"
+        subtitle="Record labour, plant, materials and site evidence, then push the approved report into cost, inventory, reporting and executive intelligence."
+        actions={
+          <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh</button>
+        }
+      />
 
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric icon={<FileText />} label="Daily reports" value={loading ? "..." : String(metrics.total)} />

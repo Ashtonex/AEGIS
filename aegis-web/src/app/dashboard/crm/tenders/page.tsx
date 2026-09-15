@@ -34,6 +34,7 @@ import {
   describeActionError
 } from '@/lib/api';
 import { supabase } from '@/lib/supabase';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 
 // Stages definition. 'Awarded' and 'Lost' used to be a single combined
@@ -953,34 +954,28 @@ export default function TendersCommand() {
   return (
     <div className="h-dvh bg-[#050505] text-paper p-6 relative overflow-hidden flex flex-col">
 
-      {/* Header */}
-      <header className="flex justify-between items-end border-b border-white/5 pb-4 mb-6 relative z-10 shrink-0">
-        <div>
-          <div className="flex items-center space-x-2 mb-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#3B82F6] animate-pulse"></span>
-            <span className="font-mono text-[9px] text-[#3B82F6] uppercase tracking-widest">Construction procurement bids</span>
-          </div>
-          <h1 className="font-sans font-black text-2xl tracking-tight text-paper uppercase">
-            Tenders & Bids Board
-          </h1>
-        </div>
-
-        <div className="flex items-center space-x-4">
-          <Link
-            href="/dashboard/crm"
-            className="px-3.5 py-1.5 border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] rounded-sm text-[10px] font-mono tracking-widest text-slate-light uppercase transition-all"
-          >
-            ← Back to Command
-          </Link>
-          <button 
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center space-x-1.5 px-4 py-1.5 bg-[#D4AF37] text-black hover:bg-[#D4AF37]/90 rounded-sm text-[10px] font-mono tracking-widest uppercase font-bold transition-all shadow-[0_0_15px_rgba(212,175,55,0.2)]"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Log Tender</span>
-          </button>
-        </div>
-      </header>
+      <DashboardPageHeader
+        className="relative z-10"
+        eyebrow={{ label: "Construction procurement bids" }}
+        title="Tenders & Bids Board"
+        actions={
+          <>
+            <Link
+              href="/dashboard/crm"
+              className="px-3.5 py-1.5 border border-white/5 bg-white/[0.02] hover:bg-white/[0.05] rounded-sm text-[10px] font-mono tracking-widest text-slate-light uppercase transition-all"
+            >
+              ← Back to Command
+            </Link>
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center space-x-1.5 px-4 py-1.5 bg-[#D4AF37] text-black hover:bg-[#D4AF37]/90 rounded-sm text-[10px] font-mono tracking-widest uppercase font-bold transition-all shadow-[0_0_15px_rgba(212,175,55,0.2)]"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Log Tender</span>
+            </button>
+          </>
+        }
+      />
 
       {/* Overview Analytics Row */}
       <div className="grid grid-cols-4 gap-2 mb-6 shrink-0 z-10">

@@ -9,6 +9,7 @@ import {
 import WorkforceOperations from "./WorkforceOperations";
 import Link from "next/link";
 import { RBACGuard } from "@/components/auth/RBACGuard";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { getComplianceDeploymentGateChecks, getComplianceItems, getHrRecords, getWorkforce } from "@/lib/api";
 
 type RecordData = Record<string, unknown>;
@@ -144,17 +145,19 @@ function WorkforceWorkspace() {
 
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5">
-        <div>
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal"><Users className="h-4 w-4" />People operations</p>
-          <h1 className="font-display text-3xl font-bold">Workforce Command</h1>
-          <p className="mt-1 text-sm text-slate-light">Live employee register, documented assignments, and compliance evidence.</p>
-          <Link href="/dashboard/workforce/people" className="mt-3 inline-block text-sm text-signal underline">Manage people and organisation</Link>
-        </div>
-        <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
-        </button>
-      </header>
+      <DashboardPageHeader
+        eyebrow={{ label: "People operations", icon: Users }}
+        title="Workforce Command"
+        subtitle="Live employee register, documented assignments, and compliance evidence."
+        actions={
+          <>
+            <Link href="/dashboard/workforce/people" className="text-sm text-signal underline">Manage people and organisation</Link>
+            <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
+            </button>
+          </>
+        }
+      />
 
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Employee register" value={loading ? "..." : String(employees.length)} detail="Registered workers (up to 250)" icon={Users} />

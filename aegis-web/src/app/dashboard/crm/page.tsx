@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
 import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
 import { PROVINCES } from '@/lib/constants';
+import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 
 const CRM_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -777,30 +778,21 @@ export default function CRMCommercialEngine() {
       
       <div className="relative z-10 flex flex-col flex-1 min-h-0 overflow-hidden">
         
-        {/* Header Section */}
-        <header className="flex justify-between items-end pb-2 shrink-0">
-          <div className="flex items-center space-x-4" data-tour="crm-title">
-            <div className="w-10 h-10 rounded-sm bg-gradient-to-br from-ink-light to-ink border border-white/10 flex items-center justify-center shadow-lg">
-              <Activity className="w-5 h-5 text-signal" />
-            </div>
-            <div>
-              <h1 className="font-display text-2xl tracking-tight text-paper mb-0.5">Commercial Command</h1>
-              <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase flex items-center">
-                <span className="w-1 h-1 rounded-full bg-signal mr-1.5 animate-pulse-signal"></span>
-                Strategic Engine & Intelligence Matrix
-              </p>
-            </div>
-            <button
-              onClick={crmTour.openTour}
-              className="text-slate-light hover:text-paper transition-colors"
-              title="Replay CRM tour"
-              aria-label="Replay CRM tour"
-            >
-              <CircleHelp className="w-5 h-5" />
-            </button>
-          </div>
-          
-          <div className="flex space-x-3" data-tour="crm-nav-links">
+        <DashboardPageHeader
+          className="mb-0 border-b-0 pb-2 shrink-0"
+          eyebrow={{ label: "Strategic Engine & Intelligence Matrix", icon: Activity }}
+          title="Commercial Command"
+          actions={
+            <div className="flex items-center gap-3" data-tour="crm-title">
+              <button
+                onClick={crmTour.openTour}
+                className="text-slate-light hover:text-paper transition-colors"
+                title="Replay CRM tour"
+                aria-label="Replay CRM tour"
+              >
+                <CircleHelp className="w-5 h-5" />
+              </button>
+              <div className="flex space-x-3" data-tour="crm-nav-links">
             <Link
               href="/dashboard/crm/marketing"
               className="group flex items-center px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-slate-light hover:bg-white/10 text-[10px] font-mono tracking-widest text-slate-light transition-all duration-300"
@@ -864,8 +856,10 @@ export default function CRMCommercialEngine() {
               <Users className="w-3.5 h-3.5 mr-1.5" />
               TEAMS
             </Link>
-          </div>
-        </header>
+              </div>
+            </div>
+          }
+        />
 
         {renderKpiCards()}
 
