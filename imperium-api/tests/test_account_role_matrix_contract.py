@@ -32,10 +32,14 @@ CRM_ASSOCIATE_ACCESS_BRIDGE_MIGRATION = (
 TENDER_BIDS_ROUTER = (ROOT / "routers" / "tender_bids.py").read_text(encoding="utf-8")
 SETTINGS_PAGE = (
     WEB_ROOT / "app" / "dashboard" / "settings" / "page.tsx"
-).read_text(encoding="utf-8")
+).read_text(encoding="utf-8") + (
+    WEB_ROOT / "app" / "dashboard" / "settings" / "SettingsTabPanels.tsx"
+).read_text(encoding="utf-8")  # tab bodies now live here, see SettingsTabPanels.tsx
 DASHBOARD_SHELL = (
     WEB_ROOT / "app" / "dashboard" / "DashboardShell.tsx"
-).read_text(encoding="utf-8")
+).read_text(encoding="utf-8") + (
+    WEB_ROOT / "lib" / "navigation.ts"
+).read_text(encoding="utf-8")  # nav role/permission data now lives here, see lib/navigation.ts
 PORTAL_HOME = (WEB_ROOT / "components" / "auth" / "PortalHome.tsx").read_text(
     encoding="utf-8"
 )

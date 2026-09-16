@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { ArrowLeft, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Breadcrumb } from "@/components/ui/Breadcrumb";
+import { DOMAIN_META, getDomainForPathname, getBreadcrumbsForPathname } from "@/lib/navigation";
 
 interface DashboardPageHeaderProps {
   /** Small back-link rendered above the eyebrow/title - for sub-routes that
@@ -11,6 +14,11 @@ interface DashboardPageHeaderProps {
    * linking back to /dashboard/quotations). Omit for top-level pages. */
   backHref?: string;
   backLabel?: string;
+  /** Breadcrumb trail rendered above the eyebrow/title, e.g.
+   * [{label: "Procurement", href: "/dashboard/procurement"}, {label: "Suppliers"}].
+   * Omit for top-level pages (Executive, Dashboard root) that have nothing to
+   * trail back to. */
+  breadcrumbs?: { label: string; href?: string }[];
   eyebrow?: { label: string; icon?: LucideIcon };
   /** String for the common case; a node (e.g. a dynamic greeting) when the
    * title itself needs to render something other than plain text - pass
@@ -37,6 +45,7 @@ interface DashboardPageHeaderProps {
 export function DashboardPageHeader({
   backHref,
   backLabel = "Back to Dashboard",
+  breadcrumbs,
   eyebrow,
   title,
   documentTitle,
@@ -45,6 +54,7 @@ export function DashboardPageHeader({
   className,
 }: DashboardPageHeaderProps) {
   const resolvedDocumentTitle = documentTitle ?? (typeof title === "string" ? title : undefined);
+  const pathname = usePathname();
 
   useEffect(() => {
     if (!resolvedDocumentTitle) return;
@@ -57,6 +67,14 @@ export function DashboardPageHeader({
 
   const EyebrowIcon = eyebrow?.icon;
 
+  // Falls back to a path-derived trail (Domain > Group > current page) so
+  // most pages get a correct breadcrumb for free; pages with a dynamic
+  // title (e.g. a customer name) pass their own `breadcrumbs` instead.
+  const derivedBreadcrumbs = useMemo(() => getBreadcrumbsForPathname(pathname), [pathname]);
+  const resolvedBreadcrumbs = breadcrumbs ?? derivedBreadcrumbs;
+  const domain = useMemo(() => getDomainForPathname(pathname), [pathname]);
+  const accentClass = domain ? DOMAIN_META[domain].accentClass : "text-signal";
+
   return (
     <header
       className={cn(
@@ -65,6 +83,9 @@ export function DashboardPageHeader({
       )}
     >
       <div>
+        {resolvedBreadcrumbs.length > 0 && (
+          <Breadcrumb items={resolvedBreadcrumbs} className="mb-2" />
+        )}
         {backHref && (
           <Link
             href={backHref}
@@ -74,7 +95,7 @@ export function DashboardPageHeader({
           </Link>
         )}
         {eyebrow && (
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal">
+          <p className={cn("mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest", accentClass)}>
             {EyebrowIcon && <EyebrowIcon className="h-3.5 w-3.5" />}
             {eyebrow.label}
           </p>

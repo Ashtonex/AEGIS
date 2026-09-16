@@ -10,6 +10,11 @@ TASK_STACKS = (ROOT / "app" / "shared" / "task_stacks.py").read_text(encoding="u
 ROUTER = (ROOT / "routers" / "crm_tasks.py").read_text(encoding="utf-8")
 API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(
     encoding="utf-8"
+) + "".join(
+    sorted_p.read_text(
+    encoding="utf-8"
+)
+    for sorted_p in [(ROOT.parent / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
 )
 TASK_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "tasks" / "page.tsx"

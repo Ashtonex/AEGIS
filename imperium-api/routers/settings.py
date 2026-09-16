@@ -931,26 +931,36 @@ async def _assign_roles(
     user_id: UUID,
     role_ids: list[UUID],
 ) -> None:
-    for role_id in role_ids:
-        role_exists = (
+    if not role_ids:
+        return
+    valid_role_ids = {
+        row[0]
+        for row in (
             await db.execute(
                 text("""
-            SELECT 1 FROM core.roles
-            WHERE id=:role_id AND organization_id=:org_id AND is_deleted=false
+            SELECT id FROM core.roles
+            WHERE id=ANY(:role_ids) AND organization_id=:org_id AND is_deleted=false
         """),
-                {"role_id": role_id, "org_id": org_id},
+                {"role_ids": role_ids, "org_id": org_id},
             )
-        ).scalar()
-        if not role_exists:
-            raise HTTPException(status_code=404, detail="Selected role was not found.")
-        await db.execute(
-            text("""
+        ).all()
+    }
+    if len(valid_role_ids) != len(set(role_ids)):
+        raise HTTPException(status_code=404, detail="Selected role was not found.")
+
+    values_sql: list[str] = []
+    params: dict[str, Any] = {"user_id": user_id, "org_id": org_id}
+    for idx, role_id in enumerate(role_ids):
+        values_sql.append(f"(:user_id, :role_id_{idx}, :org_id)")
+        params[f"role_id_{idx}"] = role_id
+    await db.execute(
+        text(f"""
             INSERT INTO core.user_roles (user_id, role_id, organization_id)
-            VALUES (:user_id, :role_id, :org_id)
+            VALUES {", ".join(values_sql)}
             ON CONFLICT (user_id, role_id) DO NOTHING
-        """),
-            {"user_id": user_id, "role_id": role_id, "org_id": org_id},
-        )
+        """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+        params,
+    )
 
 
 async def _create_employee_access_role(
@@ -980,14 +990,19 @@ async def _create_employee_access_role(
         ).scalar()
     if not role_id:
         raise HTTPException(status_code=409, detail="Access role could not be created.")
-    for permission_id in permission_ids.values():
+    if permission_ids:
+        values_sql: list[str] = []
+        params: dict[str, Any] = {"role_id": role_id}
+        for idx, permission_id in enumerate(permission_ids.values()):
+            values_sql.append(f"(:role_id, :permission_id_{idx})")
+            params[f"permission_id_{idx}"] = permission_id
         await db.execute(
-            text("""
+            text(f"""
             INSERT INTO core.role_permissions (role_id, permission_id)
-            VALUES (:role_id, :permission_id)
+            VALUES {", ".join(values_sql)}
             ON CONFLICT DO NOTHING
-        """),
-            {"role_id": role_id, "permission_id": permission_id},
+        """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+            params,
         )
     return role_id
 
@@ -1580,19 +1595,22 @@ async def invite_user(
         )
 
     role_names: dict[UUID, str] = {}
-    for role_id in payload.role_ids:
-        role_row = (
+    if payload.role_ids:
+        role_rows = (
             await db.execute(
                 text(
-                    "SELECT name FROM core.roles WHERE id=:role_id AND organization_id=:org_id AND is_deleted=false"
+                    "SELECT id, name FROM core.roles WHERE id=ANY(:role_ids) AND organization_id=:org_id AND is_deleted=false"
                 ),
-                {"role_id": role_id, "org_id": org_id},
+                {"role_ids": payload.role_ids, "org_id": org_id},
             )
-        ).mappings().first()
-        if not role_row:
-            raise HTTPException(status_code=404, detail="Selected role was not found.")
-        _enforce_sole_superadmin({"role_name": role_row["name"], "user_email": payload.email})
-        role_names[role_id] = role_row["name"]
+        ).mappings().all()
+        found_by_id = {row["id"]: row["name"] for row in role_rows}
+        for role_id in payload.role_ids:
+            role_name = found_by_id.get(role_id)
+            if not role_name:
+                raise HTTPException(status_code=404, detail="Selected role was not found.")
+            _enforce_sole_superadmin({"role_name": role_name, "user_email": payload.email})
+            role_names[role_id] = role_name
 
     resend_configured = _resend_configured()
     action_link: Optional[str] = None

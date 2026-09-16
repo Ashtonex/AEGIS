@@ -1,0 +1,46 @@
+name: Frontend CI
+
+# Nothing in the pipeline could previously catch a frontend regression
+# before it reached main (see AEGIS Performance Audit, Part 4 "No
+# performance testing anywhere" / Part 5 item 4.8) - this is the first gate:
+# typecheck, lint and a full production build on every change to aegis-web.
+# Lighthouse/bundle-size/web-vitals budgets are a follow-up once this base
+# gate has run for a while and real budget numbers can be set from it.
+
+on:
+  pull_request:
+    paths:
+      - "aegis-web/**"
+      - ".github/workflows/frontend-ci.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "aegis-web/**"
+      - ".github/workflows/frontend-ci.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aegis-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: aegis-web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build

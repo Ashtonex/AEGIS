@@ -28,9 +28,9 @@ import {
   markCrmOpportunityLost,
   getCrmWinLossReasons,
   createCrmWinLossReason,
-  getFinanceDepartments,
   describeActionError,
 } from '@/lib/api';
+import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
@@ -197,7 +197,6 @@ export default function OpportunitiesKanban() {
   const [winNotes, setWinNotes] = useState('');
   const [winReasonOptions, setWinReasonOptions] = useState<any[]>([]);
   const [selectedWinReasonId, setSelectedWinReasonId] = useState('');
-  const [winDepartmentOptions, setWinDepartmentOptions] = useState<any[]>([]);
   const [selectedWinDepartmentId, setSelectedWinDepartmentId] = useState('');
   const [selectedWinOriginatingDepartmentId, setSelectedWinOriginatingDepartmentId] = useState('');
 
@@ -233,16 +232,11 @@ export default function OpportunitiesKanban() {
 
   const [showNewContactFields, setShowNewContactFields] = useState(false);
 
-  // Pipeline-wide department options for the create/edit forms and list
-  // filter - separate from winDepartmentOptions, which only loads lazily
-  // when the Mark Won modal opens.
-  const [pipelineDepartments, setPipelineDepartments] = useState<{ id: string; name: string }[]>([]);
+  // Department options for the create/edit forms, list filter, and the
+  // Mark Won modal - one shared SWR-cached fetch (see useFinanceDepartments)
+  // instead of a separate lazy fetch each time the Mark Won modal opened.
+  const { departments } = useFinanceDepartments();
   const [departmentFilter, setDepartmentFilter] = useState('');
-  useEffect(() => {
-    void getFinanceDepartments()
-      .then((res) => setPipelineDepartments(res.success && Array.isArray(res.data) ? res.data : []))
-      .catch(() => setPipelineDepartments([]));
-  }, []);
 
   // Edit Drawer Form State
   const [editForm, setEditForm] = useState<{
@@ -677,12 +671,6 @@ export default function OpportunitiesKanban() {
       if (res.success && Array.isArray(res.data)) setWinReasonOptions(res.data);
     } catch {
       setWinReasonOptions([]);
-    }
-    try {
-      const res = await getFinanceDepartments();
-      if (res.success && Array.isArray(res.data)) setWinDepartmentOptions(res.data);
-    } catch {
-      setWinDepartmentOptions([]);
     }
   };
 
@@ -1120,7 +1108,7 @@ export default function OpportunitiesKanban() {
             className="bg-black border border-white/10 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none"
           >
             <option value="">All Departments</option>
-            {pipelineDepartments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
 
           {/* Clear Filters Button */}
@@ -1463,7 +1451,7 @@ export default function OpportunitiesKanban() {
                   className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                 >
                   <option value="">Unassigned</option>
-                  {pipelineDepartments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </div>
 
@@ -1748,7 +1736,7 @@ export default function OpportunitiesKanban() {
                       className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
                     >
                       <option value="">Unassigned</option>
-                      {pipelineDepartments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                     </select>
                   </div>
 
@@ -2013,7 +2001,7 @@ export default function OpportunitiesKanban() {
                   </select>
                 </div>
               )}
-              {winDepartmentOptions.length > 0 && (
+              {departments.length > 0 && (
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-slate mb-1 font-mono uppercase text-[9px]">Delivered by</label>
@@ -2023,7 +2011,7 @@ export default function OpportunitiesKanban() {
                       className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
                     >
                       <option value="">Unassigned</option>
-                      {winDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                     </select>
                   </div>
                   <div>
@@ -2034,7 +2022,7 @@ export default function OpportunitiesKanban() {
                       className="w-full bg-black border border-white/10 rounded-sm p-2 text-white outline-none"
                     >
                       <option value="">Unassigned</option>
-                      {winDepartmentOptions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                     </select>
                   </div>
                 </div>

@@ -3,6 +3,7 @@ import logging
 from typing import Any
 
 import redis as redis_sync
+from fastapi import Response
 from redis import asyncio as redis_async
 
 from core.config import settings
@@ -88,3 +89,16 @@ def delete_sync(key: str) -> None:
         _get_sync_client().delete(key)
     except Exception as exc:
         logger.warning("Redis delete_sync failed for key %s: %s", key, exc)
+
+
+def set_reference_data_cache_headers(response: Response, max_age_seconds: int = 120) -> None:
+    """Marks a response as short-lived, browser/proxy-cacheable reference
+    data - org-scoped rate libraries, cost codes, permissions, and similar
+    slow-changing lookups that were previously refetched and recomputed on
+    every request (zero Cache-Control headers existed anywhere in the
+    backend before this). `private` because every response here is
+    authenticated and org-scoped - it must never be cached by a shared
+    proxy, only the requesting browser. No ETag: these responses already
+    vary per organization via the auth token, so a fixed short max-age is
+    simpler than computing and validating a content hash per request."""
+    response.headers["Cache-Control"] = f"private, max-age={max_age_seconds}"

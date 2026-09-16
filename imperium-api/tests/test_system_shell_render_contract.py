@@ -7,7 +7,9 @@ WEB_ROOT = ROOT.parent / "aegis-web" / "src"
 
 DASHBOARD_SHELL = (WEB_ROOT / "app" / "dashboard" / "DashboardShell.tsx").read_text(
     encoding="utf-8"
-)
+) + (WEB_ROOT / "lib" / "navigation.ts").read_text(
+    encoding="utf-8"
+)  # nav role/permission data now lives here, see lib/navigation.ts
 PORTAL_LAYOUT = (WEB_ROOT / "app" / "portal" / "layout.tsx").read_text(encoding="utf-8")
 NAVIGATION_WRAPPER = (WEB_ROOT / "components" / "layout" / "NavigationWrapper.tsx").read_text(
     encoding="utf-8"
@@ -66,8 +68,11 @@ class SystemShellRenderContractTests(unittest.TestCase):
             group_start = DASHBOARD_SHELL.index(f'name: "{name}"')
             group_end = DASHBOARD_SHELL.index("subItems:", group_start)
             self.assertIn("directLink: true", DASHBOARD_SHELL[group_start:group_end])
-        self.assertIn("if (group.directLink)", DASHBOARD_SHELL)
-        self.assertIn("href={group.href}", DASHBOARD_SHELL)
+        # Any group that resolves to exactly one visible sub-item also
+        # renders as a direct link now (not just directLink: true groups) -
+        # part of the sidebar domain restructure, see lib/navigation.ts.
+        self.assertIn("if (group.directLink || group.subItems.length === 1)", DASHBOARD_SHELL)
+        self.assertIn("href={target.href}", DASHBOARD_SHELL)
 
     def test_module_pages_do_not_render_duplicate_horizontal_navigation(self):
         for source in MODULE_PAGES_WITH_SIDENAV_ONLY:

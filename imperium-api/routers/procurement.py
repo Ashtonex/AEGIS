@@ -631,28 +631,29 @@ async def create_requisition(
             },
         )
     ).scalar()
-    for line in payload.line_items:
+    if payload.line_items:
+        values_sql = []
+        line_params: dict[str, Any] = {"org_id": user["org_id"], "req_id": req_id}
+        for idx, line in enumerate(payload.line_items):
+            values_sql.append(
+                f"(:org_id, :req_id, :item_id_{idx}, :description_{idx}, :quantity_{idx}, "
+                f":uom_{idx}, :unit_cost_{idx}, :work_package_{idx}, :notes_{idx})"
+            )
+            line_params[f"item_id_{idx}"] = line.item_id
+            line_params[f"description_{idx}"] = line.description
+            line_params[f"quantity_{idx}"] = line.qty
+            line_params[f"uom_{idx}"] = line.uom
+            line_params[f"unit_cost_{idx}"] = line.unit_cost
+            line_params[f"work_package_{idx}"] = line.work_package
+            line_params[f"notes_{idx}"] = line.notes
         await db.execute(
-            text("""
+            text(f"""
             INSERT INTO procurement.requisition_lines (
                 organization_id, requisition_id, item_id, description, quantity,
                 unit_of_measure, estimated_unit_cost, work_package, notes
-            ) VALUES (
-                :org_id, :req_id, :item_id, :description, :quantity,
-                :uom, :unit_cost, :work_package, :notes
-            )
-        """),
-            {
-                "org_id": user["org_id"],
-                "req_id": req_id,
-                "item_id": line.item_id,
-                "description": line.description,
-                "quantity": line.qty,
-                "uom": line.uom,
-                "unit_cost": line.unit_cost,
-                "work_package": line.work_package,
-                "notes": line.notes,
-            },
+            ) VALUES {", ".join(values_sql)}
+        """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+            line_params,
         )
     await emit_event(
         db,

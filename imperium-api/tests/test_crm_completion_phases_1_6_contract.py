@@ -10,7 +10,10 @@ CRM_ROUTER = (API_ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 CRM_LEADS_ROUTER = (API_ROOT / "routers" / "crm_leads.py").read_text(encoding="utf-8")
 CRM_ORGS_ROUTER = (API_ROOT / "routers" / "crm_organizations.py").read_text(encoding="utf-8")
 MIGRATION = (API_ROOT / "migrations" / "041_crm_completion_phases_1_6.sql").read_text(encoding="utf-8")
-API_CLIENT = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+API_CLIENT = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 CUSTOMER_360_PAGE = (
     WEB_ROOT / "src" / "app" / "dashboard" / "crm" / "organizations" / "[id]" / "page.tsx"
 ).read_text(encoding="utf-8")

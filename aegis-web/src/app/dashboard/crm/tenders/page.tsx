@@ -18,7 +18,6 @@ import {
   deleteCrmTender,
   awardCrmTender,
   closeoutCrmTender,
-  getFinanceDepartments,
   getTenderRequirements,
   createTenderRequirement,
   toggleTenderRequirement,
@@ -33,6 +32,7 @@ import {
   getDocumentSignedUrl,
   describeActionError
 } from '@/lib/api';
+import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { supabase } from '@/lib/supabase';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
@@ -138,7 +138,7 @@ export default function TendersCommand() {
   // project, so it's gated behind this modal instead of a plain stage move.
   const [isAwardModalOpen, setIsAwardModalOpen] = useState(false);
   const [awardTenderId, setAwardTenderId] = useState<string | null>(null);
-  const [awardDepartmentOptions, setAwardDepartmentOptions] = useState<any[]>([]);
+  const { departments: awardDepartmentOptions } = useFinanceDepartments();
   const [selectedAwardDepartmentId, setSelectedAwardDepartmentId] = useState('');
   const [selectedAwardOriginatingDepartmentId, setSelectedAwardOriginatingDepartmentId] = useState('');
   const [awardCloseoutReason, setAwardCloseoutReason] = useState('');
@@ -297,12 +297,6 @@ export default function TendersCommand() {
     setAwardCloseoutReason('');
     setAwardNextSteps('');
     setIsAwardModalOpen(true);
-    try {
-      const res = await getFinanceDepartments();
-      if (res.success && Array.isArray(res.data)) setAwardDepartmentOptions(res.data);
-    } catch {
-      setAwardDepartmentOptions([]);
-    }
   };
 
   const handleConfirmAward = async () => {

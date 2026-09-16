@@ -10,7 +10,10 @@ MIGRATION = (ROOT / "migrations" / "032_crm_communication_ledger.sql").read_text
 ROUTER = (ROOT / "routers" / "crm_communications.py").read_text(encoding="utf-8")
 PORTALS_ROUTER = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
-WEB_API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+WEB_API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 PORTAL_HOME = (
     WEB_ROOT / "src" / "components" / "auth" / "PortalHome.tsx"
 ).read_text(encoding="utf-8")

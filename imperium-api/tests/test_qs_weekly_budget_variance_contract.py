@@ -10,7 +10,10 @@ FINANCE = (ROOT / "routers" / "financial_performance.py").read_text(encoding="ut
 MIGRATION = (
     ROOT / "migrations" / "146_qs_master_to_weekly_budget_variance_controls.sql"
 ).read_text(encoding="utf-8")
-API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 ENGINEER_PORTAL = (
     WEB_ROOT / "components" / "auth" / "SiteEngineerPortalHome.tsx"
 ).read_text(encoding="utf-8")

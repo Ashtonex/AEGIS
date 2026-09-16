@@ -1,9 +1,9 @@
 "use client";
 
 import React, { use, useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Briefcase, FileText, MessageSquare, Ticket, Users } from "lucide-react";
+import { Briefcase, FileText, MessageSquare, Ticket, Users } from "lucide-react";
 import { getCrmCustomer360 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 
@@ -46,22 +46,31 @@ export default function CRMCustomer360Page({ params }: { params: Promise<{ id: s
 
   return (
     <div className="min-h-screen bg-[#050505] text-paper p-6">
-      <Link href="/dashboard/crm/organizations" className="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-slate-light hover:text-signal">
-        <ArrowLeft className="h-4 w-4" /> Back to Organizations
-      </Link>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "CRM", href: "/dashboard/crm" },
+          { label: "Organizations", href: "/dashboard/crm/organizations" },
+          { label: data && !loading && !error ? organization.name || "Customer 360" : "Customer 360" },
+        ]}
+        backHref="/dashboard/crm/organizations"
+        backLabel="Back to Organizations"
+        eyebrow={{ label: "Customer 360" }}
+        title={data && !loading && !error ? organization.name : "Customer 360"}
+        documentTitle={data && !loading && !error && organization.name ? organization.name : "Customer 360"}
+        subtitle={
+          data && !loading && !error
+            ? `${organization.industry || "Unclassified industry"} · ${organization.lifecycle_stage || "prospect"} · ${organization.account_status || "active"}`
+            : undefined
+        }
+      />
 
       {loading && <p className="mt-8 text-sm text-slate-light">Loading Customer 360...</p>}
       {error && <div className="mt-8 rounded border border-red-400/30 bg-red-500/10 p-4 text-sm text-red-100">{error}</div>}
 
       {!loading && !error && data && (
         <>
-          <header className="mt-6 rounded border border-white/10 bg-white/[0.03] p-5">
-            <p className="text-xs uppercase tracking-wider text-slate-light">Customer 360</p>
-            <h1 className="mt-1 text-3xl font-black tracking-tight">{organization.name}</h1>
-            <p className="mt-2 max-w-4xl text-sm text-slate-light">
-              {organization.industry || "Unclassified industry"} · {organization.lifecycle_stage || "prospect"} · {organization.account_status || "active"}
-            </p>
-            <p className="mt-2 text-xs text-slate-light">
+          <div className="rounded border border-white/10 bg-white/[0.03] p-5">
+            <p className="text-xs text-slate-light">
               Financial summary: {String(data.financial_summary?.awarded_value ?? 0)} · Risk flags: {String(data.risk_compliance_flags?.risk_rating ?? "not set")}
             </p>
             <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
@@ -71,7 +80,7 @@ export default function CRMCustomer360Page({ params }: { params: Promise<{ id: s
               <Metric icon={<Ticket />} label="Tickets" value={data.open_support_tickets?.length || 0} />
               <Metric icon={<MessageSquare />} label="Comms" value={data.recent_communications?.length || 0} />
             </div>
-          </header>
+          </div>
 
           <nav className="mt-5 flex flex-wrap gap-2">
             {customer360Tabs.map((tab) => (

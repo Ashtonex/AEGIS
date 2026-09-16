@@ -7,8 +7,13 @@ WEB_ROOT = ROOT.parent / "aegis-web"
 HR_RECORDS = (ROOT / "routers" / "hr_records.py").read_text(encoding="utf-8")
 HR_OPERATIONS = (ROOT / "routers" / "hr_operations.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
-API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
-HR_PAGE = (WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "page.tsx").read_text(encoding="utf-8")
+API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
+HR_PAGE = (WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "page.tsx").read_text(encoding="utf-8") + (
+    WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "HRTabPanels.tsx"
+).read_text(encoding="utf-8")  # tab bodies now live here, see HRTabPanels.tsx
 PROFILE_PAGE = (WEB_ROOT / "src" / "app" / "dashboard" / "profile" / "page.tsx").read_text(encoding="utf-8")
 MIGRATION = (ROOT / "migrations" / "162_hr_operating_layer_self_service_leave.sql").read_text(encoding="utf-8")
 

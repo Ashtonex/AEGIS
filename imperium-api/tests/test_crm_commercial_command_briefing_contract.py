@@ -6,7 +6,10 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 CRM_PAGE = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "crm" / "page.tsx").read_text(encoding="utf-8")
-API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(REPO / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 
 
 class CommercialCommandBriefingContractTests(unittest.TestCase):

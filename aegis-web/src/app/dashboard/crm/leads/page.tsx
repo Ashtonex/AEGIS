@@ -29,10 +29,10 @@ import {
   getCrmComplianceRequirementTypes,
   getCrmCommunications,
   createCrmCommunication,
-  grantClientPortalAccess,
-  getFinanceDepartments
+  grantClientPortalAccess
 } from '@/lib/api';
 import { useApiQuery } from '@/hooks/useApiQuery';
+import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
 import { SkeletonTableRows } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -180,14 +180,8 @@ export default function CRMLeadsApp() {
     originating_department_id: ''
   };
   const [manualForm, setManualForm] = useState(DEFAULT_MANUAL_FORM);
-  const [departments, setDepartments] = useState<Department[]>([]);
+  const { departments } = useFinanceDepartments();
   const [departmentFilter, setDepartmentFilter] = useState('');
-
-  useEffect(() => {
-    void getFinanceDepartments()
-      .then((res) => setDepartments(res.success && Array.isArray(res.data) ? res.data : []))
-      .catch(() => setDepartments([]));
-  }, []);
 
   useEffect(() => {
     void getCrmComplianceRequirementTypes()

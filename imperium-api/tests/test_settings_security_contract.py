@@ -20,7 +20,9 @@ SETTINGS_PAGE = (
 ).read_text(encoding="utf-8")
 DASHBOARD_SHELL = (
     WEB_ROOT / "src" / "app" / "dashboard" / "DashboardShell.tsx"
-).read_text(encoding="utf-8")
+).read_text(encoding="utf-8") + (
+    WEB_ROOT / "src" / "lib" / "navigation.ts"
+).read_text(encoding="utf-8")  # nav role/permission data now lives here, see lib/navigation.ts
 
 
 class SettingsSecurityContractTests(unittest.TestCase):

@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw, TrendingDown, TrendingUp, Wallet } from "lucide-react";
 
 import {
-  getFinanceDepartments, getFinanceStatements, getIncomeStatement, getBalanceSheet,
+  getFinanceStatements, getIncomeStatement, getBalanceSheet,
   getCashMovementStatement, getArAging, getApAging, getTrialBalance,
 } from "@/lib/api";
+import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 
 type RecordData = Record<string, any>;
 type PeriodType = "day" | "week" | "month" | "quarter" | "year";
@@ -222,7 +223,7 @@ function GlStatementsView() {
 
 export function FinancialStatementsPanel() {
   const [view, setView] = useState<"department" | "gl">("department");
-  const [departments, setDepartments] = useState<RecordData[]>([]);
+  const { departments } = useFinanceDepartments();
   const [statement, setStatement] = useState<RecordData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -234,13 +235,10 @@ export function FinancialStatementsPanel() {
     setLoading(true);
     setError(null);
     try {
-      const [deptRes, stmtRes] = await Promise.allSettled([
-        getFinanceDepartments(),
-        getFinanceStatements({ period, anchor_date: anchorDate, department_id: departmentId || undefined }),
-      ]);
-      if (deptRes.status === "fulfilled") setDepartments(deptRes.value.data ?? []);
-      if (stmtRes.status === "fulfilled") setStatement(stmtRes.value.data ?? null);
-      else setError("Financial statement could not be loaded.");
+      const stmtRes = await getFinanceStatements({ period, anchor_date: anchorDate, department_id: departmentId || undefined });
+      setStatement(stmtRes.data ?? null);
+    } catch {
+      setError("Financial statement could not be loaded.");
     } finally {
       setLoading(false);
     }

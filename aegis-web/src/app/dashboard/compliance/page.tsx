@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import ComplianceFoundation from "./ComplianceFoundation";
-import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, X, FileText, ClipboardList, ShieldAlert, CheckCircle2,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
   getComplianceObligations,
@@ -31,6 +32,16 @@ import {
   getFleet
 } from "@/lib/api";
 
+// Only the active tab's panel ships to the browser instead of all 5 at once.
+function PanelLoading() {
+  return <Skeleton className="h-64 w-full" />;
+}
+const EmployeesTab = dynamic(() => import("./ComplianceTabPanels").then((m) => m.EmployeesTab), { loading: PanelLoading });
+const EquipmentTab = dynamic(() => import("./ComplianceTabPanels").then((m) => m.EquipmentTab), { loading: PanelLoading });
+const DeploymentGatesTab = dynamic(() => import("./ComplianceTabPanels").then((m) => m.DeploymentGatesTab), { loading: PanelLoading });
+const CorrectiveActionsTab = dynamic(() => import("./ComplianceTabPanels").then((m) => m.CorrectiveActionsTab), { loading: PanelLoading });
+const IncidentsTab = dynamic(() => import("./ComplianceTabPanels").then((m) => m.IncidentsTab), { loading: PanelLoading });
+
 type RecordData = Record<string, any>;
 type ComplianceTab = "obligations" | "employees" | "equipment" | "deployment-gates" | "corrective-actions" | "incidents";
 
@@ -43,21 +54,26 @@ const TAB_ROUTES: Record<ComplianceTab, string> = {
   incidents: "/dashboard/compliance/incidents",
 };
 
-function normalizeTab(value: string | null | undefined): ComplianceTab {
-  return value && value in TAB_ROUTES ? (value as ComplianceTab) : "obligations";
-}
+const COMPLIANCE_TAB_LABELS: Record<ComplianceTab, string> = {
+  obligations: "Compliance Overview",
+  employees: "Employee Credentials",
+  equipment: "Equipment Licenses",
+  "deployment-gates": "Deployment Gates",
+  "corrective-actions": "Corrective Actions",
+  incidents: "HSE Incidents",
+};
 
-function textValue(value: unknown, fallback = "Not recorded") {
+export function textValue(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function dateValue(value: unknown) {
+export function dateValue(value: unknown) {
   if (!value) return "Not recorded";
   const date = new Date(String(value));
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-ZW", { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
 
-function statusClass(status: string) {
+export function statusClass(status: string) {
   const normalized = String(status || "").toLowerCase();
   if (["compliant", "active", "pass", "completed", "resolved"].includes(normalized)) {
     return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
@@ -94,18 +110,25 @@ function normalizeActionError(reason: unknown, fallback: string) {
 }
 
 export default function ComplianceDashboard() {
-  const params = useSearchParams();
-  if (!params?.get("tab") || params.get("tab") === "obligations") return <ComplianceFoundation />;
+  return <CompliancePage initialTab="obligations" />;
+}
+
+/** Shared Compliance workspace, rendered by a real route per tab (see the
+ * sibling folders here) instead of the old compliance/[tab] -> redirect() ->
+ * ?tab= shim. "obligations" (the root route) renders the newer
+ * ComplianceFoundation overview instead of this workspace's own obligations
+ * table - unchanged from before this conversion. */
+export function CompliancePage({ initialTab }: { initialTab: ComplianceTab }) {
+  if (initialTab === "obligations") return <ComplianceFoundation />;
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
-      <ComplianceWorkspace />
+      <ComplianceWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
 }
 
-function ComplianceWorkspace() {
-  const searchParams = useSearchParams();
-  const [activeTab, setActiveTab] = useState<ComplianceTab>(() => normalizeTab(searchParams?.get("tab")));
+function ComplianceWorkspace({ initialTab }: { initialTab: Exclude<ComplianceTab, "obligations"> }) {
+  const activeTab = initialTab;
   const [obligations, setObligations] = useState<RecordData[]>([]);
   const [empCredentials, setEmpCredentials] = useState<RecordData[]>([]);
   const [eqCredentials, setEqCredentials] = useState<RecordData[]>([]);
@@ -202,10 +225,6 @@ function ComplianceWorkspace() {
 
   useLiveTable("core.compliance_items", () => void loadData());
   useLiveTable("projects.hse_incidents", () => void loadData());
-
-  useEffect(() => {
-    setActiveTab(normalizeTab(searchParams?.get("tab")));
-  }, [searchParams]);
 
   const handleCreateObligation = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -368,19 +387,10 @@ function ComplianceWorkspace() {
       )}
 
       <DashboardPageHeader
-        title="Compliance, Legal & Assurance"
+        title={COMPLIANCE_TAB_LABELS[activeTab]}
         subtitle="SNC compliance gates, regulatory filings, corrective action plans and incident logs."
         actions={
           <>
-            {activeTab === "obligations" && (
-              <button
-                onClick={() => setShowObligationModal(true)}
-                className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                <span>Record Obligation</span>
-              </button>
-            )}
             {activeTab === "corrective-actions" && (
               <button
                 onClick={() => setShowActionModal(true)}
@@ -453,328 +463,19 @@ function ComplianceWorkspace() {
 
       {/* Tab Panels */}
       <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-        {activeTab === "obligations" && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                  <th className="p-4">Obligation</th>
-                  <th className="p-4">Authority</th>
-                  <th className="p-4">Category</th>
-                  <th className="p-4">Responsible Person</th>
-                  <th className="p-4">Due Date</th>
-                  <th className="p-4">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-mid">
-                {obligations.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-4 text-center text-slate">No compliance obligations recorded in the registry.</td>
-                  </tr>
-                ) : (
-                  obligations.map((o) => (
-                    <tr key={o.id} className="hover:bg-ink-mid/10">
-                      <td className="p-4 font-semibold text-paper">{o.title}</td>
-                      <td className="p-4 font-mono text-signal">{o.authority}</td>
-                      <td className="p-4 text-slate-light capitalize">{o.category}</td>
-                      <td className="p-4 text-paper">{o.responsible_person || "—"}</td>
-                      <td className="p-4 text-slate-light">{dateValue(o.due_date)}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(o.status || 'pending')}`}>
-                          {o.status || 'pending'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {activeTab === "employees" && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                  <th className="p-4">Employee</th>
-                  <th className="p-4">Credential</th>
-                  <th className="p-4">Certificate Number</th>
-                  <th className="p-4">Issuing Authority</th>
-                  <th className="p-4">Expiry Date</th>
-                  <th className="p-4">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-mid">
-                {empCredentials.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-4 text-center text-slate">No employee credentials requiring assurance tracking.</td>
-                  </tr>
-                ) : (
-                  empCredentials.map((c) => (
-                    <tr key={c.id} className="hover:bg-ink-mid/10">
-                      <td className="p-4 font-medium text-paper">{c.employee_name}</td>
-                      <td className="p-4 text-paper">{c.certification_name}</td>
-                      <td className="p-4 font-mono text-slate-light">{c.certificate_number || "—"}</td>
-                      <td className="p-4 text-slate-light">{c.issuing_authority || "—"}</td>
-                      <td className="p-4 text-slate-light">{dateValue(c.expires_on)}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(c.status)}`}>
-                          {c.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {activeTab === "equipment" && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                  <th className="p-4">Asset Code</th>
-                  <th className="p-4">Asset Name</th>
-                  <th className="p-4">Licence Type</th>
-                  <th className="p-4">Certificate Number</th>
-                  <th className="p-4">Expiry Date</th>
-                  <th className="p-4">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-mid">
-                {eqCredentials.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-4 text-center text-slate">No equipment licence credentials registered.</td>
-                  </tr>
-                ) : (
-                  eqCredentials.map((c) => (
-                    <tr key={c.id} className="hover:bg-ink-mid/10">
-                      <td className="p-4 font-mono text-signal">{c.asset_code}</td>
-                      <td className="p-4 font-medium text-paper">{c.asset_name}</td>
-                      <td className="p-4 text-paper">{c.licence_type}</td>
-                      <td className="p-4 font-mono text-slate-light">{c.certificate_number || "—"}</td>
-                      <td className="p-4 text-slate-light">{dateValue(c.expires_on)}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(c.status)}`}>
-                          {c.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
+        {activeTab === "employees" && <EmployeesTab empCredentials={empCredentials} />}
+        {activeTab === "equipment" && <EquipmentTab eqCredentials={eqCredentials} />}
         {activeTab === "deployment-gates" && (
-          <div className="space-y-6 p-4">
-            <section>
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="font-mono text-xs font-semibold uppercase tracking-widest text-paper">Active deployment requirements</h2>
-                  <p className="mt-1 text-xs text-slate-light">These rules are enforced before workforce allocation and equipment operator deployment.</p>
-                </div>
-                <span className="font-mono text-xs text-slate">{deploymentRequirements.filter((r) => r.is_active).length} active</span>
-              </div>
-              <div className="overflow-x-auto border border-ink-mid">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                      <th className="p-3">Scope</th>
-                      <th className="p-3">Credential</th>
-                      <th className="p-3">Role / Equipment</th>
-                      <th className="p-3">Project</th>
-                      <th className="p-3">Verification</th>
-                      <th className="p-3">Warning</th>
-                      <th className="p-3">Status</th>
-                      <th className="p-3">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {deploymentRequirements.length === 0 ? (
-                      <tr>
-                        <td colSpan={8} className="p-4 text-center text-slate">No deployment compliance requirements configured.</td>
-                      </tr>
-                    ) : (
-                      deploymentRequirements.map((r) => (
-                        <tr key={r.id} className="hover:bg-ink-mid/10">
-                          <td className="p-3 font-mono text-signal">{String(r.requirement_scope || "").replaceAll("_", " ")}</td>
-                          <td className="p-3 font-semibold text-paper">{r.certification_name}</td>
-                          <td className="p-3 text-slate-light">{r.target_role || r.equipment_type || "All deployments"}</td>
-                          <td className="p-3 text-slate-light">{r.project_name || "All projects"}</td>
-                          <td className="p-3 text-paper">{r.required_verification_status}</td>
-                          <td className="p-3 text-slate-light">{r.warning_days} days</td>
-                          <td className="p-3">
-                            <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${r.is_active ? statusClass("active") : statusClass("archived")}`}>
-                              {r.is_active ? "active" : "archived"}
-                            </span>
-                          </td>
-                          <td className="p-3">
-                            {r.is_active ? (
-                              <button onClick={() => handleArchiveRequirement(String(r.id))} className="text-xs font-semibold text-red-300 hover:text-red-200">
-                                Archive
-                              </button>
-                            ) : (
-                              <span className="text-xs text-slate">—</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
-            <section>
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="font-mono text-xs font-semibold uppercase tracking-widest text-paper">Recent deployment gate checks</h2>
-                  <p className="mt-1 text-xs text-slate-light">Audit trail of passed and blocked deployment decisions.</p>
-                </div>
-                <button onClick={() => void loadData()} className="flex items-center gap-2 text-xs font-semibold text-signal hover:text-signal/80">
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  Refresh
-                </button>
-              </div>
-              <div className="overflow-x-auto border border-ink-mid">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                      <th className="p-3">Time</th>
-                      <th className="p-3">Gate</th>
-                      <th className="p-3">Employee</th>
-                      <th className="p-3">Project / Asset</th>
-                      <th className="p-3">Result</th>
-                      <th className="p-3">Evidence</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {deploymentGateChecks.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="p-4 text-center text-slate">No deployment gate checks have been recorded yet.</td>
-                      </tr>
-                    ) : (
-                      deploymentGateChecks.map((g) => {
-                        const missing = Array.isArray(g.missing_requirements) ? g.missing_requirements : [];
-                        return (
-                          <tr key={g.id} className="hover:bg-ink-mid/10">
-                            <td className="p-3 text-slate-light">{dateValue(g.checked_at)}</td>
-                            <td className="p-3 font-mono text-signal">{String(g.gate_type || "").replaceAll("_", " ")}</td>
-                            <td className="p-3 text-paper">{g.employee_name || g.employee_number || "Unknown employee"}</td>
-                            <td className="p-3 text-slate-light">{g.project_name || g.asset_code || g.vehicle_registration || "General"}</td>
-                            <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(g.status)}`}>
-                                {g.status}
-                              </span>
-                            </td>
-                            <td className="p-3 text-xs text-slate-light">
-                              {missing.length === 0 ? "Requirements satisfied" : missing.map((item: RecordData) => item.certification_name || item.reason).join(", ")}
-                              {g.status === "override" && <span className="mt-1 block text-amber-300">Override: {g.override_reason || "Reason recorded"} {g.override_reference ? `· ${g.override_reference}` : ""}</span>}
-                              {g.status === "blocked" && (
-                                <button onClick={() => { setOverrideTarget(g); setOverrideForm({ reason: "", override_reference: "" }); }} className="mt-2 block text-xs font-semibold text-amber-300 hover:text-amber-200">
-                                  Record controlled override
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </div>
+          <DeploymentGatesTab
+            deploymentRequirements={deploymentRequirements}
+            deploymentGateChecks={deploymentGateChecks}
+            onArchiveRequirement={handleArchiveRequirement}
+            onRefresh={() => void loadData()}
+            onOverride={(gate) => { setOverrideTarget(gate); setOverrideForm({ reason: "", override_reference: "" }); }}
+          />
         )}
-
-        {activeTab === "corrective-actions" && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                  <th className="p-4">Finding / Trigger</th>
-                  <th className="p-4">Assigned To</th>
-                  <th className="p-4">Due Date</th>
-                  <th className="p-4">Priority</th>
-                  <th className="p-4">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-mid">
-                {correctiveActions.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="p-4 text-center text-slate">No corrective actions (CAPA) logged.</td>
-                  </tr>
-                ) : (
-                  correctiveActions.map((a) => (
-                    <tr key={a.id} className="hover:bg-ink-mid/10">
-                      <td className="p-4 font-semibold text-paper">{a.finding_trigger}</td>
-                      <td className="p-4 text-paper">{a.responsible_person}</td>
-                      <td className="p-4 text-slate-light">{dateValue(a.due_date)}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(a.priority)}`}>
-                          {a.priority}
-                        </span>
-                      </td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(a.status)}`}>
-                          {a.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {activeTab === "incidents" && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                  <th className="p-4">Incident Date</th>
-                  <th className="p-4">Title</th>
-                  <th className="p-4">Severity</th>
-                  <th className="p-4">Location</th>
-                  <th className="p-4">Description</th>
-                  <th className="p-4">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-mid">
-                {incidents.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="p-4 text-center text-slate">No safety incidents on record.</td>
-                  </tr>
-                ) : (
-                  incidents.map((i) => (
-                    <tr key={i.id} className="hover:bg-ink-mid/10">
-                      <td className="p-4 text-paper">{dateValue(i.incident_date)}</td>
-                      <td className="p-4 font-semibold text-paper">{i.title || "Untitled"}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(i.severity)}`}>
-                          {i.severity}
-                        </span>
-                      </td>
-                      <td className="p-4 text-slate-light">{i.location || "—"}</td>
-                      <td className="p-4 text-paper max-w-xs truncate">{i.description || "—"}</td>
-                      <td className="p-4">
-                        <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(i.status || "open")}`}>
-                          {i.status || "open"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {activeTab === "corrective-actions" && <CorrectiveActionsTab correctiveActions={correctiveActions} />}
+        {activeTab === "incidents" && <IncidentsTab incidents={incidents} />}
       </div>
 
       {overrideTarget && (

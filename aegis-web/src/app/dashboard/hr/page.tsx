@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
-  AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw, Search,
+  AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw,
   ShieldCheck, Users, X, CalendarCheck, CalendarDays, Award, Briefcase, CheckCircle2
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { Skeleton } from "@/components/ui/Skeleton";
 import {
   getHREmployees,
   getHREmployee,
@@ -21,7 +22,16 @@ import {
   getHROperationsSummary,
   getInternalProjects
 } from "@/lib/api";
-import { VendorVerificationPanel } from "./VendorVerificationPanel";
+
+// Only the active tab's panel ships to the browser instead of all at once.
+function PanelLoading() {
+  return <Skeleton className="h-64 w-full" />;
+}
+const VendorVerificationPanel = dynamic(() => import("./VendorVerificationPanel").then((m) => m.VendorVerificationPanel), { loading: PanelLoading });
+const EmployeesTab = dynamic(() => import("./HRTabPanels").then((m) => m.EmployeesTab), { loading: PanelLoading });
+const AttendanceTab = dynamic(() => import("./HRTabPanels").then((m) => m.AttendanceTab), { loading: PanelLoading });
+const LeaveTab = dynamic(() => import("./HRTabPanels").then((m) => m.LeaveTab), { loading: PanelLoading });
+const OperationList = dynamic(() => import("./HRTabPanels").then((m) => m.OperationList), { loading: PanelLoading });
 
 type RecordData = Record<string, any>;
 type HRTab = "employees" | "recruitment" | "documents" | "credentials" | "performance" | "assets" | "training" | "org-chart" | "planning" | "attendance" | "leave" | "payroll" | "vendor-verification";
@@ -42,21 +52,33 @@ const TAB_ROUTES: Record<HRTab, string> = {
   "vendor-verification": "/dashboard/hr/vendor-verification",
 };
 
-function normalizeTab(value: string | null | undefined): HRTab {
-  return value && value in TAB_ROUTES ? (value as HRTab) : "employees";
-}
+const HR_TAB_LABELS: Record<HRTab, string> = {
+  employees: "HR & Workforce",
+  recruitment: "Recruitment",
+  documents: "Contracts & Docs",
+  credentials: "Credentials",
+  performance: "Performance",
+  assets: "Assets",
+  training: "Training Matrix",
+  "org-chart": "Org Chart",
+  planning: "Workforce Planning",
+  attendance: "Attendance Log",
+  leave: "Leave Management",
+  payroll: "Payroll",
+  "vendor-verification": "Vendor Verification",
+};
 
 function textValue(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function dateValue(value: unknown) {
+export function dateValue(value: unknown) {
   if (!value) return "Not recorded";
   const date = new Date(String(value));
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("en-ZW", { day: "2-digit", month: "short", year: "numeric" }).format(date);
 }
 
-function statusClass(status: string) {
+export function statusClass(status: string) {
   const normalized = String(status || "").toLowerCase();
   if (["active", "present", "verified"].includes(normalized)) {
     return "border-emerald-500/30 bg-emerald-950/20 text-emerald-300";
@@ -95,146 +117,22 @@ function normalizeActionError(reason: unknown, fallback: string) {
   const clean = rawMessage.trim();
   return clean || fallback;
 }
-
-function formatCell(value: unknown) {
-  if (value === null || value === undefined || value === "") return "—";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "number") return new Intl.NumberFormat("en-ZW", { maximumFractionDigits: 2 }).format(value);
-  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) return dateValue(value);
-  return String(value).replace(/_/g, " ");
-}
-
-function columnLabel(value: string) {
-  return value.replace(/_/g, " ");
-}
-
-function OperationList({ title, rows, columns, empty }: { title: string; rows: RecordData[]; columns: string[]; empty: string }) {
-  return (
-    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-      <div className="flex items-center justify-between gap-4 border-b border-ink-mid bg-ink/30 px-4 py-3">
-        <span className="font-mono text-xs tracking-wider uppercase text-slate">{title}</span>
-        <span className="font-mono text-xs text-paper">{rows.length}</span>
-      </div>
-      {rows.length === 0 ? (
-        <div className="p-8 text-center text-sm text-slate-light">{empty}</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-left text-sm">
-            <thead>
-              <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                {columns.map((column) => <th key={column} className="p-4">{columnLabel(column)}</th>)}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-ink-mid">
-              {rows.map((row, index) => (
-                <tr key={row.id || index} className="hover:bg-ink-mid/10">
-                  {columns.map((column) => (
-                    <td key={column} className="p-4 text-slate-light">
-                      <span className={/(status|stage|severity|outcome|type)$/.test(column) ? "capitalize" : ""}>{formatCell(row[column])}</span>
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LeaveTable({ rows, onDecide }: { rows: RecordData[]; onDecide: (id: string, decision: "approved" | "rejected") => void }) {
-  return (
-    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-      <div className="border-b border-ink-mid bg-ink/30 px-4 py-3">
-        <span className="font-mono text-xs tracking-wider uppercase text-slate">Leave request log</span>
-      </div>
-      <table className="w-full text-left border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-            <th className="p-4">Employee</th>
-            <th className="p-4">Type</th>
-            <th className="p-4">Start</th>
-            <th className="p-4">End</th>
-            <th className="p-4 text-right">Days</th>
-            <th className="p-4">Status</th>
-            <th className="p-4 text-right">Action</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-ink-mid">
-          {rows.length === 0 ? (
-            <tr><td colSpan={7} className="p-4 text-center text-slate">No leave requests logged.</td></tr>
-          ) : rows.map((l) => (
-            <tr key={l.id} className="hover:bg-ink-mid/10">
-              <td className="p-4 font-medium text-paper">{l.employee_name}</td>
-              <td className="p-4 capitalize text-paper">{l.leave_type}</td>
-              <td className="p-4 text-slate-light">{dateValue(l.start_date)}</td>
-              <td className="p-4 text-slate-light">{dateValue(l.end_date)}</td>
-              <td className="p-4 text-right text-paper font-mono">{l.days_requested}</td>
-              <td className="p-4"><span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(l.status)}`}>{l.status}</span></td>
-              <td className="p-4 text-right space-x-2">
-                {l.status === "pending" && (
-                  <>
-                    <button onClick={() => onDecide(l.id, "approved")} className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 px-2 py-1 rounded text-xs font-mono">Approve</button>
-                    <button onClick={() => onDecide(l.id, "rejected")} className="bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 px-2 py-1 rounded text-xs font-mono">Reject</button>
-                  </>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function LeaveCalendar({ rows }: { rows: RecordData[] }) {
-  const grouped = rows.reduce<Record<string, RecordData[]>>((acc, row) => {
-    const key = typeof row.start_date === "string" ? row.start_date.slice(0, 10) : "Unscheduled";
-    acc[key] = acc[key] || [];
-    acc[key].push(row);
-    return acc;
-  }, {});
-  const days = Object.keys(grouped).sort().slice(0, 21);
-  return (
-    <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-      <div className="border-b border-ink-mid bg-ink/30 px-4 py-3">
-        <span className="font-mono text-xs tracking-wider uppercase text-slate">Leave calendar</span>
-      </div>
-      {days.length === 0 ? (
-        <div className="p-6 text-center text-sm text-slate-light">No leave appears on the calendar.</div>
-      ) : (
-        <div className="grid gap-px bg-ink-mid md:grid-cols-3">
-          {days.map((day) => (
-            <div key={day} className="min-h-28 bg-ink p-3">
-              <p className="font-mono text-[10px] uppercase tracking-wider text-slate">{dateValue(day)}</p>
-              <div className="mt-2 space-y-1.5">
-                {grouped[day].map((item) => (
-                  <div key={item.id} className={`border px-2 py-1 text-xs ${statusClass(item.status)}`}>
-                    <p className="font-medium text-paper">{item.employee_name || item.title}</p>
-                    <p className="capitalize text-slate-light">{item.leave_type} · {item.days_requested} day(s)</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function HRDashboard() {
+  return <HRPage initialTab="employees" />;
+}
+
+/** Shared HR workspace, rendered by a real route per tab (see the sibling
+ * folders here) instead of the old hr/[tab] -> redirect() -> ?tab= shim. */
+export function HRPage({ initialTab }: { initialTab: HRTab }) {
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"]}>
-      <HRWorkspace />
+      <HRWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
 }
 
-function HRWorkspace() {
-  const searchParams = useSearchParams();
-  const [activeTab, setActiveTab] = useState<HRTab>(() => normalizeTab(searchParams?.get("tab")));
+function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
+  const activeTab = initialTab;
   const [employees, setEmployees] = useState<RecordData[]>([]);
   const [attendance, setAttendance] = useState<RecordData[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<RecordData[]>([]);
@@ -302,10 +200,6 @@ function HRWorkspace() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
-
-  useEffect(() => {
-    setActiveTab(normalizeTab(searchParams?.get("tab")));
-  }, [searchParams]);
 
   const loadEmployeeDetail = async (id: string) => {
     setSelectedEmployeeId(id);
@@ -464,7 +358,7 @@ function HRWorkspace() {
       )}
 
       <DashboardPageHeader
-        title="HR & Workforce"
+        title={HR_TAB_LABELS[activeTab]}
         subtitle="Six Nine Construction workforce, competence registers, and attendance controls."
         actions={
           <>
@@ -520,141 +414,25 @@ function HRWorkspace() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
           {activeTab === "employees" && (
-            <div className="space-y-4">
-              {/* Search & Filters */}
-              <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex flex-col md:flex-row gap-4 items-center">
-                <div className="relative flex-1 w-full">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate" />
-                  <input
-                    type="text"
-                    placeholder="Search employees, numbers, trades..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full bg-ink border border-ink-mid rounded pl-9 pr-4 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  />
-                </div>
-                <div className="flex gap-4 w-full md:w-auto">
-                  <select
-                    value={deptFilter}
-                    onChange={(e) => setDeptFilter(e.target.value)}
-                    className="bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  >
-                    <option value="all">All Departments</option>
-                    <option value="Operations">Operations</option>
-                    <option value="Engineering">Engineering</option>
-                    <option value="Administration">Administration</option>
-                    <option value="Plant Hire">Plant Hire</option>
-                  </select>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  >
-                    <option value="all">All Statuses</option>
-                    <option value="active">Active</option>
-                    <option value="on_leave">On Leave</option>
-                    <option value="suspended">Suspended</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Table */}
-              <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                      <th className="p-4">Employee #</th>
-                      <th className="p-4">Name</th>
-                      <th className="p-4">Role</th>
-                      <th className="p-4">Department</th>
-                      <th className="p-4">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {filteredEmployees.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="p-4 text-center text-slate">No employees found matching the filters.</td>
-                      </tr>
-                    ) : (
-                      filteredEmployees.map((e) => (
-                        <tr
-                          key={e.id}
-                          onClick={() => void loadEmployeeDetail(e.id)}
-                          className={`cursor-pointer hover:bg-ink-mid/30 transition-colors ${selectedEmployeeId === e.id ? 'bg-ink-mid/20 border-l-2 border-l-signal' : ''}`}
-                        >
-                          <td className="p-4 font-mono text-signal">{e.employee_number || "—"}</td>
-                          <td className="p-4 font-medium text-paper">{e.employee_name || e.name || e.full_name}</td>
-                          <td className="p-4 text-paper">{e.job_title}</td>
-                          <td className="p-4 text-slate-light">{e.department || "—"}</td>
-                          <td className="p-4">
-                            <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(e.employment_status)}`}>
-                              {e.employment_status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <EmployeesTab
+              filteredEmployees={filteredEmployees}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              deptFilter={deptFilter}
+              onDeptChange={setDeptFilter}
+              statusFilter={statusFilter}
+              onStatusChange={setStatusFilter}
+              selectedEmployeeId={selectedEmployeeId}
+              onSelectEmployee={(id) => void loadEmployeeDetail(id)}
+            />
           )}
 
           {activeTab === "attendance" && (
-            <div className="space-y-4">
-              <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] flex justify-between items-center">
-                <span className="font-mono text-xs uppercase text-slate tracking-wider">Attendance date filter</span>
-                <input
-                  type="date"
-                  value={attendanceDate}
-                  onChange={(e) => setAttendanceDate(e.target.value)}
-                  className="bg-ink border border-ink-mid rounded px-3 py-1.5 text-sm text-paper focus:outline-none focus:border-signal/50"
-                />
-              </div>
-              <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink bg-opacity-20">
-                      <th className="p-4">Employee</th>
-                      <th className="p-4">Check In</th>
-                      <th className="p-4">Check Out</th>
-                      <th className="p-4 text-right">Regular Hrs</th>
-                      <th className="p-4 text-right">Overtime</th>
-                      <th className="p-4">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {attendance.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="p-4 text-center text-slate">No attendance logged for the selected date.</td>
-                      </tr>
-                    ) : (
-                      attendance.map((a) => (
-                        <tr key={a.id} className="hover:bg-ink-mid/10">
-                          <td className="p-4 font-medium text-paper">{a.employee_name}</td>
-                          <td className="p-4 font-mono text-slate-light">{a.check_in ? new Date(a.check_in).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) : "—"}</td>
-                          <td className="p-4 font-mono text-slate-light">{a.check_out ? new Date(a.check_out).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) : "—"}</td>
-                          <td className="p-4 text-right text-paper font-mono">{a.regular_hours}</td>
-                          <td className="p-4 text-right text-slate-light font-mono">{a.overtime_hours}</td>
-                          <td className="p-4">
-                            <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider border ${statusClass(a.status)}`}>
-                              {a.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <AttendanceTab attendance={attendance} attendanceDate={attendanceDate} onDateChange={setAttendanceDate} />
           )}
 
           {activeTab === "leave" && (
-            <div className="space-y-4">
-              <LeaveCalendar rows={operations.leave_calendar || leaveRequests} />
-              <LeaveTable rows={leaveRequests} onDecide={handleDecideLeave} />
-            </div>
+            <LeaveTab calendarRows={operations.leave_calendar || leaveRequests} leaveRequests={leaveRequests} onDecide={handleDecideLeave} />
           )}
 
           {activeTab === "payroll" && (

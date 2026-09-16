@@ -12,52 +12,15 @@ import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
 import { matchesRole } from "@/lib/rbacMatch";
 import {
-  Search, Bell, CircleHelp, User, LayoutDashboard, Briefcase,
-  HardHat, Activity, Users, Truck, Wrench, ShoppingCart,
-  Package, DollarSign, UserCheck, ShieldCheck, ShieldAlert, FileText,
-  BarChart, PieChart, Settings, LogOut, ChevronDown, ChevronRight,
-  Target, Handshake, Building2, BookOpen, Inbox, Zap, MapPin,
-  LockKeyhole, ClipboardCheck, Calendar, Banknote, BookMarked, Receipt, BrainCircuit,
-  Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Scale, Menu, X, Bot, FileSearch
+  Search, Bell, CircleHelp, User, ShieldAlert,
+  Settings, LogOut, ChevronDown, ChevronRight, Menu, X,
+  LockKeyhole, Package, ClipboardCheck, HardHat,
 } from "lucide-react";
-
-type ModuleNavItem = {
-  name: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  // Roles allowed to see this item, mirroring the allowedRoles already
-  // passed to <RBACGuard> on the page it links to. Omit to leave the item
-  // visible to everyone (matches pages with no RBACGuard today).
-  allowedRoles?: string[];
-  // Roles explicitly denied this item, on top of whatever allowedRoles
-  // permits. For carving a narrow exception (e.g. one restricted role) out
-  // of an item that's otherwise open to everyone, without having to convert
-  // it into a full allow-list and enumerate every other role that currently
-  // relies on the open-by-default behavior.
-  restrictedRoles?: string[];
-  // Permission key that also grants visibility, on top of allowedRoles -
-  // backfilled from PAGE_ACCESS in imperium-api/routers/settings.py so a
-  // brand-new self-service role (with no allowedRoles entry at all) still
-  // gets this item once granted the matching permission. Undefined items
-  // keep today's role-only gating unchanged.
-  requiredPermission?: string;
-};
-
-type ModuleGroup = {
-  name: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  subItems: ModuleNavItem[];
-  directLink?: boolean;
-  // Roles allowed to see the whole group. Harvested from the RBACGuard on
-  // the group's root page - sub-items don't carry their own RBACGuard today
-  // so this is the closest real signal for "who should see this module".
-  allowedRoles?: string[];
-  // See ModuleNavItem.restrictedRoles.
-  restrictedRoles?: string[];
-  // See ModuleNavItem.requiredPermission.
-  requiredPermission?: string;
-};
+import {
+  MODULE_GROUPS, DOMAIN_META, DOMAIN_ORDER, SITE_FIELD_ROLES,
+  SITE_FIELD_DASHBOARD_GROUPS, getDomainForPathname,
+  type ModuleGroup, type DomainKey,
+} from "@/lib/navigation";
 
 // Plain case-insensitive membership check for restrictedRoles. Deliberately
 // not matchesRole - that helper always returns true for SUPERADMIN, which
@@ -77,318 +40,6 @@ function isExactRole(userRole: string, roles: string[]): boolean {
 function isSuperAdminRole(userRole: string): boolean {
   return userRole.toLowerCase().trim() === "superadmin";
 }
-
-const SITE_FIELD_ROLES = ["FOREMAN", "Site Clerk", "Site Engineer", "Site Agent"];
-const SITE_FIELD_DASHBOARD_GROUPS = new Set(["Messages", "Notifications", "Site Operations", "Settings"]);
-const PROCUREMENT_STORES_MANAGER_ROLES = ["Procurement Manager", "Stores and Procurement Manager", "Stores & Procurement Manager"];
-
-const MODULE_GROUPS: ModuleGroup[] = [
-  {
-    name: "Executive",
-    href: "/dashboard/executive",
-    icon: LayoutDashboard,
-    allowedRoles: ["Executive (Admin)", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "executive.view_dashboard",
-    directLink: true,
-    subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard, requiredPermission: "executive.view_dashboard" }],
-  },
-  {
-    name: "Messages",
-    href: "/dashboard/messages",
-    icon: Inbox,
-    restrictedRoles: ["CRM Associate"],
-    directLink: true,
-    subItems: [{ name: "Communication Ledger", href: "/dashboard/messages", icon: Inbox }],
-  },
-  {
-    name: "Notifications",
-    href: "/dashboard/notifications",
-    icon: Bell,
-    restrictedRoles: ["CRM Associate"],
-    directLink: true,
-    subItems: [{ name: "Notification Center", href: "/dashboard/notifications", icon: Bell }],
-  },
-  {
-    name: "CRM",
-    href: "/dashboard/crm",
-    icon: Briefcase,
-    // No group-level requiredPermission - unlike the single-page groups
-    // below, CRM's subItems are gated individually (a self-service role
-    // granted only crm_leads.read should still see Leads even without
-    // crm.view_opportunities), matching how restrictedRoles already works
-    // per-subitem here rather than on the group as a whole.
-    subItems: [
-      { name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, requiredPermission: "crm.view_opportunities" },
-      { name: "Leads", href: "/dashboard/crm/leads", icon: Target, requiredPermission: "crm_leads.read" },
-      { name: "Opportunities", href: "/dashboard/crm/opportunities", icon: Briefcase, requiredPermission: "crm.view_opportunities" },
-      { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2 },
-      { name: "Organizations", href: "/dashboard/crm/organizations", icon: Handshake, requiredPermission: "crm_organizations.read" },
-      { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, requiredPermission: "crm_contacts.read" },
-      { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat },
-      { name: "Activities", href: "/dashboard/crm/activities", icon: MapPin, requiredPermission: "crm_activities.read" },
-      { name: "Documents", href: "/dashboard/crm/documents", icon: BookOpen, requiredPermission: "documents.read" },
-      { name: "Sales Inbox", href: "/dashboard/crm/inbox", icon: Inbox, requiredPermission: "crm_communications.read" },
-      { name: "Automations", href: "/dashboard/crm/automations", icon: Zap, requiredPermission: "crm_automations.read" },
-      { name: "Integrations", href: "/dashboard/crm/integrations", icon: Settings, requiredPermission: "crm.integrations.read" },
-      { name: "Marketing", href: "/dashboard/crm/marketing", icon: Megaphone },
-      { name: "Campaigns", href: "/dashboard/crm/campaigns", icon: TrendingUp, requiredPermission: "crm.marketing.read" },
-      { name: "Segments", href: "/dashboard/crm/segments", icon: PieChart },
-      { name: "Templates", href: "/dashboard/crm/templates", icon: FileText },
-      { name: "Import & Export", href: "/dashboard/crm/import", icon: Upload, requiredPermission: "crm.import" },
-      { name: "Support", href: "/dashboard/crm/support", icon: LifeBuoy, requiredPermission: "crm.support.read" },
-      { name: "Tickets", href: "/dashboard/crm/tickets", icon: Ticket },
-      {
-        name: "Reports",
-        href: "/dashboard/crm/reports",
-        icon: BarChart,
-        allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Tender / Bid Manager", "Executive Read Only", "CRM Associate"],
-        requiredPermission: "crm.reports.read",
-      },
-      { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck, requiredPermission: "crm_tasks.read" },
-      { name: "Rate Build-Up", href: "/dashboard/quotations/rates", icon: Scale, requiredPermission: "quotations.manage_rate_intelligence" },
-      { name: "Teams", href: "/dashboard/crm/teams", icon: Users, requiredPermission: "users.read_assignable" },
-    ],
-  },
-  {
-    name: "Estimating & Quotations",
-    href: "/dashboard/quotations",
-    icon: FileText,
-    subItems: [
-      { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard, restrictedRoles: ["CRM Associate"] },
-      { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText, restrictedRoles: ["CRM Associate"] },
-      { name: "Rate Build-Up", href: "/dashboard/quotations/rates", icon: Scale, requiredPermission: "quotations.manage_rate_intelligence" },
-      { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit, restrictedRoles: ["CRM Associate"] },
-      { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain, restrictedRoles: ["CRM Associate"] },
-      { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers, restrictedRoles: ["CRM Associate"] },
-      { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen, restrictedRoles: ["CRM Associate"] },
-    ],
-  },
-  {
-    name: "Projects",
-    href: "/dashboard/projects",
-    icon: HardHat,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Contracts Manager", "Commercial Manager", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "projects.read",
-    subItems: [
-      { name: "Projects Command", href: "/dashboard/projects", icon: LayoutDashboard },
-      { name: "Overview", href: "/dashboard/projects/overview", icon: LayoutDashboard },
-      { name: "Schedule", href: "/dashboard/projects/schedule", icon: Activity },
-      { name: "Financials", href: "/dashboard/projects/financials", icon: DollarSign },
-      { name: "Materials", href: "/dashboard/projects/materials", icon: Package },
-    ],
-  },
-  {
-    name: "Site Operations",
-    href: "/dashboard/site-operations",
-    icon: Activity,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Site Engineer", "FOREMAN", "Storekeeper"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "site_operations.read",
-    subItems: [{ name: "Daily Reports", href: "/dashboard/site-operations", icon: Activity }],
-  },
-  {
-    name: "Workforce",
-    href: "/dashboard/workforce",
-    icon: Users,
-    allowedRoles: ["Executive (Admin)", "HR Manager", "Project Manager"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "workforce.read",
-    subItems: [
-      { name: "Overview", href: "/dashboard/workforce", icon: Users },
-      { name: "People Register", href: "/dashboard/workforce/people", icon: Users },
-    ],
-  },
-  {
-    name: "Fleet",
-    href: "/dashboard/fleet",
-    icon: Truck,
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "fleet.read",
-    subItems: [{ name: "Overview", href: "/dashboard/fleet", icon: Truck }],
-  },
-  {
-    name: "Equipment",
-    href: "/dashboard/equipment",
-    icon: Wrench,
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager", "Maintenance Planner", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "equipment_assets.read",
-    subItems: [{ name: "Overview", href: "/dashboard/equipment", icon: Wrench }],
-  },
-  {
-    name: "Procurement",
-    href: "/dashboard/procurement",
-    icon: ShoppingCart,
-    allowedRoles: ["Executive (Admin)", ...PROCUREMENT_STORES_MANAGER_ROLES, "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "procurement.requisition.read",
-    subItems: [
-      { name: "Procurement Pipeline", href: "/dashboard/procurement", icon: LayoutDashboard },
-      { name: "Requisitions", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
-      { name: "RFQs", href: "/dashboard/procurement/rfqs", icon: Search },
-      { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart },
-      { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package },
-      { name: "Pricing", href: "/dashboard/procurement/pricing", icon: DollarSign },
-      { name: "Invoices", href: "/dashboard/procurement/invoices", icon: DollarSign },
-    ],
-  },
-  {
-    name: "Inventory",
-    href: "/dashboard/inventory",
-    icon: Package,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", ...PROCUREMENT_STORES_MANAGER_ROLES, "Inventory Controller", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
-    subItems: [
-      { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },
-      { name: "Stock Levels", href: "/dashboard/inventory/stock", icon: Package },
-      { name: "Item Catalogue", href: "/dashboard/inventory/catalogue", icon: FileText },
-      { name: "Stores", href: "/dashboard/inventory/stores", icon: Building2 },
-      { name: "Movements", href: "/dashboard/inventory/movements", icon: Activity },
-    ],
-  },
-  {
-    name: "Finance",
-    href: "/dashboard/finance",
-    icon: DollarSign,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Payroll Administrator", "Accounts Payable / Cash Officer", "Budget & Reporting Analyst", "Contracts Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
-    requiredPermission: "finance.cost.read",
-    subItems: [
-      { name: "Finance & Cost Control", href: "/dashboard/finance", icon: LayoutDashboard },
-      { name: "Financial Data Room", href: "/dashboard/finance/data-room", icon: FileText },
-      { name: "Project Financials", href: "/dashboard/finance/project-financials", icon: DollarSign },
-      { name: "Cost Codes", href: "/dashboard/finance/cost-codes", icon: FileText },
-      { name: "Variations", href: "/dashboard/finance/variations", icon: BarChart },
-      { name: "Progress Claims", href: "/dashboard/finance/progress-claims", icon: ClipboardCheck },
-      { name: "Earned Value", href: "/dashboard/finance/earned-value", icon: TrendingUp },
-      { name: "Close-Out", href: "/dashboard/finance/close-out", icon: ShieldCheck },
-      { name: "Budgets", href: "/dashboard/finance/budgets", icon: PieChart },
-      { name: "Banking & Cash", href: "/dashboard/finance/banking", icon: Banknote },
-      { name: "Cashbook", href: "/dashboard/finance/cashbook", icon: BookMarked },
-      { name: "Supplier Payments", href: "/dashboard/finance/supplier-payments", icon: Receipt },
-      { name: "Payroll", href: "/dashboard/finance/payroll", icon: Users },
-      { name: "Internal Transfers", href: "/dashboard/finance/transfers", icon: Receipt },
-      { name: "Department P&L", href: "/dashboard/finance/department-pnl", icon: PieChart },
-      { name: "Statutory", href: "/dashboard/finance/statutory", icon: ShieldCheck },
-      { name: "Vendor Payments", href: "/dashboard/finance/vendor-payments", icon: Receipt },
-      { name: "Client Payments", href: "/dashboard/finance/client-payments", icon: Banknote },
-      { name: "Historical Entry", href: "/dashboard/finance/historical-entry", icon: BookMarked },
-      { name: "Financial Statements", href: "/dashboard/finance/financial-statements", icon: FileText },
-      { name: "General Ledger", href: "/dashboard/finance/general-ledger", icon: Scale },
-      { name: "Cash Forecast", href: "/dashboard/finance/cash-forecast", icon: TrendingUp },
-      { name: "AI Assistant", href: "/dashboard/finance/ai-assistant", icon: Bot },
-      { name: "Management Accounts", href: "/dashboard/finance/management-accounts", icon: FileText },
-      { name: "Project Portfolio", href: "/dashboard/finance/project-portfolio", icon: Layers },
-      { name: "Audit Workspace", href: "/dashboard/finance/audit-workspace", icon: FileSearch },
-    ],
-  },
-  {
-    name: "HR",
-    href: "/dashboard/hr",
-    icon: UserCheck,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"],
-    restrictedRoles: ["CRM Associate"],
-    subItems: [
-      { name: "HR & Workforce", href: "/dashboard/hr", icon: LayoutDashboard },
-      { name: "Employee Register", href: "/dashboard/hr/employees", icon: Users },
-      { name: "Recruitment", href: "/dashboard/hr/recruitment", icon: Briefcase },
-      { name: "Contracts & Docs", href: "/dashboard/hr/documents", icon: FileText },
-      { name: "Credentials", href: "/dashboard/hr/credentials", icon: ShieldCheck },
-      { name: "Performance", href: "/dashboard/hr/performance", icon: Activity },
-      { name: "Assets", href: "/dashboard/hr/assets", icon: Package },
-      { name: "Training Matrix", href: "/dashboard/hr/training", icon: BookOpen },
-      { name: "Org Chart", href: "/dashboard/hr/org-chart", icon: Users },
-      { name: "Workforce Planning", href: "/dashboard/hr/planning", icon: Calendar },
-      { name: "Attendance Log", href: "/dashboard/hr/attendance", icon: Calendar },
-      { name: "Leave Management", href: "/dashboard/hr/leave", icon: UserCheck },
-      { name: "Payroll", href: "/dashboard/hr/payroll", icon: Banknote },
-      { name: "Vendor Verification", href: "/dashboard/hr/vendor-verification", icon: ShieldCheck },
-    ],
-  },
-  {
-    name: "Compliance",
-    href: "/dashboard/compliance",
-    icon: ShieldCheck,
-    // HSE / Safety Officer added here alongside the landing-page migration
-    // (083) that sends this role straight to /dashboard/compliance - this
-    // role held zero nav access to any group before this fix, despite being
-    // created specifically for HSE incident tracking (migration 066).
-    allowedRoles: ["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "HSE / Safety Officer", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
-    subItems: [
-      { name: "Compliance Overview", href: "/dashboard/compliance", icon: LayoutDashboard },
-      { name: "Corporate Credentials", href: "/dashboard/compliance/corporate-credentials", icon: BookMarked },
-      { name: "Obligation Register", href: "/dashboard/compliance/obligations", icon: ShieldCheck },
-      { name: "Employee Credentials", href: "/dashboard/compliance/employees", icon: Users },
-      { name: "Equipment Licenses", href: "/dashboard/compliance/equipment", icon: Wrench },
-      { name: "Deployment Gates", href: "/dashboard/compliance/deployment-gates", icon: LockKeyhole },
-      { name: "Corrective Actions", href: "/dashboard/compliance/corrective-actions", icon: ClipboardCheck },
-      { name: "HSE Incidents", href: "/dashboard/compliance/incidents", icon: Activity },
-    ],
-  },
-  {
-    name: "Client Portal",
-    href: "/dashboard/client-portal",
-    icon: LockKeyhole,
-    restrictedRoles: ["CRM Associate"],
-    subItems: [{ name: "Overview", href: "/dashboard/client-portal", icon: LockKeyhole }],
-  },
-  {
-    name: "Documents",
-    href: "/dashboard/documents",
-    icon: FileText,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Compliance Officer", "Finance Manager", "Document Controller", "Tender / Bid Manager", "Contracts Manager", "Commercial Manager", "Maintenance Planner", "Inventory Controller", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
-    subItems: [{ name: "Overview", href: "/dashboard/documents", icon: FileText }],
-  },
-  {
-    name: "Reports",
-    href: "/dashboard/reports",
-    icon: BarChart,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
-    subItems: [{ name: "Overview", href: "/dashboard/reports", icon: BarChart }],
-  },
-  {
-    name: "Analytics",
-    href: "/dashboard/analytics",
-    icon: PieChart,
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Commercial Manager", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
-    subItems: [
-      { name: "Analytics Overview", href: "/dashboard/analytics", icon: LayoutDashboard },
-      { name: "Project Margin Trends", href: "/dashboard/analytics/projects", icon: BarChart },
-      { name: "Fleet Productivity", href: "/dashboard/analytics/equipment", icon: Truck },
-      { name: "Spend & Supplier SLA", href: "/dashboard/analytics/procurement", icon: ShoppingCart },
-      { name: "Labour Allocation", href: "/dashboard/analytics/workforce", icon: Users },
-    ],
-  },
-  {
-    name: "Settings",
-    href: "/dashboard/settings",
-    icon: Settings,
-    restrictedRoles: ["CRM Associate"],
-    subItems: [
-      { name: "Settings Overview", href: "/dashboard/settings", icon: LayoutDashboard, requiredPermission: "settings.read" },
-      // Configuration/Access Control/Account Setup/Website Content/Audit Log
-      // previously had no role restriction at all - every logged-in employee
-      // could open them (the underlying endpoints still enforced their own
-      // permission checks, but the pages themselves weren't gated). Settings
-      // Overview and My Profile stay open to everyone - general-purpose
-      // pages, not administrative controls.
-      { name: "Configuration", href: "/dashboard/settings/configuration", icon: Settings, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Access Control", href: "/dashboard/settings/access", icon: LockKeyhole, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Website Content", href: "/dashboard/settings/website", icon: FileText, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Audit Log", href: "/dashboard/settings/audit", icon: ShieldCheck, allowedRoles: ["Executive (Admin)", "System Administrator", "External Auditor"] },
-      { name: "Performance", href: "/dashboard/settings/performance", icon: TrendingUp, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "My Profile", href: "/dashboard/profile", icon: User },
-    ],
-  },
-];
 
 // Renders the CAT clock and owns its own 1s tick, so that tick re-renders
 // only this small leaf instead of the entire DashboardShell (and everything
@@ -499,6 +150,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       return;
     }
     let cancelled = false;
+    setPermissions(null);
     getMyPermissions()
       .then((res) => {
         if (!cancelled && res.success && Array.isArray(res.data)) setPermissions(new Set(res.data));
@@ -554,7 +206,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);
       return MODULE_GROUPS.filter(
         (group) =>
-          (!isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
+          (group.permissionDriven || !isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
           (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
           !isRoleRestricted(userRole, group.restrictedRoles) &&
           hasPermission(group.requiredPermission)
@@ -565,18 +217,39 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             (sub) =>
               (!sub.allowedRoles || matchesRole(userRole, sub.allowedRoles)) &&
               !isRoleRestricted(userRole, sub.restrictedRoles) &&
-              hasPermission(sub.requiredPermission)
+              (group.permissionDriven
+                ? isSuperAdminRole(userRole) || !sub.requiredPermission || !!permissions?.has(sub.requiredPermission)
+                : hasPermission(sub.requiredPermission))
           ),
         }))
         .filter((group) => group.subItems.length > 0);
     },
-    [userRole, hasPermission, isPortalRoute, portalGroups]
+    [userRole, permissions, hasPermission, isPortalRoute, portalGroups]
   );
 
   const activeGroup = useMemo(
     () => visibleGroups.find((group) => pathname === group.href || pathname?.startsWith(`${group.href}/`)) ?? null,
     [pathname, visibleGroups]
   );
+
+  const currentDomain = useMemo(() => getDomainForPathname(pathname), [pathname]);
+
+  // Messages/Notifications carry no `domain` - they stay pinned above the
+  // domain list exactly as before this restructure. Everything else nests
+  // under its DOMAIN_META entry, collapsing the old flat 20-group/120-link
+  // sidebar into ~8 top-level domains (see docs/AEGIS audit item 3.2).
+  const pinnedGroups = useMemo(() => visibleGroups.filter((group) => !group.domain), [visibleGroups]);
+
+  const visibleDomains = useMemo(() => {
+    const byDomain = new Map<DomainKey, ModuleGroup[]>();
+    for (const group of visibleGroups) {
+      if (!group.domain) continue;
+      const list = byDomain.get(group.domain) ?? [];
+      list.push(group);
+      byDomain.set(group.domain, list);
+    }
+    return DOMAIN_ORDER.map((key) => ({ key, groups: byDomain.get(key) ?? [] })).filter((d) => d.groups.length > 0);
+  }, [visibleGroups]);
 
   const tourStorageKey = session?.user?.id ? `aegis:onboarding:tour:${session.user.id}` : null;
 
@@ -613,7 +286,11 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
   useEffect(() => {
     if (!activeGroup) return;
-    setOpenGroups((current) => ({ ...current, [activeGroup.name]: true }));
+    setOpenGroups((current) => ({
+      ...current,
+      [activeGroup.name]: true,
+      ...(activeGroup.domain ? { [`domain:${activeGroup.domain}`]: true } : {}),
+    }));
   }, [activeGroup]);
 
   useEffect(() => {
@@ -662,71 +339,121 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, tourStorageKey]);
 
+  // Renders one ModuleGroup - either as a flat link (directLink groups, or
+  // any group down to a single visible sub-item) or as an expandable
+  // subtree. `accentClass` is the owning domain's DOMAIN_META color (falls
+  // back to the generic --dxl-signal amber for pinned/passthrough groups
+  // that have no sibling domain to distinguish themselves from);
+  // `indentClass` pushes it one level in when nested under a domain header.
+  const renderGroupLink = (group: ModuleGroup, opts: { indentClass?: string; accentClass?: string } = {}) => {
+    const accentClass = opts.accentClass ?? "text-signal";
+    const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
+
+    if (group.directLink || group.subItems.length === 1) {
+      const target = group.subItems.length === 1 ? group.subItems[0] : { href: group.href, icon: group.icon };
+      return (
+        <Link
+          key={group.name}
+          href={target.href}
+          prefetch
+          onMouseEnter={() => prefetchRoute(target.href)}
+          onFocus={() => prefetchRoute(target.href)}
+          className={`mb-1 flex min-w-0 items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors ${opts.indentClass ?? ""} ${
+            isCurrent ? `${accentClass} bg-signal/5` : "text-slate-light hover:bg-ink-light hover:text-paper"
+          }`}
+        >
+          <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? accentClass : "text-slate"}`} />
+          <span className="truncate">{group.name}</span>
+        </Link>
+      );
+    }
+
+    const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
+    return (
+      <div key={group.name} className="mb-1">
+        <button
+          onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
+          className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${opts.indentClass ?? ""} ${
+            isCurrent ? `${accentClass} bg-signal/5` : "text-slate-light hover:text-paper hover:bg-ink-light"
+          }`}
+        >
+          <div className="flex min-w-0 items-center space-x-3">
+            <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? accentClass : "text-slate"}`} />
+            <span className="truncate">{group.name}</span>
+          </div>
+          {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-slate" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate" />}
+        </button>
+
+        {isOpen && (
+          <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
+            {group.subItems.map((sub) => {
+              const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
+              return (
+                <Link
+                  key={sub.name}
+                  href={sub.href}
+                  prefetch
+                  onMouseEnter={() => prefetchRoute(sub.href)}
+                  onFocus={() => prefetchRoute(sub.href)}
+                  className={`flex min-w-0 items-center space-x-3 py-1.5 ${opts.indentClass ? "pl-14" : "pl-10"} pr-3 rounded-sm text-xs transition-colors relative ${
+                    isSubCurrent
+                      ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
+                      : "text-slate hover:text-paper hover:bg-ink-light/50"
+                  }`}
+                >
+                  <sub.icon className={`h-3.5 w-3.5 shrink-0 ${isSubCurrent ? accentClass : "text-slate-light"}`} />
+                  <span className="truncate">{sub.name}</span>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Renders one top-level domain (Commercial, Delivery, Supply, Assets,
+  // People, Governance). A domain that currently resolves to exactly one
+  // visible group - either because it only ever has one (Executive,
+  // Finance) or every sibling is permission-hidden for this role - skips
+  // the wrapper and renders that group directly, so there's never a
+  // pointless single-child accordion.
+  const renderDomainBlock = (domainKey: DomainKey, groups: ModuleGroup[]) => {
+    const meta = DOMAIN_META[domainKey];
+    if (groups.length === 1) {
+      return renderGroupLink(groups[0], { accentClass: meta.accentClass });
+    }
+    const stateKey = `domain:${domainKey}`;
+    const isDomainCurrent = groups.some((g) => pathname === g.href || pathname?.startsWith(`${g.href}/`));
+    const isDomainOpen = Boolean(openGroups[stateKey] ?? isDomainCurrent);
+    const DomainIcon = meta.icon;
+    return (
+      <div key={domainKey} className="mb-1">
+        <button
+          onClick={() => setOpenGroups((current) => ({ ...current, [stateKey]: !isDomainOpen }))}
+          className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-xs font-semibold uppercase tracking-wide transition-colors ${
+            isDomainCurrent ? `${meta.accentClass} ${meta.accentBgClass}` : "text-slate-light hover:text-paper hover:bg-ink-light"
+          }`}
+        >
+          <div className="flex min-w-0 items-center space-x-3">
+            <DomainIcon className={`h-4 w-4 shrink-0 ${isDomainCurrent ? meta.accentClass : "text-slate"}`} />
+            <span className="truncate">{meta.label}</span>
+          </div>
+          {isDomainOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-slate" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate" />}
+        </button>
+        {isDomainOpen && (
+          <div className="mt-1 flex flex-col space-y-1">
+            {groups.map((group) => renderGroupLink(group, { indentClass: "pl-4", accentClass: meta.accentClass }))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderNavGroups = () => (
     <>
-      {visibleGroups.map((group) => {
-        const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
-        const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
-        if (group.directLink) {
-          return (
-            <Link
-              key={group.name}
-              href={group.href}
-              prefetch
-              onMouseEnter={() => prefetchRoute(group.href)}
-              onFocus={() => prefetchRoute(group.href)}
-              className={`mb-1 flex min-w-0 items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors ${
-                isCurrent ? "bg-signal/5 text-signal" : "text-slate-light hover:bg-ink-light hover:text-paper"
-              }`}
-            >
-              <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? "text-signal" : "text-slate"}`} />
-              <span className="truncate">{group.name}</span>
-            </Link>
-          );
-        }
-
-        return (
-          <div key={group.name} className="mb-1">
-            <button
-              onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
-              className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
-                isCurrent ? "text-signal bg-signal/5" : "text-slate-light hover:text-paper hover:bg-ink-light"
-              }`}
-            >
-              <div className="flex min-w-0 items-center space-x-3">
-                <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? "text-signal" : "text-slate"}`} />
-                <span className="truncate">{group.name}</span>
-              </div>
-              {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-slate" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate" />}
-            </button>
-
-            {isOpen && (
-              <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
-                {group.subItems.map((sub) => {
-                  const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
-                  return (
-                    <Link
-                      key={sub.name}
-                      href={sub.href}
-                      prefetch
-                      onMouseEnter={() => prefetchRoute(sub.href)}
-                      onFocus={() => prefetchRoute(sub.href)}
-                      className={`flex min-w-0 items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
-                        isSubCurrent
-                          ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
-                          : "text-slate hover:text-paper hover:bg-ink-light/50"
-                      }`}
-                    >
-                      <sub.icon className={`h-3.5 w-3.5 shrink-0 ${isSubCurrent ? "text-signal" : "text-slate-light"}`} />
-                      <span className="truncate">{sub.name}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {pinnedGroups.map((group) => renderGroupLink(group))}
+      {visibleDomains.map(({ key, groups }) => renderDomainBlock(key, groups))}
     </>
   );
 
@@ -943,7 +670,12 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </aside>
 
         {/* MAIN CONTENT AREA */}
-        <main ref={mainScrollRef} className="relative min-w-0 flex-1 overflow-auto bg-ink">
+        <main
+          ref={mainScrollRef}
+          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 ${
+            currentDomain ? DOMAIN_META[currentDomain].accentTopBorderClass : "border-t-transparent"
+          }`}
+        >
           {children}
         </main>
       </div>

@@ -44,12 +44,18 @@ async def list_sop_templates(
     query += " ORDER BY name"
 
     templates = [dict(row._mapping) for row in await db.execute(text(query), params)]
-    for tmpl in templates:
-        items = await db.execute(
-            text("SELECT * FROM compliance.sop_template_items WHERE template_id = :id ORDER BY sort_order"),
-            {"id": tmpl["id"]},
+    if templates:
+        template_ids = [tmpl["id"] for tmpl in templates]
+        all_items = await db.execute(
+            text("SELECT * FROM compliance.sop_template_items WHERE template_id = ANY(:ids) ORDER BY template_id, sort_order"),
+            {"ids": template_ids},
         )
-        tmpl["items"] = [dict(r._mapping) for r in items]
+        items_by_template: Dict[Any, List[Dict[str, Any]]] = {}
+        for row in all_items:
+            item = dict(row._mapping)
+            items_by_template.setdefault(item["template_id"], []).append(item)
+        for tmpl in templates:
+            tmpl["items"] = items_by_template.get(tmpl["id"], [])
 
     return {"success": True, "data": templates, "message": "SOP templates retrieved.", "meta": {"total": len(templates)}}
 
@@ -84,22 +90,26 @@ async def create_sop_template(
             )
         ).scalar()
 
-        for idx, item in enumerate(payload.get("items") or []):
+        items_payload = payload.get("items") or []
+        if items_payload:
+            values_sql: List[str] = []
+            insert_params: Dict[str, Any] = {"org_id": user["org_id"], "template_id": template_id}
+            for idx, item in enumerate(items_payload):
+                values_sql.append(
+                    f"(:org_id, :template_id, :item_label_{idx}, :requires_evidence_{idx}, :requires_reviewer_{idx}, :sort_order_{idx})"
+                )
+                insert_params[f"item_label_{idx}"] = item.get("item_label", "Item")
+                insert_params[f"requires_evidence_{idx}"] = bool(item.get("requires_evidence", False))
+                insert_params[f"requires_reviewer_{idx}"] = bool(item.get("requires_independent_reviewer", False))
+                insert_params[f"sort_order_{idx}"] = idx
             await db.execute(
-                text("""
+                text(f"""
                     INSERT INTO compliance.sop_template_items (
                         organization_id, template_id, item_label, requires_evidence,
                         requires_independent_reviewer, sort_order
-                    ) VALUES (:org_id, :template_id, :item_label, :requires_evidence, :requires_reviewer, :sort_order)
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "template_id": template_id,
-                    "item_label": item.get("item_label", "Item"),
-                    "requires_evidence": bool(item.get("requires_evidence", False)),
-                    "requires_reviewer": bool(item.get("requires_independent_reviewer", False)),
-                    "sort_order": idx,
-                },
+                    ) VALUES {", ".join(values_sql)}
+                """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+                insert_params,
             )
         await db.commit()
     except Exception:
@@ -125,12 +135,18 @@ async def _instances_with_items(db: AsyncSession, org_id: str, subject_type: str
             {"org_id": org_id, "subject_type": subject_type, "subject_id": subject_id},
         )
     ]
-    for inst in instances:
-        items = await db.execute(
-            text("SELECT * FROM compliance.sop_instance_items WHERE instance_id = :id ORDER BY sort_order"),
-            {"id": inst["id"]},
+    if instances:
+        instance_ids = [inst["id"] for inst in instances]
+        all_items = await db.execute(
+            text("SELECT * FROM compliance.sop_instance_items WHERE instance_id = ANY(:ids) ORDER BY instance_id, sort_order"),
+            {"ids": instance_ids},
         )
-        inst["items"] = [dict(r._mapping) for r in items]
+        items_by_instance: Dict[Any, List[Dict[str, Any]]] = {}
+        for row in all_items:
+            item = dict(row._mapping)
+            items_by_instance.setdefault(item["instance_id"], []).append(item)
+        for inst in instances:
+            inst["items"] = items_by_instance.get(inst["id"], [])
     return instances
 
 
@@ -192,19 +208,25 @@ async def start_sop_instance(
             )
         ).scalar()
 
-        for item in template_items:
+        if template_items:
+            values_sql: List[str] = []
+            insert_params: Dict[str, Any] = {"org_id": user["org_id"], "instance_id": instance_id}
+            for idx, item in enumerate(template_items):
+                values_sql.append(
+                    f"(:org_id, :instance_id, :item_label_{idx}, :requires_evidence_{idx}, :requires_reviewer_{idx}, :sort_order_{idx})"
+                )
+                insert_params[f"item_label_{idx}"] = item["item_label"]
+                insert_params[f"requires_evidence_{idx}"] = item["requires_evidence"]
+                insert_params[f"requires_reviewer_{idx}"] = item["requires_independent_reviewer"]
+                insert_params[f"sort_order_{idx}"] = item["sort_order"]
             await db.execute(
-                text("""
+                text(f"""
                     INSERT INTO compliance.sop_instance_items (
                         organization_id, instance_id, item_label, requires_evidence,
                         requires_independent_reviewer, sort_order
-                    ) VALUES (:org_id, :instance_id, :item_label, :requires_evidence, :requires_reviewer, :sort_order)
-                """),
-                {
-                    "org_id": user["org_id"], "instance_id": instance_id, "item_label": item["item_label"],
-                    "requires_evidence": item["requires_evidence"], "requires_reviewer": item["requires_independent_reviewer"],
-                    "sort_order": item["sort_order"],
-                },
+                    ) VALUES {", ".join(values_sql)}
+                """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+                insert_params,
             )
         await db.commit()
     except Exception:

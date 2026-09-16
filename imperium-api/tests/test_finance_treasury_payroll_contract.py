@@ -6,7 +6,10 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 MIGRATION = (ROOT / "migrations" / "034_finance_treasury_payroll.sql").read_text(encoding="utf-8")
 ROUTER = (ROOT / "routers" / "financial_performance.py").read_text(encoding="utf-8")
-WEB_API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+WEB_API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(REPO / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 FINANCE_PAGE = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "finance" / "page.tsx").read_text(encoding="utf-8")
 OPS_PANEL = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "finance" / "FinanceOperationsPanel.tsx").read_text(encoding="utf-8")
 

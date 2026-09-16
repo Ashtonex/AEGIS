@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok
@@ -11,6 +12,7 @@ router = APIRouter()
 
 @router.get("/")
 async def list_departments(
+    response: Response,
     user: dict = Depends(require_permission("finance.department.read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -29,4 +31,5 @@ async def list_departments(
         {"org_id": user["org_id"]},
     )
     items = [dict(row._mapping) for row in result]
+    set_reference_data_cache_headers(response)
     return ok(items, "Departments listed.")

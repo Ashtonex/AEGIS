@@ -5,7 +5,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = ROOT.parent / "aegis-web" / "src"
 PORTALS = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
-API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 PORTAL_HOME = (WEB_ROOT / "components" / "auth" / "PortalHome.tsx").read_text(encoding="utf-8")
 FOREMAN_HOME = (WEB_ROOT / "components" / "auth" / "ForemanPortalHome.tsx").read_text(encoding="utf-8")
 FOREMAN_PAGE = (WEB_ROOT / "app" / "portal" / "foreman" / "page.tsx").read_text(encoding="utf-8")

@@ -8,7 +8,10 @@ HR_ROUTER = (ROOT / "routers" / "hr_verification.py").read_text(encoding="utf-8"
 HR_PANEL = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "hr" / "VendorVerificationPanel.tsx"
 ).read_text(encoding="utf-8")
-API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(ROOT.parent / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 SUPPLIER_RECORDS = (ROOT / "routers" / "supplier_records.py").read_text(encoding="utf-8")
 PAYMENTS_ROUTER = (ROOT / "routers" / "payments.py").read_text(encoding="utf-8")

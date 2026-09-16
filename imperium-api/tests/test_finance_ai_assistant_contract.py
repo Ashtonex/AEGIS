@@ -12,8 +12,13 @@ ROUTER = (ROOT / "routers" / "finance_assistant.py").read_text(encoding="utf-8")
 CONFIG = (ROOT / "core" / "config.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 FINANCE_PAGE = (WEB_ROOT / "app" / "dashboard" / "finance" / "page.tsx").read_text(encoding="utf-8")
-DASHBOARD_SHELL = (WEB_ROOT / "app" / "dashboard" / "DashboardShell.tsx").read_text(encoding="utf-8")
-WEB_API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+DASHBOARD_SHELL = (WEB_ROOT / "app" / "dashboard" / "DashboardShell.tsx").read_text(encoding="utf-8") + (
+    WEB_ROOT / "lib" / "navigation.ts"
+).read_text(encoding="utf-8")  # nav role/permission data now lives here, see lib/navigation.ts
+WEB_API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 
 _WRITE_FUNCTION_SUBSTRINGS = (
     "propose_journal", "post_journal", "settle_liability", "approve_", "reject_",

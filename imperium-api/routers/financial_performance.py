@@ -2,7 +2,7 @@ import calendar
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -10,6 +10,7 @@ from typing import Optional, List, Any, Dict
 from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
 from app.shared.events import emit_notification
@@ -610,6 +611,7 @@ async def get_financial_statements(
 
 @router.get("/cost-codes")
 async def list_cost_codes(
+    response: Response,
     department_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("finance.budget.read")),
     db: AsyncSession = Depends(get_db),
@@ -631,6 +633,7 @@ async def list_cost_codes(
 
     result = await db.execute(text(query_str), params)
     items = [dict(row._mapping) for row in result]
+    set_reference_data_cache_headers(response)
     return ok(items, "Cost codes listed.")
 
 

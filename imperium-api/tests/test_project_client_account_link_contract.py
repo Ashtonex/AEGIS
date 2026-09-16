@@ -8,7 +8,9 @@ CRM_ROUTER = (ROOT / "routers" / "crm.py").read_text(encoding="utf-8")
 MIGRATION = (ROOT / "migrations" / "155_project_individual_client_links.sql").read_text(encoding="utf-8")
 PROJECTS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "page.tsx"
-).read_text(encoding="utf-8")
+).read_text(encoding="utf-8") + (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "ProjectDetailPanel.tsx"
+).read_text(encoding="utf-8")  # ProjectDetail now lives here, see ProjectDetailPanel.tsx
 
 
 class ProjectClientAccountLinkContractTests(unittest.TestCase):

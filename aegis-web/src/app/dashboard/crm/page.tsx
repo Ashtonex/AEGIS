@@ -3,7 +3,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Briefcase, FileText, Target, Users, Activity, Loader2, Plus, LayoutDashboard, TrendingUp, ShieldCheck, MapPin, ChevronRight, Terminal, CircleHelp, ListChecks, Plug } from 'lucide-react';
-import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations, getFinanceDepartments, getCommercialMorningBriefing } from '@/lib/api';
+import { getCrmOpportunities, getCrmTenders, getAccountabilityMetrics, createCrmOpportunity, createCrmTender, updateCrmOpportunity, updateCrmTender, getRiskMatrices, getCrmOrganizations, getCommercialMorningBriefing } from '@/lib/api';
+import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { useModuleTour } from '@/hooks/useModuleTour';
 import { ModuleTour, type ModuleTourStep } from '@/components/onboarding/ModuleTour';
@@ -101,12 +102,7 @@ export default function CRMCommercialEngine() {
   
   // Forms state
   const [oppForm, setOppForm] = useState({ name: '', stage: 'Inquiry', budget: 0, probability: 0, client_org_id: '', region: '', latitude: '', longitude: '', originating_department_id: '' });
-  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
-  useEffect(() => {
-    void getFinanceDepartments()
-      .then((res) => setDepartments(res.success && Array.isArray(res.data) ? res.data : []))
-      .catch(() => setDepartments([]));
-  }, []);
+  const { departments } = useFinanceDepartments();
   const [tenderForm, setTenderForm] = useState({ tender_name: '', stage: 'Tender Identified', bid_amount: 0, region: '', latitude: '', longitude: '' });
   const [regionAssigning, setRegionAssigning] = useState<string | null>(null);
   const [oppFormErrors, setOppFormErrors] = useState<Record<string, string>>({});

@@ -10,11 +10,11 @@ import {
   createHistoricalRevenue,
   getCrmOrganizations,
   getFinanceCashAccounts,
-  getFinanceDepartments,
   getHistoricalReconciliation,
   getInternalProjects,
   setHistoricalReconciliationBaseline,
 } from "@/lib/api";
+import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 
 type RecordData = Record<string, any>;
 
@@ -43,7 +43,7 @@ const EVIDENCE_GRADES = [
 
 export function HistoricalEntryPanel() {
   const [projects, setProjects] = useState<RecordData[]>([]);
-  const [departments, setDepartments] = useState<RecordData[]>([]);
+  const { departments } = useFinanceDepartments();
   const [organizations, setOrganizations] = useState<RecordData[]>([]);
   const [cashAccounts, setCashAccounts] = useState<RecordData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -75,11 +75,10 @@ export function HistoricalEntryPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [projRes, deptRes, orgRes, cashRes] = await Promise.allSettled([
-        getInternalProjects(), getFinanceDepartments(), getCrmOrganizations(), getFinanceCashAccounts(),
+      const [projRes, orgRes, cashRes] = await Promise.allSettled([
+        getInternalProjects(), getCrmOrganizations(), getFinanceCashAccounts(),
       ]);
       if (projRes.status === "fulfilled") setProjects(projRes.value.data ?? []);
-      if (deptRes.status === "fulfilled") setDepartments(deptRes.value.data ?? []);
       if (orgRes.status === "fulfilled") setOrganizations(orgRes.value.data ?? []);
       if (cashRes.status === "fulfilled") setCashAccounts(cashRes.value.data ?? []);
     } finally {

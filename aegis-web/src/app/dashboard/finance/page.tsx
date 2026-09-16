@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
@@ -12,11 +12,11 @@ import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
 import { useApiQueries } from "@/hooks/useApiQueries";
+import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import {
-  getFinanceDepartments,
   getFinanceProjectSummaries,
   getFinanceProjectDetail,
   getFinanceCostCodes,
@@ -93,10 +93,6 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-portfolio": "/dashboard/finance/project-portfolio",
   "audit-workspace": "/dashboard/finance/audit-workspace",
 };
-
-function normalizeTab(value: string | null | undefined): FinanceTab {
-  return value && value in TAB_ROUTES ? (value as FinanceTab) : "project-financials";
-}
 
 const FINANCE_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -177,17 +173,58 @@ function statusClass(status: string) {
 }
 
 export default function FinanceDashboard() {
+  return <FinancePage initialTab="project-financials" />;
+}
+
+const FINANCE_TAB_LABELS: Record<FinanceTab, string> = {
+  "project-financials": "Finance & Cost Control",
+  "cost-codes": "Cost Codes",
+  variations: "Variations",
+  "progress-claims": "Progress Claims",
+  "earned-value": "Earned Value",
+  "close-out": "Close-Out",
+  budgets: "Budgets",
+  banking: "Banking & Cash",
+  "cash-accounts": "Banking & Cash",
+  cashbook: "Cashbook",
+  "supplier-payments": "Supplier Payments",
+  payroll: "Payroll",
+  transfers: "Internal Transfers",
+  "department-pnl": "Department P&L",
+  statutory: "Statutory",
+  "vendor-payments": "Vendor Payments",
+  "client-payments": "Client Payments",
+  "historical-entry": "Historical Entry",
+  "financial-statements": "Financial Statements",
+  "data-room": "Financial Data Room",
+  "general-ledger": "General Ledger",
+  "cash-forecast": "Cash Forecast",
+  "ai-assistant": "AI Assistant",
+  "management-accounts": "Management Accounts",
+  "project-portfolio": "Project Portfolio",
+  "audit-workspace": "Audit Workspace",
+};
+
+/** Shared Finance workspace, rendered by a real route per tab (see the
+ * sibling folders under dashboard/finance/) instead of the old
+ * finance/[tab] -> redirect() -> ?tab= shim - each route now has its own
+ * URL, its own header title, and (via the tab's already-existing
+ * next/dynamic panel) only loads the one panel it actually renders. */
+export function FinancePage({ initialTab }: { initialTab: FinanceTab }) {
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Contracts Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
-      <FinanceWorkspace />
+      <FinanceWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
 }
 
-function FinanceWorkspace() {
-  const searchParams = useSearchParams();
+function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
+  const router = useRouter();
   const financeTour = useModuleTour("finance");
-  const [activeTab, setActiveTab] = useState<FinanceTab>(() => normalizeTab(searchParams?.get("tab")));
+  // Each route (see the sibling tab folders) mounts this component with a
+  // fixed initialTab - no local mutation needed since switching tabs is now
+  // a real navigation, not client-side state.
+  const activeTab = initialTab;
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
   const [departmentId, setDepartmentId] = useState<string>("");
@@ -206,6 +243,8 @@ function FinanceWorkspace() {
   const [newVariation, setNewVariation] = useState({ variation_number: "", project_id: "", title: "", description: "", cost_impact: "0", time_impact_days: "0", initiated_by: "client" });
   const [newClaim, setNewClaim] = useState({ claim_number: "", project_id: "", claim_period_start: "", claim_period_end: "", contract_value: "0", this_claim_amount: "0", retention_pct: "10" });
 
+  const { departments } = useFinanceDepartments();
+
   const {
     data: financeData,
     warnings: sourceWarnings,
@@ -215,7 +254,6 @@ function FinanceWorkspace() {
   } = useApiQueries(
     {
       projects: () => getInternalProjects(),
-      departments: () => getFinanceDepartments(),
       summaries: () => getFinanceProjectSummaries({ department_id: departmentId || undefined }),
       costCodes: () => getFinanceCostCodes({ department_id: departmentId || undefined }),
       variations: () => getFinanceVariations({ department_id: departmentId || undefined }),
@@ -228,7 +266,6 @@ function FinanceWorkspace() {
       criticalKeys: ["summaries"],
       labels: {
         projects: "Project register",
-        departments: "Departments",
         summaries: "Project financial summaries",
         costCodes: "Cost codes",
         variations: "Variation register",
@@ -240,7 +277,6 @@ function FinanceWorkspace() {
   );
 
   const projects = useMemo(() => financeData.projects?.data || [], [financeData.projects]);
-  const departments = useMemo(() => financeData.departments?.data || [], [financeData.departments]);
   const projectSummaries = useMemo(() => financeData.summaries?.data || [], [financeData.summaries]);
   const costCodes = useMemo(() => financeData.costCodes?.data || [], [financeData.costCodes]);
   const variations = useMemo(() => financeData.variations?.data || [], [financeData.variations]);
@@ -250,10 +286,6 @@ function FinanceWorkspace() {
 
   useLiveTable("finance.budgets", () => void loadData());
   const error = loadError ? loadFailureMessage(loadError) : null;
-
-  useEffect(() => {
-    setActiveTab(normalizeTab(searchParams?.get("tab")));
-  }, [searchParams]);
 
   const loadProjectDetail = async (id: string) => {
     setSelectedProjectId(id);
@@ -420,7 +452,7 @@ function FinanceWorkspace() {
       )}
 
       <DashboardPageHeader
-        title="Finance & Cost Control"
+        title={FINANCE_TAB_LABELS[activeTab]}
         subtitle="SNC authoritative financial ledger and budget controls."
         className="items-center"
         actions={
@@ -451,7 +483,7 @@ function FinanceWorkspace() {
               ))}
             </div>
             <button
-              onClick={() => setActiveTab(activeTab === "data-room" ? "project-financials" : "data-room")}
+              onClick={() => router.push(activeTab === "data-room" ? TAB_ROUTES["project-financials"] : TAB_ROUTES["data-room"])}
               className={`flex items-center space-x-1.5 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
                 activeTab === "data-room"
                   ? "bg-signal text-ink border-signal font-semibold"

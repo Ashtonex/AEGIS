@@ -114,38 +114,47 @@ async def create_drawing_revision(
             )
         ).scalar()
 
-        for idx, measurement in enumerate(extraction.get("measurements") or []):
+        measurements_payload = extraction.get("measurements") or []
+        if measurements_payload:
+            values_sql = []
+            m_params: Dict[str, Any] = {"org_id": user["org_id"], "revision_id": revision_id}
+            entered_source = source_mode if source_mode != "manual_reference" else "manual"
+            for idx, measurement in enumerate(measurements_payload):
+                values_sql.append(
+                    f"(:org_id, :revision_id, :description_{idx}, :unit_{idx}, :quantity_{idx}, "
+                    f":source_{idx}, :confidence_pct_{idx}, :sort_order_{idx}, :entered_by)"
+                )
+                m_params[f"description_{idx}"] = measurement["description"]
+                m_params[f"unit_{idx}"] = measurement["unit"]
+                m_params[f"quantity_{idx}"] = measurement["quantity"]
+                m_params[f"source_{idx}"] = entered_source
+                m_params[f"confidence_pct_{idx}"] = measurement.get("confidence_pct")
+                m_params[f"sort_order_{idx}"] = idx
+            m_params["entered_by"] = user["sub"]
             await db.execute(
-                text("""
+                text(f"""
                     INSERT INTO takeoff.drawing_measurements (
                         organization_id, drawing_revision_id, description, unit, quantity,
                         source, confidence_pct, sort_order, entered_by
-                    ) VALUES (
-                        :org_id, :revision_id, :description, :unit, :quantity,
-                        :source, :confidence_pct, :sort_order, :entered_by
-                    )
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "revision_id": revision_id,
-                    "description": measurement["description"],
-                    "unit": measurement["unit"],
-                    "quantity": measurement["quantity"],
-                    "source": source_mode if source_mode != "manual_reference" else "manual",
-                    "confidence_pct": measurement.get("confidence_pct"),
-                    "sort_order": idx,
-                    "entered_by": user["sub"],
-                },
+                    ) VALUES {", ".join(values_sql)}
+                """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+                m_params,
             )
 
-        for idx, item_label in enumerate(DEFAULT_CHECKLIST_ITEMS):
+        if DEFAULT_CHECKLIST_ITEMS:
+            values_sql = []
+            c_params: Dict[str, Any] = {"org_id": user["org_id"], "revision_id": revision_id}
+            for idx, item_label in enumerate(DEFAULT_CHECKLIST_ITEMS):
+                values_sql.append(f"(:org_id, :revision_id, :item_label_{idx}, :sort_order_{idx})")
+                c_params[f"item_label_{idx}"] = item_label
+                c_params[f"sort_order_{idx}"] = idx
             await db.execute(
-                text("""
+                text(f"""
                     INSERT INTO takeoff.drawing_revision_checklist_items (
                         organization_id, drawing_revision_id, item_label, sort_order
-                    ) VALUES (:org_id, :revision_id, :item_label, :sort_order)
-                """),
-                {"org_id": user["org_id"], "revision_id": revision_id, "item_label": item_label, "sort_order": idx},
+                    ) VALUES {", ".join(values_sql)}
+                """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+                c_params,
             )
 
         await db.commit()
@@ -265,28 +274,28 @@ async def replace_drawing_measurements(
             text("UPDATE takeoff.drawing_measurements SET is_deleted = true WHERE drawing_revision_id = :id AND organization_id = :org_id"),
             {"id": revision_id, "org_id": user["org_id"]},
         )
-        for idx, row in enumerate(rows):
+        if rows:
+            values_sql = []
+            r_params: Dict[str, Any] = {"org_id": user["org_id"], "revision_id": revision_id, "entered_by": user["sub"]}
+            for idx, row in enumerate(rows):
+                values_sql.append(
+                    f"(:org_id, :revision_id, :description_{idx}, :unit_{idx}, :quantity_{idx}, "
+                    f":source_{idx}, :confidence_pct_{idx}, :sort_order_{idx}, :entered_by)"
+                )
+                r_params[f"description_{idx}"] = row.get("description", "Item")
+                r_params[f"unit_{idx}"] = row.get("unit", "unit")
+                r_params[f"quantity_{idx}"] = row.get("quantity", 0)
+                r_params[f"source_{idx}"] = row.get("source", "manual")
+                r_params[f"confidence_pct_{idx}"] = row.get("confidence_pct")
+                r_params[f"sort_order_{idx}"] = idx
             await db.execute(
-                text("""
+                text(f"""
                     INSERT INTO takeoff.drawing_measurements (
                         organization_id, drawing_revision_id, description, unit, quantity,
                         source, confidence_pct, sort_order, entered_by
-                    ) VALUES (
-                        :org_id, :revision_id, :description, :unit, :quantity,
-                        :source, :confidence_pct, :sort_order, :entered_by
-                    )
-                """),
-                {
-                    "org_id": user["org_id"],
-                    "revision_id": revision_id,
-                    "description": row.get("description", "Item"),
-                    "unit": row.get("unit", "unit"),
-                    "quantity": row.get("quantity", 0),
-                    "source": row.get("source", "manual"),
-                    "confidence_pct": row.get("confidence_pct"),
-                    "sort_order": idx,
-                    "entered_by": user["sub"],
-                },
+                    ) VALUES {", ".join(values_sql)}
+                """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+                r_params,
             )
         await db.commit()
     except Exception:

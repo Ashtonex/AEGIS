@@ -6,8 +6,9 @@ import {
   getCompanyBudgets, createCompanyBudget, getCompanyBudget, replaceCompanyBudgetLines,
   submitCompanyBudget, startCompanyBudgetReview, approveCompanyBudget, rejectCompanyBudget,
   cancelCompanyBudget, freezeCompanyBudget, reopenCompanyBudget, createCompanyBudgetRevision,
-  getCompanyBudgetVariance, getDepartmentBudgetVariance, getFinanceDepartments,
+  getCompanyBudgetVariance, getDepartmentBudgetVariance,
 } from "@/lib/api";
+import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 
 type RecordData = Record<string, any>;
 
@@ -47,7 +48,7 @@ export function CompanyBudgetPanel() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [budgets, setBudgets] = useState<RecordData[]>([]);
-  const [departments, setDepartments] = useState<RecordData[]>([]);
+  const { departments } = useFinanceDepartments();
   const [selectedBudget, setSelectedBudget] = useState<RecordData | null>(null);
   const [companyVariance, setCompanyVariance] = useState<RecordData | null>(null);
   const [departmentVariance, setDepartmentVariance] = useState<RecordData | null>(null);
@@ -60,12 +61,8 @@ export function CompanyBudgetPanel() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [budgetRes, deptRes] = await Promise.all([
-        getCompanyBudgets(fiscalYear),
-        getFinanceDepartments(),
-      ]);
+      const budgetRes = await getCompanyBudgets(fiscalYear);
       setBudgets(budgetRes.data || []);
-      setDepartments(deptRes.data || []);
     } catch {
       setNotice("Failed to load company budgets.");
     } finally {

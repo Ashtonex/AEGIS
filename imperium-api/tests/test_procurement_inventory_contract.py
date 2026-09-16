@@ -7,7 +7,10 @@ INV = (ROOT / "routers" / "inventory.py").read_text()
 INV_ITEMS = (ROOT / "routers" / "inventory_items.py").read_text()
 INV_SERVICE = (ROOT / "app" / "services" / "inventory_service.py").read_text()
 MAIN = (ROOT / "main.py").read_text()
-WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text()
+WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text() + "".join(
+    sorted_p.read_text()
+    for sorted_p in [(ROOT.parent / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 INVENTORY_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "inventory" / "page.tsx"
 ).read_text()
@@ -33,7 +36,9 @@ SUPABASE_STORES_PROCUREMENT_ACCESS_REPAIR = (
 SETTINGS_ROUTER = (ROOT / "routers" / "settings.py").read_text()
 DASHBOARD_SHELL = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "DashboardShell.tsx"
-).read_text()
+).read_text() + (
+    ROOT.parent / "aegis-web" / "src" / "lib" / "navigation.ts"
+).read_text()  # nav role/permission data now lives here, see lib/navigation.ts
 USE_API_QUERIES_HOOK = (
     ROOT.parent / "aegis-web" / "src" / "hooks" / "useApiQueries.ts"
 ).read_text()

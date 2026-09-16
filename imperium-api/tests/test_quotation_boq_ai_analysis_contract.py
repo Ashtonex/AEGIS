@@ -15,7 +15,10 @@ ROUTER = (ROOT / "routers" / "quotations.py").read_text(encoding="utf-8")
 CONFIG = (ROOT / "core" / "config.py").read_text(encoding="utf-8")
 CALCULATOR = (ROOT / "app" / "services" / "quotations" / "calculator.py").read_text(encoding="utf-8")
 BOQ_IMPORTER = (ROOT / "app" / "services" / "quotations" / "boq_importer.py").read_text(encoding="utf-8")
-WEB_API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+WEB_API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 CCB_PAGE = (WEB_ROOT / "app" / "dashboard" / "quotations" / "ccb" / "page.tsx").read_text(encoding="utf-8")
 
 

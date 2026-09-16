@@ -9,7 +9,10 @@ SITE_REPORTS = (ROOT / "routers" / "site_reports.py").read_text(encoding="utf-8"
 PORTALS = (ROOT / "routers" / "portals.py").read_text(encoding="utf-8")
 EXECUTIVE = (ROOT / "routers" / "executive.py").read_text(encoding="utf-8")
 MIGRATION = (ROOT / "migrations" / "147_site_variance_hardening_controls.sql").read_text(encoding="utf-8")
-API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+API = (WEB_ROOT / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 PORTAL_HOME = (WEB_ROOT / "components" / "auth" / "PortalHome.tsx").read_text(encoding="utf-8")
 ENGINEER_PORTAL = (WEB_ROOT / "components" / "auth" / "SiteEngineerPortalHome.tsx").read_text(encoding="utf-8")
 QS_PORTAL = (WEB_ROOT / "components" / "auth" / "QsPortalHome.tsx").read_text(encoding="utf-8")

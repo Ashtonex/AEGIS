@@ -6,7 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ROUTER = (ROOT / "routers" / "bi_reports.py").read_text(encoding="utf-8")
 ANALYTICS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "analytics" / "page.tsx"
-).read_text(encoding="utf-8")
+).read_text(encoding="utf-8") + (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "analytics" / "AnalyticsTabPanels.tsx"
+).read_text(encoding="utf-8")  # tab panel bodies now live here, see AnalyticsTabPanels.tsx
 
 
 class AnalyticsContractTests(unittest.TestCase):
@@ -53,9 +55,16 @@ class AnalyticsContractTests(unittest.TestCase):
             "The analytics feed is still synchronizing. Please retry once the connection is ready.",
             ANALYTICS_PAGE,
         )
-        self.assertIn("equipmentIntel.map", ANALYTICS_PAGE)
-        self.assertIn("procurementIntel.map", ANALYTICS_PAGE)
-        self.assertIn("workforceIntel.map", ANALYTICS_PAGE)
+        # Each tab's dataset is code-split into its own panel component
+        # (see AnalyticsTabPanels.tsx) that receives it as a generic `data`
+        # prop rather than the page's own equipmentIntel/procurementIntel/
+        # workforceIntel state names - check each panel actually renders its
+        # data via .map(), not just declares the prop and drops it.
+        for panel in ("EquipmentIntelPanel", "ProcurementIntelPanel", "WorkforceIntelPanel"):
+            start = ANALYTICS_PAGE.index(f"export function {panel}(")
+            end = ANALYTICS_PAGE.find("export function", start + 1)
+            body = ANALYTICS_PAGE[start:] if end == -1 else ANALYTICS_PAGE[start:end]
+            self.assertIn("data.map(", body, panel)
         self.assertIn("Promise.allSettled", ANALYTICS_PAGE)
         self.assertNotIn("getAnalyticsExceptions().catch", ANALYTICS_PAGE)
         self.assertNotIn("getAnalyticsProjectPerformance().catch", ANALYTICS_PAGE)

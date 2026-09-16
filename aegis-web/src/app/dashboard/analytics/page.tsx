@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import {
   AlertTriangle, Loader2, RefreshCw, X, TrendingUp, TrendingDown,
   Activity, Users, Truck, ShoppingCart, ShieldCheck, Flame, PieChart, BarChart
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { Skeleton } from "@/components/ui/Skeleton";
 import {
   getAnalyticsExceptions,
   getAnalyticsProjectPerformance,
@@ -15,6 +16,18 @@ import {
   getAnalyticsProcurement,
   getAnalyticsWorkforce
 } from "@/lib/api";
+
+// Only the active tab's panel ships to the browser, and loadData below only
+// fetches that tab's one data source (plus the always-shown exceptions
+// panel) instead of all 4 analytics sources on every page regardless of
+// which tab is open.
+function PanelLoading() {
+  return <Skeleton className="h-48 w-full" />;
+}
+const ProjectPerformancePanel = dynamic(() => import("./AnalyticsTabPanels").then((m) => m.ProjectPerformancePanel), { loading: PanelLoading });
+const EquipmentIntelPanel = dynamic(() => import("./AnalyticsTabPanels").then((m) => m.EquipmentIntelPanel), { loading: PanelLoading });
+const ProcurementIntelPanel = dynamic(() => import("./AnalyticsTabPanels").then((m) => m.ProcurementIntelPanel), { loading: PanelLoading });
+const WorkforceIntelPanel = dynamic(() => import("./AnalyticsTabPanels").then((m) => m.WorkforceIntelPanel), { loading: PanelLoading });
 
 type RecordData = Record<string, any>;
 type AnalyticsTab = "projects" | "equipment" | "procurement" | "workforce";
@@ -26,19 +39,12 @@ const TAB_ROUTES: Record<AnalyticsTab, string> = {
   workforce: "/dashboard/analytics/workforce",
 };
 
-function normalizeTab(value: string | null | undefined): AnalyticsTab {
-  return value && value in TAB_ROUTES ? (value as AnalyticsTab) : "projects";
-}
-
-function money(value: unknown) {
-  const num = Number(value);
-  return new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Number.isFinite(num) ? num : 0);
-}
-
-function percent(value: unknown) {
-  const num = Number(value);
-  return `${(Number.isFinite(num) ? num : 0).toFixed(1)}%`;
-}
+const ANALYTICS_TAB_LABELS: Record<AnalyticsTab, string> = {
+  projects: "Analytics & Decision Intelligence",
+  equipment: "Fleet Productivity",
+  procurement: "Spend & Supplier SLA",
+  workforce: "Labour Allocation",
+};
 
 function statusClass(status: string) {
   const normalized = String(status || "").toLowerCase();
@@ -77,16 +83,22 @@ function normalizeActionError(reason: unknown, fallback: string) {
 }
 
 export default function AnalyticsDashboard() {
+  return <AnalyticsPage initialTab="projects" />;
+}
+
+/** Shared Analytics workspace, rendered by a real route per tab (see the
+ * sibling folders here) instead of the old analytics/[tab] -> redirect() ->
+ * ?tab= shim. */
+export function AnalyticsPage({ initialTab }: { initialTab: AnalyticsTab }) {
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Commercial Manager", "Executive Read Only"]}>
-      <AnalyticsWorkspace />
+      <AnalyticsWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
 }
 
-function AnalyticsWorkspace() {
-  const searchParams = useSearchParams();
-  const [activeTab, setActiveTab] = useState<AnalyticsTab>(() => normalizeTab(searchParams?.get("tab")));
+function AnalyticsWorkspace({ initialTab }: { initialTab: AnalyticsTab }) {
+  const activeTab = initialTab;
   const [exceptions, setExceptions] = useState<RecordData[]>([]);
   const [projectPerformance, setProjectPerformance] = useState<RecordData[]>([]);
   const [equipmentIntel, setEquipmentIntel] = useState<RecordData[]>([]);
@@ -97,29 +109,31 @@ function AnalyticsWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the source the active tab actually renders is fetched, alongside
+  // the exceptions panel shown on every tab - previously all 4 tab sources
+  // loaded on every page load regardless of which tab was open.
+  const tabSourceFetchers: Record<AnalyticsTab, { label: string; run: () => Promise<{ data?: RecordData[] }>; apply: (data: RecordData[]) => void }> = {
+    projects: { label: "Project performance analytics", run: getAnalyticsProjectPerformance, apply: setProjectPerformance },
+    equipment: { label: "Fleet utilisation analytics", run: getAnalyticsEquipmentIntelligence, apply: setEquipmentIntel },
+    procurement: { label: "Procurement analytics", run: getAnalyticsProcurement, apply: setProcurementIntel },
+    workforce: { label: "Workforce analytics", run: getAnalyticsWorkforce, apply: setWorkforceIntel },
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [exceptionsRes, projRes, equipRes, procRes, workforceRes] = await Promise.allSettled([
+      const tabSource = tabSourceFetchers[activeTab];
+      const [exceptionsRes, tabRes] = await Promise.allSettled([
         getAnalyticsExceptions(),
-        getAnalyticsProjectPerformance(),
-        getAnalyticsEquipmentIntelligence(),
-        getAnalyticsProcurement(),
-        getAnalyticsWorkforce()
+        tabSource.run(),
       ]);
 
       const warnings: string[] = [];
       if (exceptionsRes.status === "fulfilled") setExceptions(exceptionsRes.value.data || []);
       else warnings.push("Active decision signals could not be loaded.");
-      if (projRes.status === "fulfilled") setProjectPerformance(projRes.value.data || []);
-      else warnings.push("Project performance analytics could not be loaded.");
-      if (equipRes.status === "fulfilled") setEquipmentIntel(equipRes.value.data || []);
-      else warnings.push("Fleet utilisation analytics could not be loaded.");
-      if (procRes.status === "fulfilled") setProcurementIntel(procRes.value.data || []);
-      else warnings.push("Procurement analytics could not be loaded.");
-      if (workforceRes.status === "fulfilled") setWorkforceIntel(workforceRes.value.data || []);
-      else warnings.push("Workforce analytics could not be loaded.");
+      if (tabRes.status === "fulfilled") tabSource.apply(tabRes.value.data || []);
+      else warnings.push(`${tabSource.label} could not be loaded.`);
       setSourceWarnings(warnings);
       if (exceptionsRes.status === "rejected") {
         throw new Error(loadFailureMessage(exceptionsRes.reason));
@@ -129,15 +143,12 @@ function AnalyticsWorkspace() {
     } finally {
       setLoading(false);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
-
-  useEffect(() => {
-    setActiveTab(normalizeTab(searchParams?.get("tab")));
-  }, [searchParams]);
 
   if (loading) {
     return (
@@ -151,7 +162,7 @@ function AnalyticsWorkspace() {
     <div className="p-6 space-y-6">
       <DashboardPageHeader
         className="mb-0 border-b-0 pb-0"
-        title="Analytics & Decision Intelligence"
+        title={ANALYTICS_TAB_LABELS[activeTab]}
         subtitle="SNC predictive metrics, automated margin erosion exceptions, and project utilization logs."
       />
       {error && (
@@ -209,52 +220,10 @@ function AnalyticsWorkspace() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main analytics data */}
         <div className="lg:col-span-2 bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden p-5">
-          {activeTab === "projects" && (
-            <div className="space-y-6">
-              <h3 className="text-xs font-semibold text-paper font-mono uppercase tracking-wider">Project Forecast EAC vs Budget</h3>
-              {projectPerformance.length === 0 ? (
-                <EmptyPanel title="No project performance records" detail="Project analytics will populate when project budgets and cost transactions exist." />
-              ) : (
-                <div className="space-y-4">
-                  {projectPerformance.map((p) => {
-                    const pctVal = Math.min(100, (p.actual_cost / p.budget_value) * 100);
-                    return (
-                      <div key={p.id} className="space-y-1">
-                        <div className="flex justify-between text-xs text-paper">
-                          <span>{p.project_name}</span>
-                          <span>{percent(pctVal)} spent</span>
-                        </div>
-                        <div className="w-full bg-ink h-3 rounded overflow-hidden">
-                          <div className="bg-signal h-full" style={{ width: `${pctVal}%` }}></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {activeTab === "equipment" && (
-            <div className="space-y-6">
-              <h3 className="text-xs font-semibold text-paper font-mono uppercase tracking-wider">Asset Utilisation Ratios</h3>
-              {equipmentIntel.length === 0 ? <EmptyPanel title="No fleet utilisation records" detail="Equipment intelligence will populate from fleet utilisation logs." /> : <div className="space-y-4">{equipmentIntel.map((asset) => { const utilisation = Number(asset.utilisation) || 0; return <div key={String(asset.id)} className="space-y-2"><div className="flex justify-between text-xs text-slate-light font-mono"><span>{asset.asset}</span><span>{percent(utilisation)} utilisation · margin {money(asset.margin)}</span></div><div className="w-full bg-ink h-3 rounded-sm overflow-hidden"><div className={utilisation >= 75 ? "bg-emerald-500 h-full" : "bg-amber-500 h-full"} style={{ width: `${Math.min(100, utilisation)}%` }} /></div></div>; })}</div>}
-            </div>
-          )}
-
-          {activeTab === "procurement" && (
-            <div className="space-y-6">
-              <h3 className="text-xs font-semibold text-paper font-mono uppercase tracking-wider">Supplier SLA and matching signals</h3>
-              {procurementIntel.length === 0 ? <EmptyPanel title="No procurement analytics records" detail="Supplier intelligence will populate from purchase orders, GRNs and invoice matching." /> : <div className="space-y-3">{procurementIntel.map((supplier) => <div key={String(supplier.id)} className="flex items-center justify-between gap-4 border border-ink-mid bg-ink p-3 text-xs"><div><p className="font-semibold text-paper">{supplier.supplier}</p><p className="mt-1 text-slate-light">{supplier.pos_issued} POs · {supplier.quality_issues} invoice/quality issues</p></div><span className="font-mono text-slate-light">{percent(supplier.on_time_delivery_pct)} on time · {Number(supplier.avg_lead_time_days || 0).toFixed(1)}d lead</span></div>)}</div>}
-            </div>
-          )}
-
-          {activeTab === "workforce" && (
-            <div className="space-y-6">
-              <h3 className="text-xs font-semibold text-paper font-mono uppercase tracking-wider">Labour Cost Allocation</h3>
-              {workforceIntel.length === 0 ? <EmptyPanel title="No workforce analytics records" detail="Labour allocation will populate from attendance and labour cost transactions." /> : <div className="space-y-4">{workforceIntel.map((row) => { const maxCost = Math.max(...workforceIntel.map((item) => Number(item.labour_cost) || 0), 1); const width = ((Number(row.labour_cost) || 0) / maxCost) * 100; return <div key={String(row.id)} className="space-y-1"><div className="flex justify-between text-xs text-paper"><span>{row.project}</span><span className="font-mono">{money(row.labour_cost)} · attendance {percent(row.attendance_rate)} · OT {percent(row.ot_ratio)}</span></div><div className="w-full bg-ink h-3 rounded overflow-hidden"><div className="bg-purple-500 h-full" style={{ width: `${Math.min(100, width)}%` }} /></div></div>; })}</div>}
-            </div>
-          )}
+          {activeTab === "projects" && <ProjectPerformancePanel data={projectPerformance} />}
+          {activeTab === "equipment" && <EquipmentIntelPanel data={equipmentIntel} />}
+          {activeTab === "procurement" && <ProcurementIntelPanel data={procurementIntel} />}
+          {activeTab === "workforce" && <WorkforceIntelPanel data={workforceIntel} />}
         </div>
 
         {/* Right side analytics intelligence panel */}

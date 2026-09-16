@@ -11,10 +11,15 @@ MIGRATION = (ROOT / "migrations" / "033_system_notifications.sql").read_text(
 ROUTER = (ROOT / "routers" / "notifications.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
 EVENTS = (ROOT / "app" / "shared" / "events.py").read_text(encoding="utf-8")
-WEB_API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+WEB_API = (WEB_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(WEB_ROOT / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 DASHBOARD_SHELL = (
     WEB_ROOT / "src" / "app" / "dashboard" / "DashboardShell.tsx"
-).read_text(encoding="utf-8")
+).read_text(encoding="utf-8") + (
+    WEB_ROOT / "src" / "lib" / "navigation.ts"
+).read_text(encoding="utf-8")  # nav role/permission data now lives here, see lib/navigation.ts
 NOTIFICATION_BELL = (
     WEB_ROOT / "src" / "components" / "layout" / "dashboard" / "NotificationBell.tsx"
 ).read_text(encoding="utf-8")

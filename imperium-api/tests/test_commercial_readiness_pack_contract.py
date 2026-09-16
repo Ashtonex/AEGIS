@@ -12,8 +12,13 @@ PROJECTS_ROUTER = (ROOT / "routers" / "projects.py").read_text(encoding="utf-8")
 TENDER_ROUTER = (ROOT / "routers" / "tender_bids.py").read_text(encoding="utf-8")
 QUOTATIONS_ROUTER = (ROOT / "routers" / "quotations.py").read_text(encoding="utf-8")
 TASK_STACKS = (ROOT / "app" / "shared" / "task_stacks.py").read_text(encoding="utf-8")
-PROJECTS_PAGE = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "page.tsx").read_text(encoding="utf-8")
-API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+PROJECTS_PAGE = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "page.tsx").read_text(encoding="utf-8") + (
+    REPO / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "ProjectDetailPanel.tsx"
+).read_text(encoding="utf-8")  # ProjectDetail now lives here, see ProjectDetailPanel.tsx
+API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="utf-8") + "".join(
+    sorted_p.read_text(encoding="utf-8")
+    for sorted_p in [(REPO / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+)
 
 
 class CommercialReadinessPackContractTests(unittest.TestCase):
