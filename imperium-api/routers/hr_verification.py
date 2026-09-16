@@ -674,7 +674,7 @@ async def accept_vendor_with_onboarding_gaps(
         text("""
         UPDATE crm.subcontractors
         SET verification_stage = 'hr_verified',
-            hr_verified_by = :user_id,
+            hr_verified_by = CAST(:user_id AS uuid),
             hr_verified_at = NOW(),
             hr_verification_notes = :notes,
             submission_data = COALESCE(submission_data, '{}'::jsonb)
@@ -682,7 +682,7 @@ async def accept_vendor_with_onboarding_gaps(
                     'account_type', COALESCE(submission_data->>'account_type', :account_type, 'vendor'),
                     'onboarding_bypass', jsonb_build_object(
                         'enabled', true,
-                        'accepted_by', :user_id,
+                        'accepted_by', CAST(:user_id AS text),
                         'accepted_by_name', :actor_name,
                         'accepted_at', NOW(),
                         'missing_items', CAST(:missing_items AS jsonb),

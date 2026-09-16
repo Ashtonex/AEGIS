@@ -113,6 +113,37 @@ async def create_item(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
+@router.get("/runs")
+async def list_automation_runs(
+    rule_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    params: Dict[str, Any] = {"org_id": user["org_id"]}
+    filter_sql = ""
+    if rule_id:
+        filter_sql = "AND rule_id = :rule_id"
+        params["rule_id"] = rule_id
+
+    query = text(f"""
+        SELECT *
+        FROM crm.automation_runs
+        WHERE organization_id = :org_id {filter_sql}
+        ORDER BY created_at DESC
+        LIMIT 100
+    """)
+    result = await db.execute(query, params)
+    runs = [dict(row._mapping) for row in result]
+
+    return {
+        "success": True,
+        "data": runs,
+        "message": "crm_automation_runs listed.",
+        "meta": {"total": len(runs)},
+    }
+
+
+
 @router.get("/{item_id}")
 async def get_item(
     item_id: str,
@@ -228,34 +259,4 @@ async def execute_automations(
         db, user["org_id"], user["sub"], payload.trigger_type, payload.trigger_payload
     )
     return {"success": True, "data": runs, "message": "CRM automations executed.", "meta": {"total": len(runs)}}
-
-
-@router.get("/runs")
-async def list_automation_runs(
-    rule_id: Optional[str] = None,
-    user: dict = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    params: Dict[str, Any] = {"org_id": user["org_id"]}
-    filter_sql = ""
-    if rule_id:
-        filter_sql = "AND rule_id = :rule_id"
-        params["rule_id"] = rule_id
-
-    query = text(f"""
-        SELECT *
-        FROM crm.automation_runs
-        WHERE organization_id = :org_id {filter_sql}
-        ORDER BY created_at DESC
-        LIMIT 100
-    """)
-    result = await db.execute(query, params)
-    runs = [dict(row._mapping) for row in result]
-
-    return {
-        "success": True,
-        "data": runs,
-        "message": "crm_automation_runs listed.",
-        "meta": {"total": len(runs)},
-    }
 

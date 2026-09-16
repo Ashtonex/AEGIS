@@ -428,12 +428,12 @@ async def _load_org_rate_benchmarks(
                     OR (:rate_group <> '' AND rate_group = :rate_group)
                     OR (
                         source_type = :source_type
-                        AND (:source_id IS NULL OR source_id = :source_id)
+                        AND (CAST(:source_id AS varchar) IS NULL OR source_id = CAST(:source_id AS varchar))
                     )
               )
             ORDER BY
               CASE
-                WHEN source_type = :source_type AND :source_id IS NOT NULL AND source_id = :source_id THEN 3
+                WHEN source_type = :source_type AND CAST(:source_id AS varchar) IS NOT NULL AND source_id = CAST(:source_id AS varchar) THEN 3
                 WHEN :rate_group <> '' AND rate_group = :rate_group THEN 2
                 WHEN COALESCE(source_type, 'global') = 'global' THEN 1
                 ELSE 0

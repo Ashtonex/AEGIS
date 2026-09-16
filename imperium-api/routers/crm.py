@@ -1163,11 +1163,11 @@ async def lifecycle_report(
     by_source = await _rows(
         db,
         """
-        SELECT COALESCE(lead_source, source_channel, 'unknown') AS source, COUNT(*) AS lead_count,
+        SELECT COALESCE(lead_source, 'unknown') AS source, COUNT(*) AS lead_count,
           COUNT(*) FILTER (WHERE lower(status) IN ('qualified', 'converted')) AS qualified_count
         FROM crm.leads
         WHERE organization_id = :org_id AND is_deleted = false
-        GROUP BY COALESCE(lead_source, source_channel, 'unknown')
+        GROUP BY COALESCE(lead_source, 'unknown')
         ORDER BY lead_count DESC
         """,
         {"org_id": org_id},
