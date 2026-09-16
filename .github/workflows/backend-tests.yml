@@ -42,12 +42,14 @@ jobs:
 
       - name: Run tests
         env:
-          ENVIRONMENT: testing
           # Settings requires these with no defaults, but nothing here needs
           # them to be real - the suite skips its Postgres-dependent tests
-          # when no live database is reachable, and ENVIRONMENT=testing
-          # skips the production-hardening validation these would otherwise
-          # need to satisfy (see core/config.py's validate_production_hardening).
+          # when no live database is reachable. ENVIRONMENT is deliberately
+          # left unset (defaults to "development") rather than "testing":
+          # test_standardized_stack.py::test_settings_validation asserts
+          # settings.ENVIRONMENT == "development" directly, and "development"
+          # already skips core/config.py's production-hardening validation
+          # these dummy values would otherwise need to satisfy.
           SECRET_KEY: ci-test-secret-key-not-for-production
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           SUPABASE_URL: https://example.supabase.co
