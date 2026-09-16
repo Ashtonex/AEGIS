@@ -43,4 +43,14 @@ jobs:
       - name: Run tests
         env:
           ENVIRONMENT: testing
+          # Settings requires these with no defaults, but nothing here needs
+          # them to be real - the suite skips its Postgres-dependent tests
+          # when no live database is reachable, and ENVIRONMENT=testing
+          # skips the production-hardening validation these would otherwise
+          # need to satisfy (see core/config.py's validate_production_hardening).
+          SECRET_KEY: ci-test-secret-key-not-for-production
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_ANON_KEY: ci-test-anon-key
+          SUPABASE_SERVICE_KEY: ci-test-service-key
         run: python -m pytest -q

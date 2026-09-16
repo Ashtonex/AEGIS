@@ -76,7 +76,7 @@ export function FinanceAssistantPanel() {
       <div className="flex-1 overflow-y-auto custom-scrollbar space-y-4 p-4">
         {messages.length === 0 && (
           <p className="text-xs text-slate-light">
-            Ask something like "what's our VAT position this quarter" or "how is project X's GL looking against forecast".
+            Ask something like &ldquo;what&rsquo;s our VAT position this quarter&rdquo; or &ldquo;how is project X&rsquo;s GL looking against forecast&rdquo;.
           </p>
         )}
         {messages.map((msg, idx) => (
