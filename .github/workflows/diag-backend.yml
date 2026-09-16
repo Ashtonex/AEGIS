@@ -1,0 +1,31 @@
+name: Diagnose Backend
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and inspect
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -x
+            cd /opt/aegis
+            echo "--- container status ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml ps
+            echo "--- imperium-api logs (last 300 lines) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml logs --tail=300 imperium-api || true
+            echo "--- imperium-worker logs (last 80 lines) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml logs --tail=80 imperium-worker || true
+            echo "--- caddy logs (last 80 lines) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml logs --tail=80 caddy || true
+            echo "--- current git commit on droplet ---"
+            git log -1 --oneline
+            echo "--- disk/memory ---"
+            df -h /
+            free -h
