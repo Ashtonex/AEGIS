@@ -1,10 +1,12 @@
 from typing import AsyncGenerator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.exc import TimeoutError as SATimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from supabase import Client, create_client
 
 from core.config import settings
+from core.logging import logger
 
 # ----------------------------------------------------------------------------
 # Runtime app traffic uses Supavisor's *transaction*-mode pooler (port 6543),
@@ -68,10 +70,56 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
+# ----------------------------------------------------------------------------
+# Pool instrumentation (AEGIS audit item 1.1 follow-up). The audit's literal
+# recommendation - acquire/release the DB connection per query instead of per
+# request - is a correctness-risky rewrite across ~1,565 call sites (it can
+# silently split a write endpoint's multi-statement transaction into several
+# non-atomic ones). Before attempting that, measure whether pool exhaustion
+# under get_db()'s current per-request session is actually still happening
+# now that a smaller per-worker pool (1.2) and Redis auth caching (1.3, which
+# removes most of the auth-tax queries that used to hold the connection
+# during every request) are in place. No such measurement existed before -
+# this only observes, it changes no behavior for callers.
+_pool = engine.sync_engine.pool
+_POOL_CAPACITY = settings.DB_POOL_SIZE + settings.DB_MAX_OVERFLOW
+_POOL_WARN_RATIO = 0.8
+
+
+def pool_status() -> dict:
+    checked_out = _pool.checkedout()
+    return {
+        "checked_out": checked_out,
+        "capacity": _POOL_CAPACITY,
+        "checked_in": _pool.checkedin(),
+        "overflow": _pool.overflow(),
+    }
+
+
+@event.listens_for(engine.sync_engine, "checkout")
+def _log_pool_pressure(dbapi_connection, connection_record, connection_proxy) -> None:
+    checked_out = _pool.checkedout()
+    if checked_out >= _POOL_CAPACITY * _POOL_WARN_RATIO:
+        logger.warning(
+            "db_pool_near_capacity",
+            checked_out=checked_out,
+            capacity=_POOL_CAPACITY,
+            overflow=_pool.overflow(),
+        )
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except SATimeoutError:
+            # This is the failure mode root cause 2 predicted: every slot in
+            # this worker's pool was checked out and a new request waited the
+            # full pool_timeout (SQLAlchemy default 30s) without getting one.
+            # Logged with pool_status() so it's visible whether this is a
+            # live problem, not just a theoretical one from the audit.
+            logger.error("db_pool_checkout_timeout", **pool_status())
+            raise
         finally:
             await session.close()
 

@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from core.config import settings
-from core.database import check_database_health
+from core.database import check_database_health, pool_status
 from core.logging import logger, setup_logging
 from core.security import get_current_user, require_resource_permission
 from app.middleware.logging_middleware import StructuredLoggingMiddleware
@@ -103,6 +103,11 @@ def create_app() -> FastAPI:
                 "database": database_health["status"],
                 "deploy_marker": "modules-diag-2026-08-05a",
                 "realtime_listener": get_listener_status(),
+                # This worker process's own DB pool occupancy only - with 4
+                # workers each has an independent pool, so this is not the
+                # whole picture, but a quick way to see if any one process is
+                # under pressure without grepping logs for db_pool_* events.
+                "db_pool": pool_status(),
             },
             "message": "Project Imperium is online.",
             "meta": {},
