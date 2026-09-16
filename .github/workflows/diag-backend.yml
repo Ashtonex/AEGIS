@@ -20,6 +20,8 @@ jobs:
             docker compose -f deploy/digitalocean/docker-compose.yml ps
             echo "--- imperium-api errors/500s since deploy (~2h) ---"
             docker compose -f deploy/digitalocean/docker-compose.yml logs --since=2h imperium-api 2>&1 | grep -iE "error|500 Internal|traceback|exception" | tail -400 || true
+            echo "--- db pool pressure/timeout events since deploy (~2h) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml logs --since=2h imperium-api 2>&1 | grep -F "db_pool_" | tail -200 || true
             echo "--- current git commit on droplet ---"
             git log -1 --oneline
             echo "--- disk/memory ---"
