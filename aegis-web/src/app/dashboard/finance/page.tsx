@@ -45,6 +45,8 @@ function PanelLoading() {
   );
 }
 const FinanceOperationsPanel = dynamic(() => import("./FinanceOperationsPanel").then((m) => m.FinanceOperationsPanel), { loading: PanelLoading });
+const PayrollPanel = dynamic(() => import("./PayrollPanel").then((m) => m.PayrollPanel), { loading: PanelLoading });
+const ProjectFinancialsWorkspace = dynamic(() => import("./ProjectFinancialsWorkspace").then((m) => m.ProjectFinancialsWorkspace), { loading: PanelLoading });
 const DepartmentTransfersPanel = dynamic(() => import("./DepartmentTransfersPanel").then((m) => m.DepartmentTransfersPanel), { loading: PanelLoading });
 const StatutoryPanel = dynamic(() => import("./StatutoryPanel").then((m) => m.StatutoryPanel), { loading: PanelLoading });
 const VendorPaymentsPanel = dynamic(() => import("./VendorPaymentsPanel").then((m) => m.VendorPaymentsPanel), { loading: PanelLoading });
@@ -379,7 +381,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   };
 
   // Aggregated KPIs
-  const operationalTabs: FinanceTab[] = ["banking", "cash-accounts", "cashbook", "supplier-payments", "payroll"];
+  const operationalTabs: FinanceTab[] = ["banking", "cash-accounts", "cashbook", "supplier-payments"];
 
   const kpis = useMemo(() => {
     let contractTotal = 0;
@@ -568,11 +570,13 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       {/* Tab Panels */}
       {activeTab === "data-room" ? (
         <DataRoomPanel />
+      ) : activeTab === "payroll" ? (
+        <PayrollPanel projects={projects} departmentId={departmentId} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
           {operationalTabs.includes(activeTab) && (
-            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll"} projects={projects} departmentId={departmentId} />
+            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments"} projects={projects} departmentId={departmentId} />
           )}
 
           {activeTab === "transfers" && (
@@ -874,87 +878,20 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
 
         </div>
 
-        {/* Project Detail Right Sidebar / Panel */}
+        {/* Project Financials Right Sidebar / Panel */}
         <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-            <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Project Detail Control</h2>
-            {detailLoading ? (
-              <div className="flex h-48 items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-signal" />
-              </div>
-            ) : projectDetail ? (
-              <div className="space-y-4 mt-4">
-                <div>
-                  <h3 className="text-base font-semibold text-paper">{projectDetail.project_name}</h3>
-                  <p className="text-xs text-slate-light font-mono mt-0.5">{projectDetail.project_code || "Code unassigned"}</p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 border-t border-b border-ink-mid py-4 my-4">
-                  <div>
-                    <span className="text-[10px] uppercase font-mono text-slate tracking-wider block">Revised Contract Value</span>
-                    <span className="text-sm font-semibold text-paper block mt-1">{money(Number(projectDetail.contract_value || 0) + Number(projectDetail.approved_variations || 0))}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] uppercase font-mono text-slate tracking-wider block">Certified Revenue</span>
-                    <span className="text-sm font-semibold text-emerald-400 block mt-1">{money(projectDetail.certified_to_date)}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] uppercase font-mono text-slate tracking-wider block">Actual Costs To Date</span>
-                    <span className="text-sm font-semibold text-paper block mt-1">{money(projectDetail.actual_cost_to_date)}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] uppercase font-mono text-slate tracking-wider block">Committed Costs</span>
-                    <span className="text-sm font-semibold text-slate-light block mt-1">{money(projectDetail.committed_cost)}</span>
-                  </div>
-                </div>
-
-                {/* Progress Indicators */}
-                <div className="space-y-3">
-                  <div>
-                    <div className="flex justify-between text-xs font-mono text-slate mb-1">
-                      <span>Budget Spent</span>
-                      <span>{percent((Number(projectDetail.actual_cost_to_date || 0) / Number(projectDetail.approved_budget || 1)) * 100)}</span>
-                    </div>
-                    <div className="w-full bg-ink h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-signal h-full"
-                        style={{ width: `${Math.min(100, (Number(projectDetail.actual_cost_to_date || 0) / Number(projectDetail.approved_budget || 1)) * 100)}%` }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex justify-between text-xs font-mono text-slate mb-1">
-                      <span>Cash collection efficiency</span>
-                      <span>{percent((Number(projectDetail.cash_collected || 0) / Number(projectDetail.certified_to_date || 1)) * 100)}</span>
-                    </div>
-                    <div className="w-full bg-ink h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-emerald-500 h-full"
-                        style={{ width: `${Math.min(100, (Number(projectDetail.cash_collected || 0) / Number(projectDetail.certified_to_date || 1)) * 100)}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Warnings / Risk alerts */}
-                {(projectDetail.cost_overrun_risk || projectDetail.cashflow_deficit_risk) && (
-                  <div className="bg-red-950/20 border border-red-500/30 p-3 rounded flex items-start space-x-3 mt-4">
-                    <AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-semibold text-red-300">Financial Risk Warnings</p>
-                      <ul className="text-[11px] text-red-400/90 list-disc list-inside mt-1 space-y-1">
-                        {projectDetail.cost_overrun_risk && <li>EAC exceeds approved budget</li>}
-                        {projectDetail.cashflow_deficit_risk && <li>Certified/Commitment cash deficit detected</li>}
-                      </ul>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p className="text-xs text-slate mt-4 text-center">Select a project ledger to view detailed metrics and budget progression.</p>
-            )}
-          </div>
+          <ProjectFinancialsWorkspace
+            projects={projects}
+            budgets={budgets}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={(id) => void loadProjectDetail(id)}
+            projectDetail={projectDetail}
+            detailLoading={detailLoading}
+            onDataChanged={async () => {
+              await loadData();
+              if (selectedProjectId) await loadProjectDetail(selectedProjectId);
+            }}
+          />
         </div>
       </div>
       )}

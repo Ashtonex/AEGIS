@@ -8,32 +8,24 @@ import {
   confirmBankStatementMatch,
   createCashbookEntryFromBankLine,
   createFinanceCashAccount,
-  createPayrollRun,
-  decidePayrollRun,
   getBankStatementImports,
   getBankStatementLines,
   getFinanceCashAccounts,
   getFinanceCashbook,
-  getFinancePayrollProfiles,
   getFinanceProgressClaims,
   getFinanceSupplierPayments,
-  getHREmployees,
-  getPayrollItemAllocations,
-  getPayrollRun,
   getPayrollRuns,
   getProcurementInvoices,
   postFinanceCashbookTransaction,
   postFinanceSupplierPaymentBatch,
-  putPayrollItemAllocations,
   rejectBankStatementMatch,
   reopenBankStatementMatch,
   runBankStatementMatching,
   uploadBankStatementImport,
-  upsertFinancePayrollProfile,
 } from "@/lib/api";
 
 type RecordData = Record<string, any>;
-type OpsTab = "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "banking";
+type OpsTab = "cash-accounts" | "cashbook" | "supplier-payments" | "banking";
 
 function money(value: unknown) {
   const num = typeof value === "number" ? value : Number(value);
@@ -55,31 +47,21 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   const [cashbook, setCashbook] = useState<RecordData[]>([]);
   const [supplierPayments, setSupplierPayments] = useState<RecordData[]>([]);
   const [supplierInvoices, setSupplierInvoices] = useState<RecordData[]>([]);
-  const [employees, setEmployees] = useState<RecordData[]>([]);
-  const [payProfiles, setPayProfiles] = useState<RecordData[]>([]);
   const [payrollRuns, setPayrollRuns] = useState<RecordData[]>([]);
 
   const [cashAccount, setCashAccount] = useState({ account_code: "", account_name: "", account_type: "bank", bank_name: "", account_number: "", currency: "USD", opening_balance: "0" });
   const [cashTx, setCashTx] = useState({ cash_account_id: "", transaction_date: today(), transaction_type: "receipt", project_id: "", counterparty_name: "", payment_method: "bank_transfer", reference: "", description: "", amount: "0", currency: "USD" });
   const [receipt, setReceipt] = useState({ cash_account_id: "", progress_claim_id: "", transaction_date: today(), amount: "0", reference: "", counterparty_name: "" });
   const [supplierBatch, setSupplierBatch] = useState({ cash_account_id: "", payment_date: today(), supplier_invoice_ids: [] as string[], payment_method: "bank_transfer", reference: "", notes: "" });
-  const [payProfile, setPayProfile] = useState({ employee_id: "", pay_type: "monthly_salary", base_rate: "0", overtime_rate: "0", currency: "USD", bank_name: "", bank_account_number: "", tax_number: "", nssa_number: "" });
-  const [payrollRun, setPayrollRun] = useState({ period_start: today(), period_end: today(), payment_date: today(), cash_account_id: "", project_id: "" });
-  const [selectedProfileIds, setSelectedProfileIds] = useState<Record<string, boolean>>({});
-  const [profileHours, setProfileHours] = useState<Record<string, { regular_hours: string; overtime_hours: string }>>({});
   const [claims, setClaims] = useState<RecordData[]>([]);
-  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
-  const [expandedRunItems, setExpandedRunItems] = useState<RecordData[]>([]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
-    const [accountRes, cashbookRes, paymentsRes, invoicesRes, employeeRes, profileRes, runRes, claimsRes] = await Promise.allSettled([
+    const [accountRes, cashbookRes, paymentsRes, invoicesRes, runRes, claimsRes] = await Promise.allSettled([
       getFinanceCashAccounts(),
       getFinanceCashbook({ department_id: departmentId || undefined }),
       getFinanceSupplierPayments({ department_id: departmentId || undefined }),
       getProcurementInvoices({ status: "approved", match_status: "all" }),
-      getHREmployees({ status: "active" }),
-      getFinancePayrollProfiles(),
       getPayrollRuns({ department_id: departmentId || undefined }),
       getFinanceProgressClaims({ department_id: departmentId || undefined }),
     ]);
@@ -87,8 +69,6 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
     if (cashbookRes.status === "fulfilled") setCashbook(cashbookRes.value.data || []);
     if (paymentsRes.status === "fulfilled") setSupplierPayments(paymentsRes.value.data || []);
     if (invoicesRes.status === "fulfilled") setSupplierInvoices((invoicesRes.value.data || []).filter((i: RecordData) => i.status !== "paid"));
-    if (employeeRes.status === "fulfilled") setEmployees(employeeRes.value.data || []);
-    if (profileRes.status === "fulfilled") setPayProfiles(profileRes.value.data || []);
     if (runRes.status === "fulfilled") setPayrollRuns(runRes.value.data || []);
     if (claimsRes.status === "fulfilled") setClaims((claimsRes.value.data || []).filter((c: RecordData) => ["certified", "submitted"].includes(String(c.status || "").toLowerCase())));
     setLoading(false);
@@ -134,54 +114,6 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   const paySuppliers = (event: React.FormEvent) => {
     event.preventDefault();
     void runAction(() => postFinanceSupplierPaymentBatch(supplierBatch), "Supplier payment batch posted.");
-  };
-
-  const savePayProfile = (event: React.FormEvent) => {
-    event.preventDefault();
-    void runAction(() => upsertFinancePayrollProfile({ ...payProfile, base_rate: Number(payProfile.base_rate), overtime_rate: Number(payProfile.overtime_rate) }), "Payroll profile saved.");
-  };
-
-  const toggleProfileSelected = (profileId: string) => {
-    setSelectedProfileIds(prev => ({ ...prev, [profileId]: !prev[profileId] }));
-    setProfileHours(prev => prev[profileId] ? prev : { ...prev, [profileId]: { regular_hours: "160", overtime_hours: "0" } });
-  };
-
-  const createRun = (event: React.FormEvent) => {
-    event.preventDefault();
-    const selected = payProfiles.filter(p => selectedProfileIds[p.id]);
-    if (selected.length === 0) {
-      setNotice("Select at least one employee to include in this run.");
-      return;
-    }
-    const items = selected.map(p => {
-      const hours = profileHours[p.id] || { regular_hours: "0", overtime_hours: "0" };
-      return {
-        employee_id: p.employee_id,
-        project_id: payrollRun.project_id || null,
-        regular_hours: Number(hours.regular_hours) || 0,
-        overtime_hours: Number(hours.overtime_hours) || 0,
-        other_deduction: 0,
-      };
-    });
-    void runAction(() => createPayrollRun({
-      period_start: payrollRun.period_start,
-      period_end: payrollRun.period_end,
-      payment_date: payrollRun.payment_date,
-      cash_account_id: payrollRun.cash_account_id,
-      items,
-    }), "Payroll run created.");
-    setSelectedProfileIds({});
-  };
-
-  const toggleRunExpanded = async (runId: string) => {
-    if (expandedRunId === runId) {
-      setExpandedRunId(null);
-      setExpandedRunItems([]);
-      return;
-    }
-    setExpandedRunId(runId);
-    const res = await getPayrollRun(runId);
-    setExpandedRunItems(res.data?.items || []);
   };
 
   if (loading) {
@@ -250,92 +182,6 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
         </Panel>
       )}
 
-      {tab === "payroll" && (
-        <section className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <Panel title="Payroll Profiles">
-            <form onSubmit={savePayProfile} className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              <select className={inputClass} value={payProfile.employee_id} onChange={e => setPayProfile({ ...payProfile, employee_id: e.target.value })} required><option value="">Employee</option>{employees.map(e => <option key={e.id} value={e.id}>{e.full_name || e.name}</option>)}</select>
-              <select className={inputClass} value={payProfile.pay_type} onChange={e => setPayProfile({ ...payProfile, pay_type: e.target.value })}><option value="monthly_salary">Monthly</option><option value="hourly">Hourly</option><option value="daily">Daily</option></select>
-              <input className={inputClass} placeholder="Base rate" value={payProfile.base_rate} onChange={e => setPayProfile({ ...payProfile, base_rate: e.target.value })} />
-              <input className={inputClass} placeholder="Overtime rate" value={payProfile.overtime_rate} onChange={e => setPayProfile({ ...payProfile, overtime_rate: e.target.value })} />
-              <input className={inputClass} placeholder="Bank" value={payProfile.bank_name} onChange={e => setPayProfile({ ...payProfile, bank_name: e.target.value })} />
-              <input className={inputClass} placeholder="Bank account" value={payProfile.bank_account_number} onChange={e => setPayProfile({ ...payProfile, bank_account_number: e.target.value })} />
-              <button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Save Profile</button>
-            </form>
-            <SimpleTable rows={payProfiles} columns={["employee_number", "full_name", "pay_type", "base_rate", "bank_name"]} />
-          </Panel>
-          <Panel title="Payroll Runs">
-            <form onSubmit={createRun} className="space-y-3 mb-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <input className={inputClass} type="date" value={payrollRun.period_start} onChange={e => setPayrollRun({ ...payrollRun, period_start: e.target.value })} />
-                <input className={inputClass} type="date" value={payrollRun.period_end} onChange={e => setPayrollRun({ ...payrollRun, period_end: e.target.value })} />
-                <input className={inputClass} type="date" value={payrollRun.payment_date} onChange={e => setPayrollRun({ ...payrollRun, payment_date: e.target.value })} />
-                <SelectAccount accounts={accounts} value={payrollRun.cash_account_id} onChange={v => setPayrollRun({ ...payrollRun, cash_account_id: v })} />
-                <select className={inputClass} value={payrollRun.project_id} onChange={e => setPayrollRun({ ...payrollRun, project_id: e.target.value })}><option value="">No linked project</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
-              </div>
-              <div className="border border-ink-mid rounded max-h-48 overflow-y-auto divide-y divide-ink-mid">
-                {payProfiles.length === 0 ? (
-                  <p className="text-xs text-slate p-3">No active payroll profiles - add one above first.</p>
-                ) : (
-                  payProfiles.map(p => (
-                    <div key={p.id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                      <input type="checkbox" checked={!!selectedProfileIds[p.id]} onChange={() => toggleProfileSelected(p.id)} />
-                      <span className="flex-1 text-paper">{p.full_name || p.employee_number || p.employee_id}</span>
-                      {selectedProfileIds[p.id] && (
-                        <div className="flex gap-1">
-                          <input
-                            className={`${inputClass} w-20 py-1`}
-                            placeholder="Reg hrs"
-                            value={profileHours[p.id]?.regular_hours ?? "160"}
-                            onChange={e => setProfileHours(prev => ({ ...prev, [p.id]: { regular_hours: e.target.value, overtime_hours: prev[p.id]?.overtime_hours ?? "0" } }))}
-                          />
-                          <input
-                            className={`${inputClass} w-20 py-1`}
-                            placeholder="OT hrs"
-                            value={profileHours[p.id]?.overtime_hours ?? "0"}
-                            onChange={e => setProfileHours(prev => ({ ...prev, [p.id]: { regular_hours: prev[p.id]?.regular_hours ?? "160", overtime_hours: e.target.value } }))}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-              <button disabled={busy} className={buttonClass}><Plus className="h-4 w-4" />Create Run</button>
-            </form>
-            <div className="space-y-2">
-              {payrollRuns.map(run => (
-                <div key={run.id} className="border border-ink-mid bg-ink/30 text-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2">
-                    <button className="text-paper hover:text-signal" onClick={() => void toggleRunExpanded(run.id)}>
-                      {run.run_number} {money(run.net_pay)} <span className="text-slate">{run.status}</span>
-                    </button>
-                    <div className="flex gap-2">
-                      {run.status === "draft" && <button className="text-xs text-signal" onClick={() => void runAction(() => decidePayrollRun(run.id, "approve"), "Payroll run approved.")}>Approve</button>}
-                      {run.status === "approved" && <button className="text-xs text-signal" onClick={() => void runAction(() => decidePayrollRun(run.id, "post"), "Payroll posted.")}>Post</button>}
-                    </div>
-                  </div>
-                  {expandedRunId === run.id && (
-                    <div className="border-t border-ink-mid px-3 py-2 space-y-2">
-                      {expandedRunItems.length === 0 && <p className="text-xs text-slate">No items.</p>}
-                      {expandedRunItems.map(item => (
-                        <PayrollItemAllocationRow
-                          key={item.id}
-                          item={item}
-                          projects={projects}
-                          editable={run.status === "draft" || run.status === "approved"}
-                          onSaved={() => setNotice("Allocation saved.")}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </Panel>
-        </section>
-      )}
-
       <button onClick={() => void loadData()} className="inline-flex items-center gap-2 text-xs text-slate hover:text-paper"><RefreshCw className="h-3 w-3" />Refresh operations</button>
     </div>
   );
@@ -351,89 +197,6 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 function SelectAccount({ accounts, value, onChange }: { accounts: RecordData[]; value: string; onChange: (value: string) => void }) {
   return <select className={inputClass} value={value} onChange={e => onChange(e.target.value)} required><option value="">Cash account</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.account_name} - {money(account.current_balance)}</option>)}</select>;
-}
-
-function PayrollItemAllocationRow({ item, projects, editable, onSaved }: { item: RecordData; projects: RecordData[]; editable: boolean; onSaved: () => void }) {
-  const [rows, setRows] = useState<Array<{ project_id: string; allocation_pct: string }>>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void getPayrollItemAllocations(item.id).then(res => {
-      if (cancelled) return;
-      const existing = res.data?.allocations || [];
-      setRows(
-        existing.length > 0
-          ? existing.map((a: RecordData) => ({ project_id: a.project_id || "", allocation_pct: String(a.allocation_pct) }))
-          : [{ project_id: item.project_id || "", allocation_pct: "100" }]
-      );
-      setLoaded(true);
-    });
-    return () => { cancelled = true; };
-  }, [item.id, item.project_id]);
-
-  const total = rows.reduce((sum, r) => sum + (Number(r.allocation_pct) || 0), 0);
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await putPayrollItemAllocations(item.id, rows.map(r => ({ project_id: r.project_id || null, allocation_pct: Number(r.allocation_pct) || 0 })));
-      onSaved();
-    } catch (err: any) {
-      setError(err?.message || "Failed to save allocation.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (!loaded) return <div className="text-xs text-slate">{item.employee_name || item.employee_number}...</div>;
-
-  return (
-    <div className="border border-ink-mid rounded px-3 py-2 space-y-1.5">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-paper">{item.employee_name || item.employee_number} - {money(item.gross_pay)} gross</span>
-        {!editable && <span className="text-slate">Locked (run posted)</span>}
-      </div>
-      {rows.map((row, idx) => (
-        <div key={idx} className="flex items-center gap-2">
-          <select
-            className={`${inputClass} flex-1 py-1`}
-            disabled={!editable}
-            value={row.project_id}
-            onChange={e => setRows(prev => prev.map((r, i) => (i === idx ? { ...r, project_id: e.target.value } : r)))}
-          >
-            <option value="">HQ / no project</option>
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-          <input
-            className={`${inputClass} w-20 py-1`}
-            disabled={!editable}
-            value={row.allocation_pct}
-            onChange={e => setRows(prev => prev.map((r, i) => (i === idx ? { ...r, allocation_pct: e.target.value } : r)))}
-          />
-          <span className="text-xs text-slate">%</span>
-          {editable && rows.length > 1 && (
-            <button className="text-xs text-red-300" onClick={() => setRows(prev => prev.filter((_, i) => i !== idx))}>
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-      ))}
-      {editable && (
-        <div className="flex items-center justify-between">
-          <button className="text-xs text-signal" onClick={() => setRows(prev => [...prev, { project_id: "", allocation_pct: "0" }])}>+ Add project</button>
-          <div className="flex items-center gap-2">
-            <span className={`text-xs ${Math.abs(total - 100) > 0.01 ? "text-red-300" : "text-slate"}`}>{total}%</span>
-            <button disabled={saving} className="text-xs text-signal font-semibold" onClick={() => void save()}>Save Split</button>
-          </div>
-        </div>
-      )}
-      {error && <p className="text-xs text-red-300">{error}</p>}
-    </div>
-  );
 }
 
 function CashbookForm({ accounts, projects, cashTx, setCashTx, onSubmit, busy }: { accounts: RecordData[]; projects: RecordData[]; cashTx: RecordData; setCashTx: (value: any) => void; onSubmit: (event: React.FormEvent) => void; busy: boolean }) {
