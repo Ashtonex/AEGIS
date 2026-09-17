@@ -47,18 +47,25 @@ Symptoms: requests hang until timeout with no clear error, or
 `asyncpg`/`sqlalchemy` connection errors, or every DB-backed endpoint 500s
 while `/docs` still loads fine (proves the app itself started).
 
-1. Check first whether this is the known IPv6 pooler issue on this machine -
+1. Check first whether this is actually Redis being down, not the DB at all -
+   see [Local Redis down makes every authenticated request slow](#8-local-redis-down-makes-every-authenticated-request-slow-not-the-db)
+   below. It produces this exact symptom set (every authenticated endpoint
+   slow/hanging while `/docs` stays fast) with zero DB-side cause - confirmed
+   via `pg_stat_activity`/`pg_locks` showing no blocking locks at all while
+   requests were taking 20-36s. Rule this out before assuming pool
+   exhaustion or a Postgres-side problem.
+2. Check whether this is the known IPv6 pooler issue on this machine -
    see [Supabase IPv4 pooler required](#6-supabase-database-host-must-be-the-ipv4-pooler)
    below. This has burned an entire debugging session before; rule it out
    before anything else.
-2. Confirm Supabase itself is reachable and not paused (free-tier projects
+3. Confirm Supabase itself is reachable and not paused (free-tier projects
    pause after inactivity): open the Supabase dashboard for
    `mzwwkwokpakdweyyscef` and check project status.
-3. Confirm the password in `DATABASE_URL` is current - if it was rotated
+4. Confirm the password in `DATABASE_URL` is current - if it was rotated
    (see `docs/SECRET_ROTATION_RUNBOOK.md`), a stale local `.env` will fail
    auth silently as a connection timeout in some drivers, or an explicit
    auth error in others.
-4. If using the transaction-mode pooler port (6543), confirm
+5. If using the transaction-mode pooler port (6543), confirm
    `connect_args={"statement_cache_size": 0, "prepared_statement_cache_size": 0}`
    is set wherever the engine is created (`core/database.py`,
    `migrations/run_aegis_migrations.py`) - pgbouncer transaction mode
@@ -66,7 +73,7 @@ while `/docs` still loads fine (proves the app itself started).
    port (5432, what this environment currently uses) doesn't need this,
    but don't remove it defensively without checking every engine creation
    site actually agrees on the port.
-5. Restart the backend after any `.env` change - it's read once at process
+6. Restart the backend after any `.env` change - it's read once at process
    start, not live-reloaded.
 
 ## 3. Migration failure
@@ -153,7 +160,7 @@ unavailable", or login works but every subsequent authenticated call fails.
 
 ## Environment gotchas (this Windows dev machine specifically)
 
-These three have each independently eaten significant debugging time by
+These have each independently eaten significant debugging time by
 presenting as something else entirely. Check these BEFORE assuming a code
 change is the root cause of a newly-broken local dev environment.
 
@@ -209,6 +216,40 @@ calls the backend directly rather than via `/api/v1/...`, check
 `ALLOWED_ORIGINS` against whatever port the frontend is actually running
 on before assuming it's a backend logic bug. Current value:
 `http://localhost:3010`.
+
+## 8. Local Redis down makes every authenticated request slow, not the DB
+
+Symptoms: `/docs` and other unauthenticated routes respond fast, but every
+authenticated endpoint takes 20-36s (not a hard hang - it eventually
+returns 200) and the frontend gives up first, showing banners like
+"Finance data could not be loaded." Looks exactly like DB pool exhaustion
+or lock contention, but `pg_stat_activity`/`pg_locks` show nothing blocking.
+
+`core/cache.py`'s Redis helpers fail open by design (return `None`/log a
+warning on any Redis error, never raise) - so with `redis://localhost:6379`
+refused, `core/security.py`'s token-verification cache
+(`auth:token:*`) and `get_current_user`'s identity/role cache
+(`auth:identity:*`) are silently bypassed on every single request. Every
+authenticated call then falls through to a live Supabase Auth API round
+trip, retried 3x with a 10s `httpx` timeout per attempt on failure. A
+dashboard page firing ~15 concurrent API calls on load (e.g. `/dashboard/finance`)
+turns that into 20-36s per request under the resulting contention, even
+though a single standalone call to Supabase's Auth API from this machine
+completes in well under a second.
+
+**Fix:** confirm Redis is actually running first -
+`C:\Program Files\Redis\redis-cli.exe ping` should return `PONG`, or check
+port 6379 is listening. Docker Desktop would normally provide this via the
+root `docker-compose.yml`'s `redis` service, but it would not start on this
+machine (WSL backend stuck, no process ever appears after launching it) -
+worked around by installing a native Windows Redis build instead:
+```bash
+winget install --id Redis.Redis -e --accept-package-agreements --accept-source-agreements
+"C:\Program Files\Redis\redis-server.exe" "C:\Program Files\Redis\redis.windows.conf"
+```
+This is a plain foreground process, not a Windows service - it does not
+survive a reboot and must be manually relaunched with the command above
+after any restart of this machine.
 
 ---
 
