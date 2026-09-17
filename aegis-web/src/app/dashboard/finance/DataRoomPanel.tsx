@@ -5,7 +5,7 @@ import {
   Folder, FolderOpen, FileText, Upload, Download, Search, CheckCircle2,
   AlertCircle, ShieldCheck, Plus, RefreshCw, X, ChevronRight, ChevronDown,
   Building2, ExternalLink, Filter, Check, Clock, FileCheck, Layers, PieChart,
-  HardDrive, Lock, Sparkles, FolderPlus, Eye, ArrowUpDown
+  HardDrive, Lock, Sparkles, FolderPlus, Eye, ArrowUpDown, Cloud
 } from "lucide-react";
 import {
   getDataRoomTree,
@@ -21,6 +21,9 @@ import {
   verifyBankabilityItem,
   getDataRoomExportUrl,
   getInternalProjects,
+  getDataRoomSharePointStatus,
+  syncDataRoomFromSharePoint,
+  uploadDataRoomDocumentToSharePoint,
 } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 
@@ -81,6 +84,10 @@ export function DataRoomPanel() {
   // Projects list
   const [projects, setProjects] = useState<RecordData[]>([]);
 
+  // SharePoint sync state
+  const [sharepointStatus, setSharepointStatus] = useState<RecordData>({ connected: false, sync_enabled: false });
+  const [syncingSharePoint, setSyncingSharePoint] = useState(false);
+
   // Modals
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
@@ -106,10 +113,11 @@ export function DataRoomPanel() {
   const loadTreeAndData = useCallback(async () => {
     setLoading(true);
     try {
-      const [treeRes, bankRes, projRes] = await Promise.allSettled([
+      const [treeRes, bankRes, projRes, spRes] = await Promise.allSettled([
         getDataRoomTree(),
         getBankabilityMatrix(),
         getInternalProjects(),
+        getDataRoomSharePointStatus(),
       ]);
 
       if (treeRes.status === "fulfilled" && treeRes.value.data) {
@@ -123,6 +131,9 @@ export function DataRoomPanel() {
       }
       if (projRes.status === "fulfilled" && projRes.value.data) {
         setProjects(projRes.value.data || []);
+      }
+      if (spRes.status === "fulfilled" && spRes.value.data) {
+        setSharepointStatus(spRes.value.data);
       }
     } catch (err: any) {
       setNotice(err?.message || "Failed to load data room.");
@@ -198,46 +209,62 @@ export function DataRoomPanel() {
 
     setUploading(true);
     try {
-      // 1. Ask the API for a storage path bound to this organization, then
-      // upload to Supabase Storage at exactly that path. The register call
-      // below rejects any path outside this prefix.
-      const pathRes = await issueDataRoomUploadPath({ file_name: uploadFile.name });
-      const storagePath = pathRes.data?.storage_path;
-      if (!storagePath) throw new Error("Failed to allocate a secure upload location.");
-
-      const { error: uploadErr } = await supabase.storage
-        .from("documents")
-        .upload(storagePath, uploadFile, { cacheControl: "3600", upsert: false });
-
-      if (uploadErr) throw uploadErr;
-
-      // 2. Determine target folder and metadata
+      // Determine target folder and metadata
       const targetFolder = isCustomFolder && customFolderOverride
         ? customFolderOverride
         : classifiedTarget?.suggested_folder_path || selectedFolder;
 
-      const sectionCode = classifiedTarget?.section_code || "01_CORPORATE";
-      const auditCode = classifiedTarget?.audit_code || undefined;
-      const auditSubitem = classifiedTarget?.audit_subitem || undefined;
       const projId = uploadProject || classifiedTarget?.project_id || undefined;
       const fiscalYr = classifiedTarget?.fiscal_year || new Date(uploadDate).getFullYear();
 
-      await uploadDataRoomDocument({
-        title: uploadTitle,
-        folder_path: targetFolder,
-        section_code: sectionCode,
-        audit_code: auditCode,
-        audit_subitem: auditSubitem,
-        project_id: projId,
-        fiscal_year: fiscalYr,
-        document_date: uploadDate,
-        amount: uploadAmount ? parseFloat(uploadAmount) : undefined,
-        currency: "USD",
-        file_name: uploadFile.name,
-        file_size_bytes: uploadFile.size,
-        mime_type: uploadFile.type || "application/octet-stream",
-        storage_path: storagePath,
-      });
+      if (sharepointStatus.connected && sharepointStatus.sync_enabled) {
+        // Push straight to the org's real SharePoint site instead of
+        // Supabase Storage - see uploadDataRoomDocumentToSharePoint.
+        await uploadDataRoomDocumentToSharePoint({
+          file: uploadFile,
+          title: uploadTitle,
+          folder_path: targetFolder,
+          project_id: projId,
+          fiscal_year: fiscalYr,
+          document_date: uploadDate,
+          amount: uploadAmount ? parseFloat(uploadAmount) : undefined,
+        });
+      } else {
+        // 1. Ask the API for a storage path bound to this organization, then
+        // upload to Supabase Storage at exactly that path. The register call
+        // below rejects any path outside this prefix.
+        const pathRes = await issueDataRoomUploadPath({ file_name: uploadFile.name });
+        const storagePath = pathRes.data?.storage_path;
+        if (!storagePath) throw new Error("Failed to allocate a secure upload location.");
+
+        const { error: uploadErr } = await supabase.storage
+          .from("documents")
+          .upload(storagePath, uploadFile, { cacheControl: "3600", upsert: false });
+
+        if (uploadErr) throw uploadErr;
+
+        // 2. Register the document against its classified/selected folder
+        const sectionCode = classifiedTarget?.section_code || "01_CORPORATE";
+        const auditCode = classifiedTarget?.audit_code || undefined;
+        const auditSubitem = classifiedTarget?.audit_subitem || undefined;
+
+        await uploadDataRoomDocument({
+          title: uploadTitle,
+          folder_path: targetFolder,
+          section_code: sectionCode,
+          audit_code: auditCode,
+          audit_subitem: auditSubitem,
+          project_id: projId,
+          fiscal_year: fiscalYr,
+          document_date: uploadDate,
+          amount: uploadAmount ? parseFloat(uploadAmount) : undefined,
+          currency: "USD",
+          file_name: uploadFile.name,
+          file_size_bytes: uploadFile.size,
+          mime_type: uploadFile.type || "application/octet-stream",
+          storage_path: storagePath,
+        });
+      }
 
       setNotice(`Document stored and indexed in: ${targetFolder}`);
       setShowUploadModal(false);
@@ -270,6 +297,24 @@ export function DataRoomPanel() {
       await loadTreeAndData();
     } catch (err: any) {
       setNotice(err?.message || "Failed to create folder.");
+    }
+  };
+
+  const handleSyncFromSharePoint = async () => {
+    setSyncingSharePoint(true);
+    try {
+      const res = await syncDataRoomFromSharePoint();
+      const summary = res.data;
+      setNotice(
+        summary
+          ? `Sync complete: ${summary.folders_created} folder(s), ${summary.documents_imported} document(s) imported from SharePoint.`
+          : "Sync from SharePoint complete."
+      );
+      await Promise.all([loadTreeAndData(), loadDocuments()]);
+    } catch (err: any) {
+      setNotice(err?.message || "Failed to sync from SharePoint.");
+    } finally {
+      setSyncingSharePoint(false);
     }
   };
 
@@ -473,6 +518,20 @@ export function DataRoomPanel() {
               <span>New Folder</span>
             </button>
 
+            {/* Sync from SharePoint Button - only when the org's Data Room
+                SharePoint sync is actually connected and enabled */}
+            {sharepointStatus.connected && sharepointStatus.sync_enabled && (
+              <button
+                onClick={handleSyncFromSharePoint}
+                disabled={syncingSharePoint}
+                className="flex items-center gap-1.5 border border-sky-500/40 bg-sky-950/20 px-3 py-1.5 rounded text-xs text-sky-400 hover:bg-sky-950/40 transition-colors disabled:opacity-50"
+                title="Import files added directly in the connected SharePoint site"
+              >
+                <Cloud className={`w-3.5 h-3.5 ${syncingSharePoint ? "animate-pulse" : ""}`} />
+                <span>{syncingSharePoint ? "Syncing..." : "Sync from SharePoint"}</span>
+              </button>
+            )}
+
             {/* Export Button */}
             <a
               href={getDataRoomExportUrl(selectedFolder)}
@@ -637,9 +696,31 @@ export function DataRoomPanel() {
                           <div className="flex items-center gap-2.5">
                             <FileText className="w-4 h-4 text-signal/80 shrink-0" />
                             <div className="truncate max-w-xs">
-                              <p className="font-semibold text-paper truncate hover:text-signal cursor-pointer" onClick={() => handleOpenDoc(doc.id)}>
-                                {doc.title}
-                              </p>
+                              <div className="flex items-center gap-1.5">
+                                <p className="font-semibold text-paper truncate hover:text-signal cursor-pointer" onClick={() => handleOpenDoc(doc.id)}>
+                                  {doc.title}
+                                </p>
+                                {doc.provider === "sharepoint" && (
+                                  <span
+                                    className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-sky-500/30 bg-sky-950/20 text-sky-400 shrink-0"
+                                    title="Stored in SharePoint"
+                                  >
+                                    <Cloud className="w-2.5 h-2.5" /> SharePoint
+                                  </span>
+                                )}
+                                {doc.provider === "sharepoint" && doc.sharepoint_web_url && (
+                                  <a
+                                    href={doc.sharepoint_web_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-slate hover:text-sky-400 shrink-0"
+                                    title="Open in SharePoint"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                              </div>
                               <p className="text-[10px] text-slate font-mono truncate">{doc.file_name}</p>
                             </div>
                           </div>

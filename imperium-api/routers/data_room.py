@@ -1,3 +1,4 @@
+import asyncio
 import html
 import io
 import json
@@ -7,7 +8,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -15,7 +16,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.pagination import ok
-from core.database import get_db, supabase
+from app.services.microsoft import data_room_sync
+from app.services.microsoft.document_service import MicrosoftIntegrationNotReady
+from app.services.microsoft.errors import GraphError
+from core.database import get_db, supabase, AsyncSessionLocal
 from core.logging import logger
 from core.security import require_permission
 
@@ -175,6 +179,41 @@ class ChecklistVerify(BaseModel):
     notes: Optional[str] = None
 
 
+async def _bulk_upsert_system_folders(db: AsyncSession, *, org_id: str, rows: List[Dict[str, Any]]) -> None:
+    """Batch-inserts many finance.data_room_folders rows (each a plain dict
+    of parent_path/folder_name/folder_path/section_code/project_id) in a
+    single round trip via one multi-row VALUES INSERT, instead of one
+    INSERT per row. ON CONFLICT DO NOTHING correctly de-duplicates rows
+    that collide with each other within this same batch, not just against
+    rows already in the table (Postgres processes a multi-row INSERT's
+    proposed rows sequentially, so an earlier row in the batch is already
+    visible as a conflict target for a later one)."""
+    if not rows:
+        return
+
+    values_sql: List[str] = []
+    params: Dict[str, Any] = {"org_id": org_id}
+    for i, row in enumerate(rows):
+        values_sql.append(
+            f"(:org_id, :parent_path_{i}, :folder_name_{i}, :folder_path_{i}, :section_code_{i}, :project_id_{i}, true)"
+        )
+        params[f"parent_path_{i}"] = row["parent_path"]
+        params[f"folder_name_{i}"] = row["folder_name"]
+        params[f"folder_path_{i}"] = row["folder_path"]
+        params[f"section_code_{i}"] = row["section_code"]
+        params[f"project_id_{i}"] = row.get("project_id")
+
+    await db.execute(
+        text(f"""
+            INSERT INTO finance.data_room_folders (
+                organization_id, parent_path, folder_name, folder_path, section_code, project_id, is_system
+            ) VALUES {", ".join(values_sql)}
+            ON CONFLICT (organization_id, folder_path) DO NOTHING
+        """),  # nosec B608 - values_sql holds only positional bind-parameter placeholders, never user input
+        params,
+    )
+
+
 async def _ensure_folder_exists(
     db: AsyncSession, *, org_id: str, folder_path: str, section_code: Optional[str] = None, project_id: Optional[UUID] = None, user_id: Optional[str] = None
 ) -> None:
@@ -214,6 +253,58 @@ async def _ensure_folder_exists(
         )
 
 
+async def _fetch_data_room_folders(org_id: str) -> List[Dict[str, Any]]:
+    """Runs on its own short-lived session (not the request's shared `db`)
+    so it can execute concurrently with _fetch_data_room_doc_stats and
+    _fetch_bankability_score below - SQLAlchemy's AsyncSession is not safe
+    for concurrent use by multiple coroutines sharing one session."""
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            text("""
+                SELECT f.*, p.name AS project_name, p.project_code
+                FROM finance.data_room_folders f
+                LEFT JOIN projects.projects p ON p.id = f.project_id
+                WHERE f.organization_id = :org_id AND f.is_deleted = false
+                ORDER BY f.folder_path ASC
+            """),
+            {"org_id": org_id},
+        )
+        return [dict(r._mapping) for r in res]
+
+
+async def _fetch_data_room_doc_stats(org_id: str) -> Dict[str, Dict[str, Any]]:
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            text("""
+                SELECT folder_path,
+                       COUNT(id) AS document_count,
+                       COALESCE(SUM(file_size_bytes), 0) AS total_size_bytes,
+                       COUNT(CASE WHEN verification_status = 'verified' THEN 1 END) AS verified_count
+                FROM finance.data_room_documents
+                WHERE organization_id = :org_id AND is_deleted = false
+                GROUP BY folder_path
+            """),
+            {"org_id": org_id},
+        )
+        return {r["folder_path"]: dict(r._mapping) for r in res}
+
+
+async def _fetch_bankability_score(org_id: str) -> Dict[str, Any]:
+    async with AsyncSessionLocal() as s:
+        res = await s.execute(
+            text("""
+                SELECT
+                    COUNT(id) AS total_items,
+                    COUNT(CASE WHEN status = 'verified' THEN 1 END) AS verified_items,
+                    COUNT(CASE WHEN status = 'in_progress' THEN 1 END) AS in_progress_items
+                FROM finance.bankability_checklists
+                WHERE organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": org_id},
+        )
+        return res.mappings().first() or {}
+
+
 @router.get("/tree")
 async def get_data_room_tree(
     user: dict = Depends(require_permission("finance.data_room.read")),
@@ -235,87 +326,48 @@ async def get_data_room_tree(
     )
     projects = [dict(r._mapping) for r in projects_res]
 
-    # Ensure system default folders are populated if missing
+    # Seed every standard/system folder (18 sections + banking years +
+    # per-project root/subfolders) in a single batched INSERT instead of one
+    # round trip per row. This endpoint runs on every panel load, and the
+    # old per-row loop was (18 + 3 + 5*project_count) sequential awaited
+    # round trips - measured at 30+ seconds end-to-end against a
+    # higher-latency Supabase connection.
+    folder_rows: List[Dict[str, Any]] = []
     for sec in STANDARD_SECTIONS:
-        await db.execute(
-            text("""
-                INSERT INTO finance.data_room_folders (
-                    organization_id, parent_path, folder_name, folder_path, section_code, is_system
-                ) VALUES (
-                    :org_id, '', :name, :name, :code, true
-                ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-            """),
-            {"org_id": org_id, "name": sec["name"], "code": sec["code"]},
-        )
-    # Ensure banking years
+        folder_rows.append({
+            "parent_path": "", "folder_name": sec["name"], "folder_path": sec["name"],
+            "section_code": sec["code"], "project_id": None,
+        })
     for yr in ["2024", "2025", "2026"]:
-        await db.execute(
-            text("""
-                INSERT INTO finance.data_room_folders (
-                    organization_id, parent_path, folder_name, folder_path, section_code, is_system
-                ) VALUES (
-                    :org_id, '02 BANKING', :yr, :path, '02_BANKING', true
-                ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-            """),
-            {"org_id": org_id, "yr": yr, "path": f"02 BANKING/{yr}"},
-        )
-
-    # Ensure registered projects have subfolders under 05 PROJECTS
+        folder_rows.append({
+            "parent_path": "02 BANKING", "folder_name": yr, "folder_path": f"02 BANKING/{yr}",
+            "section_code": "02_BANKING", "project_id": None,
+        })
     for p in projects:
         p_name = p["name"]
         p_root = f"05 PROJECTS/{p_name}"
-        await db.execute(
-            text("""
-                INSERT INTO finance.data_room_folders (
-                    organization_id, parent_path, folder_name, folder_path, section_code, project_id, is_system
-                ) VALUES (
-                    :org_id, '05 PROJECTS', :name, :path, '05_PROJECTS', :project_id, true
-                ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-            """),
-            {"org_id": org_id, "name": p_name, "path": p_root, "project_id": p["id"]},
-        )
+        folder_rows.append({
+            "parent_path": "05 PROJECTS", "folder_name": p_name, "folder_path": p_root,
+            "section_code": "05_PROJECTS", "project_id": p["id"],
+        })
         for sub in ["Receipts & Invoices", "Contracts & Agreements", "Progress Claims", "BOQ & Variations"]:
-            sub_path = f"{p_root}/{sub}"
-            await db.execute(
-                text("""
-                    INSERT INTO finance.data_room_folders (
-                        organization_id, parent_path, folder_name, folder_path, section_code, project_id, is_system
-                    ) VALUES (
-                        :org_id, :parent, :sub, :sub_path, '05_PROJECTS', :project_id, true
-                    ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-                """),
-                {"org_id": org_id, "parent": p_root, "sub": sub, "sub_path": sub_path, "project_id": p["id"]},
-            )
+            folder_rows.append({
+                "parent_path": p_root, "folder_name": sub, "folder_path": f"{p_root}/{sub}",
+                "section_code": "05_PROJECTS", "project_id": p["id"],
+            })
 
+    await _bulk_upsert_system_folders(db, org_id=org_id, rows=folder_rows)
     await db.commit()
 
-    # 2. Fetch all folders
-    folders_res = await db.execute(
-        text("""
-            SELECT f.*, p.name AS project_name, p.project_code
-            FROM finance.data_room_folders f
-            LEFT JOIN projects.projects p ON p.id = f.project_id
-            WHERE f.organization_id = :org_id AND f.is_deleted = false
-            ORDER BY f.folder_path ASC
-        """),
-        {"org_id": org_id},
+    # 2-4. Three independent reads (folders, per-folder document stats,
+    # bankability score) - none depends on another's result, so they run
+    # concurrently on their own short-lived sessions instead of one after
+    # another on the shared request session.
+    folders, doc_stats, score_row = await asyncio.gather(
+        _fetch_data_room_folders(org_id),
+        _fetch_data_room_doc_stats(org_id),
+        _fetch_bankability_score(org_id),
     )
-    folders = [dict(r._mapping) for r in folders_res]
-
-    # 3. Aggregate documents count and size per folder_path
-    docs_stat_res = await db.execute(
-        text("""
-            SELECT folder_path,
-                   COUNT(id) AS document_count,
-                   COALESCE(SUM(file_size_bytes), 0) AS total_size_bytes,
-                   COUNT(CASE WHEN verification_status = 'verified' THEN 1 END) AS verified_count
-            FROM finance.data_room_documents
-            WHERE organization_id = :org_id AND is_deleted = false
-            GROUP BY folder_path
-        """),
-        {"org_id": org_id},
-    )
-    doc_stats = {r["folder_path"]: dict(r._mapping) for r in docs_stat_res}
 
     # Merge stats into folder objects
     for f in folders:
@@ -324,19 +376,6 @@ async def get_data_room_tree(
         f["total_size_bytes"] = stat.get("total_size_bytes", 0)
         f["verified_count"] = stat.get("verified_count", 0)
 
-    # 4. Bankability overall score
-    checklist_score_res = await db.execute(
-        text("""
-            SELECT
-                COUNT(id) AS total_items,
-                COUNT(CASE WHEN status = 'verified' THEN 1 END) AS verified_items,
-                COUNT(CASE WHEN status = 'in_progress' THEN 1 END) AS in_progress_items
-            FROM finance.bankability_checklists
-            WHERE organization_id = :org_id AND is_deleted = false
-        """),
-        {"org_id": org_id},
-    )
-    score_row = checklist_score_res.mappings().first() or {}
     total_items = score_row.get("total_items", 0) or 1
     verified_items = score_row.get("verified_items", 0) or 0
     readiness_pct = round((verified_items / total_items) * 100, 1)
@@ -662,6 +701,185 @@ async def upload_data_room_document(
     return ok({"id": str(doc_id), "folder_path": folder_path}, "Document registered in Data Room.")
 
 
+@router.get("/sharepoint-status")
+async def get_data_room_sharepoint_status(
+    user: dict = Depends(require_permission("finance.data_room.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tells the frontend whether the Data Room's SharePoint sync is usable
+    right now, so it can pick the upload path (this endpoint vs. the
+    Supabase-storage /upload flow) and whether to show the 'Sync from
+    SharePoint' button. Never returns a secret - only connection state."""
+    row = (
+        await db.execute(
+            text("""
+                SELECT connection_status, sync_data_room, data_room_root_web_url, last_synced_at
+                FROM core.organisation_integrations
+                WHERE organization_id = :org_id AND provider = 'microsoft365' AND is_deleted = false
+            """),
+            {"org_id": user["org_id"]},
+        )
+    ).mappings().first()
+
+    connected = bool(row and row["connection_status"] == "connected")
+    sync_enabled = bool(row and row["sync_data_room"])
+    return ok({
+        "connected": connected,
+        "sync_enabled": sync_enabled,
+        "root_web_url": row.get("data_room_root_web_url") if row else None,
+        "last_synced_at": row.get("last_synced_at") if row else None,
+    }, "Data Room SharePoint status retrieved.")
+
+
+@router.post("/sync-from-sharepoint")
+async def sync_data_room_from_sharepoint(
+    user: dict = Depends(require_permission("finance.data_room.sharepoint_sync")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manual 'pull': walks the connected SharePoint Data Room folder and
+    registers any file dropped there directly (outside AEGIS) that the Data
+    Room doesn't already know about. See
+    app/services/microsoft/data_room_sync.py's reconcile_from_sharepoint."""
+    try:
+        summary = await data_room_sync.reconcile_from_sharepoint(
+            db, organization_id=user["org_id"], actor_id=user.get("user_id"), standard_sections=STANDARD_SECTIONS,
+        )
+    except MicrosoftIntegrationNotReady as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc))
+    except GraphError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"SharePoint sync failed: {exc}")
+
+    await db.commit()
+    return ok(summary, f"Sync complete: {summary['folders_created']} folder(s), {summary['documents_imported']} document(s) imported.")
+
+
+@router.post("/upload-to-sharepoint", status_code=status.HTTP_201_CREATED)
+async def upload_data_room_document_to_sharepoint(
+    file: UploadFile = File(...),
+    title: str = Form(..., min_length=1, max_length=255),
+    folder_path: Optional[str] = Form(default=None, max_length=500),
+    project_id: Optional[str] = Form(default=None),
+    fiscal_year: Optional[int] = Form(default=None),
+    document_date: Optional[str] = Form(default=None),
+    amount: Optional[float] = Form(default=None),
+    user: dict = Depends(require_permission("finance.data_room.upload")),
+    db: AsyncSession = Depends(get_db),
+):
+    """SharePoint-backed counterpart to /upload: the file's bytes go
+    straight to the org's real SharePoint site (app/services/microsoft/
+    data_room_sync.py) instead of Supabase Storage. The frontend calls this
+    instead of the issue-path -> Supabase-upload -> register three-step flow
+    only when GET /sharepoint-status reports the org is connected and Data
+    Room sync is enabled."""
+    org_id = user["org_id"]
+    user_id = user["user_id"]
+
+    project_uuid: Optional[UUID] = None
+    if project_id:
+        try:
+            project_uuid = UUID(project_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="project_id must be a valid UUID.")
+
+    parsed_date: Optional[date] = None
+    if document_date:
+        try:
+            parsed_date = date.fromisoformat(document_date)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="document_date must be an ISO date (YYYY-MM-DD).")
+
+    resolved_folder_path = (folder_path or "").strip().strip("/")
+    section_code = "01_CORPORATE"
+    if not resolved_folder_path:
+        if project_uuid:
+            proj_row = (await db.execute(
+                text("SELECT name FROM projects.projects WHERE id = :id AND organization_id = :org_id"),
+                {"id": project_uuid, "org_id": org_id},
+            )).mappings().first()
+            p_name = proj_row["name"] if proj_row else "Project"
+            year = fiscal_year or datetime.now(timezone.utc).year
+            resolved_folder_path = f"05 PROJECTS/{p_name}/Receipts & Invoices/{year}"
+            section_code = "05_PROJECTS"
+        else:
+            year = fiscal_year or datetime.now(timezone.utc).year
+            resolved_folder_path = f"01 CORPORATE/{year}"
+    else:
+        root_token = resolved_folder_path.split("/")[0]
+        sec_match = next((s for s in STANDARD_SECTIONS if s["name"].lower() == root_token.lower()), None)
+        if sec_match:
+            section_code = sec_match["code"]
+
+    await _ensure_folder_exists(
+        db, org_id=org_id, folder_path=resolved_folder_path, section_code=section_code,
+        project_id=project_uuid, user_id=user_id,
+    )
+    await db.commit()
+
+    content = await file.read()
+    mime_type = file.content_type or "application/octet-stream"
+    file_name = file.filename or title
+
+    try:
+        result = await data_room_sync.upload_document(
+            db, organization_id=org_id, folder_path=resolved_folder_path, file_name=file_name,
+            content=content, mime_type=mime_type,
+        )
+    except MicrosoftIntegrationNotReady as exc:
+        await db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc))
+    except GraphError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"SharePoint upload failed: {exc}")
+
+    # The physical file already exists in SharePoint at this point and can't
+    # be un-uploaded by a local rollback - commit the folder-cache write
+    # immediately (same defensive pattern as routers/documents.py's
+    # /sharepoint-upload) so a failure in the insert below can't silently
+    # lose track of a real SharePoint file.
+    await db.commit()
+
+    try:
+        doc_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO finance.data_room_documents (
+                        organization_id, folder_path, title, section_code, project_id, fiscal_year,
+                        document_date, amount, currency, file_name, file_size_bytes, mime_type,
+                        storage_path, provider, provider_drive_id, provider_item_id, sharepoint_web_url,
+                        sharepoint_etag, verification_status, sync_status, last_synced_at, created_by
+                    ) VALUES (
+                        :org_id, :folder_path, :title, :section_code, :project_id, :fiscal_year,
+                        :document_date, :amount, 'USD', :file_name, :file_size_bytes, :mime_type,
+                        :storage_path, 'sharepoint', :drive_id, :item_id, :web_url,
+                        :etag, 'unverified', 'synced', NOW(), :created_by
+                    ) RETURNING id
+                """),
+                {
+                    "org_id": org_id, "folder_path": resolved_folder_path, "title": title, "section_code": section_code,
+                    "project_id": project_uuid, "fiscal_year": fiscal_year or datetime.now(timezone.utc).year,
+                    "document_date": parsed_date or date.today(), "amount": amount, "file_name": file_name,
+                    "file_size_bytes": len(content), "mime_type": mime_type, "storage_path": result["web_url"],
+                    "drive_id": result["drive_id"], "item_id": result["item_id"], "web_url": result["web_url"],
+                    "etag": result["etag"], "created_by": user_id,
+                },
+            )
+        ).scalar()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This SharePoint file is already registered against a Data Room document.",
+        )
+
+    await db.commit()
+    return ok(
+        {"id": str(doc_id), "folder_path": resolved_folder_path, "provider": "sharepoint", "web_url": result["web_url"]},
+        "Document uploaded to SharePoint and registered in Data Room.",
+    )
+
+
 @router.post("/create-folder", status_code=status.HTTP_201_CREATED)
 async def create_data_room_folder(
     payload: FolderCreate,
@@ -696,7 +914,7 @@ async def get_data_room_document_signed_url(
     doc_row = (
         await db.execute(
             text("""
-                SELECT storage_path, file_name, mime_type
+                SELECT storage_path, file_name, mime_type, provider, provider_drive_id, provider_item_id, sharepoint_web_url
                 FROM finance.data_room_documents
                 WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             """),
@@ -706,6 +924,23 @@ async def get_data_room_document_signed_url(
 
     if not doc_row:
         raise HTTPException(status_code=404, detail="Document not found.")
+
+    if doc_row["provider"] == "sharepoint":
+        try:
+            url = await data_room_sync.get_download_url(
+                db, organization_id=user["org_id"], drive_id=doc_row["provider_drive_id"], item_id=doc_row["provider_item_id"]
+            )
+        except MicrosoftIntegrationNotReady as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        except GraphError as exc:
+            raise HTTPException(status_code=502, detail=f"SharePoint request failed: {exc}")
+        return ok({
+            "url": url,
+            "file_name": doc_row["file_name"],
+            "mime_type": doc_row["mime_type"],
+            "web_url": doc_row["sharepoint_web_url"],
+            "expires_in": None,
+        })
 
     try:
         signed = supabase.storage.from_(DOCUMENTS_BUCKET).create_signed_url(
@@ -720,6 +955,8 @@ async def get_data_room_document_signed_url(
             "mime_type": doc_row["mime_type"],
             "expires_in": SIGNED_URL_TTL_SECONDS,
         })
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Failed to create signed URL for data room document", exc_info=e)
         raise HTTPException(status_code=502, detail="Storage service error.")
@@ -945,12 +1182,19 @@ async def export_data_room(
         for doc in docs:
             rel_file_path = _safe_zip_path(doc["folder_path"], doc["file_name"], f"UNNAMED_{doc['id']}")
 
-            # Attempt to download binary from Supabase Storage
+            # Attempt to download binary from wherever this document actually
+            # lives - SharePoint for provider='sharepoint' rows, Supabase
+            # Storage (by storage_path) for everything else.
             file_bytes = None
             try:
-                download_res = supabase.storage.from_(DOCUMENTS_BUCKET).download(doc["storage_path"])
-                if download_res:
-                    file_bytes = download_res
+                if doc.get("provider") == "sharepoint":
+                    file_bytes = await data_room_sync.fetch_bytes(
+                        db, organization_id=org_id, drive_id=doc["provider_drive_id"], item_id=doc["provider_item_id"]
+                    )
+                else:
+                    download_res = supabase.storage.from_(DOCUMENTS_BUCKET).download(doc["storage_path"])
+                    if download_res:
+                        file_bytes = download_res
             except Exception as e:
                 logger.warning(f"Could not download object {doc['storage_path']} for export: {e}")
 

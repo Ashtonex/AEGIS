@@ -62,6 +62,7 @@ class SelectCalendarPayload(Payload):
 class TogglePayload(Payload):
     sync_documents: Optional[bool] = None
     sync_calendar: Optional[bool] = None
+    sync_data_room: Optional[bool] = None
 
 
 async def _get_row(db: AsyncSession, org_id: UUID) -> Optional[dict]:
@@ -119,6 +120,8 @@ async def get_status(
         "enabled": bool(row and row["enabled"]),
         "sync_documents": bool(row and row["sync_documents"]),
         "sync_calendar": bool(row and row["sync_calendar"]),
+        "sync_data_room": bool(row and row["sync_data_room"]),
+        "data_room_root_web_url": row.get("data_room_root_web_url") if row else None,
         "library_map": row.get("library_map") if row else {},
         "last_test_at": row.get("last_test_at") if row else None,
         "last_test_error": row.get("last_test_error") if row else None,
@@ -382,19 +385,29 @@ async def update_settings(
         raise HTTPException(status_code=400, detail="Map at least one document library before enabling document sync.")
     if payload.sync_calendar and not row.get("calendar_id"):
         raise HTTPException(status_code=400, detail="Select a calendar before enabling calendar sync.")
+    # sync_data_room needs no library_map entry - the Financial Data Room
+    # gets its own dedicated root folder in the connected drive, created
+    # automatically on first use (see app/services/microsoft/
+    # data_room_sync.py's _ensure_root_folder). It only needs the
+    # site/drive connection this row already proves exists.
 
     sync_documents = payload.sync_documents if payload.sync_documents is not None else row["sync_documents"]
     sync_calendar = payload.sync_calendar if payload.sync_calendar is not None else row["sync_calendar"]
+    sync_data_room = payload.sync_data_room if payload.sync_data_room is not None else row["sync_data_room"]
     updated = (
         await db.execute(
             text("""
                 UPDATE core.organisation_integrations
                 SET sync_documents = :sync_documents, sync_calendar = :sync_calendar,
-                    enabled = (:sync_documents OR :sync_calendar), updated_at = NOW()
+                    sync_data_room = :sync_data_room,
+                    enabled = (:sync_documents OR :sync_calendar OR :sync_data_room), updated_at = NOW()
                 WHERE id = :id
                 RETURNING *
             """),
-            {"sync_documents": sync_documents, "sync_calendar": sync_calendar, "id": row["id"]},
+            {
+                "sync_documents": sync_documents, "sync_calendar": sync_calendar,
+                "sync_data_room": sync_data_room, "id": row["id"],
+            },
         )
     ).mappings().first()
     return ok(dict(updated), "Microsoft 365 sync settings updated.")
@@ -412,7 +425,7 @@ async def disconnect(
     await db.execute(
         text("""
             UPDATE core.organisation_integrations
-            SET enabled = false, sync_documents = false, sync_calendar = false,
+            SET enabled = false, sync_documents = false, sync_calendar = false, sync_data_room = false,
                 connection_status = 'not_connected', updated_at = NOW()
             WHERE id = :id
         """),
