@@ -76,6 +76,9 @@ function isQueueableRequest(request) {
   // Workforce writes require an online receipt until the dedicated capture
   // queue is available. This includes compatibility routes and decisions.
   if (url.pathname === "/api/v1/workforce" || url.pathname.startsWith("/api/v1/workforce/")) return false;
+  // Compliance decisions require an online, version-checked server receipt.
+  if (url.pathname === "/api/v1/compliance" || url.pathname.startsWith("/api/v1/compliance/")) return false;
+  if (url.pathname.startsWith("/api/v1/compliance-items/")) return false;
 
   const contentType = request.headers.get("content-type") || "";
   if (contentType.includes("multipart/form-data")) return false;

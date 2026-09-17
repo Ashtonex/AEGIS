@@ -101,3 +101,7 @@ class AssignmentCreate(Payload):
 
 class Decision(VersionReason):
     decision: Literal["approved", "rejected"]
+
+
+class AssignmentRevision(VersionReason):
+    owner_id: UUID

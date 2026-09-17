@@ -41,7 +41,7 @@ def check_version(row, expected):
 
 async def row(db, user, table, record_id, *, lock=False):
     if table not in TABLES:
-        raise ValueError("Unknown compliance table")
+        raise HTTPException(404, "Compliance register not found")
     found = (
         (
             await db.execute(
@@ -263,9 +263,10 @@ async def create_obligation(db, user, payload, predecessor_id=None):
 
 async def transition(db, user, record_id, action, payload):
     permit(user, "manage")
+    current = await row(db, user, "obligation_versions", record_id)
+    await row(db, user, "obligations", current["obligation_id"], lock=True)
     current = await row(db, user, "obligation_versions", record_id, lock=True)
     check_version(current, payload.expected_version)
-    await row(db, user, "obligations", current["obligation_id"], lock=True)
     allowed = {
         "submit": {"draft"},
         "activate": {"applicable"},
@@ -289,13 +290,14 @@ async def transition(db, user, record_id, action, payload):
         if current["rule"]["requires_legal_review"]:
             steps.insert(0, PREFIX + "legal_review")
         approval_id = await WorkflowService(db).initiate_approval(
-            user={**user, "user_id": current["created_by"]},
+            user=user,
             workflow_name="compliance.obligation",
             target_type="compliance.obligation_versions",
             target_id=record_id,
             target_version=current["version"] + 1,
             steps=steps,
             subject_user_id=current["owner_id"],
+            excluded_user_ids=[current["created_by"]],
         )
     if action == "activate":
         if current["effective_from"] > date.today() or (
@@ -481,3 +483,19 @@ async def assign(db, user, payload):
         {**payload.model_dump(), "project_id": assessment["project_id"]},
     )
     return await record(db, user, "assignments", result, "created", payload.reason)
+
+
+async def reassign(db, user, record_id, payload):
+    permit(user, "assign")
+    current = await row(db, user, "assignments", record_id, lock=True)
+    check_version(current, payload.expected_version)
+    await project_scope(db, user, current["project_id"])
+    await master(db, user, "core.users", payload.owner_id)
+    if str(current["owner_id"]) == str(payload.owner_id):
+        raise HTTPException(422, "Choose a different accountable owner")
+    result = (await db.execute(text("UPDATE compliance.assignments SET owner_id=:owner,reason=:reason,version=version+1 WHERE organization_id=:org AND id=:id RETURNING *"),
+        {"owner": payload.owner_id, "reason": payload.reason, "org": user["org_id"], "id": record_id})).mappings().one()
+    await audit_action(db, user, "compliance.assignments", record_id, "OWNER_CHANGED", {
+        "previous_owner_id": str(current["owner_id"]), "owner_id": str(payload.owner_id),
+        "reason": payload.reason, "version": result["version"]})
+    return await record(db, user, "assignments", dict(result), "reassigned", payload.reason)

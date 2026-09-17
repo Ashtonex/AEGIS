@@ -23,6 +23,7 @@ from schemas.compliance import (
     VersionReason,
     AssessmentCreate,
     AssignmentCreate,
+    AssignmentRevision,
     Decision,
     Payload,
 )
@@ -125,7 +126,7 @@ async def lookups(
         (
             await db.execute(
                 text(
-                    f"SELECT id FROM {table} WHERE organization_id=:org AND is_deleted=false AND CAST(id AS text) ILIKE :q ORDER BY id LIMIT 100"
+                    f"SELECT id, COALESCE(to_jsonb(t)->>'full_name',to_jsonb(t)->>'name',to_jsonb(t)->>'employee_name',to_jsonb(t)->>'supplier_name',to_jsonb(t)->>'asset_code',CAST(id AS text)) AS name FROM {table} t WHERE organization_id=:org AND is_deleted=false AND (CAST(id AS text) ILIKE :q OR COALESCE(to_jsonb(t)->>'full_name',to_jsonb(t)->>'name',to_jsonb(t)->>'employee_name',to_jsonb(t)->>'supplier_name',to_jsonb(t)->>'asset_code','') ILIKE :q) ORDER BY id LIMIT 100"
                 ),
                 {"org": user["org_id"], "q": f"%{q}%"},
             )
@@ -181,16 +182,19 @@ async def listing(
 async def history(resource: str, record_id: UUID, db: DB, user: User):
     service.permit(user, "audit.read")
     table = resource.replace("-", "_")
-    await service.row(db, user, table, record_id)
+    if table == "scope_grants":
+        service.permit(user, "scope.manage")
+    current = await service.row(db, user, table, record_id)
     rows = (
         (
             await db.execute(
                 text("""SELECT id,action,new_data,created_at,created_by FROM core.audit_log
-        WHERE organization_id=:org AND table_name=:table AND record_id=:id ORDER BY created_at,id"""),
+        WHERE organization_id=:org AND ((table_name=:table AND record_id=:id) OR (table_name='core.approval_instances' AND record_id=CAST(:approval AS uuid))) ORDER BY created_at,id"""),
                 {
                     "org": user["org_id"],
                     "table": "compliance." + table,
                     "id": record_id,
+                    "approval": current.get("approval_id"),
                 },
             )
         )
@@ -231,7 +235,14 @@ async def export_register(
 
 @router.get("/{resource}/{record_id}")
 async def detail(resource: str, record_id: UUID, db: DB, user: User):
-    return response(await service.row(db, user, resource.replace("-", "_"), record_id))
+    table = resource.replace("-", "_")
+    if table == "scope_grants":
+        service.permit(user, "scope.manage")
+    current = await service.row(db, user, table, record_id)
+    if current.get("approval_id"):
+        stages = (await db.execute(text("SELECT step_number,permission_key,status,decided_by,decided_at,reason FROM core.approval_steps WHERE organization_id=:org AND approval_instance_id=:id ORDER BY step_number"), {"org": user["org_id"], "id": current["approval_id"]})).mappings().all()
+        current["approval_stages"] = [dict(stage) for stage in stages]
+    return response(current)
 
 
 @router.post("/catalogues/{kind}", status_code=201)
@@ -369,6 +380,12 @@ async def assign(payload: AssignmentCreate, db: DB, user: User, key: Key):
 class ScopeGrant(Payload):
     user_id: UUID
     project_id: UUID
+
+
+@router.post("/assignments/{record_id}/reassign")
+async def reassign(record_id: UUID, payload: AssignmentRevision, db: DB, user: User, key: Key):
+    return await execute(db, user, key, "assignments.reassign", {"id": record_id, **payload.model_dump()},
+                         lambda: service.reassign(db, user, record_id, payload))
 
 
 @router.post("/scope-grants", status_code=201)

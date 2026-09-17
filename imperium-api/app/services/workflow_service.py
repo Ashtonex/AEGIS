@@ -22,6 +22,7 @@ class WorkflowService:
         target_version: int,
         steps: list[str],
         subject_user_id: UUID | None = None,
+        excluded_user_ids: list[UUID] | None = None,
     ) -> UUID:
         if not steps or len(steps) != len(set(steps)):
             raise ValueError("Approval requires distinct ordered capability steps")
@@ -39,7 +40,7 @@ class WorkflowService:
                     "id": target_id,
                     "version": target_version,
                     "actor": user["user_id"],
-                    "metadata": canonical_json({"subject_user_id": subject_user_id}),
+                    "metadata": canonical_json({"subject_user_id": subject_user_id, "excluded_user_ids": excluded_user_ids or []}),
                 },
             )
         ).scalar_one()
@@ -96,7 +97,7 @@ class WorkflowService:
         if actor in (
             str(instance["submitted_by"]),
             str(instance["metadata"].get("subject_user_id")),
-        ):
+        ) or actor in {str(value) for value in instance["metadata"].get("excluded_user_ids", [])}:
             raise HTTPException(
                 403, "The originator and subject cannot approve their own evidence"
             )
