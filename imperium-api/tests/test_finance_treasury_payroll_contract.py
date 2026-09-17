@@ -12,6 +12,7 @@ WEB_API = (REPO / "aegis-web" / "src" / "lib" / "api.ts").read_text(encoding="ut
 )
 FINANCE_PAGE = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "finance" / "page.tsx").read_text(encoding="utf-8")
 OPS_PANEL = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "finance" / "FinanceOperationsPanel.tsx").read_text(encoding="utf-8")
+PAYROLL_PANEL = (REPO / "aegis-web" / "src" / "app" / "dashboard" / "finance" / "PayrollPanel.tsx").read_text(encoding="utf-8")
 
 
 class FinanceTreasuryPayrollContractTests(unittest.TestCase):
@@ -121,16 +122,23 @@ class FinanceTreasuryPayrollContractTests(unittest.TestCase):
         for tab in ["cash-accounts", "cashbook", "supplier-payments", "payroll"]:
             self.assertIn(tab, FINANCE_PAGE)
         self.assertIn("FinanceOperationsPanel", FINANCE_PAGE)
+        # Payroll was extracted into its own PayrollPanel component - the
+        # finance dashboard still routes the "payroll" tab there instead of
+        # through FinanceOperationsPanel.
+        self.assertIn("PayrollPanel", FINANCE_PAGE)
         for workflow in [
             "createFinanceCashAccount",
             "postFinanceCashbookTransaction",
             "allocateFinanceReceipt",
             "postFinanceSupplierPaymentBatch",
+        ]:
+            self.assertIn(workflow, OPS_PANEL)
+        for workflow in [
             "upsertFinancePayrollProfile",
             "createPayrollRun",
             "decidePayrollRun",
         ]:
-            self.assertIn(workflow, OPS_PANEL)
+            self.assertIn(workflow, PAYROLL_PANEL)
 
 
 if __name__ == "__main__":
