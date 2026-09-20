@@ -1,0 +1,31 @@
+name: Set Microsoft Graph Env Vars
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  set-env:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and update droplet .env, restart backend
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          envs: MICROSOFT_GRAPH_CLIENT_SECRET
+          script: |
+            set -euo pipefail
+            cd /opt/aegis
+            ENV_FILE=deploy/digitalocean/.env
+            sed -i '/^MICROSOFT_GRAPH_TENANT_ID=/d;/^MICROSOFT_GRAPH_CLIENT_ID=/d;/^MICROSOFT_GRAPH_CLIENT_SECRET=/d' "$ENV_FILE"
+            {
+              echo "MICROSOFT_GRAPH_TENANT_ID=451fcc4a-31e1-4ed8-a575-666130eb37cf"
+              echo "MICROSOFT_GRAPH_CLIENT_ID=4c57b26e-ca6b-4d15-915a-4c50c2a8b033"
+              echo "MICROSOFT_GRAPH_CLIENT_SECRET=$MICROSOFT_GRAPH_CLIENT_SECRET"
+            } >> "$ENV_FILE"
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file "$ENV_FILE" up -d --no-build imperium-api
+            echo "--- imperium-api env check (secret value masked by GitHub, only presence/length shown) ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml exec -T imperium-api printenv | grep -c '^MICROSOFT_GRAPH_' || true
+        env:
+          MICROSOFT_GRAPH_CLIENT_SECRET: ${{ secrets.MICROSOFT_GRAPH_CLIENT_SECRET }}
