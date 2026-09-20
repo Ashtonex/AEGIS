@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     SECRET_KEY: str
-    ALLOWED_ORIGINS: str = "http://localhost:3000"
+    ALLOWED_ORIGINS: str = "http://localhost:3010"
     ALLOWED_HOSTS: str = "localhost,127.0.0.1"
     RENDER: bool = False
     RENDER_EXTERNAL_HOSTNAME: Optional[str] = None

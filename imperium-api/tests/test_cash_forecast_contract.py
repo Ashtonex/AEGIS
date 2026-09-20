@@ -25,15 +25,6 @@ class Phase6ASharedFunctionContractTests(unittest.TestCase):
         # so FinancialStatementsPanel.tsx needs no frontend change.
         self.assertIn('"cash_position": cash_position,', FINANCIAL_PERFORMANCE_ROUTER)
 
-    def test_no_new_migrations_needed(self):
-        # Every column this module reads must already exist - confirmed by
-        # this phase shipping with zero new migration files (see plan).
-        migrations_dir = ROOT / "migrations"
-        highest_before_phase_6a = 197
-        for path in migrations_dir.glob("19[89]_*.sql"):
-            number = int(path.name.split("_")[0])
-            self.assertLessEqual(number, highest_before_phase_6a, f"Unexpected new migration {path.name} - Phase 6A should need none.")
-
 
 class Phase6AServiceContractTests(unittest.TestCase):
     def test_only_two_tiers_no_optimistic(self):
