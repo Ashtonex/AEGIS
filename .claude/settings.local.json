@@ -108,7 +108,8 @@
       "Bash(taskkill //F //PID 22792)",
       "Bash(taskkill //F //PID 37124)",
       "Bash(\"./.venv/Scripts/python.exe\" -m pytest tests/test_standardized_stack.py::StandardizedStackCalculationsTests::test_settings_validation -q)",
-      "Bash(taskkill //F //PID 24988)"
+      "Bash(taskkill //F //PID 24988)",
+      "Bash(gh run *)"
     ]
   },
   "hooks": {

@@ -383,7 +383,7 @@ export async function addProductionRevenue(projectId: string, payload: { amount:
 }
 
 /** Finance sign-off that a project's deposit has been received - opens the pre-mobilisation readiness gate. */
-export async function confirmProjectDeposit(projectId: string, payload: { deposit_reference?: string; notes?: string }): Promise<ApiResponse<any>> {
+export async function confirmProjectDeposit(projectId: string, payload: { deposit_received_amount: number; deposit_reference?: string; notes?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/confirm-deposit`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -453,11 +453,32 @@ export async function decideProjectRegistration(projectId: string, decision: 'ap
   });
 }
 
-/** Finance sets an ad-hoc execution budget ceiling on a project with no quotation-derived budget. */
-export async function setProjectBudget(projectId: string, totalAmount: number, notes?: string): Promise<ApiResponse<any>> {
+export type ProjectBudgetUploadLine = {
+  cost_code: string;
+  description: string;
+  cost_category?: 'labour' | 'equipment' | 'materials' | 'subcontract' | 'overhead' | 'other';
+  quantity?: number;
+  unit?: string;
+  unit_rate?: number;
+  amount: number;
+  source_line?: number;
+};
+
+/** Save a protected master baseline or a separate execution-budget review draft. */
+export async function setProjectBudget(
+  projectId: string,
+  totalAmount: number,
+  notes?: string,
+  options?: { budgetStage?: 'master' | 'execution'; lines?: ProjectBudgetUploadLine[] },
+): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/budget`, {
     method: 'POST',
-    body: JSON.stringify({ total_amount: totalAmount, notes }),
+    body: JSON.stringify({
+      total_amount: totalAmount,
+      notes,
+      budget_stage: options?.budgetStage ?? 'master',
+      lines: options?.lines ?? [],
+    }),
     allowFallback: false,
   });
 }
@@ -1393,4 +1414,3 @@ export async function updateWebsiteContent(payload: Record<string, unknown>): Pr
     allowFallback: false,
   });
 }
-

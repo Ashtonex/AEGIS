@@ -2,6 +2,7 @@ import time
 import os
 import json
 from urllib.parse import urlparse
+from uuid import UUID
 from arq import Retry
 from arq.connections import RedisSettings
 from arq.cron import cron
@@ -29,6 +30,10 @@ from app.services.finance.ccb_monitor import (
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
 from app.services.workforce_events import dispatch_workforce_events
 from app.events.bus import EventBus
+from app.shared.events import emit_notification
+from app.shared.task_stacks import generate_task_stack
+from app.services.microsoft.tender_calendar import cancel_all_for_tender
+from routers.tender_bids import _record_tender_closeout
 
 
 async def dispatch_compliance_events_job(ctx):
@@ -233,6 +238,194 @@ async def poll_ticket_sla_triggers_job(ctx):
         return True
     except Exception as exc:
         logger.exception(f"Ticket SLA automation poll failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def auto_close_overdue_tenders_job(ctx):
+    """Periodic cron: a tender still sitting pre-submission (never actually
+    bid) whose submission deadline has passed was lost by default - the
+    window to bid is closed. Auto-marks it Lost (with closeout_status/reason
+    set the same way a manual close-out would) so it drops out of the
+    morning briefing's tenders_due list instead of aging into silence, and
+    shows up instead in that briefing's dedicated lost-tenders section.
+
+    Deliberately scoped to pre-submission stages only ('Tender Identified',
+    'Bid Prep'). A tender that was actually Submitted and is now in
+    Adjudication has its deadline pass as a matter of course while awaiting
+    an outcome - that is not a loss signal, and auto-closing it would
+    falsely kill a live pending bid.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    closed = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                (
+                    await db.execute(
+                        text("""
+                SELECT id, organization_id
+                FROM crm.tenders
+                WHERE is_deleted = false
+                  AND submission_deadline IS NOT NULL
+                  AND submission_deadline < NOW()
+                  AND lower(COALESCE(stage, '')) IN ('tender identified', 'bid prep')
+                  AND COALESCE(closeout_status, '') NOT IN ('won', 'lost')
+                LIMIT 500
+            """)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+            for row in rows:
+                tender_id = str(row["id"])
+                org_id = str(row["organization_id"])
+                await _record_tender_closeout(
+                    db,
+                    org_id=org_id,
+                    user_id=None,
+                    tender_id=tender_id,
+                    status="lost",
+                    reason="Submission deadline passed with no bid submitted and no manual close-out recorded.",
+                    next_steps=["Review lapsed tender for lessons learned."],
+                    create_followups=False,
+                )
+                await db.commit()
+                closed += 1
+
+                # Mirror the manual close-out endpoint's post-steps
+                # (tender_bids.py's closeout_tender) so an auto-lost tender
+                # gets the same "Lost"-stage task pack and freed calendar
+                # slots a human closing it out would trigger - best-effort,
+                # must never undo the closeout that already committed.
+                try:
+                    await cancel_all_for_tender(db, organization_id=org_id, tender_id=UUID(tender_id))
+                    await db.commit()
+                except Exception as exc:  # noqa: BLE001
+                    await db.rollback()
+                    logger.warning("microsoft_graph.tender_calendar_auto_closeout_cancel_errored", tender_id=tender_id, error=str(exc))
+                try:
+                    await generate_task_stack(
+                        db,
+                        org_id=org_id,
+                        entity_type="tender",
+                        entity_id=tender_id,
+                        created_by=None,
+                        source_event="tender_closeout_recorded",
+                        generation_reason="Tender auto-marked lost after its submission deadline passed unactioned.",
+                        stage="Lost",
+                    )
+                    await db.commit()
+                except Exception as exc:  # noqa: BLE001
+                    await db.rollback()
+                    logger.warning("tender.auto_closeout.task_stack_failed", tender_id=tender_id, error=str(exc))
+
+        if closed:
+            logger.info(f"Auto-closed {closed} tender(s) whose submission deadline passed.")
+        return {"closed": closed}
+    except Exception as exc:
+        logger.exception(f"Auto-close overdue tenders job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def notify_stale_pipeline_items_job(ctx):
+    """Daily cron: nags the owner (falling back to the creator, if
+    unassigned) of any open lead or opportunity that has sat 3+ days without
+    a logged action - the outreach/follow-up nudge the pipeline needs so
+    deals don't quietly die from inattention. Deliberately fires again every
+    day an item is still stale (no dedupe beyond the daily cadence) - the
+    point is to keep making noise until someone acts.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    notified = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            stale_opportunities = (
+                (
+                    await db.execute(
+                        text("""
+                SELECT id, organization_id, name,
+                       COALESCE(owner_user_id, sales_owner_id, created_by) AS notify_user_id,
+                       GREATEST(1, EXTRACT(DAY FROM (NOW() - COALESCE(next_activity_due_at, updated_at)))::int) AS days_stale
+                FROM crm.opportunities
+                WHERE is_deleted = false
+                  AND win_loss_status IS NULL
+                  AND (
+                    (next_activity_due_at IS NOT NULL AND next_activity_due_at < NOW() - INTERVAL '3 days')
+                    OR (next_activity_due_at IS NULL AND updated_at < NOW() - INTERVAL '3 days')
+                  )
+                LIMIT 500
+            """)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in stale_opportunities:
+                if not row["notify_user_id"]:
+                    continue
+                await emit_notification(
+                    db,
+                    org_id=str(row["organization_id"]),
+                    user_id=str(row["notify_user_id"]),
+                    title="Opportunity needs a follow-up",
+                    message=f'"{row["name"]}" has had no logged action for {row["days_stale"]}+ day(s). Log an outreach or move it forward.',
+                    notification_type="opportunity_stale",
+                    priority="normal",
+                    action_url="/dashboard/crm/opportunities",
+                    metadata={"opportunity_id": str(row["id"])},
+                )
+                notified += 1
+            await db.commit()
+
+            stale_leads = (
+                (
+                    await db.execute(
+                        text("""
+                SELECT id, organization_id, COALESCE(NULLIF(company_name, ''), NULLIF(contact_name, ''), 'Untitled lead') AS name,
+                       COALESCE(owner_user_id, assigned_to, created_by) AS notify_user_id,
+                       GREATEST(1, EXTRACT(DAY FROM (NOW() - updated_at))::int) AS days_stale
+                FROM crm.leads
+                WHERE is_deleted = false
+                  AND lower(COALESCE(status, '')) NOT IN ('disqualified', 'converted')
+                  AND converted_at IS NULL
+                  AND updated_at < NOW() - INTERVAL '3 days'
+                LIMIT 500
+            """)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in stale_leads:
+                if not row["notify_user_id"]:
+                    continue
+                await emit_notification(
+                    db,
+                    org_id=str(row["organization_id"]),
+                    user_id=str(row["notify_user_id"]),
+                    title="Lead needs outreach",
+                    message=f'"{row["name"]}" has had no activity for {row["days_stale"]}+ day(s). Do an outreach or follow-up.',
+                    notification_type="lead_stale",
+                    priority="normal",
+                    action_url="/dashboard/crm/leads",
+                    metadata={"lead_id": str(row["id"])},
+                )
+                notified += 1
+            await db.commit()
+
+        if notified:
+            logger.info(f"Sent {notified} stale-pipeline nudge notification(s).")
+        return {"notified": notified}
+    except Exception as exc:
+        logger.exception(f"Stale pipeline notification job failed: {exc}")
         raise Retry(defer=exponential_backoff_retry(ctx)) from exc
     finally:
         worker_job_id_ctx.set("")
@@ -495,6 +688,8 @@ class WorkerSettings:
         send_notification_job,
         compliance_check_reminder_job,
         poll_ticket_sla_triggers_job,
+        auto_close_overdue_tenders_job,
+        notify_stale_pipeline_items_job,
         run_ccb_budget_overrun_check_job,
         run_ccb_requisition_breach_check_job,
         run_ccb_variance_staleness_check_job,
@@ -511,6 +706,10 @@ class WorkerSettings:
         cron(
             poll_ticket_sla_triggers_job, minute={0, 15, 30, 45}, run_at_startup=False
         ),
+        cron(
+            auto_close_overdue_tenders_job, minute={0, 15, 30, 45}, run_at_startup=False
+        ),
+        cron(notify_stale_pipeline_items_job, hour=6, minute=0, run_at_startup=False),
         cron(run_ccb_budget_overrun_check_job, hour=3, minute=0, run_at_startup=False),
         cron(
             run_ccb_requisition_breach_check_job,

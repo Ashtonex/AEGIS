@@ -353,6 +353,7 @@ export default function CRMCommercialEngine() {
 
   const briefingItems = useMemo(() => {
     const tendersDue = Array.isArray(briefing?.tenders_due) ? briefing.tenders_due : [];
+    const lostTenders = Array.isArray(briefing?.lost_tenders) ? briefing.lost_tenders : [];
     const taskActivity = Array.isArray(briefing?.task_activity) ? briefing.task_activity : [];
     const paperworkGaps = Array.isArray(briefing?.paperwork_gaps) ? briefing.paperwork_gaps : [];
     const staleItems = Array.isArray(briefing?.stale_items) ? briefing.stale_items : [];
@@ -364,6 +365,14 @@ export default function CRMCommercialEngine() {
         label: 'Tender deadline',
         title: item.title,
         detail: `${Number(item.days_left ?? 0)} day${Number(item.days_left ?? 0) === 1 ? '' : 's'} left${Number(item.open_requirement_count ?? 0) ? ` · ${item.open_requirement_count} open requirement${Number(item.open_requirement_count) === 1 ? '' : 's'}` : ''}`,
+        href: '/dashboard/crm/tenders',
+      })),
+      ...lostTenders.map((item: any) => ({
+        id: `lost-tender-${item.id}`,
+        tone: 'info',
+        label: 'Tender lost',
+        title: item.title,
+        detail: item.reason || 'Submission deadline passed without a bid.',
         href: '/dashboard/crm/tenders',
       })),
       ...taskActivity.map((item: any) => {
@@ -592,8 +601,9 @@ export default function CRMCommercialEngine() {
             </div>
           ) : (
             <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-1.5 pr-0.5">
-              <div className="grid grid-cols-4 gap-1">
+              <div className="grid grid-cols-5 gap-1">
                 <BriefingMetric label="Tenders" value={briefing?.summary?.urgent_tenders ?? 0} />
+                <BriefingMetric label="Lost" value={briefing?.summary?.lost_tenders ?? 0} />
                 <BriefingMetric label="Review" value={briefing?.summary?.tasks_needing_review ?? 0} />
                 <BriefingMetric label="Paper" value={briefing?.summary?.paperwork_gaps ?? 0} />
                 <BriefingMetric label="Stale" value={briefing?.summary?.stale_items ?? 0} />

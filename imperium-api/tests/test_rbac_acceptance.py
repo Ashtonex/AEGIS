@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -14,6 +15,66 @@ from core.security import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def warm_authorization_cache(monkeypatch):
+    from core import cache
+
+    redis = SimpleNamespace(
+        get=AsyncMock(return_value='{"organization_id":"org-1","role":"SUPERADMIN"}'),
+        set=AsyncMock(),
+    )
+    monkeypatch.setattr(cache, "_async_client", redis)
+    return redis
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active,deleted", [(False, False), (True, True)])
+async def test_warm_identity_cache_cannot_override_account_revocation(warm_authorization_cache, active, deleted):
+    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=active, is_deleted=deleted)))
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1", "role": "SUPERADMIN"}}, db)
+    assert exc.value.status_code == 403
+    assert len(db.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("assigned,expected", [([], "authenticated"), ([SimpleNamespace(name="EMPLOYEE")], "EMPLOYEE"), ([SimpleNamespace(name="SUPERADMIN")], "SUPERADMIN")])
+async def test_current_assignments_override_warm_cache_and_stale_admin_claim(warm_authorization_cache, assigned, expected):
+    db = FakeDb(
+        FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)),
+        FakeResult(rows=assigned),
+        FakeResult(),
+    )
+    resolved = await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1", "role": "SUPERADMIN"}}, db)
+    assert resolved["role"] == expected
+    assert len(db.calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("granted", [None, 1])
+@pytest.mark.parametrize("entrypoint", ["permission", "resource", "business"])
+async def test_current_permission_grants_override_warm_cache(warm_authorization_cache, granted, entrypoint):
+    from core.security import user_has_permission
+
+    warm_authorization_cache.get.return_value = "true"
+    db = FakeDb(FakeResult(scalar_value=granted))
+    if entrypoint == "business":
+        assert await user_has_permission(db, user(), "workforce.update") is bool(granted)
+    else:
+        async def check():
+            if entrypoint == "permission":
+                return await require_permission("workforce.update")(user(), db)
+            return await require_resource_permission("workforce")(FakeRequest("PATCH"), user(), db)
+
+        if granted:
+            assert (await check())["user_id"] == "user-1"
+        else:
+            with pytest.raises(HTTPException) as exc:
+                await check()
+            assert exc.value.status_code == 403
+    assert len(db.calls) == 1
 
 
 class FakeResult:

@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  distDir: process.env.AEGIS_WORKFORCE_LOCAL_TEST === "1" ? ".next-workforce-test" : ".next",
   output:
     process.env.NODE_ENV === "production" && process.env.VERCEL !== "1"
       ? "standalone"

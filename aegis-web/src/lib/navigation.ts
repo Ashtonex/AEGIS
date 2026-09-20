@@ -229,6 +229,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     subItems: [
       { name: "Overview", href: "/dashboard/workforce", icon: Users, requiredPermission: "workforce.read" },
       { name: "People Register", href: "/dashboard/workforce/people", icon: Users, requiredPermission: "workforce.people.read" },
+      { name: "Reporting Authority", href: "/dashboard/workforce/organisation", icon: Users, requiredPermission: "workforce.organisation.read" },
       { name: "My Profile", href: "/dashboard/workforce/me", icon: Users },
     ],
   },

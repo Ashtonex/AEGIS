@@ -7,7 +7,7 @@ import {
   DollarSign, Clock, ShieldCheck, CheckSquare,
   Briefcase, UserCheck, AlertTriangle, Loader2, Save,
   Calendar, Users, Info, ToggleLeft, ToggleRight, Search, Landmark, ShieldAlert, Trash2,
-  Eye, Download
+  Eye, Download, Upload
 } from 'lucide-react';
 import {
   ApiError,
@@ -69,6 +69,7 @@ interface Tender {
   tender_name: string;
   bid_number?: string;
   category?: string;
+  region?: string | null;
   bid_amount: number | string | null;
   stage: string;
   project_id?: string | null;
@@ -157,6 +158,7 @@ export default function TendersCommand() {
   const [complianceSummary, setComplianceSummary] = useState<TenderComplianceSummary | null>(null);
   const [isSeedingLibrary, setIsSeedingLibrary] = useState(false);
   const [matchingRequirementId, setMatchingRequirementId] = useState<string | null>(null);
+  const [uploadingRequirementId, setUploadingRequirementId] = useState<string | null>(null);
 
   // Tender documents state
   const [tenderDocuments, setTenderDocuments] = useState<any[]>([]);
@@ -178,6 +180,7 @@ export default function TendersCommand() {
     tender_name: '',
     bid_number: '',
     category: 'Civil Works',
+    region: '',
     stage: 'Tender Identified',
     bid_amount: '',
     site_visit_at: '',
@@ -508,6 +511,7 @@ export default function TendersCommand() {
         const extraPayload: any = {
           bid_number: newTender.bid_number.trim() || `BID-2026-${generatedId.substring(0, 5).toUpperCase()}`,
           category: newTender.category,
+          region: newTender.region.trim() || null,
           bid_bond_secured: newTender.bid_bond_secured,
           jv_partners: newTender.jv_partners.trim() || null,
           bond_amount: newTender.bond_amount.trim() !== '' ? Number(newTender.bond_amount) : null,
@@ -541,6 +545,7 @@ export default function TendersCommand() {
           tender_name: '',
           bid_number: '',
           category: 'Civil Works',
+          region: '',
           stage: 'Tender Identified',
           bid_amount: '',
           site_visit_at: '',
@@ -587,6 +592,7 @@ export default function TendersCommand() {
         tender_name: editForm.tender_name,
         bid_number: editForm.bid_number || '',
         category: editForm.category || 'Civil Works',
+        region: editForm.region?.trim() || null,
         stage: editForm.stage,
         bid_amount: bidAmountStr !== '' ? Number(bidAmountStr) : null,
         bid_bond_secured: editForm.bid_bond_secured,
@@ -776,6 +782,49 @@ export default function TendersCommand() {
       alert(describeActionError(err, "You don't have permission to edit this tender.", err instanceof ApiError ? err.message : 'This requirement has no associated credential type to check against the vault.'));
     } finally {
       setMatchingRequirementId(null);
+    }
+  };
+
+  const handleUploadRequirementDocument = async (req: TenderRequirement, file: File) => {
+    if (!selectedTenderId) return;
+    setUploadingRequirementId(req.id);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}${fileExt ? `.${fileExt}` : ''}`;
+      const filePath = `documents/${storedName}`;
+      const { error: uploadError } = await supabase.storage
+        .from('documents')
+        .upload(filePath, file, { cacheControl: '3600', upsert: false });
+      if (uploadError) throw uploadError;
+
+      const docRes = await createDocument({
+        title: `${req.label} - ${file.name}`,
+        category: 'tender',
+        tender_id: selectedTenderId,
+        file_name: file.name,
+        file_size_bytes: file.size,
+        storage_path: filePath,
+        mime_type: file.type || undefined,
+      });
+      const docId = (docRes.data as any)?.id;
+      if (!docRes.success || !docId) {
+        throw new Error('Document record was not created.');
+      }
+
+      // Attaching proof against a requirement is itself the "produced"
+      // signal - the backend marks status PRESENT/is_satisfied automatically
+      // once satisfied_document_id is set.
+      const res = await updateTenderRequirement(selectedTenderId, req.id, { satisfied_document_id: docId });
+      if (res.success) {
+        setRequirements(prev => prev.map(r => r.id === req.id ? { ...r, ...(res.data as Partial<TenderRequirement>), satisfied_document_id: docId, is_satisfied: true, status: 'PRESENT' } : r));
+        void refreshComplianceSummary(selectedTenderId);
+      }
+      await loadTenderDocuments(selectedTenderId);
+    } catch (err) {
+      console.error('Failed to upload requirement document:', err);
+      alert(describeActionError(err, "You don't have permission to upload documents.", 'Document upload failed. Check the CRM service connection and retry.'));
+    } finally {
+      setUploadingRequirementId(null);
     }
   };
 
@@ -1374,6 +1423,17 @@ export default function TendersCommand() {
                 </div>
               </div>
 
+              <div className="space-y-1">
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Location</label>
+                <input
+                  type="text"
+                  value={newTender.region}
+                  onChange={e => setNewTender({ ...newTender, region: e.target.value })}
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all placeholder:text-slate"
+                  placeholder="e.g. Harare, Mashonaland East"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Tender Stage</label>
@@ -1638,6 +1698,17 @@ export default function TendersCommand() {
                         {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
                       </select>
                     </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block font-mono text-[8px] text-slate-light uppercase">Location</label>
+                    <input
+                      type="text"
+                      value={editForm.region || ''}
+                      onChange={e => setEditForm({ ...editForm, region: e.target.value })}
+                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
+                      placeholder="e.g. Harare, Mashonaland East"
+                    />
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
@@ -1912,8 +1983,27 @@ export default function TendersCommand() {
                             </span>
                             <div className="flex items-center gap-2 shrink-0">
                               {req.satisfied_document_id && (
-                                <span className="text-[8px] font-mono uppercase tracking-wider text-[#D4AF37] border border-[#D4AF37]/30 px-1 py-0.5 shrink-0">Auto</span>
+                                <span className="text-[8px] font-mono uppercase tracking-wider text-[#D4AF37] border border-[#D4AF37]/30 px-1 py-0.5 shrink-0">Produced</span>
                               )}
+                              <label
+                                title="Upload proof document - marks this requirement as produced"
+                                className={`cursor-pointer text-slate hover:text-[#D4AF37] transition-colors ${uploadingRequirementId === req.id ? 'opacity-40 pointer-events-none' : ''}`}
+                              >
+                                <input
+                                  type="file"
+                                  className="hidden"
+                                  onChange={e => {
+                                    const file = e.target.files?.[0];
+                                    if (file) handleUploadRequirementDocument(req, file);
+                                    e.target.value = '';
+                                  }}
+                                />
+                                {uploadingRequirementId === req.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Upload className="w-4 h-4" />
+                                )}
+                              </label>
                               <div onClick={() => handleToggleRequirement(req)} className="cursor-pointer" title="Toggle satisfied">
                                 {req.is_satisfied ? (
                                   <ToggleRight className="w-6 h-6 text-[#D4AF37]" />

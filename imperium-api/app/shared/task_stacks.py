@@ -198,9 +198,9 @@ async def generate_task_stack(
                             template_version = :template_version,
                             parent_pack_id = COALESCE(parent_pack_id, :parent_pack_id),
                             source_history = source_history || jsonb_build_array(jsonb_build_object(
-                                'event', :source_event,
-                                'rule', :generation_rule,
-                                'template_id', :template_id,
+                                'event', CAST(:source_event_json AS text),
+                                'rule', CAST(:generation_rule_json AS text),
+                                'template_id', CAST(:template_id_json AS uuid),
                                 'generated_at', NOW()
                             )),
                             updated_at = NOW()
@@ -210,9 +210,10 @@ async def generate_task_stack(
                         "org_id": org_id,
                         "task_id": existing_task["id"],
                         "parent_pack_id": pack,
-                        "source_event": source_event,
-                        "generation_rule": template["template_key"] or requirement_code,
+                        "source_event_json": source_event,
+                        "generation_rule_json": template["template_key"] or requirement_code,
                         "template_id": template["id"],
+                        "template_id_json": template["id"],
                         "template_version": template_version,
                     },
                 )
@@ -234,9 +235,9 @@ async def generate_task_stack(
                         :org_id, :title, :description, :entity_type, :entity_id,
                         :entity_type, :entity_id, 'template', :source_event,
                         jsonb_build_array(jsonb_build_object(
-                            'event', :source_event,
-                            'rule', :generation_rule,
-                            'template_id', :template_id,
+                            'event', CAST(:source_event_json AS text),
+                            'rule', CAST(:generation_rule_json AS text),
+                            'template_id', CAST(:template_id_json AS uuid),
                             'generated_at', NOW()
                         )),
                         :template_id, :template_version, :parent_pack_id,
@@ -257,6 +258,7 @@ async def generate_task_stack(
                     "entity_type": entity_type,
                     "entity_id": entity_id,
                     "template_id": template["id"],
+                    "template_id_json": template["id"],
                     "template_version": template_version,
                     "parent_pack_id": pack,
                     "task_type": template["task_type"] or "control",
@@ -264,6 +266,7 @@ async def generate_task_stack(
                     "expected_outcome": template["outcome_key"],
                     "deduplication_key": dedupe_key,
                     "source_event": source_event,
+                    "source_event_json": source_event,
                     "responsible_role": template["responsible_role"],
                     "reviewer_role": template["reviewer_role"],
                     "approver_role": template["approver_role"],
@@ -277,6 +280,7 @@ async def generate_task_stack(
                     "contribution_target_field": _json_value(template["contribution_target"], {}).get("field"),
                     "reuse_scope": template["reuse_scope"] or "entity_specific",
                     "generation_rule": template["template_key"] or requirement_code,
+                    "generation_rule_json": template["template_key"] or requirement_code,
                     "created_by": created_by,
                 },
             )

@@ -409,6 +409,7 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
   const [form, setForm] = useState({ client_name: "", contract_value: "", start_date: "", project_code: "", initial_percent_complete: "", initial_costs_incurred: "" });
   const [budgetAmount, setBudgetAmount] = useState("");
   const [depositReference, setDepositReference] = useState("");
+  const [depositReceivedAmount, setDepositReceivedAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -417,11 +418,20 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
   const projectId = String(project.id ?? "");
 
   const confirmDeposit = async () => {
+    const amount = Number(depositReceivedAmount);
+    if (!depositReceivedAmount || !Number.isFinite(amount) || amount <= 0) {
+      setMsg("Enter the deposit amount actually received before confirming.");
+      return;
+    }
     setBusy(true); setMsg(null);
     try {
-      await confirmProjectDeposit(projectId, { deposit_reference: depositReference || undefined });
+      await confirmProjectDeposit(projectId, {
+        deposit_received_amount: amount,
+        deposit_reference: depositReference || undefined,
+      });
       setMsg("Deposit confirmed. Pre-mobilisation gate opened.");
       setDepositReference("");
+      setDepositReceivedAmount("");
       onRefresh();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "Failed to confirm deposit.");
@@ -525,11 +535,15 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
           </p>
           {isFinance ? (
             <div className="flex items-end gap-3">
+              <div>
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Amount received ($)</label>
+                <input value={depositReceivedAmount} onChange={(e) => setDepositReceivedAmount(e.target.value)} type="number" min="0.01" step="0.01" required placeholder="0.00" className="h-10 w-40 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
               <div className="flex-1">
                 <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Deposit Reference (EFT/receipt number)</label>
                 <input value={depositReference} onChange={(e) => setDepositReference(e.target.value)} placeholder="Optional reference" className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
               </div>
-              <button onClick={confirmDeposit} disabled={busy} className="h-10 bg-emerald-500 px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+              <button onClick={confirmDeposit} disabled={busy || !depositReceivedAmount} className="h-10 bg-emerald-500 px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
                 Confirm Deposit Received
               </button>
             </div>
@@ -946,8 +960,8 @@ function ProjectControlsPanel({ project, detail }: { project: Project; detail: D
     },
     {
       label: "Labour plan",
-      ready: Boolean(source.project_manager ?? source.manager),
-      evidence: text(source.project_manager ?? source.manager, "No responsible delivery owner"),
+      ready: Boolean(viability?.delivery_manager),
+      evidence: text(viability?.delivery_manager, "No responsible delivery owner"),
     },
     {
       label: "Material procurement schedule",
@@ -1690,16 +1704,34 @@ function ProjectCommandModal({
     try {
       if (!budgetTotal || budgetTotal <= 0) throw new Error("Enter or upload a budget total greater than zero.");
       if (budgetErrors.length) throw new Error("Correct budget upload errors before protecting the baseline.");
+      const budgetNotes = [
+        budgetForm.notes,
+        `${budgetStage === "master" ? "Master budget baseline" : "Execution budget"} total: ${formatCurrency(budgetTotal)}.`,
+        budgetRows.length ? `Uploaded ${budgetStage} budget: ${budgetForm.fileName || "budget file"} with ${acceptedBudgetRows.length} accepted line(s) and ${excludedBudgetRows.length} excluded line(s).` : "",
+        budgetRisks.length ? `Risk flags: ${budgetRisks.join(" ")}` : "",
+      ].filter(Boolean).join("\n");
+      await setProjectBudget(project.id, budgetTotal, budgetNotes, {
+        budgetStage,
+        lines: acceptedBudgetRows.map((row) => ({
+          cost_code: row.cost_code,
+          description: row.description,
+          cost_category: "other",
+          quantity: number(row.quantity) ?? undefined,
+          unit: row.unit || undefined,
+          unit_rate: number(row.rate) ?? undefined,
+          amount: number(row.amount) ?? 0,
+          source_line: Math.trunc(number(row.source_line) ?? 0) || undefined,
+        })),
+      });
       if (budgetStage === "execution") {
-        setMessage("Execution budget staged for review against the protected master baseline. Attach the execution-budget source file below so it is retained and downloadable; a dedicated execution-budget save endpoint is still needed before it can become the live site allowance.");
+        setBudgetSourceRows([]);
+        setBudgetColumns([]);
+        setBudgetColumnMap(EMPTY_BUDGET_COLUMN_MAP);
+        setBudgetForm((current) => ({ ...current, total: "", fileName: "", pastedText: "" }));
+        setMessage("Execution budget saved as a review draft against the protected master baseline. Its accepted lines and generated cost codes are retained in Finance; the master baseline was not changed.");
+        onRefresh();
         return;
       }
-      await setProjectBudget(project.id, budgetTotal, [
-        budgetForm.notes,
-        `Master budget baseline total: ${formatCurrency(budgetTotal)}.`,
-        budgetRows.length ? `Uploaded master budget: ${budgetForm.fileName || "budget file"} with ${acceptedBudgetRows.length} accepted line(s) and ${excludedBudgetRows.length} excluded line(s).` : "",
-        budgetRisks.length ? `Risk flags: ${budgetRisks.join(" ")}` : "",
-      ].filter(Boolean).join("\n"));
       setBudgetStage("execution");
       setBudgetSourceRows([]);
       setBudgetColumns([]);
@@ -1879,7 +1911,7 @@ function ProjectCommandModal({
                   <Info label="Baseline total" value={budgetTotal > 0 ? formatCurrency(budgetTotal) : "Not calculated"} />
                 </div>
                 <button onClick={() => void saveBudget()} disabled={busy || !budgetTotal || budgetErrors.length > 0} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />} {budgetStage === "master" ? "Save master baseline" : "Stage execution budget review"}
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />} {budgetStage === "master" ? "Save master baseline" : "Save execution budget draft"}
                 </button>
                 {budgetStage === "execution" ? (
                   <button type="button" onClick={() => setBudgetStage("master")} className="inline-flex h-9 w-full items-center justify-center border border-ink-mid px-3 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper">
@@ -2205,12 +2237,13 @@ export function ProjectDetail({
       const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
       setRegionOverride(region);
       onProjectUpdated({ region: (saved.region as string | undefined) ?? region });
+      onRefresh();
     } catch (err) {
       setRegionError("Failed to update region.");
     } finally {
       setRegionSaving(false);
     }
-  }, [project.id, onProjectUpdated]);
+  }, [project.id, onProjectUpdated, onRefresh]);
 
   const [coords, setCoords] = useState({ latitude: "", longitude: "" });
   const [coordsSaving, setCoordsSaving] = useState(false);
@@ -2244,12 +2277,59 @@ export function ProjectDetail({
         longitude: saved.longitude ?? longNum ?? undefined,
       });
       setCoordsDirty(false);
+      onRefresh();
     } catch (err) {
       setCoordsError("Failed to update coordinates.");
     } finally {
       setCoordsSaving(false);
     }
-  }, [coords, project.id, onProjectUpdated]);
+  }, [coords, project.id, onProjectUpdated, onRefresh]);
+
+  // Start/programme-end dates live directly on projects.projects (not the
+  // profile side table), and were previously only settable via Field
+  // Intake/registration - this closes the same "Setup gaps to close" items
+  // from inside the popup that reports them missing.
+  const currentStartDate = text(source.start_date as string | undefined, "");
+  const currentPlannedEnd = text((source as Record<string, unknown>).planned_completion_date as string | undefined, "");
+  const [programmeDates, setProgrammeDates] = useState({ start_date: "", planned_completion_date: "" });
+  const [programmeDatesDirty, setProgrammeDatesDirty] = useState(false);
+  const [programmeDatesSaving, setProgrammeDatesSaving] = useState(false);
+  const [programmeDatesError, setProgrammeDatesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (programmeDatesDirty) return;
+    setProgrammeDates({
+      start_date: currentStartDate ? currentStartDate.slice(0, 10) : "",
+      planned_completion_date: currentPlannedEnd ? currentPlannedEnd.slice(0, 10) : "",
+    });
+  }, [currentStartDate, currentPlannedEnd, programmeDatesDirty]);
+
+  const saveProgrammeDates = useCallback(async () => {
+    setProgrammeDatesSaving(true);
+    setProgrammeDatesError(null);
+    try {
+      const response = await updateInternalProject(project.id, {
+        start_date: programmeDates.start_date || null,
+        planned_completion_date: programmeDates.planned_completion_date || null,
+      });
+      const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
+      onProjectUpdated({
+        start_date: (saved.start_date as string | undefined) ?? programmeDates.start_date ?? undefined,
+        planned_completion_date: (saved.planned_completion_date as string | undefined) ?? programmeDates.planned_completion_date ?? undefined,
+      } as Partial<Project>);
+      // No onRefresh() here (unlike region/coords below): start_date and
+      // planned_completion_date live directly on projects.projects, so
+      // onProjectUpdated's patch into detail.project above already is the
+      // fresh value - a full detail refetch would be redundant. Region and
+      // coordinates live on project_profiles/viability instead, which
+      // onProjectUpdated never touches, so those two genuinely need it.
+      setProgrammeDatesDirty(false);
+    } catch (err) {
+      setProgrammeDatesError("Failed to update programme dates.");
+    } finally {
+      setProgrammeDatesSaving(false);
+    }
+  }, [programmeDates, project.id, onProjectUpdated]);
 
   const [activeTab, setActiveTab] = useState<ProjectTab>(initialTab);
 
@@ -2507,13 +2587,13 @@ export function ProjectDetail({
   const overviewSetupGaps = useMemo(() => {
     const gaps: string[] = [];
     if (!title(source) || title(source) === "Untitled Project") gaps.push("Project name is missing.");
-    if (!text(source.location, "")) gaps.push("Project location is not recorded.");
+    if (!text(viability?.region ?? viability?.site_location ?? (source as Project).region, "")) gaps.push("Project location is not recorded.");
     if (!contractVal && text(viability?.initiated_by as string | undefined ?? (source as Record<string, unknown>).initiated_by, "client") !== "company") gaps.push("Contract value is not recorded.");
     if (!budgetedCost && !projectSignals.boqSummary) gaps.push("Approved budget or BOQ baseline is not linked.");
-    if (!text(viability?.delivery_manager ?? source.project_manager ?? source.manager, "")) gaps.push("Project manager is not recorded.");
+    if (!text(viability?.delivery_manager, "") && !projectAssignment?.assigned_user_name && !projectAssignment?.assigned_team_name) gaps.push("Project manager is not recorded.");
     if (!projectAssignment?.assigned_team_name && !projectAssignment?.assigned_user_name) gaps.push("No responsible team or user is assigned.");
     if (!text(source.start_date, "")) gaps.push("Project start date is not set.");
-    if (!text(viability?.planned_end_date ?? source.end_date, "")) gaps.push("Programme end date is not set.");
+    if (!text((source as Record<string, unknown>).planned_completion_date as string | undefined, "")) gaps.push("Programme end date is not set.");
     return gaps;
   }, [source, viability, contractVal, budgetedCost, projectSignals.boqSummary, projectAssignment]);
 
@@ -2577,7 +2657,7 @@ export function ProjectDetail({
             </p>
             <h2 className="mt-1 text-2xl font-bold text-paper font-display">{title(source)}</h2>
             <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-light">
-              <MapPin className="h-3.5 w-3.5 text-signal" />{text(source.location)}
+              <MapPin className="h-3.5 w-3.5 text-signal" />{text(viability?.region ?? viability?.site_location ?? (source as Project).region, "No location recorded")}
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2">
@@ -2835,12 +2915,51 @@ export function ProjectDetail({
 
                 <section className="grid gap-4 lg:grid-cols-[1fr_0.8fr]">
                   <RecordList title="Project evidence matrix" records={overviewEvidenceRows} columns={["area", "records", "latest", "status"]} />
-                  <RiskList
-                    title="Setup gaps to close"
-                    items={overviewSetupGaps}
-                    empty="No setup gaps detected from the project fields currently returned."
-                    tone="amber"
-                  />
+                  <div className="flex flex-col gap-3">
+                    <RiskList
+                      title="Setup gaps to close"
+                      items={overviewSetupGaps}
+                      empty="No setup gaps detected from the project fields currently returned."
+                      tone="amber"
+                    />
+                    <div className="border border-ink-mid bg-ink-light/20 p-3">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Close programme date gaps</p>
+                      <p className="mt-1 text-[11px] text-slate-light">Location is set from the Region field above. Project Manager is set from Assign Workforce on the Team tab.</p>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <label className="space-y-1">
+                          <span className="block font-mono text-[9px] uppercase tracking-wider text-slate">Start date</span>
+                          <input
+                            type="date"
+                            value={programmeDates.start_date}
+                            onChange={(e) => { setProgrammeDates((cur) => ({ ...cur, start_date: e.target.value })); setProgrammeDatesDirty(true); }}
+                            disabled={programmeDatesSaving}
+                            className="h-8 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
+                          />
+                        </label>
+                        <label className="space-y-1">
+                          <span className="block font-mono text-[9px] uppercase tracking-wider text-slate">Programme end</span>
+                          <input
+                            type="date"
+                            value={programmeDates.planned_completion_date}
+                            onChange={(e) => { setProgrammeDates((cur) => ({ ...cur, planned_completion_date: e.target.value })); setProgrammeDatesDirty(true); }}
+                            disabled={programmeDatesSaving}
+                            className="h-8 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper disabled:opacity-50"
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void saveProgrammeDates()}
+                          disabled={programmeDatesSaving || !programmeDatesDirty}
+                          className="inline-flex h-8 items-center gap-1.5 border border-signal bg-signal/10 px-3 font-mono text-[10px] font-bold uppercase tracking-wider text-signal hover:bg-signal/20 disabled:opacity-50"
+                        >
+                          {programmeDatesSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Save dates
+                        </button>
+                        {programmeDatesError && <span className="text-[10px] text-red-300">{programmeDatesError}</span>}
+                      </div>
+                    </div>
+                  </div>
                 </section>
 
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -2856,8 +2975,8 @@ export function ProjectDetail({
                   ) : (
                     <Info label="Contract Value" value={formatCurrency(contractVal)} />
                   )}
-                  <Info label="Project Manager" value={text(viability?.delivery_manager ?? source.project_manager ?? source.manager)} />
-                  <Info label="Programme End" value={formatDate(text(viability?.planned_end_date ?? source.end_date, ""))} />
+                  <Info label="Project Manager" value={text(viability?.delivery_manager ?? projectAssignment?.assigned_user_name ?? projectAssignment?.assigned_team_name, "Not recorded")} />
+                  <Info label="Programme End" value={formatDate(text((source as Record<string, unknown>).planned_completion_date as string | undefined, ""))} />
                 </div>
 
                 <p className="font-mono text-[10px] uppercase tracking-wider text-slate-light">
@@ -2956,7 +3075,7 @@ export function ProjectDetail({
                       </p>
                     </div>
                     <div className="flex flex-col items-start gap-2 lg:items-end">
-                      <Info label="Project Manager" value={text(viability?.delivery_manager ?? source.project_manager ?? source.manager)} />
+                      <Info label="Project Manager" value={text(viability?.delivery_manager ?? projectAssignment?.assigned_user_name ?? projectAssignment?.assigned_team_name, "Not recorded")} />
                       <button
                         onClick={() => setActiveCommand("workforce")}
                         className="inline-flex h-9 items-center gap-2 border border-signal bg-signal/10 px-3 font-mono text-[11px] font-bold uppercase tracking-wider text-signal hover:bg-signal/20"
@@ -3716,4 +3835,3 @@ export function ProjectDetail({
     </div>
   );
 }
-

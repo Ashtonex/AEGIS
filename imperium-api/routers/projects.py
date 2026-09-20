@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.logging import logger
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, require_permission, user_has_permission
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
@@ -136,12 +136,26 @@ class ProjectRegistrationDecision(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=2000)
 
 
+class ProjectBudgetLineSet(BaseModel):
+    cost_code: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=255)
+    cost_category: Literal["labour", "equipment", "materials", "subcontract", "overhead", "other"] = "other"
+    quantity: Optional[Decimal] = Field(default=None, gt=0)
+    unit: Optional[str] = Field(default=None, max_length=40)
+    unit_rate: Optional[Decimal] = Field(default=None, ge=0)
+    amount: Decimal = Field(gt=0)
+    source_line: Optional[int] = Field(default=None, ge=1)
+
+
 class ProjectBudgetSet(BaseModel):
     total_amount: Decimal = Field(gt=0)
     notes: Optional[str] = None
+    budget_stage: Literal["master", "execution"] = "master"
+    lines: list[ProjectBudgetLineSet] = Field(default_factory=list, max_length=5000)
 
 
 class ProjectDepositConfirm(BaseModel):
+    deposit_received_amount: Decimal = Field(gt=0)
     deposit_reference: Optional[str] = Field(default=None, max_length=255)
     notes: Optional[str] = Field(default=None, max_length=2000)
 
@@ -409,10 +423,10 @@ async def _seed_pre_mobilisation_checks(db: AsyncSession, *, org_id: str, projec
                 SELECT :project_id, :org_id, :check_name, :check_type, 'incomplete'
                 WHERE NOT EXISTS (
                     SELECT 1 FROM projects.project_checks
-                    WHERE project_id = :project_id
-                      AND organization_id = :org_id
-                      AND check_type = :check_type
-                      AND check_name = :check_name
+                    WHERE project_id = :project_id_exists
+                      AND organization_id = :org_id_exists
+                      AND check_type = :check_type_exists
+                      AND check_name = :check_name_exists
                 )
                 RETURNING id
             """),
@@ -421,6 +435,10 @@ async def _seed_pre_mobilisation_checks(db: AsyncSession, *, org_id: str, projec
                 "org_id": org_id,
                 "check_name": gate,
                 "check_type": PRE_MOBILISATION_GATE_TYPE,
+                "project_id_exists": project_id,
+                "org_id_exists": org_id,
+                "check_type_exists": PRE_MOBILISATION_GATE_TYPE,
+                "check_name_exists": gate,
                 "sort_order": sort_order,
                 "user_id": user_id,
             },
@@ -1445,6 +1463,7 @@ async def confirm_project_deposit(
                 deposit_confirmed_at = NOW(),
                 deposit_confirmed_by = :user_id,
                 deposit_reference = :deposit_reference,
+                deposit_received_amount = :deposit_received_amount,
                 updated_at = NOW()
             WHERE id = :project_id AND organization_id = :org_id
         """),
@@ -1453,6 +1472,7 @@ async def confirm_project_deposit(
             "org_id": user["org_id"],
             "user_id": user["user_id"],
             "deposit_reference": payload.deposit_reference,
+            "deposit_received_amount": payload.deposit_received_amount,
         },
     )
     await _seed_pre_mobilisation_checks(
@@ -1469,7 +1489,11 @@ async def confirm_project_deposit(
         aggregate_type="project",
         aggregate_id=project_id,
         project_id=project_id,
-        event_data={"deposit_reference": payload.deposit_reference, "notes": payload.notes},
+        event_data={
+            "deposit_reference": payload.deposit_reference,
+            "deposit_received_amount": str(payload.deposit_received_amount),
+            "notes": payload.notes,
+        },
     )
     await db.commit()
     tasks_created = await generate_task_stack(
@@ -1490,6 +1514,7 @@ async def confirm_project_deposit(
         {
             "id": str(project_id),
             "status": "pre_mobilisation",
+            "deposit_received_amount": str(payload.deposit_received_amount),
             "tasks_created": tasks_created,
             "commercial_tasks_created": commercial_tasks_created,
         },
@@ -1609,8 +1634,8 @@ async def update_commercial_readiness(
                 commercial_readiness_pack = CAST(:pack AS jsonb),
                 commercial_readiness_blockers = CAST(:blockers AS jsonb),
                 commercial_clearance_statement = CAST(:clearance_statement AS jsonb),
-                commercial_cleared_at = CASE WHEN :status = 'cleared' THEN commercial_cleared_at ELSE NULL END,
-                commercial_cleared_by = CASE WHEN :status = 'cleared' THEN commercial_cleared_by ELSE NULL END,
+                commercial_cleared_at = CASE WHEN :status_check = 'cleared' THEN commercial_cleared_at ELSE NULL END,
+                commercial_cleared_by = CASE WHEN :status_check = 'cleared' THEN commercial_cleared_by ELSE NULL END,
                 updated_at = NOW()
             WHERE project_id = :project_id AND organization_id = :org_id
         """),
@@ -1618,6 +1643,7 @@ async def update_commercial_readiness(
             "project_id": project_id,
             "org_id": user["org_id"],
             "status": status,
+            "status_check": status,
             "pack": json.dumps(pack, default=str),
             "blockers": json.dumps(blockers, default=str),
             "clearance_statement": json.dumps(payload.clearance_statement, default=str),
@@ -1808,20 +1834,54 @@ async def set_project_budget(
     user: dict = Depends(require_permission("projects.registration.approve")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Finance sets an ad-hoc execution budget ceiling directly, for a
-    project that never went through a won quotation (e.g. a promoted Field
-    Intake project) - same finance.project_budgets shape
-    seed_project_budget_from_quotation produces, just without a quotation
-    behind it."""
-    await _project_or_404(db, project_id, user["org_id"])
-    await db.execute(
-        text("""
-        UPDATE finance.project_budgets
-        SET status='superseded', updated_at=NOW()
-        WHERE project_id=:project_id AND organization_id=:org_id AND status='approved' AND is_deleted=false
-    """),
-        {"project_id": project_id, "org_id": user["org_id"]},
-    )
+    """Save a versioned master baseline or an execution-budget review draft.
+
+    Master versions remain immutable in history when superseded. Execution
+    uploads are retained as drafts and never replace the approved baseline.
+    A project's FIRST master baseline can be set by anyone holding project
+    registration approval (initial setup). Once a baseline has been
+    approved/protected, superseding it with a new version is a budget-
+    ceiling adjustment, not setup, and is restricted to Finance regardless
+    of who else happens to hold the broader registration-approve
+    permission.
+    """
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    if payload.budget_stage == "master":
+        existing_protected_baseline = (
+            await db.execute(
+                text("""
+                    SELECT 1 FROM finance.project_budgets
+                    WHERE project_id = :project_id AND organization_id = :org_id
+                      AND status = 'approved' AND is_deleted = false
+                    LIMIT 1
+                """),
+                {"project_id": project_id, "org_id": user["org_id"]},
+            )
+        ).scalar()
+        if existing_protected_baseline and not await user_has_permission(db, user, "projects.budget_baseline.lock"):
+            raise HTTPException(
+                status_code=403,
+                detail="This project's master budget baseline is already protected. Only Finance can adjust it further.",
+            )
+        await db.execute(
+            text("""
+            UPDATE finance.project_budgets
+            SET status='superseded', updated_at=NOW()
+            WHERE project_id=:project_id AND organization_id=:org_id
+              AND status='approved' AND is_deleted=false
+        """),
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )
+    else:
+        await db.execute(
+            text("""
+            UPDATE finance.project_budgets
+            SET status='cancelled', updated_at=NOW()
+            WHERE project_id=:project_id AND organization_id=:org_id
+              AND status='draft' AND label='Execution budget review' AND is_deleted=false
+        """),
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )
     next_version = (
         await db.execute(
             text("""
@@ -1831,6 +1891,7 @@ async def set_project_budget(
             {"project_id": project_id, "org_id": user["org_id"]},
         )
     ).scalar()
+    is_master = payload.budget_stage == "master"
     row = (
         await db.execute(
             text("""
@@ -1838,22 +1899,92 @@ async def set_project_budget(
             organization_id, project_id, budget_version, status, label,
             effective_date, total_amount, notes, approved_by, approved_at, created_by
         ) VALUES (
-            :org_id, :project_id, :version, 'approved', 'Finance-set ad-hoc budget',
-            CURRENT_DATE, :total_amount, :notes, :user_id, NOW(), :user_id
+            :org_id, :project_id, :version, :status, :label,
+            CURRENT_DATE, :total_amount, :notes, :approved_by,
+            CASE WHEN :is_master THEN NOW() ELSE NULL END, :user_id
         ) RETURNING id
     """),
             {
                 "org_id": user["org_id"],
                 "project_id": project_id,
                 "version": next_version,
+                "status": "approved" if is_master else "draft",
+                "label": "Protected master budget baseline" if is_master else "Execution budget review",
                 "total_amount": payload.total_amount,
                 "notes": payload.notes,
+                "approved_by": user["user_id"] if is_master else None,
+                "is_master": is_master,
                 "user_id": user["user_id"],
             },
         )
     ).first()
+    budget_id = row.id
+    for line in payload.lines:
+        cost_code_id = (
+            await db.execute(
+                text("""
+                INSERT INTO finance.cost_codes (
+                    organization_id, code, name, category, department_id, created_by
+                ) VALUES (
+                    :org_id, :code, :name, :category, :department_id, :user_id
+                )
+                ON CONFLICT (organization_id, code) DO UPDATE SET
+                    name=EXCLUDED.name,
+                    is_active=true,
+                    updated_at=NOW()
+                RETURNING id
+            """),
+                {
+                    "org_id": user["org_id"],
+                    "code": line.cost_code,
+                    "name": line.description,
+                    "category": line.cost_category,
+                    "department_id": project.get("department_id"),
+                    "user_id": user["user_id"],
+                },
+            )
+        ).scalar_one()
+        line_notes = "; ".join(
+            part
+            for part in (
+                f"Source line {line.source_line}" if line.source_line else "",
+                f"Unit: {line.unit}" if line.unit else "",
+            )
+            if part
+        ) or None
+        await db.execute(
+            text("""
+            INSERT INTO finance.budget_lines (
+                organization_id, budget_id, cost_code_id, cost_category,
+                description, quantity, unit_rate, amount, notes, created_by
+            ) VALUES (
+                :org_id, :budget_id, :cost_code_id, :cost_category,
+                :description, :quantity, :unit_rate, :amount, :notes, :user_id
+            )
+        """),
+            {
+                "org_id": user["org_id"],
+                "budget_id": budget_id,
+                "cost_code_id": cost_code_id,
+                "cost_category": line.cost_category,
+                "description": line.description,
+                "quantity": line.quantity,
+                "unit_rate": line.unit_rate,
+                "amount": line.amount,
+                "notes": line_notes,
+                "user_id": user["user_id"],
+            },
+        )
     await db.commit()
-    return _result({"id": str(row.id)}, "Project budget set.")
+    return _result(
+        {
+            "id": str(budget_id),
+            "budget_stage": payload.budget_stage,
+            "status": "approved" if is_master else "draft",
+            "line_count": len(payload.lines),
+        },
+        "Master budget baseline protected." if is_master else "Execution budget saved for review.",
+    )
 
 
 @router.patch("/{project_id}")
@@ -1881,6 +2012,21 @@ async def update_project(
         and str(current_project.get("status") or "").lower() != "active"
     ):
         await _ensure_project_can_activate(db, org_id=user["org_id"], project_id=project_id)
+    if (
+        str(current_project.get("status") or "").lower() == "pending_deposit"
+        and str(values.get("status") or "").lower() in ("pre_mobilisation", "active")
+    ):
+        # A deposit must be confirmed through POST /{project_id}/confirm-deposit
+        # (which records who confirmed it, when, and the real amount received)
+        # - this generic field-update endpoint must never be a side door past
+        # that checkpoint into pre_mobilisation or beyond. Other destinations
+        # (cancelled, on_hold, back to field_intake, ...) are legitimate ways
+        # to leave pending_deposit without a deposit ever being paid and must
+        # stay open.
+        raise HTTPException(
+            status_code=409,
+            detail="A received deposit must be confirmed (Confirm Deposit) before this project can move to pre-mobilisation or active.",
+        )
 
     project_values = {key: val for key, val in values.items() if key not in PROFILE_COLUMNS}
     profile_values = {key: val for key, val in values.items() if key in PROFILE_COLUMNS}

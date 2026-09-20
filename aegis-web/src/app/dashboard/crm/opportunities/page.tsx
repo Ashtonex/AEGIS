@@ -184,7 +184,8 @@ export default function OpportunitiesKanban() {
   const [nextActionForm, setNextActionForm] = useState({
     type: 'Follow-up',
     dueDate: tomorrowDateInputValue(),
-    notes: ''
+    notes: '',
+    dealValue: ''
   });
 
   // Close Win/Loss and Forecast States
@@ -385,7 +386,8 @@ export default function OpportunitiesKanban() {
     setNextActionForm({
       type: targetFrontendStage === 'Proposal' ? 'Email' : targetFrontendStage === 'Negotiation' ? 'Meeting' : 'Follow-up',
       dueDate: opp.next_activity_due_at ? toDateInputValue(new Date(opp.next_activity_due_at)) : tomorrowDateInputValue(),
-      notes: ''
+      notes: '',
+      dealValue: opp.budget ? String(opp.budget) : ''
     });
     setStageMoveRequest({ oppId, currentFrontendStage, targetFrontendStage, source });
   };
@@ -408,10 +410,14 @@ export default function OpportunitiesKanban() {
     } : o));
 
     try {
-      const res = await updateCrmOpportunity(request.oppId, {
+      const updatePayload: Record<string, unknown> = {
         stage: backendStage,
         next_activity_due_at: dueDate
-      });
+      };
+      if (request.targetFrontendStage === 'Proposal' && Number(nextActionForm.dealValue) > 0) {
+        updatePayload.budget = Number(nextActionForm.dealValue);
+      }
+      const res = await updateCrmOpportunity(request.oppId, updatePayload);
       if (!res.success) {
         await loadData();
         setLoadError(res.message || "Opportunity stage move did not save. Please retry.");
@@ -435,7 +441,7 @@ export default function OpportunitiesKanban() {
       });
 
       setStageMoveRequest(null);
-      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '' });
+      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '', dealValue: '' });
       await loadData();
     } catch (err) {
       console.error('Failed to update stage:', err);
@@ -449,6 +455,7 @@ export default function OpportunitiesKanban() {
   const handleConfirmStageMove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stageMoveRequest || !nextActionForm.dueDate) return;
+    if (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0)) return;
     await executeStageMove(stageMoveRequest);
   };
 
@@ -1311,6 +1318,22 @@ export default function OpportunitiesKanban() {
                 </div>
               </div>
 
+              {stageMoveRequest.targetFrontendStage === 'Proposal' && (
+                <div className="space-y-1">
+                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Deal Value ($) - required to move to Proposal</label>
+                  <input
+                    required
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={nextActionForm.dealValue}
+                    onChange={e => setNextActionForm({ ...nextActionForm, dealValue: e.target.value })}
+                    className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
+                    placeholder="e.g. 45000"
+                  />
+                </div>
+              )}
+
               <div className="space-y-1">
                 <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Notes</label>
                 <textarea
@@ -1332,7 +1355,7 @@ export default function OpportunitiesKanban() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || !nextActionForm.dueDate}
+                  disabled={isSubmitting || !nextActionForm.dueDate || (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0))}
                   className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 transition-all uppercase"
                 >
                   {isSubmitting ? 'Saving...' : 'Move deal'}

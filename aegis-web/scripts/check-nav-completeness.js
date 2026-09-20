@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Diffs the static routes under src/app/dashboard against the hrefs wired
-// into DashboardShell.tsx's sidebar, so a new page shipped without a nav
+// into the shared navigation configuration, so a new page shipped without a nav
 // link fails a check instead of quietly going unreachable (the exact bug
 // class fixed in commits 6cf34cb/4c58bab).
 
@@ -8,7 +8,7 @@ const fs = require("fs");
 const path = require("path");
 
 const DASHBOARD_DIR = path.join(__dirname, "..", "src", "app", "dashboard");
-const SHELL_FILE = path.join(__dirname, "..", "src", "app", "dashboard", "DashboardShell.tsx");
+const NAV_FILE = path.join(__dirname, "..", "src", "lib", "navigation.ts");
 
 // Routes that are intentionally not linked from the sidebar - keep this
 // list short and explain why each entry is here.
@@ -49,8 +49,8 @@ function extractNavHrefs(shellSource) {
 function main() {
   const allRoutes = walkPageRoutes(DASHBOARD_DIR, DASHBOARD_DIR);
   const staticRoutes = allRoutes.filter((route) => !isDynamicRoute(route));
-  const shellSource = fs.readFileSync(SHELL_FILE, "utf8");
-  const navHrefs = extractNavHrefs(shellSource);
+  const navSource = fs.readFileSync(NAV_FILE, "utf8");
+  const navHrefs = extractNavHrefs(navSource);
 
   const orphaned = staticRoutes.filter(
     (route) => !navHrefs.has(route) && !ALLOWLIST.has(route)
@@ -62,7 +62,7 @@ function main() {
       console.error(`  ${route}`);
     }
     console.error(
-      "\nAdd a link in DashboardShell.tsx's MODULE_GROUPS, or add the route to the ALLOWLIST in scripts/check-nav-completeness.js with a comment explaining why it's intentionally unlinked."
+      "\nAdd a link in src/lib/navigation.ts's MODULE_GROUPS, or add the route to the ALLOWLIST in scripts/check-nav-completeness.js with a comment explaining why it's intentionally unlinked."
     );
     process.exit(1);
   }

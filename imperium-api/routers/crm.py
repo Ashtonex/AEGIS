@@ -1430,6 +1430,27 @@ async def commercial_morning_briefing(
         """,
         {"org_id": org_id},
     )
+    lost_tenders = await _rows(
+        db,
+        """
+        SELECT
+            t.id,
+            t.tender_name AS title,
+            t.bid_amount AS value,
+            t.submission_deadline AS due_date,
+            t.closeout_reason AS reason,
+            t.closeout_recorded_at
+        FROM crm.tenders t
+        WHERE t.organization_id = :org_id
+          AND t.is_deleted = false
+          AND lower(COALESCE(t.stage, '')) = 'lost'
+          AND t.closeout_recorded_at IS NOT NULL
+          AND t.closeout_recorded_at >= NOW() - INTERVAL '7 days'
+        ORDER BY t.closeout_recorded_at DESC
+        LIMIT 10
+        """,
+        {"org_id": org_id},
+    )
     task_activity = await _rows(
         db,
         """
@@ -1581,11 +1602,13 @@ async def commercial_morning_briefing(
         "data": {
             "generated_at": date.today().isoformat(),
             "tenders_due": tenders_due,
+            "lost_tenders": lost_tenders,
             "task_activity": task_activity,
             "paperwork_gaps": paperwork_gaps,
             "stale_items": stale_items,
             "summary": {
                 "urgent_tenders": len([item for item in tenders_due if (item.get("days_left") or 99) <= 3]),
+                "lost_tenders": len(lost_tenders),
                 "tasks_needing_review": len([item for item in task_activity if item.get("briefing_status") == "ready_for_verification"]),
                 "paperwork_gaps": len(paperwork_gaps),
                 "stale_items": len(stale_items),
@@ -1844,7 +1867,7 @@ async def update_opportunity(
         current_stage_row = await _single_row(
             db,
             """
-            SELECT stage FROM crm.opportunities
+            SELECT stage, deal_value, budget FROM crm.opportunities
             WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
             """,
             {"opportunity_id": opportunity_id, "org_id": org_id},
@@ -1853,6 +1876,23 @@ async def update_opportunity(
             raise HTTPException(status_code=404, detail="Opportunity not found")
         if params["stage"] != current_stage_row.get("stage"):
             await _ensure_opportunity_stage_unlocked(db, user, current_stage_row.get("stage"))
+            # Entering Proposal (Quotation) is the point a deal stops being a
+            # hunch and starts being a forecast number Sales/Exec rely on -
+            # block the move rather than let a $0 opportunity silently ride
+            # into the pipeline value. Gated on the target being Quotation
+            # (not the source being literally "Qualification") because the
+            # frontend buckets Inquiry/Site Visit/Qualification into one
+            # "Qualification" column - Site Visit -> Proposal is the most
+            # common real path into Quotation and must be caught too.
+            if params["stage"] == "Quotation" and current_stage_row.get("stage") != "Quotation":
+                effective_value = params.get("deal_value", current_stage_row.get("deal_value"))
+                if not effective_value:
+                    effective_value = params.get("budget", current_stage_row.get("budget"))
+                if not effective_value or effective_value <= 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="A deal value must be set before moving this opportunity to Proposal.",
+                    )
             stage_changed = True
     if "deal_value" in params or "probability" in params:
         current = await _single_row(

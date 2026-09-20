@@ -73,15 +73,24 @@ def _coerce_timestamptz_columns(params: dict) -> None:
             params[column] = datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+_crm_tender_columns_cache: set[str] | None = None
+
+
 async def _crm_tender_columns(db: AsyncSession) -> set[str]:
-    result = await db.execute(
-        text("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'crm' AND table_name = 'tenders'
-        """)
-    )
-    return {str(row[0]) for row in result.fetchall()}
+    # Schema doesn't change within a process's lifetime, so this only needs
+    # to hit information_schema once - not once per row of a batch caller
+    # like the auto-close-overdue-tenders cron job.
+    global _crm_tender_columns_cache
+    if _crm_tender_columns_cache is None:
+        result = await db.execute(
+            text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'crm' AND table_name = 'tenders'
+            """)
+        )
+        _crm_tender_columns_cache = {str(row[0]) for row in result.fetchall()}
+    return _crm_tender_columns_cache
 
 
 async def _sync_tender_calendar(
@@ -1464,10 +1473,16 @@ async def update_requirement(
         "status", "credential_id", "required_category", "required_classification",
         "correct_category", "correct_classification", "valid_through_closing",
         "responsible_user_id", "due_date", "included_in_final_submission",
-        "reviewer_user_id", "review_date",
+        "reviewer_user_id", "review_date", "satisfied_document_id",
     ):
         if field in payload:
             updates[field] = payload[field]
+
+    # Uploading proof against a requirement is itself the "produced" signal -
+    # attaching a document and leaving status untouched would otherwise still
+    # show the item as missing.
+    if "satisfied_document_id" in updates and updates["satisfied_document_id"] and "status" not in updates:
+        updates["status"] = "PRESENT"
 
     if "severity" in updates and updates["severity"] not in _REQUIREMENT_SEVERITIES:
         raise HTTPException(status_code=400, detail="Invalid severity.")
