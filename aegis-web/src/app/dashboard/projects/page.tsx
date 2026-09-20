@@ -463,8 +463,13 @@ function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
           loading={loading}
           onSelect={(project) => void openProject(project)}
           onStatusChange={(project, nextStatus) => {
+            const previousStatus = project.status;
+            setError(null);
             setProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, status: nextStatus } : p)));
-            void updateInternalProject(project.id, { status: nextStatus }).catch(() => void load());
+            void updateInternalProject(project.id, { status: nextStatus }).catch((err) => {
+              setProjects((prev) => prev.map((p) => (p.id === project.id ? { ...p, status: previousStatus } : p)));
+              setError(err instanceof Error ? err.message : "Failed to move the project.");
+            });
           }}
         />
       ) : (

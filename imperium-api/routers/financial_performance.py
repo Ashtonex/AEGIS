@@ -21,6 +21,7 @@ from app.services.finance.statutory_accrual import accrue_liability_line
 from app.services.finance import gl_bridge
 from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.finance.cash_position import compute_cash_runway
+from app.services.inventory_service import post_cost_transaction
 from routers.payroll_runs import _compute_gross
 
 router = APIRouter()
@@ -355,13 +356,20 @@ async def get_project_financial_detail(
             ), 0) AS cash_collected,
             
             COALESCE((
-                SELECT pb.total_amount 
-                FROM finance.project_budgets pb 
-                WHERE pb.project_id = p.id AND pb.organization_id = :org_id 
-                  AND pb.status = 'approved' AND pb.is_deleted = false 
+                SELECT pb.total_amount
+                FROM finance.project_budgets pb
+                WHERE pb.project_id = p.id AND pb.organization_id = :org_id
+                  AND pb.status = 'approved' AND pb.is_deleted = false
                 LIMIT 1
-            ), 0) AS approved_budget
-            
+            ), 0) AS approved_budget,
+
+            COALESCE((
+                SELECT SUM(cb.amount)
+                FROM finance.cashbook_transactions cb
+                WHERE cb.project_id = p.id AND cb.organization_id = :org_id
+                  AND cb.direction = 'outflow' AND cb.is_deleted = false
+            ), 0) AS cash_paid_out
+
         FROM projects.projects p
         WHERE p.id = :project_id AND p.organization_id = :org_id AND p.is_deleted = false
     """)
@@ -382,6 +390,53 @@ async def get_project_financial_detail(
     detail["cashflow_deficit_risk"] = (
         detail["committed_cost"] > detail["cash_collected"]
     )
+    detail["cash_position"] = detail["cash_collected"] - detail["cash_paid_out"]
+
+    petty_cash_rows = await db.execute(
+        text("""
+            SELECT id, account_code, account_name, float_amount, current_balance,
+                   custodian_user_id, currency, is_active
+            FROM finance.cash_accounts
+            WHERE project_id = :project_id AND organization_id = :org_id
+              AND is_petty_cash = true AND is_deleted = false
+            ORDER BY created_at
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    detail["petty_cash"] = [dict(r._mapping) for r in petty_cash_rows]
+
+    # Chronological, cross-source feed for the Project Finance cockpit - each
+    # source carries a different notion of "value" (a cash movement, an
+    # accrued cost, a variation's cost impact), so `kind` tells the frontend
+    # which lens to render it through rather than merging them into one
+    # ambiguous number.
+    transactions_rows = await db.execute(
+        text("""
+            SELECT 'cash' AS kind, cb.transaction_date AS occurred_at, cb.description,
+                   cb.amount, cb.direction AS detail, cb.transaction_type AS source_type
+            FROM finance.cashbook_transactions cb
+            WHERE cb.project_id = :project_id AND cb.organization_id = :org_id AND cb.is_deleted = false
+
+            UNION ALL
+
+            SELECT 'cost' AS kind, ct.transaction_date AS occurred_at, ct.description,
+                   ct.amount, ct.cost_category AS detail, ct.source_type
+            FROM finance.cost_transactions ct
+            WHERE ct.project_id = :project_id AND ct.organization_id = :org_id AND ct.status = 'posted'
+
+            UNION ALL
+
+            SELECT 'variation' AS kind, v.created_at::date AS occurred_at, v.title AS description,
+                   v.cost_impact AS amount, v.status AS detail, v.variation_number AS source_type
+            FROM finance.variations v
+            WHERE v.project_id = :project_id AND v.organization_id = :org_id AND v.is_deleted = false
+
+            ORDER BY occurred_at DESC
+            LIMIT 50
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    detail["recent_transactions"] = [dict(r._mapping) for r in transactions_rows]
 
     return ok(detail, "Project financial detail retrieved.")
 
@@ -848,12 +903,48 @@ class ClientPaymentRequestClearByFinance(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=1000)
 
 
+class PettyCashOpen(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    account_name: str = Field(min_length=1, max_length=255)
+    custodian_user_id: UUID
+    float_amount: float = Field(gt=0)
+    currency: str = Field(default="USD", max_length=3)
+
+
+class PettyCashSpend(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    amount: float = Field(gt=0)
+    description: str = Field(min_length=1)
+    cost_category: str = Field(default="other", max_length=40)
+    reference: Optional[str] = Field(default=None, max_length=160)
+
+
+class PettyCashReplenish(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    amount: float = Field(gt=0)
+    source_cash_account_id: UUID
+    reference: Optional[str] = Field(default=None, max_length=160)
+
+
+class PettyCashClose(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    sweep_to_cash_account_id: Optional[UUID] = None
+
+
 async def _pick_client_cash_account(db: AsyncSession, org_id: str, currency: str) -> str:
+    # is_petty_cash excluded: a client receipt (deposit, progress claim) must
+    # never auto-land in a project's petty cash float just because it's the
+    # oldest active account of the right currency.
     account_id = (
         await db.execute(
             text("""
             SELECT id FROM finance.cash_accounts
             WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+              AND is_petty_cash = false
             ORDER BY (currency = :currency) DESC, created_at ASC
             LIMIT 1
         """),
@@ -1974,6 +2065,271 @@ async def post_cashbook_transaction(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Transaction number already exists.")
+
+
+@router.post("/projects/{project_id}/petty-cash", status_code=status.HTTP_201_CREATED)
+async def open_project_petty_cash(
+    project_id: UUID,
+    payload: PettyCashOpen,
+    user: dict = Depends(require_permission("finance.petty_cash.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    account_code = f"PC-{uuid4().hex[:8].upper()}"
+    try:
+        acc_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO finance.cash_accounts (
+                        organization_id, project_id, account_code, account_name, account_type,
+                        currency, opening_balance, current_balance,
+                        is_petty_cash, custodian_user_id, float_amount, created_by
+                    ) VALUES (
+                        :org_id, :project_id, :account_code, :account_name, 'cash',
+                        :currency, :float_amount, :float_amount,
+                        true, :custodian_user_id, :float_amount, :user_id
+                    ) RETURNING id
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": project_id,
+                    "account_code": account_code,
+                    "account_name": payload.account_name,
+                    "currency": payload.currency,
+                    "float_amount": payload.float_amount,
+                    "custodian_user_id": payload.custodian_user_id,
+                    "user_id": user["sub"],
+                },
+            )
+        ).scalar()
+        await db.commit()
+        return ok({"id": str(acc_id)}, "Petty cash float opened.")
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="This project already has an active petty cash float.")
+
+
+@router.get("/projects/{project_id}/petty-cash")
+async def get_project_petty_cash(
+    project_id: UUID,
+    user: dict = Depends(require_permission("finance.petty_cash.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    accounts = (
+        await db.execute(
+            text("""
+                SELECT id, account_code, account_name, float_amount, current_balance,
+                       custodian_user_id, currency, is_active, created_at
+                FROM finance.cash_accounts
+                WHERE project_id = :project_id AND organization_id = :org_id
+                  AND is_petty_cash = true AND is_deleted = false
+                ORDER BY created_at
+            """),
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )
+    ).mappings().all()
+    account_ids = [row["id"] for row in accounts]
+    movements: List[Dict[str, Any]] = []
+    if account_ids:
+        movements = [
+            dict(r._mapping)
+            for r in await db.execute(
+                text("""
+                    SELECT id, cash_account_id, transaction_number, transaction_date,
+                           transaction_type, direction, amount, description, reference
+                    FROM finance.cashbook_transactions
+                    WHERE cash_account_id = ANY(:account_ids) AND organization_id = :org_id
+                      AND is_deleted = false
+                    ORDER BY transaction_date DESC, created_at DESC
+                """),
+                {"account_ids": account_ids, "org_id": user["org_id"]},
+            )
+        ]
+    return ok({"accounts": [dict(row) for row in accounts], "movements": movements}, "Petty cash retrieved.")
+
+
+async def _get_active_petty_cash_account(db: AsyncSession, *, org_id: str, cash_account_id: UUID) -> Dict[str, Any]:
+    account = (
+        await db.execute(
+            text("""
+                SELECT id, project_id, account_name, current_balance, currency, is_active
+                FROM finance.cash_accounts
+                WHERE id = :id AND organization_id = :org_id
+                  AND is_petty_cash = true AND is_deleted = false
+                FOR UPDATE
+            """),
+            {"id": cash_account_id, "org_id": org_id},
+        )
+    ).mappings().first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Petty cash float not found.")
+    return dict(account)
+
+
+@router.post("/petty-cash/{cash_account_id}/spend", status_code=status.HTTP_201_CREATED)
+async def spend_petty_cash(
+    cash_account_id: UUID,
+    payload: PettyCashSpend,
+    user: dict = Depends(require_permission("finance.petty_cash.spend")),
+    db: AsyncSession = Depends(get_db),
+):
+    account = await _get_active_petty_cash_account(db, org_id=user["org_id"], cash_account_id=cash_account_id)
+    if not account["is_active"]:
+        raise HTTPException(status_code=409, detail="This petty cash float is closed.")
+    if payload.amount > float(account["current_balance"]):
+        raise HTTPException(status_code=409, detail="Spend exceeds the petty cash float's current balance.")
+
+    tx_number = f"PC-{uuid4().hex[:10].upper()}"
+    tx_id = (
+        await db.execute(
+            text("""
+                INSERT INTO finance.cashbook_transactions (
+                    organization_id, cash_account_id, transaction_number, transaction_date,
+                    transaction_type, direction, project_id, payment_method,
+                    description, reference, amount, currency, posted_by
+                ) VALUES (
+                    :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+                    'payment', 'outflow', :project_id, 'cash',
+                    :description, :reference, :amount, :currency, :user_id
+                ) RETURNING id
+            """),
+            {
+                "org_id": user["org_id"],
+                "cash_account_id": cash_account_id,
+                "tx_number": tx_number,
+                "project_id": account["project_id"],
+                "description": payload.description,
+                "reference": payload.reference,
+                "amount": payload.amount,
+                "currency": account["currency"],
+                "user_id": user["sub"],
+            },
+        )
+    ).scalar()
+
+    await post_cost_transaction(
+        db,
+        org_id=user["org_id"],
+        project_id=account["project_id"],
+        source_type="petty_cash_spend",
+        source_id=tx_id,
+        cost_category=payload.cost_category,
+        description=payload.description,
+        quantity=Decimal("1"),
+        unit_cost=Decimal(str(payload.amount)),
+        amount=Decimal(str(payload.amount)),
+        posted_by=user["sub"],
+    )
+
+    await db.commit()
+    return ok({"id": str(tx_id)}, "Petty cash spend recorded.")
+
+
+@router.post("/petty-cash/{cash_account_id}/replenish", status_code=status.HTTP_201_CREATED)
+async def replenish_petty_cash(
+    cash_account_id: UUID,
+    payload: PettyCashReplenish,
+    user: dict = Depends(require_permission("finance.petty_cash.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    account = await _get_active_petty_cash_account(db, org_id=user["org_id"], cash_account_id=cash_account_id)
+    if not account["is_active"]:
+        raise HTTPException(status_code=409, detail="This petty cash float is closed.")
+    source_check = await db.execute(
+        text("SELECT 1 FROM finance.cash_accounts WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": payload.source_cash_account_id, "org_id": user["org_id"]},
+    )
+    if not source_check.first():
+        raise HTTPException(status_code=404, detail="Source cash account not found.")
+
+    batch_ref = payload.reference or f"PCR-{uuid4().hex[:8].upper()}"
+    tx_number_base = uuid4().hex[:10].upper()
+    for suffix, tx_type, direction, acct_id in (
+        ("OUT", "transfer_out", "outflow", payload.source_cash_account_id),
+        ("IN", "transfer_in", "inflow", cash_account_id),
+    ):
+        await db.execute(
+            text("""
+                INSERT INTO finance.cashbook_transactions (
+                    organization_id, cash_account_id, transaction_number, transaction_date,
+                    transaction_type, direction, project_id, payment_method,
+                    description, reference, amount, currency, posted_by
+                ) VALUES (
+                    :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+                    :tx_type, :direction, :project_id, 'cash',
+                    :description, :reference, :amount, :currency, :user_id
+                )
+            """),
+            {
+                "org_id": user["org_id"],
+                "cash_account_id": acct_id,
+                "tx_number": f"PC-{tx_number_base}-{suffix}",
+                "tx_type": tx_type,
+                "direction": direction,
+                "project_id": account["project_id"] if acct_id == cash_account_id else None,
+                "description": f"Petty cash replenishment - {account['account_name']}",
+                "reference": batch_ref,
+                "amount": payload.amount,
+                "currency": account["currency"],
+                "user_id": user["sub"],
+            },
+        )
+    await db.commit()
+    return ok({"reference": batch_ref}, "Petty cash float replenished.")
+
+
+@router.post("/petty-cash/{cash_account_id}/close")
+async def close_petty_cash(
+    cash_account_id: UUID,
+    payload: PettyCashClose,
+    user: dict = Depends(require_permission("finance.petty_cash.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    account = await _get_active_petty_cash_account(db, org_id=user["org_id"], cash_account_id=cash_account_id)
+    remaining = float(account["current_balance"])
+    if remaining != 0:
+        if not payload.sweep_to_cash_account_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Float has an outstanding balance of {remaining:.2f} - provide sweep_to_cash_account_id to close it out.",
+            )
+        sweep_ref = f"PCC-{uuid4().hex[:8].upper()}"
+        tx_number_base = uuid4().hex[:10].upper()
+        for suffix, tx_type, direction, acct_id in (
+            ("OUT", "transfer_out", "outflow", cash_account_id),
+            ("IN", "transfer_in", "inflow", payload.sweep_to_cash_account_id),
+        ):
+            await db.execute(
+                text("""
+                    INSERT INTO finance.cashbook_transactions (
+                        organization_id, cash_account_id, transaction_number, transaction_date,
+                        transaction_type, direction, project_id, payment_method,
+                        description, reference, amount, currency, posted_by
+                    ) VALUES (
+                        :org_id, :cash_account_id, :tx_number, CURRENT_DATE,
+                        :tx_type, :direction, :project_id, 'cash',
+                        :description, :reference, :amount, :currency, :user_id
+                    )
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "cash_account_id": acct_id,
+                    "tx_number": f"PC-{tx_number_base}-{suffix}",
+                    "tx_type": tx_type,
+                    "direction": direction,
+                    "project_id": account["project_id"] if acct_id == cash_account_id else None,
+                    "description": f"Petty cash float closed - {account['account_name']}",
+                    "reference": sweep_ref,
+                    "amount": abs(remaining),
+                    "currency": account["currency"],
+                    "user_id": user["sub"],
+                },
+            )
+    await db.execute(
+        text("UPDATE finance.cash_accounts SET is_active = false, updated_at = NOW() WHERE id = :id"),
+        {"id": cash_account_id},
+    )
+    await db.commit()
+    return ok({"id": str(cash_account_id)}, "Petty cash float closed.")
 
 
 @router.post("/receipts/allocate", status_code=status.HTTP_201_CREATED)

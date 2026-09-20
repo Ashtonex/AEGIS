@@ -39,6 +39,7 @@ import {
   getProjectCommercialReadiness, updateProjectCommercialReadiness, clearProjectCommercialReadiness,
   getHRAttendance, getProcurementRfqs, getSiteGrns, getSiteVariances, getFinanceVariations, getFinanceBudgets, getBoqProgressSummary,
   getHREmployees, getWorkforceAllocations, createWorkforceAllocation, createDailySiteReport, createFinanceVariation,
+  getFinanceProjectDetail, getProjectPettyCash, openProjectPettyCash, postPettyCashSpend, postPettyCashReplenish, closeProjectPettyCash,
   getProjectTeam, type ProjectTeamMember,
   importBoqFile,
 } from "@/lib/api";
@@ -915,21 +916,36 @@ function PreMobilisationPanel({
   );
 }
 
-function ProjectControlsPanel({ project, detail }: { project: Project; detail: Detail | null }) {
+function ProjectControlsPanel({
+  project,
+  detail,
+  signals,
+  onOpenTab,
+  onOpenCommand,
+}: {
+  project: Project;
+  detail: Detail | null;
+  signals?: ProjectSignalState;
+  onOpenTab?: (tab: ProjectTab) => void;
+  onOpenCommand?: (command: ProjectCommand) => void;
+}) {
   const source = detail?.project ?? project;
   const viability = detail?.viability?.[0];
   const commercial = detail?.commercial_readiness;
   const preMob = detail?.pre_mobilisation;
+  const financeVariations = signals?.financeVariations ?? [];
   const checks = [
     {
       label: "Project identity and contract information",
       ready: Boolean(text(source.name ?? source.project_name ?? source.project_code, "")),
       evidence: text(source.project_code ?? source.name ?? source.project_name, "Missing project identity"),
+      onOpen: () => onOpenTab?.("overview"),
     },
     {
       label: "Client and consultant details",
       ready: Boolean(text(source.client_org_id ?? source.client_id ?? source.client_name ?? source.client, "")),
       evidence: text(source.client_name ?? source.client ?? source.client_org_id ?? source.client_id, "No linked CRM client"),
+      onOpen: () => onOpenTab?.("overview"),
     },
     {
       label: "Contract value and payment terms",
@@ -937,76 +953,91 @@ function ProjectControlsPanel({ project, detail }: { project: Project; detail: D
       evidence: (number(source.contract_value ?? source.budget ?? source.budget_value) ?? 0) > 0
         ? formatCurrency(number(source.contract_value ?? source.budget ?? source.budget_value) ?? 0)
         : text(commercial?.status, "No commercial baseline returned"),
+      onOpen: () => onOpenTab?.("financials"),
     },
     {
       label: "Master BOQ and approved budget",
       ready: Boolean(detail?.quotations?.length || viability?.budget_amount || source.budget_amount || source.budget),
       evidence: detail?.quotations?.length ? `${detail.quotations.length} quotation/BOQ record(s)` : text(viability?.budget_amount ?? source.budget_amount ?? source.budget, "No BOQ/budget evidence"),
+      onOpen: () => onOpenCommand?.("budget"),
     },
     {
       label: "Cost codes and work breakdown structure",
       ready: Boolean(source.department_id || detail?.milestones?.length),
       evidence: source.department_id ? "Department/cost owner assigned" : detail?.milestones?.length ? `${detail.milestones.length} WBS milestone(s)` : "No WBS evidence returned",
+      onOpen: () => onOpenTab?.("schedule"),
     },
     {
       label: "Baseline programme and milestones",
       ready: Boolean(detail?.milestones?.length || source.end_date || source.planned_completion_date),
       evidence: detail?.milestones?.length ? `${detail.milestones.length} milestone(s)` : text(source.end_date ?? source.planned_completion_date, "No programme dates returned"),
+      onOpen: () => onOpenTab?.("schedule"),
     },
     {
       label: "Drawings, specifications and revisions",
       ready: Boolean(detail?.tests_and_checks?.length),
       evidence: detail?.tests_and_checks?.length ? `${detail.tests_and_checks.length} technical check(s)` : "No drawing/spec revision evidence returned",
+      onOpen: () => onOpenCommand?.("documents"),
     },
     {
       label: "Labour plan",
       ready: Boolean(viability?.delivery_manager),
       evidence: text(viability?.delivery_manager, "No responsible delivery owner"),
+      onOpen: () => onOpenCommand?.("workforce"),
     },
     {
       label: "Material procurement schedule",
       ready: Boolean(detail?.material_records?.length || detail?.procurement_orders?.length),
       evidence: detail?.procurement_orders?.length ? `${detail.procurement_orders.length} procurement order(s)` : detail?.material_records?.length ? `${detail.material_records.length} material line(s)` : "No procurement/material evidence returned",
+      onOpen: () => onOpenCommand?.("materials"),
     },
     {
       label: "Plant and equipment plan",
       ready: Boolean((source as Record<string, unknown>).plant_plan_reference || (source as Record<string, unknown>).equipment_plan_reference),
       evidence: text((source as Record<string, unknown>).plant_plan_reference ?? (source as Record<string, unknown>).equipment_plan_reference, "No plant plan field returned"),
+      onOpen: undefined,
     },
     {
       label: "Subcontractor packages",
       ready: Boolean(detail?.subcontractors?.length),
       evidence: detail?.subcontractors?.length ? `${detail.subcontractors.length} subcontractor record(s)` : "No subcontract package returned",
+      onOpen: () => onOpenTab?.("overview"),
     },
     {
       label: "Risk and issue register",
       ready: Boolean(detail?.risks?.length || riskStatuses.has(text(source.health ?? source.status, "").toLowerCase())),
       evidence: detail?.risks?.length ? `${detail.risks.length} risk record(s)` : text(source.health, "No risk register evidence returned"),
+      onOpen: () => onOpenTab?.("overview"),
     },
     {
       label: "Inspection, quality and HSE documentation",
       ready: Boolean(detail?.tests_and_checks?.length || preMob?.checks?.length),
       evidence: detail?.tests_and_checks?.length ? `${detail.tests_and_checks.length} QA/HSE check(s)` : preMob?.checks?.length ? `${preMob.checks.length} pre-start check(s)` : "No inspection/HSE evidence returned",
+      onOpen: () => onOpenCommand?.("documents"),
     },
     {
       label: "Daily and weekly site records",
       ready: Boolean(detail?.site_reports?.length),
       evidence: detail?.site_reports?.length ? `${detail.site_reports.length} site report(s)` : "No daily site report returned",
+      onOpen: () => onOpenCommand?.("siteReports"),
     },
     {
       label: "Variations and instructions",
-      ready: Boolean(detail?.changes?.length),
-      evidence: detail?.changes?.length ? `${detail.changes.length} change record(s)` : "No variation/change record returned",
+      ready: Boolean(financeVariations.length),
+      evidence: financeVariations.length ? `${financeVariations.length} finance variation record(s)` : "No finance.variations record returned",
+      onOpen: () => onOpenCommand?.("variations"),
     },
     {
       label: "Payment certificates and valuations",
       ready: Boolean((source as Record<string, unknown>).payment_certificate_count || (source as Record<string, unknown>).valuation_count),
       evidence: text((source as Record<string, unknown>).payment_certificate_count ?? (source as Record<string, unknown>).valuation_count, "No payment certificate evidence returned"),
+      onOpen: undefined,
     },
     {
       label: "Practical-completion and handover records",
       ready: Boolean(text(source.status, "").toLowerCase() === "completed" || (source as Record<string, unknown>).handover_reference),
       evidence: text((source as Record<string, unknown>).handover_reference ?? source.status, "No handover evidence returned"),
+      onOpen: undefined,
     },
   ];
 
@@ -1044,7 +1075,14 @@ function ProjectControlsPanel({ project, detail }: { project: Project; detail: D
 
       <section className="grid gap-3 md:grid-cols-2">
         {checks.map((item) => (
-          <div key={item.label} className="border border-ink-mid bg-ink p-3">
+          <div
+            key={item.label}
+            role={item.onOpen ? "button" : undefined}
+            tabIndex={item.onOpen ? 0 : undefined}
+            onClick={item.onOpen}
+            onKeyDown={item.onOpen ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); item.onOpen?.(); } } : undefined}
+            className={`border border-ink-mid bg-ink p-3 ${item.onOpen ? "cursor-pointer transition-colors hover:border-signal/60 hover:bg-ink-light/30" : ""}`}
+          >
             <div className="flex items-start justify-between gap-3">
               <p className="text-sm font-semibold text-paper">{item.label}</p>
               <span className={`shrink-0 border px-2 py-1 font-mono text-[9px] uppercase tracking-wider ${item.ready ? "border-emerald-500/30 text-emerald-300" : "border-amber-500/30 text-amber-300"}`}>
@@ -1055,6 +1093,9 @@ function ProjectControlsPanel({ project, detail }: { project: Project; detail: D
           </div>
         ))}
       </section>
+      <p className="text-[11px] text-slate-light">
+        3 items (plant/equipment plan, payment certificates, handover records) have no field or screen behind them yet and are tracked separately — they can&apos;t be opened until that&apos;s built.
+      </p>
 
       <section className="grid gap-3 lg:grid-cols-3">
         <div className="border border-amber-500/30 bg-amber-950/10 p-4">
@@ -1088,6 +1129,7 @@ type ProjectSignalState = {
   financeVariations: Record<string, unknown>[];
   budgets: Record<string, unknown>[];
   boqSummary: Record<string, unknown> | null;
+  financeDetail: Record<string, unknown> | null;
 };
 
 const EMPTY_PROJECT_SIGNALS: ProjectSignalState = {
@@ -1098,6 +1140,7 @@ const EMPTY_PROJECT_SIGNALS: ProjectSignalState = {
   financeVariations: [],
   budgets: [],
   boqSummary: null,
+  financeDetail: null,
 };
 
 function sumField(rows: Record<string, unknown>[], fields: string[]): number {
@@ -1418,6 +1461,8 @@ function ProjectCommandModal({
   signals,
   onClose,
   onRefresh,
+  onNavigateTab,
+  onNavigateCommand,
 }: {
   command: ProjectCommand;
   project: Project;
@@ -1425,6 +1470,8 @@ function ProjectCommandModal({
   signals: ProjectSignalState;
   onClose: () => void;
   onRefresh: () => void;
+  onNavigateTab?: (tab: ProjectTab) => void;
+  onNavigateCommand?: (command: ProjectCommand) => void;
 }) {
   const [employees, setEmployees] = useState<Record<string, unknown>[]>([]);
   const [allocations, setAllocations] = useState<Record<string, unknown>[]>([]);
@@ -1937,7 +1984,7 @@ function ProjectCommandModal({
 
           {command === "documents" ? <EntityDocumentsPanel entityType="project" entityId={project.id} /> : null}
           {command === "progress" ? <RecordList title="Progress and milestones" records={[...(detail?.milestones ?? []), ...(signals.boqSummary ? [signals.boqSummary] : [])]} columns={["name", "status", "percent_complete", "earned_value", "forecast_date", "actual_date"]} /> : null}
-          {command === "controls" ? <ProjectControlsPanel project={project} detail={detail} /> : null}
+          {command === "controls" ? <ProjectControlsPanel project={project} detail={detail} signals={signals} onOpenTab={onNavigateTab} onOpenCommand={onNavigateCommand} /> : null}
           {command === "materials" ? <RecordList title="Material consumption and receipts" records={[...(detail?.material_records ?? []), ...signals.grns]} columns={["item_name", "description", "quantity_used", "received_quantity", "unit_cost", "wastage_quantity", "status"]} /> : null}
         </div>
         <style jsx>{`.field{height:2.5rem;width:100%;border:1px solid rgb(47 55 69);background:#09111f;padding:0 .75rem;font-size:.875rem;color:#f8fafc;outline:none}.textarea{width:100%;resize:vertical;border:1px solid rgb(47 55 69);background:#09111f;padding:.75rem;font-size:.875rem;color:#f8fafc;outline:none}`}</style>
@@ -2387,16 +2434,6 @@ export function ProjectDetail({
     return number(viability?.forecast_cost ?? source.forecast_cost ?? source.forecast_final_cost ?? source.estimate_at_completion) ?? 0;
   }, [source, viability]);
 
-  const actualCost = useMemo(() => {
-    return number(source.actual_cost ?? source.actual_cost_to_date ?? source.cost_to_date) ?? 0;
-  }, [source]);
-
-  const committedCost = useMemo(() => {
-    return number(source.committed_cost ?? source.commitments ?? source.purchase_commitments) ?? 0;
-  }, [source]);
-
-  const hasFinanceEvidence = contractVal > 0 || budgetedCost > 0 || forecastCost > 0 || actualCost > 0 || committedCost > 0;
-
   // Margin calculation formulas
   const budgetedGrossProfit = contractVal - budgetedCost;
   const budgetedGrossMarginPct = contractVal > 0 ? (budgetedGrossProfit / contractVal) * 100 : 0;
@@ -2545,6 +2582,7 @@ export function ProjectDetail({
       financeVariations,
       budgets,
       boqSummary,
+      financeDetail,
     ] = await Promise.allSettled([
       getHRAttendance({ project_id: project.id }),
       getProcurementRfqs({ project_id: project.id }),
@@ -2553,6 +2591,7 @@ export function ProjectDetail({
       getFinanceVariations({ project_id: project.id }),
       getFinanceBudgets({ project_id: project.id }),
       getBoqProgressSummary(project.id),
+      getFinanceProjectDetail(project.id),
     ]);
 
     setProjectSignals({
@@ -2563,6 +2602,7 @@ export function ProjectDetail({
       financeVariations: financeVariations.status === "fulfilled" ? financeVariations.value.data ?? [] : [],
       budgets: budgets.status === "fulfilled" ? budgets.value.data ?? [] : [],
       boqSummary: boqSummary.status === "fulfilled" ? boqSummary.value.data ?? null : null,
+      financeDetail: financeDetail.status === "fulfilled" ? financeDetail.value.data ?? null : null,
     });
     setProjectSignalsLoading(false);
   }, [project.id]);
@@ -2570,6 +2610,116 @@ export function ProjectDetail({
   useEffect(() => {
     void loadProjectSignals();
   }, [loadProjectSignals]);
+
+  const financeDetail = projectSignals.financeDetail;
+
+  // actual_cost_to_date/committed_cost come from the real cost/commitment
+  // ledger (finance.cost_transactions, finance.commitments, department
+  // transfer legs) via the finance module's per-project endpoint - source.*
+  // never carried these columns, so any legacy value there is a harmless,
+  // low-priority fallback rather than the source of truth.
+  const actualCost = useMemo(() => {
+    return number(financeDetail?.actual_cost_to_date ?? source.actual_cost ?? source.actual_cost_to_date ?? source.cost_to_date) ?? 0;
+  }, [financeDetail, source]);
+
+  const committedCost = useMemo(() => {
+    return number(financeDetail?.committed_cost ?? source.committed_cost ?? source.commitments ?? source.purchase_commitments) ?? 0;
+  }, [financeDetail, source]);
+
+  const hasFinanceEvidence = contractVal > 0 || budgetedCost > 0 || forecastCost > 0 || actualCost > 0 || committedCost > 0;
+
+  const cashCollected = number(financeDetail?.cash_collected) ?? 0;
+  const cashPaidOut = number(financeDetail?.cash_paid_out) ?? 0;
+  const cashPosition = number(financeDetail?.cash_position) ?? (cashCollected - cashPaidOut);
+  const pettyCashAccounts = (financeDetail?.petty_cash as Record<string, unknown>[] | undefined) ?? [];
+  const recentFinanceTransactions = (financeDetail?.recent_transactions as Record<string, unknown>[] | undefined) ?? [];
+  const activePettyCash = pettyCashAccounts.find((a) => a.is_active) as Record<string, unknown> | undefined;
+
+  const [pettyCashBusy, setPettyCashBusy] = useState<string | null>(null);
+  const [pettyCashMsg, setPettyCashMsg] = useState<string | null>(null);
+  const [pettyCashOpenForm, setPettyCashOpenForm] = useState({ account_name: "Site petty cash", custodian_user_id: "", float_amount: "" });
+  const [pettyCashSpendForm, setPettyCashSpendForm] = useState({ amount: "", description: "", cost_category: "other" as string, reference: "" });
+  const [pettyCashReplenishForm, setPettyCashReplenishForm] = useState({ amount: "", source_cash_account_id: "" });
+
+  const openPettyCash = async () => {
+    if (!pettyCashOpenForm.custodian_user_id || !pettyCashOpenForm.float_amount) {
+      setPettyCashMsg("Custodian and float amount are required.");
+      return;
+    }
+    setPettyCashBusy("open"); setPettyCashMsg(null);
+    try {
+      await openProjectPettyCash(project.id, {
+        account_name: pettyCashOpenForm.account_name,
+        custodian_user_id: pettyCashOpenForm.custodian_user_id,
+        float_amount: Number(pettyCashOpenForm.float_amount),
+      });
+      setPettyCashMsg("Petty cash float opened.");
+      setPettyCashOpenForm({ account_name: "Site petty cash", custodian_user_id: "", float_amount: "" });
+      void loadProjectSignals();
+    } catch (e) {
+      setPettyCashMsg(e instanceof Error ? e.message : "Failed to open petty cash float.");
+    } finally {
+      setPettyCashBusy(null);
+    }
+  };
+
+  const spendPettyCash = async () => {
+    if (!activePettyCash || !pettyCashSpendForm.amount || !pettyCashSpendForm.description) {
+      setPettyCashMsg("Amount and description are required.");
+      return;
+    }
+    setPettyCashBusy("spend"); setPettyCashMsg(null);
+    try {
+      await postPettyCashSpend(String(activePettyCash.id), {
+        amount: Number(pettyCashSpendForm.amount),
+        description: pettyCashSpendForm.description,
+        cost_category: pettyCashSpendForm.cost_category,
+        reference: pettyCashSpendForm.reference || undefined,
+      });
+      setPettyCashMsg("Petty cash spend recorded.");
+      setPettyCashSpendForm({ amount: "", description: "", cost_category: "other", reference: "" });
+      void loadProjectSignals();
+    } catch (e) {
+      setPettyCashMsg(e instanceof Error ? e.message : "Failed to record petty cash spend.");
+    } finally {
+      setPettyCashBusy(null);
+    }
+  };
+
+  const closePettyCashFloat = async () => {
+    if (!activePettyCash) return;
+    setPettyCashBusy("close"); setPettyCashMsg(null);
+    try {
+      await closeProjectPettyCash(String(activePettyCash.id));
+      setPettyCashMsg("Petty cash float closed.");
+      void loadProjectSignals();
+    } catch (e) {
+      setPettyCashMsg(e instanceof Error ? e.message : "Failed to close petty cash float.");
+    } finally {
+      setPettyCashBusy(null);
+    }
+  };
+
+  const replenishPettyCash = async () => {
+    if (!activePettyCash || !pettyCashReplenishForm.amount || !pettyCashReplenishForm.source_cash_account_id) {
+      setPettyCashMsg("Amount and source cash account are required.");
+      return;
+    }
+    setPettyCashBusy("replenish"); setPettyCashMsg(null);
+    try {
+      await postPettyCashReplenish(String(activePettyCash.id), {
+        amount: Number(pettyCashReplenishForm.amount),
+        source_cash_account_id: pettyCashReplenishForm.source_cash_account_id,
+      });
+      setPettyCashMsg("Petty cash float replenished.");
+      setPettyCashReplenishForm({ amount: "", source_cash_account_id: "" });
+      void loadProjectSignals();
+    } catch (e) {
+      setPettyCashMsg(e instanceof Error ? e.message : "Failed to replenish petty cash float.");
+    } finally {
+      setPettyCashBusy(null);
+    }
+  };
 
   const overviewEvidenceRows = useMemo(() => {
     const rows = [
@@ -2823,7 +2973,7 @@ export function ProjectDetail({
                 : "border-transparent text-slate hover:text-paper"
             }`}
           >
-            Budget Variance & Margins
+            Project Finance
           </button>
           <button
             onClick={() => setActiveTab("materials")}
@@ -3361,7 +3511,8 @@ export function ProjectDetail({
                         This tab shows the commercial position from returned project finance fields, budget records, site variances and formal variation records.
                       </p>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-3 xl:min-w-[620px]">
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-4 xl:min-w-[780px]">
+                      <Metric label="Cash position" value={formatCurrency(cashPosition)} detail="Collected minus paid out" tone={cashPosition < 0 ? "text-red-300" : "text-emerald-300"} />
                       <Metric label="Budget records" value={String(projectSignals.budgets.length)} detail="Finance budget rows" tone="text-paper" />
                       <Metric label="Exposure" value={formatCurrency(financeExposure)} detail="Actual plus committed" tone={budgetedCost > 0 && financeExposure > budgetedCost ? "text-red-300" : "text-signal"} />
                       <Metric label="Open variations" value={String(openVariationCount)} detail="Commercial action required" tone={openVariationCount ? "text-amber-300" : "text-emerald-300"} />
@@ -3387,6 +3538,73 @@ export function ProjectDetail({
                 <section className="grid gap-4 xl:grid-cols-2">
                   <RecordList title="Budget ledger" records={projectSignals.budgets} columns={["cost_code", "description", "amount", "status"]} />
                   <RecordList title="Variation ledger" records={projectSignals.financeVariations} columns={["variation_number", "description", "cost_impact", "status"]} />
+                </section>
+
+                <section className="grid gap-4 xl:grid-cols-2">
+                  <RecordList
+                    title="Income ledger"
+                    records={recentFinanceTransactions.filter((row) => row.kind === "cash" && row.detail === "inflow")}
+                    columns={["occurred_at", "description", "source_type", "amount"]}
+                  />
+                  <RecordList
+                    title="Cost / spend ledger"
+                    records={recentFinanceTransactions.filter((row) => row.kind === "cost" || (row.kind === "cash" && row.detail === "outflow"))}
+                    columns={["occurred_at", "description", "detail", "amount"]}
+                  />
+                </section>
+
+                <section className="border border-ink-mid bg-ink-light/10 p-5">
+                  <div className="flex items-center justify-between border-b border-ink-mid pb-3">
+                    <h4 className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-signal">
+                      <Banknote className="h-4 w-4" />Petty cash
+                    </h4>
+                    {activePettyCash ? (
+                      <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">
+                        Balance {formatCurrency(number(activePettyCash.current_balance) ?? 0)} / float {formatCurrency(number(activePettyCash.float_amount) ?? 0)}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {pettyCashMsg && <p className="mt-3 text-xs text-slate-light">{pettyCashMsg}</p>}
+
+                  {!activePettyCash ? (
+                    <div className="mt-4 grid gap-3 md:grid-cols-4">
+                      <input value={pettyCashOpenForm.account_name} onChange={(e) => setPettyCashOpenForm((f) => ({ ...f, account_name: e.target.value }))} placeholder="Float name" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+                      <input value={pettyCashOpenForm.custodian_user_id} onChange={(e) => setPettyCashOpenForm((f) => ({ ...f, custodian_user_id: e.target.value }))} placeholder="Custodian user ID" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+                      <input value={pettyCashOpenForm.float_amount} onChange={(e) => setPettyCashOpenForm((f) => ({ ...f, float_amount: e.target.value }))} type="number" min="0" placeholder="Float amount ($)" className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+                      <button onClick={() => void openPettyCash()} disabled={pettyCashBusy === "open"} className="h-10 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                        {pettyCashBusy === "open" ? "Opening..." : "Open float"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                      <div className="space-y-2">
+                        <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Record a spend</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <input value={pettyCashSpendForm.amount} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, amount: e.target.value }))} type="number" min="0" placeholder="Amount ($)" className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                          <select value={pettyCashSpendForm.cost_category} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, cost_category: e.target.value }))} className="h-9 border border-ink-mid bg-ink-light px-2 text-xs text-paper">
+                            {COST_CATEGORY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </div>
+                        <input value={pettyCashSpendForm.description} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, description: e.target.value }))} placeholder="Description" className="h-9 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                        <input value={pettyCashSpendForm.reference} onChange={(e) => setPettyCashSpendForm((f) => ({ ...f, reference: e.target.value }))} placeholder="Receipt/reference (optional)" className="h-9 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                        <button onClick={() => void spendPettyCash()} disabled={pettyCashBusy === "spend"} className="h-9 w-full border border-signal/40 font-mono text-[10px] uppercase tracking-wider text-signal disabled:opacity-50">
+                          {pettyCashBusy === "spend" ? "Recording..." : "Record spend"}
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Replenish float</p>
+                        <input value={pettyCashReplenishForm.amount} onChange={(e) => setPettyCashReplenishForm((f) => ({ ...f, amount: e.target.value }))} type="number" min="0" placeholder="Amount ($)" className="h-9 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                        <input value={pettyCashReplenishForm.source_cash_account_id} onChange={(e) => setPettyCashReplenishForm((f) => ({ ...f, source_cash_account_id: e.target.value }))} placeholder="Source cash account ID" className="h-9 w-full border border-ink-mid bg-ink-light px-2 text-xs text-paper" />
+                        <button onClick={() => void replenishPettyCash()} disabled={pettyCashBusy === "replenish"} className="h-9 w-full border border-emerald-500/40 font-mono text-[10px] uppercase tracking-wider text-emerald-300 disabled:opacity-50">
+                          {pettyCashBusy === "replenish" ? "Replenishing..." : "Replenish"}
+                        </button>
+                        <button onClick={() => void closePettyCashFloat()} disabled={pettyCashBusy === "close"} className="h-9 w-full border border-red-500/30 font-mono text-[10px] uppercase tracking-wider text-red-300 disabled:opacity-50">
+                          {pettyCashBusy === "close" ? "Closing..." : "Close float"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </section>
 
                 {!hasFinanceEvidence && (
@@ -3795,7 +4013,7 @@ export function ProjectDetail({
             {/* CONTROLS TAB */}
             {/* ---------------------------------------------------- */}
             {activeTab === "controls" && (
-              <ProjectControlsPanel project={source} detail={detail} />
+              <ProjectControlsPanel project={source} detail={detail} signals={projectSignals} onOpenTab={setActiveTab} onOpenCommand={setActiveCommand} />
             )}
 
             {/* ---------------------------------------------------- */}
@@ -3829,6 +4047,8 @@ export function ProjectDetail({
               void loadProjectSignals();
               onRefresh();
             }}
+            onNavigateTab={(tab) => { setActiveCommand(null); setActiveTab(tab); }}
+            onNavigateCommand={(nextCommand) => setActiveCommand(nextCommand)}
           />
         ) : null}
       </aside>

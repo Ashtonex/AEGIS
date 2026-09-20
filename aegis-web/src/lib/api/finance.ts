@@ -308,6 +308,50 @@ export async function getFinanceProjectDetail(projectId: string): Promise<ApiRes
   });
 }
 
+/** A project's petty cash float(s) plus their movement history. */
+export async function getProjectPettyCash(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/projects/${projectId}/petty-cash`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Open a new petty cash float for a project (one active float per project). */
+export async function openProjectPettyCash(projectId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/projects/${projectId}/petty-cash`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Record a spend against a petty cash float; also posts the accrued project cost. */
+export async function postPettyCashSpend(cashAccountId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/petty-cash/${cashAccountId}/spend`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Top a petty cash float back up to its authorised float from another cash account. */
+export async function postPettyCashReplenish(cashAccountId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/petty-cash/${cashAccountId}/replenish`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Close a petty cash float; sweeps any remaining balance to another cash account first. */
+export async function closeProjectPettyCash(cashAccountId: string, payload?: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/financial-performance/petty-cash/${cashAccountId}/close`, {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+    allowFallback: false,
+  });
+}
+
 /** Cost code register, optionally scoped to a department. */
 export async function getFinanceCostCodes(params?: { department_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
