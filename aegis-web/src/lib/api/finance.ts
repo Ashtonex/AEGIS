@@ -479,6 +479,31 @@ export async function getApAging(asOfDate?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/financial-statements/ap-aging${query}`, { cache: 'no-store', allowFallback: false });
 }
 
+export interface AgingBucketSummary {
+  buckets: { bucket: string; total: number }[];
+  total: number;
+}
+
+const AGING_BUCKET_ORDER = ['0-30', '31-60', '61-90', '90+', 'unknown'];
+
+/** Aggregates the flat per-claim/per-invoice rows from getArAging/getApAging
+ * into bucket totals for a compact executive summary card. Pure client-side
+ * aggregation - no backend change, safe at current data volumes. */
+export function summarizeAging(rows: Array<{ bucket?: string; outstanding_amount?: number | string }>): AgingBucketSummary {
+  const totalsByBucket = new Map<string, number>();
+  let total = 0;
+  for (const row of rows || []) {
+    const bucket = row.bucket && AGING_BUCKET_ORDER.includes(row.bucket) ? row.bucket : 'unknown';
+    const amount = Number(row.outstanding_amount) || 0;
+    totalsByBucket.set(bucket, (totalsByBucket.get(bucket) || 0) + amount);
+    total += amount;
+  }
+  const buckets = AGING_BUCKET_ORDER
+    .filter((bucket) => totalsByBucket.has(bucket))
+    .map((bucket) => ({ bucket, total: totalsByBucket.get(bucket) || 0 }));
+  return { buckets, total };
+}
+
 /** Management Accounts pack lifecycle + Project Portfolio/Health (Phase 11B). */
 export async function createManagementAccountsPack(periodStart: string, periodEnd: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/finance/management-accounts/packs', {

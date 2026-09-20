@@ -269,6 +269,16 @@ export async function getExecutiveProjectDetail(projectId: string, accessToken?:
   return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/detail`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
 
+/** Monte Carlo schedule-risk simulation for a single project. Fetched lazily
+ * (only when the project detail modal opens), never for a whole list. */
+export async function getProjectScheduleRisk(projectId: string, accessToken?: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/executive/projects/${encodeURIComponent(projectId)}/schedule-risk`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
+}
+
+export async function getMaterialsForecastAlerts(accessToken?: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/materials/forecast-alerts`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
+}
+
 /** Internal project register. Operational screens must not fall back to website demo data. */
 export async function getInternalProjects(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/projects/`, { cache: 'no-store', allowFallback: false });

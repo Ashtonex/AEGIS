@@ -93,6 +93,153 @@ async def _rows(
         return []
 
 
+async def _compute_cash_runway(
+    db: AsyncSession,
+    org_id: str,
+    source_errors: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Shared cash-runway computation used by both GET /financial-runway and
+    the GET /kpis live fallback for cash_survival_days, so the two figures
+    can never drift out of sync with each other.
+
+    Payroll burn is now a tiered estimate rather than an immediate flat
+    $3,500/employee guess: real cashbook outflow history wins if it exists,
+    otherwise real posted payroll (finance.payroll_runs) is tried before
+    falling back to the flat-rate guess. Posted payroll runs already post a
+    cashbook transaction, so the flat-rate/real-payroll tiers only ever fire
+    when the cashbook has zero outflow history at all - there is no
+    double-counting risk between the two.
+    """
+    cash_res = await _rows(
+        db,
+        "SELECT COALESCE(SUM(current_balance), 0) as total FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false",
+        {"org_id": org_id},
+        source="finance.cash_accounts",
+        source_errors=source_errors,
+    )
+    cash_unavailable = any(e["source"] == "finance.cash_accounts" for e in source_errors)
+    cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
+
+    burn_res = await _rows(
+        db,
+        """
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM finance.cashbook_transactions
+        WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
+          AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
+        """,
+        {"org_id": org_id},
+        source="finance.cashbook_transactions",
+        source_errors=source_errors,
+    )
+    real_monthly_burn = (float(burn_res[0]["total"]) / 3.0) if burn_res else 0.0
+
+    payroll_burn = 0.0
+    payroll_basis: str | None = None
+    if real_monthly_burn <= 0:
+        # Tier 2: real posted payroll, tried before the flat-rate guess.
+        payroll_res = await _rows(
+            db,
+            """
+            SELECT COALESCE(SUM(net_pay), 0) as total
+            FROM finance.payroll_runs
+            WHERE organization_id = :org_id AND status = 'posted'
+              AND payment_date >= (CURRENT_DATE - INTERVAL '90 days')
+            """,
+            {"org_id": org_id},
+            source="finance.payroll_runs",
+            source_errors=source_errors,
+        )
+        real_payroll_total = float(payroll_res[0]["total"]) if payroll_res else 0.0
+        if real_payroll_total > 0:
+            payroll_burn = real_payroll_total / 3.0
+            payroll_basis = (
+                "payroll_burn_monthly is the trailing-90-day average of real posted "
+                "payroll runs (finance.payroll_runs), not a flat-rate guess."
+            )
+        else:
+            # Tier 3: no cashbook and no posted payroll at all - last resort.
+            emp_res = await _rows(
+                db,
+                "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
+                {"org_id": org_id},
+                source="hr.employees",
+                source_errors=source_errors,
+            )
+            emp_count = emp_res[0]["total"] if emp_res else 0
+            payroll_burn = emp_count * 3500.00
+            payroll_basis = (
+                "payroll_burn_monthly assumes $3,500/employee/month - not sourced from "
+                "actual payroll runs or payslips (no posted payroll data exists for this organization)."
+            )
+    else:
+        # Real cashbook burn already covers payroll outflows (posting payroll
+        # posts a cashbook transaction); this figure is supplementary context only.
+        emp_res = await _rows(
+            db,
+            "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
+            {"org_id": org_id},
+            source="hr.employees",
+            source_errors=source_errors,
+        )
+        emp_count = emp_res[0]["total"] if emp_res else 0
+        payroll_burn = emp_count * 3500.00
+
+    fleet_res = await _rows(
+        db,
+        "SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
+        {"org_id": org_id},
+        source="fleet.fleet",
+        source_errors=source_errors,
+    )
+    fleet_burn = float(fleet_res[0]["total"]) if fleet_res else 0.0
+
+    po_res = await _rows(
+        db,
+        "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
+        {"org_id": org_id},
+        source="procurement.purchase_orders",
+        source_errors=source_errors,
+    )
+    procurement_burn = float(po_res[0]["total"]) if po_res else 0.0
+
+    estimated_burn = payroll_burn + fleet_burn + procurement_burn
+    using_real_burn = real_monthly_burn > 0
+    total_burn = real_monthly_burn if using_real_burn else estimated_burn
+
+    estimation_basis: List[str] | None = None
+    if not using_real_burn and total_burn > 0:
+        estimation_basis = [
+            payroll_basis
+            or "payroll_burn_monthly assumes $3,500/employee/month - not sourced from actual payroll runs or payslips.",
+            "procurement_burn_monthly is the total historical purchase order value, not a monthly average.",
+            "Used only because no real cashbook outflow history exists yet for this organization.",
+        ]
+
+    runway_months = (cash_reserves / total_burn) if (not cash_unavailable and total_burn > 0) else None
+
+    return {
+        "cash_reserves": None if cash_unavailable else round(cash_reserves, 2),
+        "cash_unavailable": cash_unavailable,
+        "total_burn_monthly": round(total_burn, 2) if total_burn > 0 else None,
+        "burn_source": "cashbook_trailing_90_days" if using_real_burn else (
+            "estimated_payroll_fleet_procurement" if total_burn > 0 else None
+        ),
+        "payroll_burn_monthly": round(payroll_burn, 2),
+        "fleet_burn_monthly": round(fleet_burn, 2),
+        "procurement_burn_monthly": round(procurement_burn, 2),
+        "using_real_burn": using_real_burn,
+        "runway_months": round(runway_months, 1) if runway_months is not None else None,
+        "status": "healthy" if (runway_months is not None and runway_months > 6.0) else (
+            "critical" if runway_months is not None else "UNKNOWN"
+        ),
+        "truth_status": "SYSTEM_GENERATED" if (using_real_burn and runway_months is not None) else (
+            "ESTIMATED" if runway_months is not None else "UNKNOWN"
+        ),
+        "estimation_basis": estimation_basis,
+    }
+
+
 @router.get("/kpis")
 async def get_executive_kpis(
     user: dict = Depends(require_permission("executive.view_dashboard")),
@@ -273,6 +420,49 @@ async def get_executive_kpis(
     if concentration_rows:
         data["top_client_contract_value"] = float(concentration_rows[0].get("top_client_contract_value") or 0)
         data["portfolio_contract_value"] = float(concentration_rows[0].get("portfolio_contract_value") or 0)
+
+    if data.get("cash_survival_days") is None:
+        runway = await _compute_cash_runway(db, org_id, source_errors)
+        if runway["runway_months"] is not None:
+            data["cash_survival_days"] = round(runway["runway_months"] * 30)
+            data["cash_survival_truth_status"] = runway["truth_status"]
+        else:
+            data.setdefault("_notices", []).append(
+                {
+                    "source": "executive.cash_runway",
+                    "status": "no_data",
+                    "reason": "No cash reserves or burn signal available to project cash survival days.",
+                }
+            )
+
+    if data.get("documented_workflow_percent") is None:
+        sop_rows = await _rows(
+            db,
+            """
+            SELECT
+                COUNT(*) AS total_instances,
+                COUNT(*) FILTER (WHERE status = 'complete') AS complete_instances
+            FROM compliance.sop_instances
+            WHERE organization_id = :org_id AND is_deleted = false
+            """,
+            {"org_id": org_id},
+            source="kpis.sop_instances",
+            source_errors=source_errors,
+        )
+        total_instances = int(sop_rows[0].get("total_instances") or 0) if sop_rows else 0
+        if total_instances > 0:
+            complete_instances = int(sop_rows[0].get("complete_instances") or 0)
+            data["documented_workflow_percent"] = round(complete_instances / total_instances * 100, 2)
+            data["documented_workflow_instances_total"] = total_instances
+            data["documented_workflow_instances_complete"] = complete_instances
+        else:
+            data.setdefault("_notices", []).append(
+                {
+                    "source": "compliance.sop_instances",
+                    "status": "no_data",
+                    "reason": "No SOP checklist instances recorded for this organization yet.",
+                }
+            )
 
     return {
         "success": True,
@@ -1628,77 +1818,22 @@ async def get_financial_runway(
     org_id = user["org_id"]
     source_errors: List[Dict[str, Any]] = []
 
-    cash_res = await _rows(
-        db,
-        "SELECT COALESCE(SUM(current_balance), 0) as total FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false",
-        {"org_id": org_id},
-        source="finance.cash_accounts",
-        source_errors=source_errors
-    )
-    cash_unavailable = any(e["source"] == "finance.cash_accounts" for e in source_errors)
-    cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
+    runway = await _compute_cash_runway(db, org_id, source_errors)
+    cash_unavailable = runway["cash_unavailable"]
+    total_burn = runway["total_burn_monthly"] or 0.0
+    runway_months = runway["runway_months"]
+    using_real_burn = runway["using_real_burn"]
 
-    burn_res = await _rows(
-        db,
-        """
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM finance.cashbook_transactions
-        WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
-          AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
-        """,
-        {"org_id": org_id},
-        source="finance.cashbook_transactions",
-        source_errors=source_errors
-    )
-    real_monthly_burn = (float(burn_res[0]["total"]) / 3.0) if burn_res else 0.0
-
-    # Outflow 1: payroll burn - ESTIMATE ONLY, not sourced from actual payroll data.
-    emp_res = await _rows(
-        db,
-        "SELECT COUNT(*) as total FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
-        {"org_id": org_id},
-        source="hr.employees",
-        source_errors=source_errors
-    )
-    emp_count = emp_res[0]["total"] if emp_res else 0
-    payroll_burn = emp_count * 3500.00
-
-    # Outflow 2: fleet lease/ownership costs - real figure, used only inside the estimate blend.
-    fleet_res = await _rows(
-        db,
-        "SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
-        {"org_id": org_id},
-        source="fleet.fleet",
-        source_errors=source_errors
-    )
-    fleet_burn = float(fleet_res[0]["total"]) if fleet_res else 0.0
-
-    # Outflow 3: ESTIMATE ONLY - total historical PO value, not an actual monthly figure.
-    po_res = await _rows(
-        db,
-        "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
-        {"org_id": org_id},
-        source="procurement.purchase_orders",
-        source_errors=source_errors
-    )
-    procurement_burn = float(po_res[0]["total"]) if po_res else 0.0
-
-    estimated_burn = payroll_burn + fleet_burn + procurement_burn
-    using_real_burn = real_monthly_burn > 0
-    total_burn = real_monthly_burn if using_real_burn else estimated_burn
-
-    if cash_unavailable or total_burn <= 0:
+    if cash_unavailable or runway_months is None:
         return {
             "success": True,
             "data": {
-                "total_burn_monthly": round(total_burn, 2) if total_burn > 0 else None,
-                "burn_source": "cashbook_trailing_90_days" if using_real_burn else (
-                    "estimated_payroll_fleet_procurement" if total_burn > 0 else None
-                ),
-                "payroll_burn_monthly": round(payroll_burn, 2),
-                "fleet_burn_monthly": round(fleet_burn, 2),
-                "procurement_burn_monthly": round(procurement_burn, 2),
-                "cash_reserves": None if cash_unavailable else round(cash_reserves, 2),
+                "total_burn_monthly": runway["total_burn_monthly"],
+                "burn_source": runway["burn_source"],
+                "payroll_burn_monthly": runway["payroll_burn_monthly"],
+                "fleet_burn_monthly": runway["fleet_burn_monthly"],
+                "procurement_burn_monthly": runway["procurement_burn_monthly"],
+                "cash_reserves": runway["cash_reserves"],
                 "runway_months": None,
                 "status": "UNKNOWN",
                 "truth_status": "UNKNOWN",
@@ -1713,25 +1848,19 @@ async def get_financial_runway(
             "meta": {"source_errors": source_errors}
         }
 
-    runway_months = cash_reserves / total_burn
-
     return {
         "success": True,
         "data": {
-            "total_burn_monthly": round(total_burn, 2),
-            "burn_source": "cashbook_trailing_90_days" if using_real_burn else "estimated_payroll_fleet_procurement",
-            "payroll_burn_monthly": round(payroll_burn, 2),
-            "fleet_burn_monthly": round(fleet_burn, 2),
-            "procurement_burn_monthly": round(procurement_burn, 2),
-            "cash_reserves": round(cash_reserves, 2),
-            "runway_months": round(runway_months, 1),
-            "status": "healthy" if runway_months > 6.0 else "critical",
-            "truth_status": "SYSTEM_GENERATED" if using_real_burn else "ESTIMATED",
-            "estimation_basis": None if using_real_burn else [
-                "payroll_burn_monthly assumes $3,500/employee/month - not sourced from actual payroll runs or payslips.",
-                "procurement_burn_monthly is the total historical purchase order value, not a monthly average.",
-                "Used only because no real cashbook outflow history exists yet for this organization.",
-            ],
+            "total_burn_monthly": runway["total_burn_monthly"],
+            "burn_source": runway["burn_source"],
+            "payroll_burn_monthly": runway["payroll_burn_monthly"],
+            "fleet_burn_monthly": runway["fleet_burn_monthly"],
+            "procurement_burn_monthly": runway["procurement_burn_monthly"],
+            "cash_reserves": runway["cash_reserves"],
+            "runway_months": runway_months,
+            "status": runway["status"],
+            "truth_status": runway["truth_status"],
+            "estimation_basis": runway["estimation_basis"],
         },
         "message": "Financial runway analysis complete."
             if using_real_burn else "Financial runway estimated - no real cashbook history on file yet.",

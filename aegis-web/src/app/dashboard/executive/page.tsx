@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -23,6 +24,12 @@ import {
   getFinancialRunway,
   getSafetyIndex,
   getPendingApprovals,
+  getProjectScheduleRisk,
+  getMaterialsForecastAlerts,
+  getArAging,
+  getApAging,
+  summarizeAging,
+  getFinanceDepartmentPnl,
   ApiError,
 } from "@/lib/api";
 
@@ -340,6 +347,11 @@ function ExecutiveCommandCentreWorkspace() {
       <SafetyIndexPanel />
     </section>
 
+    <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <DepartmentPnLPanel />
+      <ARAPAgingPanel />
+    </section>
+
     <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
       <ModuleGateway modules={modules} />
 
@@ -347,13 +359,14 @@ function ExecutiveCommandCentreWorkspace() {
     </section>
 
     <OperationalControlLedger stats={stats} />
+    <MaterialsForecastPanel />
     <CCBCommercialGovernanceWidget />
     <CCBAutomatedFindingsPanel />
     <PendingApprovalsPanel />
     <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricDetailGrid rows={metricDetailRows(selectedCard.key, kpis, stats, activeProjects, dataHealth)} />}</Modal>}
-    {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} /></>}</Modal>}
+    {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} accessToken={session?.access_token} /></>}</Modal>}
   </div>;
 }
 
@@ -361,7 +374,7 @@ function Modal({ title, onClose, children, wide = false }: { title: string; onCl
 function MetricDetailGrid({ rows }: { rows: Array<{ label: string; value: string; source: string }> }) { if (!rows.length) return <p className="mt-5 text-sm text-slate-light">No drill-down fields are configured for this metric.</p>; return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{rows.map((row) => <div key={`${row.label}-${row.source}`} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{row.label}</p><p className="font-mono text-sm text-paper mt-1">{row.value}</p><p className="mt-2 font-mono text-[10px] uppercase text-slate">Source: {row.source}</p></div>)}</div>; }
 function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{Object.entries(data).map(([key, value]) => <div key={key} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{titleCase(key)}</p><p className="font-mono text-sm text-paper mt-1">{displayValue(value)}</p></div>)}</div>; }
 function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (project: ApiData) => void }) { if (!projects.length) return <p className="text-slate-light mt-6">No active project records were found.</p>; return <div className="mt-5 space-y-2">{projects.map((project) => <button key={String(project.id)} onClick={() => void onSelect(project)} className="w-full flex justify-between gap-3 text-left border border-ink-mid p-3 hover:border-signal"><span className="text-paper">{displayValue(project.name)}</span><span className="font-mono text-xs text-slate-light">{displayValue(project.status)}</span></button>)}</div>; }
-function ProjectDetail({ detail }: { detail: ApiData | null }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
+function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; accessToken?: string }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); const projectId = project.id ? String(project.id) : null; return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{projectId && <section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Schedule Risk (Monte Carlo)</h3><ScheduleRiskPanel projectId={projectId} accessToken={accessToken} /></section>}{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
 function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter(isExecutiveAttentionIssue); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; const iconClass = issues.length ? "text-amber-400" : "text-green-500"; return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className={`w-4 h-4 ${iconClass}`}/>{summary}</div>; }
 function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
 function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) { return <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]"><div className="p-4 border-b border-ink-mid flex justify-between gap-4"><div><h2 className="font-mono text-xs tracking-widest text-paper uppercase">Executive Exceptions</h2><p className="text-xs text-slate-light mt-1">Conditions requiring a decision or intervention, with source evidence and drill-through where a project is linked.</p></div><span className="font-mono text-[10px] text-slate">{exceptions.length} OPEN</span></div>{exceptions.length ? <div className="divide-y divide-ink-mid">{exceptions.map((item, index) => { const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null); return <button key={`${String(item.category)}-${String(item.id)}-${index}`} onClick={() => drillProjectId && void onProject({ id: drillProjectId, name: item.title })} className="w-full p-4 flex flex-wrap justify-between gap-3 text-left hover:bg-ink-light disabled:hover:bg-transparent" disabled={!drillProjectId}><div><p className="font-mono text-[10px] text-signal uppercase">{displayValue(item.category)}</p><p className="text-sm text-paper mt-1">{displayValue(item.title ?? item.severity ?? item.certificate_name)}</p><p className="text-xs text-slate-light mt-1">{displayValue(item.action)}</p>{item.evidence ? <p className="mt-2 max-w-3xl break-words font-mono text-[10px] text-slate">Evidence: {displayValue(item.evidence)}</p> : null}</div><span className="font-mono text-xs text-slate-light">{displayValue(item.evidence_date ?? item.expiry_date ?? item.incident_date ?? item.viability_status)}</span></button>; })}</div> : <p className="p-4 text-sm text-slate-light">No configured executive exceptions are currently recorded.</p>}</section>; }
@@ -580,6 +593,22 @@ function RegionalFootprint({ regions }: { regions: ApiData[] }) {
 
           <div className="min-h-0 p-4 flex flex-col lg:overflow-y-auto">
             <div className="min-h-0 space-y-4">
+              {validCoordsRegions.length > 0 && (
+                <div>
+                  <h3 className="font-mono text-[9px] text-slate uppercase tracking-wider mb-2">Active Projects by Region</h3>
+                  <div className="h-32">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={regions.map((r) => ({ name: String(r.name), Active: Number(r.active_projects) || 0 }))} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                        <YAxis type="category" dataKey="name" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} width={100} />
+                        <Tooltip content={<ChartTooltip formatter={(v) => String(v)} />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                        <Bar dataKey="Active" fill="var(--dxl-signal)" radius={[0, 2, 2, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
               <h3 className="font-mono text-[9px] text-slate uppercase tracking-wider">Project Density Distribution</h3>
               <div className="max-h-40 space-y-3 overflow-y-auto pr-1">
                 {regions.map((region) => {
@@ -758,6 +787,26 @@ function TruthBadge({ status }: { status: unknown }) {
     </span>
   );
 }
+
+// Dark-surface Recharts tooltip matching the command-centre visual language -
+// Recharts' default tooltip is a light box that clashes badly with this page.
+function ChartTooltip({ active, payload, label, formatter }: { active?: boolean; payload?: Array<{ name?: string; value?: number | string; color?: string }>; label?: string; formatter?: (value: number | string) => string }) {
+  if (!active || !payload || !payload.length) return null;
+  const format = formatter || currencyValue;
+  return (
+    <div className="bg-ink border border-ink-mid rounded-md px-3 py-2 shadow-[0_10px_30px_-10px_rgba(0,0,0,0.6)]">
+      {label && <p className="font-mono text-[10px] uppercase text-slate mb-1">{label}</p>}
+      {payload.map((entry, index) => (
+        <p key={index} className="font-mono text-xs text-paper flex items-center gap-1.5">
+          <span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: entry.color }} />
+          {entry.name}: {format(entry.value ?? 0)}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+const AGING_BUCKETS = ["0-30", "31-60", "61-90", "90+"];
 
 function daysAgoLabel(iso: unknown) {
   if (typeof iso !== "string" || !iso) return "unknown";
@@ -1084,5 +1133,367 @@ function PendingApprovalsPanel() {
         )}
       </div>
     </section>
+  );
+}
+
+// AR/AP aging summary card. Aggregates the flat per-claim/per-invoice rows
+// from GET .../ar-aging and .../ap-aging client-side (summarizeAging) rather
+// than adding a new backend endpoint - safe at current data volumes, and the
+// bucket-cutoff logic can never drift out of sync with the one source of
+// truth in app/services/finance/financial_statements.py.
+function ARAPAgingPanel() {
+  const [arRows, setArRows] = useState<ApiData[]>([]);
+  const [apRows, setApRows] = useState<ApiData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [arRes, apRes] = await Promise.all([getArAging(), getApAging()]);
+        if (!cancelled) {
+          setArRows(Array.isArray(arRes.data) ? (arRes.data as ApiData[]) : []);
+          setApRows(Array.isArray(apRes.data) ? (apRes.data as ApiData[]) : []);
+        }
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const arSummary = useMemo(() => summarizeAging(arRows as Array<{ bucket?: string; outstanding_amount?: number | string }>), [arRows]);
+  const apSummary = useMemo(() => summarizeAging(apRows as Array<{ bucket?: string; outstanding_amount?: number | string }>), [apRows]);
+  const chartData = AGING_BUCKETS.map((bucket) => ({
+    bucket,
+    AR: arSummary.buckets.find((b) => b.bucket === bucket)?.total || 0,
+    AP: apSummary.buckets.find((b) => b.bucket === bucket)?.total || 0,
+  }));
+  const hasData = arRows.length > 0 || apRows.length > 0;
+
+  return (
+    <>
+      <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+        <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+          <div>
+            <h2 className="font-mono text-xs tracking-widest text-paper uppercase">AR / AP Aging</h2>
+            <p className="text-xs text-slate-light mt-1">Outstanding client claims vs supplier invoices, aged by days overdue.</p>
+          </div>
+          {!loading && !failed && hasData && (
+            <button onClick={() => setShowDetail(true)} className="font-mono text-[10px] text-signal hover:underline shrink-0">View detail →</button>
+          )}
+        </div>
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading aging data...</div>
+        ) : failed ? (
+          <p className="text-xs text-slate py-6">AR/AP aging could not be loaded.</p>
+        ) : !hasData ? (
+          <p className="text-xs text-slate-light py-6">No outstanding client claims or supplier invoices recorded.</p>
+        ) : (
+          <div className="py-2">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div><p className="text-slate">Receivable (AR)</p><p className="font-mono text-2xl text-paper mt-0.5">{currencyValue(arSummary.total)}</p></div>
+              <div><p className="text-slate">Payable (AP)</p><p className="font-mono text-2xl text-paper mt-0.5">{currencyValue(apSummary.total)}</p></div>
+            </div>
+            <div className="mt-4 h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" vertical={false} />
+                  <XAxis dataKey="bucket" tick={{ fill: "var(--dxl-slate-light)", fontSize: 10 }} axisLine={{ stroke: "var(--dxl-ink-mid)" }} tickLine={false} />
+                  <YAxis tick={{ fill: "var(--dxl-slate-light)", fontSize: 10 }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `$${Number(v) >= 1000 ? `${Math.round(Number(v) / 1000)}k` : v}`} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                  <Legend wrapperStyle={{ fontSize: 10, color: "var(--dxl-slate-light)" }} />
+                  <Bar dataKey="AR" fill="var(--dxl-signal)" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="AP" fill="var(--dxl-info)" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
+      </section>
+      {showDetail && (
+        <Modal title="AR / AP Aging Detail" onClose={() => setShowDetail(false)} wide>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <AgingTable title="Accounts Receivable" rows={arRows} nameKey="project_name" idLabel="Claim" />
+            <AgingTable title="Accounts Payable" rows={apRows} nameKey="supplier_name" idLabel="Invoice" />
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function AgingTable({ title, rows, nameKey, idLabel }: { title: string; rows: ApiData[]; nameKey: string; idLabel: string }) {
+  const total = rows.reduce((sum, row) => sum + (Number(row.outstanding_amount) || 0), 0);
+  return (
+    <div className="border border-ink-mid">
+      <div className="p-3 border-b border-ink-mid flex justify-between items-center">
+        <h3 className="font-mono text-[10px] uppercase text-signal">{title}</h3>
+        <span className="font-mono text-xs text-paper">{currencyValue(total)}</span>
+      </div>
+      <div className="max-h-72 overflow-y-auto">
+        {rows.length ? (
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-ink font-mono text-[9px] text-slate uppercase border-b border-ink-mid">
+              <tr><th className="p-2 font-normal">{idLabel}</th><th className="p-2 font-normal text-right">Outstanding</th><th className="p-2 font-normal text-right">Age</th></tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={index} className="border-b border-ink-mid/40">
+                  <td className="p-2 text-paper truncate max-w-[160px]">{displayValue(row[nameKey])}</td>
+                  <td className="p-2 text-right font-mono text-paper">{currencyValue(row.outstanding_amount)}</td>
+                  <td className="p-2 text-right font-mono text-slate-light">{displayValue(row.bucket)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="p-3 text-xs text-slate-light">No outstanding records.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Department P&L card. total_revenue/total_cost/net/margin_percent come
+// straight from GET /financial-performance/departments/pnl - the same
+// numbers shown on the Finance page's Department P&L tab, so the two can be
+// cross-checked against each other.
+function DepartmentPnLPanel() {
+  const [departments, setDepartments] = useState<ApiData[]>([]);
+  const [consolidated, setConsolidated] = useState<ApiData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getFinanceDepartmentPnl();
+        const data = (res.data as ApiData) || {};
+        if (!cancelled) {
+          setDepartments(Array.isArray(data.departments) ? (data.departments as ApiData[]) : []);
+          setConsolidated((data.consolidated as ApiData) || null);
+        }
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const chartData = departments
+    .filter((dept) => Number(dept.total_revenue || 0) !== 0 || Number(dept.total_cost || 0) !== 0)
+    .map((dept) => ({
+      name: String(dept.department_name || "Unassigned"),
+      Revenue: Number(dept.total_revenue) || 0,
+      Cost: Number(dept.total_cost) || 0,
+    }));
+
+  return (
+    <>
+      <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+        <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+          <div>
+            <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Department P&amp;L</h2>
+            <p className="text-xs text-slate-light mt-1">External + internal revenue against project and direct cost, per department.</p>
+          </div>
+          {!loading && !failed && departments.length > 0 && (
+            <button onClick={() => setShowDetail(true)} className="font-mono text-[10px] text-signal hover:underline shrink-0">View detail →</button>
+          )}
+        </div>
+        {loading ? (
+          <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading department P&amp;L...</div>
+        ) : failed ? (
+          <p className="text-xs text-slate py-6">Department P&amp;L could not be loaded.</p>
+        ) : !departments.length ? (
+          <p className="text-xs text-slate-light py-6">No department records configured yet.</p>
+        ) : (
+          <div className="py-2">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div><p className="text-slate">Consolidated Net</p><p className="font-mono text-2xl text-paper mt-0.5">{consolidated ? currencyValue(consolidated.net) : "Not recorded"}</p></div>
+              <div><p className="text-slate">Margin</p><p className="font-mono text-2xl text-paper mt-0.5">{metricWithUnit(consolidated?.margin_percent, "%")}</p></div>
+            </div>
+            {chartData.length > 0 && (
+              <div className="mt-4 h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 20 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={{ stroke: "var(--dxl-ink-mid)" }} tickLine={false} interval={0} angle={-20} textAnchor="end" height={50} />
+                    <YAxis tick={{ fill: "var(--dxl-slate-light)", fontSize: 10 }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `$${Number(v) >= 1000 ? `${Math.round(Number(v) / 1000)}k` : v}`} />
+                    <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                    <Legend wrapperStyle={{ fontSize: 10, color: "var(--dxl-slate-light)" }} />
+                    <Bar dataKey="Revenue" fill="var(--dxl-signal)" radius={[2, 2, 0, 0]} />
+                    <Bar dataKey="Cost" fill="var(--dxl-info)" radius={[2, 2, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+      {showDetail && (
+        <Modal title="Department P&L Detail" onClose={() => setShowDetail(false)} wide>
+          <div className="space-y-3">
+            {[...departments, ...(consolidated ? [consolidated] : [])].map((dept, index) => (
+              <div key={index} className={`border p-3 ${dept.department_id === null ? "border-signal bg-ink-light" : "border-ink-mid"}`}>
+                <div className="flex justify-between items-center gap-3">
+                  <h3 className="font-semibold text-paper text-sm truncate">{displayValue(dept.department_name)}</h3>
+                  <span className="font-mono text-sm text-paper shrink-0">{currencyValue(dept.net)} <span className="text-slate-light text-xs">({metricWithUnit(dept.margin_percent, "%")})</span></span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+                  <div><p className="text-slate">External Rev</p><p className="font-mono text-paper">{currencyValue(dept.external_revenue)}</p></div>
+                  <div><p className="text-slate">Internal Rev</p><p className="font-mono text-paper">{currencyValue(dept.internal_revenue)}</p></div>
+                  <div><p className="text-slate">Project Cost</p><p className="font-mono text-paper">{currencyValue(dept.project_cost)}</p></div>
+                  <div><p className="text-slate">Internal Cost</p><p className="font-mono text-paper">{currencyValue(dept.internal_cost)}</p></div>
+                  <div><p className="text-slate">Direct Cost</p><p className="font-mono text-paper">{currencyValue(dept.direct_cost_non_project)}</p></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+// Materials price forecast watch-list. Every material on file today has
+// exactly one price observation ever (see GET /executive/materials/forecast-alerts
+// docstring), so trend forecasting cannot honestly produce a result yet -
+// this panel says so explicitly rather than rendering an empty-looking list,
+// so the capability's existence and its current limitation are both visible.
+function MaterialsForecastPanel() {
+  const [alerts, setAlerts] = useState<ApiData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getMaterialsForecastAlerts();
+        if (!cancelled) setAlerts(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const trending = alerts.filter((a) => a.truth_status === "SYSTEM_GENERATED");
+  const incomplete = alerts.filter((a) => a.truth_status !== "SYSTEM_GENERATED");
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Materials Price Forecast</h2>
+          <p className="text-xs text-slate-light mt-1">Commodity inflation trend, forecast from real dated price observations only.</p>
+        </div>
+        <span className="font-mono text-[10px] text-slate">{alerts.length} TRACKED</span>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading materials forecast...</div>
+      ) : failed ? (
+        <p className="text-xs text-slate py-6">Materials forecast could not be loaded.</p>
+      ) : alerts.length === 0 ? (
+        <p className="text-xs text-slate-light py-6">No procurement catalog items are on file to forecast.</p>
+      ) : trending.length === 0 ? (
+        <div className="py-4">
+          <p className="text-sm text-paper">{alerts.length} materials tracked — 0 currently qualify for a trend forecast.</p>
+          <p className="text-xs text-slate-light mt-2">Trend forecasting needs at least 2 dated price observations per item; every item on file today has only one. This starts producing trends automatically as more price observations accumulate over time.</p>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {trending.map((alert, index) => (
+            <div key={index} className="flex justify-between items-center border border-ink-mid bg-ink-light p-3 text-xs">
+              <div>
+                <p className="font-semibold text-paper">{displayValue(alert.material)}</p>
+                <p className="text-slate-light mt-0.5">Current: {currencyValue(alert.current_price)} · {displayValue(alert.observations)} observations</p>
+              </div>
+              <span className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${alert.status === "warning" ? "border-amber-500/40 text-amber-300 bg-amber-950/20" : "border-emerald-500/40 text-emerald-300 bg-emerald-950/20"}`}>{displayValue(alert.trend)}</span>
+            </div>
+          ))}
+          {incomplete.length > 0 && <p className="text-[11px] text-slate mt-2">{incomplete.length} additional material(s) tracked with insufficient price history for a trend yet.</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Schedule risk (Monte Carlo). Fetched lazily - only mounted when a project
+// detail modal is actually open - never for a whole project list, since each
+// call runs a real 2000-iteration simulation server-side.
+function ScheduleRiskPanel({ projectId, accessToken }: { projectId: string; accessToken?: string }) {
+  const [data, setData] = useState<ApiData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await getProjectScheduleRisk(projectId, accessToken);
+        if (!cancelled) setData((res.data as ApiData) || {});
+      } catch {
+        if (!cancelled) setData(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, accessToken]);
+
+  if (loading) return <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Running Monte Carlo schedule simulation...</div>;
+  if (!data) return <p className="text-xs text-slate-light py-2">Schedule risk could not be loaded.</p>;
+
+  const truthStatus = String(data.truth_status || "UNKNOWN");
+  if (truthStatus === "UNKNOWN") {
+    return (
+      <div className="border border-ink-mid bg-ink-light p-3">
+        <TruthBadge status={data.truth_status} />
+        <p className="text-xs text-slate-light mt-2">{displayValue(data.reason)}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <TruthBadge status={data.truth_status} />
+        <span className="font-mono text-[10px] text-slate-light">{displayValue(data.milestones_included)} milestone(s) modeled · {displayValue(data.iterations_run)} iterations</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="border border-ink-mid p-2 text-center"><p className="font-mono text-[9px] uppercase text-slate">P50 (weeks)</p><p className="font-mono text-sm text-paper mt-1">{displayValue(data.p50_duration_weeks)}</p></div>
+        <div className="border border-ink-mid p-2 text-center"><p className="font-mono text-[9px] uppercase text-slate">P90 (weeks)</p><p className="font-mono text-sm text-paper mt-1">{displayValue(data.p90_duration_weeks)}</p></div>
+        <div className="border border-ink-mid p-2 text-center"><p className="font-mono text-[9px] uppercase text-slate">Mean (weeks)</p><p className="font-mono text-sm text-paper mt-1">{displayValue(data.mean_duration_weeks)}</p></div>
+        <div className="border border-ink-mid p-2 text-center"><p className="font-mono text-[9px] uppercase text-slate">Std Dev</p><p className="font-mono text-sm text-paper mt-1">{displayValue(data.standard_deviation_weeks)}</p></div>
+      </div>
+      {Array.isArray(data.task_basis) && data.task_basis.length > 0 && (
+        <div className="border-t border-ink-mid pt-2">
+          <p className="font-mono text-[9px] uppercase text-slate mb-2">Milestone Basis (optimistic / likely / pessimistic, weeks from today)</p>
+          <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+            {(data.task_basis as ApiData[]).map((task, index) => (
+              <div key={index} className="flex justify-between gap-3 text-xs border-b border-ink-mid/40 py-1">
+                <span className="text-paper truncate">{displayValue(task.name)}</span>
+                <span className="font-mono text-slate-light shrink-0">{displayValue(task.a)} / {displayValue(task.m)} / {displayValue(task.b)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {typeof data.milestones_excluded_no_dates === "number" && (data.milestones_excluded_no_dates as number) > 0 && (
+        <p className="text-[11px] text-amber-300/80">{displayValue(data.milestones_excluded_no_dates)} milestone(s) excluded - no baseline/forecast dates recorded.</p>
+      )}
+    </div>
   );
 }

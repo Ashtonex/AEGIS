@@ -24,12 +24,10 @@
         "run",
         "dev",
         "--prefix",
-        "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web",
-        "--",
-        "-p",
-        "3010"
+        "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web"
       ],
-      "port": 3010
+      "port": 3010,
+      "autoPort": true
     }
   ]
 }

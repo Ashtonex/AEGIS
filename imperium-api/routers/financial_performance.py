@@ -507,18 +507,21 @@ async def _compute_department_pnl(db: AsyncSession, org_id: str, date_from: Opti
         row["total_revenue"] = revenue
         row["total_cost"] = cost
         row["net"] = revenue - cost
+        row["margin_percent"] = round(row["net"] / revenue * 100, 2) if revenue else None
         for key in org_totals:
             org_totals[key] += float(row[key])
 
     org_revenue = org_totals["external_revenue"] + org_totals["internal_revenue"]
     org_cost = org_totals["project_cost"] + org_totals["internal_cost"] + org_totals["direct_cost_non_project"]
+    org_net = org_revenue - org_cost
     org_row = {
         "department_id": None,
         "department_name": "Consolidated (whole business)",
         **org_totals,
         "total_revenue": org_revenue,
         "total_cost": org_cost,
-        "net": org_revenue - org_cost,
+        "net": org_net,
+        "margin_percent": round(org_net / org_revenue * 100, 2) if org_revenue else None,
     }
 
     return {"departments": rows, "consolidated": org_row}
