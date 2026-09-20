@@ -179,7 +179,7 @@ async def upsert_event(
                     :event_id, :calendar_id, :change_key,
                     :subject, :description, :start_at, :end_at, :timezone, :location,
                     :owner_user_id, :category, :sync_status, :sync_error,
-                    CASE WHEN :sync_status = 'synced' THEN NOW() ELSE NULL END
+                    CASE WHEN :sync_status_check = 'synced' THEN NOW() ELSE NULL END
                 )
                 ON CONFLICT (organization_id, source_module, source_entity_type, source_entity_id) DO UPDATE SET
                     microsoft_event_id = COALESCE(EXCLUDED.microsoft_event_id, core.calendar_event_map.microsoft_event_id),
@@ -197,7 +197,8 @@ async def upsert_event(
                 "calendar_id": connection.calendar_id, "change_key": event.change_key if event else None,
                 "subject": subject, "description": body_html, "start_at": start_at, "end_at": end_at,
                 "timezone": connection.timezone, "location": location, "owner_user_id": owner_user_id,
-                "category": calendar_category, "sync_status": sync_status, "sync_error": sync_error,
+                "category": calendar_category, "sync_status": sync_status, "sync_status_check": sync_status,
+                "sync_error": sync_error,
             },
         )
     ).mappings().first()

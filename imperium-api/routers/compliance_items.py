@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 import json
 from typing import Literal, Optional
 from uuid import UUID
@@ -10,10 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.database import get_db
+from core.logging import logger
 from core.security import require_permission, get_current_user
 from app.shared.pagination import ok
 from app.shared.sql import safe_payload_columns, update_tenant_row_sql
 from app.shared.events import emit_notification, emit_role_notification
+from app.services.microsoft.compliance_calendar import sync_corrective_action
 
 router = APIRouter()
 
@@ -320,12 +322,16 @@ async def create_corrective_action(
             organization_id, finding_trigger, responsible_person, due_date,
             priority, status, notes, created_by
         ) VALUES (
-            :org_id, :finding_trigger, :responsible_person, CAST(:due_date AS date),
+            :org_id, :finding_trigger, :responsible_person, :due_date,
             :priority, :status, :notes, :user_id
         )
         RETURNING id
     """),
-        {**payload.model_dump(), "org_id": user["org_id"], "user_id": user["user_id"]},
+        {
+            **payload.model_dump(),
+            "due_date": date.fromisoformat(payload.due_date),
+            "org_id": user["org_id"], "user_id": user["user_id"],
+        },
     )
     action_id = row.scalar()
     await emit_compliance_event(
@@ -348,6 +354,18 @@ async def create_corrective_action(
         metadata={"corrective_action_id": str(action_id)},
     )
     await db.commit()
+
+    try:
+        await sync_corrective_action(
+            db, organization_id=user["org_id"], corrective_action_id=action_id,
+            finding_trigger=payload.finding_trigger, responsible_person=payload.responsible_person,
+            due_date=date.fromisoformat(payload.due_date), priority=payload.priority,
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 - must never fail an already-committed corrective action
+        await db.rollback()
+        logger.warning("microsoft_graph.compliance_calendar_sync_errored", corrective_action_id=str(action_id), error=str(exc))
+
     return ok({"id": str(action_id)}, "Corrective action generated.")
 
 
