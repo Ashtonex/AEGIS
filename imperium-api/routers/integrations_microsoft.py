@@ -11,6 +11,7 @@ names, connection status) leave this API.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Optional
 from uuid import UUID
 
@@ -169,6 +170,7 @@ async def test_connection(
             """),
             {"status": connection_status, "error": error_message, "id": row["id"]},
         )
+        await db.commit()
 
     if error_message:
         raise HTTPException(status_code=502, detail=f"Microsoft Graph connection test failed: {error_message}")
@@ -263,6 +265,7 @@ async def connect_site(
         },
     )
     saved = row.mappings().first()
+    await db.commit()
     return ok(dict(saved), "SharePoint site connected. Next: map document libraries and select a calendar.")
 
 
@@ -277,13 +280,14 @@ async def set_library_map(
         await db.execute(
             text("""
                 UPDATE core.organisation_integrations
-                SET library_map = :library_map, updated_at = NOW()
+                SET library_map = CAST(:library_map AS jsonb), updated_at = NOW()
                 WHERE id = :id
                 RETURNING *
             """),
-            {"library_map": payload.library_map, "id": row["id"]},
+            {"library_map": json.dumps(payload.library_map), "id": row["id"]},
         )
     ).mappings().first()
+    await db.commit()
     return ok(dict(updated), "Document library mapping saved.")
 
 
@@ -339,6 +343,7 @@ async def select_calendar(
             },
         )
     ).mappings().first()
+    await db.commit()
     return ok(dict(updated), "Calendar selected.")
 
 
@@ -410,6 +415,7 @@ async def update_settings(
             },
         )
     ).mappings().first()
+    await db.commit()
     return ok(dict(updated), "Microsoft 365 sync settings updated.")
 
 
@@ -431,4 +437,5 @@ async def disconnect(
         """),
         {"id": row["id"]},
     )
+    await db.commit()
     return ok({"disconnected": True}, "Microsoft 365 integration disconnected.")
