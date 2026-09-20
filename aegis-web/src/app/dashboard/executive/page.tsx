@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -343,6 +343,11 @@ function ExecutiveCommandCentreWorkspace() {
     </section>
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <RevenueCostMarginPanel kpis={kpis} />
+      <PipelineCompositionPanel kpis={kpis} />
+    </section>
+
+    <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <CashRunwayPanel />
       <SafetyIndexPanel />
     </section>
@@ -377,7 +382,66 @@ function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (p
 function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; accessToken?: string }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); const projectId = project.id ? String(project.id) : null; return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{projectId && <section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Schedule Risk (Monte Carlo)</h3><ScheduleRiskPanel projectId={projectId} accessToken={accessToken} /></section>}{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
 function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter(isExecutiveAttentionIssue); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; const iconClass = issues.length ? "text-amber-400" : "text-green-500"; return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className={`w-4 h-4 ${iconClass}`}/>{summary}</div>; }
 function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
-function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) { return <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]"><div className="p-4 border-b border-ink-mid flex justify-between gap-4"><div><h2 className="font-mono text-xs tracking-widest text-paper uppercase">Executive Exceptions</h2><p className="text-xs text-slate-light mt-1">Conditions requiring a decision or intervention, with source evidence and drill-through where a project is linked.</p></div><span className="font-mono text-[10px] text-slate">{exceptions.length} OPEN</span></div>{exceptions.length ? <div className="divide-y divide-ink-mid">{exceptions.map((item, index) => { const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null); return <button key={`${String(item.category)}-${String(item.id)}-${index}`} onClick={() => drillProjectId && void onProject({ id: drillProjectId, name: item.title })} className="w-full p-4 flex flex-wrap justify-between gap-3 text-left hover:bg-ink-light disabled:hover:bg-transparent" disabled={!drillProjectId}><div><p className="font-mono text-[10px] text-signal uppercase">{displayValue(item.category)}</p><p className="text-sm text-paper mt-1">{displayValue(item.title ?? item.severity ?? item.certificate_name)}</p><p className="text-xs text-slate-light mt-1">{displayValue(item.action)}</p>{item.evidence ? <p className="mt-2 max-w-3xl break-words font-mono text-[10px] text-slate">Evidence: {displayValue(item.evidence)}</p> : null}</div><span className="font-mono text-xs text-slate-light">{displayValue(item.evidence_date ?? item.expiry_date ?? item.incident_date ?? item.viability_status)}</span></button>; })}</div> : <p className="p-4 text-sm text-slate-light">No configured executive exceptions are currently recorded.</p>}</section>; }
+function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) {
+  const categoryData = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const item of exceptions) {
+      const category = String(item.category || "Other");
+      counts[category] = (counts[category] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [exceptions]);
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
+      <div className="p-4 border-b border-ink-mid flex justify-between gap-4">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Executive Exceptions</h2>
+          <p className="text-xs text-slate-light mt-1">Conditions requiring a decision or intervention, with source evidence and drill-through where a project is linked.</p>
+        </div>
+        <span className="font-mono text-[10px] text-slate">{exceptions.length} OPEN</span>
+      </div>
+      {categoryData.length > 1 && (
+        <div className="px-4 pt-4">
+          <p className="font-mono text-[9px] uppercase text-slate mb-2">By Category</p>
+          <div className="h-32">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={categoryData} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" horizontal={false} />
+                <XAxis type="number" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                <YAxis type="category" dataKey="name" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} width={140} />
+                <Tooltip content={<ChartTooltip formatter={(value) => String(value)} />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                <Bar dataKey="value" fill="var(--dxl-signal)" radius={[0, 2, 2, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+      {exceptions.length ? (
+        <div className="divide-y divide-ink-mid">
+          {exceptions.map((item, index) => {
+            const drillProjectId = item.project_id ?? (item.category === "Project viability" ? item.id : null);
+            return (
+              <button key={`${String(item.category)}-${String(item.id)}-${index}`} onClick={() => drillProjectId && void onProject({ id: drillProjectId, name: item.title })} className="w-full p-4 flex flex-wrap justify-between gap-3 text-left hover:bg-ink-light disabled:hover:bg-transparent" disabled={!drillProjectId}>
+                <div>
+                  <p className="font-mono text-[10px] text-signal uppercase">{displayValue(item.category)}</p>
+                  <p className="text-sm text-paper mt-1">{displayValue(item.title ?? item.severity ?? item.certificate_name)}</p>
+                  <p className="text-xs text-slate-light mt-1">{displayValue(item.action)}</p>
+                  {item.evidence ? <p className="mt-2 max-w-3xl break-words font-mono text-[10px] text-slate">Evidence: {displayValue(item.evidence)}</p> : null}
+                </div>
+                <span className="font-mono text-xs text-slate-light">{displayValue(item.evidence_date ?? item.expiry_date ?? item.incident_date ?? item.viability_status)}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="p-4 text-sm text-slate-light">No configured executive exceptions are currently recorded.</p>
+      )}
+    </section>
+  );
+}
 function ModuleGateway({ modules }: { modules: ApiData[] }) {
   const [selectedId, setSelectedId] = useState("");
 
@@ -808,6 +872,37 @@ function ChartTooltip({ active, payload, label, formatter }: { active?: boolean;
 
 const AGING_BUCKETS = ["0-30", "31-60", "61-90", "90+"];
 
+// Shared donut for "what makes up this total" composition questions (pipeline
+// mix, burn breakdown, findings severity) - a bar chart would misrepresent a
+// part-of-whole question as a categorical comparison. Fixed legend order,
+// caller-supplied colors so a category keeps its color across every chart it
+// appears in on this page.
+function MiniDonut({ data, formatValue = currencyValue }: { data: Array<{ name: string; value: number; color: string }>; formatValue?: (value: number) => string }) {
+  if (!data.length) return <p className="text-xs text-slate-light py-2">No data to chart.</p>;
+  return (
+    <div className="flex items-center gap-3">
+      <div className="h-32 w-32 shrink-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={data} dataKey="value" nameKey="name" innerRadius="55%" outerRadius="90%" paddingAngle={2} stroke="var(--dxl-ink)" strokeWidth={2}>
+              {data.map((entry, index) => <Cell key={index} fill={entry.color} />)}
+            </Pie>
+            <Tooltip content={<ChartTooltip formatter={(value) => formatValue(Number(value))} />} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="flex-1 min-w-0 space-y-1.5">
+        {data.map((entry) => (
+          <div key={entry.name} className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="flex items-center gap-1.5 min-w-0 text-slate-light"><span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: entry.color }} /><span className="truncate">{entry.name}</span></span>
+            <span className="font-mono text-paper shrink-0">{formatValue(entry.value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function daysAgoLabel(iso: unknown) {
   if (typeof iso !== "string" || !iso) return "unknown";
   const then = new Date(iso).getTime();
@@ -854,6 +949,21 @@ function CCBAutomatedFindingsPanel() {
     [findings, showResolved]
   );
 
+  const severityData = useMemo(() => {
+    const colorFor: Record<string, string> = {
+      critical: "var(--dxl-danger)",
+      high: "var(--dxl-warning)",
+      medium: "var(--dxl-slate-light)",
+      low: "var(--dxl-success)",
+    };
+    const counts: Record<string, number> = {};
+    for (const finding of visibleFindings) {
+      const severity = String(finding.severity || "medium");
+      counts[severity] = (counts[severity] || 0) + 1;
+    }
+    return Object.entries(counts).map(([name, value]) => ({ name: titleCase(name), value, color: colorFor[name] || "var(--dxl-slate-light)" }));
+  }, [visibleFindings]);
+
   const handleAction = useCallback(async (id: string, action: "acknowledge" | "resolve") => {
     setActioningId(id);
     try {
@@ -886,6 +996,12 @@ function CCBAutomatedFindingsPanel() {
           </button>
         </div>
       </div>
+      {!loading && severityData.length > 0 && (
+        <div className="mt-4 border-b border-ink-mid pb-4">
+          <p className="font-mono text-[9px] uppercase text-slate mb-2">Severity Mix</p>
+          <MiniDonut data={severityData} formatValue={(value) => String(value)} />
+        </div>
+      )}
       <div className="mt-4 space-y-2">
         {loading ? (
           <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading CCB findings...</div>
@@ -939,6 +1055,79 @@ function CCBAutomatedFindingsPanel() {
           ))
         )}
       </div>
+    </section>
+  );
+}
+
+// Revenue/Cost/Margin and Pipeline composition read from the already-loaded
+// `kpis` state (no dedicated fetch of their own) - the workspace already
+// pulls GET /executive/kpis once per refresh, so a second call here would
+// just duplicate it.
+function RevenueCostMarginPanel({ kpis }: { kpis: ApiData }) {
+  const revenue = Number(kpis.revenue_ytd) || 0;
+  const cost = Number(kpis.cost_ytd) || 0;
+  const hasData = revenue > 0 || cost > 0;
+  const chartData = [{ name: "YTD", Revenue: revenue, Cost: cost }];
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Revenue vs Cost (YTD)</h2>
+          <p className="text-xs text-slate-light mt-1">Live progress-claim revenue against recorded cost transactions.</p>
+        </div>
+      </div>
+      {!hasData ? (
+        <p className="text-xs text-slate-light py-6">No revenue or cost recorded year-to-date.</p>
+      ) : (
+        <div className="py-2">
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div><p className="text-slate">Revenue</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(revenue)}</p></div>
+            <div><p className="text-slate">Cost</p><p className="font-mono text-lg text-paper mt-0.5">{currencyValue(cost)}</p></div>
+            <div><p className="text-slate">Margin</p><p className="font-mono text-lg text-paper mt-0.5">{metricWithUnit(kpis.margin_percent, "%")}</p></div>
+          </div>
+          <div className="mt-4 h-28">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" horizontal={false} />
+                <XAxis type="number" tick={{ fill: "var(--dxl-slate-light)", fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${Number(v) >= 1000 ? `${Math.round(Number(v) / 1000)}k` : v}`} />
+                <YAxis type="category" dataKey="name" hide />
+                <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                <Legend wrapperStyle={{ fontSize: 10, color: "var(--dxl-slate-light)" }} />
+                <Bar dataKey="Revenue" fill="var(--dxl-signal)" radius={[0, 2, 2, 0]} barSize={26} />
+                <Bar dataKey="Cost" fill="var(--dxl-info)" radius={[0, 2, 2, 0]} barSize={26} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PipelineCompositionPanel({ kpis }: { kpis: ApiData }) {
+  const opportunityValue = Number(kpis.pipeline_opportunity_value) || 0;
+  const tenderValue = Number(kpis.pipeline_tender_value) || 0;
+  const data = [
+    { name: "Opportunities", value: opportunityValue, color: "var(--dxl-signal)" },
+    { name: "Tenders", value: tenderValue, color: "var(--dxl-info)" },
+  ].filter((entry) => entry.value > 0);
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Pipeline Composition</h2>
+          <p className="text-xs text-slate-light mt-1">Live CRM opportunity and tender value making up total pipeline.</p>
+        </div>
+      </div>
+      {!data.length ? (
+        <p className="text-xs text-slate-light py-6">No open pipeline value recorded.</p>
+      ) : (
+        <div className="py-3">
+          <MiniDonut data={data} />
+        </div>
+      )}
     </section>
   );
 }
@@ -1000,6 +1189,19 @@ function CashRunwayPanel() {
             <div><p className="text-slate">Monthly Burn</p><p className="font-mono text-paper mt-0.5">{currencyValue(data.total_burn_monthly)}</p></div>
           </div>
           <p className="font-mono text-[10px] text-slate mt-2 uppercase">Source: {displayValue(data.burn_source)}</p>
+          {(() => {
+            const burnData = [
+              { name: "Payroll", value: Number(data.payroll_burn_monthly) || 0, color: "var(--dxl-signal)" },
+              { name: "Fleet", value: Number(data.fleet_burn_monthly) || 0, color: "var(--dxl-info)" },
+              { name: "Procurement", value: Number(data.procurement_burn_monthly) || 0, color: "var(--dxl-slate-light)" },
+            ].filter((entry) => entry.value > 0);
+            return burnData.length > 0 ? (
+              <div className="mt-3 border-t border-ink-mid pt-3">
+                <p className="font-mono text-[9px] uppercase text-slate mb-2">Burn Composition</p>
+                <MiniDonut data={burnData} />
+              </div>
+            ) : null;
+          })()}
           {Array.isArray(data.estimation_basis) && data.estimation_basis.length > 0 && (
             <ul className="mt-3 space-y-1 border-t border-ink-mid pt-2">
               {(data.estimation_basis as unknown[]).map((line, index) => (
@@ -1170,18 +1372,33 @@ function ARAPAgingPanel() {
   const apSummary = useMemo(() => summarizeAging(apRows as Array<{ bucket?: string; outstanding_amount?: number | string }>), [apRows]);
   const chartData = AGING_BUCKETS.map((bucket) => ({
     bucket,
-    AR: arSummary.buckets.find((b) => b.bucket === bucket)?.total || 0,
-    AP: apSummary.buckets.find((b) => b.bucket === bucket)?.total || 0,
+    Debtors: arSummary.buckets.find((b) => b.bucket === bucket)?.total || 0,
+    Creditors: apSummary.buckets.find((b) => b.bucket === bucket)?.total || 0,
   }));
   const hasData = arRows.length > 0 || apRows.length > 0;
+
+  const topDebtors = useMemo(
+    () => [...arRows]
+      .sort((a, b) => (Number(b.outstanding_amount) || 0) - (Number(a.outstanding_amount) || 0))
+      .slice(0, 5)
+      .map((row) => ({ name: String(row.project_name || "Unknown"), value: Number(row.outstanding_amount) || 0 })),
+    [arRows]
+  );
+  const topCreditors = useMemo(
+    () => [...apRows]
+      .sort((a, b) => (Number(b.outstanding_amount) || 0) - (Number(a.outstanding_amount) || 0))
+      .slice(0, 5)
+      .map((row) => ({ name: String(row.supplier_name || "Unknown"), value: Number(row.outstanding_amount) || 0 })),
+    [apRows]
+  );
 
   return (
     <>
       <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
         <div className="flex justify-between items-start border-b border-ink-mid pb-3">
           <div>
-            <h2 className="font-mono text-xs tracking-widest text-paper uppercase">AR / AP Aging</h2>
-            <p className="text-xs text-slate-light mt-1">Outstanding client claims vs supplier invoices, aged by days overdue.</p>
+            <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Debtors &amp; Creditors</h2>
+            <p className="text-xs text-slate-light mt-1">Outstanding client claims (debtors/AR) vs supplier invoices (creditors/AP), aged by days overdue.</p>
           </div>
           {!loading && !failed && hasData && (
             <button onClick={() => setShowDetail(true)} className="font-mono text-[10px] text-signal hover:underline shrink-0">View detail →</button>
@@ -1190,14 +1407,14 @@ function ARAPAgingPanel() {
         {loading ? (
           <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading aging data...</div>
         ) : failed ? (
-          <p className="text-xs text-slate py-6">AR/AP aging could not be loaded.</p>
+          <p className="text-xs text-slate py-6">Debtors/creditors aging could not be loaded.</p>
         ) : !hasData ? (
           <p className="text-xs text-slate-light py-6">No outstanding client claims or supplier invoices recorded.</p>
         ) : (
           <div className="py-2">
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div><p className="text-slate">Receivable (AR)</p><p className="font-mono text-2xl text-paper mt-0.5">{currencyValue(arSummary.total)}</p></div>
-              <div><p className="text-slate">Payable (AP)</p><p className="font-mono text-2xl text-paper mt-0.5">{currencyValue(apSummary.total)}</p></div>
+              <div><p className="text-slate">Debtors (Receivable/AR)</p><p className="font-mono text-2xl text-paper mt-0.5">{currencyValue(arSummary.total)}</p></div>
+              <div><p className="text-slate">Creditors (Payable/AP)</p><p className="font-mono text-2xl text-paper mt-0.5">{currencyValue(apSummary.total)}</p></div>
             </div>
             <div className="mt-4 h-40">
               <ResponsiveContainer width="100%" height="100%">
@@ -1207,19 +1424,55 @@ function ARAPAgingPanel() {
                   <YAxis tick={{ fill: "var(--dxl-slate-light)", fontSize: 10 }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `$${Number(v) >= 1000 ? `${Math.round(Number(v) / 1000)}k` : v}`} />
                   <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
                   <Legend wrapperStyle={{ fontSize: 10, color: "var(--dxl-slate-light)" }} />
-                  <Bar dataKey="AR" fill="var(--dxl-signal)" radius={[2, 2, 0, 0]} />
-                  <Bar dataKey="AP" fill="var(--dxl-info)" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="Debtors" fill="var(--dxl-signal)" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="Creditors" fill="var(--dxl-info)" radius={[2, 2, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            {(topDebtors.length > 0 || topCreditors.length > 0) && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-ink-mid pt-4">
+                <div>
+                  <p className="font-mono text-[9px] uppercase text-slate mb-2">Top 5 Debtors</p>
+                  {topDebtors.length ? (
+                    <div className="h-36">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={topDebtors} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" horizontal={false} />
+                          <XAxis type="number" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${Number(v) >= 1000 ? `${Math.round(Number(v) / 1000)}k` : v}`} />
+                          <YAxis type="category" dataKey="name" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} width={90} />
+                          <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                          <Bar dataKey="value" fill="var(--dxl-signal)" radius={[0, 2, 2, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : <p className="text-xs text-slate-light">No debtors recorded.</p>}
+                </div>
+                <div>
+                  <p className="font-mono text-[9px] uppercase text-slate mb-2">Top 5 Creditors</p>
+                  {topCreditors.length ? (
+                    <div className="h-36">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={topCreditors} layout="vertical" margin={{ top: 0, right: 8, left: 0, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" horizontal={false} />
+                          <XAxis type="number" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${Number(v) >= 1000 ? `${Math.round(Number(v) / 1000)}k` : v}`} />
+                          <YAxis type="category" dataKey="name" tick={{ fill: "var(--dxl-slate-light)", fontSize: 9 }} axisLine={false} tickLine={false} width={90} />
+                          <Tooltip content={<ChartTooltip />} cursor={{ fill: "var(--dxl-ink-light)" }} />
+                          <Bar dataKey="value" fill="var(--dxl-info)" radius={[0, 2, 2, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : <p className="text-xs text-slate-light">No creditors recorded.</p>}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>
       {showDetail && (
-        <Modal title="AR / AP Aging Detail" onClose={() => setShowDetail(false)} wide>
+        <Modal title="Debtors & Creditors Detail" onClose={() => setShowDetail(false)} wide>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <AgingTable title="Accounts Receivable" rows={arRows} nameKey="project_name" idLabel="Claim" />
-            <AgingTable title="Accounts Payable" rows={apRows} nameKey="supplier_name" idLabel="Invoice" />
+            <AgingTable title="Debtors (Accounts Receivable)" rows={arRows} nameKey="project_name" idLabel="Claim" />
+            <AgingTable title="Creditors (Accounts Payable)" rows={apRows} nameKey="supplier_name" idLabel="Invoice" />
           </div>
         </Modal>
       )}
