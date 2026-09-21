@@ -28,7 +28,9 @@ import {
   Save,
   Calculator,
   UserPlus,
-  Send
+  Send,
+  Pencil,
+  Check
 } from "lucide-react";
 import {
   updateInternalProject,
@@ -58,7 +60,23 @@ import {
   type ProjectTab, type ProjectCommand,
 } from "./page";
 
-function Evidence({ label, items }: { label: string; items?: Record<string, unknown>[] }) { 
+// A single inline field-save (client link, department, name, ...) failing
+// outright on one transient blip - a slow request racing DB pool pressure,
+// a dropped connection - shouldn't force the user to notice, diagnose and
+// retry it themselves. One silent retry after a short pause absorbs that
+// class of failure; a second failure is treated as real and surfaced with
+// the backend's own error detail instead of a generic string, so a genuine
+// failure is still actionable rather than a dead end.
+async function withOneRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return fn();
+  }
+}
+
+function Evidence({ label, items }: { label: string; items?: Record<string, unknown>[] }) {
   return (
     <div className="border border-ink-mid p-3 bg-ink-light/20">
       <div className="flex justify-between gap-4">
@@ -2300,10 +2318,10 @@ export function ProjectDetail({
     setDepartmentSaving(true);
     setDepartmentError(null);
     try {
-      await updateInternalProject(project.id, { department_id: deptId || null });
+      await withOneRetry(() => updateInternalProject(project.id, { department_id: deptId || null }));
       onDepartmentChange(deptId);
     } catch (err) {
-      setDepartmentError("Failed to update department.");
+      setDepartmentError(err instanceof Error ? err.message : "Failed to update department.");
     } finally {
       setDepartmentSaving(false);
     }
@@ -2317,11 +2335,11 @@ export function ProjectDetail({
     setClientSaving(true);
     setClientError(null);
     try {
-      const response = await updateInternalProject(project.id, {
+      const response = await withOneRetry(() => updateInternalProject(project.id, {
         client_org_id: clientLinkType === "organization" ? clientId || null : null,
         client_id: clientLinkType === "individual" ? clientId || null : null,
         client_name: clientName ?? null,
-      });
+      }));
       const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
       onProjectUpdated({
         client_org_id: ((saved.client_org_id as string | undefined) ?? (clientLinkType === "organization" ? clientId : "")) || undefined,
@@ -2329,11 +2347,51 @@ export function ProjectDetail({
         client_name: (saved.client_name as string | undefined) ?? clientName ?? undefined,
       });
     } catch (err) {
-      setClientError("Failed to link client account.");
+      setClientError(err instanceof Error ? err.message : "Failed to link client account.");
     } finally {
       setClientSaving(false);
     }
   }, [clientContacts, clientLinkType, clientOrganizations, project.id, onProjectUpdated]);
+
+  const [nameEditing, setNameEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState(() => text(source.name, ""));
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+
+  const startNameEdit = useCallback(() => {
+    setNameDraft(text(source.name, ""));
+    setNameError(null);
+    setNameEditing(true);
+  }, [source.name]);
+
+  const cancelNameEdit = useCallback(() => {
+    setNameEditing(false);
+    setNameError(null);
+  }, []);
+
+  const saveNameEdit = useCallback(async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed) {
+      setNameError("Project name can't be empty.");
+      return;
+    }
+    if (trimmed === text(source.name, "")) {
+      setNameEditing(false);
+      return;
+    }
+    setNameSaving(true);
+    setNameError(null);
+    try {
+      const response = await withOneRetry(() => updateInternalProject(project.id, { name: trimmed }));
+      const saved = response.data && typeof response.data === "object" ? response.data as Partial<Project> : {};
+      onProjectUpdated({ name: (saved.name as string | undefined) ?? trimmed });
+      setNameEditing(false);
+    } catch (err) {
+      setNameError(err instanceof Error ? err.message : "Failed to update project name.");
+    } finally {
+      setNameSaving(false);
+    }
+  }, [nameDraft, project.id, source.name, onProjectUpdated]);
   const viability = detail?.viability?.[0];
 
   // Region/coordinates live on projects.project_profiles, not projects.projects, so they
@@ -2880,7 +2938,52 @@ export function ProjectDetail({
             <p className="font-mono text-[10px] uppercase tracking-widest text-signal flex items-center gap-1.5 animate-pulse-signal">
               <Activity className="h-3 w-3" />Live Project Command Portal
             </p>
-            <h2 className="mt-1 text-2xl font-bold text-paper font-display">{title(source)}</h2>
+            {nameEditing ? (
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveNameEdit();
+                    if (e.key === "Escape") cancelNameEdit();
+                  }}
+                  disabled={nameSaving}
+                  className="w-full max-w-xl border border-signal/50 bg-ink-light px-2 py-1 text-2xl font-bold text-paper font-display focus:outline-none disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => void saveNameEdit()}
+                  disabled={nameSaving}
+                  title="Save name"
+                  className="rounded-sm border border-emerald-500/40 p-1.5 text-emerald-300 hover:bg-emerald-950/20 disabled:opacity-50"
+                >
+                  {nameSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelNameEdit}
+                  disabled={nameSaving}
+                  title="Cancel"
+                  className="rounded-sm border border-ink-mid p-1.5 text-slate-light hover:border-red-500/40 hover:text-red-300 disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <h2 className="mt-1 flex items-center gap-2 text-2xl font-bold text-paper font-display">
+                {title(source)}
+                <button
+                  type="button"
+                  onClick={startNameEdit}
+                  title="Edit project name"
+                  className="text-slate hover:text-signal"
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              </h2>
+            )}
+            {nameError && <p className="mt-1 text-[10px] text-red-300">{nameError}</p>}
             <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-light">
               <MapPin className="h-3.5 w-3.5 text-signal" />{text(viability?.region ?? viability?.site_location ?? (source as Project).region, "No location recorded")}
             </p>
