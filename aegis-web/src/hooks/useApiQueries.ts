@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { runWithConcurrencyLimit } from "@/lib/utils";
 
 interface UseApiQueriesOptions {
   enabled?: boolean;
@@ -13,12 +14,20 @@ interface UseApiQueriesOptions {
 type QueryMap = Record<string, () => Promise<unknown>>;
 type QueryData<T extends QueryMap> = { [K in keyof T]?: Awaited<ReturnType<T[K]>> };
 
-// Multi-source counterpart to useApiQuery: runs N named fetches via
-// Promise.allSettled, same shape every dashboard page that needs more than
-// one source (finance, procurement, fleet, ...) was hand-rolling. A
-// designated subset of sources ("critical") promote their rejection to
-// `error`; the rest degrade to a `warnings` string instead of failing the
-// whole page.
+// Caps how many of a page's named sources are ever in flight at once.
+// Backend DB pool capacity is shared across every concurrent user, not just
+// this page - firing all N sources at once (Promise.allSettled) burst-spends
+// N pooled connections per page load, which is what saturated the pool and
+// produced "X could not be loaded" everywhere at once. Bounded concurrency
+// keeps the same Promise.allSettled result shape and per-source isolation,
+// just spread out instead of simultaneous.
+const QUERY_CONCURRENCY_LIMIT = 3;
+
+// Multi-source counterpart to useApiQuery: runs N named fetches with bounded
+// concurrency, same shape every dashboard page that needs more than one
+// source (finance, procurement, fleet, ...) was hand-rolling. A designated
+// subset of sources ("critical") promote their rejection to `error`; the
+// rest degrade to a `warnings` string instead of failing the whole page.
 export function useApiQueries<T extends QueryMap>(
   sources: T,
   dependencies: unknown[] = [],
@@ -35,7 +44,10 @@ export function useApiQueries<T extends QueryMap>(
     setError(null);
 
     const keys = Object.keys(sources) as (keyof T)[];
-    const results = await Promise.allSettled(keys.map((key) => sources[key]()));
+    const results = await runWithConcurrencyLimit(
+      keys.map((key) => () => sources[key]()),
+      QUERY_CONCURRENCY_LIMIT
+    );
 
     const nextData: QueryData<T> = {};
     const nextWarnings: string[] = [];

@@ -128,7 +128,7 @@ export type CommercialReadiness = {
 };
 
 export type ProjectTab = "dashboard" | "overview" | "team" | "schedule" | "financials" | "materials" | "documents" | "assign" | "controls";
-export type ProjectCommand = "workforce" | "siteReports" | "rfqs" | "variations" | "budget" | "documents" | "progress" | "controls" | "materials";
+export type ProjectCommand = "workforce" | "siteReports" | "rfqs" | "variations" | "budget" | "claim" | "documents" | "progress" | "controls" | "materials";
 
 const TAB_ROUTES: Record<ProjectTab, string> = {
   dashboard: "/dashboard/projects/dashboard",

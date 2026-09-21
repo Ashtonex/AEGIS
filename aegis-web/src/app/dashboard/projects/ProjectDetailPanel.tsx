@@ -27,7 +27,8 @@ import {
   Banknote,
   Save,
   Calculator,
-  UserPlus
+  UserPlus,
+  Send
 } from "lucide-react";
 import {
   updateInternalProject,
@@ -39,12 +40,13 @@ import {
   getProjectCommercialReadiness, updateProjectCommercialReadiness, clearProjectCommercialReadiness,
   getHRAttendance, getProcurementRfqs, getSiteGrns, getSiteVariances, getFinanceVariations, getFinanceBudgets, getBoqProgressSummary,
   getHREmployees, getWorkforceAllocations, createWorkforceAllocation, createDailySiteReport, createFinanceVariation,
+  getFinanceProgressClaims, createFinanceProgressClaim,
   getFinanceProjectDetail, getProjectPettyCash, openProjectPettyCash, postPettyCashSpend, postPettyCashReplenish, closeProjectPettyCash,
   getProjectTeam, type ProjectTeamMember,
   importBoqFile,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatCurrency, formatDate, runWithConcurrencyLimit } from "@/lib/utils";
 import { PROVINCES } from "@/lib/constants";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
@@ -1128,6 +1130,7 @@ type ProjectSignalState = {
   grns: Record<string, unknown>[];
   financeVariations: Record<string, unknown>[];
   budgets: Record<string, unknown>[];
+  progressClaims: Record<string, unknown>[];
   boqSummary: Record<string, unknown> | null;
   financeDetail: Record<string, unknown> | null;
 };
@@ -1139,6 +1142,7 @@ const EMPTY_PROJECT_SIGNALS: ProjectSignalState = {
   grns: [],
   financeVariations: [],
   budgets: [],
+  progressClaims: [],
   boqSummary: null,
   financeDetail: null,
 };
@@ -1371,6 +1375,7 @@ function ProjectDashboardPanel({
     { label: "Documents", icon: FileText, action: () => onOpenCommand("documents") },
     { label: "Progress", icon: TrendingUp, action: () => onOpenCommand("progress") },
     { label: "Budget", icon: Banknote, action: () => onOpenCommand("budget") },
+    { label: "Claims", icon: Send, action: () => onOpenCommand("claim") },
     { label: "Controls", icon: ShieldCheck, action: () => onOpenCommand("controls") },
     { label: "Materials", icon: Package, action: () => onOpenCommand("materials") },
   ];
@@ -1380,6 +1385,7 @@ function ProjectDashboardPanel({
     { label: "Site reports", command: "siteReports" as const, icon: ClipboardCheck, detail: "Log days, hours, material usage and engineer validations." },
     { label: "Procurement RFQs", command: "rfqs" as const, icon: Receipt, detail: "Compare suppliers before cost is committed." },
     { label: "Finance variations", command: "variations" as const, icon: DollarSign, detail: "Track variations, claims and commercial exposure." },
+    { label: "Progress claims", command: "claim" as const, icon: Send, detail: "Submit billing claims; certified claims post as claimed revenue and cash in Finance." },
   ];
 
   return (
@@ -1503,6 +1509,14 @@ function ProjectCommandModal({
     cost_impact: "0",
     time_impact_days: "0",
   });
+  const [claim, setClaim] = useState({
+    claim_number: `PC-${Date.now().toString().slice(-6)}`,
+    claim_period_start: localDateInput(),
+    claim_period_end: localDateInput(),
+    contract_value: String(number(project.contract_value ?? project.budget ?? project.budget_value) ?? 0),
+    this_claim_amount: "0",
+    retention_pct: "10",
+  });
   const [budgetForm, setBudgetForm] = useState({ total: "", notes: "", fileName: "", pastedText: "" });
   const [budgetSourceRows, setBudgetSourceRows] = useState<Record<string, string>[]>([]);
   const [budgetColumns, setBudgetColumns] = useState<string[]>([]);
@@ -1532,6 +1546,7 @@ function ProjectCommandModal({
     rfqs: "Procurement RFQs",
     variations: "Finance variations",
     budget: "Budget baseline",
+    claim: "Progress claims & deposits",
     documents: "Project documents",
     progress: "Progress control",
     controls: "Project controls",
@@ -1544,6 +1559,7 @@ function ProjectCommandModal({
     rfqs: "Compare project RFQs and supplier responses so buying decisions stay tied to the project.",
     variations: "Review and create commercial variations that feed finance controls and project cost exposure.",
     budget: "Create or upload a budget baseline, identify errors and risk flags, then save the protected project budget.",
+    claim: "Submit and review progress claims - each certified claim is recognised in Finance as claimed revenue and cash collected against this project.",
     documents: "Open the project document surface inside this same command context.",
     progress: "Review schedule and earned-value progress signals for this project.",
     controls: "Inspect mobilisation readiness, separation of duties, and control gaps before cost is committed.",
@@ -1744,6 +1760,37 @@ function ProjectCommandModal({
     }
   };
 
+  const saveClaim = async () => {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await createFinanceProgressClaim({
+        claim_number: claim.claim_number,
+        project_id: project.id,
+        claim_period_start: claim.claim_period_start,
+        claim_period_end: claim.claim_period_end,
+        contract_value: Number(claim.contract_value) || 0,
+        this_claim_amount: Number(claim.this_claim_amount) || 0,
+        retention_pct: Number(claim.retention_pct) || 0,
+      });
+      setMessage("Progress claim submitted. Certify it in Finance to recognise it as claimed revenue and cash collected.");
+      setClaim({
+        claim_number: `PC-${Date.now().toString().slice(-6)}`,
+        claim_period_start: localDateInput(),
+        claim_period_end: localDateInput(),
+        contract_value: claim.contract_value,
+        this_claim_amount: "0",
+        retention_pct: claim.retention_pct,
+      });
+      onRefresh();
+    } catch (claimError) {
+      setError(claimError instanceof Error ? claimError.message : "Progress claim could not be submitted.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveBudget = async () => {
     setBusy(true);
     setError("");
@@ -1913,6 +1960,31 @@ function ProjectCommandModal({
                 </div>
                 <button onClick={() => void saveVariation()} disabled={busy || !variation.title} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save variation
+                </button>
+              </section>
+            </div>
+          ) : null}
+
+          {command === "claim" ? (
+            <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+              <RecordList title="Project progress claims" records={signals.progressClaims} columns={["claim_number", "status", "this_claim_amount", "certified_amount", "claim_period_end"]} />
+              <section className="space-y-3 border border-ink-mid p-4">
+                <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">Submit progress claim</h4>
+                <p className="text-xs leading-5 text-slate-light">
+                  A deposit already confirmed on this project (Deposit Confirmation step) is recognised in Finance automatically. Use this to submit any further billing claim - Finance certifies it, which recognises it as claimed revenue and cash collected here.
+                </p>
+                <Field label="Claim number"><input value={claim.claim_number} onChange={(e) => setClaim({ ...claim, claim_number: e.target.value })} className="field" /></Field>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Period start"><input type="date" value={claim.claim_period_start} onChange={(e) => setClaim({ ...claim, claim_period_start: e.target.value })} className="field" /></Field>
+                  <Field label="Period end"><input type="date" value={claim.claim_period_end} onChange={(e) => setClaim({ ...claim, claim_period_end: e.target.value })} className="field" /></Field>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Field label="Contract value"><input value={claim.contract_value} onChange={(e) => setClaim({ ...claim, contract_value: e.target.value })} type="number" min="0" className="field" /></Field>
+                  <Field label="Claim amount"><input value={claim.this_claim_amount} onChange={(e) => setClaim({ ...claim, this_claim_amount: e.target.value })} type="number" min="0.01" className="field" /></Field>
+                  <Field label="Retention %"><input value={claim.retention_pct} onChange={(e) => setClaim({ ...claim, retention_pct: e.target.value })} type="number" min="0" max="100" className="field" /></Field>
+                </div>
+                <button onClick={() => void saveClaim()} disabled={busy || !claim.claim_number || Number(claim.this_claim_amount) <= 0} className="inline-flex h-10 w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50">
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Submit claim
                 </button>
               </section>
             </div>
@@ -2581,18 +2653,20 @@ export function ProjectDetail({
       grns,
       financeVariations,
       budgets,
+      progressClaims,
       boqSummary,
       financeDetail,
-    ] = await Promise.allSettled([
-      getHRAttendance({ project_id: project.id }),
-      getProcurementRfqs({ project_id: project.id }),
-      getSiteVariances({ projectId: project.id }),
-      getSiteGrns({ projectId: project.id }),
-      getFinanceVariations({ project_id: project.id }),
-      getFinanceBudgets({ project_id: project.id }),
-      getBoqProgressSummary(project.id),
-      getFinanceProjectDetail(project.id),
-    ]);
+    ] = await runWithConcurrencyLimit([
+      () => getHRAttendance({ project_id: project.id }),
+      () => getProcurementRfqs({ project_id: project.id }),
+      () => getSiteVariances({ projectId: project.id }),
+      () => getSiteGrns({ projectId: project.id }),
+      () => getFinanceVariations({ project_id: project.id }),
+      () => getFinanceBudgets({ project_id: project.id }),
+      () => getFinanceProgressClaims({ project_id: project.id }),
+      () => getBoqProgressSummary(project.id),
+      () => getFinanceProjectDetail(project.id),
+    ], 3);
 
     setProjectSignals({
       attendance: attendance.status === "fulfilled" ? attendance.value.data ?? [] : [],
@@ -2601,6 +2675,7 @@ export function ProjectDetail({
       grns: grns.status === "fulfilled" ? grns.value.data ?? [] : [],
       financeVariations: financeVariations.status === "fulfilled" ? financeVariations.value.data ?? [] : [],
       budgets: budgets.status === "fulfilled" ? budgets.value.data ?? [] : [],
+      progressClaims: progressClaims.status === "fulfilled" ? progressClaims.value.data ?? [] : [],
       boqSummary: boqSummary.status === "fulfilled" ? boqSummary.value.data ?? null : null,
       financeDetail: financeDetail.status === "fulfilled" ? financeDetail.value.data ?? null : null,
     });
@@ -3510,6 +3585,17 @@ export function ProjectDetail({
                       <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-light">
                         This tab shows the commercial position from returned project finance fields, budget records, site variances and formal variation records.
                       </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button type="button" onClick={() => setActiveCommand("budget")} className="inline-flex items-center gap-2 border border-signal/40 bg-signal/10 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-signal hover:bg-signal/20">
+                          <Banknote className="h-3.5 w-3.5" /> Set / update budget
+                        </button>
+                        <button type="button" onClick={() => setActiveCommand("claim")} className="inline-flex items-center gap-2 border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20">
+                          <Send className="h-3.5 w-3.5" /> Submit progress claim
+                        </button>
+                        <button type="button" onClick={() => setActiveCommand("variations")} className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3 py-2 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper">
+                          <DollarSign className="h-3.5 w-3.5" /> Record variation
+                        </button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-2 gap-2 font-mono text-[10px] uppercase tracking-wider sm:grid-cols-4 xl:min-w-[780px]">
                       <Metric label="Cash position" value={formatCurrency(cashPosition)} detail="Collected minus paid out" tone={cashPosition < 0 ? "text-red-300" : "text-emerald-300"} />
@@ -3538,6 +3624,20 @@ export function ProjectDetail({
                 <section className="grid gap-4 xl:grid-cols-2">
                   <RecordList title="Budget ledger" records={projectSignals.budgets} columns={["cost_code", "description", "amount", "status"]} />
                   <RecordList title="Variation ledger" records={projectSignals.financeVariations} columns={["variation_number", "description", "cost_impact", "status"]} />
+                </section>
+
+                <section className="grid gap-4 xl:grid-cols-2">
+                  <RecordList
+                    title="Progress claims (deposits & billing)"
+                    records={projectSignals.progressClaims}
+                    columns={["claim_number", "status", "this_claim_amount", "certified_amount", "claim_period_end"]}
+                  />
+                  <div className="border border-ink-mid bg-ink-light/10 p-4">
+                    <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-paper">How claimed revenue gets here</h4>
+                    <p className="mt-2 text-xs leading-5 text-slate-light">
+                      A confirmed deposit and every certified progress claim on this project post automatically as claimed revenue (Certified Revenue) and, once paid, as Cash Collected in Finance - visible on the consolidated Finance dashboard and this project&apos;s Finance workspace. Use &quot;Submit progress claim&quot; above to bill further work; Finance certifies it.
+                    </p>
+                  </div>
                 </section>
 
                 <section className="grid gap-4 xl:grid-cols-2">
