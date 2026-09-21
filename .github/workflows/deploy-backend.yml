@@ -18,6 +18,14 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
+          # Default (10m) is too tight for a full no-cache rebuild (pruning
+          # docker state before every build means no layer cache ever
+          # survives) on this droplet's shared CPU/RAM - a run that hit
+          # 10m9s died mid image-export, after the build had already spent
+          # real time downloading/installing, but before docker compose
+          # down/up ran (so it failed safely: the previous container kept
+          # serving, nothing was left half-restarted).
+          command_timeout: 20m
           script: |
             set -euo pipefail
             echo "--- disk usage before cleanup ---"
