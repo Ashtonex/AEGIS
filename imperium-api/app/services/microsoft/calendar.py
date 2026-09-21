@@ -60,6 +60,11 @@ def _event_payload(
         "body": {"contentType": "HTML", "content": body_html},
         "start": {"dateTime": start_at_iso, "timeZone": timezone},
         "end": {"dateTime": end_at_iso, "timeZone": timezone},
+        # Explicit rather than relying on Graph's own implicit default, so
+        # a reminder is a guaranteed part of the contract, not an assumption
+        # about undocumented API behaviour.
+        "isReminderOn": True,
+        "reminderMinutesBeforeStart": 15,
         # AEGIS is the system of record for these events (Phase 17, phase
         # one: AEGIS -> Microsoft only) - attendees are deliberately not set
         # here, since inviting people is a distinct, explicit decision the

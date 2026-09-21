@@ -1,12 +1,16 @@
 """Phase 15/16: CRM activity -> Microsoft Calendar bridge.
 
-Only genuine scheduled obligations become calendar events - client meetings
-and scheduled calls that are still upcoming (status='Pending'). Phase 15
-explicitly excludes routine workflow activity from the calendar; in this
-schema that means:
-  - type not in {Meeting, Call} (Email/Task/Note stay CRM-only), and
-  - status != 'Pending' (a 'Completed' activity is a logged record of
-    something that already happened, not something to schedule).
+Every CRM activity with a type and a date becomes a calendar event,
+regardless of type (Call, Meeting, Site Visit, WhatsApp, WhatsApp Call,
+Email, Manual Note) or status (Pending/Completed/etc) - this mirrors the
+navbar "Calendar" dropdown's own unfiltered view of crm.activities
+(CalendarDropdown.tsx / useCalendarActivities), so what a user sees there
+matches what lands on the shared Operations calendar. This was widened
+from the original Phase 15 scope (Meeting/Call, status=Pending only) at
+the user's explicit request - the earlier scope treated logged/completed
+activity as "routine workflow noise" not worth a calendar entry, but the
+user wants the full activity list reflected on the shared calendar
+instead.
 
 Called from routers/crm_activities.py as a best-effort side effect, always
 AFTER the underlying CRM write has already committed: a Microsoft outage,
@@ -29,17 +33,14 @@ from core.logging import logger
 from app.services.microsoft import calendar_service
 from app.services.microsoft.document_service import MicrosoftIntegrationNotReady
 
-CALENDAR_RELEVANT_TYPES = {"meeting", "call"}
-DEFAULT_DURATION_MINUTES = {"meeting": 60, "call": 30}
+DEFAULT_DURATION_MINUTES = {"meeting": 60, "call": 30, "site visit": 60}
 FALLBACK_DURATION_MINUTES = 30
 
 
 def is_calendar_relevant(activity_type: Optional[str], status: Optional[str]) -> bool:
-    if not activity_type:
-        return False
-    if (status or "").strip().lower() != "pending":
-        return False
-    return activity_type.strip().lower() in CALENDAR_RELEVANT_TYPES
+    """Any typed activity qualifies now - status is accepted for call-site
+    compatibility but no longer filters anything (see module docstring)."""
+    return bool(activity_type)
 
 
 async def _organisation_name(db: AsyncSession, organization_id: UUID) -> str:
