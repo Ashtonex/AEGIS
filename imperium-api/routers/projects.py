@@ -20,6 +20,7 @@ from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_ta
 from app.shared.project_delete import find_project_blockers, hard_delete_project
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
+from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
 
 router = APIRouter()
 
@@ -478,10 +479,11 @@ async def _pre_mobilisation_readiness(db: AsyncSession, *, org_id: str, project_
         if str(check.get("status") or "").lower() != "not_applicable"
         and not str(check.get("evidence_reference") or "").strip()
     ]
+    blocked = set(missing) | set(evidence_missing)
     return {
         "checks": checks,
         "total": len(checks),
-        "ready_count": len(checks) - len(missing),
+        "ready_count": len(checks) - len(blocked),
         "missing": missing,
         "evidence_missing": evidence_missing,
         "ready": bool(checks) and not missing and not evidence_missing,
@@ -1482,6 +1484,32 @@ async def confirm_project_deposit(
         user_id=user["user_id"],
     )
     await _open_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
+
+    # Finance sign-off on the deposit is itself claimed revenue and cash in
+    # hand - drive it through the same progress_claims lifecycle (create ->
+    # certify -> pay) a live billing claim uses, so it shows up as certified/
+    # claimed value, cash collected and GL revenue in the Finance module
+    # instead of only living on the project record. Same shared helper the
+    # backfill script uses for deposits confirmed before this existed.
+    deposit_amount = float(payload.deposit_received_amount)
+    try:
+        recognition = await recognise_deposit_as_claimed_revenue(
+            db,
+            org_id=user["org_id"],
+            project_id=project_id,
+            project_name=project.get("name"),
+            contract_value=float(project.get("contract_value") or 0),
+            department_id=project.get("department_id"),
+            deposit_amount=deposit_amount,
+            deposit_reference=payload.deposit_reference,
+            notes=payload.notes,
+            user_id=user["user_id"],
+        )
+    except NoCashAccountError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    claim_id = recognition["claim_id"]
+    gl_proposal_warning = recognition["gl_proposal_warning"]
+
     await emit_event(
         db,
         user=user,
@@ -1493,6 +1521,7 @@ async def confirm_project_deposit(
             "deposit_reference": payload.deposit_reference,
             "deposit_received_amount": str(payload.deposit_received_amount),
             "notes": payload.notes,
+            "progress_claim_id": str(claim_id),
         },
     )
     await db.commit()
@@ -1510,16 +1539,17 @@ async def confirm_project_deposit(
         entity_id=project_id,
         created_by=user["user_id"],
     )
-    return _result(
-        {
-            "id": str(project_id),
-            "status": "pre_mobilisation",
-            "deposit_received_amount": str(payload.deposit_received_amount),
-            "tasks_created": tasks_created,
-            "commercial_tasks_created": commercial_tasks_created,
-        },
-        "Deposit confirmed. Pre-mobilisation gate opened.",
-    )
+    response = {
+        "id": str(project_id),
+        "status": "pre_mobilisation",
+        "deposit_received_amount": str(payload.deposit_received_amount),
+        "progress_claim_id": str(claim_id),
+        "tasks_created": tasks_created,
+        "commercial_tasks_created": commercial_tasks_created,
+    }
+    if gl_proposal_warning:
+        response["gl_proposal_warning"] = gl_proposal_warning
+    return _result(response, "Deposit confirmed. Pre-mobilisation gate opened and recognised in Finance as claimed revenue.")
 
 
 @router.get("/{project_id}/pre-mobilisation")
