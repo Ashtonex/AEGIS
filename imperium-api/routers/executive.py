@@ -356,7 +356,7 @@ async def get_executive_kpis(
         WHERE organization_id = :org_id
           AND is_deleted = false
           AND COALESCE(claim_period_end, claim_period_start, created_at::date) >= date_trunc('year', CURRENT_DATE)::date
-          AND lower(COALESCE(status, '')) NOT IN ('rejected', 'cancelled', 'canceled')
+          AND lower(COALESCE(status, '')) IN ('certified', 'invoiced', 'paid')
         """,
         {"org_id": org_id},
         source="kpis.progress_claims",
