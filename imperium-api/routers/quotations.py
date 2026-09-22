@@ -131,31 +131,18 @@ async def _persist_commercial_baseline(
     )
     baseline_id = str(insert_result.scalar())
 
-    # Sync baseline contract value to linked project
-    project_id = str(payload.get("project_id")) if payload.get("project_id") else None
-    if project_id:
-        try:
-            await db.execute(
-                text(
-                    """
-                    UPDATE projects.projects
-                    SET contract_value = :contract_val,
-                        updated_at = NOW()
-                    WHERE id = :project_id AND organization_id = :org_id
-                    """
-                ),
-                {
-                    "project_id": project_id,
-                    "org_id": user["org_id"],
-                    "contract_val": metrics.get("target_selling_price", 0),
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Failed to sync contract_value for project %s from baseline %s",
-                project_id, baseline_id,
-            )
-
+    # Deliberately does NOT write metrics["target_selling_price"] back onto
+    # projects.projects.contract_value. Both call sites of this function are
+    # exploratory/draft evaluations (the standalone Commercial Brain
+    # "evaluate" tool, and an autonomous DRAFT quote builder) - re-running
+    # either against an already-live project (e.g. pricing an addendum, or
+    # just re-checking numbers) used to silently overwrite that project's
+    # real, already-agreed contract value with whatever the exploratory
+    # calculation produced. The authoritative place a project's contract
+    # value gets set is quotation/tender WIN (see crm.py/tender_bids.py) or
+    # a deliberate Finance edit via PATCH /projects/{id} - never a baseline
+    # snapshot from evaluating numbers. This baseline row is still recorded
+    # in full for later audit/comparison, just never pushed onto the project.
     return baseline_id
 
 
