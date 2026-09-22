@@ -17,6 +17,7 @@ import {
   removeSettingsUserRole,
   setSettingsRolePermission,
   setSettingsUserStatus,
+  setSettingsUserEmail,
   updateSystemSetting,
   updateWebsiteContent,
 } from "@/lib/api";
@@ -433,6 +434,19 @@ export function SettingsTabPage({ initialTab }: { initialTab: SettingsTab }) {
       setSaving(null);
     }
   };
+  const setUserEmail = async (userId: string, email: string) => {
+    setSaving(`email-${userId}`);
+    try {
+      const result = await setSettingsUserEmail(userId, email);
+      setNotice("Account email updated.");
+      setOverview((prev) => ({ ...prev, users: prev.users.map((user) => user.id === userId ? { ...user, email: result.data?.email || email } : user) }));
+      await load(true);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Unable to update this account's email."));
+    } finally {
+      setSaving(null);
+    }
+  };
   const inviteUser = async (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => {
     setSaving("invite-user");
     setNotice(null);
@@ -519,7 +533,7 @@ export function SettingsTabPage({ initialTab }: { initialTab: SettingsTab }) {
     {overview.source_warnings.length > 0 && <div className="border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100"><div className="mb-2 flex items-center gap-2 font-semibold"><AlertTriangle className="h-4 w-4 shrink-0" /> Partial settings source availability</div><ul className="list-disc space-y-1 pl-5 text-xs">{overview.source_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
     {notice && <div className="flex gap-2 border border-signal/40 bg-signal/10 p-3 text-sm text-paper"><ShieldCheck className="h-4 w-4 shrink-0 text-signal" /> {notice}</div>}
     {tab === "configuration" && <ConfigurationTab overview={overview} saving={saving} saveSetting={saveSetting} />}
-    {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} inviteUser={inviteUser} createRole={createRole} />}
+    {tab === "access" && <AccessTab overview={overview} saving={saving} assignRole={assignRole} removeRole={removeRole} togglePermission={togglePermission} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} inviteUser={inviteUser} createRole={createRole} />}
     {tab === "accounts" && <ManagedAccountsTab overview={overview} saving={saving === "managed-account"} createManagedAccount={createManagedAccount} />}
     {tab === "website" && <WebsiteTab items={overview.website_content} saving={saving} saveContent={saveContent} />}
     {tab === "audit" && <AuditTab events={filteredEvents} loading={auditLoading} error={auditError} auditSearch={auditSearch} setAuditSearch={setAuditSearch} auditStatus={auditStatus} setAuditStatus={setAuditStatus} onRefresh={() => void loadAudit(true)} />}

@@ -99,6 +99,10 @@ class UserStatusPayload(Payload):
     is_active: bool
 
 
+class UserEmailPayload(Payload):
+    email: EmailStr
+
+
 class RolePermissionPayload(Payload):
     permission_key: str = Field(min_length=1, max_length=100)
     enabled: bool
@@ -1881,6 +1885,84 @@ async def set_user_status(
     )
     await db.commit()
     return _response(None, "User activated." if payload.is_active else "User deactivated.")
+
+
+@router.patch("/users/{target_user_id}/email")
+async def set_user_email(
+    target_user_id: UUID,
+    payload: UserEmailPayload,
+    user: dict = Depends(require_permission("settings.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Changes the email an existing account signs in with - e.g. swapping a
+    placeholder address (created via invite_user's no_real_email path) for a
+    real company-domain address once one is issued, or the reverse. Updates
+    both the Supabase Auth identity (the thing that actually gates login) and
+    core.users, so the two never drift apart."""
+    org_id = user["org_id"]
+    new_email = str(payload.email).strip().lower()
+
+    target = await _lookup_user_with_superadmin_flag(db, org_id, target_user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User was not found.")
+    if target["is_superadmin"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"SUPERADMIN access is restricted to {SOLE_SUPERADMIN_EMAIL} and its email cannot be changed.",
+        )
+    if new_email == target["user_email"].strip().lower():
+        raise HTTPException(status_code=400, detail="That is already this account's email.")
+
+    taken = (
+        await db.execute(
+            text("SELECT 1 FROM core.users WHERE lower(email)=:email AND id != :target_user_id AND is_deleted=false"),
+            {"email": new_email, "target_user_id": target_user_id},
+        )
+    ).scalar()
+    if taken:
+        raise HTTPException(status_code=409, detail=f"An account with email {new_email} already exists.")
+
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                lambda: supabase_admin.auth.admin.update_user_by_id(
+                    str(target_user_id), {"email": new_email, "email_confirm": True}
+                )
+            ),
+            timeout=15,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable. Please retry.",
+        ) from exc
+    except Exception as exc:
+        logger.error("settings.set_user_email_failed", target_user_id=str(target_user_id), error=str(exc))
+        message = str(exc).lower()
+        if "already" in message and ("registered" in message or "exists" in message):
+            raise HTTPException(
+                status_code=409,
+                detail=f"An account with email {new_email} already exists.",
+            ) from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Supabase Auth could not update the account's email.",
+        ) from exc
+
+    await db.execute(
+        text("UPDATE core.users SET email=:email, updated_at=NOW() WHERE id=:target_user_id AND organization_id=:org_id"),
+        {"email": new_email, "target_user_id": target_user_id, "org_id": org_id},
+    )
+    await _write_audit(
+        db,
+        user,
+        "settings.access.user_email_changed",
+        "user",
+        target_user_id,
+        {"old_email": target["user_email"], "new_email": new_email},
+    )
+    await db.commit()
+    return _response({"email": new_email}, "Account email updated.")
 
 
 @router.delete("/users/{target_user_id}")

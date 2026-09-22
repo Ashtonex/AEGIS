@@ -1374,6 +1374,14 @@ export async function setSettingsUserStatus(userId: string, isActive: boolean): 
   });
 }
 
+export async function setSettingsUserEmail(userId: string, email: string): Promise<ApiResponse<{ email: string }>> {
+  return fetchApi<ApiResponse<{ email: string }>>(`/api/v1/settings/users/${userId}/email`, {
+    method: 'PATCH',
+    body: JSON.stringify({ email }),
+    allowFallback: false,
+  });
+}
+
 export async function deleteSettingsUser(userId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/settings/users/${userId}`, {
     method: 'DELETE',

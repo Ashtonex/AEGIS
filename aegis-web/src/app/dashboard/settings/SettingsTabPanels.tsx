@@ -150,8 +150,8 @@ function InviteUserModal({ roles, onClose, onInvite }: { roles: Role[]; onClose:
         </label>
         <label className="block">
           <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Email</span>
-          <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder={noRealEmail ? "firstname.lastname@aegis.local" : undefined} className="mt-1 w-full border border-ink-mid bg-ink p-2 text-sm text-paper focus:border-signal focus:outline-none" />
-          {noRealEmail && <span className="mt-1 block text-[11px] text-slate-light">Doesn&apos;t need to be a real mailbox - just unique. Use a made-up address like a placeholder domain (e.g. <span className="text-paper">@aegis.local</span>); it only has to work for signing in to AEGIS.</span>}
+          <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder={noRealEmail ? "firstname.lastname@noemail.sixnineconstruction.com" : undefined} className="mt-1 w-full border border-ink-mid bg-ink p-2 text-sm text-paper focus:border-signal focus:outline-none" />
+          {noRealEmail && <span className="mt-1 block text-[11px] text-slate-light">Doesn&apos;t need to be a real mailbox - just unique. Use a made-up address under a real domain (e.g. <span className="text-paper">@noemail.sixnineconstruction.com</span>) - reserved placeholder domains like .local or .test will be rejected; it only has to work for signing in to AEGIS.</span>}
         </label>
         <label className="flex items-start gap-2 border border-ink-mid/60 p-3 text-xs text-slate-light">
           <input type="checkbox" checked={noRealEmail} onChange={(event) => setNoRealEmail(event.target.checked)} className="mt-0.5" />
@@ -210,7 +210,7 @@ function NewRoleForm({ saving, createRole }: { saving: string | null; createRole
   </form>;
 }
 
-export function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, inviteUser, createRole }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any>; createRole: (name: string, description?: string) => Promise<void> }) {
+export function AccessTab({ overview, saving, assignRole, removeRole, togglePermission, toggleUserStatus, deleteUser, setUserEmail, inviteUser, createRole }: { overview: SettingsOverview; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; togglePermission: (roleId: string, permission: string, enabled: boolean) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void>; inviteUser: (payload: { full_name: string; email: string; role_ids: string[]; no_real_email?: boolean }) => Promise<any>; createRole: (name: string, description?: string) => Promise<void> }) {
   const [inviteOpen, setInviteOpen] = useState(false);
   return <div className="space-y-6">
     {inviteOpen && <InviteUserModal roles={overview.roles} onClose={() => setInviteOpen(false)} onInvite={inviteUser} />}
@@ -220,10 +220,10 @@ export function AccessTab({ overview, saving, assignRole, removeRole, togglePerm
         <button onClick={() => setInviteOpen(true)} className="inline-flex items-center gap-2 border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-signal hover:bg-signal/10"><UserPlus className="h-3.5 w-3.5" /> Invite user</button>
       </div>
       <div className="hidden overflow-x-auto lg:block">
-        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />)}</tbody></table>
+        <table className="w-full text-left text-xs"><thead className="border-y border-ink-mid font-mono uppercase tracking-wider text-slate"><tr><th className="p-3">User</th><th className="p-3">Status</th><th className="p-3">Roles</th><th className="p-3">Assign role</th></tr></thead><tbody className="divide-y divide-ink-mid/50">{overview.users.map((user) => <UserAccessRow key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} />)}</tbody></table>
       </div>
       <div className="grid gap-3 lg:hidden">
-        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />)}
+        {overview.users.map((user) => <UserAccessCard key={user.id} user={user} roles={overview.roles} saving={saving} assignRole={assignRole} removeRole={removeRole} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} setUserEmail={setUserEmail} />)}
       </div>
     </section>
     <section className="border border-ink-mid bg-ink p-5">
@@ -286,18 +286,35 @@ function UserActionsControl({ user, saving, toggleUserStatus, deleteUser }: { us
   </div>;
 }
 
-function UserAccessRow({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void> }) {
-  const [roleId, setRoleId] = useState("");
-  const assignedIds = new Set(user.roles.map((role) => role.id));
-  return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><p className="text-[11px] text-slate-light">{user.email}</p></td><td className="p-3"><UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
+function EditableEmail({ user, saving, setUserEmail }: { user: AccessUser; saving: string | null; setUserEmail: (userId: string, email: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(user.email);
+  const busy = saving === `email-${user.id}`;
+
+  if (!editing) {
+    return <button type="button" onClick={() => { setDraft(user.email); setEditing(true); }} title="Change this account's sign-in email" className="group inline-flex items-center gap-1 text-[11px] text-slate-light hover:text-signal">
+      {user.email} <Mail className="h-3 w-3 opacity-0 group-hover:opacity-100" />
+    </button>;
+  }
+  return <form className="flex items-center gap-1" onSubmit={async (event) => { event.preventDefault(); await setUserEmail(user.id, draft.trim()); setEditing(false); }}>
+    <input type="email" required autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} disabled={busy} className="min-w-0 border border-ink-mid bg-ink px-2 py-1 text-[11px] text-paper disabled:opacity-50" />
+    <button type="submit" disabled={busy || !draft.trim()} title="Save email" className="inline-flex h-6 w-6 shrink-0 items-center justify-center border border-signal/50 text-signal disabled:opacity-50">{busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}</button>
+    <button type="button" disabled={busy} onClick={() => setEditing(false)} title="Cancel" className="inline-flex h-6 w-6 shrink-0 items-center justify-center border border-ink-mid text-slate-light hover:text-paper disabled:opacity-50"><X className="h-3 w-3" /></button>
+  </form>;
 }
 
-function UserAccessCard({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void> }) {
+function UserAccessRow({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser, setUserEmail }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void> }) {
+  const [roleId, setRoleId] = useState("");
+  const assignedIds = new Set(user.roles.map((role) => role.id));
+  return <tr><td className="p-3"><p className="font-semibold text-paper">{user.name}</p><EditableEmail user={user} saving={saving} setUserEmail={setUserEmail} /></td><td className="p-3"><UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} /></td><td className="p-3"><div className="flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div></td><td className="p-3"><div className="flex gap-2"><select value={roleId} onChange={(event) => setRoleId(event.target.value)} className="border border-ink-mid bg-ink px-2 py-2 text-xs text-paper"><option value="">Select role</option>{roles.filter((role) => !assignedIds.has(role.id)).map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}</select><button disabled={!roleId || saving === `assign-${user.id}`} onClick={() => void assignRole(user.id, roleId)} className="border border-signal/50 px-3 py-2 font-mono text-[10px] uppercase text-signal disabled:opacity-50">Assign</button></div></td></tr>;
+}
+
+function UserAccessCard({ user, roles, saving, assignRole, removeRole, toggleUserStatus, deleteUser, setUserEmail }: { user: AccessUser; roles: Role[]; saving: string | null; assignRole: (userId: string, roleId: string) => Promise<void>; removeRole: (userId: string, roleId: string) => Promise<void>; toggleUserStatus: (userId: string, nextActive: boolean) => Promise<void>; deleteUser: (userId: string) => Promise<void>; setUserEmail: (userId: string, email: string) => Promise<void> }) {
   const [roleId, setRoleId] = useState("");
   const assignedIds = new Set(user.roles.map((role) => role.id));
   return <article className="border border-ink-mid/70 p-3">
     <div className="mb-3 flex items-start justify-between gap-3">
-      <div className="min-w-0"><p className="truncate font-semibold text-paper">{user.name}</p><p className="break-all text-[11px] text-slate-light">{user.email}</p></div>
+      <div className="min-w-0"><p className="truncate font-semibold text-paper">{user.name}</p><EditableEmail user={user} saving={saving} setUserEmail={setUserEmail} /></div>
       <UserActionsControl user={user} saving={saving} toggleUserStatus={toggleUserStatus} deleteUser={deleteUser} />
     </div>
     <div className="mb-3 flex flex-wrap gap-2">{user.roles.length === 0 ? <span className="text-xs text-slate-light">No roles</span> : user.roles.map((role) => <button key={role.id} disabled={saving === `remove-${user.id}-${role.id}`} onClick={() => void removeRole(user.id, role.id)} className="border border-ink-mid px-2 py-1 text-[11px] text-paper hover:border-red-400">{role.name} ×</button>)}</div>
