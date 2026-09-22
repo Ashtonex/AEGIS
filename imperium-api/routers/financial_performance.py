@@ -23,6 +23,7 @@ from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.finance.cash_position import compute_cash_runway
 from app.services.inventory_service import post_cost_transaction
 from routers.payroll_runs import _compute_gross
+from routers.bank_transactions import _next_cashbook_transaction_number
 
 router = APIRouter()
 
@@ -60,14 +61,26 @@ class CashAccountCreate(BaseModel):
     opening_balance: float = 0.0
 
 
+CASHBOOK_TRANSACTION_DIRECTIONS = {
+    "receipt": "inflow",
+    "transfer_in": "inflow",
+    "payment": "outflow",
+    "transfer_out": "outflow",
+    "bank_charge": "outflow",
+}
+
+
 class CashbookTransactionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     cash_account_id: UUID
-    transaction_number: str = Field(min_length=1, max_length=40)
     transaction_date: date = Field(default_factory=date.today)
     transaction_type: str = Field(min_length=1, max_length=24)
-    direction: str = Field(min_length=1, max_length=8)
+    # Only meaningful (and required) for "adjustment" - every other type has a
+    # fixed direction (see CASHBOOK_TRANSACTION_DIRECTIONS) so the client
+    # never needs to supply it for those.
+    direction: Optional[str] = Field(default=None, pattern=r"^(inflow|outflow)$")
     amount: float = Field(gt=0)
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
     description: str
     project_id: Optional[UUID] = None
     department_id: Optional[UUID] = None
@@ -2011,6 +2024,10 @@ async def post_cashbook_transaction(
     user: dict = Depends(require_permission("finance.cash.post")),
     db: AsyncSession = Depends(get_db),
 ):
+    direction = CASHBOOK_TRANSACTION_DIRECTIONS.get(payload.transaction_type, payload.direction)
+    if not direction:
+        raise HTTPException(status_code=400, detail="direction is required for adjustment transactions.")
+
     try:
         # Verify cash account exists
         acc_check = await db.execute(
@@ -2019,6 +2036,8 @@ async def post_cashbook_transaction(
         )
         if not acc_check.first():
             raise HTTPException(status_code=404, detail="Cash account not found.")
+
+        transaction_number = await _next_cashbook_transaction_number(db, str(user["org_id"]))
 
         tx_id = (
             await db.execute(
@@ -2038,12 +2057,12 @@ async def post_cashbook_transaction(
                 {
                     "org_id": user["org_id"],
                     "cash_account_id": payload.cash_account_id,
-                    "transaction_number": payload.transaction_number,
+                    "transaction_number": transaction_number,
                     "transaction_date": payload.transaction_date,
                     "transaction_type": payload.transaction_type,
-                    "direction": payload.direction,
+                    "direction": direction,
                     "amount": payload.amount,
-                    "currency": "USD",
+                    "currency": payload.currency or "USD",
                     "description": payload.description,
                     "project_id": payload.project_id,
                     "department_id": payload.department_id,
