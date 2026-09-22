@@ -95,21 +95,30 @@ async def _persist_commercial_baseline(
     user: dict,
     payload: Dict[str, Any],
     result: Dict[str, Any],
+    override_target_selling_price: Optional[float] = None,
+    override_reason: Optional[str] = None,
 ) -> Optional[str]:
     forecast = result.get("spend_forecast", {})
     metrics = result.get("metrics", {})
+    calculated_price = metrics.get("target_selling_price", 0)
+    is_overridden = override_target_selling_price is not None
+    final_price = override_target_selling_price if is_overridden else calculated_price
     insert_result = await db.execute(
         text(
             """
             INSERT INTO finance.project_commercial_baselines (
                 organization_id, quotation_id, project_id, project_title,
-                total_direct_costs, target_selling_price, protected_margin_pct, worthiness_score,
-                weekly_cost_plan, monthly_cashflow, labour_histogram, margin_at_risk_curve
+                total_direct_costs, target_selling_price, calculated_target_selling_price,
+                is_overridden, override_reason, protected_margin_pct, worthiness_score,
+                weekly_cost_plan, monthly_cashflow, labour_histogram, margin_at_risk_curve,
+                committed_by, committed_at
             ) VALUES (
                 :org_id, :quotation_id, :project_id, :project_title,
-                :total_direct_costs, :target_selling_price, :protected_margin_pct, :worthiness_score,
+                :total_direct_costs, :target_selling_price, :calculated_target_selling_price,
+                :is_overridden, :override_reason, :protected_margin_pct, :worthiness_score,
                 CAST(:weekly_cost_plan AS jsonb), CAST(:monthly_cashflow AS jsonb),
-                CAST(:labour_histogram AS jsonb), CAST(:margin_at_risk_curve AS jsonb)
+                CAST(:labour_histogram AS jsonb), CAST(:margin_at_risk_curve AS jsonb),
+                :committed_by, NOW()
             )
             RETURNING id
             """
@@ -120,13 +129,17 @@ async def _persist_commercial_baseline(
             "project_id": str(payload.get("project_id")) if payload.get("project_id") else None,
             "project_title": result.get("project_title", "Construction Project"),
             "total_direct_costs": metrics.get("total_direct_costs", 0),
-            "target_selling_price": metrics.get("target_selling_price", 0),
+            "target_selling_price": final_price,
+            "calculated_target_selling_price": calculated_price,
+            "is_overridden": is_overridden,
+            "override_reason": override_reason if is_overridden else None,
             "protected_margin_pct": metrics.get("protected_margin_pct", 0),
             "worthiness_score": result.get("worthiness_score", 0),
             "weekly_cost_plan": json.dumps(forecast.get("weekly_cost_plan", []), default=str),
             "monthly_cashflow": json.dumps(forecast.get("monthly_cashflow", []), default=str),
             "labour_histogram": json.dumps(forecast.get("labour_histogram", []), default=str),
             "margin_at_risk_curve": json.dumps(forecast.get("margin_at_risk_curve", []), default=str),
+            "committed_by": user.get("sub") or user.get("user_id"),
         },
     )
     baseline_id = str(insert_result.scalar())
@@ -627,21 +640,19 @@ async def evaluate_quotation_intelligence(
     """
     Master Commercial Brain evaluation. Assesses project worthiness, selling price,
     protected margin, risk score, rate outliers, spend timeline, and approval rules.
-    Persists the outcome as a commercial baseline so it can be audited later.
+
+    Pure preview - writes nothing. Selecting a quotation, tuning duration/area/
+    profit inputs, or just re-running this must be free to do repeatedly while
+    reviewing numbers. A commercial baseline only becomes an official, audited
+    record via POST /intelligence/baselines/commit, which a human explicitly
+    triggers after reviewing this result (and optionally overriding the
+    calculated selling price with their own judgment call).
     """
     org_rate_benchmarks = await _load_org_rate_benchmarks(db, user["org_id"])
     result = QuotationBrain.evaluate_project(payload, rate_benchmarks=org_rate_benchmarks)
 
-    baseline_id = None
-    try:
-        # Only persist a commercial baseline snapshot when this evaluation is
-        # actually tied to a real project - an unlinked call is exploratory
-        # use of the Master Commercial Brain tool (its own pre-filled demo
-        # values, most likely), not a real quotation to keep a record of.
-        if payload.get("project_id"):
-            baseline_id = await _persist_commercial_baseline(db, user, payload, result)
-
-        if payload.get("project_id") and result["worthiness_rating"] == "HIGH_RISK_REJECT_OR_REPRICE":
+    if payload.get("project_id") and result["worthiness_rating"] == "HIGH_RISK_REJECT_OR_REPRICE":
+        try:
             await emit_role_notification(
                 db,
                 org_id=user["org_id"],
@@ -651,22 +662,69 @@ async def evaluate_quotation_intelligence(
                 notification_type="ccb_evaluation",
                 priority="high",
                 action_url="/dashboard/quotations/ccb",
-                metadata={"baseline_id": baseline_id, "quotation_id": payload.get("quotation_id")},
+                metadata={"quotation_id": payload.get("quotation_id")},
             )
-
-        await db.commit()
-    except Exception:
-        await db.rollback()
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
     return {
         "success": True,
         "data": jsonable_encoder(result),
-        "message": (
-            "Quotation Intelligence evaluation complete."
-            if payload.get("project_id")
-            else "Quotation Intelligence evaluation complete (preview only - link a project to record this baseline)."
-        ),
-        "meta": {"user_id": user["user_id"], "baseline_id": baseline_id, "persisted": baseline_id is not None},
+        "message": "Quotation Intelligence evaluation complete (preview - commit it to record an official baseline).",
+        "meta": {"user_id": user["user_id"]},
+    }
+
+
+class CommercialBaselineCommit(BaseModel):
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+    override_target_selling_price: Optional[float] = Field(default=None, gt=0)
+    override_reason: Optional[str] = Field(default=None, max_length=2000)
+
+
+@router.post("/intelligence/baselines/commit", status_code=201)
+async def commit_commercial_baseline(
+    payload: CommercialBaselineCommit,
+    user: dict = Depends(require_permission("quotations.commit_baseline")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Records the human-reviewed outcome of a Commercial Brain evaluation as the
+    official baseline for a quotation - the explicit "yes, this is right, keep
+    it" step /intelligence/evaluate deliberately no longer does on its own.
+
+    Re-runs the same evaluation server-side rather than trusting whatever
+    figure the client sends (a client-supplied "calculated" number can't be
+    trusted for an audit trail); override_target_selling_price is the only
+    number a human can actually change, and only takes effect with
+    override_reason explaining why - that pairing is the record of where the
+    algorithm's number and a human's judgement diverged, which is what lets
+    this get reviewed and the model tuned over time instead of disappearing.
+    """
+    # Pydantic's extra="allow" keeps unmodeled keys (the evaluation payload
+    # itself - quotation_id, project_id, items, ...) accessible via
+    # model_extra rather than folded into model_dump alongside the two fixed
+    # override fields above.
+    eval_payload = dict(payload.model_extra or {})
+
+    if payload.override_target_selling_price is not None and not (payload.override_reason or "").strip():
+        raise HTTPException(status_code=422, detail="override_reason is required when overriding the calculated selling price.")
+
+    org_rate_benchmarks = await _load_org_rate_benchmarks(db, user["org_id"])
+    result = QuotationBrain.evaluate_project(eval_payload, rate_benchmarks=org_rate_benchmarks)
+
+    baseline_id = await _persist_commercial_baseline(
+        db, user, eval_payload, result,
+        override_target_selling_price=payload.override_target_selling_price,
+        override_reason=payload.override_reason,
+    )
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": jsonable_encoder({**result, "baseline_id": baseline_id}),
+        "message": "Commercial baseline committed.",
+        "meta": {"user_id": user["user_id"], "baseline_id": baseline_id},
     }
 
 
@@ -772,7 +830,6 @@ async def generate_autonomous_quote(
         quotation_id = str(insert_result.scalar())
         brain_payload["quotation_id"] = quotation_id
         brain = QuotationBrain.evaluate_project(brain_payload)
-        baseline_id = await _persist_commercial_baseline(db, user, brain_payload, brain)
         await db.commit()
     except Exception as exc:
         await db.rollback()
@@ -793,8 +850,10 @@ async def generate_autonomous_quote(
             "brain": brain,
             "generated_payload": quote_payload,
         }),
-        "message": "Autonomous CCB draft quote generated and baseline evaluated.",
-        "meta": {"user_id": user["user_id"], "baseline_id": baseline_id},
+        # brain is a preview, same as /intelligence/evaluate - review it, then
+        # POST /intelligence/baselines/commit to record it as official.
+        "message": "Autonomous CCB draft quote generated. Review the commercial baseline, then commit it.",
+        "meta": {"user_id": user["user_id"]},
     }
 
 @router.get("/intelligence/baselines")

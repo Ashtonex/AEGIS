@@ -260,6 +260,20 @@ export async function watchDocumentRevision(payload: Record<string, unknown>): P
   });
 }
 
+/** Records a reviewed CCB evaluation as the official commercial baseline - the explicit "commit" step after previewing via evaluateQuotationIntelligence. Pass overrideTargetSellingPrice + overrideReason to record a human correction to the calculated figure instead of accepting it as-is. */
+export async function commitCommercialBaseline(payload: Record<string, unknown> & { overrideTargetSellingPrice?: number; overrideReason?: string }): Promise<ApiResponse<any>> {
+  const { overrideTargetSellingPrice, overrideReason, ...evaluationPayload } = payload;
+  return fetchApi<ApiResponse<any>>('/api/v1/quotations/intelligence/baselines/commit', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...evaluationPayload,
+      override_target_selling_price: overrideTargetSellingPrice ?? null,
+      override_reason: overrideReason ?? null,
+    }),
+    allowFallback: false,
+  });
+}
+
 export async function getCommercialBaselineHistory(params: { quotationId?: string; projectId?: string } = {}): Promise<ApiResponse<any[]>> {
   const query = new URLSearchParams();
   if (params.quotationId) query.set('quotation_id', params.quotationId);

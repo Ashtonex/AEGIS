@@ -30,6 +30,7 @@ import {
   benchmarkRate,
   calculateAssemblyBreakdown,
   classifyBoqDescription,
+  commitCommercialBaseline,
   createCustomAssembly,
   createRateBenchmark,
   deleteCustomAssembly,
@@ -396,6 +397,16 @@ export default function CommercialControlBrainPage() {
   const [baselineId, setBaselineId] = useState<string | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
 
+  // Review-before-commit: evaluating never writes a baseline anymore (see
+  // runEvaluation) - this is the explicit "yes, this is right, keep it" step,
+  // with room to override the calculated figure and say why before it
+  // becomes the official record.
+  const [overridePrice, setOverridePrice] = useState("");
+  const [overrideReason, setOverrideReason] = useState("");
+  const [committing, setCommitting] = useState(false);
+  const [committedBaseline, setCommittedBaseline] = useState<any | null>(null);
+  const [commitError, setCommitError] = useState("");
+
   // --- ENHANCEMENT STATES --- //
   // 1. Scenario Simulation
   const [simMatHike, setSimMatHike] = useState(10);
@@ -532,30 +543,40 @@ export default function CommercialControlBrainPage() {
   const lines = useMemo(() => getQuoteLines(selectedQuote), [selectedQuote]);
   const currency = selectedQuote?.metadata?.currency || "USD";
 
-  const runEvaluation = useCallback(async () => {
-    if (!selectedQuote) return;
-    setEvaluating(true);
-    setErrorMsg("");
-    try {
-      const itemsPayload = lines.map((line) => ({
+  // Shared by the preview evaluation and the explicit commit - both must
+  // evaluate the exact same scope, just the commit additionally records it.
+  const evaluationPayload = useMemo(() => {
+    if (!selectedQuote) return null;
+    return {
+      quotation_id: selectedQuote.id,
+      project_id: selectedQuote.project_id,
+      project_title: selectedQuote.metadata?.project_title || selectedProject?.name || "Construction Quotation",
+      built_area_sqm: builtAreaSqm,
+      profit_rate: (selectedQuote.metadata?.profit_pct || 15) / 100.0,
+      project_duration_weeks: durationWeeks,
+      items: lines.map((line) => ({
         description: line.description,
         quantity: line.qty,
         rate: line.rate,
         unit: line.unit,
-      }));
+      })),
+    };
+  }, [selectedQuote, selectedProject, lines, builtAreaSqm, durationWeeks]);
 
-      const payload = {
-        quotation_id: selectedQuote.id,
-        project_id: selectedQuote.project_id,
-        project_title: selectedQuote.metadata?.project_title || selectedProject?.name || "Construction Quotation",
-        built_area_sqm: builtAreaSqm,
-        profit_rate: (selectedQuote.metadata?.profit_pct || 15) / 100.0,
-        project_duration_weeks: durationWeeks,
-        items: itemsPayload,
-      };
-
+  const runEvaluation = useCallback(async () => {
+    if (!selectedQuote || !evaluationPayload) return;
+    setEvaluating(true);
+    setErrorMsg("");
+    // A fresh evaluation (new quote, or inputs changed) invalidates whatever
+    // was reviewed/committed for the previous numbers.
+    setBaselineId(null);
+    setCommittedBaseline(null);
+    setOverridePrice("");
+    setOverrideReason("");
+    setCommitError("");
+    try {
       const [evalRes, historyRes, inflRes] = await Promise.all([
-        evaluateQuotationIntelligence(payload),
+        evaluateQuotationIntelligence(evaluationPayload),
         getCommercialBaselineHistory({ quotationId: selectedQuote.id }),
         forecastInflationImpact({
           base_cost: selectedQuote.metadata?.direct_costs || 100000,
@@ -566,7 +587,6 @@ export default function CommercialControlBrainPage() {
 
       if (evalRes.success && evalRes.data) {
         setBrain(evalRes.data as BrainResult);
-        setBaselineId(((evalRes.meta as any)?.baseline_id as string | null) ?? null);
       }
       if (historyRes.success && Array.isArray(historyRes.data)) {
         setHistory(historyRes.data);
@@ -595,7 +615,43 @@ export default function CommercialControlBrainPage() {
     } finally {
       setEvaluating(false);
     }
-  }, [selectedQuote, selectedProject, lines, durationWeeks, builtAreaSqm, currency]);
+  }, [selectedQuote, evaluationPayload, lines, durationWeeks, currency]);
+
+  const handleCommitBaseline = useCallback(async () => {
+    if (!evaluationPayload || !brain) return;
+    const trimmedReason = overrideReason.trim();
+    const parsedOverride = overridePrice.trim() ? Number(overridePrice) : null;
+    if (overridePrice.trim() && (!Number.isFinite(parsedOverride) || (parsedOverride as number) <= 0)) {
+      setCommitError("Override price must be a positive number.");
+      return;
+    }
+    if (parsedOverride !== null && !trimmedReason) {
+      setCommitError("Explain why you're overriding the calculated figure before committing.");
+      return;
+    }
+    setCommitting(true);
+    setCommitError("");
+    try {
+      const res = await commitCommercialBaseline({
+        ...evaluationPayload,
+        ...(parsedOverride !== null
+          ? { overrideTargetSellingPrice: parsedOverride, overrideReason: trimmedReason }
+          : {}),
+      });
+      if (res.success && res.data) {
+        setCommittedBaseline(res.data);
+        setBaselineId((res.meta as any)?.baseline_id ?? null);
+        const historyRes = await getCommercialBaselineHistory({ quotationId: evaluationPayload.quotation_id });
+        if (historyRes.success && Array.isArray(historyRes.data)) setHistory(historyRes.data);
+      } else {
+        setCommitError("Commit failed - no baseline was recorded.");
+      }
+    } catch (error: any) {
+      setCommitError(error?.message || "Failed to commit baseline.");
+    } finally {
+      setCommitting(false);
+    }
+  }, [evaluationPayload, brain, overridePrice, overrideReason]);
 
   useEffect(() => {
     if (selectedQuote) void runEvaluation();
@@ -1387,6 +1443,98 @@ export default function CommercialControlBrainPage() {
                     <Kpi icon={Gauge} label="Cost / Built Sqm" value={money(brain.metrics.cost_per_built_sqm, currency)} />
                     <Kpi icon={HardHat} label="Direct Works Cost" value={money(brain.metrics.total_direct_costs, currency)} />
                     <Kpi icon={ShieldAlert} label="Protected Profit" value={money(brain.metrics.protected_profit_amount, currency)} />
+                  </section>
+
+                  {/* REVIEW & COMMIT BASELINE - this evaluation is a live preview
+                      only, nothing above has been recorded anywhere yet. */}
+                  <section className="border border-ink-mid bg-ink-light p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Step 2 — Review before committing</p>
+                        <h3 className="mt-1 font-display text-lg font-bold text-white">
+                          {committedBaseline ? "Baseline committed" : "This evaluation is a preview — nothing is saved yet"}
+                        </h3>
+                        <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-light">
+                          Calculated selling price is <span className="font-mono text-white">{money(brain.metrics.target_selling_price, currency)}</span> from{" "}
+                          {money(brain.metrics.total_direct_costs, currency)} direct costs at a {brain.metrics.protected_margin_pct.toFixed(1)}% protected margin
+                          {brain.rate_outliers_count > 0 ? `, with ${brain.rate_outliers_count} rate outlier(s) flagged below` : ""}. If that number is wrong,
+                          override it below with a reason instead of accepting it as-is — that correction is kept alongside the calculated figure so the gap between
+                          the two is visible for review, not lost.
+                        </p>
+                      </div>
+                      {committedBaseline && (
+                        <span className="inline-flex shrink-0 items-center gap-1.5 border border-emerald-500/40 bg-emerald-950/20 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-emerald-300">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> Committed
+                        </span>
+                      )}
+                    </div>
+
+                    {committedBaseline ? (
+                      <div className="mt-4 flex flex-wrap items-center gap-4 border border-emerald-500/30 bg-emerald-950/10 p-4">
+                        <div>
+                          <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Official baseline</p>
+                          <p className="mt-1 font-mono text-lg font-bold text-emerald-300">
+                            {money(overridePrice.trim() ? Number(overridePrice) : brain.metrics.target_selling_price, currency)}
+                          </p>
+                        </div>
+                        {overridePrice && (
+                          <div>
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Calculated (overridden)</p>
+                            <p className="mt-1 font-mono text-sm text-slate-light line-through">{money(brain.metrics.target_selling_price, currency)}</p>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setCommittedBaseline(null); setBaselineId(null); }}
+                          className="ml-auto border border-ink-mid px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-slate-light hover:border-signal hover:text-white"
+                        >
+                          Review again
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_2fr_auto]">
+                        <div>
+                          <label className="font-mono text-[10px] uppercase tracking-wider text-slate">Override price (optional)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={overridePrice}
+                            onChange={(e) => setOverridePrice(e.target.value)}
+                            placeholder={String(brain.metrics.target_selling_price)}
+                            className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-sm text-white focus:border-signal focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="font-mono text-[10px] uppercase tracking-wider text-slate">
+                            Reason {overridePrice.trim() && <span className="text-red-400">(required to override)</span>}
+                          </label>
+                          <input
+                            type="text"
+                            value={overrideReason}
+                            onChange={(e) => setOverrideReason(e.target.value)}
+                            placeholder="e.g. Client's site access adds real cost the BOQ doesn't capture"
+                            className="mt-1 w-full border border-ink-mid bg-ink px-3 py-2 text-sm text-white focus:border-signal focus:outline-none"
+                          />
+                        </div>
+                        <div className="flex items-end">
+                          <button
+                            type="button"
+                            onClick={() => void handleCommitBaseline()}
+                            disabled={committing}
+                            className="flex h-[42px] w-full items-center justify-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 disabled:opacity-50 md:w-auto"
+                          >
+                            {committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                            {overridePrice.trim() ? "Commit override" : "Commit baseline"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {commitError && (
+                      <p className="mt-2 flex items-center gap-1.5 text-xs text-red-300">
+                        <AlertTriangle className="h-3.5 w-3.5" /> {commitError}
+                      </p>
+                    )}
                   </section>
 
                   {/* MATERIAL DEMAND & SITE OUTPUT */}
