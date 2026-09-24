@@ -61,4 +61,4 @@ structlog==25.5.0            # Approved structured logging library for new secur
 beautifulsoup4==4.12.3       # HTML parsing for the tender scraper
 tenacity==8.3.0               # Retry policies for tender scraper / drawing extraction
 playwright>=1.48.0            # Headless browser driver for the tender scraper
-openai==1.30.1                # LLM calls for drawing extraction and tender scraping
+openai==1.109.1                # LLM calls for drawing extraction, tender scraping, BOQ AI analysis, finance assistant. Was 1.30.1 - too old to construct AsyncOpenAI() against httpx>=0.28 (passes a now-removed `proxies` kwarg internally, fixed upstream by 1.55.3+). Pinned to the latest 1.x release rather than jumping to the 2.x/3.x major lines to avoid unrelated breaking API changes.
