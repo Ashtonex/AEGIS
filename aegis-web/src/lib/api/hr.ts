@@ -142,6 +142,25 @@ export async function getHROperationsSummary(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/hr/operations/summary', { cache: 'no-store', allowFallback: false });
 }
 
+export async function getRecruitmentAssessments(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/hr/operations/assessments', { cache: 'no-store', allowFallback: false });
+}
+
+/** Upload a Microsoft Forms "Open in Excel" export for scoring. */
+export async function importRecruitmentAssessments(params: { file: File; assessment_code: string }): Promise<ApiResponse<any>> {
+  const formData = new FormData();
+  formData.append('file', params.file);
+  formData.append('assessment_code', params.assessment_code);
+
+  const url = resolveApiUrl('/api/v1/hr/operations/assessments/import');
+  const headers = await getApiHeaders();
+  headers.delete('Content-Type'); // let the browser set the multipart boundary
+  const response = await fetch(url, { method: 'POST', headers, body: formData });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(response.status, body?.detail || body?.message || 'Assessment import failed.');
+  return body;
+}
+
 export async function getHRLeaveCalendar(params?: { date_from?: string; date_to?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.date_from) search.set('date_from', params.date_from);

@@ -1,13 +1,22 @@
+import json
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.shared.pagination import ok
+from app.services.hr.recruitment_assessments import (
+    ASSESSMENTS,
+    DIMENSIONS,
+    AssessmentImportError,
+    parse_forms_export,
+)
+
+MAX_ASSESSMENT_EXPORT_BYTES = 5 * 1024 * 1024
 
 router = APIRouter()
 
@@ -250,6 +259,186 @@ async def hr_operations_summary(
             "leave_calendar": leave_calendar,
         },
         "HR operating summary loaded.",
+    )
+
+
+@router.get("/assessments")
+async def list_recruitment_assessments(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("hr.operations.read")),
+):
+    """Scored Microsoft Forms assessments, one row per submission, best first per role."""
+    data = await rows(
+        db,
+        """
+        SELECT ra.id, ra.candidate_id, ra.assessment_code, ra.role_applied_for, ra.candidate_name,
+               ra.email, ra.phone, ra.submitted_at, ra.objective_score, ra.objective_max,
+               ra.dimension_scores, ra.overall_score, ra.unanswered_count, ra.created_at,
+               rc.stage
+        FROM hr.recruitment_assessments ra
+        JOIN hr.recruitment_candidates rc ON rc.id = ra.candidate_id AND rc.organization_id = ra.organization_id
+        WHERE ra.organization_id = :org_id AND ra.is_deleted = false AND rc.is_deleted = false
+        ORDER BY ra.role_applied_for, ra.overall_score DESC, ra.submitted_at
+        """,
+        {"org_id": user["org_id"]},
+    )
+    catalog = [
+        {"code": a.code, "title": a.title, "role": a.role, "minutes": a.minutes}
+        for a in ASSESSMENTS.values()
+    ]
+    return ok({"assessments": data, "catalog": catalog, "dimensions": list(DIMENSIONS)}, "Recruitment assessments loaded.")
+
+
+@router.post("/assessments/import")
+async def import_recruitment_assessments(
+    file: UploadFile = File(...),
+    assessment_code: str = Form(...),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("hr.operations.create")),
+):
+    """Score a Microsoft Forms 'Open in Excel' export and file each response
+    against a recruitment candidate (matched by email, else created)."""
+    definition = ASSESSMENTS.get(assessment_code)
+    if definition is None:
+        raise HTTPException(status_code=422, detail=f"Unknown assessment '{assessment_code}'.")
+    content = await file.read()
+    if len(content) > MAX_ASSESSMENT_EXPORT_BYTES:
+        raise HTTPException(status_code=413, detail="The export is larger than 5 MB.")
+    try:
+        responses = parse_forms_export(assessment_code, content)
+    except AssessmentImportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    org_id = user["org_id"]
+    user_id = user.get("user_id")
+    results = []
+    created_candidates = updated_candidates = new_assessments = rescored = 0
+
+    for resp in responses:
+        existing = (await db.execute(
+            text("""
+                SELECT id, candidate_id FROM hr.recruitment_assessments
+                WHERE organization_id = :org_id AND assessment_code = :code AND response_ref = :ref
+            """),
+            {"org_id": org_id, "code": assessment_code, "ref": resp.response_ref},
+        )).first()
+
+        candidate_id = existing.candidate_id if existing else None
+        if candidate_id is None:
+            match = None
+            if resp.email:
+                match = (await db.execute(
+                    text("""
+                        SELECT id FROM hr.recruitment_candidates
+                        WHERE organization_id = :org_id AND is_deleted = false AND lower(email) = :email
+                        ORDER BY created_at LIMIT 1
+                    """),
+                    {"org_id": org_id, "email": resp.email},
+                )).first()
+            if match is None:
+                match = (await db.execute(
+                    text("""
+                        SELECT id FROM hr.recruitment_candidates
+                        WHERE organization_id = :org_id AND is_deleted = false
+                          AND lower(candidate_name) = lower(:name) AND role_applied_for = :role
+                        ORDER BY created_at LIMIT 1
+                    """),
+                    {"org_id": org_id, "name": resp.candidate_name, "role": definition.role},
+                )).first()
+            if match is not None:
+                candidate_id = match.id
+                await db.execute(
+                    text("""
+                        UPDATE hr.recruitment_candidates
+                        SET email = COALESCE(email, :email), phone = COALESCE(phone, :phone),
+                            stage = CASE WHEN stage = 'applied' THEN 'screening' ELSE stage END,
+                            updated_at = NOW()
+                        WHERE id = :id AND organization_id = :org_id
+                    """),
+                    {"email": resp.email, "phone": resp.phone, "id": candidate_id, "org_id": org_id},
+                )
+                updated_candidates += 1
+            else:
+                candidate_id = (await db.execute(
+                    text("""
+                        INSERT INTO hr.recruitment_candidates
+                            (organization_id, candidate_name, role_applied_for, stage, source,
+                             email, phone, notes, created_by)
+                        VALUES (:org_id, :name, :role, 'screening', 'Microsoft Forms assessment',
+                                :email, :phone, :notes, :user_id)
+                        RETURNING id
+                    """),
+                    {
+                        "org_id": org_id, "name": resp.candidate_name, "role": definition.role,
+                        "email": resp.email, "phone": resp.phone,
+                        "notes": f"Created from {definition.title} import.", "user_id": user_id,
+                    },
+                )).scalar_one()
+                created_candidates += 1
+
+        params = {
+            "org_id": org_id, "candidate_id": candidate_id, "code": assessment_code,
+            "role": definition.role, "ref": resp.response_ref, "name": resp.candidate_name,
+            "email": resp.email, "phone": resp.phone, "submitted_at": resp.submitted_at,
+            "answers": json.dumps(resp.answers), "points": json.dumps(resp.question_points),
+            "objective": resp.objective_score, "objective_max": resp.objective_max,
+            "dimensions": json.dumps(resp.dimension_scores), "overall": resp.overall_score,
+            "unanswered": resp.unanswered_count, "file_name": (file.filename or "")[:255] or None,
+            "user_id": user_id,
+        }
+        if existing:
+            await db.execute(
+                text("""
+                    UPDATE hr.recruitment_assessments
+                    SET answers = CAST(:answers AS jsonb), question_points = CAST(:points AS jsonb),
+                        objective_score = :objective, objective_max = :objective_max,
+                        dimension_scores = CAST(:dimensions AS jsonb), overall_score = :overall,
+                        unanswered_count = :unanswered, source_file_name = :file_name,
+                        imported_by = :user_id, is_deleted = false, updated_at = NOW()
+                    WHERE id = :id
+                """),
+                {**{k: params[k] for k in ("answers", "points", "objective", "objective_max", "dimensions",
+                                           "overall", "unanswered", "file_name", "user_id")}, "id": existing.id},
+            )
+            rescored += 1
+        else:
+            await db.execute(
+                text("""
+                    INSERT INTO hr.recruitment_assessments
+                        (organization_id, candidate_id, assessment_code, role_applied_for, response_ref,
+                         candidate_name, email, phone, submitted_at, answers, question_points,
+                         objective_score, objective_max, dimension_scores, overall_score,
+                         unanswered_count, source_file_name, imported_by)
+                    VALUES (:org_id, :candidate_id, :code, :role, :ref, :name, :email, :phone, :submitted_at,
+                            CAST(:answers AS jsonb), CAST(:points AS jsonb), :objective, :objective_max,
+                            CAST(:dimensions AS jsonb), :overall, :unanswered, :file_name, :user_id)
+                """),
+                params,
+            )
+            new_assessments += 1
+        results.append({
+            "candidate_name": resp.candidate_name,
+            "email": resp.email,
+            "overall_score": resp.overall_score,
+            "objective_score": resp.objective_score,
+            "dimension_scores": resp.dimension_scores,
+            "warnings": resp.warnings,
+        })
+
+    await db.commit()
+    return ok(
+        {
+            "assessment": definition.title,
+            "responses": len(responses),
+            "new_assessments": new_assessments,
+            "rescored": rescored,
+            "candidates_created": created_candidates,
+            "candidates_matched": updated_candidates,
+            "results": results,
+        },
+        f"Scored {len(responses)} response(s) from {definition.title}.",
     )
 
 

@@ -32,6 +32,7 @@ const EmployeesTab = dynamic(() => import("./HRTabPanels").then((m) => m.Employe
 const AttendanceTab = dynamic(() => import("./HRTabPanels").then((m) => m.AttendanceTab), { loading: PanelLoading });
 const LeaveTab = dynamic(() => import("./HRTabPanels").then((m) => m.LeaveTab), { loading: PanelLoading });
 const OperationList = dynamic(() => import("./HRTabPanels").then((m) => m.OperationList), { loading: PanelLoading });
+const RecruitmentAssessmentsPanel = dynamic(() => import("./RecruitmentAssessmentsPanel").then((m) => m.RecruitmentAssessmentsPanel), { loading: PanelLoading });
 
 type RecordData = Record<string, any>;
 type HRTab = "employees" | "recruitment" | "documents" | "credentials" | "performance" | "assets" | "training" | "org-chart" | "planning" | "attendance" | "leave" | "payroll" | "vendor-verification";
@@ -445,7 +446,10 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
           )}
 
           {activeTab === "recruitment" && (
-            <OperationList title="Recruitment and onboarding pipeline" rows={[...(operations.recruitment || []), ...(operations.onboarding || [])]} columns={["candidate_name", "employee_name", "role_applied_for", "task_name", "stage", "status", "due_date"]} empty="No recruitment candidates or onboarding tasks have been recorded." />
+            <div className="space-y-6">
+              <RecruitmentAssessmentsPanel onImported={() => void loadData()} />
+              <OperationList title="Recruitment and onboarding pipeline" rows={[...(operations.recruitment || []), ...(operations.onboarding || [])]} columns={["candidate_name", "employee_name", "role_applied_for", "task_name", "stage", "status", "due_date"]} empty="No recruitment candidates or onboarding tasks have been recorded." />
+            </div>
           )}
           {activeTab === "documents" && (
             <OperationList title="Employee contracts and document expiry tracking" rows={operations.documents || []} columns={["employee_name", "document_type", "title", "document_number", "expires_on", "status"]} empty="No contract or employee document alerts." />
