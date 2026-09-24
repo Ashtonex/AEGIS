@@ -21,6 +21,7 @@ from app.services.documents.renderers import (
 from app.services.documents.extraction import extract_text, ExtractionStatus
 from app.services.microsoft.document_service import get_download_url as get_sharepoint_download_url
 from app.services.microsoft import data_room_sync
+from app.services.microsoft import bank_workbook
 from app.services.crm.automation_engine import evaluate_and_run_automations
 from app.services.finance.ccb_monitor import (
     run_budget_overrun_check,
@@ -749,6 +750,36 @@ def time_today():
 
 
 # 3. Failed Job Handling
+async def publish_bank_workbook_job(ctx, *, org_id: str, force: bool = False):
+    """Rebuilds the read-only "AEGIS Bank & Project Money" workbook in the
+    Financial Data Room (pinned as a Teams tab). Enqueued (debounced to one
+    per minute) after every bank-line tag / split / books sync; skips the
+    upload when nothing changed. Failures are recorded on
+    finance.bank_workbook_publications, not retried - the next change or the
+    nightly run publishes again."""
+    worker_job_id_ctx.set(ctx.get("job_id", "unknown"))
+    try:
+        async with AsyncSessionLocal() as db:
+            row = await bank_workbook.publish(db, org_id=org_id, force=force)
+            return {"status": (row or {}).get("last_status")}
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def publish_bank_workbooks_nightly_job(ctx):
+    """Nightly safety net: republish every organisation that has a bank
+    statement, even if no change event fired."""
+    async with AsyncSessionLocal() as db:
+        org_ids = [str(r[0]) for r in await db.execute(text(
+            "SELECT DISTINCT organization_id FROM finance.bank_statement_lines"))]
+    results = {}
+    for org_id in org_ids:
+        async with AsyncSessionLocal() as db:
+            row = await bank_workbook.publish(db, org_id=org_id)
+            results[org_id] = (row or {}).get("last_status")
+    return results
+
+
 async def on_job_failure(ctx, exp: Exception):
     job_id = ctx.get("job_id", "unknown")
     logger.error(f"Arq Job {job_id} encountered execution failure: {str(exp)}")
@@ -817,6 +848,8 @@ class WorkerSettings:
         run_ccb_labour_headcount_mismatch_check_job,
         run_ccb_fuel_hours_variance_check_job,
         run_ccb_stock_consumption_variance_check_job,
+        publish_bank_workbook_job,
+        publish_bank_workbooks_nightly_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -872,6 +905,7 @@ class WorkerSettings:
             minute=10,
             run_at_startup=False,
         ),
+        cron(publish_bank_workbooks_nightly_job, hour=2, minute=30, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

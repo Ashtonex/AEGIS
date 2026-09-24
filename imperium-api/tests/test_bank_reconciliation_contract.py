@@ -229,5 +229,34 @@ class StatementLineTaggingContractTests(unittest.TestCase):
         self.assertIn("payload.model_fields_set", endpoint)
 
 
+class BankWorkbookContractTests(unittest.TestCase):
+    WORKBOOK = (ROOT / "app" / "services" / "microsoft" / "bank_workbook.py").read_text(encoding="utf-8")
+    WORKER = (ROOT / "app" / "workers" / "arq_worker.py").read_text(encoding="utf-8")
+
+    def test_phase_one_workbook_is_read_only(self):
+        self.assertIn("ws.protection.sheet = True", self.WORKBOOK)
+        self.assertIn("readme.protection.sheet = True", self.WORKBOOK)
+
+    def test_workbook_lives_in_the_data_room_drive(self):
+        # Reuses the Data Room connection - no new Graph permission needed.
+        self.assertIn("data_room_sync._load_connection", self.WORKBOOK)
+        self.assertIn("connection.root_item_id", self.WORKBOOK)
+
+    def test_unchanged_content_is_not_reuploaded(self):
+        publish_body = self.WORKBOOK.split("async def publish")[1]
+        self.assertIn('previous.get("content_signature") == sig', publish_body)
+        self.assertLess(publish_body.find('"unchanged"'), publish_body.find("uploader("))
+
+    def test_changes_queue_a_publish_after_committing(self):
+        for fn in ("async def tag_bank_statement_lines", "async def put_line_allocations", "async def sync_bank_statement_project_books"):
+            body = BANK_TRANSACTIONS_ROUTER.split(fn)[1].split("\n@router")[0]
+            self.assertIn("_queue_workbook_publish(org_id)", body)
+            self.assertLess(body.find("await db.commit()"), body.find("_queue_workbook_publish(org_id)"))
+
+    def test_worker_registers_workbook_jobs(self):
+        self.assertIn("publish_bank_workbook_job,", self.WORKER)
+        self.assertIn("cron(publish_bank_workbooks_nightly_job", self.WORKER)
+
+
 if __name__ == "__main__":
     unittest.main()

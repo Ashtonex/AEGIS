@@ -20,6 +20,8 @@ from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
 from app.services.finance import bank_books
+from app.services.jobs.queue import enqueue_background_job
+from app.services.microsoft import bank_workbook
 from app.services.finance.general_ledger import GeneralLedgerError
 
 router = APIRouter()
@@ -88,6 +90,17 @@ async def _next_cashbook_transaction_number(db: AsyncSession, org_id: str) -> st
 
 def _raise(exc: GeneralLedgerError):
     raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+async def _queue_workbook_publish(org_id: str) -> None:
+    """Refresh the Teams workbook about a minute after a change. The job id
+    is bucketed per minute so a burst of tagging collapses into one publish
+    (arq ignores a duplicate id), while later changes still get their own."""
+    import time
+    await enqueue_background_job(
+        "publish_bank_workbook_job", org_id=org_id,
+        _job_id=f"bank-workbook-{org_id}-{int(time.time() // 60)}", _defer_by=60,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +598,7 @@ async def tag_bank_statement_lines(
     except GeneralLedgerError as exc:
         await db.rollback()
         _raise(exc)
+    await _queue_workbook_publish(org_id)
     return ok(result, f"{result['updated']} statement line(s) tagged.")
 
 
@@ -596,10 +610,11 @@ async def sync_bank_statement_project_books(
     org_id = _require_org(user)
     try:
         counts = await bank_books.sync(db, org_id=org_id, user_id=user["sub"])
+        await db.commit()
     except GeneralLedgerError as exc:
         await db.rollback()
         _raise(exc)
-    await db.commit()
+    await _queue_workbook_publish(org_id)
     return ok(counts, "Project books synced with bank statement tags.")
 
 
@@ -664,6 +679,7 @@ async def put_line_allocations(
     except GeneralLedgerError as exc:
         await db.rollback()
         _raise(exc)
+    await _queue_workbook_publish(org_id)
     return ok({"books": counts, "allocations": await bank_books.list_allocations(db, org_id=org_id, line_id=line_id)},
               "Allocations saved.")
 
@@ -688,3 +704,25 @@ async def get_bank_books_audit(
 ):
     org_id = _require_org(user)
     return ok(await bank_books.audit(db, org_id=org_id), "Bank books audit completed.")
+
+
+@router.get("/reconciliation/workbook", summary="Where the Teams workbook lives and when it was last published")
+async def get_bank_workbook_status(
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    return ok(await bank_workbook.status(db, org_id) or {"last_status": "never", "file_name": bank_workbook.WORKBOOK_FILE_NAME},
+              "Workbook status retrieved.")
+
+
+@router.post("/reconciliation/workbook/publish", summary="Rebuild the Teams workbook now")
+async def publish_bank_workbook_now(
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    row = await bank_workbook.publish(db, org_id=org_id, force=True)
+    if row and row.get("last_status") == "failed":
+        raise HTTPException(status_code=502, detail=f"Publishing to SharePoint failed: {row.get('last_error')}")
+    return ok(row, "Workbook published.")

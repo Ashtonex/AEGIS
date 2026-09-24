@@ -2,9 +2,11 @@
 
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ChevronLeft, ChevronRight, Filter, Loader2, RefreshCw, Search, ShieldAlert, Tag, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, ExternalLink, FileSpreadsheet, Filter, Loader2, RefreshCw, Search, ShieldAlert, Tag, X } from "lucide-react";
 import {
   getBankBooksAudit,
+  getBankWorkbookStatus,
+  publishBankWorkbook,
   getBankStatementAllocationSummary,
   getFinanceCashAccounts,
   searchBankStatementLines,
@@ -231,6 +233,8 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
 
       {audit && <BooksCheck audit={audit} />}
 
+      <TeamsWorkbook />
+
       {notice && (
         <div className={`border px-4 py-3 text-sm flex justify-between items-center ${notice.tone === "ok" ? "border-signal/30 bg-signal/10 text-paper" : "border-red-500/30 bg-red-950/20 text-red-200"}`}>
           <span>{notice.text}</span>
@@ -383,6 +387,61 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
           }))}
           onPick={(row) => { if (!row.category) return; const next = { ...draft, category: row.category, tag_status: undefined }; setDraft(next); setFilter(next); setPage(1); }}
         />
+      </div>
+    </div>
+  );
+}
+
+function TeamsWorkbook() {
+  const [info, setInfo] = useState<RecordData | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await getBankWorkbookStatus();
+      setInfo(res.data || null);
+    } catch {
+      setInfo(null);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const publish = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await publishBankWorkbook();
+      setInfo(res.data || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Publishing failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const published = info?.last_published_at ? new Date(info.last_published_at).toLocaleString() : null;
+  return (
+    <div className={`${cardClass} p-4 flex flex-col md:flex-row md:items-center gap-3`}>
+      <FileSpreadsheet className="h-6 w-6 text-emerald-400 shrink-0" />
+      <div className="flex-1 min-w-0">
+        <p className="text-paper font-semibold">Excel in Teams</p>
+        <p className="text-xs text-slate">
+          {info?.file_name || "AEGIS Bank & Project Money.xlsx"} in the Financial Data Room - a read-only mirror that refreshes about a minute after any change here.
+          {published ? ` Last published ${published}${info?.rows_published ? ` (${Number(info.rows_published).toLocaleString()} lines)` : ""}.` : " Not published yet."}
+        </p>
+        {info?.last_status === "failed" && <p className="text-xs text-red-300 mt-1">Last attempt failed: {info.last_error}</p>}
+        {error && <p className="text-xs text-red-300 mt-1">{error}</p>}
+      </div>
+      <div className="flex gap-2 shrink-0">
+        {info?.web_url && (
+          <a href={info.web_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 border border-ink-mid text-paper px-3 py-2 rounded-sm text-sm hover:border-signal/50">
+            <ExternalLink className="h-4 w-4" />Open workbook
+          </a>
+        )}
+        <button onClick={() => void publish()} disabled={busy} className={buttonClass}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Publish now
+        </button>
       </div>
     </div>
   );

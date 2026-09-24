@@ -296,6 +296,14 @@ export async function saveBankLineAllocations(lineId: string, allocations: BankL
   });
 }
 
+export async function getBankWorkbookStatus(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/bank-transactions/reconciliation/workbook", { cache: "no-store", allowFallback: false });
+}
+
+export async function publishBankWorkbook(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/bank-transactions/reconciliation/workbook/publish", { method: "POST", allowFallback: false });
+}
+
 export async function getBankBooksAudit(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>("/api/v1/bank-transactions/reconciliation/audit", { cache: "no-store", allowFallback: false });
 }
