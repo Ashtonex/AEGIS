@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     LOG_JSON: bool = False
     FILE_STORAGE_MAX_BYTES: int = Field(default=25 * 1024 * 1024, ge=1)
     ALLOWED_UPLOAD_EXTENSIONS: str = ".pdf,.docx,.xlsx,.xls,.csv,.png,.jpg,.jpeg"
+    # Caps how many pages of a single PDF the text-extraction job will read,
+    # so one pathological upload can't consume the whole WORKER_JOB_TIMEOUT_SECONDS
+    # budget and starve other background jobs.
+    DOCUMENT_EXTRACTION_MAX_PAGES: int = Field(default=300, ge=1)
     GENERATED_DOCUMENT_DIR: str = "generated"
     REPORT_OUTPUT_DIR: str = "generated/reports"
     REPORT_TEMPLATE_DIR: str = "templates/reports"

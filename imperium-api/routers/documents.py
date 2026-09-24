@@ -22,6 +22,7 @@ from app.services.microsoft.document_service import (
 )
 from app.services.microsoft.errors import GraphError, GraphNotConfiguredError
 from app.services.microsoft.routing import RoutingDenied
+from app.services.jobs.queue import enqueue_background_job
 
 router = APIRouter()
 
@@ -220,6 +221,37 @@ async def list_documents_for_entity(
     return ok(items, "Documents for entity retrieved.")
 
 
+@router.get("/search-content")
+async def search_document_content(
+    q: str = Query(..., min_length=1, max_length=200),
+    user: dict = Depends(require_permission("documents.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full-text search over what's INSIDE a document (extracted_text), not
+    just its title/file_name - see list_documents' own `search` param for
+    that. Only matches documents whose file has actually been through
+    extraction (extraction_status='extracted'); a pending/unsupported/failed
+    file simply won't show up here yet."""
+    result = await db.execute(
+        text("""
+            SELECT d.id, d.title, d.category, d.file_name, d.created_at,
+                   fa.mime_type, fa.extraction_status,
+                   ts_rank(fa.search_vector, plainto_tsquery('english', :q)) AS rank,
+                   ts_headline('english', fa.extracted_text, plainto_tsquery('english', :q),
+                               'MaxFragments=3, MaxWords=40') AS snippet
+            FROM core.documents d
+            JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
+            WHERE d.organization_id = :org_id AND d.is_deleted = false
+              AND fa.search_vector @@ plainto_tsquery('english', :q)
+            ORDER BY rank DESC
+            LIMIT 50
+        """),
+        {"org_id": user["org_id"], "q": q},
+    )
+    items = [dict(row._mapping) for row in result]
+    return ok(items, "Document content search results retrieved.")
+
+
 @router.get("/{document_id}")
 async def get_document(
     document_id: UUID,
@@ -324,6 +356,10 @@ async def create_document(
                 title=payload.title,
             )
         await db.commit()
+        if file_attachment_id:
+            await enqueue_background_job(
+                "extract_document_text_job", source_table="file_attachment", record_id=str(file_attachment_id)
+            )
         return ok(
             {"id": str(doc_id)},
             "Document registered successfully.",
@@ -495,6 +531,9 @@ async def upload_to_sharepoint(
             detail=f"File uploaded to SharePoint (attachment id {attachment['id']}) but could not be registered as an AEGIS document: {e}",
         )
 
+    await enqueue_background_job(
+        "extract_document_text_job", source_table="file_attachment", record_id=str(attachment["id"])
+    )
     return ok(
         {
             "id": str(doc_id),

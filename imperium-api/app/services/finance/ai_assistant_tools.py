@@ -210,6 +210,40 @@ async def _tool_get_department_budget_variance(
     )
 
 
+# Deliberately a narrower allowlist than routers/documents.py's full
+# _DOCUMENT_LINK_ENTITY_TABLES - keeps the assistant's document access
+# finance-scoped (matching every other tool in this file) rather than
+# opening it up to CRM/fleet/client-contact documents it has no other
+# business reason to see.
+_FINANCE_DOCUMENT_ENTITY_TYPES = ("project", "quotation", "journal_entry", "supplier")
+
+
+async def _tool_search_document_text(db: AsyncSession, org_id: str, *, query: str) -> list:
+    """Searches the extracted text of documents linked to finance-relevant
+    entities (projects, quotations, journal entries, suppliers) - e.g. "what
+    does this contract say about retention?". Documents that haven't been
+    through text extraction yet (extraction_status != 'extracted' - see
+    app/services/documents/extraction.py), or that were scanned images with
+    no text layer, simply won't match."""
+    rows = await db.execute(
+        text("""
+            SELECT d.id AS document_id, d.title, dl.entity_type, dl.entity_id,
+                   ts_headline('english', fa.extracted_text, plainto_tsquery('english', :query),
+                               'MaxFragments=3, MaxWords=40') AS snippet
+            FROM core.document_links dl
+            JOIN core.documents d ON d.id = dl.document_id AND d.is_deleted = false
+            JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
+            WHERE dl.organization_id = :org_id AND dl.is_deleted = false
+              AND dl.entity_type = ANY(:entity_types)
+              AND fa.search_vector @@ plainto_tsquery('english', :query)
+            ORDER BY ts_rank(fa.search_vector, plainto_tsquery('english', :query)) DESC
+            LIMIT 10
+        """),
+        {"org_id": org_id, "query": query, "entity_types": list(_FINANCE_DOCUMENT_ENTITY_TYPES)},
+    )
+    return [dict(r) for r in rows.mappings()]
+
+
 _ALL_TOOLS: list = [
     ToolSpec(
         name="get_trial_balance",
@@ -328,6 +362,17 @@ _ALL_TOOLS: list = [
             "required": ["department_id", "fiscal_year"],
         },
         fn=_tool_get_department_budget_variance,
+    ),
+    ToolSpec(
+        name="search_document_text",
+        permission_key="documents.read",
+        description="Search the text content of uploaded documents (PDF/Word) linked to projects, quotations, journal entries, or suppliers - e.g. 'what does this contract say about retention?'. Only matches documents that have already been through text extraction; scanned/image-only PDFs won't match.",
+        parameters_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Search terms to look for in document content."}},
+            "required": ["query"],
+        },
+        fn=_tool_search_document_text,
     ),
 ]
 

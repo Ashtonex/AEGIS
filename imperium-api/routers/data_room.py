@@ -19,6 +19,7 @@ from app.shared.pagination import ok
 from app.services.microsoft import data_room_sync
 from app.services.microsoft.document_service import MicrosoftIntegrationNotReady
 from app.services.microsoft.errors import GraphError
+from app.services.jobs.queue import enqueue_background_job
 from core.database import get_db, supabase, AsyncSessionLocal
 from core.logging import logger
 from core.security import require_permission
@@ -451,6 +452,34 @@ async def list_data_room_documents(
     return ok(items, "Documents listed.")
 
 
+@router.get("/documents/search-content")
+async def search_data_room_document_content(
+    q: str = Query(..., min_length=1, max_length=200),
+    user: dict = Depends(require_permission("finance.data_room.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full-text search over what's INSIDE a Data Room document
+    (extracted_text), not just its title/file_name/folder_path - see
+    list_data_room_documents' own `search` param for that."""
+    result = await db.execute(
+        text("""
+            SELECT id, title, folder_path, section_code, file_name, document_date,
+                   mime_type, extraction_status,
+                   ts_rank(search_vector, plainto_tsquery('english', :q)) AS rank,
+                   ts_headline('english', extracted_text, plainto_tsquery('english', :q),
+                               'MaxFragments=3, MaxWords=40') AS snippet
+            FROM finance.data_room_documents
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND search_vector @@ plainto_tsquery('english', :q)
+            ORDER BY rank DESC
+            LIMIT 50
+        """),
+        {"org_id": user["org_id"], "q": q},
+    )
+    items = [dict(row._mapping) for row in result]
+    return ok(items, "Data Room content search results retrieved.")
+
+
 @router.post("/classify")
 async def auto_classify_document(
     payload: ClassifyRequest,
@@ -698,6 +727,7 @@ async def upload_data_room_document(
         )
 
     await db.commit()
+    await enqueue_background_job("extract_document_text_job", source_table="data_room_document", record_id=str(doc_id))
     return ok({"id": str(doc_id), "folder_path": folder_path}, "Document registered in Data Room.")
 
 
@@ -752,6 +782,8 @@ async def sync_data_room_from_sharepoint(
         raise HTTPException(status_code=502, detail=f"SharePoint sync failed: {exc}")
 
     await db.commit()
+    for imported_id in summary.get("imported_document_ids", []):
+        await enqueue_background_job("extract_document_text_job", source_table="data_room_document", record_id=imported_id)
     return ok(summary, f"Sync complete: {summary['folders_created']} folder(s), {summary['documents_imported']} document(s) imported.")
 
 
@@ -874,6 +906,7 @@ async def upload_data_room_document_to_sharepoint(
         )
 
     await db.commit()
+    await enqueue_background_job("extract_document_text_job", source_table="data_room_document", record_id=str(doc_id))
     return ok(
         {"id": str(doc_id), "folder_path": resolved_folder_path, "provider": "sharepoint", "web_url": result["web_url"]},
         "Document uploaded to SharePoint and registered in Data Room.",

@@ -76,16 +76,22 @@ class ToolAllowListContractTests(unittest.TestCase):
         self.assertIsNone(get_tool_by_name("not_a_real_tool", narrow_tools))
         self.assertIsNotNone(get_tool_by_name("get_trial_balance", narrow_tools))
 
-    def test_eleven_tools_registered_across_six_permission_domains(self):
+    def test_twelve_tools_registered_across_seven_permission_domains(self):
         from app.services.finance.ai_assistant_tools import _ALL_TOOLS
 
-        self.assertEqual(len(_ALL_TOOLS), 11)
+        # search_document_text (permission_key="documents.read") added
+        # alongside system-wide PDF/Word text extraction - reuses the
+        # existing documents.read permission rather than a new one, same
+        # precedent as every other tool here reusing a granular read
+        # permission instead of inventing one just for the assistant.
+        self.assertEqual(len(_ALL_TOOLS), 12)
         permission_keys = {t.permission_key for t in _ALL_TOOLS}
         self.assertEqual(
             permission_keys,
             {
                 "finance.gl.read", "finance.ccb_findings.read", "finance.statutory.read",
                 "finance.cash.read", "finance.historical_entry.read", "finance.company_budget.read",
+                "documents.read",
             },
         )
 

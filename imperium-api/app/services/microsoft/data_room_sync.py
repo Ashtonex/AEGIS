@@ -190,7 +190,7 @@ async def fetch_bytes(db: AsyncSession, *, organization_id: UUID, drive_id: str,
 
 async def reconcile_from_sharepoint(
     db: AsyncSession, *, organization_id: UUID, actor_id: Optional[UUID], standard_sections: list[dict[str, str]]
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """The 'pull' half: walks the connected Data Room root folder in
     SharePoint and registers any file it doesn't already know about (a file
     someone dropped directly into SharePoint rather than through AEGIS).
@@ -203,6 +203,7 @@ async def reconcile_from_sharepoint(
     section_by_name = {s["name"].strip().lower(): s["code"] for s in standard_sections}
     folders_created = 0
     documents_imported = 0
+    imported_document_ids: list[str] = []
 
     async def walk(item_id: str, path_segments: list[str]) -> None:
         nonlocal folders_created, documents_imported
@@ -273,8 +274,9 @@ async def reconcile_from_sharepoint(
             section_code = section_by_name.get(top_level, "01_CORPORATE")
             title = child.name.rsplit(".", 1)[0] if "." in child.name else child.name
 
-            await db.execute(
-                text("""
+            inserted = (
+                await db.execute(
+                    text("""
                     INSERT INTO finance.data_room_documents (
                         organization_id, folder_path, title, section_code, file_name, file_size_bytes,
                         storage_path, provider, provider_drive_id, provider_item_id,
@@ -288,16 +290,20 @@ async def reconcile_from_sharepoint(
                     )
                     ON CONFLICT (organization_id, provider_item_id) WHERE provider = 'sharepoint' AND is_deleted = false
                     DO NOTHING
+                    RETURNING id
                 """),
-                {
-                    "org_id": organization_id, "folder_path": parent_path, "title": title,
-                    "section_code": section_code, "file_name": child.name,
-                    "file_size_bytes": child.size_bytes or 0,
-                    "storage_path": child.web_url, "drive_id": connection.drive_id, "item_id": child.item_id,
-                    "web_url": child.web_url, "etag": child.etag, "created_by": actor_id,
-                },
-            )
+                    {
+                        "org_id": organization_id, "folder_path": parent_path, "title": title,
+                        "section_code": section_code, "file_name": child.name,
+                        "file_size_bytes": child.size_bytes or 0,
+                        "storage_path": child.web_url, "drive_id": connection.drive_id, "item_id": child.item_id,
+                        "web_url": child.web_url, "etag": child.etag, "created_by": actor_id,
+                    },
+                )
+            ).scalar()
             documents_imported += 1
+            if inserted:
+                imported_document_ids.append(str(inserted))
 
     await walk(connection.root_item_id, [])
     await db.execute(
@@ -308,4 +314,11 @@ async def reconcile_from_sharepoint(
         """),
         {"org_id": organization_id},
     )
-    return {"folders_created": folders_created, "documents_imported": documents_imported}
+    return {
+        "folders_created": folders_created,
+        "documents_imported": documents_imported,
+        # Caller enqueues text extraction for these AFTER committing - this
+        # function never commits (see module docstring), so extraction jobs
+        # enqueued from here would race the caller's commit and find nothing.
+        "imported_document_ids": imported_document_ids,
+    }

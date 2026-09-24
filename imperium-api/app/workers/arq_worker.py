@@ -1,14 +1,16 @@
+import asyncio
 import time
 import os
 import json
 from urllib.parse import urlparse
 from uuid import UUID
+import httpx
 from arq import Retry
 from arq.connections import RedisSettings
 from arq.cron import cron
 from sqlalchemy import text
 from core.config import settings
-from core.database import AsyncSessionLocal
+from core.database import AsyncSessionLocal, supabase
 from core.email import send_email
 from core.logging import logger, correlation_id_ctx, worker_job_id_ctx
 from app.services.quotations.calculator import QuotationCalculator
@@ -16,6 +18,9 @@ from app.services.documents.renderers import (
     QuotationPDFRenderer,
     QuotationExcelExporter,
 )
+from app.services.documents.extraction import extract_text, ExtractionStatus
+from app.services.microsoft.document_service import get_download_url as get_sharepoint_download_url
+from app.services.microsoft import data_room_sync
 from app.services.crm.automation_engine import evaluate_and_run_automations
 from app.services.finance.ccb_monitor import (
     run_budget_overrun_check,
@@ -178,6 +183,118 @@ async def compliance_check_reminder_job(
     correlation_id_ctx.set("")
     worker_job_id_ctx.set("")
     return True
+
+
+DOCUMENTS_BUCKET = "documents"
+
+# The two document stacks this job knows how to read from - see
+# app/services/documents/extraction.py for why PDF/Word text extraction
+# lives here rather than being run synchronously in the upload request.
+_EXTRACTION_TABLES = {
+    "file_attachment": "core.file_attachments",
+    "data_room_document": "finance.data_room_documents",
+}
+
+
+async def _fetch_extraction_target(db, source_table: str, record_id: str):
+    table = _EXTRACTION_TABLES[source_table]
+    row = (
+        await db.execute(
+            text(f"""
+                SELECT id, organization_id, provider, storage_path, mime_type, file_name,
+                       provider_drive_id, provider_item_id
+                FROM {table}
+                WHERE id = :id AND is_deleted = false
+            """),  # nosec B608 - source_table is resolved through the fixed _EXTRACTION_TABLES map above, never user input
+            {"id": record_id},
+        )
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+async def _fetch_bytes_for_row(db, source_table: str, row: dict) -> bytes:
+    if row["provider"] == "sharepoint":
+        if source_table == "file_attachment":
+            download_url = await get_sharepoint_download_url(
+                db, organization_id=row["organization_id"], file_attachment_id=row["id"]
+            )
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                response = await http_client.get(download_url)
+                response.raise_for_status()
+                return response.content
+        # finance.data_room_documents already has a direct bytes accessor -
+        # reuse it rather than re-deriving a download URL ourselves.
+        return await data_room_sync.fetch_bytes(
+            db, organization_id=row["organization_id"],
+            drive_id=row["provider_drive_id"], item_id=row["provider_item_id"],
+        )
+
+    content = supabase.storage.from_(DOCUMENTS_BUCKET).download(row["storage_path"])
+    if not content:
+        raise RuntimeError(f"Supabase Storage returned no content for {row['storage_path']!r}.")
+    return content
+
+
+async def _write_extraction_result(db, source_table: str, record_id: str, result) -> None:
+    table = _EXTRACTION_TABLES[source_table]
+    await db.execute(
+        text(f"""
+            UPDATE {table}
+            SET extracted_text = :text, extraction_status = :status,
+                extraction_error = :error, text_extracted_at = NOW()
+            WHERE id = :id
+        """),  # nosec B608 - source_table is resolved through the fixed _EXTRACTION_TABLES map above, never user input
+        {
+            "text": result.text,
+            "status": result.status.value,
+            "error": result.error,
+            "id": record_id,
+        },
+    )
+
+
+async def extract_document_text_job(ctx, *, source_table: str, record_id: str):
+    """Reads a PDF/Word file's text content in the background so uploads
+    stay fast - enqueued by routers/documents.py and routers/data_room.py
+    right after a document is registered. See app/services/documents/
+    extraction.py for the actual parsing and app/services/jobs/queue.py for
+    how this gets enqueued.
+
+    Idempotent by construction (unlike generate_quotation_documents_job,
+    which needs a Redis idempotency key because it writes files to disk
+    outside its DB transaction) - this job's only side effect is the UPDATE
+    above, safe to re-run with the same result.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        async with AsyncSessionLocal() as db:
+            row = await _fetch_extraction_target(db, source_table, record_id)
+            if row is None:
+                # Soft-deleted/removed between enqueue and run - nothing to do.
+                return {"skipped": True}
+
+            try:
+                content = await _fetch_bytes_for_row(db, source_table, row)
+            except Exception as exc:
+                # Fetching the file itself failed - storage/SharePoint being
+                # unreachable is transient, so this is worth retrying rather
+                # than recording a permanent 'failed' status.
+                raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+
+            result = await asyncio.to_thread(
+                extract_text, content, file_name=row["file_name"], mime_type=row["mime_type"]
+            )
+            await _write_extraction_result(db, source_table, record_id, result)
+            await db.commit()
+            return {"status": result.status.value}
+    except Retry:
+        raise
+    except Exception as exc:
+        logger.exception(f"Document text extraction failed for {source_table}:{record_id}: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
 
 
 async def poll_ticket_sla_triggers_job(ctx):
@@ -687,6 +804,7 @@ class WorkerSettings:
         generate_quotation_documents_job,
         send_notification_job,
         compliance_check_reminder_job,
+        extract_document_text_job,
         poll_ticket_sla_triggers_job,
         auto_close_overdue_tenders_job,
         notify_stale_pipeline_items_job,
