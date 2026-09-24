@@ -76,6 +76,11 @@ services:
       BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
+      # The worker talks to SharePoint too (Teams bank workbook sync, and
+      # fetching SharePoint-stored files for text extraction).
+      MICROSOFT_GRAPH_TENANT_ID: ${MICROSOFT_GRAPH_TENANT_ID:-}
+      MICROSOFT_GRAPH_CLIENT_ID: ${MICROSOFT_GRAPH_CLIENT_ID:-}
+      MICROSOFT_GRAPH_CLIENT_SECRET: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
 
 volumes:
   caddy_data:
