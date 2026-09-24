@@ -140,6 +140,51 @@ class Phase4MatchingEngineContractTests(unittest.TestCase):
         self.assertIn("except (ValueError, InvalidOperation, KeyError) as exc:", fn_body)
         self.assertIn("errors.append", fn_body)
 
+    def test_duplicate_detection_keys_on_bank_reference(self):
+        # Statements repeat identical same-day fees that differ only by reference;
+        # without it those were all flagged as duplicates.
+        run_matching_body = SERVICE.split("async def run_matching")[1].split("\nasync def ")[0]
+        self.assertIn("PARTITION BY transaction_date, amount, COALESCE(description, ''), COALESCE(reference, '')", run_matching_body)
+
+    def test_matching_is_set_based_not_a_per_line_loop(self):
+        # The per-line loop (3-5 queries per line) timed out on a 2,287-line
+        # statement; only the handful of exact matches may be looped over.
+        run_matching_body = SERVICE.split("async def run_matching")[1].split("\nasync def ")[0]
+        self.assertNotIn("for line in lines", run_matching_body)
+        self.assertIn("WHERE candidate_count = 1", run_matching_body)
+        self.assertIn("DISTINCT ON (cashbook_id)", run_matching_body)
+
+
+TAGGING_MIGRATION = "\n".join(
+    line for line in (ROOT / "migrations" / "226_bank_statement_line_tagging.sql").read_text(encoding="utf-8").splitlines()
+    if not line.lstrip().startswith("--")
+)
+
+
+class StatementLineTaggingContractTests(unittest.TestCase):
+    def test_tagging_migration_is_additive_and_never_touches_balances(self):
+        for column in ("project_id", "counterparty_name", "category", "notes", "tagged_by", "tagged_at"):
+            self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", TAGGING_MIGRATION)
+        self.assertNotIn("finance.cash_accounts", TAGGING_MIGRATION)
+        self.assertNotIn("finance.cashbook_transactions", TAGGING_MIGRATION)
+
+    def test_tag_lines_only_updates_statement_lines(self):
+        fn_body = SERVICE.split("async def tag_lines")[1].split("\nasync def ")[0]
+        self.assertIn("UPDATE finance.bank_statement_lines", fn_body)
+        self.assertNotIn("cashbook_transactions", fn_body)
+        self.assertNotIn("cash_accounts", fn_body)
+
+    def test_tag_endpoint_requires_match_permission_and_refuses_empty_filter(self):
+        endpoint = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[1].split("\n@router")[0]
+        before = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[0][-400:]
+        self.assertIn('require_permission("finance.reconciliation.match")', endpoint)
+        self.assertIn('"/reconciliation/statement-lines/tag"', before)
+        self.assertIn("if not payload.line_ids and not filters:", endpoint)
+
+    def test_tag_fields_only_change_when_sent(self):
+        endpoint = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[1].split("\n@router")[0]
+        self.assertIn("payload.model_fields_set", endpoint)
+
 
 if __name__ == "__main__":
     unittest.main()

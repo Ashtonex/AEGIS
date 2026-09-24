@@ -213,6 +213,52 @@ export async function reopenBankStatementMatch(lineId: string, reason: string): 
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/reopen`, { method: "POST", body: JSON.stringify({ reason }), allowFallback: false });
 }
 
+export type BankStatementLineFilter = {
+  cash_account_id?: string;
+  import_id?: string;
+  q?: string;
+  date_from?: string;
+  date_to?: string;
+  direction?: "in" | "out";
+  tag_status?: "untagged" | "tagged" | "no_project";
+  project_id?: string;
+  category?: string;
+  match_status?: string;
+};
+
+export type BankStatementLineTags = {
+  project_id?: string | null;
+  counterparty_name?: string | null;
+  category?: string | null;
+  notes?: string | null;
+};
+
+function compactQuery(values: Record<string, string | number | undefined>) {
+  const params = new URLSearchParams();
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  });
+  return params.toString();
+}
+
+export async function searchBankStatementLines(filter: BankStatementLineFilter, page = 1, pageSize = 100): Promise<ApiResponse<any[]>> {
+  const query = compactQuery({ ...filter, page, page_size: pageSize });
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/bank-transactions/reconciliation/statement-lines?${query}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function tagBankStatementLines(target: { line_ids: string[] } | { filter: BankStatementLineFilter }, tags: BankStatementLineTags): Promise<ApiResponse<{ updated: number }>> {
+  return fetchApi<ApiResponse<{ updated: number }>>("/api/v1/bank-transactions/reconciliation/statement-lines/tag", {
+    method: "POST",
+    body: JSON.stringify({ ...target, ...tags }),
+    allowFallback: false,
+  });
+}
+
+export async function getBankStatementAllocationSummary(cashAccountId?: string): Promise<ApiResponse<any>> {
+  const query = compactQuery({ cash_account_id: cashAccountId });
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/allocation-summary${query ? `?${query}` : ""}`, { cache: "no-store", allowFallback: false });
+}
+
 export async function createCashbookEntryFromBankLine(lineId: string, payload: { transaction_type: string; project_id?: string | null; description?: string }): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/create-cashbook-entry`, { method: "POST", body: JSON.stringify(payload), allowFallback: false });
 }

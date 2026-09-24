@@ -62,10 +62,11 @@ const CashForecastPanel = dynamic(() => import("./CashForecastPanel").then((m) =
 const FinanceAssistantPanel = dynamic(() => import("./FinanceAssistantPanel").then((m) => m.FinanceAssistantPanel), { loading: PanelLoading });
 const ManagementAccountsPanel = dynamic(() => import("./ManagementAccountsPanel").then((m) => m.ManagementAccountsPanel), { loading: PanelLoading });
 const ProjectPortfolioPanel = dynamic(() => import("./ProjectPortfolioPanel").then((m) => m.ProjectPortfolioPanel), { loading: PanelLoading });
+const BankStatementReviewPanel = dynamic(() => import("./BankStatementReviewPanel").then((m) => m.BankStatementReviewPanel), { loading: PanelLoading });
 const AuditWorkspacePanel = dynamic(() => import("./AuditWorkspacePanel").then((m) => m.AuditWorkspacePanel), { loading: PanelLoading });
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace";
+type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace" | "bank-review";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
   "project-financials": "/dashboard/finance/project-financials",
@@ -94,6 +95,7 @@ const TAB_ROUTES: Record<FinanceTab, string> = {
   "management-accounts": "/dashboard/finance/management-accounts",
   "project-portfolio": "/dashboard/finance/project-portfolio",
   "audit-workspace": "/dashboard/finance/audit-workspace",
+  "bank-review": "/dashboard/finance/bank-review",
 };
 
 const FINANCE_TOUR_STEPS: ModuleTourStep[] = [
@@ -205,6 +207,7 @@ const FINANCE_TAB_LABELS: Record<FinanceTab, string> = {
   "management-accounts": "Management Accounts",
   "project-portfolio": "Project Portfolio",
   "audit-workspace": "Audit Workspace",
+  "bank-review": "Bank Statement Review",
 };
 
 /** Shared Finance workspace, rendered by a real route per tab (see the
@@ -570,6 +573,8 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       {/* Tab Panels */}
       {activeTab === "data-room" ? (
         <DataRoomPanel />
+      ) : activeTab === "bank-review" ? (
+        <BankStatementReviewPanel projects={projects} />
       ) : activeTab === "payroll" ? (
         <PayrollPanel projects={projects} departmentId={departmentId} />
       ) : (

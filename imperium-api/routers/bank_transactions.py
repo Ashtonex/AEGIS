@@ -497,3 +497,99 @@ async def create_cashbook_entry_from_bank_line(
         await db.rollback()
         _raise(exc)
     return ok(result, "Cashbook entry created from bank statement line.")
+
+
+# ---------------------------------------------------------------------------
+# Statement line tagging - allocate bank lines to projects / counterparties /
+# categories. Never posts to the cashbook or moves a balance.
+# ---------------------------------------------------------------------------
+
+LINE_DIRECTIONS = r"^(in|out)$"
+TAG_STATUSES = r"^(untagged|tagged|no_project)$"
+
+
+class StatementLineFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    cash_account_id: Optional[UUID] = None
+    import_id: Optional[UUID] = None
+    q: Optional[str] = Field(default=None, max_length=200)
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    direction: Optional[str] = Field(default=None, pattern=LINE_DIRECTIONS)
+    tag_status: Optional[str] = Field(default=None, pattern=TAG_STATUSES)
+    project_id: Optional[UUID] = None
+    category: Optional[str] = Field(default=None, max_length=60)
+    match_status: Optional[str] = Field(default=None, max_length=20)
+
+
+class TagStatementLinesRequest(BaseModel):
+    """Only the tag fields actually sent are changed; sending one as null clears it.
+    Target either explicit `line_ids` or every line matching `filter`."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    line_ids: Optional[list[UUID]] = Field(default=None, max_length=5000)
+    filter: Optional[StatementLineFilter] = None
+    project_id: Optional[UUID] = None
+    counterparty_name: Optional[str] = Field(default=None, max_length=200)
+    category: Optional[str] = Field(default=None, max_length=60)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+@router.get("/reconciliation/statement-lines", summary="Search bank statement lines across imports")
+async def search_bank_statement_lines(
+    filters: StatementLineFilter = Depends(),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    limit, offset = page_offset(page, page_size)
+    rows, totals = await reconciliation.search_lines(
+        db, org_id=org_id, filters=filters.model_dump(exclude_none=True), limit=limit, offset=offset,
+    )
+    response = paginated(rows, total=int(totals["total"]), page=page, page_size=limit, message="Statement lines listed.")
+    response["meta"]["money_in"] = totals["money_in"]
+    response["meta"]["money_out"] = totals["money_out"]
+    return response
+
+
+@router.post("/reconciliation/statement-lines/tag", summary="Tag statement lines with a project, counterparty, category or note")
+async def tag_bank_statement_lines(
+    payload: TagStatementLinesRequest,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    updates = {
+        name: getattr(payload, name) or None
+        for name in reconciliation.TAGGABLE_FIELDS
+        if name in payload.model_fields_set
+    }
+    filters = payload.filter.model_dump(exclude_none=True) if payload.filter is not None else None
+    if not payload.line_ids and not filters:
+        # An empty filter would tag every line the organisation has.
+        raise HTTPException(status_code=422, detail="Select lines, or narrow the filter before tagging all matches.")
+    try:
+        result = await reconciliation.tag_lines(
+            db, org_id=org_id, user_id=user["sub"], updates=updates, line_ids=payload.line_ids, filters=filters,
+        )
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    return ok(result, f"{result['updated']} statement line(s) tagged.")
+
+
+@router.get("/reconciliation/allocation-summary", summary="Bank statement totals by project and category")
+async def bank_statement_allocation_summary(
+    cash_account_id: Optional[UUID] = Query(default=None),
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    summary = await reconciliation.allocation_summary(db, org_id=org_id, cash_account_id=cash_account_id)
+    summary["counterparties"] = await reconciliation.list_counterparties(db, org_id=org_id)
+    return ok(summary, "Allocation summary retrieved.")

@@ -306,6 +306,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Budgets", href: "/dashboard/finance/budgets", icon: PieChart },
       { name: "Banking & Cash", href: "/dashboard/finance/banking", icon: Banknote },
       { name: "Cashbook", href: "/dashboard/finance/cashbook", icon: BookMarked },
+      { name: "Bank Statement Review", href: "/dashboard/finance/bank-review", icon: Banknote },
       { name: "Supplier Payments", href: "/dashboard/finance/supplier-payments", icon: Receipt },
       { name: "Payroll", href: "/dashboard/finance/payroll", icon: Users },
       { name: "Internal Transfers", href: "/dashboard/finance/transfers", icon: Receipt },
