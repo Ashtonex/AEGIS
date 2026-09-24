@@ -47,6 +47,7 @@ function PanelLoading() {
 }
 const FinanceOperationsPanel = dynamic(() => import("./FinanceOperationsPanel").then((m) => m.FinanceOperationsPanel), { loading: PanelLoading });
 const PayrollPanel = dynamic(() => import("./PayrollPanel").then((m) => m.PayrollPanel), { loading: PanelLoading });
+const ProjectMoneyModal = dynamic(() => import("./ProjectMoneyModal").then((m) => m.ProjectMoneyModal), { ssr: false });
 const ProjectFinancialsWorkspace = dynamic(() => import("./ProjectFinancialsWorkspace").then((m) => m.ProjectFinancialsWorkspace), { loading: PanelLoading });
 const DepartmentTransfersPanel = dynamic(() => import("./DepartmentTransfersPanel").then((m) => m.DepartmentTransfersPanel), { loading: PanelLoading });
 const StatutoryPanel = dynamic(() => import("./StatutoryPanel").then((m) => m.StatutoryPanel), { loading: PanelLoading });
@@ -233,6 +234,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const activeTab = initialTab;
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
+  const [moneyProjectId, setMoneyProjectId] = useState<string>("");
   const [departmentId, setDepartmentId] = useState<string>("");
   const [budgetsSubView, setBudgetsSubView] = useState<"project" | "company">("project");
 
@@ -627,6 +629,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
             <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Active Project Ledgers</span>
+                <span className="text-[11px] text-slate">Click a project to see and attribute its money</span>
               </div>
               {unassignedBankOut > 0 && (
                 <div className="px-4 py-3 border-b border-ink-mid bg-amber-950/20 text-xs text-amber-200">
@@ -666,7 +669,8 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                         return (
                           <tr
                             key={p.project_id}
-                            onClick={() => void loadProjectDetail(p.project_id)}
+                            onClick={() => { setMoneyProjectId(p.project_id); void loadProjectDetail(p.project_id); }}
+                            title="Open this project's money"
                             className={`cursor-pointer hover:bg-ink-mid/30 transition-colors ${isSelected ? 'bg-ink-mid/20 border-l-2 border-l-signal' : ''}`}
                           >
                             <td className="p-4 font-medium text-paper">
@@ -920,6 +924,29 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
           />
         </div>
       </div>
+      )}
+
+      {moneyProjectId && (
+        <ProjectMoneyModal
+          projectId={moneyProjectId}
+          projects={projects}
+          onClose={() => setMoneyProjectId("")}
+          onChanged={() => loadData()}
+          claimsAndBudget={
+            <ProjectFinancialsWorkspace
+              projects={projects}
+              budgets={budgets}
+              selectedProjectId={moneyProjectId}
+              onSelectProject={(id) => { setMoneyProjectId(id); void loadProjectDetail(id); }}
+              projectDetail={projectDetail}
+              detailLoading={detailLoading}
+              onDataChanged={async () => {
+                await loadData();
+                await loadProjectDetail(moneyProjectId);
+              }}
+            />
+          }
+        />
       )}
 
       {/* Cost Code Modal */}

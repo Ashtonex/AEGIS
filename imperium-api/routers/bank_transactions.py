@@ -19,6 +19,7 @@ from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
+from app.services.finance import bank_books
 from app.services.finance.general_ledger import GeneralLedgerError
 
 router = APIRouter()
@@ -521,6 +522,7 @@ class StatementLineFilter(BaseModel):
     project_id: Optional[UUID] = None
     category: Optional[str] = Field(default=None, max_length=60)
     match_status: Optional[str] = Field(default=None, max_length=20)
+    unallocated_cash: Optional[bool] = None
 
 
 class TagStatementLinesRequest(BaseModel):
@@ -576,9 +578,9 @@ async def tag_bank_statement_lines(
         result = await reconciliation.tag_lines(
             db, org_id=org_id, user_id=user["sub"], updates=updates, line_ids=payload.line_ids, filters=filters,
         )
-        # Keep the project books (claims / costs the dashboard reads) in step
-        # with the tags in the same transaction.
-        result["books"] = await reconciliation.sync_project_books(db, org_id=org_id, user_id=user["sub"])
+        # Keep claims, costs, petty cash and the GL in step with the tags, in
+        # the same transaction.
+        result["books"] = await bank_books.sync(db, org_id=org_id, user_id=user["sub"], line_ids=result.pop("line_ids"))
         await db.commit()
     except GeneralLedgerError as exc:
         await db.rollback()
@@ -592,7 +594,11 @@ async def sync_bank_statement_project_books(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org(user)
-    counts = await reconciliation.sync_project_books(db, org_id=org_id, user_id=user["sub"])
+    try:
+        counts = await bank_books.sync(db, org_id=org_id, user_id=user["sub"])
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
     await db.commit()
     return ok(counts, "Project books synced with bank statement tags.")
 
@@ -607,3 +613,78 @@ async def bank_statement_allocation_summary(
     summary = await reconciliation.allocation_summary(db, org_id=org_id, cash_account_id=cash_account_id)
     summary["counterparties"] = await reconciliation.list_counterparties(db, org_id=org_id)
     return ok(summary, "Allocation summary retrieved.")
+
+
+# ---------------------------------------------------------------------------
+# Splitting a line / recording how withdrawn cash was used, the project
+# workspace, and the completeness audit.
+# ---------------------------------------------------------------------------
+
+class LineAllocationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
+    category: Optional[str] = Field(default=None, max_length=60)
+    amount: float = Field(gt=0)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    allocation_date: Optional[date] = None
+
+
+class LineAllocationsReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allocations: list[LineAllocationItem] = Field(default_factory=list, max_length=200)
+
+
+@router.get("/reconciliation/lines/{line_id}/allocations", summary="List a statement line's splits / cash uses")
+async def get_line_allocations(
+    line_id: UUID,
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    return ok(await bank_books.list_allocations(db, org_id=org_id, line_id=line_id), "Allocations listed.")
+
+
+@router.put("/reconciliation/lines/{line_id}/allocations", summary="Replace a statement line's splits / cash uses")
+async def put_line_allocations(
+    line_id: UUID,
+    payload: LineAllocationsReplace,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    try:
+        counts = await bank_books.replace_allocations(
+            db, org_id=org_id, user_id=user["sub"], line_id=line_id,
+            allocations=[a.model_dump() for a in payload.allocations],
+        )
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    return ok({"books": counts, "allocations": await bank_books.list_allocations(db, org_id=org_id, line_id=line_id)},
+              "Allocations saved.")
+
+
+@router.get("/reconciliation/projects/{project_id}/workspace", summary="Everything about one project's money")
+async def get_project_money_workspace(
+    project_id: UUID,
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    workspace = await bank_books.project_workspace(db, org_id=org_id, project_id=project_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return ok(workspace, "Project workspace retrieved.")
+
+
+@router.get("/reconciliation/audit", summary="Prove the bank statement is fully carried into the books")
+async def get_bank_books_audit(
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    return ok(await bank_books.audit(db, org_id=org_id), "Bank books audit completed.")

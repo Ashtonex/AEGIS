@@ -14,6 +14,7 @@ SERVICE = (ROOT / "app" / "services" / "finance" / "bank_reconciliation.py").rea
 SERVICE_CODE_ONLY = SERVICE.split('"""', 2)[-1]
 BANK_ACCOUNTS_ROUTER = (ROOT / "routers" / "bank_accounts.py").read_text(encoding="utf-8")
 BANK_TRANSACTIONS_ROUTER = (ROOT / "routers" / "bank_transactions.py").read_text(encoding="utf-8")
+BANK_BOOKS = (ROOT / "app" / "services" / "finance" / "bank_books.py").read_text(encoding="utf-8")
 FINANCIAL_PERFORMANCE_ROUTER = (ROOT / "routers" / "financial_performance.py").read_text(encoding="utf-8")
 FINANCE_STATUTORY_ROUTER = (ROOT / "routers" / "finance_statutory.py").read_text(encoding="utf-8")
 
@@ -188,26 +189,40 @@ class StatementLineTaggingContractTests(unittest.TestCase):
         self.assertIn('"/reconciliation/statement-lines/tag"', before)
         self.assertIn("if not payload.line_ids and not filters:", endpoint)
 
-    def test_project_books_sync_never_touches_cash(self):
-        # The statement import already is the cash record; posting tagged
-        # lines into the project books must not write a cashbook entry (that
-        # would move the reconciled account balance) or accrue VAT.
-        fn_body = SERVICE.split("async def sync_project_books")[1].split("\nasync def ")[0]
-        self.assertIn("INSERT INTO finance.progress_claims", fn_body)
-        self.assertIn("INSERT INTO finance.cost_transactions", fn_body)
-        self.assertNotIn("cashbook_transactions (", fn_body)
-        self.assertNotIn("cash_accounts", fn_body)
-        self.assertNotIn("accrue_liability_line", fn_body)
+    def test_bank_books_never_writes_the_bank_side_to_the_cashbook(self):
+        # The statement import already is the cash record for the bank
+        # account; only HQ / site petty cash accounts get cashbook rows.
+        self.assertNotIn("cash_account_id = :bank", BANK_BOOKS)
+        self.assertIn("ensure_hq_petty_cash", BANK_BOOKS)
+        self.assertNotIn("accrue_liability_line", BANK_BOOKS)
 
-    def test_project_books_sync_skips_receipts_already_in_the_books(self):
-        fn_body = SERVICE.split("async def sync_project_books")[1].split("\nasync def ")[0]
-        self.assertIn("ct.source_type = 'progress_claim'", fn_body)
-        self.assertIn("receipt_allocations", fn_body)
+    def test_bank_books_skips_receipts_already_in_the_books(self):
+        self.assertIn("ct.source_type = 'progress_claim'", BANK_BOOKS)
+        self.assertIn("receipt_allocations", BANK_BOOKS)
+        # ...and settles the receivable instead of booking revenue twice
+        self.assertIn("RECEIVABLE if line.row[\"receipt_already_in_books\"]", BANK_BOOKS)
 
-    def test_tagging_keeps_project_books_in_step(self):
+    def test_retagging_reverses_the_old_journal_before_posting_a_new_one(self):
+        fn_body = BANK_BOOKS.split("async def _sync_ledger")[1].split("\nasync def ")[0]
+        self.assertLess(fn_body.find("_bulk_reverse("), fn_body.find("_bulk_post("))
+        self.assertGreater(fn_body.find("_bulk_reverse("), 0)
+        self.assertIn("gl_signature", fn_body)
+
+    def test_allocations_cannot_exceed_the_line(self):
+        fn_body = BANK_BOOKS.split("async def replace_allocations")[1].split("\nasync def ")[0]
+        self.assertIn("if total > abs(", fn_body)
+
+    def test_tagging_keeps_the_books_in_step(self):
         endpoint = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[1].split("\n@router")[0]
-        self.assertIn("sync_project_books", endpoint)
-        self.assertLess(endpoint.find("sync_project_books"), endpoint.find("await db.commit()"))
+        self.assertIn("bank_books.sync", endpoint)
+        self.assertLess(endpoint.find("bank_books.sync"), endpoint.find("await db.commit()"))
+
+    def test_gl_bridge_never_proposes_journals_for_bank_costs(self):
+        bridge = (ROOT / "app" / "services" / "finance" / "gl_bridge.py").read_text(encoding="utf-8")
+        sync_body = bridge.split("async def sync_project_cost_transactions")[1].split("\nasync def ")[0]
+        self.assertIn("NOT IN ('bank_statement_line', 'bank_line_allocation')", sync_body)
+        propose_body = bridge.split("async def propose_journal_for_cost_transaction")[1].split("\nasync def ")[0]
+        self.assertIn('("bank_statement_line", "bank_line_allocation")', propose_body)
 
     def test_tag_fields_only_change_when_sent(self):
         endpoint = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[1].split("\n@router")[0]

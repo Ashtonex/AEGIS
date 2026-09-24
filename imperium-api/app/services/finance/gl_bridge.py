@@ -164,6 +164,11 @@ async def propose_journal_for_cost_transaction(
     amount = float(txn["amount"])
     if amount <= 0:
         raise GeneralLedgerError("Cost transaction has a zero amount - nothing to propose.", status_code=422)
+    if txn["source_type"] in ("bank_statement_line", "bank_line_allocation"):
+        raise GeneralLedgerError(
+            "This cost comes from the bank statement and is already in the general ledger through its bank line.",
+            status_code=409,
+        )
 
     debit_account_id = await get_account_mapping(db, org_id, f"cost_category.{txn['cost_category']}")
     credit_account_id = await get_account_mapping(db, org_id, "cost_transaction.credit_control")
@@ -622,6 +627,10 @@ async def sync_project_cost_transactions(db: AsyncSession, *, org_id: str, user_
         text("""
             SELECT ct.id FROM finance.cost_transactions ct
             WHERE ct.organization_id = :org_id AND ct.project_id = :project_id
+              -- bank-statement costs are already journaled by bank_books
+              -- (the bank line's own journal expenses them) - proposing again
+              -- would double the expense.
+              AND ct.source_type NOT IN ('bank_statement_line', 'bank_line_allocation')
               AND NOT EXISTS (
                 SELECT 1 FROM finance.journal_entries je
                 WHERE je.organization_id = ct.organization_id AND je.source_type = 'cost_transaction'

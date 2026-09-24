@@ -224,6 +224,7 @@ export type BankStatementLineFilter = {
   project_id?: string;
   category?: string;
   match_status?: string;
+  unallocated_cash?: boolean;
 };
 
 export type BankStatementLineTags = {
@@ -242,7 +243,8 @@ function compactQuery(values: Record<string, string | number | undefined>) {
 }
 
 export async function searchBankStatementLines(filter: BankStatementLineFilter, page = 1, pageSize = 100): Promise<ApiResponse<any[]>> {
-  const query = compactQuery({ ...filter, page, page_size: pageSize });
+  const { unallocated_cash, ...rest } = filter;
+  const query = compactQuery({ ...rest, unallocated_cash: unallocated_cash ? "true" : undefined, page, page_size: pageSize });
   return fetchApi<ApiResponse<any[]>>(`/api/v1/bank-transactions/reconciliation/statement-lines?${query}`, { cache: "no-store", allowFallback: false });
 }
 
@@ -257,6 +259,45 @@ export async function tagBankStatementLines(target: { line_ids: string[] } | { f
 export async function getBankStatementAllocationSummary(cashAccountId?: string): Promise<ApiResponse<any>> {
   const query = compactQuery({ cash_account_id: cashAccountId });
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/allocation-summary${query ? `?${query}` : ""}`, { cache: "no-store", allowFallback: false });
+}
+
+export type BankLineAllocation = {
+  id?: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  category?: string | null;
+  amount: number;
+  description?: string | null;
+  allocation_date?: string | null;
+};
+
+export async function getProjectMoneyWorkspace(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/projects/${projectId}/workspace`, { cache: "no-store", allowFallback: false });
+}
+
+export async function getBankLineAllocations(lineId: string): Promise<ApiResponse<BankLineAllocation[]>> {
+  return fetchApi<ApiResponse<BankLineAllocation[]>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/allocations`, { cache: "no-store", allowFallback: false });
+}
+
+export async function saveBankLineAllocations(lineId: string, allocations: BankLineAllocation[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/allocations`, {
+    method: "PUT",
+    body: JSON.stringify({
+      allocations: allocations.map((a) => ({
+        id: a.id || undefined,
+        project_id: a.project_id || null,
+        category: a.category || null,
+        amount: Number(a.amount),
+        description: a.description || null,
+        allocation_date: a.allocation_date || null,
+      })),
+    }),
+    allowFallback: false,
+  });
+}
+
+export async function getBankBooksAudit(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/bank-transactions/reconciliation/audit", { cache: "no-store", allowFallback: false });
 }
 
 export async function createCashbookEntryFromBankLine(lineId: string, payload: { transaction_type: string; project_id?: string | null; description?: string }): Promise<ApiResponse<any>> {

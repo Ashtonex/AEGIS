@@ -2,8 +2,9 @@
 
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Filter, Loader2, RefreshCw, Search, Tag, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, Filter, Loader2, RefreshCw, Search, ShieldAlert, Tag, X } from "lucide-react";
 import {
+  getBankBooksAudit,
   getBankStatementAllocationSummary,
   getFinanceCashAccounts,
   searchBankStatementLines,
@@ -19,7 +20,7 @@ const CLEAR = "__clear__";
 
 // Suggested categories. Stored as plain text, so anything added here later
 // simply shows up as a new option.
-const CATEGORIES: { value: string; label: string }[] = [
+export const CATEGORIES: { value: string; label: string }[] = [
   { value: "client_receipt", label: "Client receipt" },
   { value: "capital_injection", label: "Capital / owner injection" },
   { value: "internal_transfer", label: "Internal transfer" },
@@ -36,9 +37,10 @@ const CATEGORIES: { value: string; label: string }[] = [
   { value: "tithe_donation", label: "Tithe / donation" },
   { value: "refund", label: "Refund" },
   { value: "reversal", label: "Bank reversal" },
+  { value: "site_petty_cash", label: "Handed to site petty cash" },
   { value: "other", label: "Other" },
 ];
-const CATEGORY_LABEL = Object.fromEntries(CATEGORIES.map((c) => [c.value, c.label]));
+export const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(CATEGORIES.map((c) => [c.value, c.label]));
 
 const inputClass = "w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50";
 const buttonClass = "inline-flex items-center justify-center gap-2 bg-signal text-ink font-semibold px-3 py-2 rounded-sm text-sm hover:bg-signal/95 disabled:opacity-50";
@@ -49,7 +51,7 @@ function money(value: unknown, decimals = 2) {
   return new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD", minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(Number.isFinite(num) ? num : 0);
 }
 
-function categoryLabel(value?: string | null) {
+export function categoryLabel(value?: string | null) {
   if (!value) return "";
   return CATEGORY_LABEL[value] || value.replaceAll("_", " ");
 }
@@ -71,6 +73,7 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [allMatching, setAllMatching] = useState(false);
   const [tags, setTags] = useState(EMPTY_TAGS);
+  const [audit, setAudit] = useState<RecordData | null>(null);
 
   const effectiveFilter = useMemo<BankStatementLineFilter>(() => ({ ...filter, cash_account_id: accountId || undefined }), [filter, accountId]);
 
@@ -110,6 +113,15 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
 
   useEffect(() => { void loadLines(); }, [loadLines]);
   useEffect(() => { void loadSummary(); }, [loadSummary]);
+  const loadAudit = useCallback(async () => {
+    try {
+      const res = await getBankBooksAudit();
+      setAudit(res.data || null);
+    } catch {
+      setAudit(null);
+    }
+  }, []);
+  useEffect(() => { void loadAudit(); }, [loadAudit]);
   useEffect(() => { setSelected(new Set()); setAllMatching(false); }, [effectiveFilter, page]);
 
   const total = Number(meta.total || 0);
@@ -175,7 +187,7 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
       setSelected(new Set());
       setAllMatching(false);
       setTags((prev) => ({ ...prev, notes: "" }));
-      await Promise.all([loadLines(), loadSummary()]);
+      await Promise.all([loadLines(), loadSummary(), loadAudit()]);
     } catch (err) {
       setNotice({ tone: "error", text: err instanceof Error ? err.message : "Failed to tag lines." });
     } finally {
@@ -216,6 +228,8 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
           <Stat label="Money out (filtered)" value={money(meta.money_out)} tone="out" />
         </div>
       </div>
+
+      {audit && <BooksCheck audit={audit} />}
 
       {notice && (
         <div className={`border px-4 py-3 text-sm flex justify-between items-center ${notice.tone === "ok" ? "border-signal/30 bg-signal/10 text-paper" : "border-red-500/30 bg-red-950/20 text-red-200"}`}>
@@ -369,6 +383,42 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
           }))}
           onPick={(row) => { if (!row.category) return; const next = { ...draft, category: row.category, tag_status: undefined }; setDraft(next); setFilter(next); setPage(1); }}
         />
+      </div>
+    </div>
+  );
+}
+
+function BooksCheck({ audit }: { audit: RecordData }) {
+  const todo = audit.to_do || {};
+  const checks: RecordData[] = audit.checks || [];
+  const items = [
+    { label: "Lines with no category or project", value: Number(todo.unclassified_lines || 0).toLocaleString(), note: `${money(todo.unclassified_money_out, 0)} out · ${money(todo.unclassified_money_in, 0)} in (held in Suspense)` },
+    { label: "Cash withdrawn, not yet accounted for", value: money(todo.hq_petty_cash_not_yet_accounted_for, 0), note: "Sitting in HQ Petty Cash until you record what it paid for" },
+    { label: "Project costs with no cost type", value: money(todo.unclassified_project_costs, 0), note: "Shown as Unclassified Project Costs in the statements" },
+  ];
+  return (
+    <div className={`${cardClass} p-4 space-y-4`}>
+      <div className="flex items-center gap-2">
+        {audit.all_ok ? <CheckCircle2 className="h-5 w-5 text-emerald-400" /> : <ShieldAlert className="h-5 w-5 text-amber-300" />}
+        <h3 className="text-paper font-semibold">Books check</h3>
+        <span className="text-xs text-slate">{audit.all_ok ? "The whole statement is carried into the books and ties to the bank." : "Something doesn't tie out yet - see below."}</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-2">
+        {checks.map((c) => (
+          <div key={c.check} className={`rounded border px-3 py-2 text-xs ${c.ok ? "border-emerald-500/30 bg-emerald-950/10" : "border-amber-500/40 bg-amber-950/20"}`}>
+            <p className={c.ok ? "text-emerald-300" : "text-amber-200"}>{c.ok ? "OK" : "Check"} · {c.check}</p>
+            <p className="text-slate font-mono mt-1 break-words">{c.detail}</p>
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {items.map((i) => (
+          <div key={i.label} className="bg-ink border border-ink-mid rounded p-3">
+            <p className="text-[10px] uppercase font-mono tracking-widest text-slate">{i.label}</p>
+            <p className="text-lg font-semibold text-paper mt-1">{i.value}</p>
+            <p className="text-[11px] text-slate mt-1">{i.note}</p>
+          </div>
+        ))}
       </div>
     </div>
   );
