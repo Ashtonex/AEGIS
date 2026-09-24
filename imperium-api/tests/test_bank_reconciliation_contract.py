@@ -233,9 +233,34 @@ class BankWorkbookContractTests(unittest.TestCase):
     WORKBOOK = (ROOT / "app" / "services" / "microsoft" / "bank_workbook.py").read_text(encoding="utf-8")
     WORKER = (ROOT / "app" / "workers" / "arq_worker.py").read_text(encoding="utf-8")
 
-    def test_phase_one_workbook_is_read_only(self):
+    def test_only_the_four_tag_columns_are_editable(self):
         self.assertIn("ws.protection.sheet = True", self.WORKBOOK)
-        self.assertIn("readme.protection.sheet = True", self.WORKBOOK)
+        self.assertIn('EDITABLE_HEADERS = {"Category": "category", "Project": "project", "Who": "who", "Note": "note"}', self.WORKBOOK)
+        self.assertIn("editable_cols={8, 9, 10, 11}", self.WORKBOOK)
+        self.assertIn("Protection(locked=False)", self.WORKBOOK)
+
+    def test_upload_never_overwrites_a_concurrent_excel_edit(self):
+        sync_body = self.WORKBOOK.split("async def sync(")[1]
+        self.assertIn('{"If-Match": read_etag}', sync_body)
+        self.assertIn("except GraphConflictError", sync_body)
+        self.assertIn('last_status="retry"', sync_body)
+
+    def test_edits_are_read_before_republishing(self):
+        sync_body = self.WORKBOOK.split("async def sync(")[1]
+        self.assertLess(sync_body.find("_apply_edits("), sync_body.find("build(data"))
+
+    def test_conflicts_keep_the_aegis_value(self):
+        body = self.WORKBOOK.split("async def _apply_edits")[1].split("\nasync def ")[0]
+        self.assertIn('elif now.get(field) != base.get(field):', body)
+        self.assertIn('outcome="conflict"', body)
+
+    def test_deleted_projects_cannot_be_newly_assigned(self):
+        self.assertIn("has been deleted in AEGIS", self.WORKBOOK)
+
+    def test_one_sync_cycle_at_a_time(self):
+        self.assertIn("sync_lease_until", self.WORKBOOK)
+        sync_body = self.WORKBOOK.split("async def sync(")[1]
+        self.assertIn("await _release_lease(db, org_id)", sync_body.split("finally:")[-1])
 
     def test_workbook_lives_in_the_data_room_drive(self):
         # Reuses the Data Room connection - no new Graph permission needed.
@@ -243,9 +268,9 @@ class BankWorkbookContractTests(unittest.TestCase):
         self.assertIn("connection.root_item_id", self.WORKBOOK)
 
     def test_unchanged_content_is_not_reuploaded(self):
-        publish_body = self.WORKBOOK.split("async def publish")[1]
-        self.assertIn('previous.get("content_signature") == sig', publish_body)
-        self.assertLess(publish_body.find('"unchanged"'), publish_body.find("uploader("))
+        sync_body = self.WORKBOOK.split("async def sync(")[1]
+        self.assertIn('sig == lease["content_signature"]', sync_body)
+        self.assertLess(sync_body.find('"unchanged"'), sync_body.find("put_content("))
 
     def test_changes_queue_a_publish_after_committing(self):
         for fn in ("async def tag_bank_statement_lines", "async def put_line_allocations", "async def sync_bank_statement_project_books"):
@@ -256,6 +281,7 @@ class BankWorkbookContractTests(unittest.TestCase):
     def test_worker_registers_workbook_jobs(self):
         self.assertIn("publish_bank_workbook_job,", self.WORKER)
         self.assertIn("cron(publish_bank_workbooks_nightly_job", self.WORKER)
+        self.assertIn("cron(sync_bank_workbooks_job", self.WORKER)
 
 
 if __name__ == "__main__":

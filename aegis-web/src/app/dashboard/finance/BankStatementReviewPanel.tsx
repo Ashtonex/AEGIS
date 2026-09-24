@@ -421,16 +421,20 @@ function TeamsWorkbook() {
   };
 
   const published = info?.last_published_at ? new Date(info.last_published_at).toLocaleString() : null;
+  const changes: RecordData[] = info?.recent_changes || [];
   return (
-    <div className={`${cardClass} p-4 flex flex-col md:flex-row md:items-center gap-3`}>
+    <div className={`${cardClass} p-4 space-y-3`}>
+    <div className="flex flex-col md:flex-row md:items-center gap-3">
       <FileSpreadsheet className="h-6 w-6 text-emerald-400 shrink-0" />
       <div className="flex-1 min-w-0">
         <p className="text-paper font-semibold">Excel in Teams</p>
         <p className="text-xs text-slate">
-          {info?.file_name || "AEGIS Bank & Project Money.xlsx"} in the Financial Data Room - a read-only mirror that refreshes about a minute after any change here.
+          {info?.file_name || "AEGIS Bank & Project Money.xlsx"} in the Financial Data Room. Edit Category, Project, Who or Note there and
+          AEGIS applies it within about 2 minutes; changes made here show up in the workbook just as fast.
           {published ? ` Last published ${published}${info?.rows_published ? ` (${Number(info.rows_published).toLocaleString()} lines)` : ""}.` : " Not published yet."}
         </p>
         {info?.last_status === "failed" && <p className="text-xs text-red-300 mt-1">Last attempt failed: {info.last_error}</p>}
+        {info?.last_status === "retry" && <p className="text-xs text-amber-300 mt-1">{info.last_error}</p>}
         {error && <p className="text-xs text-red-300 mt-1">{error}</p>}
       </div>
       <div className="flex gap-2 shrink-0">
@@ -440,9 +444,29 @@ function TeamsWorkbook() {
           </a>
         )}
         <button onClick={() => void publish()} disabled={busy} className={buttonClass}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Publish now
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Sync now
         </button>
       </div>
+    </div>
+    {changes.length > 0 && (
+      <div className="border-t border-ink-mid pt-3">
+        <p className="text-[10px] uppercase font-mono tracking-widest text-slate mb-2">Recent edits from Excel</p>
+        <ul className="space-y-1 text-xs">
+          {changes.slice(0, 8).map((c, i) => (
+            <li key={i} className="flex flex-wrap gap-x-2">
+              <span className={c.outcome === "applied" ? "text-emerald-300" : c.outcome === "conflict" ? "text-amber-300" : "text-red-300"}>
+                {c.outcome === "applied" ? "Applied" : c.outcome === "conflict" ? "Conflict" : "Not applied"}
+              </span>
+              <span className="text-paper">{c.field}: {c.old_value || "(blank)"} &rarr; {c.new_value || "(blank)"}</span>
+              <span className="text-slate">
+                {c.transaction_date} {c.reference} · {c.edited_by_name || "Excel"} · {new Date(c.created_at).toLocaleString()}
+              </span>
+              {c.message && c.outcome !== "applied" && <span className="text-slate w-full pl-2">{c.message}</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    )}
     </div>
   );
 }

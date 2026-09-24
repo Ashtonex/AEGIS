@@ -766,6 +766,21 @@ async def publish_bank_workbook_job(ctx, *, org_id: str, force: bool = False):
         worker_job_id_ctx.set("")
 
 
+async def sync_bank_workbooks_job(ctx):
+    """Every 2 minutes: read edits people made in the Teams workbook back into
+    AEGIS (only downloads when SharePoint says the file changed), then
+    republish. One Graph metadata call per organisation when nothing changed."""
+    async with AsyncSessionLocal() as db:
+        org_ids = [str(r[0]) for r in await db.execute(text(
+            "SELECT organization_id FROM finance.bank_workbook_publications WHERE item_id IS NOT NULL"))]
+    results = {}
+    for org_id in org_ids:
+        async with AsyncSessionLocal() as db:
+            row = await bank_workbook.sync(db, org_id=org_id)
+            results[org_id] = (row or {}).get("last_status", "busy")
+    return results
+
+
 async def publish_bank_workbooks_nightly_job(ctx):
     """Nightly safety net: republish every organisation that has a bank
     statement, even if no change event fired."""
@@ -850,6 +865,7 @@ class WorkerSettings:
         run_ccb_stock_consumption_variance_check_job,
         publish_bank_workbook_job,
         publish_bank_workbooks_nightly_job,
+        sync_bank_workbooks_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -906,6 +922,7 @@ class WorkerSettings:
             run_at_startup=False,
         ),
         cron(publish_bank_workbooks_nightly_job, hour=2, minute=30, run_at_startup=False),
+        cron(sync_bank_workbooks_job, minute=set(range(1, 60, 2)), run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

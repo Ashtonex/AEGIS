@@ -712,8 +712,9 @@ async def get_bank_workbook_status(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org(user)
-    return ok(await bank_workbook.status(db, org_id) or {"last_status": "never", "file_name": bank_workbook.WORKBOOK_FILE_NAME},
-              "Workbook status retrieved.")
+    info = await bank_workbook.status(db, org_id) or {"last_status": "never", "file_name": bank_workbook.WORKBOOK_FILE_NAME}
+    info["recent_changes"] = await bank_workbook.recent_changes(db, org_id)
+    return ok(info, "Workbook status retrieved.")
 
 
 @router.post("/reconciliation/workbook/publish", summary="Rebuild the Teams workbook now")
@@ -722,7 +723,9 @@ async def publish_bank_workbook_now(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org(user)
-    row = await bank_workbook.publish(db, org_id=org_id, force=True)
-    if row and row.get("last_status") == "failed":
+    row = await bank_workbook.sync(db, org_id=org_id, force=True)
+    if row is None:
+        raise HTTPException(status_code=409, detail="The workbook is being updated right now - try again in a minute.")
+    if row.get("last_status") == "failed":
         raise HTTPException(status_code=502, detail=f"Publishing to SharePoint failed: {row.get('last_error')}")
     return ok(row, "Workbook published.")
