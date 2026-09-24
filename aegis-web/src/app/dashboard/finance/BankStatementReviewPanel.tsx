@@ -195,7 +195,7 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
             <h2 className="text-paper font-semibold">Bank Statement Review</h2>
             <p className="text-xs text-slate mt-1 max-w-2xl">
               Say what each bank line was: the project it belongs to, who paid or was paid, and what it was for.
-              Tagging only labels the bank's record. It never posts to the cashbook or changes an account balance.
+              Tagging only labels the bank&apos;s record. It never posts to the cashbook or changes an account balance.
             </p>
           </div>
           <div className="w-full md:w-72">
@@ -276,7 +276,7 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Tag className="h-4 w-4" />}Apply to {selectionCount > 0 ? selectionCount.toLocaleString() : "selection"}
           </button>
         </div>
-        <p className="text-[11px] text-slate">Fields left on "leave as is" or blank are not changed. Type a single <span className="font-mono">-</span> in Who or Note to clear it.</p>
+        <p className="text-[11px] text-slate">Fields left on &ldquo;leave as is&rdquo; or blank are not changed. Type a single <span className="font-mono">-</span> in Who or Note to clear it.</p>
         {pageAllSelected && !allMatching && total > lines.length && (
           <div className="text-xs text-paper bg-ink border border-ink-mid rounded px-3 py-2">
             All {lines.length} lines on this page are selected.{" "}
