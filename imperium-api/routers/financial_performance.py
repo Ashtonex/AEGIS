@@ -259,13 +259,25 @@ async def list_project_financial_summaries(
                 WHERE pc.project_id = p.id AND pc.organization_id = :org_id 
                   AND pc.status = 'paid' AND pc.is_deleted = false
             ), 0) AS cash_collected,
-            
+
+            -- Money in / out on bank statement lines tagged to this project
+            -- (Bank Statement Review). Shown alongside the books, not added
+            -- to them - the tagged lines are already posted as claims/costs.
+            COALESCE((
+                SELECT SUM(bsl.amount) FROM finance.bank_statement_lines bsl
+                WHERE bsl.project_id = p.id AND bsl.organization_id = :org_id AND bsl.amount > 0
+            ), 0) AS bank_in,
+            COALESCE((
+                SELECT -SUM(bsl.amount) FROM finance.bank_statement_lines bsl
+                WHERE bsl.project_id = p.id AND bsl.organization_id = :org_id AND bsl.amount < 0
+            ), 0) AS bank_out,
+
             -- Budget Limit
             COALESCE((
-                SELECT pb.total_amount 
-                FROM finance.project_budgets pb 
-                WHERE pb.project_id = p.id AND pb.organization_id = :org_id 
-                  AND pb.status = 'approved' AND pb.is_deleted = false 
+                SELECT pb.total_amount
+                FROM finance.project_budgets pb
+                WHERE pb.project_id = p.id AND pb.organization_id = :org_id
+                  AND pb.status = 'approved' AND pb.is_deleted = false
                 LIMIT 1
             ), 0) AS approved_budget
 

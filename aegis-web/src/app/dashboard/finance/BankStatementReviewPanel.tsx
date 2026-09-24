@@ -195,7 +195,8 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
             <h2 className="text-paper font-semibold">Bank Statement Review</h2>
             <p className="text-xs text-slate mt-1 max-w-2xl">
               Say what each bank line was: the project it belongs to, who paid or was paid, and what it was for.
-              Tagging only labels the bank&apos;s record. It never posts to the cashbook or changes an account balance.
+              Tagging a line to a project also records it in that project&apos;s books: money in as a paid claim, money out as a cost.
+              It never posts to the cashbook or changes an account balance.
             </p>
           </div>
           <div className="w-full md:w-72">

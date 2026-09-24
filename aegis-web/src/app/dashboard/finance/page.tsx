@@ -29,6 +29,7 @@ import {
   recordProgressClaimFiscalInvoice,
   getFinanceBudgets,
   getFinanceDepartmentPnl,
+  getBankStatementAllocationSummary,
   getInternalProjects
 } from "@/lib/api";
 
@@ -265,6 +266,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       claims: () => getFinanceProgressClaims({ department_id: departmentId || undefined }),
       budgets: () => getFinanceBudgets({ department_id: departmentId || undefined }),
       departmentPnl: () => getFinanceDepartmentPnl(),
+      bankAllocation: () => getBankStatementAllocationSummary(),
     },
     [departmentId],
     {
@@ -277,6 +279,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
         claims: "Progress claims",
         budgets: "Budgets",
         departmentPnl: "Department P&L",
+        bankAllocation: "Bank statement allocation",
       },
     }
   );
@@ -288,6 +291,12 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const claims = useMemo(() => financeData.claims?.data || [], [financeData.claims]);
   const budgets = useMemo(() => financeData.budgets?.data || [], [financeData.budgets]);
   const departmentPnl = useMemo(() => financeData.departmentPnl?.data || null, [financeData.departmentPnl]);
+  // Bank statement money out that isn't tagged to any project yet (mostly cash
+  // withdrawals) - costs and margins below are incomplete until it is.
+  const unassignedBankOut = useMemo(() => {
+    const rows: RecordData[] = financeData.bankAllocation?.data?.by_project || [];
+    return Number(rows.find((r) => !r.project_id)?.money_out || 0);
+  }, [financeData.bankAllocation]);
 
   useLiveTable("finance.budgets", () => void loadData());
   const error = loadError ? loadFailureMessage(loadError) : null;
@@ -619,12 +628,21 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
               <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
                 <span className="font-mono text-xs tracking-wider uppercase text-slate">Active Project Ledgers</span>
               </div>
+              {unassignedBankOut > 0 && (
+                <div className="px-4 py-3 border-b border-ink-mid bg-amber-950/20 text-xs text-amber-200">
+                  {money(unassignedBankOut)} of bank statement money out isn&apos;t assigned to a project yet (mostly cash withdrawals), so actual costs and margins here are incomplete.{" "}
+                  <button type="button" onClick={() => router.push(TAB_ROUTES["bank-review"])} className="underline hover:text-paper">Assign it in Bank Statement Review</button>
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-sm">
                   <thead>
                     <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
                       <th className="p-4">Project</th>
                       <th className="p-4 text-right">Contract Value</th>
+                      <th className="p-4 text-right">Collected</th>
+                      <th className="p-4 text-right" title="Money in / out on bank statement lines tagged to this project">Bank In</th>
+                      <th className="p-4 text-right" title="Money in / out on bank statement lines tagged to this project">Bank Out</th>
                       <th className="p-4 text-right">Actual Cost</th>
                       <th className="p-4 text-right">Committed</th>
                       <th className="p-4 text-right">EAC</th>
@@ -635,7 +653,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                   <tbody className="divide-y divide-ink-mid">
                     {projectSummaries.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="p-4 text-center text-slate">No project financials registered.</td>
+                        <td colSpan={10} className="p-4 text-center text-slate">No project financials registered.</td>
                       </tr>
                     ) : (
                       projectSummaries.map((p) => {
@@ -660,6 +678,9 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                               )}
                             </td>
                             <td className="p-4 text-right text-paper">{money(totalRev)}</td>
+                            <td className="p-4 text-right text-paper">{money(p.cash_collected)}</td>
+                            <td className="p-4 text-right text-emerald-300/80">{Number(p.bank_in) ? money(p.bank_in) : "-"}</td>
+                            <td className="p-4 text-right text-red-300/80">{Number(p.bank_out) ? money(p.bank_out) : "-"}</td>
                             <td className="p-4 text-right text-paper">{money(p.actual_cost_to_date)}</td>
                             <td className="p-4 text-right text-slate-light">{money(p.committed_cost)}</td>
                             <td className="p-4 text-right text-paper">{money(eac)}</td>

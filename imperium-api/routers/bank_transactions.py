@@ -576,11 +576,25 @@ async def tag_bank_statement_lines(
         result = await reconciliation.tag_lines(
             db, org_id=org_id, user_id=user["sub"], updates=updates, line_ids=payload.line_ids, filters=filters,
         )
+        # Keep the project books (claims / costs the dashboard reads) in step
+        # with the tags in the same transaction.
+        result["books"] = await reconciliation.sync_project_books(db, org_id=org_id, user_id=user["sub"])
         await db.commit()
     except GeneralLedgerError as exc:
         await db.rollback()
         _raise(exc)
     return ok(result, f"{result['updated']} statement line(s) tagged.")
+
+
+@router.post("/reconciliation/statement-lines/sync-books", summary="Bring project books in line with statement line tags")
+async def sync_bank_statement_project_books(
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    counts = await reconciliation.sync_project_books(db, org_id=org_id, user_id=user["sub"])
+    await db.commit()
+    return ok(counts, "Project books synced with bank statement tags.")
 
 
 @router.get("/reconciliation/allocation-summary", summary="Bank statement totals by project and category")

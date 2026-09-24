@@ -22,7 +22,7 @@ import io
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -675,6 +675,166 @@ async def allocation_summary(db: AsyncSession, *, org_id: str, cash_account_id: 
         "by_project": [dict(r._mapping) for r in by_project],
         "by_category": [dict(r._mapping) for r in by_category],
     }
+
+
+# ---------------------------------------------------------------------------
+# Project books (migration 227): project-tagged lines flow into the records the
+# Finance dashboard reads - money in as a paid historical progress claim
+# (Certified Revenue / Cash Collected), money out as a cost_transactions row
+# (Actual Cost). The tags are the source of truth: sync_project_books creates,
+# moves and retires those records to match, and is safe to re-run.
+#
+# Deliberately NOT done: no cashbook entry (the statement import already is the
+# cash record, so the reconciled account balance must not move), no VAT accrual
+# (a bank receipt is not an invoice) and no GL journal proposal.
+# ---------------------------------------------------------------------------
+
+BOOKS_EXCLUDED_CATEGORIES = ("reversal", "internal_transfer")
+
+# Line category -> cost_transactions.cost_category
+_COST_CATEGORY_SQL = """
+    CASE bsl.category
+        WHEN 'supplier_payment' THEN 'materials'
+        WHEN 'subcontractor' THEN 'subcontract'
+        WHEN 'equipment_hire' THEN 'equipment'
+        WHEN 'fuel_transport' THEN 'equipment'
+        WHEN 'salaries_wages' THEN 'labour'
+        WHEN 'tax_statutory' THEN 'overhead'
+        WHEN 'bank_charges' THEN 'overhead'
+        ELSE 'other'
+    END
+"""
+
+
+async def sync_project_books(db: AsyncSession, *, org_id: str, user_id: str) -> dict:
+    counts = {"claims_created": 0, "claims_retired": 0, "costs_created": 0, "costs_removed": 0}
+    params = {"org_id": org_id, "excluded": list(BOOKS_EXCLUDED_CATEGORIES)}
+
+    # --- money in -> paid historical claims -------------------------------
+    # A receipt already in the books through the live flow (its matched
+    # cashbook entry is a claim receipt, e.g. a confirmed project deposit) is
+    # skipped, or it would be counted twice.
+    revenue_rows = await db.execute(
+        text("""
+            SELECT bsl.id, bsl.project_id, bsl.amount, bsl.transaction_date, bsl.reference,
+                   bsl.counterparty_name, bsl.books_claim_id,
+                   pc.project_id AS claim_project_id, pc.this_claim_amount AS claim_amount,
+                   COALESCE(pc.is_deleted, true) AS claim_gone,
+                   (bsl.project_id IS NOT NULL AND bsl.amount > 0
+                    AND COALESCE(bsl.category, '') <> ALL(:excluded)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM finance.cashbook_transactions ct
+                        WHERE ct.id = bsl.matched_cashbook_transaction_id
+                          AND (ct.source_type = 'progress_claim' OR EXISTS (
+                              SELECT 1 FROM finance.receipt_allocations ra WHERE ra.cashbook_transaction_id = ct.id))
+                    )) AS wanted
+            FROM finance.bank_statement_lines bsl
+            LEFT JOIN finance.progress_claims pc ON pc.id = bsl.books_claim_id
+            WHERE bsl.organization_id = :org_id
+              AND (bsl.books_claim_id IS NOT NULL OR (bsl.project_id IS NOT NULL AND bsl.amount > 0))
+        """),
+        params,
+    )
+    for row in revenue_rows.mappings().all():
+        has_claim = row["books_claim_id"] is not None and not row["claim_gone"]
+        claim_current = (
+            has_claim and row["wanted"]
+            and row["claim_project_id"] == row["project_id"]
+            and Decimal(str(row["claim_amount"])) == Decimal(str(row["amount"]))
+        )
+        if claim_current:
+            continue
+        if row["books_claim_id"] is not None:
+            if has_claim:
+                await db.execute(
+                    text("UPDATE finance.progress_claims SET is_deleted = true, updated_at = NOW() WHERE id = :id"),
+                    {"id": row["books_claim_id"]},
+                )
+                counts["claims_retired"] += 1
+            await db.execute(
+                text("UPDATE finance.bank_statement_lines SET books_claim_id = NULL WHERE id = :id"),
+                {"id": row["id"]},
+            )
+        if not row["wanted"]:
+            continue
+        paid_at = datetime.combine(row["transaction_date"], datetime.min.time())
+        claim_id = (
+            await db.execute(
+                text("""
+                    INSERT INTO finance.progress_claims (
+                        organization_id, claim_number, project_id, claim_period_start, claim_period_end,
+                        contract_value, this_claim_amount, retention_pct, retention_amount, net_claim_amount,
+                        status, submitted_by, submitted_at, certified_amount, certified_by, certified_at,
+                        notes, created_by, evidence_quality
+                    ) VALUES (
+                        :org_id, :claim_number, :project_id, :paid_on, :paid_on,
+                        :amount, :amount, 0, 0, :amount,
+                        'paid', :user_id, :paid_at, :amount, :user_id, :paid_at,
+                        :notes, :user_id, 'B'
+                    ) RETURNING id
+                """),
+                {
+                    "org_id": org_id, "claim_number": f"BANK-{uuid4().hex[:8].upper()}",
+                    "project_id": row["project_id"], "paid_on": row["transaction_date"], "paid_at": paid_at,
+                    "amount": row["amount"], "user_id": user_id,
+                    "notes": (
+                        f"Bank statement receipt {row['transaction_date']} ref {row['reference'] or '-'}"
+                        f"{' from ' + row['counterparty_name'] if row['counterparty_name'] else ''}."
+                        " Posted from Bank Statement Review; no VAT accrued."
+                    ),
+                },
+            )
+        ).scalar()
+        await db.execute(
+            text("UPDATE finance.bank_statement_lines SET books_claim_id = :claim_id WHERE id = :id"),
+            {"claim_id": claim_id, "id": row["id"]},
+        )
+        counts["claims_created"] += 1
+
+    # --- money out -> project cost rows ------------------------------------
+    wanted_costs = f"""
+        SELECT bsl.id, bsl.project_id, -bsl.amount AS amount, bsl.transaction_date,
+               {_COST_CATEGORY_SQL} AS cost_category,
+               left(regexp_replace(COALESCE(bsl.description, ''), '\\s+', ' ', 'g'), 500) AS description
+        FROM finance.bank_statement_lines bsl
+        WHERE bsl.organization_id = :org_id AND bsl.project_id IS NOT NULL AND bsl.amount < 0
+          AND COALESCE(bsl.category, '') <> ALL(:excluded)
+    """
+    removed = await db.execute(
+        text(f"""
+            WITH wanted AS ({wanted_costs})
+            DELETE FROM finance.cost_transactions ct
+            WHERE ct.organization_id = :org_id AND ct.source_type = 'bank_statement_line'
+              AND NOT EXISTS (
+                  SELECT 1 FROM wanted w
+                  WHERE w.id = ct.source_id AND w.project_id = ct.project_id
+                    AND w.amount = ct.amount AND w.cost_category = ct.cost_category
+              )
+            RETURNING ct.id
+        """),
+        params,
+    )
+    counts["costs_removed"] = len(removed.all())
+    created = await db.execute(
+        text(f"""
+            WITH wanted AS ({wanted_costs})
+            INSERT INTO finance.cost_transactions (
+                organization_id, project_id, source_type, source_id, cost_category, description,
+                quantity, unit_cost, amount, transaction_date, status, posted_by, evidence_quality
+            )
+            SELECT :org_id, w.project_id, 'bank_statement_line', w.id, w.cost_category, w.description,
+                   1, w.amount, w.amount, w.transaction_date, 'posted', :user_id, 'B'
+            FROM wanted w
+            WHERE NOT EXISTS (
+                SELECT 1 FROM finance.cost_transactions ct
+                WHERE ct.source_type = 'bank_statement_line' AND ct.source_id = w.id
+            )
+            RETURNING id
+        """),
+        {**params, "user_id": user_id},
+    )
+    counts["costs_created"] = len(created.all())
+    return counts
 
 
 async def list_counterparties(db: AsyncSession, *, org_id: str) -> list[str]:

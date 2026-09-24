@@ -188,6 +188,27 @@ class StatementLineTaggingContractTests(unittest.TestCase):
         self.assertIn('"/reconciliation/statement-lines/tag"', before)
         self.assertIn("if not payload.line_ids and not filters:", endpoint)
 
+    def test_project_books_sync_never_touches_cash(self):
+        # The statement import already is the cash record; posting tagged
+        # lines into the project books must not write a cashbook entry (that
+        # would move the reconciled account balance) or accrue VAT.
+        fn_body = SERVICE.split("async def sync_project_books")[1].split("\nasync def ")[0]
+        self.assertIn("INSERT INTO finance.progress_claims", fn_body)
+        self.assertIn("INSERT INTO finance.cost_transactions", fn_body)
+        self.assertNotIn("cashbook_transactions (", fn_body)
+        self.assertNotIn("cash_accounts", fn_body)
+        self.assertNotIn("accrue_liability_line", fn_body)
+
+    def test_project_books_sync_skips_receipts_already_in_the_books(self):
+        fn_body = SERVICE.split("async def sync_project_books")[1].split("\nasync def ")[0]
+        self.assertIn("ct.source_type = 'progress_claim'", fn_body)
+        self.assertIn("receipt_allocations", fn_body)
+
+    def test_tagging_keeps_project_books_in_step(self):
+        endpoint = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[1].split("\n@router")[0]
+        self.assertIn("sync_project_books", endpoint)
+        self.assertLess(endpoint.find("sync_project_books"), endpoint.find("await db.commit()"))
+
     def test_tag_fields_only_change_when_sent(self):
         endpoint = BANK_TRANSACTIONS_ROUTER.split("async def tag_bank_statement_lines")[1].split("\n@router")[0]
         self.assertIn("payload.model_fields_set", endpoint)
