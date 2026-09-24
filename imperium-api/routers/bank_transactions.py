@@ -289,7 +289,7 @@ async def update_transaction(
 
     try:
         await db.execute(
-            text(f"UPDATE finance.cashbook_transactions SET {set_clause}, updated_at = NOW() WHERE id = :txn_id AND organization_id = :org_id"),
+            text(f"UPDATE finance.cashbook_transactions SET {set_clause} WHERE id = :txn_id AND organization_id = :org_id"),
             params,
         )
         await db.commit()
@@ -310,7 +310,7 @@ async def void_transaction(
     result = await db.execute(
         text("""
             UPDATE finance.cashbook_transactions
-            SET is_deleted = true, updated_at = NOW()
+            SET is_deleted = true
             WHERE id = :txn_id AND organization_id = :org_id AND is_deleted = false
             RETURNING id
         """),

@@ -90,6 +90,13 @@ class Phase4OrphanedRouterBugFixContractTests(unittest.TestCase):
         self.assertNotIn("supplier_invoice_id", fn_body)
         self.assertNotIn("progress_claim_id", fn_body)
 
+    def test_update_and_void_do_not_set_nonexistent_updated_at(self):
+        # finance.cashbook_transactions has no updated_at column; setting it
+        # made every edit and every void fail with a 500.
+        for fn in ("async def update_transaction", "async def void_transaction"):
+            body = BANK_TRANSACTIONS_ROUTER.split(fn)[1].split("\n@router")[0]
+            self.assertNotIn("updated_at", body)
+
     def test_list_transactions_uses_real_project_column(self):
         self.assertIn("p.project_code AS project_number", BANK_TRANSACTIONS_ROUTER)
         self.assertNotIn("p.project_number,", BANK_TRANSACTIONS_ROUTER)
