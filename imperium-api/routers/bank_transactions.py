@@ -20,6 +20,7 @@ from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
 from app.services.finance import bank_books
+from app.services.finance import bank_rules
 from app.services.jobs.queue import enqueue_background_job
 from app.services.microsoft import bank_workbook
 from app.services.finance.general_ledger import GeneralLedgerError
@@ -387,6 +388,20 @@ async def create_bank_statement_import(
     except GeneralLedgerError as exc:
         await db.rollback()
         _raise(exc)
+    # New lines go straight into the books: auto-tagging rules fill what they
+    # can, then every line gets its ledger journal (untagged ones in Suspense).
+    # The import itself is already committed - a failure here is reported,
+    # not fatal, and "Sync books" can finish the job later.
+    try:
+        new_ids = [r.id for r in await db.execute(
+            text("SELECT id FROM finance.bank_statement_lines WHERE import_id = :i"), {"i": summary["import_id"]})]
+        summary["auto_tagged"] = (await bank_rules.apply(db, org_id=org_id, user_id=user["sub"], line_ids=new_ids))["lines_tagged"]
+        summary["books"] = await bank_books.sync(db, org_id=org_id, user_id=user["sub"], line_ids=new_ids)
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        summary["books_error"] = exc.detail
+    await _queue_workbook_publish(org_id)
     return ok(summary, "Bank statement imported and parsed.")
 
 
@@ -729,3 +744,154 @@ async def publish_bank_workbook_now(
     if row.get("last_status") == "failed":
         raise HTTPException(status_code=502, detail=f"Publishing to SharePoint failed: {row.get('last_error')}")
     return ok(row, "Workbook published.")
+
+
+# ---------------------------------------------------------------------------
+# Auto-tagging rules
+# ---------------------------------------------------------------------------
+
+RULE_DIRECTIONS = r"^(any|in|out)$"
+
+
+class TagRuleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=120)
+    match_text: str = Field(min_length=3, max_length=200)
+    direction: str = Field(default="any", pattern=RULE_DIRECTIONS)
+    amount_min: Optional[float] = Field(default=None, ge=0)
+    amount_max: Optional[float] = Field(default=None, ge=0)
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    set_category: Optional[str] = Field(default=None, max_length=60)
+    set_project_id: Optional[UUID] = None
+    set_counterparty: Optional[str] = Field(default=None, max_length=200)
+    set_note: Optional[str] = Field(default=None, max_length=2000)
+    priority: int = Field(default=100, ge=0, le=10000)
+    is_active: bool = True
+
+
+class TagRuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    match_text: Optional[str] = Field(default=None, min_length=3, max_length=200)
+    direction: Optional[str] = Field(default=None, pattern=RULE_DIRECTIONS)
+    amount_min: Optional[float] = Field(default=None, ge=0)
+    amount_max: Optional[float] = Field(default=None, ge=0)
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    set_category: Optional[str] = Field(default=None, max_length=60)
+    set_project_id: Optional[UUID] = None
+    set_counterparty: Optional[str] = Field(default=None, max_length=200)
+    set_note: Optional[str] = Field(default=None, max_length=2000)
+    priority: Optional[int] = Field(default=None, ge=0, le=10000)
+    is_active: Optional[bool] = None
+
+
+class ApplyRulesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule_ids: Optional[list[UUID]] = Field(default=None, max_length=500)
+
+
+@router.get("/reconciliation/rules", summary="List auto-tagging rules")
+async def list_tag_rules(
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return ok(await bank_rules.list_rules(db, org_id=_require_org(user)), "Rules listed.")
+
+
+@router.get("/reconciliation/rules/suggestions", summary="Rules suggested from how lines are already tagged")
+async def suggest_tag_rules(
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return ok(await bank_rules.suggest(db, org_id=_require_org(user)), "Suggestions computed.")
+
+
+@router.post("/reconciliation/rules/preview-draft", summary="What an unsaved rule would tag")
+async def preview_draft_tag_rule(
+    payload: TagRuleCreate,
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return ok(await bank_rules.preview(db, org_id=_require_org(user), rule=payload.model_dump()), "Preview computed.")
+
+
+@router.post("/reconciliation/rules/preview", summary="What applying saved rules would tag")
+async def preview_tag_rules(
+    payload: ApplyRulesRequest,
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return ok(await bank_rules.preview(db, org_id=_require_org(user), rule_ids=payload.rule_ids), "Preview computed.")
+
+
+@router.post("/reconciliation/rules", status_code=status.HTTP_201_CREATED, summary="Create an auto-tagging rule")
+async def create_tag_rule(
+    payload: TagRuleCreate,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    try:
+        result = await bank_rules.create_rule(db, org_id=org_id, user_id=user["sub"], values=payload.model_dump())
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    return ok(result, "Rule created.")
+
+
+@router.patch("/reconciliation/rules/{rule_id}", summary="Change an auto-tagging rule")
+async def update_tag_rule(
+    rule_id: UUID,
+    payload: TagRuleUpdate,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    try:
+        result = await bank_rules.update_rule(db, org_id=org_id, rule_id=rule_id,
+                                              values=payload.model_dump(exclude_unset=True))
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    return ok(result, "Rule updated.")
+
+
+@router.delete("/reconciliation/rules/{rule_id}", summary="Delete an auto-tagging rule (lines it tagged keep their tags)")
+async def delete_tag_rule(
+    rule_id: UUID,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    try:
+        await bank_rules.delete_rule(db, org_id=org_id, rule_id=rule_id)
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    return ok({"id": str(rule_id)}, "Rule deleted.")
+
+
+@router.post("/reconciliation/rules/apply", summary="Apply rules to lines that still have empty tags")
+async def apply_tag_rules(
+    payload: ApplyRulesRequest,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    try:
+        result = await bank_rules.apply(db, org_id=org_id, user_id=user["sub"], rule_ids=payload.rule_ids)
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    if result["lines_tagged"]:
+        await _queue_workbook_publish(org_id)
+    return ok(result, f"{result['lines_tagged']} line(s) tagged by rules.")

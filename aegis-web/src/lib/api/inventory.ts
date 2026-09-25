@@ -296,6 +296,57 @@ export async function saveBankLineAllocations(lineId: string, allocations: BankL
   });
 }
 
+export type BankTagRule = {
+  id?: string;
+  name: string;
+  match_text: string;
+  direction: "any" | "in" | "out";
+  amount_min?: number | null;
+  amount_max?: number | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  set_category?: string | null;
+  set_project_id?: string | null;
+  set_counterparty?: string | null;
+  set_note?: string | null;
+  priority?: number;
+  is_active?: boolean;
+};
+
+const RULES = "/api/v1/bank-transactions/reconciliation/rules";
+
+export async function getBankTagRules(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(RULES, { cache: "no-store", allowFallback: false });
+}
+
+export async function getBankTagRuleSuggestions(): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`${RULES}/suggestions`, { cache: "no-store", allowFallback: false });
+}
+
+export async function previewDraftBankTagRule(rule: BankTagRule): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${RULES}/preview-draft`, { method: "POST", body: JSON.stringify(rule), allowFallback: false });
+}
+
+export async function previewBankTagRules(ruleIds?: string[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${RULES}/preview`, { method: "POST", body: JSON.stringify({ rule_ids: ruleIds ?? null }), allowFallback: false });
+}
+
+export async function createBankTagRule(rule: BankTagRule): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(RULES, { method: "POST", body: JSON.stringify(rule), allowFallback: false });
+}
+
+export async function updateBankTagRule(ruleId: string, patch: Partial<BankTagRule>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`${RULES}/${ruleId}`, { method: "PATCH", body: JSON.stringify(patch), allowFallback: false });
+}
+
+export async function deleteBankTagRule(ruleId: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`${RULES}/${ruleId}`, { method: "DELETE", allowFallback: false });
+}
+
+export async function applyBankTagRules(ruleIds?: string[]): Promise<ApiResponse<{ lines_tagged: number }>> {
+  return fetchApi<ApiResponse<{ lines_tagged: number }>>(`${RULES}/apply`, { method: "POST", body: JSON.stringify({ rule_ids: ruleIds ?? null }), allowFallback: false });
+}
+
 export async function getBankWorkbookStatus(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>("/api/v1/bank-transactions/reconciliation/workbook", { cache: "no-store", allowFallback: false });
 }

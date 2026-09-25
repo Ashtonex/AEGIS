@@ -14,6 +14,7 @@ import {
   type BankStatementLineFilter,
   type BankStatementLineTags,
 } from "@/lib/api";
+import { TagRulesPanel } from "./TagRulesPanel";
 
 type RecordData = Record<string, any>;
 
@@ -234,6 +235,8 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
       {audit && <BooksCheck audit={audit} />}
 
       <TeamsWorkbook />
+
+      <TagRulesPanel projects={projects} onApplied={() => Promise.all([loadLines(), loadSummary(), loadAudit()])} />
 
       {notice && (
         <div className={`border px-4 py-3 text-sm flex justify-between items-center ${notice.tone === "ok" ? "border-signal/30 bg-signal/10 text-paper" : "border-red-500/30 bg-red-950/20 text-red-200"}`}>
