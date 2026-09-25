@@ -65,7 +65,7 @@ const ASSET_STATUS_OPTIONS = [
   ["disposed", "Disposed"],
 ] as const;
 
-const ASSET_CATEGORY_OPTIONS = [
+export const ASSET_CATEGORY_OPTIONS = [
   "Heavy plant",
   "Earthmoving equipment",
   "Concrete equipment",

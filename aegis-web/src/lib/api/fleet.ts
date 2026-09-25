@@ -22,6 +22,17 @@ export async function getEquipmentAsset(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/fleet/${id}`, { cache: 'no-store', allowFallback: false });
 }
 
+/** Fleet-wide utilization/revenue/cost/margin - totals, by-category breakdown, month trend, and top/bottom performing assets. Fleet and Equipment share this data (same fleet.fleet table). */
+export async function getFleetPerformance(params?: { date_from?: string; date_to?: string; category?: string; trend_months?: number }): Promise<ApiResponse<any>> {
+  const search = new URLSearchParams();
+  if (params?.date_from) search.set('date_from', params.date_from);
+  if (params?.date_to) search.set('date_to', params.date_to);
+  if (params?.category) search.set('category', params.category);
+  if (params?.trend_months) search.set('trend_months', String(params.trend_months));
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/performance${query}`, { cache: 'no-store', allowFallback: false });
+}
+
 export async function getAssetInspections(assetId: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/fleet/${assetId}/inspections`, { cache: 'no-store', allowFallback: false });
 }

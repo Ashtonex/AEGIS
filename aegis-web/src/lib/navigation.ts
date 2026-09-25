@@ -6,6 +6,7 @@ import {
   Inbox, Zap, MapPin, LockKeyhole, ClipboardCheck, Calendar, Banknote,
   BookMarked, Receipt, BrainCircuit, Megaphone, Upload, LifeBuoy, Ticket,
   TrendingUp, Brain, Layers, Scale, Bot, FileSearch, Bell, User, Search,
+  Gauge,
 } from "lucide-react";
 
 export type ModuleNavItem = {
@@ -241,7 +242,10 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "fleet.read",
-    subItems: [{ name: "Overview", href: "/dashboard/fleet", icon: Truck }],
+    subItems: [
+      { name: "Overview", href: "/dashboard/fleet", icon: Truck },
+      { name: "Performance", href: "/dashboard/fleet/performance", icon: Gauge, requiredPermission: "fleet.read" },
+    ],
   },
   {
     name: "Equipment",
@@ -251,7 +255,10 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager", "Maintenance Planner", "Executive Read Only"],
     restrictedRoles: ["CRM Associate"],
     requiredPermission: "equipment_assets.read",
-    subItems: [{ name: "Overview", href: "/dashboard/equipment", icon: Wrench }],
+    subItems: [
+      { name: "Overview", href: "/dashboard/equipment", icon: Wrench },
+      { name: "Performance", href: "/dashboard/fleet/performance", icon: Gauge, requiredPermission: "fleet.read" },
+    ],
   },
   {
     name: "Procurement",
