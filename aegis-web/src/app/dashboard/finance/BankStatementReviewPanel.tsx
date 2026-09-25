@@ -429,8 +429,9 @@ function TeamsWorkbook() {
       <div className="flex-1 min-w-0">
         <p className="text-paper font-semibold">Excel in Teams</p>
         <p className="text-xs text-slate">
-          {info?.file_name || "AEGIS Bank & Project Money.xlsx"} in the Financial Data Room. Edit Category, Project, Who or Note there and
-          AEGIS applies it within about 2 minutes; changes made here show up in the workbook just as fast.
+          {info?.file_name || "AEGIS Bank & Project Money.xlsx"} in the Financial Data Room. Edit Category, Project, Who or Note on
+          Bank Lines, or change, clear and add parts on Splits &amp; Cash Uses (e.g. what withdrawn cash paid for), and AEGIS applies it
+          within about 2 minutes; changes made here show up in the workbook just as fast.
           {published ? ` Last published ${published}${info?.rows_published ? ` (${Number(info.rows_published).toLocaleString()} lines)` : ""}.` : " Not published yet."}
         </p>
         {info?.last_status === "failed" && <p className="text-xs text-red-300 mt-1">Last attempt failed: {info.last_error}</p>}

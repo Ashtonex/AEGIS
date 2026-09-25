@@ -262,6 +262,23 @@ class BankWorkbookContractTests(unittest.TestCase):
         sync_body = self.WORKBOOK.split("async def sync(")[1]
         self.assertIn("await _release_lease(db, org_id)", sync_body.split("finally:")[-1])
 
+    def test_splits_sheet_is_editable_with_spare_rows(self):
+        self.assertIn("SPARE_SPLIT_ROWS = 100", self.WORKBOOK)
+        self.assertIn("editable_cols={7, 8, 9, 10, 11}", self.WORKBOOK)
+        self.assertIn("read_split_edits(content)", self.WORKBOOK)
+
+    def test_split_edits_use_the_same_rules_as_the_aegis_split_editor(self):
+        body = self.WORKBOOK.split("async def _apply_split_edits")[1].split("# ---")[0]
+        self.assertIn("bank_books.replace_allocations(", body)
+        self.assertIn("db.begin_nested()", body)                 # one bad line doesn't stop the others
+        self.assertIn("NOT_A_CASH_USE", body)
+
+    def test_new_split_rows_are_never_applied_twice(self):
+        body = self.WORKBOOK.split("async def _apply_split_edits")[1].split("# ---")[0]
+        self.assertIn("if key in applied_keys:", body)
+        sync_body = self.WORKBOOK.split("async def sync(")[1]
+        self.assertIn("applied_new_row_keys=[]", sync_body)      # cleared once a publish lands
+
     def test_workbook_lives_in_the_data_room_drive(self):
         # Reuses the Data Room connection - no new Graph permission needed.
         self.assertIn("data_room_sync._load_connection", self.WORKBOOK)

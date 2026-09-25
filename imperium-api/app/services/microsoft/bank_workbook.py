@@ -4,9 +4,18 @@ AEGIS builds one workbook from the bank statement, its splits / cash uses,
 per-project money and the books check, and keeps it in the Financial Data
 Room's SharePoint folder (the same connected site/drive data_room_sync.py
 uses, so no new Graph permission is needed). Pinned as a Teams tab, people
-see the live figures - and can edit four columns on Bank Lines:
+see the live figures - and can edit:
 
-    Category   Project   Who   Note
+    Bank Lines           Category, Project, Who, Note
+    Splits & Cash Uses   Project, Category, Amount, Date, What it paid for on
+                         each part (clear Amount to remove it), plus new parts
+                         in the spare rows at the bottom (Line = the bank
+                         Line ID or its first 8 characters)
+
+Split / cash-use edits go through bank_books.replace_allocations per line (a
+savepoint each), so they follow exactly the rules of the AEGIS split editor.
+New rows applied in a cycle whose republish didn't land are remembered in
+applied_new_row_keys so a re-read can't add them twice.
 
 Everything else is locked (protected sheets; Excel for the web respects
 that). Category and Project are dropdowns fed from a hidden-ish Lists sheet.
@@ -40,7 +49,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 from urllib.parse import quote
@@ -57,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.logging import logger
 from app.services.finance import bank_books
 from app.services.finance import bank_reconciliation as reconciliation
+from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.microsoft import data_room_sync, sharepoint
 from app.services.microsoft.errors import GraphConflictError, GraphNotFoundError
 from app.services.microsoft.graph_client import GraphClient
@@ -90,6 +100,18 @@ FIELD_LIMITS = {"who": 200, "note": 2000}
 BANK_LINE_HEADERS = ["Line ID", "Date", "Reference", "Description", "Money in", "Money out", "Balance",
                      "Category", "Project", "Who", "Note", "Split into parts", "Journal", "Bank account", "Sync status"]
 EDITABLE_HEADERS = {"Category": "category", "Project": "project", "Who": "who", "Note": "note"}
+
+# Splits & Cash Uses: existing parts can be changed / cleared, new ones typed
+# into spare rows (a protected sheet can't grow its table, so the spare rows
+# are part of it). "Line" takes a bank Line ID, or its first 8+ characters.
+SPLIT_HEADERS = ["Allocation ID", "Line", "Line date", "Reference", "Line amount", "Kind", "Project", "Category",
+                 "Amount", "Date", "What it paid for", "Sync status"]
+SPLIT_EDITABLE = {"Project": "project", "Category": "category", "Amount": "amount", "Date": "date",
+                  "What it paid for": "description"}
+SPARE_SPLIT_ROWS = 100
+SHORT_ID_MIN = 8
+# A use of withdrawn cash can't itself be one of these
+NOT_A_CASH_USE = ("cash_withdrawal", "client_receipt", "capital_injection", "reversal", "internal_transfer")
 
 
 def _label(category: Optional[str]) -> str:
@@ -126,7 +148,7 @@ async def collect(db: AsyncSession, org_id: str) -> dict:
                           WHEN 'rejected' THEN 'Not applied: ' || c.message
                           ELSE 'Conflict: ' || c.message END
                 FROM finance.bank_workbook_changes c
-                WHERE c.line_id = l.id AND c.created_at > NOW() - make_interval(days => :window)
+                WHERE c.line_id = l.id AND c.field <> 'split' AND c.created_at > NOW() - make_interval(days => :window)
                 ORDER BY c.created_at DESC LIMIT 1) AS sync_status
         FROM finance.bank_statement_lines l
         LEFT JOIN projects.projects p ON p.id = l.project_id
@@ -135,15 +157,33 @@ async def collect(db: AsyncSession, org_id: str) -> dict:
         WHERE l.organization_id = :org_id
         ORDER BY l.transaction_date, l.line_number
     """, window=STATUS_WINDOW_DAYS, tz=await _timezone(db, org_id))).mappings()]
+    tz = await _timezone(db, org_id)
     allocations = [dict(r) for r in (await q("""
         SELECT a.id, a.line_id, l.transaction_date AS line_date, l.reference, l.amount AS line_amount,
-               l.category AS line_category, p.name AS project, a.category, a.amount, a.allocation_date, a.description
+               l.category AS line_category, a.project_id, p.name AS project, a.category, a.amount,
+               a.allocation_date, a.description,
+               (SELECT CASE c.outcome
+                          WHEN 'applied' THEN 'Applied from Excel ' || to_char(c.created_at AT TIME ZONE :tz, 'DD Mon HH24:MI')
+                          WHEN 'rejected' THEN 'Not applied: ' || c.message
+                          ELSE 'Conflict: ' || c.message END
+                FROM finance.bank_workbook_changes c
+                WHERE c.allocation_id = a.id AND c.created_at > NOW() - make_interval(days => :window)
+                ORDER BY c.created_at DESC LIMIT 1) AS sync_status
         FROM finance.bank_line_allocations a
         JOIN finance.bank_statement_lines l ON l.id = a.line_id
         LEFT JOIN projects.projects p ON p.id = a.project_id
         WHERE a.organization_id = :org_id
         ORDER BY l.transaction_date, a.created_at
-    """)).mappings()]
+    """, tz=tz, window=STATUS_WINDOW_DAYS)).mappings()]
+    # New split rows typed in Excel that couldn't be applied - they don't
+    # survive a republish, so list them on Read Me for re-entry.
+    problems = [dict(r) for r in (await q("""
+        SELECT to_char(created_at AT TIME ZONE :tz, 'DD Mon HH24:MI') AS at, new_value, message
+        FROM finance.bank_workbook_changes
+        WHERE organization_id = :org_id AND field = 'split' AND allocation_id IS NULL AND outcome = 'rejected'
+          AND created_at > NOW() - INTERVAL '7 days'
+        ORDER BY created_at DESC LIMIT 20
+    """, tz=tz)).mappings()]
     projects = [dict(r) for r in (await q("""
         SELECT p.id, p.name, p.project_code, p.client_name, p.status, COALESCE(p.contract_value, 0) AS contract_value,
                COALESCE((SELECT sum(certified_amount) FROM finance.progress_claims pc
@@ -161,7 +201,7 @@ async def collect(db: AsyncSession, org_id: str) -> dict:
         ORDER BY collected DESC, p.name
     """)).mappings()]
     audit = await bank_books.audit(db, org_id=org_id)
-    return {"lines": lines, "allocations": allocations, "projects": projects, "audit": audit}
+    return {"lines": lines, "allocations": allocations, "projects": projects, "audit": audit, "problems": problems}
 
 
 async def _timezone(db: AsyncSession, org_id: str) -> str:
@@ -182,13 +222,46 @@ def signature(data: dict) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def snapshot(data: dict) -> dict[str, dict]:
-    """What AEGIS puts in the editable columns, per line - the baseline Excel
-    edits are detected against."""
+def _money(value: Any) -> Optional[str]:
+    """Canonical 2dp string for comparing amounts from Excel and AEGIS."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return str(Decimal(str(value).replace(",", "").strip()).quantize(Decimal("0.01")))
+    except Exception:  # noqa: BLE001 - not a number: the caller reports it
+        return "invalid"
+
+
+def _iso_date(value: Any) -> Optional[str]:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text_value = str(value).strip()[:10]
+    try:
+        return datetime.strptime(text_value, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return "invalid"
+
+
+def _alloc_state(a: dict) -> dict:
+    return {"line": str(a["line_id"]), "project": str(a["project_id"]) if a["project_id"] else None,
+            "category": a["category"], "amount": _money(a["amount"]), "date": _iso_date(a["allocation_date"]),
+            "description": _clean(a["description"])}
+
+
+def snapshot(data: dict) -> dict:
+    """What AEGIS puts in the editable cells - the baseline Excel edits are
+    detected against: per bank line, and per split / cash-use part."""
     return {
-        str(l["id"]): {"category": l["category"], "project": str(l["project_id"]) if l["project_id"] else None,
-                       "who": _clean(l["counterparty_name"]), "note": _clean(l["notes"])}
-        for l in data["lines"]
+        "lines": {
+            str(l["id"]): {"category": l["category"], "project": str(l["project_id"]) if l["project_id"] else None,
+                           "who": _clean(l["counterparty_name"]), "note": _clean(l["notes"])}
+            for l in data["lines"]
+        },
+        "allocations": {str(a["id"]): _alloc_state(a) for a in data["allocations"]},
     }
 
 
@@ -247,7 +320,11 @@ def build(data: dict, *, published_at: datetime) -> bytes:
         ("What happens next", "Within about 2 minutes AEGIS applies your edit (claims, costs, petty cash and the ledger update "
                               "together) and fills in Sync status. Clear a cell to remove that tag."),
         ("If AEGIS changed it too", "AEGIS keeps its value and Sync status says Conflict - check it in AEGIS."),
-        ("Splitting a line / cash uses", "Do this in AEGIS (a project's money panel). This sheet shows the result."),
+        ("Splitting a line / cash uses", "On Splits & Cash Uses: change Project, Category, Amount, Date or What it paid for on "
+                                         "a part, or clear its Amount to remove it. To add a part, use a blank row at the bottom: "
+                                         "put the bank line's Line ID (or its first 8 characters, from Bank Lines) in Line, then "
+                                         "the rest. On a cash withdrawal each part is what that cash paid for; anything not "
+                                         "recorded stays in HQ Petty Cash. Parts can't add up to more than the line."),
         (None, None),
         ("Books check", "All checks pass" if audit["all_ok"] else "Something doesn't tie out - see below"),
     ]
@@ -261,6 +338,9 @@ def build(data: dict, *, published_at: datetime) -> bytes:
         ("  Cash withdrawn, not yet accounted for", _num(todo["hq_petty_cash_not_yet_accounted_for"])),
         ("  Project costs with no cost type", _num(todo["unclassified_project_costs"])),
     ]
+    if data.get("problems"):
+        info += [(None, None), ("New parts from Excel that couldn't be applied (last 7 days) - please re-enter", None)]
+        info += [(f"  {p['at']}  {p['new_value'] or ''}", p["message"]) for p in data["problems"]]
     for label, value in info:
         readme.append([label, value])
     readme["A1"].font = Font(bold=True, size=14)
@@ -280,16 +360,27 @@ def build(data: dict, *, published_at: datetime) -> bytes:
         [38, 12, 20, 70, 14, 14, 14, 24, 34, 26, 30, 10, 20, 16, 44],
         money_cols={5, 6, 7}, date_cols={2}, editable_cols={8, 9, 10, 11},
     )
-    _table_sheet(
-        wb, "Splits & Cash Uses", "Allocations",
-        ["Allocation ID", "Line ID", "Line date", "Reference", "Line amount", "Kind", "Project", "Category",
-         "Amount", "Date", "What it paid for"],
-        [[str(a["id"]), str(a["line_id"]), a["line_date"], a["reference"], _num(abs(a["line_amount"])),
-          "Use of withdrawn cash" if a["line_category"] == "cash_withdrawal" else "Split of bank line",
-          a["project"], _label(a["category"]) or None, _num(a["amount"]), a["allocation_date"], a["description"]]
-         for a in data["allocations"]],
-        [38, 38, 12, 20, 14, 22, 34, 24, 14, 12, 50], money_cols={5, 9}, date_cols={3, 10},
+    split_rows = [
+        [str(a["id"]), str(a["line_id"]), a["line_date"], a["reference"], _num(abs(a["line_amount"])),
+         "Use of withdrawn cash" if a["line_category"] == "cash_withdrawal" else "Split of bank line",
+         a["project"], _label(a["category"]) or None, _num(a["amount"]), a["allocation_date"], a["description"],
+         a["sync_status"]]
+        for a in data["allocations"]
+    ] + [[None] * len(SPLIT_HEADERS) for _ in range(SPARE_SPLIT_ROWS)]
+    splits_ws = _table_sheet(
+        wb, "Splits & Cash Uses", "Allocations", SPLIT_HEADERS, split_rows,
+        [38, 38, 12, 20, 14, 22, 34, 24, 14, 12, 50, 44], money_cols={5, 9}, date_cols={3, 10},
+        editable_cols={7, 8, 9, 10, 11},
     )
+    # In the spare rows the Line cell is editable too - that's how a new part names its bank line
+    first_spare = len(data["allocations"]) + 2
+    for (cell,) in splits_ws.iter_rows(min_row=first_spare, max_row=first_spare + SPARE_SPLIT_ROWS - 1, min_col=2, max_col=2):
+        cell.protection = Protection(locked=False)
+        cell.fill = EDIT_CELL_FILL
+    for (cell,) in splits_ws.iter_rows(min_row=first_spare, max_row=first_spare + SPARE_SPLIT_ROWS - 1, min_col=10, max_col=10):
+        cell.number_format = "yyyy-mm-dd"
+    for (cell,) in splits_ws.iter_rows(min_row=first_spare, max_row=first_spare + SPARE_SPLIT_ROWS - 1, min_col=9, max_col=9):
+        cell.number_format = MONEY_FORMAT
     _table_sheet(
         wb, "Projects", "Projects",
         ["Project", "Code", "Client", "Status", "Contract value", "Certified", "Collected", "Actual cost",
@@ -318,6 +409,17 @@ def build(data: dict, *, published_at: datetime) -> bytes:
                                     errorTitle="Pick from the list", error="Choose a value from the dropdown, or clear the cell.")
         validation.add(f"{column}2:{column}{max(2, last_row)}")
         lines_ws.add_data_validation(validation)
+    last_split_row = len(split_rows) + 1
+    for column, source in (("H", f"Lists!$A$2:$A${len(category_labels) + 1}"),
+                           ("G", f"Lists!$B$2:$B${max(2, len(project_names) + 1)}")):
+        validation = DataValidation(type="list", formula1=f"={source}", allow_blank=True, showErrorMessage=True,
+                                    errorTitle="Pick from the list", error="Choose a value from the dropdown, or clear the cell.")
+        validation.add(f"{column}2:{column}{last_split_row}")
+        splits_ws.add_data_validation(validation)
+    amount_check = DataValidation(type="decimal", operator="greaterThan", formula1="0", allow_blank=True,
+                                  showErrorMessage=True, errorTitle="Amount", error="Enter an amount above zero, or clear the cell.")
+    amount_check.add(f"I2:I{last_split_row}")
+    splits_ws.add_data_validation(amount_check)
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -444,6 +546,236 @@ async def _apply_edits(db: AsyncSession, *, org_id: str, edits: dict[str, dict],
     return counts
 
 
+def read_split_edits(content: bytes) -> list[dict]:
+    """Every row of Splits & Cash Uses that has anything in it:
+    {"id": allocation id or None (a spare row), "line": raw Line cell, field: raw cell}."""
+    wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    if "Splits & Cash Uses" not in wb.sheetnames:
+        wb.close()
+        return []
+    rows = wb["Splits & Cash Uses"].iter_rows(values_only=True)
+    header = [str(h).strip() if h is not None else "" for h in next(rows)]
+    if "Allocation ID" not in header or "Line" not in header:
+        wb.close()
+        return []
+    id_col, line_col = header.index("Allocation ID"), header.index("Line")
+    cols = {field: header.index(name) for name, field in SPLIT_EDITABLE.items() if name in header}
+    out = []
+    for row in rows:
+        cell = lambda i: row[i] if i < len(row) else None  # noqa: E731
+        entry = {"id": _clean(cell(id_col)), "line": _clean(cell(line_col))}
+        entry.update({field: cell(i) for field, i in cols.items()})
+        if entry["id"] or any(v not in (None, "") for k, v in entry.items() if k != "id"):
+            out.append(entry)
+    wb.close()
+    return out
+
+
+async def _project_lookup(db: AsyncSession, org_id: str) -> tuple[dict, dict, dict]:
+    """(live name -> [ids], deleted name -> id, id -> name)"""
+    live: dict[str, list] = {}
+    deleted: dict[str, str] = {}
+    names: dict[str, str] = {}
+    for r in await db.execute(text("SELECT id, name, is_deleted FROM projects.projects WHERE organization_id = :o"), {"o": org_id}):
+        names[str(r.id)] = r.name
+        if r.is_deleted:
+            deleted.setdefault(r.name.strip().lower(), str(r.id))
+        else:
+            live.setdefault(r.name.strip().lower(), []).append(r.id)
+    return live, deleted, names
+
+
+async def _apply_split_edits(db: AsyncSession, *, org_id: str, rows: list[dict], baseline: dict[str, dict],
+                             applied_keys: set[str], editor_name: Optional[str],
+                             editor_user_id: Optional[UUID]) -> tuple[dict, list[str]]:
+    """Splits & Cash Uses edits: change / clear existing parts, add new ones.
+    Each affected line's parts are saved together through
+    bank_books.replace_allocations (same rules as the AEGIS split editor),
+    in a savepoint so one bad line doesn't stop the others. Returns
+    (counts, keys of new rows applied this cycle)."""
+    counts = {"applied": 0, "rejected": 0, "conflict": 0}
+    new_keys: list[str] = []
+    if not rows:
+        return counts, new_keys
+    live, deleted, names = await _project_lookup(db, org_id)
+    label_to_code = {v.lower(): k for k, v in CATEGORY_LABELS.items()}
+    label_to_code.update({k: k for k in CATEGORY_LABELS})
+    lines = {str(r.id): r for r in await db.execute(text("""
+        SELECT id, amount, category, transaction_date FROM finance.bank_statement_lines WHERE organization_id = :o
+    """), {"o": org_id})}
+    current = {str(r["id"]): _alloc_state(r) for r in (await db.execute(text("""
+        SELECT id, line_id, project_id, category, amount, allocation_date, description
+        FROM finance.bank_line_allocations WHERE organization_id = :o
+    """), {"o": org_id})).mappings()}
+
+    def resolve_line(raw: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        if not raw:
+            return None, "Line is empty - paste the bank line's Line ID (or its first 8 characters)"
+        key = raw.strip().lower()
+        if key in lines:
+            return key, None
+        if len(key) >= SHORT_ID_MIN:
+            matches = [i for i in lines if i.startswith(key)]
+            if len(matches) == 1:
+                return matches[0], None
+            if len(matches) > 1:
+                return None, f"'{raw}' matches more than one bank line - use more of the Line ID"
+        return None, f"no bank line with ID '{raw}'"
+
+    def normalise(row: dict, line_id: str) -> tuple[dict, Optional[str]]:
+        errors = []
+        project = _clean(row.get("project"))
+        project_id = None
+        if project:
+            ids = live.get(project.lower(), [])
+            if len(ids) == 1:
+                project_id = str(ids[0])
+            elif not ids and project.lower() in deleted:
+                project_id = deleted[project.lower()]
+            else:
+                errors.append(f"project '{project}' {'is ambiguous' if ids else 'was not found'}")
+        category = _clean(row.get("category"))
+        code = None
+        if category:
+            code = label_to_code.get(category.lower())
+            if not code:
+                errors.append(f"'{category}' is not a category")
+        amount = _money(row.get("amount"))
+        if amount == "invalid":
+            errors.append("Amount is not a number")
+        date = _iso_date(row.get("date"))
+        if date == "invalid":
+            errors.append("Date should look like 2026-02-08")
+        if not date or date == "invalid":
+            date = lines[line_id].transaction_date.isoformat()
+        description = _clean(row.get("description"))
+        state = {"line": line_id, "project": project_id, "category": code,
+                 "amount": None if amount == "invalid" else amount, "date": date,
+                 "description": description[:2000] if description else None}
+        return state, "; ".join(errors) or None
+
+    def same(a: Optional[dict], b: Optional[dict]) -> bool:
+        keys = ("project", "category", "amount", "date", "description")
+        return a is not None and b is not None and all(a.get(k) == b.get(k) for k in keys)
+
+    def describe(state: Optional[dict]) -> Optional[str]:
+        if not state:
+            return None
+        parts = [names.get(state.get("project") or "", "no project"), _label(state.get("category")) or "no category",
+                 state.get("amount") or "no amount", state.get("date") or "", state.get("description") or ""]
+        return " · ".join(p for p in parts if p)
+
+    log: list[dict] = []
+    per_line: dict[str, dict] = {}
+    for row in rows:
+        aid = row["id"]
+        if aid:
+            base = baseline.get(aid)
+            if base is None:
+                continue
+            excel, error = normalise(row, base["line"])
+            deleting = excel["amount"] is None and not error
+            if not error and not deleting and same(excel, base):
+                continue                                    # nobody touched it
+            cur = current.get(aid)
+            if deleting and cur is None:
+                continue                                    # already removed
+            if not error and not deleting and same(excel, cur):
+                continue                                    # already what AEGIS has
+            entry = {"line_id": base["line"], "allocation_id": aid, "field": "split",
+                     "old_value": describe(cur or base), "new_value": "(removed)" if deleting else describe(excel)}
+            if error:
+                entry.update(outcome="rejected", message=error)
+            elif cur is None:
+                entry.update(outcome="conflict", message="this part was removed in AEGIS - your change was not applied")
+            elif not same(cur, base):
+                entry.update(outcome="conflict", message="this part was also changed in AEGIS - AEGIS's version was kept")
+            else:
+                bucket = per_line.setdefault(base["line"], {"updates": {}, "new": []})
+                bucket["updates"][aid] = None if deleting else excel
+                bucket.setdefault("entries", []).append(entry)
+                continue
+            counts[entry["outcome"]] += 1
+            log.append(entry)
+        else:
+            key = hashlib.sha256(json.dumps(
+                [str(row.get(k) or "") for k in ("line", "project", "category", "amount", "date", "description")]
+            ).encode()).hexdigest()
+            if key in applied_keys:
+                continue                                    # applied last cycle; republish hasn't landed yet
+            line_id, error = resolve_line(row.get("line"))
+            excel = None
+            if line_id:
+                excel, error = normalise(row, line_id)
+                if not error and excel["amount"] is None:
+                    error = "enter an Amount"
+            shown = describe(excel) if excel else " · ".join(str(row.get(k)) for k in ("line", "project", "category", "amount") if row.get(k))
+            entry = {"line_id": line_id, "allocation_id": None, "field": "split", "old_value": None, "new_value": shown}
+            if error:
+                entry.update(outcome="rejected", message=error)
+                counts["rejected"] += 1
+                log.append(entry)
+                continue
+            bucket = per_line.setdefault(line_id, {"updates": {}, "new": []})
+            bucket["new"].append((excel, entry, key))
+
+    user_id = str(editor_user_id) if editor_user_id else None
+    for line_id, bucket in per_line.items():
+        line = lines[line_id]
+        is_cash = line.category == "cash_withdrawal" and line.amount < 0
+        final = []
+        for aid, cur in current.items():
+            if cur["line"] != line_id:
+                continue
+            state = bucket["updates"].get(aid, cur) if aid in bucket["updates"] else cur
+            if state is None:
+                continue                                    # cleared -> removed
+            final.append({"id": UUID(aid), **state})
+        final += [dict(state) for state, _, _ in bucket["new"]]
+        entries = bucket.get("entries", []) + [entry for _, entry, _ in bucket["new"]]
+        error = None
+        if is_cash and any((p.get("category") or "") in NOT_A_CASH_USE for p in final):
+            error = "a use of withdrawn cash can't be categorised as " + ", ".join(
+                sorted({_label(p["category"]) for p in final if (p.get("category") or "") in NOT_A_CASH_USE}))
+        if not error:
+            try:
+                before = {aid for aid, cur in current.items() if cur["line"] == line_id}
+                async with db.begin_nested():
+                    await bank_books.replace_allocations(db, org_id=org_id, user_id=user_id, line_id=UUID(line_id), allocations=[
+                        {"id": p.get("id"), "project_id": UUID(p["project"]) if p.get("project") else None,
+                         "category": p.get("category"), "amount": Decimal(p["amount"]), "description": p.get("description"),
+                         "allocation_date": date.fromisoformat(p["date"]) if p.get("date") else None}
+                        for p in final
+                    ])
+                created = [str(r.id) for r in await db.execute(text("""
+                    SELECT id FROM finance.bank_line_allocations WHERE line_id = :l ORDER BY created_at, id
+                """), {"l": line_id}) if str(r.id) not in before]
+                for (_, entry, key), new_id in zip(bucket["new"], created):
+                    entry["allocation_id"] = new_id
+                    new_keys.append(key)
+            except GeneralLedgerError as exc:
+                error = exc.detail
+        for entry in entries:
+            entry.update(outcome="rejected", message=error) if error else entry.update(outcome="applied", message=None)
+            counts[entry["outcome"]] += 1
+            log.append(entry)
+
+    if log:
+        await db.execute(
+            text("""
+                INSERT INTO finance.bank_workbook_changes (
+                    organization_id, line_id, allocation_id, field, old_value, new_value, outcome, message,
+                    edited_by_name, edited_by_user_id
+                )
+                SELECT :org_id, x.line_id, x.allocation_id, x.field, x.old_value, x.new_value, x.outcome, x.message, :name, :user_id
+                FROM jsonb_to_recordset(CAST(:log AS jsonb)) AS x(
+                    line_id uuid, allocation_id uuid, field text, old_value text, new_value text, outcome text, message text)
+            """),
+            {"org_id": org_id, "name": editor_name, "user_id": editor_user_id, "log": json.dumps(log)},
+        )
+    return counts, new_keys
+
+
 # ---------------------------------------------------------------------------
 # Publication row, lease
 # ---------------------------------------------------------------------------
@@ -465,7 +797,7 @@ async def recent_changes(db: AsyncSession, org_id: str, limit: int = 20) -> list
         text("""
             SELECT c.created_at, c.field, c.old_value, c.new_value, c.outcome, c.message, c.edited_by_name,
                    l.transaction_date, l.reference, l.amount
-            FROM finance.bank_workbook_changes c JOIN finance.bank_statement_lines l ON l.id = c.line_id
+            FROM finance.bank_workbook_changes c LEFT JOIN finance.bank_statement_lines l ON l.id = c.line_id
             WHERE c.organization_id = :org_id ORDER BY c.created_at DESC LIMIT :limit
         """),
         {"org_id": org_id, "limit": limit},
@@ -474,10 +806,12 @@ async def recent_changes(db: AsyncSession, org_id: str, limit: int = 20) -> list
 
 
 async def _record(db: AsyncSession, org_id: str, **values: Any) -> None:
-    if "published_snapshot" in values:
-        values["published_snapshot"] = json.dumps(values["published_snapshot"])
+    json_columns = ("published_snapshot", "applied_new_row_keys")
+    for k in json_columns:
+        if k in values:
+            values[k] = json.dumps(values[k])
     assignments = ", ".join(
-        f"{k} = CAST(:{k} AS jsonb)" if k == "published_snapshot" else f"{k} = :{k}" for k in values
+        f"{k} = CAST(:{k} AS jsonb)" if k in json_columns else f"{k} = :{k}" for k in values
     )
     await db.execute(
         text(f"UPDATE finance.bank_workbook_publications SET {assignments}, updated_at = NOW() WHERE organization_id = :org_id"),
@@ -499,7 +833,7 @@ async def _take_lease(db: AsyncSession, org_id: str) -> Optional[dict]:
             UPDATE finance.bank_workbook_publications
             SET sync_lease_until = NOW() + INTERVAL '{LEASE_MINUTES} minutes'
             WHERE organization_id = :org_id AND (sync_lease_until IS NULL OR sync_lease_until < NOW())
-            RETURNING drive_id, item_id, published_etag, published_snapshot, content_signature
+            RETURNING drive_id, item_id, published_etag, published_snapshot, content_signature, applied_new_row_keys
         """),
         {"org_id": org_id},
     )).mappings().first()
@@ -507,8 +841,9 @@ async def _take_lease(db: AsyncSession, org_id: str) -> Optional[dict]:
     if not row:
         return None
     lease = dict(row)
-    if isinstance(lease["published_snapshot"], str):
-        lease["published_snapshot"] = json.loads(lease["published_snapshot"])
+    for k in ("published_snapshot", "applied_new_row_keys"):
+        if isinstance(lease[k], str):
+            lease[k] = json.loads(lease[k])
     return lease
 
 
@@ -560,13 +895,24 @@ async def sync(db: AsyncSession, *, org_id: str, force: bool = False) -> Optiona
                     content = await data_room_sync.fetch_bytes(
                         db, organization_id=UUID(org_id), drive_id=lease["drive_id"], item_id=lease["item_id"])
                     editor_name, editor_user_id = await _editor(db, item)
+                    snap = lease["published_snapshot"] or {}
+                    # snapshots from before editable splits were just {line_id: {...}}
+                    line_base = snap.get("lines", {}) if "lines" in snap else snap
+                    split_base = snap.get("allocations", {})
                     counts = await _apply_edits(
-                        db, org_id=org_id, edits=read_edits(content), baseline=lease["published_snapshot"] or {},
+                        db, org_id=org_id, edits=read_edits(content), baseline=line_base,
+                        editor_name=editor_name, editor_user_id=editor_user_id)
+                    split_counts, new_keys = await _apply_split_edits(
+                        db, org_id=org_id, rows=read_split_edits(content), baseline=split_base,
+                        applied_keys=set(lease["applied_new_row_keys"] or []),
                         editor_name=editor_name, editor_user_id=editor_user_id)
                     await db.commit()
-                    edits_applied = any(counts.values())
-                    logger.info("bank_workbook.edits_read", organization_id=org_id, **counts)
-                    await _record(db, org_id, last_read_at=now)
+                    edits_applied = any(counts.values()) or any(split_counts.values())
+                    logger.info("bank_workbook.edits_read", organization_id=org_id, lines=counts, splits=split_counts)
+                    values = {"last_read_at": now}
+                    if new_keys:
+                        values["applied_new_row_keys"] = list(lease["applied_new_row_keys"] or []) + new_keys
+                    await _record(db, org_id, **values)
 
         # 3. Republish (skip when nothing changed on either side)
         data = await collect(db, org_id)
@@ -601,7 +947,7 @@ async def sync(db: AsyncSession, *, org_id: str, force: bool = False) -> Optiona
             db, org_id, drive_id=connection.drive_id, item_id=body["id"], web_url=body.get("webUrl"),
             published_etag=body.get("eTag"), published_snapshot=snapshot(data), content_signature=sig,
             last_published_at=now, last_attempt_at=now, last_status="published", last_error=None,
-            rows_published=len(data["lines"]),
+            rows_published=len(data["lines"]), applied_new_row_keys=[],
         )
         return await status(db, org_id)
     except Exception as exc:  # noqa: BLE001 - recorded on the row, never breaks the caller
