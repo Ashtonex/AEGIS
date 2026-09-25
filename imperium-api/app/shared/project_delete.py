@@ -48,11 +48,14 @@ PROJECT_LINKED_TABLES: list[tuple[str, str]] = [
     ("crm.opportunities", "project_id"),
     ("crm.support_tickets", "project_id"),
     ("crm.tenders", "project_id"),
+    ("finance.bank_line_allocations", "project_id"),
+    ("finance.bank_statement_lines", "project_id"),
     ("finance.budgets", "project_id"),
     ("finance.cashbook_transactions", "project_id"),
     ("finance.client_payment_requests", "project_id"),
     ("finance.department_transfer_legs", "project_id"),
     ("finance.department_transfers", "project_id"),
+    ("finance.journal_lines", "project_id"),
     ("finance.payroll_items", "project_id"),
     ("finance.quotations", "project_id"),
     ("finance.statutory_liability_lines", "project_id"),
@@ -91,6 +94,39 @@ async def find_project_blockers(db: AsyncSession, project_id: UUID | str) -> lis
     )
     result = await db.execute(text(union_sql), {"project_id": project_id})
     return [{"table": row.tbl, "count": row.cnt} for row in result if row.cnt > 0]
+
+
+async def money_attached(db: AsyncSession, project_id: UUID | str) -> dict:
+    """What money is tied to this project - shown before a delete so nobody
+    archives a project without realising its bank lines, claims, costs and
+    ledger entries will drop out of the Finance dashboard and project lists.
+    (Archiving never deletes them: they stay in the bank records and the
+    general ledger, just attached to a project nobody can see.)"""
+    row = (await db.execute(
+        text("""
+            SELECT
+              (SELECT count(*) FROM finance.bank_statement_lines WHERE project_id = :p) AS bank_lines,
+              (SELECT COALESCE(sum(amount) FILTER (WHERE amount > 0), 0) FROM finance.bank_statement_lines WHERE project_id = :p) AS bank_in,
+              (SELECT COALESCE(-sum(amount) FILTER (WHERE amount < 0), 0) FROM finance.bank_statement_lines WHERE project_id = :p) AS bank_out,
+              (SELECT count(*) FROM finance.bank_line_allocations WHERE project_id = :p) AS split_parts,
+              (SELECT COALESCE(sum(amount), 0) FROM finance.bank_line_allocations WHERE project_id = :p) AS split_amount,
+              (SELECT count(*) FROM finance.progress_claims WHERE project_id = :p AND NOT is_deleted) AS claims,
+              (SELECT COALESCE(sum(net_claim_amount) FILTER (WHERE status = 'paid'), 0)
+                 FROM finance.progress_claims WHERE project_id = :p AND NOT is_deleted) AS collected,
+              (SELECT count(*) FROM finance.cost_transactions WHERE project_id = :p) AS cost_entries,
+              (SELECT COALESCE(sum(amount), 0) FROM finance.cost_transactions WHERE project_id = :p) AS actual_cost,
+              (SELECT count(*) FROM finance.journal_lines jl JOIN finance.journal_entries je ON je.id = jl.journal_entry_id
+                 WHERE jl.project_id = :p AND je.status = 'posted'
+                   -- a journal and its reversal cancel out: not money on the project
+                   AND je.reversed_by_journal_id IS NULL AND je.journal_type <> 'reversal') AS ledger_lines,
+              (SELECT COALESCE(sum(current_balance), 0) FROM finance.cash_accounts
+                 WHERE project_id = :p AND is_petty_cash AND NOT is_deleted) AS petty_cash
+        """),
+        {"p": project_id},
+    )).mappings().one()
+    money = {k: (float(v) if not isinstance(v, int) else v) for k, v in row.items()}
+    money["has_money"] = any(money[k] for k in ("bank_lines", "split_parts", "claims", "cost_entries", "ledger_lines", "petty_cash"))
+    return money
 
 
 async def hard_delete_project(db: AsyncSession, *, org_id: str, project_id: UUID | str) -> None:

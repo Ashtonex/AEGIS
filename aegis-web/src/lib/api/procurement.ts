@@ -308,8 +308,22 @@ export async function updateInternalProject(projectId: string, payload: Record<s
  * the wipe and archives it instead - check `data.wiped` to tell which
  * happened, and `data.blocked_by` for what's still linked.
  */
-export async function deleteInternalProject(projectId: string): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
-  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}`, {
+export type ProjectMoneyAttached = {
+  bank_lines: number; bank_in: number; bank_out: number; split_parts: number; split_amount: number;
+  claims: number; collected: number; cost_entries: number; actual_cost: number; ledger_lines: number;
+  petty_cash: number; has_money: boolean;
+};
+
+/** What deleting a project would affect - ask before deleting. */
+export async function getProjectDeleteImpact(projectId: string): Promise<ApiResponse<{ money: ProjectMoneyAttached; blocked_by: { table: string; count: number }[]; would_wipe: boolean }>> {
+  return fetchApi<ApiResponse<{ money: ProjectMoneyAttached; blocked_by: { table: string; count: number }[]; would_wipe: boolean }>>(
+    `/api/v1/projects/${projectId}/delete-impact`, { cache: 'no-store', allowFallback: false },
+  );
+}
+
+/** acknowledgeMoney must be true when the project has bank lines, claims, costs or ledger entries attached. */
+export async function deleteInternalProject(projectId: string, acknowledgeMoney = false): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
+  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}${acknowledgeMoney ? '?acknowledge_money=true' : ''}`, {
     method: 'DELETE',
     allowFallback: false,
   });

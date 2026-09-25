@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Literal, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,7 @@ from core.security import get_current_user, require_permission, user_has_permiss
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
-from app.shared.project_delete import find_project_blockers, hard_delete_project
+from app.shared.project_delete import find_project_blockers, hard_delete_project, money_attached
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
@@ -2103,14 +2103,44 @@ async def update_project(
     return _result(updated_project, "Project updated.")
 
 
-@router.delete("/{project_id}")
-async def delete_project(
+@router.get("/{project_id}/delete-impact")
+async def get_project_delete_impact(
     project_id: UUID,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.delete")),
 ):
+    """What deleting this project would affect - asked before the delete."""
     await _project_or_404(db, project_id, user["org_id"])
+    blockers = await find_project_blockers(db, project_id)
+    return _result(
+        {"money": await money_attached(db, project_id), "blocked_by": blockers, "would_wipe": not blockers},
+        "Delete impact computed.",
+    )
+
+
+@router.delete("/{project_id}")
+async def delete_project(
+    project_id: UUID,
+    acknowledge_money: bool = Query(default=False, description="Required when bank lines, claims, costs or ledger entries are attached"),
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.delete")),
+):
+    await _project_or_404(db, project_id, user["org_id"])
+
+    money = await money_attached(db, project_id)
+    if money["has_money"] and not acknowledge_money:
+        # Archiving hides all of this from the Finance dashboard and project
+        # pickers - make the caller confirm they know before doing it.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This project has money attached (bank lines, claims, costs or ledger entries). "
+                           "Confirm to archive it anyway, or move its bank lines to another project first.",
+                "money": money,
+            },
+        )
 
     blockers = await find_project_blockers(db, project_id)
     if blockers:

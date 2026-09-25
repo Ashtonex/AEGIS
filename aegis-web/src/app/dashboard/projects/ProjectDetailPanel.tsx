@@ -35,7 +35,7 @@ import {
 import {
   updateInternalProject,
   submitProjectRegistration, decideProjectRegistration, setProjectBudget, confirmProjectDeposit,
-  deleteInternalProject, updateProjectIntake, commitProjectIntake, getProjectLifecycle, addProjectMilestone,
+  deleteInternalProject, getProjectDeleteImpact, updateProjectIntake, commitProjectIntake, getProjectLifecycle, addProjectMilestone,
   updateProjectMilestone, getAssignableUsers, getAssignment, getProductionExpenses, addProductionExpense,
   getProductionRevenue, addProductionRevenue,
   updateProjectPreMobilisationCheck, approveProjectPreMobilisation,
@@ -2281,11 +2281,40 @@ export function ProjectDetail({
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleDelete = useCallback(async () => {
-    if (!window.confirm(`Delete "${title(project)}"? If it has no linked activity anywhere it will be permanently wiped; otherwise it will be archived instead.`)) return;
-    setDeleting(true);
     setDeleteError(null);
+    let acknowledgeMoney = false;
     try {
-      const res = await deleteInternalProject(project.id);
+      const impact = await getProjectDeleteImpact(project.id);
+      const money = impact.data?.money;
+      if (money?.has_money) {
+        const usd = (n: number) => new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD" }).format(n || 0);
+        const lines = [
+          money.bank_lines ? `- ${money.bank_lines} bank statement line(s): ${usd(money.bank_in)} in, ${usd(money.bank_out)} out` : "",
+          money.split_parts ? `- ${money.split_parts} split / cash-use part(s): ${usd(money.split_amount)}` : "",
+          money.claims ? `- ${money.claims} claim(s), ${usd(money.collected)} collected` : "",
+          money.cost_entries ? `- ${money.cost_entries} cost entr${money.cost_entries === 1 ? "y" : "ies"}: ${usd(money.actual_cost)}` : "",
+          money.ledger_lines ? `- ${money.ledger_lines} general ledger line(s)` : "",
+          money.petty_cash ? `- ${usd(money.petty_cash)} in its petty cash float` : "",
+        ].filter(Boolean).join("\n");
+        const ok = window.confirm(
+          `WARNING: "${title(project)}" has money attached:\n\n${lines}\n\n` +
+          "Deleting archives the project: all of this disappears from the Finance dashboard, project lists and pickers " +
+          "(it stays in the bank records and the ledger, attached to a hidden project).\n\n" +
+          "If you meant to move this money, cancel and re-tag its bank lines to another project first " +
+          "(Finance > Bank Statement Review).\n\nArchive it anyway?",
+        );
+        if (!ok) return;
+        acknowledgeMoney = true;
+      } else if (!window.confirm(`Delete "${title(project)}"? If it has no linked activity anywhere it will be permanently wiped; otherwise it will be archived instead.`)) {
+        return;
+      }
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Could not check what this project is linked to.");
+      return;
+    }
+    setDeleting(true);
+    try {
+      const res = await deleteInternalProject(project.id, acknowledgeMoney);
       if (!res.success) throw new Error("Project could not be deleted.");
       if (res.data?.wiped) {
         window.alert(`"${title(project)}" was permanently deleted.`);
