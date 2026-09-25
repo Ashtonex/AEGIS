@@ -21,6 +21,7 @@ from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
 from app.services.finance import bank_books
 from app.services.finance import bank_rules
+from app.services.finance import bank_statement_pdf as statement_pdf
 from app.services.jobs.queue import enqueue_background_job
 from app.services.microsoft import bank_workbook
 from app.services.finance.general_ledger import GeneralLedgerError
@@ -363,6 +364,28 @@ class CreateCashbookEntryFromLineRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=1000)
 
 
+async def _books_after_import(db: AsyncSession, *, org_id: str, user_id: str, summary: dict,
+                              run_matching: bool = False) -> None:
+    """New statement lines go straight into the books: optionally matched to
+    the cashbook, auto-tagging rules fill what they can, then every line gets
+    its ledger journal (untagged ones in Suspense). The import itself is
+    already committed - a failure here is reported, not fatal, and "Sync
+    books" can finish the job later."""
+    try:
+        if run_matching:
+            summary["matching"] = await reconciliation.run_matching(
+                db, org_id=org_id, user_id=user_id, import_id=UUID(summary["import_id"]))
+        new_ids = [r.id for r in await db.execute(
+            text("SELECT id FROM finance.bank_statement_lines WHERE import_id = :i"), {"i": summary["import_id"]})]
+        summary["auto_tagged"] = (await bank_rules.apply(db, org_id=org_id, user_id=user_id, line_ids=new_ids))["lines_tagged"]
+        summary["books"] = await bank_books.sync(db, org_id=org_id, user_id=user_id, line_ids=new_ids)
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        summary["books_error"] = exc.detail
+    await _queue_workbook_publish(org_id)
+
+
 @router.post("/reconciliation/imports", status_code=status.HTTP_201_CREATED, summary="Upload a bank statement CSV")
 async def create_bank_statement_import(
     cash_account_id: UUID = Form(...),
@@ -388,21 +411,61 @@ async def create_bank_statement_import(
     except GeneralLedgerError as exc:
         await db.rollback()
         _raise(exc)
-    # New lines go straight into the books: auto-tagging rules fill what they
-    # can, then every line gets its ledger journal (untagged ones in Suspense).
-    # The import itself is already committed - a failure here is reported,
-    # not fatal, and "Sync books" can finish the job later.
+    await _books_after_import(db, org_id=org_id, user_id=user["sub"], summary=summary)
+    return ok(summary, "Bank statement imported and parsed.")
+
+
+MAX_STATEMENT_PDF_BYTES = 25 * 1024 * 1024
+
+
+async def _read_statement_pdf(file: UploadFile) -> bytes:
+    content = await file.read(MAX_STATEMENT_PDF_BYTES + 1)
+    if len(content) > MAX_STATEMENT_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="Statement PDF is larger than 25 MB.")
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=422, detail="That file is not a PDF.")
+    return content
+
+
+@router.post("/reconciliation/imports/pdf/preview", summary="Read a BancABC PDF statement without saving it")
+async def preview_bank_statement_pdf(
+    cash_account_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_permission("finance.reconciliation.import")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Shows the period, what is already in AEGIS, what is new, and whether the
+    statement ties out - nothing is written."""
+    org_id = _require_org(user)
+    content = await _read_statement_pdf(file)
     try:
-        new_ids = [r.id for r in await db.execute(
-            text("SELECT id FROM finance.bank_statement_lines WHERE import_id = :i"), {"i": summary["import_id"]})]
-        summary["auto_tagged"] = (await bank_rules.apply(db, org_id=org_id, user_id=user["sub"], line_ids=new_ids))["lines_tagged"]
-        summary["books"] = await bank_books.sync(db, org_id=org_id, user_id=user["sub"], line_ids=new_ids)
+        result = await statement_pdf.preview(db, org_id=org_id, cash_account_id=cash_account_id, pdf_bytes=content)
+    except GeneralLedgerError as exc:
+        _raise(exc)
+    return ok(result, "Statement read.")
+
+
+@router.post("/reconciliation/imports/pdf", status_code=status.HTTP_201_CREATED,
+             summary="Import a BancABC PDF statement (only the lines AEGIS doesn't have yet)")
+async def create_bank_statement_pdf_import(
+    cash_account_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_permission("finance.reconciliation.import")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    content = await _read_statement_pdf(file)
+    try:
+        summary = await statement_pdf.create_import(
+            db, org_id=org_id, user_id=user["sub"], cash_account_id=cash_account_id,
+            filename=file.filename or "statement.pdf", pdf_bytes=content,
+        )
         await db.commit()
     except GeneralLedgerError as exc:
         await db.rollback()
-        summary["books_error"] = exc.detail
-    await _queue_workbook_publish(org_id)
-    return ok(summary, "Bank statement imported and parsed.")
+        _raise(exc)
+    await _books_after_import(db, org_id=org_id, user_id=user["sub"], summary=summary, run_matching=True)
+    return ok(summary, f"{summary['total_lines']} new bank line(s) imported.")
 
 
 @router.get("/reconciliation/imports", summary="List bank statement imports")

@@ -69,10 +69,13 @@ class RuleWiringContractTests(unittest.TestCase):
         self.assertIn("tag_rule_id", body)
 
     def test_new_statement_imports_are_auto_tagged_and_journaled(self):
-        body = ROUTER.split("async def create_bank_statement_import(")[1].split("\n@router")[0]
-        self.assertIn("bank_rules.apply(", body)
-        self.assertIn("bank_books.sync(", body)
-        self.assertLess(body.find("await db.commit()"), body.find("bank_rules.apply("))  # import committed first
+        helper = ROUTER.split("async def _books_after_import(")[1].split("\n@router")[0]
+        self.assertIn("bank_rules.apply(", helper)
+        self.assertIn("bank_books.sync(", helper)
+        for endpoint in ("async def create_bank_statement_import(", "async def create_bank_statement_pdf_import("):
+            body = ROUTER.split(endpoint)[1].split("\n@router")[0]
+            self.assertIn("_books_after_import(", body)
+            self.assertLess(body.find("await db.commit()"), body.find("_books_after_import("))  # import committed first
 
     def test_rule_endpoints_have_permissions(self):
         for fn, perm in (("async def create_tag_rule", "finance.reconciliation.match"),

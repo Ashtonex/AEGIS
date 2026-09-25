@@ -2,13 +2,15 @@
 
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ChevronLeft, ChevronRight, ExternalLink, FileSpreadsheet, Filter, Loader2, RefreshCw, Search, ShieldAlert, Tag, X } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, ExternalLink, FileSpreadsheet, FileUp, Filter, Loader2, RefreshCw, Search, ShieldAlert, Tag, X } from "lucide-react";
 import {
   getBankBooksAudit,
   getBankWorkbookStatus,
   publishBankWorkbook,
   getBankStatementAllocationSummary,
   getFinanceCashAccounts,
+  importBankStatementPdf,
+  previewBankStatementPdf,
   searchBankStatementLines,
   tagBankStatementLines,
   type BankStatementLineFilter,
@@ -232,6 +234,12 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
         </div>
       </div>
 
+      <StatementUpload
+        accounts={accounts}
+        defaultAccountId={accountId}
+        onImported={() => Promise.all([loadLines(), loadSummary(), loadAudit()])}
+      />
+
       {audit && <BooksCheck audit={audit} />}
 
       <TeamsWorkbook />
@@ -391,6 +399,156 @@ export function BankStatementReviewPanel({ projects }: { projects: RecordData[] 
           onPick={(row) => { if (!row.category) return; const next = { ...draft, category: row.category, tag_status: undefined }; setDraft(next); setFilter(next); setPage(1); }}
         />
       </div>
+    </div>
+  );
+}
+
+function StatementUpload({ accounts, defaultAccountId, onImported }: {
+  accounts: RecordData[];
+  defaultAccountId: string;
+  onImported: () => Promise<unknown>;
+}) {
+  const [accountId, setAccountId] = useState(defaultAccountId);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<RecordData | null>(null);
+  const [busy, setBusy] = useState<"" | "reading" | "importing">("");
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<RecordData | null>(null);
+  const [inputKey, setInputKey] = useState(0);
+
+  useEffect(() => { if (!accountId && defaultAccountId) setAccountId(defaultAccountId); }, [accountId, defaultAccountId]);
+
+  const reset = () => { setFile(null); setPreview(null); setError(null); setInputKey((k) => k + 1); };
+
+  const read = async (chosen: File | null) => {
+    setFile(chosen);
+    setPreview(null);
+    setDone(null);
+    setError(null);
+    if (!chosen) return;
+    if (!accountId) { setError("Choose the bank account this statement belongs to first."); return; }
+    setBusy("reading");
+    try {
+      const res = await previewBankStatementPdf(accountId, chosen);
+      setPreview(res.data || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The statement could not be read.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const confirm = async () => {
+    if (!file || !accountId) return;
+    setBusy("importing");
+    setError(null);
+    try {
+      const res = await importBankStatementPdf(accountId, file);
+      setDone(res.data || {});
+      reset();
+      await onImported();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const st: RecordData = preview?.statement || {};
+  const problems: string[] = preview?.problems || [];
+  const sample: RecordData[] = preview?.sample || [];
+  const day = (v?: string | null) => (v ? new Date(`${v}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "-");
+
+  return (
+    <div className={`${cardClass} p-4 space-y-3`}>
+      <div className="flex flex-col md:flex-row md:items-center gap-3">
+        <FileUp className="h-6 w-6 text-signal shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-paper font-semibold">Upload this month&apos;s statement</p>
+          <p className="text-xs text-slate">
+            Download the PDF statement from BancABC internet banking and choose it here. AEGIS checks it adds up to the bank&apos;s
+            closing balance, skips lines it already has (statements can overlap), refuses a gap between statements, then
+            matches the new lines to the cashbook, runs your tagging rules and posts them to the ledger.
+          </p>
+        </div>
+      </div>
+      <div className="grid md:grid-cols-[16rem_1fr] gap-3">
+        <select className={inputClass} value={accountId} onChange={(e) => { setAccountId(e.target.value); reset(); }} aria-label="Statement bank account">
+          <option value="">Choose bank account…</option>
+          {accounts.map((a) => <option key={a.id} value={a.id}>{a.account_name} {a.account_number ? `(${String(a.account_number).slice(-4)})` : ""}</option>)}
+        </select>
+        <input
+          key={inputKey}
+          type="file"
+          accept="application/pdf,.pdf"
+          disabled={busy !== ""}
+          onChange={(e) => void read(e.target.files?.[0] || null)}
+          className="text-sm text-slate file:mr-3 file:border-0 file:bg-ink file:text-paper file:px-3 file:py-2 file:rounded-sm"
+        />
+      </div>
+
+      {busy === "reading" && <p className="text-xs text-slate flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Reading the statement… (a few seconds for a month, longer for a long history)</p>}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {done && (
+        <p className="text-xs text-emerald-300">
+          {Number(done.total_lines || 0).toLocaleString()} new line(s) imported ({Number(done.already_in_aegis || 0).toLocaleString()} already in AEGIS were skipped)
+          {done.auto_tagged ? `, ${done.auto_tagged} tagged by rules` : ""}
+          {done.matching?.matched ? `, ${done.matching.matched} matched to the cashbook` : ""}.
+          {done.books_error ? ` Books not updated yet: ${done.books_error} - use Sync books.` : ""}
+        </p>
+      )}
+
+      {preview && (
+        <div className="border-t border-ink-mid pt-3 space-y-3">
+          <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+            <Stat label="Statement" value={`${day(st.first_line)} – ${day(st.last_line)}`} />
+            <Stat label="Opening → closing" value={`${money(st.opening_balance)} → ${money(st.closing_balance)}`} />
+            <Stat label="Already in AEGIS" value={Number(preview.already_in_aegis || 0).toLocaleString()} />
+            <Stat label="New lines" value={Number(preview.new_lines || 0).toLocaleString()} />
+            <Stat label="New money in" value={money(preview.new_money_in)} tone="in" />
+            <Stat label="New money out" value={money(preview.new_money_out)} tone="out" />
+          </div>
+          {problems.length > 0 ? (
+            <div className="border border-red-500/30 bg-red-950/20 px-3 py-2 text-xs text-red-200 space-y-1">
+              <p className="font-semibold flex items-center gap-2"><ShieldAlert className="h-4 w-4" />This statement can&apos;t be imported</p>
+              {problems.map((p, i) => <p key={i}>{p}</p>)}
+            </div>
+          ) : Number(preview.new_lines) === 0 ? (
+            <p className="text-xs text-slate">Every line on this statement is already in AEGIS - nothing to import.</p>
+          ) : (
+            <p className="text-xs text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />Ties out: every line follows the running balance and the totals equal the bank&apos;s closing balance
+              {st.account_number ? ` for account ${st.account_number}` : ""}.
+            </p>
+          )}
+          {sample.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="text-slate text-left"><th className="py-1 pr-3">Date</th><th className="pr-3">Reference</th><th className="pr-3">Description</th><th className="text-right pr-3">Amount</th><th className="text-right">Balance</th></tr></thead>
+                <tbody>
+                  {sample.map((l, i) => (
+                    <tr key={i} className="border-t border-ink-mid/60">
+                      <td className="py-1 pr-3 whitespace-nowrap text-slate">{day(l.date)}</td>
+                      <td className="pr-3 font-mono text-slate">{l.reference}</td>
+                      <td className="pr-3 text-paper">{l.description}</td>
+                      <td className={`pr-3 text-right whitespace-nowrap ${Number(l.amount) < 0 ? "text-red-300" : "text-emerald-300"}`}>{money(l.amount)}</td>
+                      <td className="text-right whitespace-nowrap text-slate">{money(l.balance)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {Number(preview.new_lines) > sample.length && <p className="text-[11px] text-slate mt-1">…and {Number(preview.new_lines) - sample.length} more.</p>}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button onClick={() => void confirm()} disabled={!preview.can_import || busy !== ""} className={buttonClass}>
+              {busy === "importing" ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+              Import {Number(preview.new_lines || 0).toLocaleString()} new line(s)
+            </button>
+            <button onClick={reset} disabled={busy !== ""} className="border border-ink-mid text-paper px-3 py-2 rounded-sm text-sm hover:border-signal/50">Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

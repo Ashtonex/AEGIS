@@ -1076,7 +1076,8 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
         SELECT i.id, i.file_name, i.total_lines, i.statement_period_start, i.statement_period_end,
                (SELECT count(*) FROM finance.bank_statement_lines l WHERE l.import_id = i.id) AS lines_stored,
                (SELECT COALESCE(sum(amount), 0) FROM finance.bank_statement_lines l WHERE l.import_id = i.id) AS net_movement,
-               i.column_mapping->>'closing_balance' AS closing_balance_per_bank
+               i.column_mapping->>'closing_balance' AS closing_balance_per_bank,
+               COALESCE(i.column_mapping->>'opening_balance', '0') AS opening_balance
         FROM finance.bank_statement_imports i WHERE i.organization_id = :org_id
     """)).mappings()]
     lines = (await q("""
@@ -1131,8 +1132,11 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
          "ok": all(i["lines_stored"] == i["total_lines"] for i in imports),
          "detail": ", ".join(f"{i['lines_stored']}/{i['total_lines']}" for i in imports)},
         {"check": "Stored lines add up to the bank's closing balance",
-         "ok": all(i["closing_balance_per_bank"] is None or Decimal(str(i["net_movement"])) == Decimal(i["closing_balance_per_bank"]) for i in imports),
-         "detail": ", ".join(f"{i['net_movement']} vs {i['closing_balance_per_bank']}" for i in imports)},
+         "ok": all(i["closing_balance_per_bank"] is None
+                   or Decimal(i["opening_balance"]) + Decimal(str(i["net_movement"])) == Decimal(i["closing_balance_per_bank"])
+                   for i in imports),
+         "detail": ", ".join(f"{Decimal(i['opening_balance']) + Decimal(str(i['net_movement']))} vs {i['closing_balance_per_bank']}"
+                             for i in imports)},
         {"check": "Every line has a posted, current ledger journal",
          "ok": lines["missing_journal"] == 0 and stale == 0,
          "detail": f"{lines['missing_journal']} missing, {stale} out of date"},

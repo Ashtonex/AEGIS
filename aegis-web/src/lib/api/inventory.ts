@@ -184,6 +184,31 @@ export async function uploadBankStatementImport(params: { cashAccountId: string;
   return data;
 }
 
+/** Monthly BancABC PDF statement: preview reads it without saving; import stores only the lines AEGIS doesn't have yet. */
+async function postBankStatementPdf(path: string, cashAccountId: string, file: File): Promise<ApiResponse<any>> {
+  const form = new FormData();
+  form.set("cash_account_id", cashAccountId);
+  form.set("file", file);
+  const headers = new Headers();
+  const token = await getSupabaseAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(resolveApiUrl(path), { method: "POST", headers, body: form });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data?.detail;
+    throw new Error(typeof detail === "string" ? detail : "The statement could not be read.");
+  }
+  return data;
+}
+
+export async function previewBankStatementPdf(cashAccountId: string, file: File): Promise<ApiResponse<any>> {
+  return postBankStatementPdf("/api/v1/bank-transactions/reconciliation/imports/pdf/preview", cashAccountId, file);
+}
+
+export async function importBankStatementPdf(cashAccountId: string, file: File): Promise<ApiResponse<any>> {
+  return postBankStatementPdf("/api/v1/bank-transactions/reconciliation/imports/pdf", cashAccountId, file);
+}
+
 export async function getBankStatementImports(): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>("/api/v1/bank-transactions/reconciliation/imports", { cache: "no-store", allowFallback: false });
 }
