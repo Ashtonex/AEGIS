@@ -274,7 +274,7 @@ async def list_recruitment_assessments(
         """
         SELECT ra.id, ra.candidate_id, ra.assessment_code, ra.role_applied_for, ra.candidate_name,
                ra.email, ra.phone, ra.submitted_at, ra.objective_score, ra.objective_max,
-               ra.dimension_scores, ra.overall_score, ra.unanswered_count, ra.created_at,
+               ra.dimension_scores, ra.overall_score, ra.unanswered_count, ra.verdict, ra.created_at,
                rc.stage
         FROM hr.recruitment_assessments ra
         JOIN hr.recruitment_candidates rc ON rc.id = ra.candidate_id AND rc.organization_id = ra.organization_id
@@ -284,7 +284,8 @@ async def list_recruitment_assessments(
         {"org_id": user["org_id"]},
     )
     catalog = [
-        {"code": a.code, "title": a.title, "role": a.role, "minutes": a.minutes}
+        {"code": a.code, "title": a.title, "role": a.role, "minutes": a.minutes,
+         "sections": [s.name for s in a.sections] or list(DIMENSIONS)}
         for a in ASSESSMENTS.values()
     ]
     return ok({"assessments": data, "catalog": catalog, "dimensions": list(DIMENSIONS)}, "Recruitment assessments loaded.")
@@ -385,7 +386,7 @@ async def import_recruitment_assessments(
             "answers": json.dumps(resp.answers), "points": json.dumps(resp.question_points),
             "objective": resp.objective_score, "objective_max": resp.objective_max,
             "dimensions": json.dumps(resp.dimension_scores), "overall": resp.overall_score,
-            "unanswered": resp.unanswered_count, "file_name": (file.filename or "")[:255] or None,
+            "unanswered": resp.unanswered_count, "verdict": resp.verdict, "file_name": (file.filename or "")[:255] or None,
             "user_id": user_id,
         }
         if existing:
@@ -395,12 +396,12 @@ async def import_recruitment_assessments(
                     SET answers = CAST(:answers AS jsonb), question_points = CAST(:points AS jsonb),
                         objective_score = :objective, objective_max = :objective_max,
                         dimension_scores = CAST(:dimensions AS jsonb), overall_score = :overall,
-                        unanswered_count = :unanswered, source_file_name = :file_name,
+                        unanswered_count = :unanswered, verdict = :verdict, source_file_name = :file_name,
                         imported_by = :user_id, is_deleted = false, updated_at = NOW()
                     WHERE id = :id
                 """),
                 {**{k: params[k] for k in ("answers", "points", "objective", "objective_max", "dimensions",
-                                           "overall", "unanswered", "file_name", "user_id")}, "id": existing.id},
+                                           "overall", "unanswered", "verdict", "file_name", "user_id")}, "id": existing.id},
             )
             rescored += 1
         else:
@@ -410,10 +411,10 @@ async def import_recruitment_assessments(
                         (organization_id, candidate_id, assessment_code, role_applied_for, response_ref,
                          candidate_name, email, phone, submitted_at, answers, question_points,
                          objective_score, objective_max, dimension_scores, overall_score,
-                         unanswered_count, source_file_name, imported_by)
+                         unanswered_count, verdict, source_file_name, imported_by)
                     VALUES (:org_id, :candidate_id, :code, :role, :ref, :name, :email, :phone, :submitted_at,
                             CAST(:answers AS jsonb), CAST(:points AS jsonb), :objective, :objective_max,
-                            CAST(:dimensions AS jsonb), :overall, :unanswered, :file_name, :user_id)
+                            CAST(:dimensions AS jsonb), :overall, :unanswered, :verdict, :file_name, :user_id)
                 """),
                 params,
             )
@@ -424,6 +425,7 @@ async def import_recruitment_assessments(
             "overall_score": resp.overall_score,
             "objective_score": resp.objective_score,
             "dimension_scores": resp.dimension_scores,
+            "verdict": resp.verdict,
             "warnings": resp.warnings,
         })
 

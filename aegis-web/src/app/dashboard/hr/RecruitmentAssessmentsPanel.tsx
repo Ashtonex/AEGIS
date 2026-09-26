@@ -6,9 +6,7 @@ import { getRecruitmentAssessments, importRecruitmentAssessments } from "@/lib/a
 import { dateValue } from "./page";
 
 type RecordData = Record<string, any>;
-type Catalog = { code: string; title: string; role: string; minutes: number };
-
-const DEFAULT_DIMENSIONS = ["Cognitive", "Accuracy", "Pressure", "Controls", "Work Style"];
+type Catalog = { code: string; title: string; role: string; minutes: number; sections?: string[] };
 
 function scoreClass(value: number) {
   if (value >= 75) return "text-emerald-300";
@@ -27,13 +25,15 @@ function Score({ value }: { value: unknown }) {
 export function RecruitmentAssessmentsPanel({ onImported }: { onImported?: () => void }) {
   const [rows, setRows] = useState<RecordData[]>([]);
   const [catalog, setCatalog] = useState<Catalog[]>([]);
-  const [dimensions, setDimensions] = useState<string[]>(DEFAULT_DIMENSIONS);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [assessmentCode, setAssessmentCode] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; warnings: string[] } | null>(null);
+
+  const sectionsFor = (row: RecordData): string[] =>
+    catalog.find((a) => a.code === row.assessment_code)?.sections || Object.keys(row.dimension_scores || {});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,7 +43,6 @@ export function RecruitmentAssessmentsPanel({ onImported }: { onImported?: () =>
       const data = res?.data || {};
       setRows(data.assessments || []);
       setCatalog(data.catalog || []);
-      if (data.dimensions?.length) setDimensions(data.dimensions);
       setAssessmentCode((current) => current || data.catalog?.[0]?.code || "");
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not load candidate assessments.");
@@ -150,8 +149,9 @@ export function RecruitmentAssessmentsPanel({ onImported }: { onImported?: () =>
                 <th className="p-4">Role</th>
                 <th className="p-4">Submitted</th>
                 <th className="p-4">Objective</th>
-                {dimensions.map((d) => <th key={d} className="p-4">{d}</th>)}
+                <th className="p-4">Breakdown (%)</th>
                 <th className="p-4">Overall</th>
+                <th className="p-4">Verdict</th>
                 <th className="p-4">Stage</th>
               </tr>
             </thead>
@@ -168,8 +168,15 @@ export function RecruitmentAssessmentsPanel({ onImported }: { onImported?: () =>
                     {Number(row.objective_score)}/{Number(row.objective_max)}
                     {row.unanswered_count > 0 && <span className="ml-1 text-amber-300">({row.unanswered_count} blank)</span>}
                   </td>
-                  {dimensions.map((d) => <td key={d} className="p-4"><Score value={row.dimension_scores?.[d]} /></td>)}
+                  <td className="p-4">
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                      {sectionsFor(row).map((d) => (
+                        <span key={d} className="whitespace-nowrap text-slate">{d} <Score value={row.dimension_scores?.[d]} /></span>
+                      ))}
+                    </div>
+                  </td>
                   <td className="p-4 font-semibold"><Score value={row.overall_score} /></td>
+                  <td className="p-4 text-slate-light">{row.verdict || "—"}</td>
                   <td className="p-4 capitalize text-slate-light">{row.stage}</td>
                 </tr>
               ))}
@@ -178,8 +185,9 @@ export function RecruitmentAssessmentsPanel({ onImported }: { onImported?: () =>
         </div>
       )}
       <p className="px-4 py-3 text-xs text-slate">
-        Dimension scores are % of available points; overall is their equal-weighted mean. Work-style items are directional
-        indicators — combine with interview, work sample and reference checks before deciding.
+        Accountant assessment: marks out of 100 from Forms (mark the written answers in Forms before exporting); verdict uses the
+        assessor guide&apos;s bands and section minimums. 40-item tests: dimension % of available points, overall is their mean.
+        Combine with interview, work sample and reference checks before deciding.
       </p>
     </div>
   );

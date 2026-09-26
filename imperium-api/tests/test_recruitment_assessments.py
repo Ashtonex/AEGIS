@@ -113,3 +113,57 @@ def test_import_endpoint_and_recruitment_ui_are_wired():
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "/api/v1/hr/operations/assessments/import" in api
     assert "importRecruitmentAssessments" in panel
+
+
+ACCOUNTANT_MAX = {**{n: 2.5 for n in range(1, 11)}, 11: 8, 12: 3, 13: 2, 14: 2,
+                  **{n: 3 for n in range(15, 20)}, 20: 5, 21: 5, 22: 12, 23: 10, 24: 13}
+
+
+def _accountant_export(candidates):
+    """Forms quiz export shape: answer, 'Points - <q>', 'Feedback - <q>' per question."""
+    wb = Workbook()
+    ws = wb.active
+    header = ["ID", "Start time", "Completion time", "Email", "Name", "Total points", "Quiz feedback",
+              "Full Legal Name", "Points - Full Legal Name", "Feedback - Full Legal Name",
+              "Email Address", "Points - Email Address", "Feedback - Email Address"]
+    titles = {n: f"{n}. Question {n}" for n in range(1, 25)}
+    titles[1] = "1. Opening cash is USD 18,400. Confirmed receipts are USD 7,600 and approved payments are USD 9,250."
+    for n in range(1, 25):
+        header += [titles[n], f"Points - {titles[n]}", f"Feedback - {titles[n]}"]
+    ws.append(header)
+    for i, (name, points) in enumerate(candidates, start=1):
+        row = [i, "", "9/26/26 10:00:00", "anonymous", "", "", "", name, "", "", f"c{i}@example.com", "", ""]
+        for n in range(1, 25):
+            row += ["answer", points.get(n), ""]
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_accountant_points_are_totalled_by_section_with_guide_bands():
+    full = dict(ACCOUNTANT_MAX)
+    # Loses all of Section C's choice marks (15/25 = 60% < 70% minimum) -> 85 overall.
+    weak_c = {**ACCOUNTANT_MAX, **{n: 0 for n in range(15, 20)}}
+    unmarked = {n: v for n, v in ACCOUNTANT_MAX.items() if n not in (22, 23, 24)}
+    top, c_fail, pending = parse_forms_export(
+        "snc_accountant_2026",
+        _accountant_export([("Full Marks", full), ("Weak C", weak_c), ("Pending", unmarked)]),
+    )
+
+    assert top.overall_score == 100.0 and top.objective_score == 47 and top.objective_max == 47
+    assert top.dimension_scores == {"Section A": 100.0, "Section B": 100.0, "Section C": 100.0, "Section D": 100.0}
+    assert top.verdict == "Strong"
+
+    assert c_fail.overall_score == 85.0
+    assert c_fail.dimension_scores["Section C"] == 40.0
+    assert c_fail.verdict == "Strong; below minimum in Section C"
+
+    assert pending.verdict == "Awaiting marking"
+    assert any("Q22, Q23, Q24" in w for w in pending.warnings)
+
+
+def test_accountant_export_without_points_columns_is_rejected():
+    content = _export("acc", [("Tariro", "t@example.com", _perfect("acc"))])
+    with pytest.raises(AssessmentImportError):
+        parse_forms_export("snc_accountant_2026", content)

@@ -120,6 +120,16 @@ _KEYS: dict[str, list[tuple[str, str, int, bool]]] = {
 
 
 @dataclass(frozen=True)
+class PointsSection:
+    name: str
+    first: int
+    last: int
+    max_points: float
+    # Pass minimum as a fraction of the section's marks (None = no minimum).
+    minimum: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class AssessmentDefinition:
     code: str
     title: str
@@ -127,9 +137,37 @@ class AssessmentDefinition:
     minutes: int
     # Start of question 1's title, used to reject an export from the other quiz.
     q1_prefix: str
+    question_count: int = 40
+    # "key": AEGIS marks the answers against _KEYS (the 40-item tests).
+    # "points": Forms has already marked every question (auto for choice
+    # questions, the assessor for written ones) and AEGIS totals the
+    # "Points - <question>" columns of the export by section.
+    mode: str = "key"
+    sections: tuple[PointsSection, ...] = ()
+    written_questions: frozenset[int] = frozenset()
 
 
 ASSESSMENTS: dict[str, AssessmentDefinition] = {
+    # Replaced the 40-item Accounting test on 2026-09-26. Source and assessor
+    # guide: "SNC ACCOUNTANT ONLINE ASSESSMENT" (100 marks, 60 minutes).
+    # Section B's 7 choice marks were not allocated in the guide; SNC chose
+    # Q12 = 3, Q13 = 2, Q14 = 2.
+    "snc_accountant_2026": AssessmentDefinition(
+        code="snc_accountant_2026",
+        title="SNC | Accountant Online Assessment | 2026",
+        role="Accounting",
+        minutes=60,
+        q1_prefix="Opening cash is USD 18,400",
+        question_count=24,
+        mode="points",
+        sections=(
+            PointsSection("Section A", 1, 10, 25, minimum=0.60),
+            PointsSection("Section B", 11, 14, 15),
+            PointsSection("Section C", 15, 21, 25, minimum=0.70),
+            PointsSection("Section D", 22, 24, 35, minimum=0.60),
+        ),
+        written_questions=frozenset({11, 20, 21, 22, 23, 24}),
+    ),
     "snc_accounting_2026": AssessmentDefinition(
         code="snc_accounting_2026",
         title="SNC | Accounting Candidate Assessment | 2026",
@@ -165,6 +203,7 @@ class ScoredResponse:
     dimension_scores: dict[str, float]
     overall_score: float
     unanswered_count: int
+    verdict: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -227,6 +266,70 @@ def score_answers(role: str, answers: dict[int, str]) -> dict[str, Any]:
     }
 
 
+def _band(total: float) -> str:
+    # Thresholds from the assessor guide.
+    if total >= 80:
+        return "Strong"
+    if total >= 65:
+        return "Suitable subject to interview"
+    if total >= 50:
+        return "Borderline"
+    return "Do not progress"
+
+
+def score_points(definition: AssessmentDefinition, points: dict[int, Optional[float]]) -> dict[str, Any]:
+    """Total Forms-awarded points ({question number: points or None if unmarked}) by section."""
+    section_scores: dict[str, float] = {}
+    below_minimum = []
+    total = 0.0
+    for section in definition.sections:
+        earned = sum(points.get(n) or 0.0 for n in range(section.first, section.last + 1))
+        total += earned
+        pct = round(earned / section.max_points * 100, 1)
+        section_scores[section.name] = pct
+        if section.minimum is not None and earned < section.minimum * section.max_points:
+            below_minimum.append(section.name)
+    choice_questions = [n for n in range(1, definition.question_count + 1) if n not in definition.written_questions]
+    objective = sum(points.get(n) or 0.0 for n in choice_questions)
+    objective_max = sum(s.max_points for s in definition.sections) - _written_max(definition)
+    unmarked = sorted(n for n in definition.written_questions if points.get(n) is None)
+
+    if unmarked:
+        verdict = "Awaiting marking"
+    else:
+        verdict = _band(total)
+        if below_minimum:
+            verdict += f"; below minimum in {', '.join(below_minimum)}"
+    return {
+        "question_points": {f"Q{n}": points.get(n) for n in range(1, definition.question_count + 1)},
+        "objective_score": round(objective, 2),
+        "objective_max": objective_max,
+        "dimension_scores": section_scores,
+        "overall_score": round(total, 1),
+        "unanswered_count": 0,
+        "verdict": verdict,
+        "unmarked": unmarked,
+    }
+
+
+# Marks available on the written (assessor-marked) questions, by assessment.
+_WRITTEN_MAX = {"snc_accountant_2026": {11: 8, 20: 5, 21: 5, 22: 12, 23: 10, 24: 13}}
+
+
+def _written_max(definition: AssessmentDefinition) -> float:
+    return float(sum(_WRITTEN_MAX.get(definition.code, {}).values()))
+
+
+def _parse_points(value: Any) -> Optional[float]:
+    text = _clean(value)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _parse_datetime(value: Any) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value
@@ -261,23 +364,37 @@ def parse_forms_export(assessment_code: str, content: bytes) -> list[ScoredRespo
     except StopIteration:
         raise AssessmentImportError("The workbook is empty.")
 
+    count = definition.question_count
     question_cols: dict[int, int] = {}
+    points_cols: dict[int, int] = {}
     for idx, header in enumerate(headers):
+        if header.startswith("Points - "):
+            match = _QUESTION_HEADER.match(header[len("Points - "):])
+            if match and 1 <= int(match.group(1)) <= count:
+                points_cols.setdefault(int(match.group(1)), idx)
+            continue
         match = _QUESTION_HEADER.match(header)
         if match:
             n = int(match.group(1))
-            if 1 <= n <= QUESTION_COUNT and n not in question_cols:
+            if 1 <= n <= count and n not in question_cols:
                 question_cols[n] = idx
                 if n == 1 and not match.group(2).startswith(definition.q1_prefix):
                     raise AssessmentImportError(
                         f"This export is not from '{definition.title}' (question 1 does not match)."
                     )
-    missing = [n for n in range(1, QUESTION_COUNT + 1) if n not in question_cols]
+    missing = [n for n in range(1, count + 1) if n not in question_cols]
     if missing:
         raise AssessmentImportError(
             f"The export is missing question columns {missing[:5]}{'...' if len(missing) > 5 else ''}. "
             "Upload the unmodified Forms 'Open in Excel' file."
         )
+    if definition.mode == "points":
+        missing = [n for n in range(1, count + 1) if n not in points_cols]
+        if missing:
+            raise AssessmentImportError(
+                f"The export has no 'Points' columns for questions {missing[:5]}. Download it from the "
+                "quiz's Responses tab (Open in Excel) after marking the written answers."
+            )
 
     def col(*names: str) -> Optional[int]:
         lowered = [h.lower() for h in headers]
@@ -312,10 +429,19 @@ def parse_forms_export(assessment_code: str, content: bytes) -> list[ScoredRespo
             digest = hashlib.sha1(f"{name}|{email}|{submitted_at}".encode()).hexdigest()[:16]
             ref = f"row-{digest}"
 
-        scored = score_answers(definition.role, answers)
         warnings = []
-        if scored["unanswered_count"]:
-            warnings.append(f"{scored['unanswered_count']} question(s) unanswered")
+        if definition.mode == "points":
+            scored = score_points(
+                definition,
+                {n: _parse_points(values[i]) if i < len(values) else None for n, i in points_cols.items()},
+            )
+            unmarked = scored.pop("unmarked")
+            if unmarked:
+                warnings.append(f"written answers not yet marked in Forms: Q{', Q'.join(map(str, unmarked))}")
+        else:
+            scored = score_answers(definition.role, answers)
+            if scored["unanswered_count"]:
+                warnings.append(f"{scored['unanswered_count']} question(s) unanswered")
         if not email:
             warnings.append("no email given; matched by name")
         results.append(
