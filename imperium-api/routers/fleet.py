@@ -2362,7 +2362,7 @@ async def list_plant_requests(
         ) inc ON true
         LEFT JOIN fleet.plant_financial_closures cl ON cl.plant_request_id=pr.id AND cl.organization_id=pr.organization_id AND cl.is_deleted=false
         WHERE pr.organization_id=:org_id AND pr.is_deleted=false
-          AND (:status_filter IS NULL OR pr.status=:status_filter)
+          AND (CAST(:status_filter AS VARCHAR) IS NULL OR pr.status=CAST(:status_filter AS VARCHAR))
         ORDER BY pr.created_at DESC
         LIMIT 500
     """),

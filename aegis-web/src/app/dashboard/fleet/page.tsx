@@ -225,7 +225,7 @@ function FleetTrackerDashboard() {
       ? "You do not have permission to read the fleet register."
       : normalizeLoadError(error, "Fleet records could not be loaded. Verify the API connection and try again.")
     : null;
-  const gateWarning = warnings[0] ?? null;
+  const gateWarning = warnings.find(warning => /deployment gate/i.test(warning)) ?? null;
   const plantWarning = warnings.find(warning => /plant/i.test(warning)) ?? null;
 
   useLiveTable("fleet.fleet", () => void loadFleet());
