@@ -26,17 +26,38 @@ def setup_dependencies():
     app.dependency_overrides.pop(get_current_user, None)
 
 @pytest.mark.asyncio
-async def test_materials_forecast_alerts():
-    """Tests that the materials inflation forecasting endpoint executes successfully."""
+async def test_materials_forecast_alerts(monkeypatch):
+    """Forecasts real catalog rows only: a trend where there is price history,
+    INCOMPLETE where there isn't. The endpoint no longer injects fabricated
+    commodities, so the rows are stubbed rather than relying on a live DB."""
+    from datetime import datetime
+    import routers.executive as executive
+
+    async def fake_rows(db, query, params, *, source, source_errors=None):
+        assert source == "procurement.inventory_items"
+        return [
+            {"item_name": "Cement 50kg", "price": 10.0, "created_at": datetime(2026, 1, 1)},
+            {"item_name": "Cement 50kg", "price": 11.0, "created_at": datetime(2026, 2, 1)},
+            {"item_name": "Cement 50kg", "price": 12.0, "created_at": datetime(2026, 3, 1)},
+            {"item_name": "Rebar Y12", "price": 8.5, "created_at": datetime(2026, 1, 1)},
+        ]
+
+    monkeypatch.setattr(executive, "_rows", fake_rows)
+
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/api/v1/executive/materials/forecast-alerts")
         assert response.status_code == 200
         json_data = response.json()
         assert json_data["success"] is True
-        assert len(json_data["data"]) > 0
-        assert "material" in json_data["data"][0]
-        assert "trend" in json_data["data"][0]
+        by_material = {a["material"]: a for a in json_data["data"]}
+        assert set(by_material) == {"Cement 50kg", "Rebar Y12"}
+        assert by_material["Cement 50kg"]["truth_status"] == "SYSTEM_GENERATED"
+        assert by_material["Cement 50kg"]["trend"] == "upward"
+        assert by_material["Rebar Y12"]["truth_status"] == "INCOMPLETE"
+        assert by_material["Rebar Y12"]["trend"] == "unknown"
+        assert json_data["meta"]["materials_with_trend"] == 1
+        assert json_data["meta"]["materials_incomplete_history"] == 1
 
 @pytest.mark.asyncio
 async def test_pending_approvals():
