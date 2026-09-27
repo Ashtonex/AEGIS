@@ -73,12 +73,9 @@ def test_activity_label_is_truncated():
     assert len(line["label"]) == 80 and line["label"].endswith("...")
 
 
-def test_activity_query_is_tenant_scoped_through_the_acting_user():
-    # audit_log.organization_id is never populated, so scoping must come
-    # from the actor's organization - never from audit_log itself.
-    sql = executive._TODAY_ACTIVITY_SQL
-    assert "actor.organization_id = :org_id" in sql
-    assert "a.organization_id" not in sql
+def test_activity_query_is_tenant_scoped_on_the_audit_row():
+    # Populated by core.process_audit_log() since migration 237.
+    assert "a.organization_id = :org_id" in executive._TODAY_ACTIVITY_SQL
 
 
 def test_bank_tab_only_lists_bank_accounts():
@@ -159,7 +156,21 @@ async def test_failing_commercial_section_degrades_alone():
 
 
 def test_audit_log_activity_index_migration_matches_the_query():
-    migration = (ROOT / "migrations" / "236_audit_log_actor_activity_index.sql").read_text(encoding="utf-8")
-    assert "ON core.audit_log (created_at DESC, created_by)" in migration
+    migration = (ROOT / "migrations" / "237_audit_log_organization_id.sql").read_text(encoding="utf-8")
+    assert "ON core.audit_log (organization_id, created_at DESC)" in migration
     assert "WHERE created_by IS NOT NULL" in migration
     assert "a.created_by IS NOT NULL" in executive._TODAY_ACTIVITY_SQL
+
+
+def test_audit_trigger_sets_organization_id_without_risking_the_write():
+    migration = (ROOT / "migrations" / "237_audit_log_organization_id.sql").read_text(encoding="utf-8")
+    function = migration[migration.index("CREATE OR REPLACE FUNCTION core.process_audit_log()"):migration.index("$function$;")]
+    # every insert path writes the tenant
+    assert function.count("organization_id)") == 3
+    assert function.count("current_user_id, row_org_id)") == 3
+    # resolution order: row -> organizations row itself -> acting user
+    assert function.index("row_data->>'organization_id'") < function.index("TG_TABLE_NAME = 'organizations'") < function.index("FROM core.users u")
+    # an unknown org is nulled rather than violating the FK and failing the audited write
+    assert "NOT EXISTS (SELECT 1 FROM core.organizations o WHERE o.id = row_org_id)" in function
+    # the backfill only fills gaps
+    assert "WHERE src.organization_id IS NULL" in migration
