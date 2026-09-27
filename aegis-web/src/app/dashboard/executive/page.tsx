@@ -236,6 +236,7 @@ function ExecutiveCommandCentreWorkspace() {
   const [selectedProject, setSelectedProject] = useState<ApiData | null>(null);
   const [projectDetail, setProjectDetail] = useState<ApiData | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const userEmail = session?.user?.email || "System User";
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -272,6 +273,7 @@ function ExecutiveCommandCentreWorkspace() {
       ...sourceWarningsFrom(healthResult, "Data confidence"),
       ...sourceWarningsFrom(exceptionResult, "Executive exceptions"),
     ]);
+    setLastUpdated(new Date());
     setLoading(false);
     setRefreshing(false);
   }, [session]);
@@ -325,6 +327,7 @@ function ExecutiveCommandCentreWorkspace() {
       title={<GreetingHeading displayName={displayName} userRole={userRole} />}
       documentTitle="Executive Command Centre"
       actions={<div className="flex items-center gap-3">
+        {lastUpdated && <span className="font-mono text-[10px] uppercase text-slate" title={lastUpdated.toLocaleString()}>As of {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
         <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
       </div>}
     />
