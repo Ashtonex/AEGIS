@@ -4,7 +4,7 @@ import { API_BASE_URL } from "../constants";
 import { resolveBackendOrigin } from "../backend-url";
 import { getSupabase, getCachedAccessToken } from "../supabase";
 import { PROJECTS_DOSSIERS, getProjectDossier } from "../projectsDossiers";
-import { fetchApi, ApiError, isPermissionDenied, describeActionError, resolveApiUrl, getApiHeaders, buildApiError, getErrorMessage, API_TIMEOUT_MS, parseJsonResponse, getSupabaseAccessToken, createIdempotencyKey, type ApiRequestOptions } from "./core";
+import { fetchApi, ApiError, isPermissionDenied, describeActionError, resolveApiUrl, getApiHeaders, buildApiError, getErrorMessage, API_TIMEOUT_MS, parseJsonResponse, getSupabaseAccessToken, createIdempotencyKey, type ApiRequestOptions, recordApiWrite } from "./core";
 import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- INVENTORY & MATERIALS CONTROL ---
@@ -193,6 +193,7 @@ async function postBankStatementPdf(path: string, cashAccountId: string, file: F
   const token = await getSupabaseAccessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const response = await fetch(resolveApiUrl(path), { method: "POST", headers, body: form });
+  recordApiWrite();
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = data?.detail;

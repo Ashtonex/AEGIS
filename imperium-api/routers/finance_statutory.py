@@ -13,11 +13,12 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok
@@ -57,11 +58,13 @@ class RateTableCreate(BaseModel):
 
 @router.get("/rate-tables")
 async def list_rate_tables(
+    response: Response,
     tax_type: Optional[str] = None,
     currency: Optional[str] = None,
     user: dict = Depends(require_permission("finance.tax_rate.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     query_str = "SELECT * FROM finance.tax_rate_tables WHERE organization_id = :org_id AND is_deleted = false"
     params: dict = {"org_id": user["org_id"]}
     if tax_type:
@@ -77,12 +80,14 @@ async def list_rate_tables(
 
 @router.get("/rate-tables/active")
 async def get_active_rate_table(
+    response: Response,
     tax_type: str,
     currency: str = "USD",
     as_at: Optional[date] = None,
     user: dict = Depends(require_permission("finance.tax_rate.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     as_at = as_at or date.today()
     header = await db.execute(
         text("""

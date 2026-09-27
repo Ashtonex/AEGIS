@@ -5,11 +5,12 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
 
+from core.cache import set_reference_data_cache_headers
 from core.database import gather_reads, get_db
 from core.security import require_permission, user_has_permission, is_self_certification, SUPERADMIN_ROLE
 from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
@@ -983,9 +984,11 @@ async def create_segment(
 
 @router.get("/templates")
 async def list_templates(
+    response: Response,
     user: dict = Depends(require_permission("crm.marketing.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     org_id = _require_org_id(user)
     templates = await _rows(
         db,
@@ -2637,10 +2640,12 @@ async def mark_opportunity_lost(
 
 @router.get("/win-loss-reasons")
 async def list_win_loss_reasons(
+    response: Response,
     reason_type: Optional[str] = Query(default=None, pattern="^(won|lost)$"),
     user: dict = Depends(require_permission("crm.marketing.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     org_id = _require_org_id(user)
     query = "SELECT * FROM crm.win_loss_reasons WHERE organization_id=:org_id AND is_deleted=false"
     params: dict = {"org_id": org_id}

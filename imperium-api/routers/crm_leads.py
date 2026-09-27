@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from typing import Dict, Any, List, Optional
 from uuid import UUID
 from pydantic import BaseModel, Field
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission, user_has_permission
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
@@ -155,9 +156,11 @@ async def _sync_lead_compliance_requirements(
 
 @router.get("/compliance-requirement-types")
 async def list_compliance_requirement_types(
+    response: Response,
     user: dict = Depends(require_permission(LEAD_READ_PERMISSION)),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     result = await db.execute(
         text("""
             SELECT id, code, label

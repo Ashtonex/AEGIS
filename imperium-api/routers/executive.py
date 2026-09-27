@@ -1,4 +1,7 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime, timedelta
@@ -467,6 +470,73 @@ async def get_executive_kpis(
     }
 
 
+_route_tags_cache: List[tuple[str, str]] | None = None
+
+
+def _walk_route_tags(routes, prefix: str = "", tags: tuple = (), in_schema: bool = True, out=None):
+    """Read (path, tag) straight off the route table. FastAPI wraps every
+    include_router() in an _IncludedRouter carrying the include's prefix and
+    tags (include_context) around the original router, so recurse through
+    those. ~2ms, vs ~9s+ for app.openapi(). These are FastAPI internals, so
+    tests/test_executive_module_registry.py asserts this matches
+    app.openapi() exactly - a FastAPI upgrade that changes them fails CI."""
+    out = [] if out is None else out
+    for route in routes:
+        context = getattr(route, "include_context", None)
+        original = getattr(route, "original_router", None)
+        if context is not None and original is not None:
+            _walk_route_tags(
+                original.routes,
+                prefix + (context.prefix or ""),
+                tuple(tags) + tuple(context.tags or []),
+                in_schema and bool(context.include_in_schema),
+                out,
+            )
+        elif isinstance(route, APIRoute) and in_schema and route.include_in_schema:
+            path = prefix + route.path
+            if path.startswith("/api/v1/"):
+                out.extend((path, str(tag)) for tag in [*tags, *(route.tags or [])])
+    return out
+
+
+def _group_by_path(pairs: List[tuple[str, str]]) -> List[tuple[str, str]]:
+    """Order like app.openapi()'s "paths": each path's operations together,
+    paths in first-seen order - so every module keeps the same "route"."""
+    grouped: Dict[str, List[tuple[str, str]]] = {}
+    for pair in pairs:
+        grouped.setdefault(pair[0], []).append(pair)
+    return [pair for group in grouped.values() for pair in group]
+
+
+def _openapi_route_tags(app) -> List[tuple[str, str]]:
+    tags: List[tuple[str, str]] = []
+    for path, operations in app.openapi().get("paths", {}).items():
+        if not path.startswith("/api/v1/"):
+            continue
+        for operation in operations.values():
+            tags.extend((path, str(tag)) for tag in operation.get("tags", []))
+    return tags
+
+
+async def _registered_route_tags(app) -> List[tuple[str, str]]:
+    """(path, tag) for every /api/v1 operation, computed once per process.
+
+    This used to call app.openapi() inline: building the schema for ~650
+    paths is ~9s+ of CPU that holds the GIL, so the first Module Gateway
+    load on each worker after a deploy froze every request on that worker
+    and timed out on the dashboard. The route-table walk avoids building
+    the schema at all; app.openapi() (off the event loop) remains only as a
+    fallback should the walk ever come back empty."""
+    global _route_tags_cache
+    if _route_tags_cache is None:
+        tags = _group_by_path(_walk_route_tags(app.routes))
+        if not tags:
+            logger.warning("module_registry_route_walk_empty_falling_back_to_openapi")
+            tags = await asyncio.to_thread(_openapi_route_tags, app)
+        _route_tags_cache = tags
+    return _route_tags_cache
+
+
 @router.get("/modules")
 async def get_modules_status(
     request: Request,
@@ -474,6 +544,7 @@ async def get_modules_status(
     db: AsyncSession = Depends(get_db),
 ):
     """Report modules from the routes actually registered in this running API."""
+    route_tags = await _registered_route_tags(request.app)
     query = text("SELECT id, name, status FROM core.system_modules ORDER BY name ASC")
     try:
         result = await db.execute(query)
@@ -483,36 +554,25 @@ async def get_modules_status(
 
     registry = {str(module["name"]): module for module in modules}
     discovered: Dict[str, Dict[str, Any]] = {}
-    # request.app.routes only lists routes defined directly on the app - every
-    # router mounted via include_router() is wrapped in a private, lazily-
-    # resolved object that doesn't flatten into it (confirmed live: this walk
-    # silently found zero routes, degrading the whole Module Gateway to empty
-    # with no error surfaced anywhere). app.openapi() is FastAPI's public,
-    # stable contract for the fully-resolved route table - it's what powers
-    # /docs, so paths and merged tags are guaranteed correct here.
-    for path, operations in request.app.openapi().get("paths", {}).items():
-        if not path.startswith("/api/v1/"):
+    for path, tag in route_tags:
+        if tag in {"Authentication", "Users"}:
             continue
-        for operation in operations.values():
-            for tag in operation.get("tags", []):
-                if tag in {"Authentication", "Users"}:
-                    continue
-                name = str(tag)
-                configured = registry.get(name)
-                configured_status = (
-                    str(configured.get("status", "")).lower() if configured else ""
-                )
-                discovered[name] = {
-                    "id": str(configured.get("id", name.lower().replace(" ", "-")))
-                    if configured
-                    else name.lower().replace(" ", "-"),
-                    "name": name,
-                    "status": "Not Built"
-                    if configured_status in {"not built", "not_built"}
-                    else "Online",
-                    "available": configured_status not in {"not built", "not_built"},
-                    "route": path,
-                }
+        name = str(tag)
+        configured = registry.get(name)
+        configured_status = (
+            str(configured.get("status", "")).lower() if configured else ""
+        )
+        discovered[name] = {
+            "id": str(configured.get("id", name.lower().replace(" ", "-")))
+            if configured
+            else name.lower().replace(" ", "-"),
+            "name": name,
+            "status": "Not Built"
+            if configured_status in {"not built", "not_built"}
+            else "Online",
+            "available": configured_status not in {"not built", "not_built"},
+            "route": path,
+        }
 
     # Retain a deliberately configured not-built module even when no route exists yet.
     for name, configured in registry.items():

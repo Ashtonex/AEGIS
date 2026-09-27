@@ -91,14 +91,33 @@ def delete_sync(key: str) -> None:
         logger.warning("Redis delete_sync failed for key %s: %s", key, exc)
 
 
-def set_reference_data_cache_headers(response: Response, max_age_seconds: int = 120) -> None:
-    """Marks a response as short-lived, browser/proxy-cacheable reference
-    data - org-scoped rate libraries, cost codes, permissions, and similar
-    slow-changing lookups that were previously refetched and recomputed on
-    every request (zero Cache-Control headers existed anywhere in the
-    backend before this). `private` because every response here is
-    authenticated and org-scoped - it must never be cached by a shared
-    proxy, only the requesting browser. No ETag: these responses already
-    vary per organization via the auth token, so a fixed short max-age is
-    simpler than computing and validating a content hash per request."""
+REFERENCE_DATA_MAX_AGE_SECONDS = 120
+
+
+def set_reference_data_cache_headers(
+    response: Response, max_age_seconds: int = REFERENCE_DATA_MAX_AGE_SECONDS
+) -> None:
+    """Marks a response as short-lived, browser-cacheable reference data -
+    org-scoped cost codes, departments, chart of accounts, tax rate tables,
+    templates and similar slow-changing lookups (AEGIS audit item 4.2).
+
+    `private`: every response here is authenticated and org-scoped, so only
+    the requesting browser may cache it, never a shared proxy.
+
+    `Vary: Authorization`: the browser cache is keyed by URL, so without
+    this a different user signing in on the same browser could be served
+    the previous user's cached copy of the same URL.
+
+    The frontend (lib/api/core.ts fetchApi) revalidates every GET for a
+    window after this browser makes any write, so a user always sees their
+    own edits immediately; other users' edits show up within max-age. Keep
+    max-age at or below that window (REFERENCE_CACHE_BYPASS_MS there).
+
+    No ETag: these responses already vary per organization via the auth
+    token, so a fixed short max-age is simpler than computing and
+    validating a content hash per request."""
     response.headers["Cache-Control"] = f"private, max-age={max_age_seconds}"
+    vary = [v.strip() for v in response.headers.get("Vary", "").split(",") if v.strip()]
+    if "authorization" not in {v.lower() for v in vary}:
+        vary.append("Authorization")
+    response.headers["Vary"] = ", ".join(vary)

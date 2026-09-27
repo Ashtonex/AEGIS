@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,7 @@ from app.services.finance.project_forecast import (
     seed_project_budget_from_quotation,
 )
 from routers.sop_compliance import get_missing_required_sops
+from core.cache import set_reference_data_cache_headers
 from core.config import settings
 from core.database import get_db
 from core.idempotency import begin_idempotent_request, complete_idempotent_request, fail_idempotent_request
@@ -1195,10 +1196,12 @@ async def benchmark_rate(
 
 @router.get("/rates/benchmarks")
 async def list_rate_benchmarks(
+    response: Response,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Lists org-specific rate intelligence benchmarks (custom entries only, for admin management)."""
+    set_reference_data_cache_headers(response)
     result = await db.execute(
         text(
             """

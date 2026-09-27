@@ -189,6 +189,39 @@ function isIdempotentRequest(method?: string): boolean {
   return normalized === "GET" || normalized === "HEAD";
 }
 
+// Reference-data GETs (cost codes, chart of accounts, tax rate tables,
+// templates...) are browser-cached for up to 120s - see
+// set_reference_data_cache_headers in imperium-api/core/cache.py. So a user
+// always sees their own edits, every GET revalidates with the server for
+// this long after this browser makes any write. Must stay >= that max-age.
+// Shared across tabs via localStorage; other users' edits appear within
+// max-age, which is the intended bounded staleness.
+const REFERENCE_CACHE_BYPASS_MS = 180_000;
+const LAST_API_WRITE_KEY = "aegis:last-api-write-at";
+let lastApiWriteAt = 0;
+
+export function recordApiWrite(): void {
+  lastApiWriteAt = Date.now();
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_API_WRITE_KEY, String(lastApiWriteAt));
+  } catch {
+    // Private mode / blocked storage: this tab's in-memory marker still applies.
+  }
+}
+
+function wroteRecently(): boolean {
+  let at = lastApiWriteAt;
+  if (typeof window !== "undefined") {
+    try {
+      at = Math.max(at, Number(window.localStorage.getItem(LAST_API_WRITE_KEY)) || 0);
+    } catch {
+      // Fall back to this tab's marker.
+    }
+  }
+  return Date.now() - at < REFERENCE_CACHE_BYPASS_MS;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -491,6 +524,9 @@ export async function fetchApi<T>(endpoint: string, options: ApiRequestOptions =
 
     let sentAuthorization = headers.has("Authorization");
     const canRetryTransient = isIdempotentRequest(requestOptions.method);
+    if (canRetryTransient && requestOptions.cache === undefined && wroteRecently()) {
+      requestOptions.cache = "no-cache";
+    }
     let response = await fetch(url, {
       ...requestOptions,
       headers,
@@ -519,6 +555,12 @@ export async function fetchApi<T>(endpoint: string, options: ApiRequestOptions =
         headers,
         signal: controller.signal
       });
+    }
+
+    // Any write the server answered - even with an error, since it may have
+    // committed partway - means cached reference data may now be stale.
+    if (!canRetryTransient) {
+      recordApiWrite();
     }
 
     if (!response.ok) {

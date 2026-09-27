@@ -19,10 +19,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import get_current_user, is_self_certification, require_permission, user_has_permission
 
@@ -32,10 +33,12 @@ logger = logging.getLogger(__name__)
 
 @router.get("/templates")
 async def list_sop_templates(
+    response: Response,
     applies_to: Optional[str] = None,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     query = "SELECT * FROM compliance.sop_templates WHERE organization_id = :org_id AND is_deleted = false AND is_active = true"
     params: Dict[str, Any] = {"org_id": user["org_id"]}
     if applies_to:

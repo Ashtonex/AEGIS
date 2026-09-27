@@ -4,7 +4,7 @@ import { API_BASE_URL } from "../constants";
 import { resolveBackendOrigin } from "../backend-url";
 import { getSupabase, getCachedAccessToken } from "../supabase";
 import { PROJECTS_DOSSIERS, getProjectDossier } from "../projectsDossiers";
-import { fetchApi, ApiError, isPermissionDenied, describeActionError, resolveApiUrl, getApiHeaders, buildApiError, getErrorMessage, API_TIMEOUT_MS, parseJsonResponse, getSupabaseAccessToken, createIdempotencyKey, type ApiRequestOptions } from "./core";
+import { fetchApi, ApiError, isPermissionDenied, describeActionError, resolveApiUrl, getApiHeaders, buildApiError, getErrorMessage, API_TIMEOUT_MS, parseJsonResponse, getSupabaseAccessToken, createIdempotencyKey, type ApiRequestOptions, recordApiWrite } from "./core";
 import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- QUOTATIONS --- //
@@ -24,6 +24,7 @@ export async function importBoqFile(
   const headers = await getApiHeaders();
   headers.delete("Content-Type"); // let the browser set the multipart boundary
   const response = await fetch(url, { method: "POST", headers, body: formData });
+  recordApiWrite();
   if (!response.ok) {
     throw await buildApiError(response);
   }

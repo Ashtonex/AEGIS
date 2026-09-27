@@ -2,13 +2,14 @@ import asyncio
 import json
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from uuid import UUID
 from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db, AsyncSessionLocal
 from core.security import require_permission, user_has_permission
 from app.shared.events import emit_notification
@@ -1060,10 +1061,12 @@ async def backfill_task_stacks(
 
 @router.get("/templates")
 async def list_task_templates(
+    response: Response,
     entity_type: Optional[str] = None,
     user: dict = Depends(require_permission("crm_tasks.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     query_str = """
         SELECT * FROM crm.task_templates
         WHERE organization_id = :org_id AND is_deleted = false

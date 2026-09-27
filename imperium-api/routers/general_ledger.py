@@ -2,10 +2,11 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
 from app.shared.pagination import ok, page_offset, paginated
@@ -104,11 +105,13 @@ def _raise(exc: gl.GeneralLedgerError):
 
 @router.get("/accounts")
 async def list_accounts(
+    response: Response,
     category: Optional[str] = None,
     active_only: bool = False,
     user: dict = Depends(require_permission("finance.coa.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    set_reference_data_cache_headers(response)
     items = await gl.list_chart_of_accounts(db, org_id=user["org_id"], category=category, active_only=active_only)
     return ok(items, "Chart of accounts listed.")
 
