@@ -32,7 +32,7 @@ def warm_authorization_cache(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("active,deleted", [(False, False), (True, True)])
 async def test_warm_identity_cache_cannot_override_account_revocation(warm_authorization_cache, active, deleted):
-    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=active, is_deleted=deleted)))
+    db = FakeDb(FakeResult(row=identity(is_active=active, is_deleted=deleted, role_name="SUPERADMIN")))
     with pytest.raises(HTTPException) as exc:
         await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1", "role": "SUPERADMIN"}}, db)
     assert exc.value.status_code == 403
@@ -40,16 +40,13 @@ async def test_warm_identity_cache_cannot_override_account_revocation(warm_autho
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("assigned,expected", [([], "authenticated"), ([SimpleNamespace(name="EMPLOYEE")], "EMPLOYEE"), ([SimpleNamespace(name="SUPERADMIN")], "SUPERADMIN")])
+@pytest.mark.parametrize("assigned,expected", [(None, "authenticated"), ("EMPLOYEE", "EMPLOYEE"), ("SUPERADMIN", "SUPERADMIN")])
 async def test_current_assignments_override_warm_cache_and_stale_admin_claim(warm_authorization_cache, assigned, expected):
-    db = FakeDb(
-        FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)),
-        FakeResult(rows=assigned),
-        FakeResult(),
-    )
+    db = FakeDb(FakeResult(row=identity(role_name=assigned)))
     resolved = await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1", "role": "SUPERADMIN"}}, db)
     assert resolved["role"] == expected
-    assert len(db.calls) == 3
+    # Identity, role, permissions and the audit-actor set_config: one round trip.
+    assert len(db.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -105,6 +102,26 @@ class FakeDb:
         return self.results.pop(0)
 
 
+class InfoFakeDb(FakeDb):
+    """A FakeDb with a per-session info dict, like a real AsyncSession."""
+
+    def __init__(self, *results: FakeResult):
+        super().__init__(*results)
+        self.info = {}
+
+
+def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_name=None, permission_keys=()):
+    return SimpleNamespace(
+        actor_sub="user-1",
+        user_exists=True,
+        organization_id=organization_id,
+        is_active=is_active,
+        is_deleted=is_deleted,
+        role_name=role_name,
+        permission_keys=list(permission_keys),
+    )
+
+
 class FakeRequest:
     def __init__(self, method: str):
         self.method = method
@@ -145,7 +162,7 @@ async def test_get_current_user_rejects_deactivated_identity_without_reprovision
     # distinguish "deactivated" from "never existed"), it would try to
     # INSERT/UPDATE the user back to is_active=true and raise
     # AssertionError("Unexpected database query.") here instead.
-    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=False, is_deleted=False)))
+    db = FakeDb(FakeResult(row=identity(is_active=False)))
 
     with pytest.raises(HTTPException) as exc:
         await get_current_user(
@@ -164,7 +181,7 @@ async def test_get_current_user_rejects_deactivated_identity_without_reprovision
 
 @pytest.mark.asyncio
 async def test_get_current_user_rejects_token_tenant_mismatch():
-    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)))
+    db = FakeDb(FakeResult(row=identity()))
 
     with pytest.raises(HTTPException) as exc:
         await get_current_user(
@@ -182,11 +199,7 @@ async def test_get_current_user_rejects_token_tenant_mismatch():
 
 @pytest.mark.asyncio
 async def test_get_current_user_resolves_superadmin_from_database_role():
-    db = FakeDb(
-        FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)),
-        FakeResult(rows=[SimpleNamespace(name=SUPERADMIN_ROLE)]),
-        FakeResult(),  # SELECT set_config(...) - makes the actor visible to core.audit_log's trigger
-    )
+    db = FakeDb(FakeResult(row=identity(role_name=SUPERADMIN_ROLE)))
 
     resolved = await get_current_user(
         {
@@ -200,6 +213,73 @@ async def test_get_current_user_resolves_superadmin_from_database_role():
 
     assert resolved["role"] == SUPERADMIN_ROLE
     assert resolved["org_id"] == "org-1"
+
+
+@pytest.mark.asyncio
+async def test_identity_query_sets_audit_actor_in_same_round_trip():
+    db = FakeDb(FakeResult(row=identity(role_name="EMPLOYEE")))
+
+    await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1"}}, db)
+
+    assert len(db.calls) == 1
+    assert "set_config('request.jwt.claim.sub', :actor_sub, true)" in db.calls[0]["query"]
+    assert db.calls[0]["params"]["actor_sub"] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_unknown_identity_row_from_left_join_is_not_treated_as_revoked():
+    # The anchor LEFT JOIN always returns a row; with no core.users match it
+    # must fall into provisioning (here: default org missing -> 403 via the
+    # org check, i.e. a second query), not the "revoked" early rejection.
+    missing = SimpleNamespace(user_exists=False, organization_id=None, is_active=None, is_deleted=None,
+                              role_name=None, permission_keys=[])
+    db = FakeDb(FakeResult(row=missing), FakeResult(row=None))
+
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user({"sub": "user-1", "app_metadata": {}}, db)
+
+    assert exc.value.status_code == 403
+    assert len(db.calls) == 2
+    assert "core.organizations" in db.calls[1]["query"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["permission", "resource", "business"])
+async def test_permission_checks_reuse_grants_read_by_this_request(entrypoint):
+    from core.security import user_has_permission
+
+    db = InfoFakeDb(FakeResult(row=identity(role_name="QS", permission_keys=["workforce.update"])))
+    current = await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1"}}, db)
+
+    if entrypoint == "business":
+        assert await user_has_permission(db, current, "workforce.update") is True
+        assert await user_has_permission(db, current, "workforce.delete") is False
+    elif entrypoint == "permission":
+        assert (await require_permission("workforce.update")(current, db))["user_id"] == "user-1"
+        with pytest.raises(HTTPException) as exc:
+            await require_permission("workforce.delete")(current, db)
+        assert exc.value.status_code == 403
+    else:
+        assert (await require_resource_permission("workforce")(FakeRequest("PATCH"), current, db))["user_id"] == "user-1"
+        with pytest.raises(HTTPException):
+            await require_resource_permission("workforce")(FakeRequest("DELETE"), current, db)
+
+    # Only the identity query ran - no per-check permission round trips.
+    assert len(db.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_request_grants_are_not_reused_for_a_different_user():
+    db = InfoFakeDb(
+        FakeResult(row=identity(role_name="QS", permission_keys=["workforce.update"])),
+        FakeResult(scalar_value=None),
+    )
+    await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1"}}, db)
+
+    other = {**user(), "user_id": "user-2", "sub": "user-2"}
+    with pytest.raises(HTTPException):
+        await require_permission("workforce.update")(other, db)
+    assert len(db.calls) == 2
 
 
 @pytest.mark.asyncio

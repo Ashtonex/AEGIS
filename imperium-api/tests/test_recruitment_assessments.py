@@ -102,7 +102,7 @@ def test_non_excel_upload_is_rejected():
 
 def test_import_endpoint_and_recruitment_ui_are_wired():
     router = (ROOT / "routers" / "hr_operations.py").read_text(encoding="utf-8")
-    migration = (ROOT / "migrations" / "230_recruitment_assessments.sql").read_text(encoding="utf-8")
+    migration = (ROOT / "migrations" / "234_recruitment_assessments.sql").read_text(encoding="utf-8")
     web = ROOT.parent / "aegis-web" / "src"
     api = (web / "lib" / "api" / "hr.ts").read_text(encoding="utf-8")
     panel = (web / "app" / "dashboard" / "hr" / "RecruitmentAssessmentsPanel.tsx").read_text(encoding="utf-8")

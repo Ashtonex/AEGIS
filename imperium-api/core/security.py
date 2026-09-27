@@ -388,15 +388,57 @@ async def get_current_user(
             detail="User ID not found in token.",
         )
 
-    # Account status and assignments must reflect committed revocations on every request.
+    # Account status and assignments must reflect committed revocations on
+    # every request, so none of this is cached across requests. Instead the
+    # identity row, the primary role, the full permission-key set and the
+    # audit-actor set_config are fetched in ONE round trip (previously four
+    # sequential ones, ~220ms each against eu-west-1 - AEGIS audit item 1.3).
+    #
+    # set_config makes the acting user visible to core.process_audit_log()
+    # (the DB trigger backing core.audit_log) for the rest of this request's
+    # transaction. Every write across the app goes through this same `db`
+    # session (FastAPI caches Depends(get_db) per-request), so setting it once
+    # here covers every module. Without it every audit_log row's created_by
+    # is silently NULL. It's transaction-local, so running it before the
+    # checks below reject a request is harmless.
+    #
+    # The role subquery mirrors resolve_primary_role's precedence exactly
+    # (SUPERADMIN first, EMPLOYEE last). The LEFT JOIN from a one-row anchor
+    # guarantees a row (and so the set_config) even for an unknown user;
+    # user_exists tells that case apart from a revoked one.
     identity = await db.execute(
         text("""
-        SELECT organization_id, is_active, is_deleted FROM core.users
-        WHERE id = :user_id
+        SELECT
+            set_config('request.jwt.claim.sub', :actor_sub, true) AS actor_sub,
+            (u.id IS NOT NULL) AS user_exists,
+            u.organization_id,
+            u.is_active,
+            u.is_deleted,
+            (
+                SELECT r.name FROM core.user_roles ur
+                JOIN core.roles r ON r.id = ur.role_id
+                WHERE ur.user_id = u.id AND ur.organization_id = u.organization_id
+                  AND r.organization_id = u.organization_id AND r.is_deleted = false
+                ORDER BY (r.name = :superadmin) DESC, (r.name = 'EMPLOYEE') ASC, r.name
+                LIMIT 1
+            ) AS role_name,
+            ARRAY(
+                SELECT DISTINCT p.key
+                FROM core.permissions p
+                JOIN core.role_permissions rp ON p.id = rp.permission_id
+                JOIN core.user_roles ur ON rp.role_id = ur.role_id
+                JOIN core.roles r ON r.id = ur.role_id
+                    AND r.organization_id = u.organization_id AND r.is_deleted = false
+                WHERE ur.user_id = u.id AND ur.organization_id = u.organization_id
+            ) AS permission_keys
+        FROM (SELECT 1) AS anchor
+        LEFT JOIN core.users u ON u.id = :user_id
     """),
-        {"user_id": user_id},
+        {"user_id": user_id, "actor_sub": str(user_id), "superadmin": SUPERADMIN_ROLE},
     )
     identity_row = identity.fetchone()
+    if identity_row is not None and not identity_row.user_exists:
+        identity_row = None
 
     # A row that exists but is deactivated/soft-deleted was deliberately
     # revoked - reject it outright. Falling through to the auto-provisioning
@@ -453,6 +495,12 @@ async def get_current_user(
                 {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
             )
             await db.commit()
+            # commit() ended the transaction the set_config above was local
+            # to - re-set it so this request's writes are still attributed.
+            await db.execute(
+                text("SELECT set_config('request.jwt.claim.sub', :actor_sub, true)"),
+                {"actor_sub": str(user_id)},
+            )
             database_org_id = default_org_id
         else:
             raise HTTPException(
@@ -471,16 +519,12 @@ async def get_current_user(
 
     # Token claims cannot restore a revoked assignment, including the last
     # SUPERADMIN role. An unassigned authenticated identity has no role grants.
-    resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id)
-
-    # Makes the acting user visible to core.process_audit_log() (the DB
-    # trigger backing core.audit_log) for the rest of this request's
-    # transaction. Every write across the app already goes through this same
-    # `db` session (FastAPI caches Depends(get_db) per-request), so setting
-    # this once here - rather than once per router - covers every module.
-    # Without it, every audit_log row's created_by is silently NULL: the
-    # trigger reads this session variable and nothing ever set it.
-    await db.execute(text("SELECT set_config('request.jwt.claim.sub', :uid, true)"), {"uid": str(user_id)})
+    if identity_row is not None:
+        resolved_role = identity_row.role_name or "authenticated"
+        _remember_request_permissions(db, user_id, org_id, identity_row.permission_keys)
+    else:
+        # Just auto-provisioned above - rare, so the separate lookup is fine.
+        resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id)
 
     return {
         "user_id": user_id,
@@ -518,10 +562,40 @@ async def user_has_permission(db: AsyncSession, user: dict, permission_key: str)
     return await _check_permission(db, user, permission_key)
 
 
+_REQUEST_PERMISSIONS_KEY = "aegis_request_permission_keys"
+
+
+def _remember_request_permissions(db: AsyncSession, user_id, org_id, permission_keys) -> None:
+    """Stash the grants get_current_user already read on this request's own
+    session, so the permission checks that follow in the same request don't
+    re-query them. Scoped to the session (one per request via get_db), never
+    shared across requests, so a revocation still applies from the very next
+    request."""
+    info = getattr(db, "info", None)
+    if info is None:
+        return
+    info[_REQUEST_PERMISSIONS_KEY] = (str(user_id), str(org_id), frozenset(permission_keys or ()))
+
+
+def _request_permissions(db: AsyncSession, user_id, org_id) -> frozenset[str] | None:
+    info = getattr(db, "info", None)
+    if not info:
+        return None
+    cached = info.get(_REQUEST_PERMISSIONS_KEY)
+    if not cached or cached[0] != str(user_id) or cached[1] != str(org_id):
+        return None
+    return cached[2]
+
+
 async def _check_permission(db: AsyncSession, user: dict, permission_key: str) -> bool:
-    """Read current grants for every decision; cached grants cannot survive revocation."""
+    """Read current grants for every decision; cached grants cannot survive
+    revocation. The only reuse is within a single request (see
+    _remember_request_permissions)."""
     user_id = user.get("user_id")
     org_id = user.get("org_id")
+    granted = _request_permissions(db, user_id, org_id)
+    if granted is not None:
+        return permission_key in granted
     result = await db.execute(
         text("""
             SELECT 1
