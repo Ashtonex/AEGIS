@@ -30,6 +30,7 @@ import {
   getApAging,
   summarizeAging,
   getFinanceDepartmentPnl,
+  getExecutiveStatutoryLiabilities,
   ApiError,
 } from "@/lib/api";
 
@@ -349,14 +350,15 @@ function ExecutiveCommandCentreWorkspace() {
       <PipelineCompositionPanel kpis={kpis} />
     </section>
 
-    <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <CashRunwayPanel />
-      <SafetyIndexPanel />
+      <StatutoryLiabilitiesPanel />
+      <ARAPAgingPanel />
     </section>
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <DepartmentPnLPanel />
-      <ARAPAgingPanel />
+      <SafetyIndexPanel />
     </section>
 
     <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -1388,6 +1390,109 @@ function AgingTable({ title, rows, nameKey, idLabel }: { title: string; rows: Ap
         )}
       </div>
     </div>
+  );
+}
+
+const STATUTORY_TYPE_LABELS: Record<string, string> = {
+  vat: "VAT",
+  paye: "PAYE",
+  nssa_employee: "NSSA (employee)",
+  nssa_employer: "NSSA (employer)",
+  aids_levy: "AIDS Levy",
+  withholding_tax: "Withholding Tax",
+  other: "Other",
+};
+
+function moneyIn(currency: unknown, value: unknown): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "Not recorded";
+  const formatted = amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return String(currency || "USD") === "USD" ? `$${formatted}` : `${String(currency)} ${formatted}`;
+}
+
+function statutoryPeriod(item: ApiData): string {
+  const start = item.period_start ? new Date(String(item.period_start)) : null;
+  if (!start || Number.isNaN(start.getTime())) return "";
+  if (item.period_type === "year") return String(start.getFullYear());
+  if (item.period_type === "quarter") return `Q${Math.floor(start.getMonth() / 3) + 1} ${start.getFullYear()}`;
+  return start.toLocaleDateString([], { month: "short", year: "numeric" });
+}
+
+// What the organisation owes ZIMRA/NSSA and when - GET
+// /executive/statutory-liabilities reads the same register as Finance >
+// Statutory. Totals are per currency; they are never added across currencies.
+function StatutoryLiabilitiesPanel() {
+  const [data, setData] = useState<ApiData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getExecutiveStatutoryLiabilities();
+        if (!cancelled) setData((res.data as ApiData) || {});
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const totals = Array.isArray(data?.totals) ? (data.totals as ApiData[]) : [];
+  const items = Array.isArray(data?.items) ? (data.items as ApiData[]) : [];
+  const dueSoonDays = Number(data?.due_soon_days) || 30;
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Statutory Liabilities</h2>
+          <p className="text-xs text-slate-light mt-1">VAT, PAYE and NSSA outstanding, from the Finance statutory register.</p>
+        </div>
+        <Link href="/dashboard/finance/statutory" className="font-mono text-[10px] text-signal hover:underline shrink-0">Open register →</Link>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading statutory liabilities...</div>
+      ) : failed ? (
+        <p className="text-xs text-slate py-6">Statutory liabilities could not be loaded.</p>
+      ) : !items.length ? (
+        <p className="text-xs text-slate-light py-6">No outstanding statutory liabilities on the register.</p>
+      ) : (
+        <div className="py-2 space-y-3">
+          {totals.map((total) => (
+            <div key={String(total.currency)} className="grid grid-cols-3 gap-2 text-xs">
+              <div><p className="text-slate">Outstanding</p><p className="font-mono text-xl text-paper mt-0.5">{moneyIn(total.currency, total.outstanding)}</p></div>
+              <div><p className="text-slate">Overdue</p><p className={`font-mono text-xl mt-0.5 ${Number(total.overdue) > 0 ? "text-red-300" : "text-paper"}`}>{moneyIn(total.currency, total.overdue)}</p></div>
+              <div><p className="text-slate">Due in {dueSoonDays}d</p><p className={`font-mono text-xl mt-0.5 ${Number(total.due_soon) > 0 ? "text-amber-300" : "text-paper"}`}>{moneyIn(total.currency, total.due_soon)}</p></div>
+            </div>
+          ))}
+          <ul className="border-t border-ink-mid pt-2 space-y-1.5 max-h-56 overflow-y-auto">
+            {items.map((item) => {
+              const days = item.days_until_due === null || item.days_until_due === undefined ? null : Number(item.days_until_due);
+              const dueLabel = days === null ? "No due date" : days < 0 ? `Overdue ${Math.abs(days)}d` : days === 0 ? "Due today" : `Due in ${days}d`;
+              const dueTone = item.overdue ? "border-red-500/40 text-red-300 bg-red-950/20" : item.due_soon ? "border-amber-500/40 text-amber-300 bg-amber-950/20" : "border-ink-mid text-slate-light";
+              return (
+                <li key={String(item.id)} className="flex items-center justify-between gap-2 text-xs">
+                  <div className="min-w-0">
+                    <p className="text-paper truncate">{STATUTORY_TYPE_LABELS[String(item.liability_type)] || titleCase(String(item.liability_type))} <span className="text-slate">· {statutoryPeriod(item)}</span></p>
+                    <div className="flex gap-1 mt-0.5">
+                      <span className={`font-mono text-[9px] uppercase px-1.5 border rounded ${dueTone}`}>{dueLabel}</span>
+                      {item.status === "accruing"
+                        ? <span className="font-mono text-[9px] uppercase px-1.5 border rounded border-ink-mid text-slate-light" title="The period is still open, so nothing can be filed yet">Accruing</span>
+                        : !item.filed && Boolean(item.overdue || item.due_soon) && <span className="font-mono text-[9px] uppercase px-1.5 border rounded border-amber-500/40 text-amber-300">Not filed</span>}
+                    </div>
+                  </div>
+                  <span className="font-mono text-paper shrink-0">{moneyIn(item.currency, item.outstanding_amount)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -629,6 +629,13 @@ export async function getFinancialRunway(): Promise<ApiResponse<any>> {
   });
 }
 
+export async function getExecutiveStatutoryLiabilities(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/executive/statutory-liabilities', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 export async function getSafetyIndex(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/hse/ltifr', {
     cache: 'no-store',

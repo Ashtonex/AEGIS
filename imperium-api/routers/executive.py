@@ -195,7 +195,7 @@ def _snapshot_is_stale(snapshot_date: Any) -> bool:
             return True
     if isinstance(snapshot_date, datetime):
         snapshot_date = snapshot_date.date()
-    return (datetime.utcnow().date() - snapshot_date).days > _KPI_SNAPSHOT_MAX_AGE_DAYS
+    return (datetime.now().date() - snapshot_date).days > _KPI_SNAPSHOT_MAX_AGE_DAYS
 
 
 async def _compute_cash_runway(
@@ -1969,6 +1969,81 @@ async def get_financial_runway(
     }
 
 
+_STATUTORY_DUE_SOON_DAYS = 30
+
+_EXECUTIVE_STATUTORY_SQL = """
+    SELECT id, authority, liability_type, currency, period_type,
+           period_start, period_end, due_date, status, filed_at,
+           outstanding_amount,
+           (due_date - CURRENT_DATE) AS days_until_due
+    FROM finance.statutory_liabilities
+    WHERE organization_id = :org_id AND is_deleted = false
+      AND status NOT IN ('paid', 'waived', 'refund_due')
+      AND outstanding_amount > 0
+    ORDER BY due_date ASC NULLS LAST, liability_type
+"""
+
+
+@router.get("/statutory-liabilities")
+async def get_executive_statutory_liabilities(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """What the organisation owes ZIMRA/NSSA right now, and when. Reads the
+    same finance.statutory_liabilities register as the Finance > Statutory
+    page, gated by the dashboard permission so an executive doesn't also
+    need finance.statutory.read. Totals are kept per currency - USD and ZWG
+    liabilities are never summed together."""
+    source_errors: List[Dict[str, Any]] = []
+    rows = await _rows(
+        db,
+        _EXECUTIVE_STATUTORY_SQL,
+        {"org_id": user["org_id"]},
+        source="executive.statutory_liabilities",
+        source_errors=source_errors,
+    )
+
+    totals: Dict[str, Dict[str, Any]] = {}
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        amount = float(row.get("outstanding_amount") or 0)
+        days = row.get("days_until_due")
+        overdue = days is not None and days < 0
+        due_soon = days is not None and 0 <= days <= _STATUTORY_DUE_SOON_DAYS
+        currency = row.get("currency") or "USD"
+        bucket = totals.setdefault(
+            currency,
+            {"currency": currency, "outstanding": 0.0, "overdue": 0.0, "due_soon": 0.0, "count": 0},
+        )
+        bucket["outstanding"] += amount
+        bucket["count"] += 1
+        if overdue:
+            bucket["overdue"] += amount
+        elif due_soon:
+            bucket["due_soon"] += amount
+        items.append(
+            {
+                **row,
+                "outstanding_amount": amount,
+                "overdue": overdue,
+                "due_soon": due_soon,
+                "filed": row.get("filed_at") is not None,
+            }
+        )
+
+    return {
+        "success": True,
+        "data": {
+            "totals": sorted(totals.values(), key=lambda t: t["currency"]),
+            "items": items,
+            "overdue_count": sum(1 for item in items if item["overdue"]),
+            "due_soon_days": _STATUTORY_DUE_SOON_DAYS,
+        },
+        "message": "Statutory liabilities retrieved.",
+        "meta": {"source_errors": source_errors},
+    }
+
+
 @router.get("/hse/ltifr")
 async def get_safety_index(
     user: dict = Depends(require_permission("executive.view_dashboard")),
@@ -2141,10 +2216,10 @@ _TODAY_ACTIVITY_SQL = """
         SELECT a.table_name, a.action, a.created_by, a.created_at,
                COALESCE(a.new_data, a.old_data) AS data
         FROM core.audit_log a
-        -- audit_log.organization_id is never populated by the audit
-        -- trigger, so the tenant scope comes from the acting user instead.
-        JOIN core.users actor ON actor.id = a.created_by AND actor.organization_id = :org_id
-        WHERE a.created_by IS NOT NULL
+        -- organization_id is set by core.process_audit_log() since
+        -- migration 237 (and backfilled); index audit_log_org_actor_recent_idx.
+        WHERE a.organization_id = :org_id
+          AND a.created_by IS NOT NULL
           AND a.created_at >= NOW() - INTERVAL '7 days'
           AND NOT (a.table_name = ANY(CAST(:noise_tables AS text[])))
     ),
