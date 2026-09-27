@@ -85,7 +85,7 @@ class ProjectsRouterContractTests(unittest.TestCase):
         self.assertIn("disabled", PROJECTS_PAGE)
 
     def test_project_material_tab_uses_source_backed_daily_report_materials(self):
-        self.assertIn('"material_records": await _rows', EXECUTIVE_ROUTER)
+        self.assertIn('"material_records": lambda session: _rows', EXECUTIVE_ROUTER)
         self.assertIn("projects.daily_report_materials", EXECUTIVE_ROUTER)
         self.assertIn("material_records?: Record<string, unknown>[]", PROJECTS_PAGE)
         self.assertIn(

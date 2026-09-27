@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List
 
 from app.shared.events import emit_role_notification
-from core.database import get_db
+from core.database import gather_reads, get_db
 from core.logging import logger
 from core.security import SUPERADMIN_ROLE, require_permission
 from core.analytics_ml import ml_engine
@@ -63,6 +63,91 @@ ZIMBABWE_REGIONS: List[Dict[str, Any]] = [
 ]
 
 
+# Live-module reads behind GET /kpis (run concurrently there).
+_KPI_LIVE_PROJECTS_SQL = f"""
+        SELECT
+            COUNT(*) FILTER (WHERE {PROJECT_OPEN_STATUS_SQL}) AS open_projects,
+            NULLIF(COALESCE(SUM(COALESCE(p.contract_value, 0)) FILTER (WHERE {PROJECT_OPEN_STATUS_SQL}), 0), 0) AS portfolio_value
+        FROM projects.projects p
+        WHERE p.organization_id = :org_id AND p.is_deleted = false
+        """
+
+_KPI_PIPELINE_SQL = """
+        SELECT
+            COALESCE(SUM(opportunity_value), 0) AS opportunity_value,
+            COALESCE(SUM(tender_value), 0) AS tender_value,
+            COALESCE(SUM(opportunity_count), 0) AS opportunity_count,
+            COALESCE(SUM(tender_count), 0) AS tender_count
+        FROM (
+            SELECT
+                COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS opportunity_value,
+                0::numeric AS tender_value,
+                COUNT(*) AS opportunity_count,
+                0::bigint AS tender_count
+            FROM crm.opportunities
+            WHERE organization_id = :org_id
+              AND is_deleted = false
+              AND COALESCE(win_loss_status, '') <> 'lost'
+              AND lower(COALESCE(stage, '')) NOT IN ('contract', 'lost')
+            UNION ALL
+            SELECT
+                0::numeric AS opportunity_value,
+                COALESCE(SUM(bid_amount), 0) AS tender_value,
+                0::bigint AS opportunity_count,
+                COUNT(*) AS tender_count
+            FROM crm.tenders
+            WHERE organization_id = :org_id
+              AND is_deleted = false
+              AND lower(COALESCE(stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled', 'canceled')
+        ) pipeline_parts
+        """
+
+_KPI_REVENUE_YTD_SQL = """
+        SELECT
+            NULLIF(COALESCE(SUM(COALESCE(certified_amount, net_claim_amount, this_claim_amount)), 0), 0) AS revenue_ytd
+        FROM finance.progress_claims
+        WHERE organization_id = :org_id
+          AND is_deleted = false
+          AND COALESCE(claim_period_end, claim_period_start, created_at::date) >= date_trunc('year', CURRENT_DATE)::date
+          AND lower(COALESCE(status, '')) IN ('certified', 'invoiced', 'paid')
+        """
+
+_KPI_COST_YTD_SQL = """
+        SELECT NULLIF(COALESCE(SUM(amount), 0), 0) AS cost_ytd
+        FROM finance.cost_transactions
+        WHERE organization_id = :org_id
+          AND transaction_date >= date_trunc('year', CURRENT_DATE)::date
+          AND lower(COALESCE(status, '')) NOT IN ('void', 'cancelled', 'canceled', 'rejected')
+        """
+
+_KPI_CLIENT_CONCENTRATION_SQL = f"""
+        WITH client_totals AS (
+            SELECT COALESCE(NULLIF(client_name, ''), client_org_id::text, 'Unassigned') AS client_key,
+                   SUM(COALESCE(contract_value, 0)) AS contract_value
+            FROM projects.projects p
+            WHERE p.organization_id = :org_id
+              AND p.is_deleted = false
+              AND {PROJECT_OPEN_STATUS_SQL}
+            GROUP BY 1
+        )
+        SELECT
+            MAX(contract_value) AS top_client_contract_value,
+            SUM(contract_value) AS portfolio_contract_value,
+            CASE WHEN SUM(contract_value) > 0
+                 THEN ROUND(MAX(contract_value) / SUM(contract_value) * 100, 2)
+                 ELSE NULL
+            END AS concentration_percent
+        FROM client_totals
+        """
+_KPI_SOP_COMPLETION_SQL = """
+        SELECT
+            COUNT(*) AS total_instances,
+            COUNT(*) FILTER (WHERE status = 'complete') AS complete_instances
+        FROM compliance.sop_instances
+        WHERE organization_id = :org_id AND is_deleted = false
+        """
+
+
 async def _rows(
     db: AsyncSession,
     query: str,
@@ -110,29 +195,32 @@ async def _compute_cash_runway(
     when the cashbook has zero outflow history at all - there is no
     double-counting risk between the two.
     """
-    cash_res = await _rows(
-        db,
-        "SELECT COALESCE(SUM(current_balance), 0) as total FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false",
-        {"org_id": org_id},
-        source="finance.cash_accounts",
-        source_errors=source_errors,
-    )
-    cash_unavailable = any(e["source"] == "finance.cash_accounts" for e in source_errors)
-    cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
+    params = {"org_id": org_id}
 
-    burn_res = await _rows(
+    def rows(query: str, source: str):
+        return lambda session: _rows(session, query, params, source=source, source_errors=source_errors)
+
+    # Four independent reads; the payroll tiers below depend on burn_res.
+    cash_res, burn_res, fleet_res, po_res = await gather_reads(
         db,
-        """
+        rows("SELECT COALESCE(SUM(current_balance), 0) as total FROM finance.cash_accounts WHERE organization_id = :org_id AND is_active = true AND is_deleted = false", "finance.cash_accounts"),
+        rows(
+            """
         SELECT COALESCE(SUM(amount), 0) as total
         FROM finance.cashbook_transactions
         WHERE organization_id = :org_id AND direction = 'outflow' AND is_deleted = false
           AND transaction_date >= (CURRENT_DATE - INTERVAL '90 days')
         """,
-        {"org_id": org_id},
-        source="finance.cashbook_transactions",
-        source_errors=source_errors,
+            "finance.cashbook_transactions",
+        ),
+        rows("SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false", "fleet.fleet"),
+        rows("SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false", "procurement.purchase_orders"),
     )
+    cash_unavailable = any(e["source"] == "finance.cash_accounts" for e in source_errors)
+    cash_reserves = float(cash_res[0]["total"]) if cash_res else 0.0
     real_monthly_burn = (float(burn_res[0]["total"]) / 3.0) if burn_res else 0.0
+    fleet_burn = float(fleet_res[0]["total"]) if fleet_res else 0.0
+    procurement_burn = float(po_res[0]["total"]) if po_res else 0.0
 
     payroll_burn = 0.0
     payroll_basis: str | None = None
@@ -184,24 +272,6 @@ async def _compute_cash_runway(
         )
         emp_count = emp_res[0]["total"] if emp_res else 0
         payroll_burn = emp_count * 3500.00
-
-    fleet_res = await _rows(
-        db,
-        "SELECT COALESCE(SUM(monthly_ownership_cost), 0) as total FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
-        {"org_id": org_id},
-        source="fleet.fleet",
-        source_errors=source_errors,
-    )
-    fleet_burn = float(fleet_res[0]["total"]) if fleet_res else 0.0
-
-    po_res = await _rows(
-        db,
-        "SELECT COALESCE(SUM(total_amount), 0) as total FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
-        {"org_id": org_id},
-        source="procurement.purchase_orders",
-        source_errors=source_errors,
-    )
-    procurement_burn = float(po_res[0]["total"]) if po_res else 0.0
 
     estimated_burn = payroll_burn + fleet_burn + procurement_burn
     using_real_burn = real_monthly_burn > 0
@@ -260,8 +330,32 @@ async def get_executive_kpis(
         ORDER BY snapshot_date DESC
         LIMIT 1
     """)
-    result = await db.execute(query, {"org_id": org_id})
-    snapshot = result.fetchone()
+    params = {"org_id": org_id}
+
+    def rows(sql: str, source: str):
+        return lambda session: _rows(session, sql, params, source=source, source_errors=source_errors)
+
+    async def latest_snapshot(session: AsyncSession):
+        return (await session.execute(query, params)).fetchone()
+
+    # The snapshot and the five live-module reads are independent of each
+    # other - run them concurrently where spare connections allow.
+    (
+        snapshot,
+        live_rows,
+        pipeline_rows,
+        finance_rows,
+        cost_rows,
+        concentration_rows,
+    ) = await gather_reads(
+        db,
+        latest_snapshot,
+        rows(_KPI_LIVE_PROJECTS_SQL, "kpis.projects"),
+        rows(_KPI_PIPELINE_SQL, "kpis.pipeline"),
+        rows(_KPI_REVENUE_YTD_SQL, "kpis.progress_claims"),
+        rows(_KPI_COST_YTD_SQL, "kpis.cost_transactions"),
+        rows(_KPI_CLIENT_CONCENTRATION_SQL, "kpis.client_concentration"),
+    )
 
     # A missing snapshot is not a zero-performance result. Keep it explicit so
     # the executive UI can distinguish unavailable data from a real zero.
@@ -286,58 +380,10 @@ async def get_executive_kpis(
             }
         ]
 
-    live_rows = await _rows(
-        db,
-        f"""
-        SELECT
-            COUNT(*) FILTER (WHERE {PROJECT_OPEN_STATUS_SQL}) AS open_projects,
-            NULLIF(COALESCE(SUM(COALESCE(p.contract_value, 0)) FILTER (WHERE {PROJECT_OPEN_STATUS_SQL}), 0), 0) AS portfolio_value
-        FROM projects.projects p
-        WHERE p.organization_id = :org_id AND p.is_deleted = false
-        """,
-        {"org_id": org_id},
-        source="kpis.projects",
-        source_errors=source_errors,
-    )
     if live_rows:
         data["active_projects_count"] = int(live_rows[0].get("open_projects") or 0)
         data["active_project_portfolio_value"] = float(live_rows[0].get("portfolio_value") or 0)
 
-    pipeline_rows = await _rows(
-        db,
-        """
-        SELECT
-            COALESCE(SUM(opportunity_value), 0) AS opportunity_value,
-            COALESCE(SUM(tender_value), 0) AS tender_value,
-            COALESCE(SUM(opportunity_count), 0) AS opportunity_count,
-            COALESCE(SUM(tender_count), 0) AS tender_count
-        FROM (
-            SELECT
-                COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS opportunity_value,
-                0::numeric AS tender_value,
-                COUNT(*) AS opportunity_count,
-                0::bigint AS tender_count
-            FROM crm.opportunities
-            WHERE organization_id = :org_id
-              AND is_deleted = false
-              AND COALESCE(win_loss_status, '') <> 'lost'
-              AND lower(COALESCE(stage, '')) NOT IN ('contract', 'lost')
-            UNION ALL
-            SELECT
-                0::numeric AS opportunity_value,
-                COALESCE(SUM(bid_amount), 0) AS tender_value,
-                0::bigint AS opportunity_count,
-                COUNT(*) AS tender_count
-            FROM crm.tenders
-            WHERE organization_id = :org_id
-              AND is_deleted = false
-              AND lower(COALESCE(stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled', 'canceled')
-        ) pipeline_parts
-        """,
-        {"org_id": org_id},
-        source="kpis.pipeline",
-        source_errors=source_errors,
-    )
     if pipeline_rows:
         opportunity_value = float(pipeline_rows[0].get("opportunity_value") or 0)
         tender_value = float(pipeline_rows[0].get("tender_value") or 0)
@@ -347,34 +393,6 @@ async def get_executive_kpis(
         data["pipeline_tender_count"] = int(pipeline_rows[0].get("tender_count") or 0)
         data["pipeline"] = f"${opportunity_value + tender_value:,.2f}"
 
-    finance_rows = await _rows(
-        db,
-        """
-        SELECT
-            NULLIF(COALESCE(SUM(COALESCE(certified_amount, net_claim_amount, this_claim_amount)), 0), 0) AS revenue_ytd
-        FROM finance.progress_claims
-        WHERE organization_id = :org_id
-          AND is_deleted = false
-          AND COALESCE(claim_period_end, claim_period_start, created_at::date) >= date_trunc('year', CURRENT_DATE)::date
-          AND lower(COALESCE(status, '')) IN ('certified', 'invoiced', 'paid')
-        """,
-        {"org_id": org_id},
-        source="kpis.progress_claims",
-        source_errors=source_errors,
-    )
-    cost_rows = await _rows(
-        db,
-        """
-        SELECT NULLIF(COALESCE(SUM(amount), 0), 0) AS cost_ytd
-        FROM finance.cost_transactions
-        WHERE organization_id = :org_id
-          AND transaction_date >= date_trunc('year', CURRENT_DATE)::date
-          AND lower(COALESCE(status, '')) NOT IN ('void', 'cancelled', 'canceled', 'rejected')
-        """,
-        {"org_id": org_id},
-        source="kpis.cost_transactions",
-        source_errors=source_errors,
-    )
     revenue_ytd = float(finance_rows[0].get("revenue_ytd") or 0) if finance_rows else 0
     cost_ytd = float(cost_rows[0].get("cost_ytd") or 0) if cost_rows else 0
     data["revenue_ytd"] = revenue_ytd
@@ -386,31 +404,6 @@ async def get_executive_kpis(
         data["margin_percent"] = round(margin_percent, 2)
         data["margin"] = f"{margin_percent:.2f}%"
 
-    concentration_rows = await _rows(
-        db,
-        f"""
-        WITH client_totals AS (
-            SELECT COALESCE(NULLIF(client_name, ''), client_org_id::text, 'Unassigned') AS client_key,
-                   SUM(COALESCE(contract_value, 0)) AS contract_value
-            FROM projects.projects p
-            WHERE p.organization_id = :org_id
-              AND p.is_deleted = false
-              AND {PROJECT_OPEN_STATUS_SQL}
-            GROUP BY 1
-        )
-        SELECT
-            MAX(contract_value) AS top_client_contract_value,
-            SUM(contract_value) AS portfolio_contract_value,
-            CASE WHEN SUM(contract_value) > 0
-                 THEN ROUND(MAX(contract_value) / SUM(contract_value) * 100, 2)
-                 ELSE NULL
-            END AS concentration_percent
-        FROM client_totals
-        """,
-        {"org_id": org_id},
-        source="kpis.client_concentration",
-        source_errors=source_errors,
-    )
     if (
         data.get("revenue_concentration_percent") is None
         and concentration_rows
@@ -421,8 +414,20 @@ async def get_executive_kpis(
         data["top_client_contract_value"] = float(concentration_rows[0].get("top_client_contract_value") or 0)
         data["portfolio_contract_value"] = float(concentration_rows[0].get("portfolio_contract_value") or 0)
 
-    if data.get("cash_survival_days") is None:
-        runway = await _compute_cash_runway(db, org_id, source_errors)
+    # Live fallbacks for whatever the snapshot didn't supply - independent
+    # of each other, so they also run concurrently.
+    needs_runway = data.get("cash_survival_days") is None
+    needs_sop = data.get("documented_workflow_percent") is None
+    fallback_reads = []
+    if needs_runway:
+        fallback_reads.append(lambda session: _compute_cash_runway(session, org_id, source_errors))
+    if needs_sop:
+        fallback_reads.append(rows(_KPI_SOP_COMPLETION_SQL, "kpis.sop_instances"))
+    fallback_results = await gather_reads(db, *fallback_reads)
+    runway = fallback_results.pop(0) if needs_runway else None
+    sop_rows = fallback_results.pop(0) if needs_sop else None
+
+    if needs_runway:
         if runway["runway_months"] is not None:
             data["cash_survival_days"] = round(runway["runway_months"] * 30)
             data["cash_survival_truth_status"] = runway["truth_status"]
@@ -435,20 +440,7 @@ async def get_executive_kpis(
                 }
             )
 
-    if data.get("documented_workflow_percent") is None:
-        sop_rows = await _rows(
-            db,
-            """
-            SELECT
-                COUNT(*) AS total_instances,
-                COUNT(*) FILTER (WHERE status = 'complete') AS complete_instances
-            FROM compliance.sop_instances
-            WHERE organization_id = :org_id AND is_deleted = false
-            """,
-            {"org_id": org_id},
-            source="kpis.sop_instances",
-            source_errors=source_errors,
-        )
+    if needs_sop:
         total_instances = int(sop_rows[0].get("total_instances") or 0) if sop_rows else 0
         if total_instances > 0:
             complete_instances = int(sop_rows[0].get("complete_instances") or 0)
@@ -708,24 +700,25 @@ async def get_project_detail(
         raise HTTPException(status_code=404, detail="Project not found")
     params["project_id"] = project_rows[0]["project"]["id"]
 
-    # Each query is isolated because older ERP deployments may not yet have every relationship.
-    related = {
-        "viability": await _rows(
-            db,
+    # Each query is isolated because older ERP deployments may not yet have
+    # every relationship. They're independent, so they run concurrently.
+    related_reads = {
+        "viability": lambda session: _rows(
+            session,
             "SELECT to_jsonb(pp) || jsonb_build_object('delivery_manager', u.email) AS item FROM projects.project_profiles pp LEFT JOIN core.users u ON u.id = pp.delivery_manager_id WHERE pp.project_id = :project_id AND pp.organization_id = :org_id",
             params,
             source="project_detail.viability",
             source_errors=source_errors,
         ),
-        "tests_and_checks": await _rows(
-            db,
+        "tests_and_checks": lambda session: _rows(
+            session,
             "SELECT to_jsonb(pc) AS item FROM projects.project_checks pc WHERE pc.project_id = :project_id AND pc.organization_id = :org_id ORDER BY pc.completed_at DESC NULLS LAST",
             params,
             source="project_detail.tests_and_checks",
             source_errors=source_errors,
         ),
-        "site_reports": await _rows(
-            db,
+        "site_reports": lambda session: _rows(
+            session,
             """
             SELECT to_jsonb(r) AS item
             FROM projects.daily_site_reports r
@@ -739,8 +732,8 @@ async def get_project_detail(
             source="project_detail.site_reports",
             source_errors=source_errors,
         ),
-        "material_records": await _rows(
-            db,
+        "material_records": lambda session: _rows(
+            session,
             """
             SELECT to_jsonb(m)
                 || jsonb_build_object(
@@ -772,35 +765,36 @@ async def get_project_detail(
             source="project_detail.material_records",
             source_errors=source_errors,
         ),
-        "quotations": await _rows(
-            db,
+        "quotations": lambda session: _rows(
+            session,
             "SELECT to_jsonb(q) AS item FROM finance.quotations q WHERE q.organization_id = :org_id AND q.is_deleted = false AND COALESCE(to_jsonb(q)->>'project_id', '') = :project_id",
             params,
             source="project_detail.quotations",
             source_errors=source_errors,
         ),
-        "procurement_orders": await _rows(
-            db,
+        "procurement_orders": lambda session: _rows(
+            session,
             "SELECT to_jsonb(o) AS item FROM procurement.purchase_orders o WHERE o.organization_id = :org_id AND o.is_deleted = false AND COALESCE(to_jsonb(o)->>'project_id', '') = :project_id",
             params,
             source="project_detail.procurement_orders",
             source_errors=source_errors,
         ),
-        "tenders": await _rows(
-            db,
+        "tenders": lambda session: _rows(
+            session,
             "SELECT to_jsonb(t) AS item FROM crm.tenders t WHERE t.organization_id = :org_id AND t.is_deleted = false AND COALESCE(to_jsonb(t)->>'project_id', '') = :project_id",
             params,
             source="project_detail.tenders",
             source_errors=source_errors,
         ),
-        "subcontractors": await _rows(
-            db,
+        "subcontractors": lambda session: _rows(
+            session,
             "SELECT to_jsonb(c) AS item FROM crm.contacts c WHERE c.organization_id = :org_id AND c.is_deleted = false AND COALESCE(to_jsonb(c)->>'project_id', '') = :project_id",
             params,
             source="project_detail.subcontractors",
             source_errors=source_errors,
         ),
     }
+    related = dict(zip(related_reads, await gather_reads(db, *related_reads.values())))
     return {
         "success": True,
         "data": {
@@ -847,104 +841,104 @@ async def get_executive_stats(
     source_errors: List[Dict[str, Any]] = []
     params = {"org_id": org_id}
 
-    projects_count = await _stat_scalar(
-        db, f"SELECT COUNT(*) FROM projects.projects p WHERE p.organization_id = :org_id AND p.is_deleted = false AND {PROJECT_OPEN_STATUS_SQL}",
-        params, source="projects.projects", source_errors=source_errors
-    )
-    machinery_count = await _stat_scalar(
-        db, "SELECT COUNT(*) FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false",
-        params, source="fleet.fleet", source_errors=source_errors
-    )
-    workforce_count = await _stat_scalar(
-        db, "SELECT COUNT(*) FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false",
-        params, source="hr.employees", source_errors=source_errors
-    )
-    orders_count = await _stat_scalar(
-        db, "SELECT COUNT(*) FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false",
-        params, source="procurement.purchase_orders", source_errors=source_errors
-    )
-    inventory_value = await _stat_scalar(
-        db,
-        """
-            SELECT COALESCE(SUM(sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)), 0)
-            FROM procurement.stock_ledger sl
-            JOIN procurement.inventory_items i
-              ON i.id = sl.item_id AND i.organization_id = sl.organization_id AND i.is_deleted = false
-            WHERE sl.organization_id = :org_id
-        """,
-        params, source="procurement.stock_ledger", source_errors=source_errors
-    )
-    incidents_count = await _stat_scalar(
-        db, "SELECT COUNT(*) FROM projects.hse_incidents WHERE organization_id = :org_id AND is_deleted = false",
-        params, source="projects.hse_incidents", source_errors=source_errors
-    )
+    def stat(query_sql: str, source: str):
+        return lambda session: _stat_scalar(session, query_sql, params, source=source, source_errors=source_errors)
 
     # CRM open pipeline (deal count + value, excluding won/lost) - a shared
     # query, so both derived fields become None together on failure rather
     # than one silently staying a stale/fake 0 while the other is flagged.
-    try:
-        pipeline_query = text(
-            """
-            SELECT
-                COUNT(*) AS open_deal_count,
-                COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS open_pipeline_value
-            FROM crm.opportunities
-            WHERE organization_id = :org_id AND is_deleted = false
-              AND stage NOT IN ('Contract', 'Lost')
-            """
-        )
-        pipeline_res = (await db.execute(pipeline_query, params)).one()
-        open_deal_count = pipeline_res.open_deal_count or 0
-        open_pipeline_value = float(pipeline_res.open_pipeline_value or 0)
-    except Exception as exc:
-        await db.rollback()
-        source_errors.append({"source": "crm.opportunities", "status": "degraded", "reason": exc.__class__.__name__})
-        open_deal_count = None
-        open_pipeline_value = None
-
-    open_leads_count = await _stat_scalar(
-        db, "SELECT COUNT(*) FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')",
-        params, source="crm.leads", source_errors=source_errors
-    )
-    recent_activity_last_7_days = await _stat_scalar(
-        db, "SELECT COUNT(*) FROM crm.activities WHERE organization_id = :org_id AND activity_date >= NOW() - INTERVAL '7 days'",
-        params, source="crm.activities", source_errors=source_errors
-    )
+    async def pipeline(session: AsyncSession):
+        try:
+            pipeline_query = text(
+                """
+                SELECT
+                    COUNT(*) AS open_deal_count,
+                    COALESCE(SUM(COALESCE(deal_value, budget)), 0) AS open_pipeline_value
+                FROM crm.opportunities
+                WHERE organization_id = :org_id AND is_deleted = false
+                  AND stage NOT IN ('Contract', 'Lost')
+                """
+            )
+            pipeline_res = (await session.execute(pipeline_query, params)).one()
+            return pipeline_res.open_deal_count or 0, float(pipeline_res.open_pipeline_value or 0)
+        except Exception as exc:
+            await session.rollback()
+            source_errors.append({"source": "crm.opportunities", "status": "degraded", "reason": exc.__class__.__name__})
+            return None, None
 
     # Plant & Equipment lifecycle control spine - one shared query, so all
     # 5 derived fields become None together on failure.
-    try:
-        plant_query = text(
-            """
-            SELECT
-                COUNT(*) FILTER (WHERE status NOT IN ('closed','cancelled','rejected')) AS open_requests,
-                COUNT(*) FILTER (WHERE status IN ('approved','reserved','ready_for_dispatch')) AS dispatch_queue,
-                COUNT(*) FILTER (WHERE status IN ('dispatched','active')) AS active_deployments,
-                COUNT(*) FILTER (WHERE status IN ('off_hire_requested','returned','under_reconciliation')) AS closure_queue,
-                COALESCE(SUM(contribution_margin) FILTER (WHERE status NOT IN ('cancelled','rejected')), 0) AS contribution_margin
-            FROM fleet.plant_requests
-            WHERE organization_id = :org_id AND is_deleted = false
-            """
-        )
-        plant_res = (await db.execute(plant_query, params)).one()
-        plant_open_requests = plant_res.open_requests or 0
-        plant_dispatch_queue = plant_res.dispatch_queue or 0
-        plant_active_deployments = plant_res.active_deployments or 0
-        plant_closure_queue = plant_res.closure_queue or 0
-        plant_contribution_margin = float(plant_res.contribution_margin or 0)
-    except Exception as exc:
-        await db.rollback()
-        source_errors.append({"source": "fleet.plant_requests", "status": "degraded", "reason": exc.__class__.__name__})
-        plant_open_requests = None
-        plant_dispatch_queue = None
-        plant_active_deployments = None
-        plant_closure_queue = None
-        plant_contribution_margin = None
+    async def plant(session: AsyncSession):
+        try:
+            plant_query = text(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE status NOT IN ('closed','cancelled','rejected')) AS open_requests,
+                    COUNT(*) FILTER (WHERE status IN ('approved','reserved','ready_for_dispatch')) AS dispatch_queue,
+                    COUNT(*) FILTER (WHERE status IN ('dispatched','active')) AS active_deployments,
+                    COUNT(*) FILTER (WHERE status IN ('off_hire_requested','returned','under_reconciliation')) AS closure_queue,
+                    COALESCE(SUM(contribution_margin) FILTER (WHERE status NOT IN ('cancelled','rejected')), 0) AS contribution_margin
+                FROM fleet.plant_requests
+                WHERE organization_id = :org_id AND is_deleted = false
+                """
+            )
+            plant_res = (await session.execute(plant_query, params)).one()
+            return (
+                plant_res.open_requests or 0,
+                plant_res.dispatch_queue or 0,
+                plant_res.active_deployments or 0,
+                plant_res.closure_queue or 0,
+                float(plant_res.contribution_margin or 0),
+            )
+        except Exception as exc:
+            await session.rollback()
+            source_errors.append({"source": "fleet.plant_requests", "status": "degraded", "reason": exc.__class__.__name__})
+            return None, None, None, None, None
 
-    plant_serious_incidents = await _stat_scalar(
+    # All independent reads - run concurrently where spare connections allow.
+    (
+        projects_count,
+        machinery_count,
+        workforce_count,
+        orders_count,
+        inventory_value,
+        incidents_count,
+        (open_deal_count, open_pipeline_value),
+        open_leads_count,
+        recent_activity_last_7_days,
+        (
+            plant_open_requests,
+            plant_dispatch_queue,
+            plant_active_deployments,
+            plant_closure_queue,
+            plant_contribution_margin,
+        ),
+        plant_serious_incidents,
+    ) = await gather_reads(
         db,
-        "SELECT COUNT(*) FROM fleet.plant_incidents WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('closed','cancelled') AND severity IN ('high','critical')",
-        params, source="fleet.plant_incidents", source_errors=source_errors
+        stat(f"SELECT COUNT(*) FROM projects.projects p WHERE p.organization_id = :org_id AND p.is_deleted = false AND {PROJECT_OPEN_STATUS_SQL}", "projects.projects"),
+        stat("SELECT COUNT(*) FROM fleet.fleet WHERE organization_id = :org_id AND is_deleted = false", "fleet.fleet"),
+        stat("SELECT COUNT(*) FROM hr.employees WHERE organization_id = :org_id AND is_deleted = false", "hr.employees"),
+        stat("SELECT COUNT(*) FROM procurement.purchase_orders WHERE organization_id = :org_id AND is_deleted = false", "procurement.purchase_orders"),
+        stat(
+            """
+                SELECT COALESCE(SUM(sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)), 0)
+                FROM procurement.stock_ledger sl
+                JOIN procurement.inventory_items i
+                  ON i.id = sl.item_id AND i.organization_id = sl.organization_id AND i.is_deleted = false
+                WHERE sl.organization_id = :org_id
+            """,
+            "procurement.stock_ledger",
+        ),
+        stat("SELECT COUNT(*) FROM projects.hse_incidents WHERE organization_id = :org_id AND is_deleted = false", "projects.hse_incidents"),
+        pipeline,
+        stat("SELECT COUNT(*) FROM crm.leads WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('converted', 'disqualified')", "crm.leads"),
+        stat("SELECT COUNT(*) FROM crm.activities WHERE organization_id = :org_id AND activity_date >= NOW() - INTERVAL '7 days'", "crm.activities"),
+        plant,
+        stat(
+            "SELECT COUNT(*) FROM fleet.plant_incidents WHERE organization_id = :org_id AND is_deleted = false AND status NOT IN ('closed','cancelled') AND severity IN ('high','critical')",
+            "fleet.plant_incidents",
+        ),
     )
 
     return {
@@ -1155,327 +1149,343 @@ async def get_executive_exceptions(
     """A deliberately small, source-backed list of conditions needing executive attention."""
     params = {"org_id": user["org_id"]}
     source_errors: List[Dict[str, Any]] = []
-    incidents = await _rows(
-        db,
-        """
-        SELECT id, severity, incident_date, 'HSE incident' AS category,
-               'Review high-severity incident' AS action
-        FROM projects.hse_incidents
-        WHERE organization_id = :org_id AND is_deleted = false
-          AND lower(COALESCE(severity, '')) IN ('high', 'critical')
-        ORDER BY incident_date DESC NULLS LAST LIMIT 20
-    """,
-        params,
-        source="exceptions.hse_incidents",
-        source_errors=source_errors,
-    )
-    compliance = await _rows(
-        db,
-        """
-        SELECT id, certificate_name AS title, expiry_date, 'Compliance expiry' AS category,
-               'Renew or resolve certificate' AS action
-        FROM core.compliance_items
-        WHERE organization_id = :org_id AND is_deleted = false
-          AND expiry_date <= CURRENT_DATE + INTERVAL '30 days'
-        ORDER BY expiry_date ASC LIMIT 20
-    """,
-        params,
-        source="exceptions.compliance_items",
-        source_errors=source_errors,
-    )
-    viability = await _rows(
-        db,
-        """
-        SELECT pp.project_id AS id, p.name AS title, pp.viability_status, 'Project viability' AS category,
-               'Review delivery and commercial recovery plan' AS action
-        FROM projects.project_profiles pp
-        JOIN projects.projects p ON p.id = pp.project_id AND p.organization_id = pp.organization_id
-        WHERE pp.organization_id = :org_id AND p.is_deleted = false
-          AND lower(COALESCE(pp.viability_status, '')) IN ('at risk', 'blocked', 'critical')
-        ORDER BY pp.updated_at DESC LIMIT 20
-    """,
-        params,
-        source="exceptions.project_profiles",
-        source_errors=source_errors,
-    )
-    finance_risk = await _rows(
-        db,
-        """
-        SELECT f.project_id AS id, p.name AS title,
-               CASE
-                 WHEN f.cost_overrun_risk AND f.cashflow_deficit_risk THEN 'critical'
-                 WHEN f.cost_overrun_risk OR f.cashflow_deficit_risk THEN 'warning'
-                 ELSE 'info'
-               END AS severity,
-               'Financial forecast' AS category,
-               CASE
-                 WHEN f.cost_overrun_risk AND f.cashflow_deficit_risk THEN 'Review recovery plan: cost overrun and cash-flow deficit risks are both active'
-                 WHEN f.cost_overrun_risk THEN 'Review forecast-to-complete and cost recovery plan'
-                 WHEN f.cashflow_deficit_risk THEN 'Review near-term cash requirement and collection plan'
-                 ELSE 'Review financial forecast'
-               END AS action,
-               f.as_at_date AS evidence_date,
-               jsonb_build_object(
-                 'forecast_margin_pct', f.forecast_margin_pct,
-                 'estimate_at_completion', f.estimate_at_completion,
-                 'approved_budget', f.approved_budget,
-                 'committed_cost', f.committed_cost,
-                 'actual_cost_to_date', f.actual_cost_to_date
-               ) AS evidence
-        FROM finance.project_forecasts f
-        JOIN projects.projects p ON p.id=f.project_id AND p.organization_id=f.organization_id
-        WHERE f.organization_id=:org_id AND p.is_deleted=false
-          AND (f.cost_overrun_risk = true OR f.cashflow_deficit_risk = true OR COALESCE(f.forecast_margin_pct, 1) < 0.12)
-        ORDER BY f.as_at_date DESC LIMIT 20
-    """,
-        params,
-        source="exceptions.project_forecasts",
-        source_errors=source_errors,
-    )
-    supplier_risk = await _rows(
-        db,
-        """
-        SELECT s.id, COALESCE(s.trading_name, to_jsonb(s)->>'supplier_name', to_jsonb(s)->>'name', s.id::text) AS title,
-               CASE WHEN COALESCE(s.on_time_delivery_pct, 100) < 70 THEN 'critical' ELSE 'warning' END AS severity,
-               'Supplier performance' AS category,
-               'Review supplier delivery performance and procurement mitigation plan' AS action,
-               jsonb_build_object('on_time_delivery_pct', s.on_time_delivery_pct, 'performance_score', s.performance_score, 'compliance_status', s.compliance_status) AS evidence
-        FROM procurement.suppliers s
-        WHERE s.organization_id=:org_id AND COALESCE(s.is_deleted, false)=false
-          AND (COALESCE(s.on_time_delivery_pct, 100) < 85 OR lower(COALESCE(s.compliance_status, '')) = 'non_compliant')
-        ORDER BY COALESCE(s.on_time_delivery_pct, 100) ASC NULLS LAST LIMIT 20
-    """,
-        params,
-        source="exceptions.suppliers",
-        source_errors=source_errors,
-    )
-    equipment_risk = await _rows(
-        db,
-        """
-        SELECT f.id, COALESCE(to_jsonb(f)->>'asset_name', to_jsonb(f)->>'name', to_jsonb(f)->>'registration_number', to_jsonb(f)->>'asset_code', f.id::text) AS title,
-               'warning' AS severity,
-               'Equipment utilisation' AS category,
-               'Review asset deployment: assigned equipment has no recent utilisation record' AS action,
-               jsonb_build_object('current_project_id', f.current_project_id, 'monthly_ownership_cost', f.monthly_ownership_cost) AS evidence
-        FROM fleet.fleet f
-        WHERE f.organization_id=:org_id AND f.is_deleted=false AND f.current_project_id IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM fleet.utilization_logs u
-            WHERE u.fleet_id=f.id AND u.organization_id=f.organization_id AND u.is_deleted=false
-              AND u.occurred_on >= CURRENT_DATE - INTERVAL '7 days'
-        )
-        ORDER BY f.updated_at DESC NULLS LAST LIMIT 20
-    """,
-        params,
-        source="exceptions.equipment_utilisation",
-        source_errors=source_errors,
-    )
-    plant_request_risk = await _rows(
-        db,
-        """
-        SELECT pr.id,
-               pr.request_number || ' - ' || pr.required_asset_type AS title,
-               CASE WHEN pr.risk_level='critical' OR pr.priority='emergency' THEN 'critical' ELSE 'warning' END AS severity,
-               'Plant request control' AS category,
-               CASE
-                 WHEN pr.status IN ('submitted','under_validation','returned_for_correction') THEN 'Validate Plant request before any asset leaves the yard'
-                 WHEN pr.status IN ('availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval') THEN 'Complete availability, cost, risk and approval controls'
-                 WHEN pr.status IN ('off_hire_requested','returned','under_reconciliation') THEN 'Complete off-hire return and financial reconciliation'
-                 ELSE 'Review Plant request control state'
-               END AS action,
-               pr.start_date AS evidence_date,
-               jsonb_build_object(
-                 'status', pr.status,
-                 'request_type', pr.request_type,
-                 'priority', pr.priority,
-                 'risk_level', pr.risk_level,
-                 'work_location', pr.work_location,
-                 'expected_revenue', pr.expected_revenue,
-                 'estimated_cost', pr.estimated_cost,
-                 'contribution_margin', pr.contribution_margin
-               ) AS evidence
-        FROM fleet.plant_requests pr
-        WHERE pr.organization_id=:org_id AND pr.is_deleted=false
-          AND pr.status NOT IN ('closed','cancelled','rejected')
-          AND (
-            pr.priority IN ('urgent','emergency')
-            OR pr.risk_level IN ('high','critical')
-            OR pr.status IN ('off_hire_requested','returned','under_reconciliation')
-          )
-        ORDER BY
-          CASE WHEN pr.risk_level='critical' OR pr.priority='emergency' THEN 0 ELSE 1 END,
-          pr.updated_at DESC
-        LIMIT 20
-    """,
-        params,
-        source="exceptions.plant_requests",
-        source_errors=source_errors,
-    )
-    plant_incident_risk = await _rows(
-        db,
-        """
-        SELECT pi.id,
-               COALESCE(f.asset_code, f.vehicle_registration, pi.fleet_id::text) AS title,
-               CASE WHEN pi.severity='critical' THEN 'critical' ELSE 'warning' END AS severity,
-               'Plant incident' AS category,
-               CASE
-                 WHEN pi.work_order_id IS NULL AND pi.incident_type='breakdown' THEN 'Open and track maintenance work order for plant breakdown'
-                 WHEN pi.escalation_required THEN 'Escalate Plant incident to Risk/HSE/executive review'
-                 ELSE 'Review open Plant incident'
-               END AS action,
-               pi.occurred_at AS evidence_date,
-               jsonb_build_object(
-                 'incident_type', pi.incident_type,
-                 'severity', pi.severity,
-                 'status', pi.status,
-                 'plant_request_id', pi.plant_request_id,
-                 'work_order_id', pi.work_order_id,
-                 'location', pi.location
-               ) AS evidence
-        FROM fleet.plant_incidents pi
-        JOIN fleet.fleet f ON f.id=pi.fleet_id AND f.organization_id=pi.organization_id
-        WHERE pi.organization_id=:org_id AND pi.is_deleted=false
-          AND pi.status NOT IN ('closed','cancelled')
-          AND (pi.severity IN ('high','critical') OR pi.escalation_required=true)
-        ORDER BY pi.occurred_at DESC
-        LIMIT 20
-    """,
-        params,
-        source="exceptions.plant_incidents",
-        source_errors=source_errors,
-    )
-    site_report_risk = await _rows(
-        db,
-        """
-        SELECT r.id,
-               r.project_id,
-               p.name AS title,
-               r.report_date AS evidence_date,
-               'Site report exception' AS category,
-               CASE
-                 WHEN COALESCE(r.cost_exposure, 0) > 0 THEN 'Review approved site report cost exposure'
-                 WHEN NULLIF(TRIM(COALESCE(r.delays, '')), '') IS NOT NULL THEN 'Review approved site report delay'
-                 WHEN NULLIF(TRIM(COALESCE(r.safety_notes, '')), '') IS NOT NULL THEN 'Review approved site report safety note'
-                 ELSE 'Review approved site report operational variance'
-               END AS action,
-               jsonb_build_object(
-                 'daily_site_report_id', r.id,
-                 'report_date', r.report_date,
-                 'cost_exposure', r.cost_exposure,
-                 'delays', r.delays,
-                 'safety_notes', r.safety_notes,
-                 'labour_lines', COALESCE(lines.labour_lines, 0),
-                 'equipment_lines', COALESCE(lines.equipment_lines, 0),
-                 'material_lines', COALESCE(lines.material_lines, 0),
-                 'material_wastage', COALESCE(lines.material_wastage, 0)
-               ) AS evidence
-        FROM projects.daily_site_reports r
-        JOIN projects.projects p
-          ON p.id = r.project_id
-         AND p.organization_id = r.organization_id
-         AND p.is_deleted = false
-        LEFT JOIN LATERAL (
-          SELECT
-            (SELECT COUNT(*) FROM projects.daily_report_labour l WHERE l.organization_id=r.organization_id AND l.report_id=r.id AND l.is_deleted=false) AS labour_lines,
-            (SELECT COUNT(*) FROM projects.daily_report_equipment e WHERE e.organization_id=r.organization_id AND e.report_id=r.id AND e.is_deleted=false) AS equipment_lines,
-            (SELECT COUNT(*) FROM projects.daily_report_materials m WHERE m.organization_id=r.organization_id AND m.report_id=r.id AND m.is_deleted=false) AS material_lines,
-            (SELECT COALESCE(SUM(m.wastage_quantity), 0) FROM projects.daily_report_materials m WHERE m.organization_id=r.organization_id AND m.report_id=r.id AND m.is_deleted=false) AS material_wastage
-        ) lines ON true
-        WHERE r.organization_id=:org_id
-          AND r.is_deleted=false
-          AND r.status='approved'
-          AND (
-            COALESCE(r.cost_exposure, 0) > 0
-            OR NULLIF(TRIM(COALESCE(r.delays, '')), '') IS NOT NULL
-            OR NULLIF(TRIM(COALESCE(r.safety_notes, '')), '') IS NOT NULL
-            OR COALESCE(lines.material_wastage, 0) > 0
-          )
-        ORDER BY r.report_date DESC, r.approved_at DESC NULLS LAST
-        LIMIT 20
-    """,
-        params,
-        source="exceptions.site_reports",
-        source_errors=source_errors,
-    )
-    site_variance_risk = await _rows(
-        db,
-        """
-        SELECT v.id,
-               v.project_id,
-               COALESCE(v.variation_number || ' - ' || v.title, v.id::text) AS title,
-               CASE
-                 WHEN v.proceed_at_risk THEN 'critical'
-                 WHEN v.execution_blocked THEN 'warning'
-                 ELSE 'info'
-               END AS severity,
-               'Site variance gate' AS category,
-               CASE
-                 WHEN v.proceed_at_risk THEN 'Monitor proceed-at-risk work until formal written authority is attached'
-                 WHEN v.execution_blocked THEN 'Clear QS/client/internal approval before released execution or procurement'
-                 WHEN v.qs_review_status != 'reviewed' THEN 'Complete QS entitlement and pricing review'
-                 ELSE 'Review unresolved site-originated variance'
-               END AS action,
-               COALESCE(v.formal_approval_deadline, v.submitted_at::date, v.created_at::date) AS evidence_date,
-               jsonb_build_object(
-                 'variation_number', v.variation_number,
-                 'classification', v.variance_classification,
-                 'approval_route', v.approval_route,
-                 'qs_review_status', v.qs_review_status,
-                 'client_approval_status', v.client_approval_status,
-                 'proceed_at_risk', v.proceed_at_risk,
-                 'execution_blocked', v.execution_blocked,
-                 'formal_approval_deadline', v.formal_approval_deadline,
-                 'cost_impact', v.cost_impact,
-                 'time_impact_days', v.time_impact_days
-               ) AS evidence
-        FROM finance.variations v
-        WHERE v.organization_id=:org_id
-          AND v.is_deleted=false
-          AND v.source_type='weekly_budget_item'
-          AND (
-            v.status NOT IN ('approved','rejected','cancelled')
-            OR v.proceed_at_risk=true
-            OR v.execution_blocked=true
-          )
-        ORDER BY
-          CASE WHEN v.proceed_at_risk THEN 0 WHEN v.execution_blocked THEN 1 ELSE 2 END,
-          v.updated_at DESC NULLS LAST
-        LIMIT 30
-    """,
-        params,
-        source="exceptions.site_variance_gates",
-        source_errors=source_errors,
-    )
-    blocked_material_risk = await _rows(
-        db,
-        """
-        SELECT mr.id,
-               mr.project_id,
-               mr.request_number || ' - ' || COALESCE(i.item_name, i.item_code, mr.item_id::text) AS title,
-               'warning' AS severity,
-               'Blocked execution item' AS category,
-               'Resolve weekly allowance, variance approval, or proceed-at-risk override before stock/procurement action' AS action,
-               mr.required_by_date AS evidence_date,
-               jsonb_build_object(
-                 'request_number', mr.request_number,
-                 'requested_quantity', mr.requested_quantity,
-                 'execution_gate_status', mr.execution_gate_status,
-                 'engineer_review_status', mr.engineer_review_status,
-                 'weekly_budget_item_id', mr.weekly_budget_item_id,
-                 'variance_id', mr.variance_id
-               ) AS evidence
-        FROM procurement.material_requests mr
-        LEFT JOIN procurement.inventory_items i ON i.id=mr.item_id AND i.organization_id=mr.organization_id
-        WHERE mr.organization_id=:org_id
-          AND mr.is_deleted=false
-          AND mr.execution_gate_status='blocked'
-        ORDER BY mr.required_by_date ASC NULLS LAST, mr.updated_at DESC NULLS LAST
-        LIMIT 30
-    """,
-        params,
-        source="exceptions.blocked_material_requests",
-        source_errors=source_errors,
-    )
+    # Every exception source is an independent read - run them concurrently.
+    exception_reads = {
+        "incidents": lambda session: _rows(
+            session,
+            """
+            SELECT id, severity, incident_date, 'HSE incident' AS category,
+                   'Review high-severity incident' AS action
+            FROM projects.hse_incidents
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND lower(COALESCE(severity, '')) IN ('high', 'critical')
+            ORDER BY incident_date DESC NULLS LAST LIMIT 20
+        """,
+            params,
+            source="exceptions.hse_incidents",
+            source_errors=source_errors,
+        ),
+        "compliance": lambda session: _rows(
+            session,
+            """
+            SELECT id, certificate_name AS title, expiry_date, 'Compliance expiry' AS category,
+                   'Renew or resolve certificate' AS action
+            FROM core.compliance_items
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND expiry_date <= CURRENT_DATE + INTERVAL '30 days'
+            ORDER BY expiry_date ASC LIMIT 20
+        """,
+            params,
+            source="exceptions.compliance_items",
+            source_errors=source_errors,
+        ),
+        "viability": lambda session: _rows(
+            session,
+            """
+            SELECT pp.project_id AS id, p.name AS title, pp.viability_status, 'Project viability' AS category,
+                   'Review delivery and commercial recovery plan' AS action
+            FROM projects.project_profiles pp
+            JOIN projects.projects p ON p.id = pp.project_id AND p.organization_id = pp.organization_id
+            WHERE pp.organization_id = :org_id AND p.is_deleted = false
+              AND lower(COALESCE(pp.viability_status, '')) IN ('at risk', 'blocked', 'critical')
+            ORDER BY pp.updated_at DESC LIMIT 20
+        """,
+            params,
+            source="exceptions.project_profiles",
+            source_errors=source_errors,
+        ),
+        "finance_risk": lambda session: _rows(
+            session,
+            """
+            SELECT f.project_id AS id, p.name AS title,
+                   CASE
+                     WHEN f.cost_overrun_risk AND f.cashflow_deficit_risk THEN 'critical'
+                     WHEN f.cost_overrun_risk OR f.cashflow_deficit_risk THEN 'warning'
+                     ELSE 'info'
+                   END AS severity,
+                   'Financial forecast' AS category,
+                   CASE
+                     WHEN f.cost_overrun_risk AND f.cashflow_deficit_risk THEN 'Review recovery plan: cost overrun and cash-flow deficit risks are both active'
+                     WHEN f.cost_overrun_risk THEN 'Review forecast-to-complete and cost recovery plan'
+                     WHEN f.cashflow_deficit_risk THEN 'Review near-term cash requirement and collection plan'
+                     ELSE 'Review financial forecast'
+                   END AS action,
+                   f.as_at_date AS evidence_date,
+                   jsonb_build_object(
+                     'forecast_margin_pct', f.forecast_margin_pct,
+                     'estimate_at_completion', f.estimate_at_completion,
+                     'approved_budget', f.approved_budget,
+                     'committed_cost', f.committed_cost,
+                     'actual_cost_to_date', f.actual_cost_to_date
+                   ) AS evidence
+            FROM finance.project_forecasts f
+            JOIN projects.projects p ON p.id=f.project_id AND p.organization_id=f.organization_id
+            WHERE f.organization_id=:org_id AND p.is_deleted=false
+              AND (f.cost_overrun_risk = true OR f.cashflow_deficit_risk = true OR COALESCE(f.forecast_margin_pct, 1) < 0.12)
+            ORDER BY f.as_at_date DESC LIMIT 20
+        """,
+            params,
+            source="exceptions.project_forecasts",
+            source_errors=source_errors,
+        ),
+        "supplier_risk": lambda session: _rows(
+            session,
+            """
+            SELECT s.id, COALESCE(s.trading_name, to_jsonb(s)->>'supplier_name', to_jsonb(s)->>'name', s.id::text) AS title,
+                   CASE WHEN COALESCE(s.on_time_delivery_pct, 100) < 70 THEN 'critical' ELSE 'warning' END AS severity,
+                   'Supplier performance' AS category,
+                   'Review supplier delivery performance and procurement mitigation plan' AS action,
+                   jsonb_build_object('on_time_delivery_pct', s.on_time_delivery_pct, 'performance_score', s.performance_score, 'compliance_status', s.compliance_status) AS evidence
+            FROM procurement.suppliers s
+            WHERE s.organization_id=:org_id AND COALESCE(s.is_deleted, false)=false
+              AND (COALESCE(s.on_time_delivery_pct, 100) < 85 OR lower(COALESCE(s.compliance_status, '')) = 'non_compliant')
+            ORDER BY COALESCE(s.on_time_delivery_pct, 100) ASC NULLS LAST LIMIT 20
+        """,
+            params,
+            source="exceptions.suppliers",
+            source_errors=source_errors,
+        ),
+        "equipment_risk": lambda session: _rows(
+            session,
+            """
+            SELECT f.id, COALESCE(to_jsonb(f)->>'asset_name', to_jsonb(f)->>'name', to_jsonb(f)->>'registration_number', to_jsonb(f)->>'asset_code', f.id::text) AS title,
+                   'warning' AS severity,
+                   'Equipment utilisation' AS category,
+                   'Review asset deployment: assigned equipment has no recent utilisation record' AS action,
+                   jsonb_build_object('current_project_id', f.current_project_id, 'monthly_ownership_cost', f.monthly_ownership_cost) AS evidence
+            FROM fleet.fleet f
+            WHERE f.organization_id=:org_id AND f.is_deleted=false AND f.current_project_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM fleet.utilization_logs u
+                WHERE u.fleet_id=f.id AND u.organization_id=f.organization_id AND u.is_deleted=false
+                  AND u.occurred_on >= CURRENT_DATE - INTERVAL '7 days'
+            )
+            ORDER BY f.updated_at DESC NULLS LAST LIMIT 20
+        """,
+            params,
+            source="exceptions.equipment_utilisation",
+            source_errors=source_errors,
+        ),
+        "plant_request_risk": lambda session: _rows(
+            session,
+            """
+            SELECT pr.id,
+                   pr.request_number || ' - ' || pr.required_asset_type AS title,
+                   CASE WHEN pr.risk_level='critical' OR pr.priority='emergency' THEN 'critical' ELSE 'warning' END AS severity,
+                   'Plant request control' AS category,
+                   CASE
+                     WHEN pr.status IN ('submitted','under_validation','returned_for_correction') THEN 'Validate Plant request before any asset leaves the yard'
+                     WHEN pr.status IN ('availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval') THEN 'Complete availability, cost, risk and approval controls'
+                     WHEN pr.status IN ('off_hire_requested','returned','under_reconciliation') THEN 'Complete off-hire return and financial reconciliation'
+                     ELSE 'Review Plant request control state'
+                   END AS action,
+                   pr.start_date AS evidence_date,
+                   jsonb_build_object(
+                     'status', pr.status,
+                     'request_type', pr.request_type,
+                     'priority', pr.priority,
+                     'risk_level', pr.risk_level,
+                     'work_location', pr.work_location,
+                     'expected_revenue', pr.expected_revenue,
+                     'estimated_cost', pr.estimated_cost,
+                     'contribution_margin', pr.contribution_margin
+                   ) AS evidence
+            FROM fleet.plant_requests pr
+            WHERE pr.organization_id=:org_id AND pr.is_deleted=false
+              AND pr.status NOT IN ('closed','cancelled','rejected')
+              AND (
+                pr.priority IN ('urgent','emergency')
+                OR pr.risk_level IN ('high','critical')
+                OR pr.status IN ('off_hire_requested','returned','under_reconciliation')
+              )
+            ORDER BY
+              CASE WHEN pr.risk_level='critical' OR pr.priority='emergency' THEN 0 ELSE 1 END,
+              pr.updated_at DESC
+            LIMIT 20
+        """,
+            params,
+            source="exceptions.plant_requests",
+            source_errors=source_errors,
+        ),
+        "plant_incident_risk": lambda session: _rows(
+            session,
+            """
+            SELECT pi.id,
+                   COALESCE(f.asset_code, f.vehicle_registration, pi.fleet_id::text) AS title,
+                   CASE WHEN pi.severity='critical' THEN 'critical' ELSE 'warning' END AS severity,
+                   'Plant incident' AS category,
+                   CASE
+                     WHEN pi.work_order_id IS NULL AND pi.incident_type='breakdown' THEN 'Open and track maintenance work order for plant breakdown'
+                     WHEN pi.escalation_required THEN 'Escalate Plant incident to Risk/HSE/executive review'
+                     ELSE 'Review open Plant incident'
+                   END AS action,
+                   pi.occurred_at AS evidence_date,
+                   jsonb_build_object(
+                     'incident_type', pi.incident_type,
+                     'severity', pi.severity,
+                     'status', pi.status,
+                     'plant_request_id', pi.plant_request_id,
+                     'work_order_id', pi.work_order_id,
+                     'location', pi.location
+                   ) AS evidence
+            FROM fleet.plant_incidents pi
+            JOIN fleet.fleet f ON f.id=pi.fleet_id AND f.organization_id=pi.organization_id
+            WHERE pi.organization_id=:org_id AND pi.is_deleted=false
+              AND pi.status NOT IN ('closed','cancelled')
+              AND (pi.severity IN ('high','critical') OR pi.escalation_required=true)
+            ORDER BY pi.occurred_at DESC
+            LIMIT 20
+        """,
+            params,
+            source="exceptions.plant_incidents",
+            source_errors=source_errors,
+        ),
+        "site_report_risk": lambda session: _rows(
+            session,
+            """
+            SELECT r.id,
+                   r.project_id,
+                   p.name AS title,
+                   r.report_date AS evidence_date,
+                   'Site report exception' AS category,
+                   CASE
+                     WHEN COALESCE(r.cost_exposure, 0) > 0 THEN 'Review approved site report cost exposure'
+                     WHEN NULLIF(TRIM(COALESCE(r.delays, '')), '') IS NOT NULL THEN 'Review approved site report delay'
+                     WHEN NULLIF(TRIM(COALESCE(r.safety_notes, '')), '') IS NOT NULL THEN 'Review approved site report safety note'
+                     ELSE 'Review approved site report operational variance'
+                   END AS action,
+                   jsonb_build_object(
+                     'daily_site_report_id', r.id,
+                     'report_date', r.report_date,
+                     'cost_exposure', r.cost_exposure,
+                     'delays', r.delays,
+                     'safety_notes', r.safety_notes,
+                     'labour_lines', COALESCE(lines.labour_lines, 0),
+                     'equipment_lines', COALESCE(lines.equipment_lines, 0),
+                     'material_lines', COALESCE(lines.material_lines, 0),
+                     'material_wastage', COALESCE(lines.material_wastage, 0)
+                   ) AS evidence
+            FROM projects.daily_site_reports r
+            JOIN projects.projects p
+              ON p.id = r.project_id
+             AND p.organization_id = r.organization_id
+             AND p.is_deleted = false
+            LEFT JOIN LATERAL (
+              SELECT
+                (SELECT COUNT(*) FROM projects.daily_report_labour l WHERE l.organization_id=r.organization_id AND l.report_id=r.id AND l.is_deleted=false) AS labour_lines,
+                (SELECT COUNT(*) FROM projects.daily_report_equipment e WHERE e.organization_id=r.organization_id AND e.report_id=r.id AND e.is_deleted=false) AS equipment_lines,
+                (SELECT COUNT(*) FROM projects.daily_report_materials m WHERE m.organization_id=r.organization_id AND m.report_id=r.id AND m.is_deleted=false) AS material_lines,
+                (SELECT COALESCE(SUM(m.wastage_quantity), 0) FROM projects.daily_report_materials m WHERE m.organization_id=r.organization_id AND m.report_id=r.id AND m.is_deleted=false) AS material_wastage
+            ) lines ON true
+            WHERE r.organization_id=:org_id
+              AND r.is_deleted=false
+              AND r.status='approved'
+              AND (
+                COALESCE(r.cost_exposure, 0) > 0
+                OR NULLIF(TRIM(COALESCE(r.delays, '')), '') IS NOT NULL
+                OR NULLIF(TRIM(COALESCE(r.safety_notes, '')), '') IS NOT NULL
+                OR COALESCE(lines.material_wastage, 0) > 0
+              )
+            ORDER BY r.report_date DESC, r.approved_at DESC NULLS LAST
+            LIMIT 20
+        """,
+            params,
+            source="exceptions.site_reports",
+            source_errors=source_errors,
+        ),
+        "site_variance_risk": lambda session: _rows(
+            session,
+            """
+            SELECT v.id,
+                   v.project_id,
+                   COALESCE(v.variation_number || ' - ' || v.title, v.id::text) AS title,
+                   CASE
+                     WHEN v.proceed_at_risk THEN 'critical'
+                     WHEN v.execution_blocked THEN 'warning'
+                     ELSE 'info'
+                   END AS severity,
+                   'Site variance gate' AS category,
+                   CASE
+                     WHEN v.proceed_at_risk THEN 'Monitor proceed-at-risk work until formal written authority is attached'
+                     WHEN v.execution_blocked THEN 'Clear QS/client/internal approval before released execution or procurement'
+                     WHEN v.qs_review_status != 'reviewed' THEN 'Complete QS entitlement and pricing review'
+                     ELSE 'Review unresolved site-originated variance'
+                   END AS action,
+                   COALESCE(v.formal_approval_deadline, v.submitted_at::date, v.created_at::date) AS evidence_date,
+                   jsonb_build_object(
+                     'variation_number', v.variation_number,
+                     'classification', v.variance_classification,
+                     'approval_route', v.approval_route,
+                     'qs_review_status', v.qs_review_status,
+                     'client_approval_status', v.client_approval_status,
+                     'proceed_at_risk', v.proceed_at_risk,
+                     'execution_blocked', v.execution_blocked,
+                     'formal_approval_deadline', v.formal_approval_deadline,
+                     'cost_impact', v.cost_impact,
+                     'time_impact_days', v.time_impact_days
+                   ) AS evidence
+            FROM finance.variations v
+            WHERE v.organization_id=:org_id
+              AND v.is_deleted=false
+              AND v.source_type='weekly_budget_item'
+              AND (
+                v.status NOT IN ('approved','rejected','cancelled')
+                OR v.proceed_at_risk=true
+                OR v.execution_blocked=true
+              )
+            ORDER BY
+              CASE WHEN v.proceed_at_risk THEN 0 WHEN v.execution_blocked THEN 1 ELSE 2 END,
+              v.updated_at DESC NULLS LAST
+            LIMIT 30
+        """,
+            params,
+            source="exceptions.site_variance_gates",
+            source_errors=source_errors,
+        ),
+        "blocked_material_risk": lambda session: _rows(
+            session,
+            """
+            SELECT mr.id,
+                   mr.project_id,
+                   mr.request_number || ' - ' || COALESCE(i.item_name, i.item_code, mr.item_id::text) AS title,
+                   'warning' AS severity,
+                   'Blocked execution item' AS category,
+                   'Resolve weekly allowance, variance approval, or proceed-at-risk override before stock/procurement action' AS action,
+                   mr.required_by_date AS evidence_date,
+                   jsonb_build_object(
+                     'request_number', mr.request_number,
+                     'requested_quantity', mr.requested_quantity,
+                     'execution_gate_status', mr.execution_gate_status,
+                     'engineer_review_status', mr.engineer_review_status,
+                     'weekly_budget_item_id', mr.weekly_budget_item_id,
+                     'variance_id', mr.variance_id
+                   ) AS evidence
+            FROM procurement.material_requests mr
+            LEFT JOIN procurement.inventory_items i ON i.id=mr.item_id AND i.organization_id=mr.organization_id
+            WHERE mr.organization_id=:org_id
+              AND mr.is_deleted=false
+              AND mr.execution_gate_status='blocked'
+            ORDER BY mr.required_by_date ASC NULLS LAST, mr.updated_at DESC NULLS LAST
+            LIMIT 30
+        """,
+            params,
+            source="exceptions.blocked_material_requests",
+            source_errors=source_errors,
+        ),
+    }
+    (
+        incidents,
+        compliance,
+        viability,
+        finance_risk,
+        supplier_risk,
+        equipment_risk,
+        plant_request_risk,
+        plant_incident_risk,
+        site_report_risk,
+        site_variance_risk,
+        blocked_material_risk,
+    ) = await gather_reads(db, *exception_reads.values())
     return {
         "success": True,
         "data": [

@@ -19,7 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, supabase as supabase_admin
+from core.database import gather_reads, get_db, supabase as supabase_admin
 from core.config import settings
 from core.email import send_email
 from core.security import require_permission
@@ -1228,98 +1228,118 @@ async def overview(
 ):
     org_id = user["org_id"]
     source_warnings: list[str] = []
-    org = await _settings_first(
-        db,
-        """
-        SELECT name, registration_number, updated_at FROM core.organizations
-        WHERE id=:org_id AND is_deleted=false
-    """,
-        {"org_id": org_id},
-        source_warnings,
-        "Organization profile",
-    )
-    organization = await _settings_first(
-        db,
-        """
-        SELECT trading_name, legal_name, timezone, currency_code, fiscal_year_start_month,
-               country_code, primary_contact_email, primary_contact_phone, address, updated_at
-        FROM settings.organization_settings WHERE organization_id=:org_id
-    """,
-        {"org_id": org_id},
-        source_warnings,
-        "Organization settings",
-    )
-    notifications = await _settings_first(
-        db,
-        """
-        SELECT email_enabled, in_app_enabled, daily_digest_enabled, incident_alerts_enabled,
-               approval_alerts_enabled, updated_at
-        FROM settings.notification_preferences WHERE organization_id=:org_id
-    """,
-        {"org_id": org_id},
-        source_warnings,
-        "Notification preferences",
-    )
-    integrations = await _settings_rows(
-        db,
-        """
-        SELECT id, provider, display_name, status, account_label, endpoint_url, external_reference,
-               scopes, sync_status, last_synced_at, updated_at
-        FROM settings.integration_connections
-        WHERE organization_id=:org_id AND is_deleted=false ORDER BY provider
-    """,
-        {"org_id": org_id},
-        source_warnings,
-        "Integration metadata",
-    )
-    users = await _settings_rows(
-        db,
-        """
-        SELECT u.id, u.email, u.full_name, u.is_active, u.updated_at,
-               COALESCE(jsonb_agg(jsonb_build_object('id', r.id, 'name', r.name) ORDER BY r.name) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles
-        FROM core.users u
-        LEFT JOIN core.user_roles ur ON ur.user_id=u.id AND ur.organization_id=u.organization_id
-        LEFT JOIN core.roles r ON r.id=ur.role_id AND r.organization_id=u.organization_id AND r.is_deleted=false
-        WHERE u.organization_id=:org_id AND u.is_deleted=false
-        GROUP BY u.id ORDER BY u.full_name, u.email
-    """,
-        {"org_id": org_id},
-        source_warnings,
-        "User accounts",
-    )
-    roles = await _settings_rows(
-        db,
-        """
-        SELECT r.id, r.name, r.description,
-               COALESCE(jsonb_agg(p.key ORDER BY p.key) FILTER (WHERE p.key IS NOT NULL), '[]'::jsonb) AS permissions
-        FROM core.roles r
-        LEFT JOIN core.role_permissions rp ON rp.role_id=r.id
-        LEFT JOIN core.permissions p ON p.id=rp.permission_id
-        WHERE r.organization_id=:org_id AND r.is_deleted=false
-        GROUP BY r.id ORDER BY r.name
-    """,
-        {"org_id": org_id},
-        source_warnings,
-        "Roles",
-    )
-    permissions = await _settings_rows(
-        db,
-        "SELECT key, description FROM core.permissions ORDER BY key",
-        {},
-        source_warnings,
-        "Permission catalog",
-    )
-    try:
-        audits = await _audit_events(db, org_id, 50)
-    except SQLAlchemyError:
-        await db.rollback()
-        source_warnings.append("Audit events could not be loaded.")
-        audits = []
-    try:
-        website_content = await _website_content(db, org_id)
-    except HTTPException:
-        source_warnings.append("Website content could not be loaded.")
-        website_content = []
+    async def audit_events(session: AsyncSession):
+        try:
+            return await _audit_events(session, org_id, 50)
+        except SQLAlchemyError:
+            await session.rollback()
+            source_warnings.append("Audit events could not be loaded.")
+            return []
+
+    async def website_content_rows(session: AsyncSession):
+        try:
+            return await _website_content(session, org_id)
+        except HTTPException:
+            source_warnings.append("Website content could not be loaded.")
+            return []
+
+    # Independent reads - run them concurrently.
+    reads = {
+        "org": lambda session: _settings_first(
+            session,
+            """
+            SELECT name, registration_number, updated_at FROM core.organizations
+            WHERE id=:org_id AND is_deleted=false
+        """,
+            {"org_id": org_id},
+            source_warnings,
+            "Organization profile",
+        ),
+        "organization": lambda session: _settings_first(
+            session,
+            """
+            SELECT trading_name, legal_name, timezone, currency_code, fiscal_year_start_month,
+                   country_code, primary_contact_email, primary_contact_phone, address, updated_at
+            FROM settings.organization_settings WHERE organization_id=:org_id
+        """,
+            {"org_id": org_id},
+            source_warnings,
+            "Organization settings",
+        ),
+        "notifications": lambda session: _settings_first(
+            session,
+            """
+            SELECT email_enabled, in_app_enabled, daily_digest_enabled, incident_alerts_enabled,
+                   approval_alerts_enabled, updated_at
+            FROM settings.notification_preferences WHERE organization_id=:org_id
+        """,
+            {"org_id": org_id},
+            source_warnings,
+            "Notification preferences",
+        ),
+        "integrations": lambda session: _settings_rows(
+            session,
+            """
+            SELECT id, provider, display_name, status, account_label, endpoint_url, external_reference,
+                   scopes, sync_status, last_synced_at, updated_at
+            FROM settings.integration_connections
+            WHERE organization_id=:org_id AND is_deleted=false ORDER BY provider
+        """,
+            {"org_id": org_id},
+            source_warnings,
+            "Integration metadata",
+        ),
+        "users": lambda session: _settings_rows(
+            session,
+            """
+            SELECT u.id, u.email, u.full_name, u.is_active, u.updated_at,
+                   COALESCE(jsonb_agg(jsonb_build_object('id', r.id, 'name', r.name) ORDER BY r.name) FILTER (WHERE r.id IS NOT NULL), '[]'::jsonb) AS roles
+            FROM core.users u
+            LEFT JOIN core.user_roles ur ON ur.user_id=u.id AND ur.organization_id=u.organization_id
+            LEFT JOIN core.roles r ON r.id=ur.role_id AND r.organization_id=u.organization_id AND r.is_deleted=false
+            WHERE u.organization_id=:org_id AND u.is_deleted=false
+            GROUP BY u.id ORDER BY u.full_name, u.email
+        """,
+            {"org_id": org_id},
+            source_warnings,
+            "User accounts",
+        ),
+        "roles": lambda session: _settings_rows(
+            session,
+            """
+            SELECT r.id, r.name, r.description,
+                   COALESCE(jsonb_agg(p.key ORDER BY p.key) FILTER (WHERE p.key IS NOT NULL), '[]'::jsonb) AS permissions
+            FROM core.roles r
+            LEFT JOIN core.role_permissions rp ON rp.role_id=r.id
+            LEFT JOIN core.permissions p ON p.id=rp.permission_id
+            WHERE r.organization_id=:org_id AND r.is_deleted=false
+            GROUP BY r.id ORDER BY r.name
+        """,
+            {"org_id": org_id},
+            source_warnings,
+            "Roles",
+        ),
+        "permissions": lambda session: _settings_rows(
+            session,
+            "SELECT key, description FROM core.permissions ORDER BY key",
+            {},
+            source_warnings,
+            "Permission catalog",
+        ),
+        "audits": audit_events,
+        "website_content": website_content_rows,
+    }
+    (
+        org,
+        organization,
+        notifications,
+        integrations,
+        users,
+        roles,
+        permissions,
+        audits,
+        website_content,
+    ) = await gather_reads(db, *reads.values())
 
     org_defaults = {
         "trading_name": org["name"] if org else "AEGIS",

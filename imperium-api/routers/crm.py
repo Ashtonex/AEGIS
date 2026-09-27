@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from sqlalchemy.exc import DataError, IntegrityError
 
-from core.database import get_db
+from core.database import gather_reads, get_db
 from core.security import require_permission, user_has_permission, is_self_certification, SUPERADMIN_ROLE
 from app.services.tender_scraper import collect_tender_signals, configured_tender_sources
 from app.services.crm.automation_engine import fire_trigger
@@ -508,181 +508,200 @@ async def customer_360(
 ):
     org_id = _require_org_id(user)
     params = {"org_id": org_id, "client_org_id": client_org_id}
-    organization = await _single_row(
+    # The organization and its contacts are independent reads; everything
+    # after needs contact_ids, so it runs in a second concurrent batch.
+    organization, contacts = await gather_reads(
         db,
-        """
-        SELECT *
-        FROM crm.organizations
-        WHERE id=:client_org_id AND organization_id=:org_id AND is_deleted=false
-        """,
-        params,
+        lambda session: _single_row(
+            session,
+            """
+            SELECT *
+            FROM crm.organizations
+            WHERE id=:client_org_id AND organization_id=:org_id AND is_deleted=false
+            """,
+            params,
+        ),
+        lambda session: _rows(
+            session,
+            """
+            SELECT *
+            FROM crm.contacts
+            WHERE client_org_id=:client_org_id AND organization_id=:org_id AND is_deleted=false
+            ORDER BY created_at DESC
+            """,
+            params,
+        ),
     )
     if not organization:
         raise HTTPException(status_code=404, detail="Customer organization not found.")
 
-    contacts = await _rows(
-        db,
-        """
-        SELECT *
-        FROM crm.contacts
-        WHERE client_org_id=:client_org_id AND organization_id=:org_id AND is_deleted=false
-        ORDER BY created_at DESC
-        """,
-        params,
-    )
     contact_ids = [row["id"] for row in contacts]
 
-    leads = await _rows(
-        db,
-        """
-        SELECT *
-        FROM crm.leads
-        WHERE organization_id=:org_id
-          AND is_deleted=false
-          AND (
-            client_org_id=:client_org_id
-            OR lower(company_name)=lower((SELECT name FROM crm.organizations WHERE id=:client_org_id))
-          )
-          AND lower(status) NOT IN ('converted', 'disqualified')
-        ORDER BY created_at DESC
-        """,
-        params,
-    )
-    opportunities = await _rows(
-        db,
-        """
-        SELECT o.*,
-               COALESCE(o.deal_value, o.budget) AS forecast_value,
-               COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS forecast_weighted_value,
-               q.status AS quote_status,
-               p.name AS project_name
-        FROM crm.opportunities o
-        LEFT JOIN finance.quotations q ON q.id=o.quote_id AND q.organization_id=o.organization_id AND q.is_deleted=false
-        LEFT JOIN projects.projects p ON p.id=o.project_id AND p.organization_id=o.organization_id AND p.is_deleted=false
-        WHERE o.organization_id=:org_id
-          AND o.is_deleted=false
-          AND (
-            o.client_org_id=:client_org_id
-            OR o.client_id = ANY(:contact_ids)
-          )
-        ORDER BY o.updated_at DESC
-        """,
-        {**params, "contact_ids": contact_ids or [None]},
-    )
-    quotations = await _rows(
-        db,
-        """
-        SELECT q.*
-        FROM finance.quotations q
-        LEFT JOIN crm.opportunities o ON o.id=q.opportunity_id AND o.organization_id=q.organization_id
-        WHERE q.organization_id=:org_id
-          AND q.is_deleted=false
-          AND (
-            q.client_org_id=:client_org_id
-            OR o.client_org_id=:client_org_id
-            OR q.contact_id = ANY(:contact_ids)
-          )
-        ORDER BY q.created_at DESC
-        """,
-        {**params, "contact_ids": contact_ids or [None]},
-    )
-    projects = await _rows(
-        db,
-        """
-        SELECT *
-        FROM projects.projects
-        WHERE organization_id=:org_id
-          AND is_deleted=false
-          AND (
-            client_org_id=:client_org_id
-            OR client_id = ANY(:contact_ids)
-            OR client_name=CAST((SELECT name FROM crm.organizations WHERE id=:client_org_id) AS varchar)
-          )
-        ORDER BY updated_at DESC
-        """,
-        {**params, "contact_ids": contact_ids or [None]},
-    )
-    tickets = await _rows(
-        db,
-        """
-        SELECT *
-        FROM crm.support_tickets
-        WHERE organization_id=:org_id
-          AND client_org_id=:client_org_id
-          AND is_deleted=false
-          AND status NOT IN ('resolved', 'closed')
-        ORDER BY updated_at DESC
-        """,
-        params,
-    )
-    communications = await _rows(
-        db,
-        """
-        SELECT *
-        FROM crm.communication_events
-        WHERE organization_id=:org_id
-          AND is_deleted=false
-          AND (
-            client_org_id=:client_org_id
-            OR contact_id = ANY(:contact_ids)
-          )
-        ORDER BY started_at DESC
-        LIMIT 25
-        """,
-        {**params, "contact_ids": contact_ids or [None]},
-    )
-    activities = await _rows(
-        db,
-        """
-        SELECT *
-        FROM crm.activities
-        WHERE organization_id=:org_id
-          AND is_deleted=false
-          AND status IN ('Pending', 'planned', 'pending')
-          AND (
-            client_org_id=:client_org_id
-            OR contact_id = ANY(:contact_ids)
-          )
-        ORDER BY activity_date ASC
-        LIMIT 25
-        """,
-        {**params, "contact_ids": contact_ids or [None]},
-    )
-    documents = await _rows(
-        db,
-        """
-        SELECT d.*
-        FROM core.documents d
-        LEFT JOIN crm.opportunities o ON o.id=d.opportunity_id AND o.organization_id=d.organization_id
-        WHERE d.organization_id=:org_id
-          AND d.is_deleted=false
-          AND o.client_org_id=:client_org_id
-        ORDER BY d.created_at DESC
-        LIMIT 50
-        """,
-        params,
-    )
-    financial_summary = await _single_row(
-        db,
-        """
-        SELECT
-            COALESCE(SUM(q.quote_amount), 0) AS quoted_value,
-            COALESCE(SUM(p.contract_value), 0) AS awarded_value,
-            COUNT(DISTINCT q.id) AS quotation_count,
-            COUNT(DISTINCT p.id) AS project_count
-        FROM crm.organizations org
-        LEFT JOIN finance.quotations q
-            ON q.organization_id=org.organization_id
-           AND q.client_org_id=org.id
-           AND q.is_deleted=false
-        LEFT JOIN projects.projects p
-            ON p.organization_id=org.organization_id
-           AND p.client_org_id=org.id
-           AND p.is_deleted=false
-        WHERE org.id=:client_org_id AND org.organization_id=:org_id
-        """,
-        params,
-    )
+    # The remaining sections only need contact_ids - independent reads, run concurrently.
+    reads = {
+        "leads": lambda session: _rows(
+            session,
+            """
+            SELECT *
+            FROM crm.leads
+            WHERE organization_id=:org_id
+              AND is_deleted=false
+              AND (
+                client_org_id=:client_org_id
+                OR lower(company_name)=lower((SELECT name FROM crm.organizations WHERE id=:client_org_id))
+              )
+              AND lower(status) NOT IN ('converted', 'disqualified')
+            ORDER BY created_at DESC
+            """,
+            params,
+        ),
+        "opportunities": lambda session: _rows(
+            session,
+            """
+            SELECT o.*,
+                   COALESCE(o.deal_value, o.budget) AS forecast_value,
+                   COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS forecast_weighted_value,
+                   q.status AS quote_status,
+                   p.name AS project_name
+            FROM crm.opportunities o
+            LEFT JOIN finance.quotations q ON q.id=o.quote_id AND q.organization_id=o.organization_id AND q.is_deleted=false
+            LEFT JOIN projects.projects p ON p.id=o.project_id AND p.organization_id=o.organization_id AND p.is_deleted=false
+            WHERE o.organization_id=:org_id
+              AND o.is_deleted=false
+              AND (
+                o.client_org_id=:client_org_id
+                OR o.client_id = ANY(:contact_ids)
+              )
+            ORDER BY o.updated_at DESC
+            """,
+            {**params, "contact_ids": contact_ids or [None]},
+        ),
+        "quotations": lambda session: _rows(
+            session,
+            """
+            SELECT q.*
+            FROM finance.quotations q
+            LEFT JOIN crm.opportunities o ON o.id=q.opportunity_id AND o.organization_id=q.organization_id
+            WHERE q.organization_id=:org_id
+              AND q.is_deleted=false
+              AND (
+                q.client_org_id=:client_org_id
+                OR o.client_org_id=:client_org_id
+                OR q.contact_id = ANY(:contact_ids)
+              )
+            ORDER BY q.created_at DESC
+            """,
+            {**params, "contact_ids": contact_ids or [None]},
+        ),
+        "projects": lambda session: _rows(
+            session,
+            """
+            SELECT *
+            FROM projects.projects
+            WHERE organization_id=:org_id
+              AND is_deleted=false
+              AND (
+                client_org_id=:client_org_id
+                OR client_id = ANY(:contact_ids)
+                OR client_name=CAST((SELECT name FROM crm.organizations WHERE id=:client_org_id) AS varchar)
+              )
+            ORDER BY updated_at DESC
+            """,
+            {**params, "contact_ids": contact_ids or [None]},
+        ),
+        "tickets": lambda session: _rows(
+            session,
+            """
+            SELECT *
+            FROM crm.support_tickets
+            WHERE organization_id=:org_id
+              AND client_org_id=:client_org_id
+              AND is_deleted=false
+              AND status NOT IN ('resolved', 'closed')
+            ORDER BY updated_at DESC
+            """,
+            params,
+        ),
+        "communications": lambda session: _rows(
+            session,
+            """
+            SELECT *
+            FROM crm.communication_events
+            WHERE organization_id=:org_id
+              AND is_deleted=false
+              AND (
+                client_org_id=:client_org_id
+                OR contact_id = ANY(:contact_ids)
+              )
+            ORDER BY started_at DESC
+            LIMIT 25
+            """,
+            {**params, "contact_ids": contact_ids or [None]},
+        ),
+        "activities": lambda session: _rows(
+            session,
+            """
+            SELECT *
+            FROM crm.activities
+            WHERE organization_id=:org_id
+              AND is_deleted=false
+              AND status IN ('Pending', 'planned', 'pending')
+              AND (
+                client_org_id=:client_org_id
+                OR contact_id = ANY(:contact_ids)
+              )
+            ORDER BY activity_date ASC
+            LIMIT 25
+            """,
+            {**params, "contact_ids": contact_ids or [None]},
+        ),
+        "documents": lambda session: _rows(
+            session,
+            """
+            SELECT d.*
+            FROM core.documents d
+            LEFT JOIN crm.opportunities o ON o.id=d.opportunity_id AND o.organization_id=d.organization_id
+            WHERE d.organization_id=:org_id
+              AND d.is_deleted=false
+              AND o.client_org_id=:client_org_id
+            ORDER BY d.created_at DESC
+            LIMIT 50
+            """,
+            params,
+        ),
+        "financial_summary": lambda session: _single_row(
+            session,
+            """
+            SELECT
+                COALESCE(SUM(q.quote_amount), 0) AS quoted_value,
+                COALESCE(SUM(p.contract_value), 0) AS awarded_value,
+                COUNT(DISTINCT q.id) AS quotation_count,
+                COUNT(DISTINCT p.id) AS project_count
+            FROM crm.organizations org
+            LEFT JOIN finance.quotations q
+                ON q.organization_id=org.organization_id
+               AND q.client_org_id=org.id
+               AND q.is_deleted=false
+            LEFT JOIN projects.projects p
+                ON p.organization_id=org.organization_id
+               AND p.client_org_id=org.id
+               AND p.is_deleted=false
+            WHERE org.id=:client_org_id AND org.organization_id=:org_id
+            """,
+            params,
+        ),
+    }
+    (
+        leads,
+        opportunities,
+        quotations,
+        projects,
+        tickets,
+        communications,
+        activities,
+        documents,
+        financial_summary,
+    ) = await gather_reads(db, *reads.values())
 
     return {
         "success": True,
@@ -1253,22 +1272,67 @@ async def sales_report(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org_id(user)
-    summary = await _single_row(
-        db,
-        """
-        SELECT
-            COALESCE(SUM(COALESCE(deal_value, budget)) FILTER (WHERE win_loss_status IS NULL), 0) AS pipeline_value,
-            COALESCE(SUM(weighted_value) FILTER (WHERE win_loss_status IS NULL), 0) AS weighted_forecast,
-            COUNT(*) FILTER (WHERE win_loss_status = 'won') AS won_count,
-            COUNT(*) FILTER (WHERE win_loss_status = 'lost') AS lost_count,
-            COUNT(*) FILTER (WHERE win_loss_status IS NULL AND (next_activity_due_at IS NULL OR next_activity_due_at < NOW())) AS stale_opportunities,
-            COUNT(*) FILTER (WHERE quote_id IS NOT NULL) AS quoted_count,
-            COUNT(*) AS total_count
-        FROM crm.opportunities
-        WHERE organization_id = :org_id AND is_deleted = false
-        """,
-        {"org_id": org_id},
-    )
+    # Independent report sections - run them concurrently.
+    reads = {
+        "summary": lambda session: _single_row(
+            session,
+            """
+            SELECT
+                COALESCE(SUM(COALESCE(deal_value, budget)) FILTER (WHERE win_loss_status IS NULL), 0) AS pipeline_value,
+                COALESCE(SUM(weighted_value) FILTER (WHERE win_loss_status IS NULL), 0) AS weighted_forecast,
+                COUNT(*) FILTER (WHERE win_loss_status = 'won') AS won_count,
+                COUNT(*) FILTER (WHERE win_loss_status = 'lost') AS lost_count,
+                COUNT(*) FILTER (WHERE win_loss_status IS NULL AND (next_activity_due_at IS NULL OR next_activity_due_at < NOW())) AS stale_opportunities,
+                COUNT(*) FILTER (WHERE quote_id IS NOT NULL) AS quoted_count,
+                COUNT(*) AS total_count
+            FROM crm.opportunities
+            WHERE organization_id = :org_id AND is_deleted = false
+            """,
+            {"org_id": org_id},
+        ),
+        "stage_ageing": lambda session: _rows(
+            session,
+            """
+            SELECT stage, COUNT(*) AS count,
+                   COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0), 0) AS avg_age_days
+            FROM crm.opportunities
+            WHERE organization_id = :org_id AND is_deleted = false AND win_loss_status IS NULL
+            GROUP BY stage
+            ORDER BY avg_age_days DESC
+            """,
+            {"org_id": org_id},
+        ),
+        "loss_reasons": lambda session: _rows(
+            session,
+            """
+            SELECT COALESCE(wlr.label, o.win_loss_reason, 'unspecified') AS reason, COUNT(*) AS count
+            FROM crm.opportunities o
+            LEFT JOIN crm.win_loss_reasons wlr ON wlr.id = o.win_loss_reason_id AND wlr.organization_id = o.organization_id
+            WHERE o.organization_id = :org_id AND o.is_deleted = false AND o.win_loss_status = 'lost'
+            GROUP BY COALESCE(wlr.label, o.win_loss_reason, 'unspecified')
+            ORDER BY count DESC
+            """,
+            {"org_id": org_id},
+        ),
+        "activity_completion": lambda session: _single_row(
+            session,
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'Completed') AS completed,
+                COUNT(*) FILTER (WHERE status IN ('Pending', 'planned', 'pending')) AS pending,
+                COUNT(*) AS total
+            FROM crm.activities
+            WHERE organization_id = :org_id AND is_deleted = false
+            """,
+            {"org_id": org_id},
+        ),
+    }
+    (
+        summary,
+        stage_ageing,
+        loss_reasons,
+        activity_completion,
+    ) = await gather_reads(db, *reads.values())
     summary = dict(summary or {})
     won = summary.get("won_count") or 0
     lost = summary.get("lost_count") or 0
@@ -1276,42 +1340,6 @@ async def sales_report(
     summary["win_rate_pct"] = round(100.0 * won / (won + lost), 1) if (won + lost) else None
     summary["quote_conversion_pct"] = round(100.0 * (summary.get("quoted_count") or 0) / total, 1) if total else None
 
-    stage_ageing = await _rows(
-        db,
-        """
-        SELECT stage, COUNT(*) AS count,
-               COALESCE(AVG(EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0), 0) AS avg_age_days
-        FROM crm.opportunities
-        WHERE organization_id = :org_id AND is_deleted = false AND win_loss_status IS NULL
-        GROUP BY stage
-        ORDER BY avg_age_days DESC
-        """,
-        {"org_id": org_id},
-    )
-    loss_reasons = await _rows(
-        db,
-        """
-        SELECT COALESCE(wlr.label, o.win_loss_reason, 'unspecified') AS reason, COUNT(*) AS count
-        FROM crm.opportunities o
-        LEFT JOIN crm.win_loss_reasons wlr ON wlr.id = o.win_loss_reason_id AND wlr.organization_id = o.organization_id
-        WHERE o.organization_id = :org_id AND o.is_deleted = false AND o.win_loss_status = 'lost'
-        GROUP BY COALESCE(wlr.label, o.win_loss_reason, 'unspecified')
-        ORDER BY count DESC
-        """,
-        {"org_id": org_id},
-    )
-    activity_completion = await _single_row(
-        db,
-        """
-        SELECT
-            COUNT(*) FILTER (WHERE status = 'Completed') AS completed,
-            COUNT(*) FILTER (WHERE status IN ('Pending', 'planned', 'pending')) AS pending,
-            COUNT(*) AS total
-        FROM crm.activities
-        WHERE organization_id = :org_id AND is_deleted = false
-        """,
-        {"org_id": org_id},
-    )
     return {
         "success": True,
         "data": {
@@ -1394,209 +1422,219 @@ async def commercial_morning_briefing(
     requirement gaps, missing BOQ/authority paperwork, and stale pursuit work.
     """
     org_id = _require_org_id(user)
-    tenders_due = await _rows(
-        db,
-        """
-        SELECT
-            t.id,
-            t.tender_name AS title,
-            t.stage,
-            t.bid_amount AS value,
-            t.submission_deadline AS due_date,
-            GREATEST(0, CEIL(EXTRACT(EPOCH FROM (t.submission_deadline::timestamp - NOW())) / 86400.0))::int AS days_left,
-            COALESCE(open_requirements.open_count, 0) AS open_requirement_count,
-            COALESCE(document_counts.document_count, 0) AS document_count
-        FROM crm.tenders t
-        LEFT JOIN (
-            SELECT tender_id, COUNT(*) AS open_count
-            FROM crm.tender_requirements
-            WHERE organization_id = :org_id AND is_deleted = false AND is_satisfied = false
-            GROUP BY tender_id
-        ) open_requirements ON open_requirements.tender_id = t.id
-        LEFT JOIN (
-            SELECT entity_id AS tender_id, COUNT(*) AS document_count
-            FROM core.document_links
-            WHERE organization_id = :org_id AND is_deleted = false AND entity_type = 'tender'
-            GROUP BY entity_id
-        ) document_counts ON document_counts.tender_id = t.id
-        WHERE t.organization_id = :org_id
-          AND t.is_deleted = false
-          AND t.submission_deadline IS NOT NULL
-          AND t.submission_deadline::timestamp >= NOW() - INTERVAL '1 day'
-          AND t.submission_deadline::timestamp <= NOW() + INTERVAL '14 days'
-          AND lower(COALESCE(t.stage, '')) NOT IN ('awarded/lost', 'lost', 'withdrawn', 'cancelled')
-        ORDER BY t.submission_deadline ASC
-        LIMIT 10
-        """,
-        {"org_id": org_id},
-    )
-    lost_tenders = await _rows(
-        db,
-        """
-        SELECT
-            t.id,
-            t.tender_name AS title,
-            t.bid_amount AS value,
-            t.submission_deadline AS due_date,
-            t.closeout_reason AS reason,
-            t.closeout_recorded_at
-        FROM crm.tenders t
-        WHERE t.organization_id = :org_id
-          AND t.is_deleted = false
-          AND lower(COALESCE(t.stage, '')) = 'lost'
-          AND t.closeout_recorded_at IS NOT NULL
-          AND t.closeout_recorded_at >= NOW() - INTERVAL '7 days'
-        ORDER BY t.closeout_recorded_at DESC
-        LIMIT 10
-        """,
-        {"org_id": org_id},
-    )
-    task_activity = await _rows(
-        db,
-        """
-        SELECT
-            t.id,
-            t.title,
-            t.status,
-            t.priority,
-            t.entity_type,
-            t.entity_id,
-            t.due_date,
-            t.updated_at,
-            t.completed_at,
-            t.review_submitted_at,
-            u.full_name AS assignee_name,
-            CASE
-                WHEN t.status = 'completed' THEN 'completed'
-                WHEN t.status = 'under_review' THEN 'ready_for_verification'
-                WHEN t.status = 'in_progress' THEN 'started'
-                WHEN t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE AND t.status NOT IN ('completed','cancelled','superseded','not_applicable') THEN 'overdue'
-                ELSE 'open'
-            END AS briefing_status
-        FROM crm.tasks t
-        LEFT JOIN core.users u ON u.id = t.assigned_to_user_id AND u.organization_id = t.organization_id
-        WHERE t.organization_id = :org_id
-          AND t.is_deleted = false
-          AND (
-            (t.status IN ('completed', 'under_review', 'in_progress') AND COALESCE(t.updated_at, t.created_at) >= NOW() - INTERVAL '7 days')
-            OR (
-                t.due_date IS NOT NULL
-                AND t.due_date <= CURRENT_DATE + INTERVAL '7 days'
-                AND t.status NOT IN ('completed','cancelled','superseded','not_applicable')
-            )
-          )
-        ORDER BY
-            CASE
-                WHEN t.status = 'under_review' THEN 1
-                WHEN t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE THEN 2
-                WHEN t.status = 'completed' THEN 3
-                WHEN t.status = 'in_progress' THEN 4
-                ELSE 5
-            END,
-            COALESCE(t.due_date, CURRENT_DATE) ASC,
-            COALESCE(t.updated_at, t.created_at) DESC
-        LIMIT 12
-        """,
-        {"org_id": org_id},
-    )
-    paperwork_gaps = await _rows(
-        db,
-        """
-        SELECT
-            'tender_requirement' AS gap_type,
-            tr.id,
-            tr.tender_id AS entity_id,
-            'tender' AS entity_type,
-            t.tender_name AS entity_title,
-            tr.label AS title,
-            t.submission_deadline AS due_date,
-            CASE
-                WHEN t.submission_deadline IS NOT NULL AND t.submission_deadline <= CURRENT_DATE + INTERVAL '3 days' THEN 'critical'
-                ELSE 'warning'
-            END AS severity
-        FROM crm.tender_requirements tr
-        JOIN crm.tenders t ON t.id = tr.tender_id AND t.organization_id = tr.organization_id AND t.is_deleted = false
-        WHERE tr.organization_id = :org_id
-          AND tr.is_deleted = false
-          AND tr.is_satisfied = false
-
-        UNION ALL
-
-        SELECT
-            'missing_tender_document' AS gap_type,
-            t.id,
-            t.id AS entity_id,
-            'tender' AS entity_type,
-            t.tender_name AS entity_title,
-            'No tender paperwork linked' AS title,
-            t.submission_deadline AS due_date,
-            CASE
-                WHEN t.submission_deadline IS NOT NULL AND t.submission_deadline <= CURRENT_DATE + INTERVAL '3 days' THEN 'critical'
-                ELSE 'warning'
-            END AS severity
-        FROM crm.tenders t
-        WHERE t.organization_id = :org_id
-          AND t.is_deleted = false
-          AND lower(COALESCE(t.stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled')
-          AND NOT EXISTS (
-              SELECT 1 FROM core.document_links dl
-              WHERE dl.organization_id = t.organization_id
-                AND dl.entity_type = 'tender'
-                AND dl.entity_id = t.id
-                AND dl.is_deleted = false
-          )
-
-        UNION ALL
-
-        SELECT
-            'missing_opportunity_document' AS gap_type,
-            o.id,
-            o.id AS entity_id,
-            'opportunity' AS entity_type,
-            o.name AS entity_title,
-            'No opportunity authority or scope document linked' AS title,
-            o.expected_close_date AS due_date,
-            'warning' AS severity
-        FROM crm.opportunities o
-        WHERE o.organization_id = :org_id
-          AND o.is_deleted = false
-          AND o.win_loss_status IS NULL
-          AND o.stage IN ('Quotation', 'Negotiation', 'Contract')
-          AND NOT EXISTS (
-              SELECT 1 FROM core.document_links dl
-              WHERE dl.organization_id = o.organization_id
-                AND dl.entity_type = 'opportunity'
-                AND dl.entity_id = o.id
-                AND dl.is_deleted = false
-          )
-        ORDER BY due_date NULLS LAST, severity
-        LIMIT 14
-        """,
-        {"org_id": org_id},
-    )
-    stale_items = await _rows(
-        db,
-        """
-        SELECT
-            id,
-            name AS title,
-            stage,
-            COALESCE(deal_value, budget) AS value,
-            next_activity_due_at,
-            updated_at
-        FROM crm.opportunities
-        WHERE organization_id = :org_id
-          AND is_deleted = false
-          AND win_loss_status IS NULL
-          AND (
-            next_activity_due_at < NOW()
-            OR (next_activity_due_at IS NULL AND updated_at < NOW() - INTERVAL '10 days')
-          )
-        ORDER BY COALESCE(next_activity_due_at, updated_at) ASC
-        LIMIT 8
-        """,
-        {"org_id": org_id},
-    )
+    # Every briefing section is an independent read - run them concurrently.
+    reads = {
+        "tenders_due": lambda session: _rows(
+            session,
+            """
+            SELECT
+                t.id,
+                t.tender_name AS title,
+                t.stage,
+                t.bid_amount AS value,
+                t.submission_deadline AS due_date,
+                GREATEST(0, CEIL(EXTRACT(EPOCH FROM (t.submission_deadline::timestamp - NOW())) / 86400.0))::int AS days_left,
+                COALESCE(open_requirements.open_count, 0) AS open_requirement_count,
+                COALESCE(document_counts.document_count, 0) AS document_count
+            FROM crm.tenders t
+            LEFT JOIN (
+                SELECT tender_id, COUNT(*) AS open_count
+                FROM crm.tender_requirements
+                WHERE organization_id = :org_id AND is_deleted = false AND is_satisfied = false
+                GROUP BY tender_id
+            ) open_requirements ON open_requirements.tender_id = t.id
+            LEFT JOIN (
+                SELECT entity_id AS tender_id, COUNT(*) AS document_count
+                FROM core.document_links
+                WHERE organization_id = :org_id AND is_deleted = false AND entity_type = 'tender'
+                GROUP BY entity_id
+            ) document_counts ON document_counts.tender_id = t.id
+            WHERE t.organization_id = :org_id
+              AND t.is_deleted = false
+              AND t.submission_deadline IS NOT NULL
+              AND t.submission_deadline::timestamp >= NOW() - INTERVAL '1 day'
+              AND t.submission_deadline::timestamp <= NOW() + INTERVAL '14 days'
+              AND lower(COALESCE(t.stage, '')) NOT IN ('awarded/lost', 'lost', 'withdrawn', 'cancelled')
+            ORDER BY t.submission_deadline ASC
+            LIMIT 10
+            """,
+            {"org_id": org_id},
+        ),
+        "lost_tenders": lambda session: _rows(
+            session,
+            """
+            SELECT
+                t.id,
+                t.tender_name AS title,
+                t.bid_amount AS value,
+                t.submission_deadline AS due_date,
+                t.closeout_reason AS reason,
+                t.closeout_recorded_at
+            FROM crm.tenders t
+            WHERE t.organization_id = :org_id
+              AND t.is_deleted = false
+              AND lower(COALESCE(t.stage, '')) = 'lost'
+              AND t.closeout_recorded_at IS NOT NULL
+              AND t.closeout_recorded_at >= NOW() - INTERVAL '7 days'
+            ORDER BY t.closeout_recorded_at DESC
+            LIMIT 10
+            """,
+            {"org_id": org_id},
+        ),
+        "task_activity": lambda session: _rows(
+            session,
+            """
+            SELECT
+                t.id,
+                t.title,
+                t.status,
+                t.priority,
+                t.entity_type,
+                t.entity_id,
+                t.due_date,
+                t.updated_at,
+                t.completed_at,
+                t.review_submitted_at,
+                u.full_name AS assignee_name,
+                CASE
+                    WHEN t.status = 'completed' THEN 'completed'
+                    WHEN t.status = 'under_review' THEN 'ready_for_verification'
+                    WHEN t.status = 'in_progress' THEN 'started'
+                    WHEN t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE AND t.status NOT IN ('completed','cancelled','superseded','not_applicable') THEN 'overdue'
+                    ELSE 'open'
+                END AS briefing_status
+            FROM crm.tasks t
+            LEFT JOIN core.users u ON u.id = t.assigned_to_user_id AND u.organization_id = t.organization_id
+            WHERE t.organization_id = :org_id
+              AND t.is_deleted = false
+              AND (
+                (t.status IN ('completed', 'under_review', 'in_progress') AND COALESCE(t.updated_at, t.created_at) >= NOW() - INTERVAL '7 days')
+                OR (
+                    t.due_date IS NOT NULL
+                    AND t.due_date <= CURRENT_DATE + INTERVAL '7 days'
+                    AND t.status NOT IN ('completed','cancelled','superseded','not_applicable')
+                )
+              )
+            ORDER BY
+                CASE
+                    WHEN t.status = 'under_review' THEN 1
+                    WHEN t.due_date IS NOT NULL AND t.due_date < CURRENT_DATE THEN 2
+                    WHEN t.status = 'completed' THEN 3
+                    WHEN t.status = 'in_progress' THEN 4
+                    ELSE 5
+                END,
+                COALESCE(t.due_date, CURRENT_DATE) ASC,
+                COALESCE(t.updated_at, t.created_at) DESC
+            LIMIT 12
+            """,
+            {"org_id": org_id},
+        ),
+        "paperwork_gaps": lambda session: _rows(
+            session,
+            """
+            SELECT
+                'tender_requirement' AS gap_type,
+                tr.id,
+                tr.tender_id AS entity_id,
+                'tender' AS entity_type,
+                t.tender_name AS entity_title,
+                tr.label AS title,
+                t.submission_deadline AS due_date,
+                CASE
+                    WHEN t.submission_deadline IS NOT NULL AND t.submission_deadline <= CURRENT_DATE + INTERVAL '3 days' THEN 'critical'
+                    ELSE 'warning'
+                END AS severity
+            FROM crm.tender_requirements tr
+            JOIN crm.tenders t ON t.id = tr.tender_id AND t.organization_id = tr.organization_id AND t.is_deleted = false
+            WHERE tr.organization_id = :org_id
+              AND tr.is_deleted = false
+              AND tr.is_satisfied = false
+    
+            UNION ALL
+    
+            SELECT
+                'missing_tender_document' AS gap_type,
+                t.id,
+                t.id AS entity_id,
+                'tender' AS entity_type,
+                t.tender_name AS entity_title,
+                'No tender paperwork linked' AS title,
+                t.submission_deadline AS due_date,
+                CASE
+                    WHEN t.submission_deadline IS NOT NULL AND t.submission_deadline <= CURRENT_DATE + INTERVAL '3 days' THEN 'critical'
+                    ELSE 'warning'
+                END AS severity
+            FROM crm.tenders t
+            WHERE t.organization_id = :org_id
+              AND t.is_deleted = false
+              AND lower(COALESCE(t.stage, '')) NOT IN ('lost', 'withdrawn', 'cancelled')
+              AND NOT EXISTS (
+                  SELECT 1 FROM core.document_links dl
+                  WHERE dl.organization_id = t.organization_id
+                    AND dl.entity_type = 'tender'
+                    AND dl.entity_id = t.id
+                    AND dl.is_deleted = false
+              )
+    
+            UNION ALL
+    
+            SELECT
+                'missing_opportunity_document' AS gap_type,
+                o.id,
+                o.id AS entity_id,
+                'opportunity' AS entity_type,
+                o.name AS entity_title,
+                'No opportunity authority or scope document linked' AS title,
+                o.expected_close_date AS due_date,
+                'warning' AS severity
+            FROM crm.opportunities o
+            WHERE o.organization_id = :org_id
+              AND o.is_deleted = false
+              AND o.win_loss_status IS NULL
+              AND o.stage IN ('Quotation', 'Negotiation', 'Contract')
+              AND NOT EXISTS (
+                  SELECT 1 FROM core.document_links dl
+                  WHERE dl.organization_id = o.organization_id
+                    AND dl.entity_type = 'opportunity'
+                    AND dl.entity_id = o.id
+                    AND dl.is_deleted = false
+              )
+            ORDER BY due_date NULLS LAST, severity
+            LIMIT 14
+            """,
+            {"org_id": org_id},
+        ),
+        "stale_items": lambda session: _rows(
+            session,
+            """
+            SELECT
+                id,
+                name AS title,
+                stage,
+                COALESCE(deal_value, budget) AS value,
+                next_activity_due_at,
+                updated_at
+            FROM crm.opportunities
+            WHERE organization_id = :org_id
+              AND is_deleted = false
+              AND win_loss_status IS NULL
+              AND (
+                next_activity_due_at < NOW()
+                OR (next_activity_due_at IS NULL AND updated_at < NOW() - INTERVAL '10 days')
+              )
+            ORDER BY COALESCE(next_activity_due_at, updated_at) ASC
+            LIMIT 8
+            """,
+            {"org_id": org_id},
+        ),
+    }
+    (
+        tenders_due,
+        lost_tenders,
+        task_activity,
+        paperwork_gaps,
+        stale_items,
+    ) = await gather_reads(db, *reads.values())
     return {
         "success": True,
         "data": {

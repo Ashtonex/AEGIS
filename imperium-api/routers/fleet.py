@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db, AsyncSessionLocal
+from core.database import AsyncSessionLocal, gather_reads, get_db
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
 from app.shared.sql import (
@@ -1065,7 +1065,9 @@ async def fleet_performance(
           AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
     """
     params = {"org_id": org_id, "date_from": range_from, "date_to": range_to, "category": category}
-    totals_row = (await db.execute(text(totals_query), params)).mappings().one()
+
+    async def read_totals(session: AsyncSession):
+        return (await session.execute(text(totals_query), params)).mappings().one()
 
     def with_margin(row: Mapping[str, Any]) -> dict:
         internal_revenue = float(row["internal_revenue"])
@@ -1078,20 +1080,18 @@ async def fleet_performance(
             "margin_pct": round(margin / internal_revenue * 100, 2) if internal_revenue else 0.0,
         }
 
-    totals = with_margin(totals_row)
-
-    external_row = (
-        await db.execute(
-            text("""
-                SELECT COALESCE(SUM(external_invoice_amount), 0) AS external_invoice_revenue
-                FROM fleet.plant_financial_closures
-                WHERE organization_id=:org_id AND is_deleted=false AND status='closed'
-                  AND closed_at::date BETWEEN :date_from AND :date_to
-            """),
-            {"org_id": org_id, "date_from": range_from, "date_to": range_to},
-        )
-    ).mappings().one()
-    totals["external_invoice_revenue"] = float(external_row["external_invoice_revenue"])
+    async def read_external(session: AsyncSession):
+        return (
+            await session.execute(
+                text("""
+                    SELECT COALESCE(SUM(external_invoice_amount), 0) AS external_invoice_revenue
+                    FROM fleet.plant_financial_closures
+                    WHERE organization_id=:org_id AND is_deleted=false AND status='closed'
+                      AND closed_at::date BETWEEN :date_from AND :date_to
+                """),
+                {"org_id": org_id, "date_from": range_from, "date_to": range_to},
+            )
+        ).mappings().one()
 
     by_category_query = """
         SELECT f.asset_category, COUNT(DISTINCT f.id) AS asset_count,
@@ -1125,75 +1125,66 @@ async def fleet_performance(
           AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
         GROUP BY f.asset_category
     """
-    by_category_rows = (await db.execute(text(by_category_query), params)).mappings().all()
-    by_category = [with_margin(row) for row in by_category_rows]
+    async def read_by_category(session: AsyncSession):
+        return (await session.execute(text(by_category_query), params)).mappings().all()
 
-    trend_rows = (
-        await db.execute(
-            text("""
-                WITH months AS (
-                  SELECT generate_series(date_trunc('month', CAST(:trend_start AS date)), date_trunc('month', CAST(:date_to AS date)), interval '1 month')::date AS month
-                ),
-                util AS (
-                  SELECT date_trunc('month', u.occurred_on)::date AS month,
-                         SUM(u.revenue_amount) AS internal_revenue, SUM(u.cost_amount) AS utilization_cost,
-                         SUM(u.operating_hours) AS operating_hours, SUM(u.operating_hours + u.idle_hours) AS total_hours
-                  FROM fleet.utilization_logs u
-                  JOIN fleet.fleet f ON f.id=u.fleet_id AND f.organization_id=u.organization_id AND f.is_deleted=false
-                  WHERE u.organization_id=:org_id AND u.is_deleted=false
-                    AND u.occurred_on >= :trend_start AND u.occurred_on <= :date_to
-                    AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
-                  GROUP BY 1
-                ),
-                fuel AS (
-                  SELECT date_trunc('month', ft.transaction_at)::date AS month, SUM(ft.total_cost) AS fuel_cost
-                  FROM fleet.fuel_transactions ft
-                  JOIN fleet.fleet f ON f.id=ft.fleet_id AND f.organization_id=ft.organization_id AND f.is_deleted=false
-                  WHERE ft.organization_id=:org_id AND ft.is_deleted=false
-                    AND ft.transaction_at::date >= :trend_start AND ft.transaction_at::date <= :date_to
-                    AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
-                  GROUP BY 1
-                ),
-                maint AS (
-                  SELECT date_trunc('month', wo.completed_at)::date AS month, SUM(wo.actual_cost) AS maintenance_cost
-                  FROM fleet.maintenance_work_orders wo
-                  JOIN fleet.fleet f ON f.id=wo.fleet_id AND f.organization_id=wo.organization_id AND f.is_deleted=false
-                  WHERE wo.organization_id=:org_id AND wo.is_deleted=false
-                    AND wo.status IN ('completed','returned_to_service','closed')
-                    AND wo.completed_at::date >= :trend_start AND wo.completed_at::date <= :date_to
-                    AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
-                  GROUP BY 1
-                ),
-                ownership AS (
-                  SELECT COALESCE(SUM(f.monthly_ownership_cost), 0) AS ownership_cost
-                  FROM fleet.fleet f
-                  WHERE f.organization_id=:org_id AND f.is_deleted=false
-                    AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
-                )
-                SELECT m.month,
-                       COALESCE(u.internal_revenue, 0) AS internal_revenue,
-                       COALESCE(u.utilization_cost, 0) + COALESCE(fu.fuel_cost, 0) + COALESCE(ma.maintenance_cost, 0) + o.ownership_cost AS operating_cost,
-                       ROUND(CASE WHEN COALESCE(u.total_hours, 0) > 0 THEN (u.operating_hours / NULLIF(u.total_hours, 0)) * 100 ELSE 0 END, 2) AS utilization_pct
-                FROM months m
-                LEFT JOIN util u ON u.month = m.month
-                LEFT JOIN fuel fu ON fu.month = m.month
-                LEFT JOIN maint ma ON ma.month = m.month
-                CROSS JOIN ownership o
-                ORDER BY m.month
-            """),
-            {"org_id": org_id, "trend_start": trend_start, "date_to": range_to, "category": category},
-        )
-    ).mappings().all()
-    trend = [
-        {
-            "month": row["month"].isoformat(),
-            "internal_revenue": round(float(row["internal_revenue"]), 2),
-            "operating_cost": round(float(row["operating_cost"]), 2),
-            "margin": round(float(row["internal_revenue"]) - float(row["operating_cost"]), 2),
-            "utilization_pct": float(row["utilization_pct"]),
-        }
-        for row in trend_rows
-    ]
+    async def read_trend(session: AsyncSession):
+        return (
+            await session.execute(
+                text("""
+                    WITH months AS (
+                      SELECT generate_series(date_trunc('month', CAST(:trend_start AS date)), date_trunc('month', CAST(:date_to AS date)), interval '1 month')::date AS month
+                    ),
+                    util AS (
+                      SELECT date_trunc('month', u.occurred_on)::date AS month,
+                             SUM(u.revenue_amount) AS internal_revenue, SUM(u.cost_amount) AS utilization_cost,
+                             SUM(u.operating_hours) AS operating_hours, SUM(u.operating_hours + u.idle_hours) AS total_hours
+                      FROM fleet.utilization_logs u
+                      JOIN fleet.fleet f ON f.id=u.fleet_id AND f.organization_id=u.organization_id AND f.is_deleted=false
+                      WHERE u.organization_id=:org_id AND u.is_deleted=false
+                        AND u.occurred_on >= :trend_start AND u.occurred_on <= :date_to
+                        AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
+                      GROUP BY 1
+                    ),
+                    fuel AS (
+                      SELECT date_trunc('month', ft.transaction_at)::date AS month, SUM(ft.total_cost) AS fuel_cost
+                      FROM fleet.fuel_transactions ft
+                      JOIN fleet.fleet f ON f.id=ft.fleet_id AND f.organization_id=ft.organization_id AND f.is_deleted=false
+                      WHERE ft.organization_id=:org_id AND ft.is_deleted=false
+                        AND ft.transaction_at::date >= :trend_start AND ft.transaction_at::date <= :date_to
+                        AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
+                      GROUP BY 1
+                    ),
+                    maint AS (
+                      SELECT date_trunc('month', wo.completed_at)::date AS month, SUM(wo.actual_cost) AS maintenance_cost
+                      FROM fleet.maintenance_work_orders wo
+                      JOIN fleet.fleet f ON f.id=wo.fleet_id AND f.organization_id=wo.organization_id AND f.is_deleted=false
+                      WHERE wo.organization_id=:org_id AND wo.is_deleted=false
+                        AND wo.status IN ('completed','returned_to_service','closed')
+                        AND wo.completed_at::date >= :trend_start AND wo.completed_at::date <= :date_to
+                        AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
+                      GROUP BY 1
+                    ),
+                    ownership AS (
+                      SELECT COALESCE(SUM(f.monthly_ownership_cost), 0) AS ownership_cost
+                      FROM fleet.fleet f
+                      WHERE f.organization_id=:org_id AND f.is_deleted=false
+                        AND (CAST(:category AS varchar) IS NULL OR f.asset_category=CAST(:category AS varchar))
+                    )
+                    SELECT m.month,
+                           COALESCE(u.internal_revenue, 0) AS internal_revenue,
+                           COALESCE(u.utilization_cost, 0) + COALESCE(fu.fuel_cost, 0) + COALESCE(ma.maintenance_cost, 0) + o.ownership_cost AS operating_cost,
+                           ROUND(CASE WHEN COALESCE(u.total_hours, 0) > 0 THEN (u.operating_hours / NULLIF(u.total_hours, 0)) * 100 ELSE 0 END, 2) AS utilization_pct
+                    FROM months m
+                    LEFT JOIN util u ON u.month = m.month
+                    LEFT JOIN fuel fu ON fu.month = m.month
+                    LEFT JOIN maint ma ON ma.month = m.month
+                    CROSS JOIN ownership o
+                    ORDER BY m.month
+                """),
+                {"org_id": org_id, "trend_start": trend_start, "date_to": range_to, "category": category},
+            )
+        ).mappings().all()
 
     performer_query = """
         SELECT f.id, f.asset_code, f.vehicle_registration, f.asset_category,
@@ -1233,8 +1224,31 @@ async def fleet_performance(
             "margin": round(internal_revenue - operating_cost, 2),
         }
 
-    top_rows = (await db.execute(text(performer_query + " ORDER BY (COALESCE(util.revenue_amount,0) - (COALESCE(util.cost_amount,0)+COALESCE(fuel.amt,0)+COALESCE(maint.amt,0)+COALESCE(f.monthly_ownership_cost,0))) DESC LIMIT 5"), params)).mappings().all()
-    bottom_rows = (await db.execute(text(performer_query + " ORDER BY (COALESCE(util.revenue_amount,0) - (COALESCE(util.cost_amount,0)+COALESCE(fuel.amt,0)+COALESCE(maint.amt,0)+COALESCE(f.monthly_ownership_cost,0))) ASC LIMIT 5"), params)).mappings().all()
+    performer_order = " ORDER BY (COALESCE(util.revenue_amount,0) - (COALESCE(util.cost_amount,0)+COALESCE(fuel.amt,0)+COALESCE(maint.amt,0)+COALESCE(f.monthly_ownership_cost,0)))"
+
+    async def read_top(session: AsyncSession):
+        return (await session.execute(text(performer_query + performer_order + " DESC LIMIT 5"), params)).mappings().all()
+
+    async def read_bottom(session: AsyncSession):
+        return (await session.execute(text(performer_query + performer_order + " ASC LIMIT 5"), params)).mappings().all()
+
+    # All six reads are independent - run them concurrently.
+    totals_row, external_row, by_category_rows, trend_rows, top_rows, bottom_rows = await gather_reads(
+        db, read_totals, read_external, read_by_category, read_trend, read_top, read_bottom
+    )
+    totals = with_margin(totals_row)
+    totals["external_invoice_revenue"] = float(external_row["external_invoice_revenue"])
+    by_category = [with_margin(row) for row in by_category_rows]
+    trend = [
+        {
+            "month": row["month"].isoformat(),
+            "internal_revenue": round(float(row["internal_revenue"]), 2),
+            "operating_cost": round(float(row["operating_cost"]), 2),
+            "margin": round(float(row["internal_revenue"]) - float(row["operating_cost"]), 2),
+            "utilization_pct": float(row["utilization_pct"]),
+        }
+        for row in trend_rows
+    ]
 
     return result(
         {

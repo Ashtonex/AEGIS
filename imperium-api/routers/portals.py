@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_role_notification
 from app.shared.vendor_verification import run_system_verification_check
-from core.database import get_db, supabase
+from core.database import gather_reads, get_db, supabase
 from core.security import get_current_user, resolve_primary_role
 
 router = APIRouter()
@@ -1911,41 +1911,53 @@ async def get_client_project_detail(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    tickets = await db.execute(
-        text("""
-        SELECT id, subject, description, status, priority, category, created_at, updated_at
-        FROM crm.support_tickets
-        WHERE organization_id = :org_id AND project_id = :project_id AND contact_id = :contact_id AND is_deleted = false
-        ORDER BY created_at DESC
-    """),
-        {"org_id": user["org_id"], "project_id": str(project_id), "contact_id": client["contact_id"]},
-    )
-    variations = await db.execute(
-        text("""
-        SELECT id, variation_number, title, description, scope_impact, cost_impact,
-               time_impact_days, status, submitted_at, approved_at, rejection_reason
-        FROM finance.variations
-        WHERE organization_id = :org_id AND project_id = :project_id AND is_deleted = false
-        ORDER BY created_at DESC
-    """),
-        {"org_id": user["org_id"], "project_id": str(project_id)},
-    )
-    payment_requests = await db.execute(
-        text("""
-        SELECT id, title, description, amount, currency, due_date, status, cleared_at
-        FROM finance.client_payment_requests
-        WHERE organization_id = :org_id AND project_id = :project_id AND is_deleted = false
-        ORDER BY created_at DESC
-    """),
-        {"org_id": user["org_id"], "project_id": str(project_id)},
+    # Only after the ownership check above: these three are scoped by
+    # project, so they must never run for a project the client doesn't own.
+    # They're independent of each other, so they run concurrently.
+    def rows(query, params):
+        async def read(session: AsyncSession):
+            return [dict(r._mapping) for r in await session.execute(query, params)]
+
+        return read
+
+    tickets, variations, payment_requests = await gather_reads(
+        db,
+        rows(
+            text("""
+            SELECT id, subject, description, status, priority, category, created_at, updated_at
+            FROM crm.support_tickets
+            WHERE organization_id = :org_id AND project_id = :project_id AND contact_id = :contact_id AND is_deleted = false
+            ORDER BY created_at DESC
+        """),
+            {"org_id": user["org_id"], "project_id": str(project_id), "contact_id": client["contact_id"]},
+        ),
+        rows(
+            text("""
+            SELECT id, variation_number, title, description, scope_impact, cost_impact,
+                   time_impact_days, status, submitted_at, approved_at, rejection_reason
+            FROM finance.variations
+            WHERE organization_id = :org_id AND project_id = :project_id AND is_deleted = false
+            ORDER BY created_at DESC
+        """),
+            {"org_id": user["org_id"], "project_id": str(project_id)},
+        ),
+        rows(
+            text("""
+            SELECT id, title, description, amount, currency, due_date, status, cleared_at
+            FROM finance.client_payment_requests
+            WHERE organization_id = :org_id AND project_id = :project_id AND is_deleted = false
+            ORDER BY created_at DESC
+        """),
+            {"org_id": user["org_id"], "project_id": str(project_id)},
+        ),
     )
     return {
         "success": True,
         "data": {
             "project": dict(project._mapping),
-            "tickets": [dict(r._mapping) for r in tickets],
-            "variations": [dict(r._mapping) for r in variations],
-            "payment_requests": [dict(r._mapping) for r in payment_requests],
+            "tickets": tickets,
+            "variations": variations,
+            "payment_requests": payment_requests,
         },
         "message": "Project detail loaded.",
         "meta": {},

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import gather_reads, get_db
 from core.logging import logger
 from core.security import get_current_user, require_permission, user_has_permission
 from app.shared.events import emit_event, emit_notification
@@ -995,35 +995,50 @@ async def project_lifecycle(
     await _project_or_404(db, project_id, user["org_id"])
     params = {"project_id": project_id, "org_id": user["org_id"]}
 
-    async def rows(query: str):
-        return [dict(r._mapping) for r in await db.execute(text(query), params)]
+    def rows(query: str):
+        async def read(session: AsyncSession):
+            return [dict(r._mapping) for r in await session.execute(text(query), params)]
 
-    project = (
-        await db.execute(
-            text(
-                "SELECT p.*, pp.* FROM projects.projects p LEFT JOIN projects.project_profiles pp ON pp.project_id=p.id AND pp.organization_id=p.organization_id WHERE p.id=:project_id AND p.organization_id=:org_id"
-            ),
-            params,
-        )
-    ).first()
+        return read
+
+    async def read_project(session: AsyncSession):
+        return (
+            await session.execute(
+                text(
+                    "SELECT p.*, pp.* FROM projects.projects p LEFT JOIN projects.project_profiles pp ON pp.project_id=p.id AND pp.organization_id=p.organization_id WHERE p.id=:project_id AND p.organization_id=:org_id"
+                ),
+                params,
+            )
+        ).first()
+
+    # Everything below is an independent read - run them concurrently.
+    project, milestones, changes, risks, pre_mobilisation, commercial_readiness = await gather_reads(
+        db,
+        read_project,
+        rows(
+            """SELECT m.*, owner.full_name AS owner_name
+               FROM projects.project_milestones m
+               LEFT JOIN core.users owner ON owner.id = m.owner_id
+               WHERE m.project_id=:project_id AND m.organization_id=:org_id AND m.is_deleted=false
+               ORDER BY m.baseline_date NULLS LAST, m.created_at"""
+        ),
+        rows(
+            "SELECT * FROM projects.project_changes WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY created_at DESC"
+        ),
+        rows(
+            "SELECT *, CASE WHEN likelihood IS NOT NULL AND impact IS NOT NULL THEN likelihood * impact END AS exposure FROM projects.project_risks WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY (likelihood * impact) DESC NULLS LAST, created_at DESC"
+        ),
+        lambda session: _pre_mobilisation_readiness(session, org_id=user["org_id"], project_id=project_id),
+        lambda session: _commercial_readiness_summary(session, org_id=user["org_id"], project_id=project_id),
+    )
     return _result(
         {
             "project": dict(project._mapping),
-            "milestones": await rows(
-                """SELECT m.*, owner.full_name AS owner_name
-                   FROM projects.project_milestones m
-                   LEFT JOIN core.users owner ON owner.id = m.owner_id
-                   WHERE m.project_id=:project_id AND m.organization_id=:org_id AND m.is_deleted=false
-                   ORDER BY m.baseline_date NULLS LAST, m.created_at"""
-            ),
-            "changes": await rows(
-                "SELECT * FROM projects.project_changes WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY created_at DESC"
-            ),
-            "risks": await rows(
-                "SELECT *, CASE WHEN likelihood IS NOT NULL AND impact IS NOT NULL THEN likelihood * impact END AS exposure FROM projects.project_risks WHERE project_id=:project_id AND organization_id=:org_id AND is_deleted=false ORDER BY (likelihood * impact) DESC NULLS LAST, created_at DESC"
-            ),
-            "pre_mobilisation": await _pre_mobilisation_readiness(db, org_id=user["org_id"], project_id=project_id),
-            "commercial_readiness": await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id),
+            "milestones": milestones,
+            "changes": changes,
+            "risks": risks,
+            "pre_mobilisation": pre_mobilisation,
+            "commercial_readiness": commercial_readiness,
         },
         "Project lifecycle retrieved.",
     )

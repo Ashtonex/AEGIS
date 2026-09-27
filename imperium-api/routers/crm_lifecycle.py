@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import gather_reads, get_db
 from core.security import require_permission
 from app.services.crm.automation_engine import fire_trigger
 
@@ -446,61 +446,74 @@ async def support_dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _org_id(user)
-    summary = (await db.execute(
-        text("""
-            SELECT
-                COUNT(*) FILTER (WHERE status NOT IN ('resolved', 'closed')) AS open_tickets,
-                COUNT(*) FILTER (WHERE status NOT IN ('resolved', 'closed') AND resolution_due_at IS NOT NULL AND resolution_due_at < NOW()) AS overdue_tickets,
-                COUNT(*) FILTER (WHERE first_response_due_at IS NOT NULL) AS tickets_with_response_sla,
-                COUNT(*) FILTER (WHERE first_response_due_at IS NOT NULL AND first_responded_at IS NOT NULL AND first_responded_at <= first_response_due_at) AS response_sla_met,
-                COUNT(*) FILTER (WHERE resolution_due_at IS NOT NULL) AS tickets_with_resolution_sla,
-                COUNT(*) FILTER (WHERE resolution_due_at IS NOT NULL AND resolved_at IS NOT NULL AND resolved_at <= resolution_due_at) AS resolution_sla_met,
-                COUNT(*) FILTER (WHERE reopen_count > 0) AS reopened_tickets,
-                COALESCE(AVG(EXTRACT(EPOCH FROM (first_responded_at - created_at)) / 3600.0) FILTER (WHERE first_responded_at IS NOT NULL), 0) AS avg_first_response_hours,
-                COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0) FILTER (WHERE resolved_at IS NOT NULL), 0) AS avg_resolution_hours,
-                COALESCE(AVG(satisfaction_score), 0) AS avg_satisfaction
+
+    async def read_summary(session: AsyncSession):
+        return (await session.execute(
+            text("""
+                SELECT
+                    COUNT(*) FILTER (WHERE status NOT IN ('resolved', 'closed')) AS open_tickets,
+                    COUNT(*) FILTER (WHERE status NOT IN ('resolved', 'closed') AND resolution_due_at IS NOT NULL AND resolution_due_at < NOW()) AS overdue_tickets,
+                    COUNT(*) FILTER (WHERE first_response_due_at IS NOT NULL) AS tickets_with_response_sla,
+                    COUNT(*) FILTER (WHERE first_response_due_at IS NOT NULL AND first_responded_at IS NOT NULL AND first_responded_at <= first_response_due_at) AS response_sla_met,
+                    COUNT(*) FILTER (WHERE resolution_due_at IS NOT NULL) AS tickets_with_resolution_sla,
+                    COUNT(*) FILTER (WHERE resolution_due_at IS NOT NULL AND resolved_at IS NOT NULL AND resolved_at <= resolution_due_at) AS resolution_sla_met,
+                    COUNT(*) FILTER (WHERE reopen_count > 0) AS reopened_tickets,
+                    COALESCE(AVG(EXTRACT(EPOCH FROM (first_responded_at - created_at)) / 3600.0) FILTER (WHERE first_responded_at IS NOT NULL), 0) AS avg_first_response_hours,
+                    COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0) FILTER (WHERE resolved_at IS NOT NULL), 0) AS avg_resolution_hours,
+                    COALESCE(AVG(satisfaction_score), 0) AS avg_satisfaction
+                FROM crm.support_tickets
+                WHERE organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": org_id},
+        )).mappings().first()
+
+    # Independent dashboard reads - run them concurrently.
+    reads = {
+        "summary": read_summary,
+        "by_category": lambda session: _rows(
+            session,
+            """
+            SELECT COALESCE(category, 'uncategorized') AS category, COUNT(*) AS ticket_count
             FROM crm.support_tickets
             WHERE organization_id = :org_id AND is_deleted = false
-        """),
-        {"org_id": org_id},
-    )).mappings().first()
-    by_category = await _rows(
-        db,
-        """
-        SELECT COALESCE(category, 'uncategorized') AS category, COUNT(*) AS ticket_count
-        FROM crm.support_tickets
-        WHERE organization_id = :org_id AND is_deleted = false
-        GROUP BY COALESCE(category, 'uncategorized')
-        ORDER BY ticket_count DESC
-        """,
-        {"org_id": org_id},
-    )
-    by_client = await _rows(
-        db,
-        """
-        SELECT co.name AS client_name, COUNT(*) AS ticket_count
-        FROM crm.support_tickets t
-        LEFT JOIN crm.organizations co ON co.id = t.organization_account_id AND co.organization_id = t.organization_id
-        WHERE t.organization_id = :org_id AND t.is_deleted = false
-        GROUP BY co.name
-        ORDER BY ticket_count DESC
-        LIMIT 20
-        """,
-        {"org_id": org_id},
-    )
-    by_project = await _rows(
-        db,
-        """
-        SELECT p.name AS project_name, COUNT(*) AS ticket_count
-        FROM crm.support_tickets t
-        LEFT JOIN projects.projects p ON p.id = t.project_id AND p.organization_id = t.organization_id
-        WHERE t.organization_id = :org_id AND t.is_deleted = false AND t.project_id IS NOT NULL
-        GROUP BY p.name
-        ORDER BY ticket_count DESC
-        LIMIT 20
-        """,
-        {"org_id": org_id},
-    )
+            GROUP BY COALESCE(category, 'uncategorized')
+            ORDER BY ticket_count DESC
+            """,
+            {"org_id": org_id},
+        ),
+        "by_client": lambda session: _rows(
+            session,
+            """
+            SELECT co.name AS client_name, COUNT(*) AS ticket_count
+            FROM crm.support_tickets t
+            LEFT JOIN crm.organizations co ON co.id = t.organization_account_id AND co.organization_id = t.organization_id
+            WHERE t.organization_id = :org_id AND t.is_deleted = false
+            GROUP BY co.name
+            ORDER BY ticket_count DESC
+            LIMIT 20
+            """,
+            {"org_id": org_id},
+        ),
+        "by_project": lambda session: _rows(
+            session,
+            """
+            SELECT p.name AS project_name, COUNT(*) AS ticket_count
+            FROM crm.support_tickets t
+            LEFT JOIN projects.projects p ON p.id = t.project_id AND p.organization_id = t.organization_id
+            WHERE t.organization_id = :org_id AND t.is_deleted = false AND t.project_id IS NOT NULL
+            GROUP BY p.name
+            ORDER BY ticket_count DESC
+            LIMIT 20
+            """,
+            {"org_id": org_id},
+        ),
+    }
+    (
+        summary,
+        by_category,
+        by_client,
+        by_project,
+    ) = await gather_reads(db, *reads.values())
     summary_dict = dict(summary) if summary else {}
     response_total = summary_dict.get("tickets_with_response_sla") or 0
     resolution_total = summary_dict.get("tickets_with_resolution_sla") or 0

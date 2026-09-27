@@ -1,4 +1,5 @@
-from typing import AsyncGenerator
+import asyncio
+from typing import Any, AsyncGenerator, Awaitable, Callable
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import TimeoutError as SATimeoutError
@@ -122,6 +123,109 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+# ----------------------------------------------------------------------------
+# Concurrent independent reads (AEGIS audit item 1.4). One AsyncSession can
+# only run one statement at a time, so running reads concurrently means
+# borrowing extra pool connections - and this worker's pool is small (see
+# DB_POOL_SIZE / DB_MAX_OVERFLOW; 3+2 in production). gather_reads therefore
+# only ever borrows a connection that is spare *right now*, and otherwise
+# runs that read on the request's own session instead. It never waits for a
+# spare slot, so it can't deadlock against requests holding their own
+# connections, and it degrades to plain sequential execution under load.
+#
+# Only for reads that don't need to see the request session's uncommitted
+# writes - a borrowed session is a separate transaction.
+_PARALLEL_READ_LIMIT = max(0, _POOL_CAPACITY - 2)
+_PARALLEL_READS_PER_CALL = 4
+_POOL_HEADROOM = 1  # always leave one connection for a brand-new request
+_parallel_reads_in_flight = 0
+
+
+def _try_claim_parallel_slot() -> bool:
+    global _parallel_reads_in_flight
+    if _parallel_reads_in_flight >= _PARALLEL_READ_LIMIT:
+        return False
+    # Claimed slots may not have checked their connection out yet, so count
+    # them on top of checkedout() - double-counting the ones that have only
+    # makes this more conservative.
+    if _pool.checkedout() + _parallel_reads_in_flight >= _POOL_CAPACITY - _POOL_HEADROOM:
+        return False
+    _parallel_reads_in_flight += 1
+    return True
+
+
+def _release_parallel_slot() -> None:
+    global _parallel_reads_in_flight
+    _parallel_reads_in_flight -= 1
+
+
+async def gather_reads(db, *reads: Callable[[AsyncSession], Awaitable[Any]]) -> list[Any]:
+    """Run independent read callables - each `async (session) -> result` -
+    concurrently where spare connections allow, returning results in call
+    order. A read that can't get a spare connection runs on `db`, the
+    request's session, in call order.
+
+    Anything other than a real AsyncSession (the fakes the unit tests
+    inject) gets plain sequential execution on `db`, so tests keep their
+    exact query order and never open real connections."""
+    if not isinstance(db, AsyncSession) or len(reads) < 2:
+        return [await read(db) for read in reads]
+
+    # "Lanes": the request session plus each borrowed session repeatedly
+    # take the next unstarted read, so N reads over L lanes cost about N/L
+    # round trips. Each lane runs its reads one at a time on its own session.
+    results: list[Any] = [None] * len(reads)
+    next_index = 0
+
+    async def drain(session: AsyncSession) -> None:
+        nonlocal next_index
+        while next_index < len(reads):
+            index = next_index
+            next_index += 1
+            results[index] = await reads[index](session)
+
+    released = 0
+
+    async def borrowed_lane() -> None:
+        nonlocal released
+        try:
+            async with AsyncSessionLocal() as session:
+                # Connect before taking any read: a read's own error handling
+                # (e.g. executive._rows reporting a "degraded" source) must
+                # never be triggered by this lane failing to get a connection.
+                # If it can't connect, the other lanes simply take its share.
+                try:
+                    await session.connection()
+                except Exception as exc:
+                    logger.warning("parallel_read_lane_unavailable", error_type=exc.__class__.__name__)
+                    return
+                await drain(session)
+        finally:
+            released += 1
+            _release_parallel_slot()
+
+    lanes: list[asyncio.Task] = []
+    while (
+        len(lanes) < min(_PARALLEL_READS_PER_CALL, len(reads) - 1)
+        and _try_claim_parallel_slot()
+    ):
+        lanes.append(asyncio.ensure_future(borrowed_lane()))
+
+    try:
+        await drain(db)
+        await asyncio.gather(*lanes)
+    except BaseException:
+        for lane in lanes:
+            lane.cancel()
+        await asyncio.gather(*lanes, return_exceptions=True)
+        # A lane cancelled before its first step never runs its finally, so
+        # release those slots here - otherwise they'd leak for good.
+        for _ in range(len(lanes) - released):
+            _release_parallel_slot()
+        raise
+    return results
 
 
 async def check_database_health() -> dict:

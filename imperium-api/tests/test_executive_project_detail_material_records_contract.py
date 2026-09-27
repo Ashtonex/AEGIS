@@ -19,8 +19,8 @@ class ExecutiveProjectDetailMaterialRecordsContractTests(unittest.TestCase):
     """
 
     def test_material_records_query_uses_the_real_inventory_item_column(self):
-        query_start = EXECUTIVE.index('"material_records": await _rows(')
-        query_end = EXECUTIVE.index('"quotations": await _rows(')
+        query_start = EXECUTIVE.index('"material_records": lambda session: _rows(')
+        query_end = EXECUTIVE.index('"quotations": lambda session: _rows(')
         section = EXECUTIVE[query_start:query_end]
         self.assertIn("i.item_name", section)
         self.assertNotIn("i.name,", section)
