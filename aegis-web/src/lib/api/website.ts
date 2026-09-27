@@ -226,6 +226,60 @@ export async function getExecutiveKPIs(accessToken?: string): Promise<ApiRespons
   });
 }
 
+export type ExecutiveTodayActivity = {
+  actor: string;
+  verb: string;
+  count: number;
+  noun: string;
+  label: string | null;
+  happened_at: string;
+  href: string | null;
+};
+
+export type ExecutiveTodayBankAccount = {
+  id: string;
+  account_name: string;
+  bank_name: string | null;
+  currency: string | null;
+  book_balance: string | number | null;
+  statement_balance: string | number | null;
+  statement_date: string | null;
+};
+
+type TodayRow = Record<string, unknown>;
+
+export type ExecutiveToday = {
+  materials: { at_risk_requests: TodayRow[]; low_stock: TodayRow[] };
+  commercial: {
+    summary: {
+      urgent_tenders: number;
+      lost_tenders: number;
+      tasks_needing_review: number;
+      paperwork_gaps: number;
+      stale_items: number;
+    };
+    tenders_due: TodayRow[];
+    paperwork_gaps: TodayRow[];
+    stale_items: TodayRow[];
+  } | null;
+  activity: ExecutiveTodayActivity[];
+  bank: {
+    accounts: ExecutiveTodayBankAccount[];
+    untagged_count: number;
+    untagged_value: number;
+    oldest_untagged_date: string | null;
+  };
+};
+
+export async function getExecutiveToday(accessToken?: string): Promise<ApiResponse<ExecutiveToday>> {
+  return fetchApi<ApiResponse<ExecutiveToday>>(`/api/v1/executive/today`, {
+    cache: 'no-store',
+    headers: bearerHeaders(accessToken),
+    timeoutMs: EXECUTIVE_READ_TIMEOUT_MS,
+    allowFallback: false
+  });
+}
+
 export async function getModulesStatus(accessToken?: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/modules`, {
     cache: 'no-store',

@@ -1413,18 +1413,9 @@ async def executive_crm_report(
     }
 
 
-@router.get("/commercial-briefing")
-async def commercial_morning_briefing(
-    user: dict = Depends(require_permission("crm.view_opportunities")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Live Commercial Command briefing.
-
-    This is intentionally computed from current operational records each time
-    the CRM home screen loads: tender deadlines, task movement, open tender
-    requirement gaps, missing BOQ/authority paperwork, and stale pursuit work.
-    """
-    org_id = _require_org_id(user)
+async def build_commercial_briefing(db: AsyncSession, org_id: str) -> Dict[str, Any]:
+    """The commercial morning briefing's data - shared by GET /crm/commercial-briefing
+    and the Executive dashboard's Today panel (GET /executive/today)."""
     # Every briefing section is an independent read - run them concurrently.
     reads = {
         "tenders_due": lambda session: _rows(
@@ -1639,22 +1630,37 @@ async def commercial_morning_briefing(
         stale_items,
     ) = await gather_reads(db, *reads.values())
     return {
-        "success": True,
-        "data": {
-            "generated_at": date.today().isoformat(),
-            "tenders_due": tenders_due,
-            "lost_tenders": lost_tenders,
-            "task_activity": task_activity,
-            "paperwork_gaps": paperwork_gaps,
-            "stale_items": stale_items,
-            "summary": {
-                "urgent_tenders": len([item for item in tenders_due if (item.get("days_left") or 99) <= 3]),
-                "lost_tenders": len(lost_tenders),
-                "tasks_needing_review": len([item for item in task_activity if item.get("briefing_status") == "ready_for_verification"]),
-                "paperwork_gaps": len(paperwork_gaps),
-                "stale_items": len(stale_items),
-            },
+        "generated_at": date.today().isoformat(),
+        "tenders_due": tenders_due,
+        "lost_tenders": lost_tenders,
+        "task_activity": task_activity,
+        "paperwork_gaps": paperwork_gaps,
+        "stale_items": stale_items,
+        "summary": {
+            "urgent_tenders": len([item for item in tenders_due if (item.get("days_left") or 99) <= 3]),
+            "lost_tenders": len(lost_tenders),
+            "tasks_needing_review": len([item for item in task_activity if item.get("briefing_status") == "ready_for_verification"]),
+            "paperwork_gaps": len(paperwork_gaps),
+            "stale_items": len(stale_items),
         },
+    }
+
+
+@router.get("/commercial-briefing")
+async def commercial_morning_briefing(
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Live Commercial Command briefing.
+
+    This is intentionally computed from current operational records each time
+    the CRM home screen loads: tender deadlines, task movement, open tender
+    requirement gaps, missing BOQ/authority paperwork, and stale pursuit work.
+    """
+    org_id = _require_org_id(user)
+    return {
+        "success": True,
+        "data": await build_commercial_briefing(db, org_id),
         "message": "Commercial morning briefing generated.",
         "meta": {},
     }

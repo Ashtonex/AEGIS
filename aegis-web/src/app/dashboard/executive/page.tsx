@@ -6,6 +6,7 @@ import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucid
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { TodayPanel } from "./TodayPanel";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -20,7 +21,6 @@ import {
   getCcbFindings,
   updateCcbFinding,
   getCommercialBaselineHistory,
-  getModulesStatus,
   getFinancialRunway,
   getSafetyIndex,
   getPendingApprovals,
@@ -228,7 +228,6 @@ function ExecutiveCommandCentreWorkspace() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [kpis, setKpis] = useState<ApiData>({});
   const [stats, setStats] = useState<ApiData>({});
-  const [modules, setModules] = useState<ApiData[]>([]);
   const [regions, setRegions] = useState<ApiData[]>([]);
   const [activeProjects, setActiveProjects] = useState<ApiData[]>([]);
   const [dataHealth, setDataHealth] = useState<ApiData[]>([]);
@@ -245,14 +244,12 @@ function ExecutiveCommandCentreWorkspace() {
   const loadDashboard = useCallback(async () => {
     setRefreshing(true);
     const accessToken = session?.access_token;
-    const [kpiResult, statsResult, moduleResult] = await Promise.allSettled([
+    const [kpiResult, statsResult] = await Promise.allSettled([
       getExecutiveKPIs(accessToken),
       getExecutiveStats(accessToken),
-      getModulesStatus(accessToken),
     ]);
     if (kpiResult.status === "fulfilled") setKpis(kpiResult.value.data || {});
     if (statsResult.status === "fulfilled") setStats(statsResult.value.data || {});
-    if (moduleResult.status === "fulfilled") setModules(moduleResult.value.data || []);
 
     const [regionResult, projectResult, healthResult] = await Promise.allSettled([
       getExecutiveRegions(accessToken),
@@ -270,7 +267,6 @@ function ExecutiveCommandCentreWorkspace() {
     setLoadWarnings([
       ...sourceWarningsFrom(kpiResult, "Executive KPIs"),
       ...sourceWarningsFrom(statsResult, "Operational control ledger"),
-      ...sourceWarningsFrom(moduleResult, "Module gateway"),
       ...sourceWarningsFrom(regionResult, "Regional footprint"),
       ...sourceWarningsFrom(projectResult, "Active projects"),
       ...sourceWarningsFrom(healthResult, "Data confidence"),
@@ -328,9 +324,9 @@ function ExecutiveCommandCentreWorkspace() {
     <DashboardPageHeader
       title={<GreetingHeading displayName={displayName} userRole={userRole} />}
       documentTitle="Executive Command Centre"
-      actions={
+      actions={<div className="flex items-center gap-3">
         <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
-      }
+      </div>}
     />
 
     <DataConfidence sources={dataHealth} />
@@ -341,6 +337,9 @@ function ExecutiveCommandCentreWorkspace() {
         <p className="font-mono text-[9px] tracking-widest text-slate uppercase">{card.label}</p><p className="font-mono text-xl leading-tight text-paper mt-3 break-words">{card.value}</p>
       </button>)}
     </section>
+
+    <PendingApprovalsPanel />
+    <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <RevenueCostMarginPanel kpis={kpis} />
@@ -358,7 +357,7 @@ function ExecutiveCommandCentreWorkspace() {
     </section>
 
     <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-      <ModuleGateway modules={modules} />
+      <TodayPanel />
 
       <RegionalFootprint regions={regions} />
     </section>
@@ -367,8 +366,6 @@ function ExecutiveCommandCentreWorkspace() {
     <MaterialsForecastPanel />
     <CCBCommercialGovernanceWidget />
     <CCBAutomatedFindingsPanel />
-    <PendingApprovalsPanel />
-    <ExecutiveExceptions exceptions={exceptions} onProject={openProject} />
 
     {selectedCard && <Modal title={selectedCard.label} onClose={() => setSelectedMetric(null)}><p className="text-sm text-slate-light">{selectedCard.source}</p><p className="font-mono text-3xl text-paper mt-4">{selectedCard.value}</p>{selectedCard.key === "active_projects" ? <ProjectList projects={activeProjects} onSelect={openProject} /> : <MetricDetailGrid rows={metricDetailRows(selectedCard.key, kpis, stats, activeProjects, dataHealth)} />}</Modal>}
     {selectedProject && <Modal title={String(selectedProject.name || "Project detail")} onClose={() => setSelectedProject(null)} wide>{detailLoading ? <Loader2 className="w-6 h-6 text-signal animate-spin"/> : <><SourceWarnings warnings={detailError ? [detailError] : []} /><ProjectDetail detail={projectDetail} accessToken={session?.access_token} /></>}</Modal>}
@@ -442,127 +439,6 @@ function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[];
     </section>
   );
 }
-function ModuleGateway({ modules }: { modules: ApiData[] }) {
-  const [selectedId, setSelectedId] = useState("");
-
-  useEffect(() => {
-    if (modules.length && !selectedId) {
-      setSelectedId(String(modules[0].id));
-    }
-  }, [modules, selectedId]);
-
-  const selectedModule = modules.find((m) => String(m.id) === selectedId) || modules[0];
-
-  if (!modules.length) {
-    return (
-      <div className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4 xl:col-span-1 min-h-[340px] flex flex-col justify-between">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Module Gateway</h2>
-          <span className="font-mono text-[10px] text-slate">OFFLINE</span>
-        </div>
-        <p className="text-sm text-slate-light py-6">No module records configured.</p>
-      </div>
-    );
-  }
-
-  const routeMap: Record<string, string> = {
-    "projects": "/dashboard/projects",
-    "site-operations": "/dashboard/site-operations",
-    "fleet": "/dashboard/fleet",
-    "workforce": "/dashboard/workforce",
-    "hr": "/dashboard/hr",
-    "procurement": "/dashboard/procurement",
-    "inventory": "/dashboard/inventory",
-    "compliance": "/dashboard/compliance",
-    "crm": "/dashboard/crm",
-    "reports": "/dashboard/reports",
-    "analytics": "/dashboard/analytics",
-    "settings": "/dashboard/settings",
-    "finance": "/dashboard/finance",
-    "documents": "/dashboard/documents"
-  };
-
-  const getModuleRoute = (name: string, id: string) => {
-    const key = String(id || name).toLowerCase().replace(/\s+/g, '-');
-    return routeMap[key] || `/dashboard/${key}`;
-  };
-
-  const isAvailable = selectedModule ? selectedModule.available !== false : false;
-  const targetRoute = selectedModule ? getModuleRoute(String(selectedModule.name), String(selectedModule.id)) : "#";
-
-  return (
-    <div className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4 xl:col-span-1 min-h-[340px] flex flex-col justify-between">
-      <div>
-        <div className="flex justify-between items-center mb-4 border-b border-ink-mid pb-3">
-          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Module Gateway</h2>
-          <span className="font-mono text-[10px] text-green-500">CONNECTED</span>
-        </div>
-
-        <p className="text-[11px] text-slate-light mb-4 leading-relaxed">Select a command module from the dropdown to check live status and deploy configuration.</p>
-
-        <label className="block mb-4">
-          <span className="font-mono text-[9px] text-slate uppercase block mb-1.5">Select Command Module</span>
-          <div className="relative">
-            <select
-              value={selectedId}
-              onChange={(e) => setSelectedId(e.target.value)}
-              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper focus:border-signal outline-none cursor-pointer appearance-none"
-            >
-              {modules.map((m) => (
-                <option key={String(m.id)} value={String(m.id)}>
-                  {String(m.name)} ({m.available !== false ? "Online" : "Not Built"})
-                </option>
-              ))}
-            </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate">
-              <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
-              </svg>
-            </div>
-          </div>
-        </label>
-      </div>
-
-      {selectedModule && (
-        <div className="border border-ink-mid bg-ink-light p-3.5 rounded-md space-y-3">
-          <div className="flex justify-between items-start">
-            <div>
-              <span className="font-mono text-[9px] uppercase text-slate">Command Status</span>
-              <h3 className="text-xs font-semibold text-paper mt-0.5">{String(selectedModule.name)}</h3>
-            </div>
-            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-mono uppercase font-bold ${
-              isAvailable ? "bg-green-500/10 text-green-400 border border-green-500/20" : "bg-slate/10 text-slate border border-slate/20"
-            }`}>
-              {isAvailable ? "Online" : "Not Built"}
-            </span>
-          </div>
-
-          <div className="flex gap-2 items-center text-[10px] text-slate-light">
-            <span className={`w-1.5 h-1.5 rounded-full ${isAvailable ? "bg-green-500 animate-pulse" : "bg-slate"}`} />
-            <span>{isAvailable ? "Route mapping operational." : "Under construction."}</span>
-          </div>
-
-          {isAvailable ? (
-            <a
-              href={targetRoute}
-              className="w-full inline-flex items-center justify-center gap-2 border border-signal/50 bg-signal/5 px-3 py-1.5 font-mono text-[9px] uppercase text-signal hover:bg-signal/15 transition-all duration-300 rounded-sm"
-            >
-              Open Module
-            </a>
-          ) : (
-            <button
-              disabled
-              className="w-full inline-flex items-center justify-center gap-2 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-[9px] uppercase text-slate disabled:opacity-40 rounded-sm"
-            >
-              Module Offline
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function RegionalFootprint({ regions }: { regions: ApiData[] }) {
   const [selectedName, setSelectedName] = useState("");
   const minLat = -23.0;

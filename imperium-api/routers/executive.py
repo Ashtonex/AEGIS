@@ -181,6 +181,23 @@ async def _rows(
         return []
 
 
+_KPI_SNAPSHOT_MAX_AGE_DAYS = 7
+
+
+def _snapshot_is_stale(snapshot_date: Any) -> bool:
+    """True when a kpi_snapshots row is too old to trust for cash runway."""
+    if snapshot_date is None:
+        return True
+    if isinstance(snapshot_date, str):
+        try:
+            snapshot_date = datetime.fromisoformat(snapshot_date)
+        except ValueError:
+            return True
+    if isinstance(snapshot_date, datetime):
+        snapshot_date = snapshot_date.date()
+    return (datetime.utcnow().date() - snapshot_date).days > _KPI_SNAPSHOT_MAX_AGE_DAYS
+
+
 async def _compute_cash_runway(
     db: AsyncSession,
     org_id: str,
@@ -380,6 +397,20 @@ async def get_executive_kpis(
                 "source": "executive.kpi_snapshots",
                 "status": "no_data",
                 "reason": "No executive KPI snapshot rows found; live module fallbacks are being used.",
+            }
+        ]
+    elif _snapshot_is_stale(data.get("snapshot_date")):
+        # An old snapshot's runway would disagree with the live Cash Runway
+        # panel on the same page - drop it so the live calculation below runs.
+        data["cash_survival_days"] = None
+        data["_notices"] = [
+            {
+                "source": "executive.kpi_snapshots",
+                "status": "stale",
+                "reason": (
+                    f"Latest KPI snapshot ({data.get('snapshot_date')}) is older than "
+                    f"{_KPI_SNAPSHOT_MAX_AGE_DAYS} days; cash runway is calculated live."
+                ),
             }
         ]
 
@@ -2021,4 +2052,276 @@ async def get_safety_index(
         },
         "message": "Lost Time Injury Frequency Rate calculated.",
         "meta": {"source_errors": source_errors}
+    }
+
+
+# ----------------------------------------------------------------------------
+# GET /executive/today - the Executive dashboard's "Today" panel (replaces
+# the Module Gateway, which only listed API route groups). Four tabs, one
+# request, gated by the same permission as the rest of the dashboard so an
+# executive doesn't separately need CRM / settings / banking permissions.
+
+# Audit tables that are machine bookkeeping, not something a person "did".
+_ACTIVITY_NOISE_TABLES = [
+    "core.notifications",
+    "core.sequences",
+    "core.file_attachments",
+    "finance.journal_lines",
+    "finance.accounting_periods",
+    "crm.automation_runs",
+    "crm.communication_events",
+]
+_ACTIVITY_VERBS = {"INSERT": "added", "UPDATE": "updated", "DELETE": "deleted"}
+_ACTIVITY_LINKS = {
+    "projects": "/dashboard/projects",
+    "crm": "/dashboard/crm",
+    "finance": "/dashboard/finance",
+    "procurement": "/dashboard/procurement",
+    "hr": "/dashboard/hr",
+    "fleet": "/dashboard/fleet",
+    "compliance": "/dashboard/compliance",
+}
+_ACTIVITY_SPECIAL_LINKS = {
+    "finance.bank_statement_lines": "/dashboard/finance/bank-review",
+    "crm.tenders": "/dashboard/crm/tenders",
+    "crm.opportunities": "/dashboard/crm/opportunities",
+    "crm.leads": "/dashboard/crm/leads",
+    "finance.quotations": "/dashboard/quotations",
+}
+
+_TODAY_MATERIAL_REQUESTS_SQL = """
+    SELECT mr.id, mr.request_number, mr.required_by_date, mr.status,
+           mr.requested_quantity, mr.issued_quantity, mr.shortfall_quantity,
+           mr.execution_gate_status, mr.project_id,
+           COALESCE(i.item_name, i.item_code) AS item, i.unit_of_measure,
+           p.name AS project_name
+    FROM procurement.material_requests mr
+    LEFT JOIN procurement.inventory_items i
+      ON i.id = mr.item_id AND i.organization_id = mr.organization_id
+    LEFT JOIN projects.projects p
+      ON p.id = mr.project_id AND p.organization_id = mr.organization_id
+    WHERE mr.organization_id = :org_id AND mr.is_deleted = false
+      AND mr.status <> 'cancelled'
+      AND (
+        mr.execution_gate_status = 'blocked'
+        OR (
+          mr.status IN ('requisitioned', 'partially_issued_requisitioned')
+          AND mr.required_by_date <= CURRENT_DATE + 7
+        )
+      )
+    ORDER BY (mr.execution_gate_status = 'blocked') DESC, mr.required_by_date ASC NULLS LAST
+    LIMIT 10
+"""
+
+# Available quantity comes from the stock ledger, same as the Inventory page
+# (inventory_items.stock_quantity is not kept in step with it).
+_TODAY_LOW_STOCK_SQL = """
+    SELECT i.id, i.item_name, i.item_code, i.unit_of_measure,
+           i.reorder_level, i.reorder_quantity,
+           COALESCE(b.available_qty, 0) AS available_qty
+    FROM procurement.inventory_items i
+    LEFT JOIN (
+        SELECT item_id, SUM(quantity) AS available_qty
+        FROM procurement.stock_ledger
+        WHERE organization_id = :org_id
+        GROUP BY item_id
+    ) b ON b.item_id = i.id
+    WHERE i.organization_id = :org_id AND i.is_deleted = false
+      AND COALESCE(i.reorder_level, 0) > 0
+      AND COALESCE(b.available_qty, 0) <= i.reorder_level
+    ORDER BY COALESCE(b.available_qty, 0) / i.reorder_level ASC, i.item_name
+    LIMIT 10
+"""
+
+# People's actions over the last 7 days, bursts (one person, one table, one
+# action, same minute) collapsed into a single line. Only a record's own
+# name/title is surfaced - never raw field values.
+_TODAY_ACTIVITY_SQL = """
+    WITH recent AS (
+        SELECT a.table_name, a.action, a.created_by, a.created_at,
+               COALESCE(a.new_data, a.old_data) AS data
+        FROM core.audit_log a
+        -- audit_log.organization_id is never populated by the audit
+        -- trigger, so the tenant scope comes from the acting user instead.
+        JOIN core.users actor ON actor.id = a.created_by AND actor.organization_id = :org_id
+        WHERE a.created_by IS NOT NULL
+          AND a.created_at >= NOW() - INTERVAL '7 days'
+          AND NOT (a.table_name = ANY(CAST(:noise_tables AS text[])))
+    ),
+    grouped AS (
+        SELECT created_by, table_name, action,
+               date_trunc('minute', created_at) AS minute,
+               COUNT(*) AS record_count,
+               MAX(created_at) AS happened_at,
+               (array_agg(
+                    COALESCE(
+                        data->>'name', data->>'title', data->>'tender_name',
+                        data->>'project_name', data->>'item_name',
+                        data->>'request_number', data->>'reference',
+                        data->>'full_name', data->>'company_name'
+                    ) ORDER BY created_at DESC
+               ))[1] AS record_label
+        FROM recent
+        GROUP BY 1, 2, 3, 4
+    )
+    SELECT g.table_name, g.action, g.record_count, g.happened_at, g.record_label,
+           COALESCE(NULLIF(u.full_name, ''), u.email) AS actor
+    FROM grouped g
+    LEFT JOIN core.users u ON u.id = g.created_by
+    ORDER BY g.happened_at DESC
+    LIMIT 80
+"""
+_ACTIVITY_MERGE_WINDOW = timedelta(minutes=30)
+_ACTIVITY_MAX_LINES = 12
+
+_TODAY_BANK_ACCOUNTS_SQL = """
+    SELECT ca.id, ca.account_name, ca.bank_name, ca.currency,
+           ca.current_balance AS book_balance,
+           last_line.bank_balance AS statement_balance,
+           last_line.transaction_date AS statement_date
+    FROM finance.cash_accounts ca
+    LEFT JOIN LATERAL (
+        SELECT bsl.bank_balance, bsl.transaction_date
+        FROM finance.bank_statement_lines bsl
+        WHERE bsl.organization_id = ca.organization_id
+          AND bsl.cash_account_id = ca.id
+          AND bsl.bank_balance IS NOT NULL
+        ORDER BY bsl.transaction_date DESC, bsl.line_number DESC
+        LIMIT 1
+    ) last_line ON true
+    -- Bank accounts only: several petty-cash floats are type 'cash' without
+    -- is_petty_cash set, so the account type is the reliable filter.
+    WHERE ca.organization_id = :org_id AND ca.is_deleted = false AND ca.is_active = true
+      AND ca.account_type = 'bank'
+      AND COALESCE(ca.is_petty_cash, false) = false
+    ORDER BY ca.current_balance DESC NULLS LAST, ca.account_name
+"""
+
+# "Untagged" matches the bank-review screen's own definition
+# (app/services/finance/bank_reconciliation.py tag_status == "untagged").
+_TODAY_BANK_UNTAGGED_SQL = """
+    SELECT COUNT(*) AS untagged_count,
+           COALESCE(SUM(ABS(amount)), 0) AS untagged_value,
+           MIN(transaction_date) AS oldest_untagged_date
+    FROM finance.bank_statement_lines
+    WHERE organization_id = :org_id
+      AND project_id IS NULL AND counterparty_name IS NULL AND category IS NULL
+"""
+
+
+def _merge_activity_runs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rows arrive newest first, already collapsed per minute. Merge a run of
+    the same person doing the same thing to the same kind of record within
+    _ACTIVITY_MERGE_WINDOW of each other into one line."""
+    merged: List[Dict[str, Any]] = []
+    for row in rows:
+        previous = merged[-1] if merged else None
+        if (
+            previous is not None
+            and previous["actor"] == row.get("actor")
+            and previous["table_name"] == row.get("table_name")
+            and previous["action"] == row.get("action")
+            and previous["_oldest"] - row["happened_at"] <= _ACTIVITY_MERGE_WINDOW
+        ):
+            previous["record_count"] += int(row.get("record_count") or 1)
+            previous["_oldest"] = row["happened_at"]
+            continue
+        merged.append({**row, "record_count": int(row.get("record_count") or 1), "_oldest": row["happened_at"]})
+    return merged[:_ACTIVITY_MAX_LINES]
+
+
+def _activity_line(row: Dict[str, Any]) -> Dict[str, Any]:
+    table = str(row.get("table_name") or "")
+    schema, _, name = table.partition(".")
+    count = int(row.get("record_count") or 1)
+    noun = (name or table).replace("_", " ")
+    if count == 1 and noun.endswith("s"):
+        noun = noun[:-1]
+    label = row.get("record_label")
+    if label is not None:
+        label = str(label).strip()
+        label = (label[:77] + "...") if len(label) > 80 else label
+    return {
+        "actor": row.get("actor") or "Someone",
+        "verb": _ACTIVITY_VERBS.get(str(row.get("action") or "").upper(), "changed"),
+        "count": count,
+        "noun": noun,
+        "label": label if count == 1 else None,
+        "happened_at": row.get("happened_at"),
+        "href": _ACTIVITY_SPECIAL_LINKS.get(table) or _ACTIVITY_LINKS.get(schema),
+    }
+
+
+@router.get("/today")
+async def get_executive_today(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Four things worth checking each morning, in one concurrent batch:
+    materials at risk, the commercial briefing, recent activity by people,
+    and the bank position. Each section degrades on its own (recorded in
+    meta.source_errors) rather than failing the whole panel."""
+    from routers.crm import build_commercial_briefing
+
+    org_id = user["org_id"]
+    params = {"org_id": org_id}
+    source_errors: List[Dict[str, Any]] = []
+
+    def rows(sql: str, source: str, extra: Dict[str, Any] | None = None):
+        return lambda session: _rows(
+            session, sql, {**params, **(extra or {})}, source=source, source_errors=source_errors
+        )
+
+    async def commercial(session: AsyncSession):
+        try:
+            return await build_commercial_briefing(session, org_id)
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("executive_today_commercial_failed", error_type=exc.__class__.__name__)
+            source_errors.append(
+                {"source": "today.commercial_briefing", "status": "degraded", "reason": exc.__class__.__name__}
+            )
+            return None
+
+    (
+        material_requests,
+        low_stock,
+        briefing,
+        activity_rows,
+        bank_accounts,
+        untagged_rows,
+    ) = await gather_reads(
+        db,
+        rows(_TODAY_MATERIAL_REQUESTS_SQL, "today.material_requests"),
+        rows(_TODAY_LOW_STOCK_SQL, "today.low_stock"),
+        commercial,
+        rows(_TODAY_ACTIVITY_SQL, "today.activity", {"noise_tables": _ACTIVITY_NOISE_TABLES}),
+        rows(_TODAY_BANK_ACCOUNTS_SQL, "today.bank_accounts"),
+        rows(_TODAY_BANK_UNTAGGED_SQL, "today.bank_untagged"),
+    )
+
+    today = datetime.now().date()
+    for request in material_requests:
+        due = request.get("required_by_date")
+        request["days_left"] = (due - today).days if due else None
+
+    untagged = untagged_rows[0] if untagged_rows else {}
+    return {
+        "success": True,
+        "data": {
+            "materials": {
+                "at_risk_requests": material_requests,
+                "low_stock": low_stock,
+            },
+            "commercial": briefing,
+            "activity": [_activity_line(row) for row in _merge_activity_runs(activity_rows)],
+            "bank": {
+                "accounts": bank_accounts,
+                "untagged_count": int(untagged.get("untagged_count") or 0),
+                "untagged_value": float(untagged.get("untagged_value") or 0),
+                "oldest_untagged_date": untagged.get("oldest_untagged_date"),
+            },
+        },
+        "message": "Executive today panel fetched.",
+        "meta": {"source_errors": source_errors},
     }
