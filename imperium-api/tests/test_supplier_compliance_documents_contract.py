@@ -73,7 +73,7 @@ class SupplierComplianceDocumentsContractTests(unittest.TestCase):
         self.assertIn("compliance_document_count", HR_VERIFICATION)
         self.assertIn("getHrVendorVerificationDocuments", HR_PANEL)
         self.assertIn("decideHrVendorVerificationDocument", HR_PANEL)
-        self.assertIn("Documents {row.compliance_document_count ?? 0}/5 uploaded", HR_PANEL)
+        self.assertIn("Documents {row.compliance_document_count ?? 0} uploaded", HR_PANEL)
 
     def test_automated_verification_uses_full_document_set(self):
         for document_type in ["tax_clearance", "nssa", "praz", "vat", "company_registration"]:

@@ -1232,13 +1232,36 @@ const SUPPLIER_STATUSES = ["active", "pending_approval", "suspended", "blacklist
 const SUPPLIER_COMPLIANCE_STATUSES = ["pending", "compliant", "non_compliant", "exempt"] as const;
 type SupplierModalTab = "overview" | "documents" | "dealings";
 
-const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+// Tax clearance, company registration and VAT (unless not VAT registered)
+// are required for verification; NSSA and PRAZ are optional.
+const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string; optional?: boolean }> = [
   { key: "tax_clearance", label: "Tax Clearance" },
-  { key: "nssa", label: "NSSA" },
-  { key: "praz", label: "PRAZ" },
-  { key: "vat", label: "VAT" },
   { key: "company_registration", label: "Company Registration" },
+  { key: "vat", label: "VAT" },
+  { key: "nssa", label: "NSSA", optional: true },
+  { key: "praz", label: "PRAZ", optional: true },
 ];
+
+const VAT_STATUS_OPTIONS = [
+  { value: "", label: "Not answered" },
+  { value: "registered", label: "VAT registered" },
+  { value: "not_registered", label: "Not VAT registered" },
+] as const;
+
+function VatStatusSelect({ value, onChange, className }: { value: string; onChange: (value: string) => void; className: string }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className}>
+      {VAT_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
+  );
+}
+
+function vatPayload(vatStatus: string, vatNumber: string) {
+  return {
+    vat_status: vatStatus || null,
+    vat_registration_number: vatStatus === "registered" ? vatNumber.trim() || null : null,
+  };
+}
 
 function supplierEditDraft(supplier: Rec) {
   return {
@@ -1247,6 +1270,8 @@ function supplierEditDraft(supplier: Rec) {
     trading_name: tx(supplier.trading_name, ""),
     registration_number: tx(supplier.registration_number, ""),
     tax_number: tx(supplier.tax_number, ""),
+    vat_status: tx(supplier.vat_status, ""),
+    vat_registration_number: tx(supplier.vat_registration_number, ""),
     praz_number: tx(supplier.praz_number, ""),
     nssa_number: tx(supplier.nssa_number, ""),
     address: tx(supplier.address, ""),
@@ -1346,7 +1371,7 @@ function Supplier360Modal({
   };
 
   const save = async () => {
-    if (!form.supplier_name.trim()) { setError("Supplier name is required."); return; }
+    if (!form.supplier_name.trim()) { setError("Registered company name is required."); return; }
     setSaving(true);
     setError(null);
     try {
@@ -1356,6 +1381,7 @@ function Supplier360Modal({
         trading_name: form.trading_name.trim() || null,
         registration_number: form.registration_number.trim() || null,
         tax_number: form.tax_number.trim() || null,
+        ...vatPayload(form.vat_status, form.vat_registration_number),
         praz_number: form.praz_number.trim() || null,
         nssa_number: form.nssa_number.trim() || null,
         address: form.address.trim() || null,
@@ -1448,13 +1474,20 @@ function Supplier360Modal({
                   <span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${supplierStatusClass(form.status)}`}>{form.status}</span>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
-                  <SupplierField label="Supplier name" value={form.supplier_name} onChange={(v) => updateField("supplier_name", v)} required />
+                  <SupplierField label="Registered company name" value={form.supplier_name} onChange={(v) => updateField("supplier_name", v)} required />
+                  <SupplierField label="Company registration number" value={form.registration_number} onChange={(v) => updateField("registration_number", v)} required />
+                  <SupplierField label="Tax clearance number" value={form.tax_number} onChange={(v) => updateField("tax_number", v)} required />
+                  <label className="block">
+                    <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">VAT registration *</span>
+                    <VatStatusSelect value={form.vat_status} onChange={(v) => updateField("vat_status", v)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
+                  </label>
+                  {form.vat_status === "registered" && (
+                    <SupplierField label="VAT number" value={form.vat_registration_number} onChange={(v) => updateField("vat_registration_number", v)} required />
+                  )}
                   <SupplierField label="Supplier code" value={form.supplier_code} onChange={(v) => updateField("supplier_code", v)} />
                   <SupplierField label="Trading name" value={form.trading_name} onChange={(v) => updateField("trading_name", v)} />
-                  <SupplierField label="Registration number" value={form.registration_number} onChange={(v) => updateField("registration_number", v)} />
-                  <SupplierField label="Tax clearance number" value={form.tax_number} onChange={(v) => updateField("tax_number", v)} />
-                  <SupplierField label="PRAZ number" value={form.praz_number} onChange={(v) => updateField("praz_number", v)} />
-                  <SupplierField label="NSSA number" value={form.nssa_number} onChange={(v) => updateField("nssa_number", v)} />
+                  <SupplierField label="PRAZ number (optional)" value={form.praz_number} onChange={(v) => updateField("praz_number", v)} />
+                  <SupplierField label="NSSA number (optional)" value={form.nssa_number} onChange={(v) => updateField("nssa_number", v)} />
                   <SupplierField label="Address" value={form.address} onChange={(v) => updateField("address", v)} />
                   <SupplierField label="Currency" value={form.currency} onChange={(v) => updateField("currency", v.toUpperCase().slice(0, 3))} />
                   <SupplierSelect label="Supplier status" value={form.status} options={SUPPLIER_STATUSES} onChange={(v) => updateField("status", v)} />
@@ -1643,7 +1676,9 @@ function SupplierComplianceDocumentsPanel({ supplier }: { supplier: Rec }) {
             <div key={required.key} className="grid gap-4 p-4 lg:grid-cols-[220px_minmax(0,1fr)_auto] lg:items-center">
               <div>
                 <p className="font-semibold text-paper">{required.label}</p>
-                <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">Required supplier document</p>
+                <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">
+                  {required.optional || (required.key === "vat" && supplier.vat_status === "not_registered") ? "Optional supplier document" : "Required supplier document"}
+                </p>
               </div>
               <div className="min-w-0">
                 {doc ? (
@@ -1848,6 +1883,8 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
     trading_name: "",
     registration_number: "",
     tax_number: "",
+    vat_status: "",
+    vat_registration_number: "",
     praz_number: "",
     nssa_number: "",
     address: "",
@@ -1860,7 +1897,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!form.supplier_name.trim()) { setError("Supplier name is required."); return; }
+    if (!form.supplier_name.trim()) { setError("Registered company name is required."); return; }
     if (issuePortalLogin && !form.primary_contact_email.trim()) { setError("A contact email is required to issue a portal login."); return; }
     setSaving(true); setError(null);
     try {
@@ -1869,6 +1906,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
         trading_name: form.trading_name.trim() || undefined,
         registration_number: form.registration_number.trim() || undefined,
         tax_number: form.tax_number.trim() || undefined,
+        ...vatPayload(form.vat_status, form.vat_registration_number),
         praz_number: form.praz_number.trim() || undefined,
         nssa_number: form.nssa_number.trim() || undefined,
         address: form.address.trim() || undefined,
@@ -1902,7 +1940,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
         <div className="space-y-3.5 py-4">
           {error && <Banner tone="error" message={error} />}
           <div>
-            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Supplier Name *</label>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Registered Company Name *</label>
             <input value={form.supplier_name} onChange={(e) => setForm({ ...form, supplier_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1911,19 +1949,29 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <input value={form.trading_name} onChange={(e) => setForm({ ...form, trading_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Registration Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Company Registration Number *</label>
               <input value={form.registration_number} onChange={(e) => setForm({ ...form, registration_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Tax Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Tax Clearance Number *</label>
               <input value={form.tax_number} onChange={(e) => setForm({ ...form, tax_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">PRAZ Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">VAT Registration *</label>
+              <VatStatusSelect value={form.vat_status} onChange={(v) => setForm({ ...form, vat_status: v })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            {form.vat_status === "registered" && (
+              <div>
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">VAT Number *</label>
+                <input value={form.vat_registration_number} onChange={(e) => setForm({ ...form, vat_registration_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+            )}
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">PRAZ Number (optional)</label>
               <input value={form.praz_number} onChange={(e) => setForm({ ...form, praz_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">NSSA Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">NSSA Number (optional)</label>
               <input value={form.nssa_number} onChange={(e) => setForm({ ...form, nssa_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div className="sm:col-span-2">

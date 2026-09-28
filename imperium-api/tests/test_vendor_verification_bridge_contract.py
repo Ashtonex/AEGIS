@@ -47,7 +47,10 @@ class VendorVerificationBridgeContractTests(unittest.TestCase):
         self.assertIn('@router.get("/{subcontractor_id}", summary="Get a combined supplier/subcontractor profile for HR review")', HR_ROUTER)
         self.assertIn('"filled_fields": filled_fields', HR_ROUTER)
         self.assertIn('"documents": documents', HR_ROUTER)
-        self.assertIn("NULLIF(ps.address, '')", HR_ROUTER)
+        # Profile values (incl. the linked supplier's address) come from the
+        # shared expressions in app/shared/vendor_verification.py.
+        self.assertIn("{vendor_profile_columns()}", HR_ROUTER)
+        self.assertIn("NULLIF(ps.address, '')", VENDOR_CHECK)
         self.assertIn("scd.supplier_id = s.linked_supplier_id", HR_ROUTER)
 
     def test_hr_queue_survives_document_table_migration_gap(self):

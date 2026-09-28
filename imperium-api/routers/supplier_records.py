@@ -32,6 +32,9 @@ SUPPLIER_EDIT_COLUMNS = {
     "trading_name",
     "registration_number",
     "tax_number",
+    "vat_status",
+    "vat_registration_number",
+    "is_vat_registered",
     "praz_number",
     "nssa_number",
     "address",
@@ -53,6 +56,15 @@ SUPPLIER_EDIT_COLUMNS = {
 # stamped with who/when so procurement_verification.check_supplier_bank_changed
 # can flag a payment approved after a bank-detail edit made post-PO-issuance.
 SUPPLIER_BANK_COLUMNS = {"bank_name", "bank_account_number", "bank_branch_code"}
+
+
+def _apply_vat_status(payload: dict) -> None:
+    """vat_status is the source of truth; keep the older is_vat_registered
+    flag in step and drop a VAT number for a non-registered supplier."""
+    if payload.get("vat_status") in ("registered", "not_registered"):
+        payload["is_vat_registered"] = payload["vat_status"] == "registered"
+        if payload["vat_status"] == "not_registered":
+            payload["vat_registration_number"] = None
 
 DOCUMENTS_BUCKET = "documents"
 SIGNED_URL_TTL_SECONDS = 300
@@ -208,7 +220,8 @@ async def ensure_supplier_subcontractor_bridge(
 
     supplier_row = await db.execute(
         text("""
-            SELECT supplier_name, trading_name, registration_number, tax_number, praz_number, nssa_number, address,
+            SELECT supplier_name, trading_name, registration_number, tax_number, vat_status, vat_registration_number,
+                   praz_number, nssa_number, address,
                    primary_contact_name, primary_contact_email, primary_contact_phone, compliance_status
             FROM procurement.suppliers
             WHERE id = :supplier_id AND organization_id = :org_id AND is_deleted = false
@@ -224,11 +237,13 @@ async def ensure_supplier_subcontractor_bridge(
         text("""
             INSERT INTO crm.subcontractors (
                 organization_id, created_by, name, registration_number, tax_clearance_number,
+                vat_status, vat_number,
                 praz_number, nssa_number, address, contact_name, contact_email, contact_phone,
                 compliance_status, linked_supplier_id, submission_data
             )
             VALUES (
                 :org_id, :user_id, :name, :registration_number, :tax_clearance_number,
+                :vat_status, :vat_number,
                 :praz_number, :nssa_number, :address, :contact_name, :contact_email, :contact_phone,
                 :compliance_status, :supplier_id, CAST(:submission_data AS jsonb)
             )
@@ -240,6 +255,8 @@ async def ensure_supplier_subcontractor_bridge(
             "name": data.get("supplier_name") or data.get("trading_name") or "Supplier",
             "registration_number": data.get("registration_number"),
             "tax_clearance_number": data.get("tax_number"),
+            "vat_status": data.get("vat_status"),
+            "vat_number": data.get("vat_registration_number"),
             "praz_number": data.get("praz_number"),
             "nssa_number": data.get("nssa_number"),
             "address": data.get("address"),
@@ -260,7 +277,7 @@ async def sync_supplier_subcontractor_bridge(
     org_id: str,
     user_id: str,
     supplier_id: str,
-) -> None:
+) -> str:
     subcontractor_id = await ensure_supplier_subcontractor_bridge(
         db, org_id=org_id, user_id=user_id, supplier_id=supplier_id
     )
@@ -270,6 +287,9 @@ async def sync_supplier_subcontractor_bridge(
             SET name = COALESCE(s.supplier_name, sc.name),
                 registration_number = COALESCE(s.registration_number, sc.registration_number),
                 tax_clearance_number = COALESCE(s.tax_number, sc.tax_clearance_number),
+                vat_status = COALESCE(s.vat_status, sc.vat_status),
+                vat_number = CASE WHEN COALESCE(s.vat_status, sc.vat_status) = 'not_registered' THEN NULL
+                                  ELSE COALESCE(s.vat_registration_number, sc.vat_number) END,
                 praz_number = COALESCE(s.praz_number, sc.praz_number),
                 nssa_number = COALESCE(s.nssa_number, sc.nssa_number),
                 address = COALESCE(s.address, sc.address),
@@ -286,6 +306,7 @@ async def sync_supplier_subcontractor_bridge(
         """),
         {"org_id": org_id, "supplier_id": supplier_id, "subcontractor_id": subcontractor_id},
     )
+    return subcontractor_id
 
 
 @router.get("/")
@@ -326,6 +347,7 @@ async def create_item(
     # only strips RESERVED_MUTATION_COLUMNS (id/org_id/etc.), not unknown
     # columns, so it must be popped out here or it leaks into the raw INSERT.
     issue_portal_login = bool(payload.pop("issue_portal_login", False))
+    _apply_vat_status(payload)
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -361,11 +383,13 @@ async def create_item(
             text("""
                 INSERT INTO crm.subcontractors (
                     organization_id, created_by, name, registration_number, tax_clearance_number,
+                    vat_status, vat_number,
                     praz_number, nssa_number, address, contact_name, contact_email, contact_phone,
                     compliance_status, linked_supplier_id, submission_data
                 )
                 VALUES (
                     :org_id, :user_id, :name, :registration_number, :tax_clearance_number,
+                    :vat_status, :vat_number,
                     :praz_number, :nssa_number, :address, :contact_name, :contact_email, :contact_phone,
                     :compliance_status, :supplier_id, CAST(:submission_data AS jsonb)
                 )
@@ -377,6 +401,8 @@ async def create_item(
                 "name": payload.get("supplier_name") or payload.get("primary_contact_name"),
                 "registration_number": payload.get("registration_number"),
                 "tax_clearance_number": payload.get("tax_number"),
+                "vat_status": payload.get("vat_status"),
+                "vat_number": payload.get("vat_registration_number"),
                 "praz_number": payload.get("praz_number"),
                 "nssa_number": payload.get("nssa_number"),
                 "address": payload.get("address"),
@@ -681,6 +707,7 @@ async def update_item(
     _: dict = Depends(require_permission("supplier_records.update")),
 ):
     payload = await request.json()
+    _apply_vat_status(payload)
     safe_keys = [
         key for key in safe_payload_columns(payload.keys()) if key in SUPPLIER_EDIT_COLUMNS
     ]
@@ -708,9 +735,20 @@ async def update_item(
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
 
-        await sync_supplier_subcontractor_bridge(
+        subcontractor_id = await sync_supplier_subcontractor_bridge(
             db, org_id=user["org_id"], user_id=user["sub"], supplier_id=item_id
         )
+        # Re-check against the key requirements now that they may be filled in.
+        try:
+            async with db.begin_nested():
+                await run_system_verification_check(
+                    db, org_id=user["org_id"], subcontractor_id=subcontractor_id
+                )
+        except Exception:
+            logger.exception(
+                "System verification check failed after supplier update",
+                subcontractor_id=subcontractor_id,
+            )
         await db.commit()
         return {
             "success": True,

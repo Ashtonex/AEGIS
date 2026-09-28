@@ -2,7 +2,7 @@
 
 import json
 from datetime import date
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -782,6 +782,7 @@ async def _get_supplier_portal_context(user: dict, db: AsyncSession) -> dict:
             SELECT
                 spa.subcontractor_id,
                 s.name, s.registration_number, s.tax_clearance_number,
+                s.vat_status, s.vat_number,
                 s.nssa_number, s.praz_number, s.contact_name, s.contact_email,
                 s.contact_phone, s.address, s.coverage_provinces,
                 s.compliance_status, s.review_status, s.verification_stage,
@@ -842,6 +843,8 @@ class SupplierProfileUpdate(BaseModel):
     name: Optional[str] = Field(default=None, max_length=255)
     registration_number: Optional[str] = Field(default=None, max_length=100)
     tax_clearance_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     contact_name: Optional[str] = Field(default=None, max_length=255)
@@ -1017,6 +1020,8 @@ async def update_supplier_profile(
         "accounts_contact_phone",
     )
     metadata_updates = {field: updates.pop(field) for field in metadata_fields if field in updates}
+    if updates.get("vat_status") == "not_registered":
+        updates["vat_number"] = None
     set_clauses = []
     params: dict = {"id": vendor["subcontractor_id"], "org_id": user["org_id"]}
     for field, value in updates.items():

@@ -42,6 +42,8 @@ export interface SupplierRegistrationPayload {
   companyName: string;
   registrationNumber: string;
   taxClearanceNumber: string;
+  vatStatus: "registered" | "not_registered";
+  vatNumber?: string;
   prazNumber?: string;
   yearEstablished: number;
   employees: number;

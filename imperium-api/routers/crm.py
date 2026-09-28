@@ -2,7 +2,7 @@ import json
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -368,6 +368,10 @@ class SubcontractorCreate(CrmPayload):
     name: str = Field(..., min_length=1, max_length=255)
     capability_tags: Optional[List[str]] = None
     compliance_status: Optional[str] = Field(default=None, max_length=50)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_clearance_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     reliability_score: int = Field(default=0, ge=0, le=100)
@@ -396,6 +400,10 @@ class SubcontractorUpdate(CrmPayload):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     capability_tags: Optional[List[str]] = None
     compliance_status: Optional[str] = Field(default=None, max_length=50)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_clearance_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     reliability_score: Optional[int] = Field(default=None, ge=0, le=100)
@@ -417,6 +425,10 @@ SUBCONTRACTOR_COLUMNS = (
     "name",
     "capability_tags",
     "compliance_status",
+    "registration_number",
+    "tax_clearance_number",
+    "vat_status",
+    "vat_number",
     "nssa_number",
     "praz_number",
     "reliability_score",
@@ -432,6 +444,8 @@ SUBCONTRACTOR_COLUMNS = (
 def _subcontractor_db_values(values: Dict[str, Any]) -> Dict[str, Any]:
     db_values = dict(values)
     db_values.pop("issue_portal_login", None)
+    if db_values.get("vat_status") == "not_registered":
+        db_values["vat_number"] = None
     if "physical_address" in db_values:
         db_values["address"] = db_values.pop("physical_address")
     metadata_fields = (
@@ -2952,6 +2966,10 @@ async def create_subcontractor(
             name,
             capability_tags,
             compliance_status,
+            registration_number,
+            tax_clearance_number,
+            vat_status,
+            vat_number,
             nssa_number,
             praz_number,
             reliability_score,
@@ -2968,6 +2986,10 @@ async def create_subcontractor(
             :name,
             CAST(:capability_tags AS text[]),
             :compliance_status,
+            :registration_number,
+            :tax_clearance_number,
+            :vat_status,
+            :vat_number,
             :nssa_number,
             :praz_number,
             :reliability_score,
@@ -3004,11 +3026,13 @@ async def create_subcontractor(
             text("""
                 INSERT INTO procurement.suppliers (
                     organization_id, created_by, supplier_name, primary_contact_name,
-                    primary_contact_email, primary_contact_phone, currency, status, compliance_status
+                    primary_contact_email, primary_contact_phone, currency, status, compliance_status,
+                    registration_number, tax_number, vat_status, vat_registration_number, is_vat_registered
                 )
                 VALUES (
                     :org_id, :user_id, :supplier_name, :primary_contact_name,
-                    :primary_contact_email, :primary_contact_phone, 'USD', 'pending_approval', :compliance_status
+                    :primary_contact_email, :primary_contact_phone, 'USD', 'pending_approval', :compliance_status,
+                    :registration_number, :tax_number, :vat_status, :vat_number, :is_vat_registered
                 )
                 RETURNING id
             """),
@@ -3020,6 +3044,11 @@ async def create_subcontractor(
                 "primary_contact_email": values.get("contact_email"),
                 "primary_contact_phone": values.get("contact_phone"),
                 "compliance_status": values.get("compliance_status"),
+                "registration_number": values.get("registration_number"),
+                "tax_number": values.get("tax_clearance_number"),
+                "vat_status": values.get("vat_status"),
+                "vat_number": values.get("vat_number"),
+                "is_vat_registered": values.get("vat_status") == "registered",
             },
         )
         supplier_id = supplier_row.scalar()
@@ -3145,6 +3174,18 @@ async def update_subcontractor(
         )
         if not result.first():
             raise HTTPException(status_code=404, detail="Subcontractor not found")
+        # Re-check against the key requirements now that they may be filled in.
+        try:
+            await run_system_verification_check(
+                db, org_id=org_id, subcontractor_id=subcontractor_id
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("System verification check failed after subcontractor update", subcontractor_id=subcontractor_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Subcontractor verification could not be completed.",
+            )
         await db.commit()
     except HTTPException:
         raise
@@ -3178,6 +3219,11 @@ async def list_subcontractors(
             name,
             capability_tags,
             compliance_status,
+            registration_number,
+            tax_clearance_number,
+            vat_status,
+            vat_number,
+            verification_stage,
             nssa_number,
             praz_number,
             reliability_score,

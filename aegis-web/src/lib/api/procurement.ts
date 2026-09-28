@@ -659,12 +659,15 @@ export async function getClientPortalTickets(): Promise<ApiResponse<ClientPortal
 
 export type VendorVerificationStage = "incomplete" | "system_pending" | "system_verified" | "hr_verified" | "rejected";
 export type VendorRateType = "material" | "transport" | "service";
+export type VendorVatStatus = "registered" | "not_registered";
 
 export interface SupplierPortalVendor {
   subcontractor_id: string;
   name: string;
   registration_number?: string;
   tax_clearance_number?: string;
+  vat_status?: VendorVatStatus | null;
+  vat_number?: string;
   nssa_number?: string;
   praz_number?: string;
   contact_name?: string;
