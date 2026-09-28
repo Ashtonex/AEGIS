@@ -16,7 +16,9 @@ async def send_email(
 ) -> bool:
     """Send a transactional email via Resend. Returns True on a 2xx from
     Resend, False otherwise - callers decide whether that's fatal (fail
-    closed, don't pretend the email went out)."""
+    closed, don't pretend the email went out). A login-only address is
+    swapped for its real mailbox (settings.EMAIL_REDIRECTS)."""
+    to = settings.email_redirects.get(to.strip().lower(), to)
     if not settings.RESEND_API_KEY or not settings.EMAIL_FROM_ADDRESS:
         logger.warning(
             "Email not sent: RESEND_API_KEY/EMAIL_FROM_ADDRESS not configured",
