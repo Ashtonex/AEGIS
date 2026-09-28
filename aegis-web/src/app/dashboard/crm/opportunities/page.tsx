@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useState, useEffect, useMemo } from 'react';
+import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 
 import {
@@ -12,7 +12,10 @@ import {
 } from 'lucide-react';
 import {
   ApiError,
-  getCrmOpportunities,
+  getCrmOpportunityBoard,
+  type OpportunityBoardColumn,
+  type OpportunityBoardFilters,
+  type OpportunityBoardSummary,
   createCrmOpportunity,
   updateCrmOpportunity,
   deleteCrmOpportunity,
@@ -43,6 +46,10 @@ import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 // crm.opportunities.override_stage permission grants).
 const PRIVILEGED_STAGE_OVERRIDE_ROLES = ['Executive (Admin)', 'Managing Director'];
 const LOCKED_BACKEND_STAGES = ['Contract', 'Lost'];
+// Cards per Kanban column per request (GET /crm/opportunities/board);
+// "Show more" fetches the next batch of one column.
+const BOARD_PAGE = 50;
+const BOARD_MAX_PER_COLUMN = 200;
 const CLOSED_FRONTEND_STAGES = ['Won', 'Lost'];
 
 // Stages definition requested by user
@@ -238,6 +245,13 @@ export default function OpportunitiesKanban() {
   // instead of a separate lazy fetch each time the Mark Won modal opened.
   const { departments } = useFinanceDepartments();
   const [departmentFilter, setDepartmentFilter] = useState('');
+  // Server-side board: exact per-column counts/totals and the whole-pipeline
+  // summary, however many cards are loaded. `opportunities` holds the
+  // loaded cards of every column.
+  const [boardColumns, setBoardColumns] = useState<Record<string, OpportunityBoardColumn>>({});
+  const [boardSummary, setBoardSummary] = useState<OpportunityBoardSummary | null>(null);
+  const [loadingMoreColumn, setLoadingMoreColumn] = useState<string | null>(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   // Edit Drawer Form State
   const [editForm, setEditForm] = useState<{
@@ -284,20 +298,51 @@ export default function OpportunitiesKanban() {
     return rawMessage || fallback;
   };
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const boardFilters = useMemo<OpportunityBoardFilters>(() => ({
+    search: debouncedSearch || undefined,
+    min_budget: minBudget === '' ? undefined : minBudget,
+    value_range: valueRange === 'All' ? undefined : (valueRange as OpportunityBoardFilters['value_range']),
+    risk_level: selectedRisk === 'All' ? undefined : selectedRisk,
+    department_id: departmentFilter || undefined,
+  }), [debouncedSearch, minBudget, valueRange, selectedRisk, departmentFilter]);
+  // Read by loadData through a ref so its identity stays stable (it's also
+  // the live-update and post-action refresh); filter changes refetch just
+  // the board (effect below).
+  const boardFiltersRef = useRef(boardFilters);
+  boardFiltersRef.current = boardFilters;
+  // Reloads keep as many cards per column as the user has expanded to.
+  const boardPerColumnRef = useRef(BOARD_PAGE);
+
+  const applyBoard = useCallback((columns: OpportunityBoardColumn[], summary?: OpportunityBoardSummary) => {
+    setBoardColumns(Object.fromEntries(columns.map((column) => [column.key, column])));
+    setOpportunities(columns.flatMap((column) => column.cards));
+    if (summary) setBoardSummary(summary);
+  }, []);
+
+  const fetchBoard = useCallback(
+    () => getCrmOpportunityBoard(boardFiltersRef.current, { perColumn: boardPerColumnRef.current }),
+    [],
+  );
+
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
       const [oppsRes, contactsRes, activitiesRes, orgsRes] = await Promise.allSettled([
-        getCrmOpportunities(),
+        fetchBoard(),
         getCrmContacts(),
         getCrmActivities(),
         getCrmOrganizations()
       ]);
 
       const warnings: string[] = [];
-      if (oppsRes.status === "fulfilled" && oppsRes.value.success && Array.isArray(oppsRes.value.data)) {
-        setOpportunities(oppsRes.value.data);
+      if (oppsRes.status === "fulfilled" && oppsRes.value.success && Array.isArray(oppsRes.value.data?.columns)) {
+        applyBoard(oppsRes.value.data.columns, oppsRes.value.data.summary);
       } else {
         warnings.push("Opportunities could not be loaded.");
       }
@@ -326,11 +371,57 @@ export default function OpportunitiesKanban() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [applyBoard, fetchBoard]);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // A filter change refetches only the board (not contacts/activities).
+  const filtersInitialised = useRef(false);
+  useEffect(() => {
+    if (!filtersInitialised.current) {
+      filtersInitialised.current = true;
+      return;
+    }
+    let cancelled = false;
+    void fetchBoard()
+      .then((res) => {
+        if (!cancelled && res.success && res.data) applyBoard(res.data.columns, res.data.summary);
+      })
+      .catch((error) => {
+        if (!cancelled) setLoadError(loadFailureMessage(error));
+      });
+    return () => { cancelled = true; };
+    // loadFailureMessage is a plain helper recreated each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardFilters, applyBoard, fetchBoard]);
+
+  const loadMoreColumn = async (stage: string) => {
+    const column = boardColumns[stage];
+    if (!column || !column.has_more) return;
+    const loaded = opportunities.filter((o) => (BACKEND_TO_FRONTEND_STAGE[o.stage] || 'Qualification') === stage).length;
+    setLoadingMoreColumn(stage);
+    try {
+      const res = await getCrmOpportunityBoard(boardFiltersRef.current, {
+        perColumn: BOARD_PAGE,
+        column: stage as OpportunityBoardColumn['key'],
+        offset: loaded,
+      });
+      const next = res.data?.columns?.[0];
+      if (!next) return;
+      setOpportunities((prev) => {
+        const seen = new Set(prev.map((o) => o.id));
+        return [...prev, ...next.cards.filter((card) => !seen.has(card.id))];
+      });
+      setBoardColumns((prev) => ({ ...prev, [stage]: { ...next, cards: [] } }));
+      boardPerColumnRef.current = Math.min(BOARD_MAX_PER_COLUMN, Math.max(boardPerColumnRef.current, loaded + next.cards.length));
+    } catch (error) {
+      setLoadError(loadFailureMessage(error));
+    } finally {
+      setLoadingMoreColumn(null);
+    }
+  };
 
   // loadData() already fetches opportunities/contacts/activities together,
   // so a change to any of the three just triggers the same refetch - safe
@@ -833,37 +924,10 @@ export default function OpportunitiesKanban() {
     }
   };
 
-  // Filter application
-  const filteredOpportunities = opportunities.filter(opp => {
-    // Search filter
-    const searchLower = searchQuery.toLowerCase();
-    const nameMatch = opp.name.toLowerCase().includes(searchLower);
-    const clientMatch = opp.client_name?.toLowerCase().includes(searchLower) ||
-                       (opp.client_id ? (contacts.find(c => c.id === opp.client_id)?.contact_name.toLowerCase().includes(searchLower)) : false);
-    const matchesSearch = searchQuery === '' || nameMatch || clientMatch;
-
-    // Minimum budget filter
-    const oppBudget = Number(opp.budget) || 0;
-    const matchesMinBudget = minBudget === '' || oppBudget >= minBudget;
-
-    // Value Range filter
-    let matchesRange = true;
-    if (valueRange === 'Under 50k') {
-      matchesRange = oppBudget < 50000;
-    } else if (valueRange === '50k-250k') {
-      matchesRange = oppBudget >= 50000 && oppBudget <= 250000;
-    } else if (valueRange === 'Over 250k') {
-      matchesRange = oppBudget > 250000;
-    }
-
-    // Risk level filter
-    const matchesRisk = selectedRisk === 'All' || opp.risk_level === selectedRisk;
-
-    // Department filter
-    const matchesDepartment = !departmentFilter || opp.originating_department_id === departmentFilter;
-
-    return matchesSearch && matchesMinBudget && matchesRange && matchesRisk && matchesDepartment;
-  });
+  // Search, budget, value-range, risk and department filters are applied by
+  // the server (GET /crm/opportunities/board), so the loaded cards are
+  // already the filtered set and column counts cover every match.
+  const filteredOpportunities = opportunities;
 
   // Contacts list is a raw, unjoined SELECT with no uniqueness guard on the
   // backend - the "+ New Client Contact" quick-add historically produced
@@ -909,10 +973,11 @@ export default function OpportunitiesKanban() {
     }
   }, [selectedOpp]);
 
-  const openOpportunities = opportunities.filter(isOpenOpportunity);
-  const missingNextActionCount = openOpportunities.filter(needsNextAction).length;
-  const overdueNextActionCount = openOpportunities.filter(hasOverdueNextAction).length;
-  const staleOpportunityCount = openOpportunities.filter(o => o.is_stale).length;
+  // Whole-pipeline figures from the server, exact however many cards are loaded.
+  const missingNextActionCount = boardSummary?.missing_next_action ?? 0;
+  const overdueNextActionCount = boardSummary?.overdue_next_action ?? 0;
+  const staleOpportunityCount = boardSummary?.stale ?? 0;
+  const moneyWhole = (value: number | undefined) => (value ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   if (isLoading && opportunities.length === 0) {
     return (
@@ -974,19 +1039,19 @@ export default function OpportunitiesKanban() {
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1">Pipeline Total</span>
           <span className="font-mono text-lg font-bold text-paper tabular-nums">
-            ${opportunities.reduce((sum, o) => sum + (Number(o.budget) || 0), 0).toLocaleString()}
+            ${(boardSummary?.pipeline_total ?? 0).toLocaleString()}
           </span>
         </div>
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-[#3B82F6] uppercase tracking-wider mb-1">Weighted Value</span>
           <span className="font-mono text-lg font-bold text-[#3B82F6] tabular-nums">
-            ${opportunities.reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            ${moneyWhole(boardSummary?.weighted_total)}
           </span>
         </div>
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider mb-1">Average Margin</span>
           <span className="font-mono text-lg font-bold text-[#D4AF37] tabular-nums">
-            {(opportunities.reduce((sum, o) => sum + (Number(o.expected_margin) || 0), 0) / (opportunities.filter(o => o.expected_margin).length || 1)).toFixed(1)}%
+            {(boardSummary?.average_margin ?? 0).toFixed(1)}%
           </span>
         </div>
         <div className={`border p-3 rounded-sm ${missingNextActionCount > 0 ? 'bg-amber-950/20 border-amber-500/25' : 'bg-[#0A0A0A] border-white/5'}`}>
@@ -1021,21 +1086,21 @@ export default function OpportunitiesKanban() {
             <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
               <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">High Risk Weighted Exposure</h4>
               <span className="text-xl font-mono text-rose-400 font-bold block">
-                ${opportunities.filter(o => o.risk_level === 'High').reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${moneyWhole(boardSummary?.weighted_high_risk)}
               </span>
               <p className="text-[9px] text-slate mt-1 italic">High risk pipelines require stricter milestone clearance reviews.</p>
             </div>
             <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
               <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">Medium Risk Forecast</h4>
               <span className="text-xl font-mono text-amber-400 font-bold block">
-                ${opportunities.filter(o => o.risk_level === 'Medium' || !o.risk_level).reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${moneyWhole(boardSummary?.weighted_medium_risk)}
               </span>
               <p className="text-[9px] text-slate mt-1 italic">Balanced deals currently in negotiation or quotation phase.</p>
             </div>
             <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
               <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">Low Risk Secure Pipeline</h4>
               <span className="text-xl font-mono text-emerald-400 font-bold block">
-                ${opportunities.filter(o => o.risk_level === 'Low').reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${moneyWhole(boardSummary?.weighted_low_risk)}
               </span>
               <p className="text-[9px] text-slate mt-1 italic">Highly probable closures aligned with secure public tenders.</p>
             </div>
@@ -1143,7 +1208,10 @@ export default function OpportunitiesKanban() {
             const displayStage = BACKEND_TO_FRONTEND_STAGE[o.stage] || 'Qualification';
             return displayStage === stage;
           });
-          const stageSum = stageOpps.reduce((sum, o) => sum + (Number(o.budget) || 0), 0);
+          const boardColumn = boardColumns[stage];
+          // Exact for the whole (filtered) column, not just the loaded cards.
+          const stageSum = boardColumn?.total_budget ?? stageOpps.reduce((sum, o) => sum + (Number(o.budget) || 0), 0);
+          const stageCount = boardColumn?.count ?? stageOpps.length;
 
           return (
             <div
@@ -1166,7 +1234,7 @@ export default function OpportunitiesKanban() {
                     ${stageSum.toLocaleString()}
                   </span>
                 </div>
-                <span className="font-mono text-[10px] text-slate bg-white/5 px-2 py-0.5 rounded-full">{stageOpps.length}</span>
+                <span className="font-mono text-[10px] text-slate bg-white/5 px-2 py-0.5 rounded-full" title={stageCount > stageOpps.length ? `${stageOpps.length} of ${stageCount} loaded` : undefined}>{stageCount}</span>
               </div>
 
               {/* Cards Container */}
@@ -1252,6 +1320,18 @@ export default function OpportunitiesKanban() {
                   <div className="h-28 border border-dashed border-white/5 rounded-sm flex flex-col items-center justify-center opacity-40">
                     <span className="font-mono text-[9px] text-slate uppercase">Drop deal here</span>
                   </div>
+                )}
+
+                {boardColumn?.has_more && stageCount > stageOpps.length && (
+                  <button
+                    type="button"
+                    onClick={() => void loadMoreColumn(stage)}
+                    disabled={loadingMoreColumn === stage}
+                    className="w-full border border-white/10 rounded-sm py-2 font-mono text-[10px] uppercase tracking-wider text-slate hover:text-paper hover:border-[#D4AF37]/40 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {loadingMoreColumn === stage && <Loader2 className="w-3 h-3 animate-spin" />}
+                    Show more ({(stageCount - stageOpps.length).toLocaleString()} not shown)
+                  </button>
                 )}
               </div>
             </div>

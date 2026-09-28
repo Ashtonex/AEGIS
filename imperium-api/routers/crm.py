@@ -1666,6 +1666,37 @@ async def commercial_morning_briefing(
     }
 
 
+# One opportunity card's fields - shared by the flat list and the Kanban
+# board so they can never drift apart. originating_department_id is
+# included: without it the board's department filter matched nothing and
+# the edit form pre-filled a blank department, so saving an edit wiped it.
+_OPPORTUNITY_CARD_SELECT = """
+    SELECT
+        o.id, o.name, o.stage, o.budget, o.probability, o.expected_margin, o.risk_level,
+        o.client_org_id, o.client_id, o.contact_id, o.sales_owner_id, o.expected_close_date,
+        o.deal_value, COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS weighted_value,
+        o.next_activity_due_at, o.quote_id, o.project_id, o.win_loss_status, o.win_loss_reason,
+        o.competitor, o.margin_approval_required, o.risk_approval_required, o.approval_status,
+        o.originating_department_id,
+        o.region, o.latitude::float AS latitude, o.longitude::float AS longitude,
+        c.contact_name as client_name,
+        co.name as organization_name,
+        q.status AS quote_status,
+        p.name AS project_name,
+        CASE
+            WHEN o.win_loss_status IS NULL
+             AND o.next_activity_due_at IS NULL
+             AND o.updated_at < NOW() - INTERVAL '14 days'
+            THEN true ELSE false
+        END AS is_stale
+    FROM crm.opportunities o
+    LEFT JOIN crm.contacts c ON o.client_id = c.id
+    LEFT JOIN crm.organizations co ON co.id = o.client_org_id AND co.organization_id = o.organization_id
+    LEFT JOIN finance.quotations q ON q.id = o.quote_id AND q.organization_id = o.organization_id AND q.is_deleted = false
+    LEFT JOIN projects.projects p ON p.id = o.project_id AND p.organization_id = o.organization_id AND p.is_deleted = false
+"""
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     limit: Optional[int] = Query(default=None, ge=1, le=500),
@@ -1675,33 +1706,14 @@ async def list_opportunities(
 ):
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
-    query = text("""
-        SELECT
-            o.id, o.name, o.stage, o.budget, o.probability, o.expected_margin, o.risk_level,
-            o.client_org_id, o.client_id, o.contact_id, o.sales_owner_id, o.expected_close_date,
-            o.deal_value, COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS weighted_value,
-            o.next_activity_due_at, o.quote_id, o.project_id, o.win_loss_status, o.win_loss_reason,
-            o.competitor, o.margin_approval_required, o.risk_approval_required, o.approval_status,
-            o.region, o.latitude::float AS latitude, o.longitude::float AS longitude,
-            c.contact_name as client_name,
-            co.name as organization_name,
-            q.status AS quote_status,
-            p.name AS project_name,
-            CASE
-                WHEN o.win_loss_status IS NULL
-                 AND o.next_activity_due_at IS NULL
-                 AND o.updated_at < NOW() - INTERVAL '14 days'
-                THEN true ELSE false
-            END AS is_stale
-        FROM crm.opportunities o
-        LEFT JOIN crm.contacts c ON o.client_id = c.id
-        LEFT JOIN crm.organizations co ON co.id = o.client_org_id AND co.organization_id = o.organization_id
-        LEFT JOIN finance.quotations q ON q.id = o.quote_id AND q.organization_id = o.organization_id AND q.is_deleted = false
-        LEFT JOIN projects.projects p ON p.id = o.project_id AND p.organization_id = o.organization_id AND p.is_deleted = false
+    query = text(
+        _OPPORTUNITY_CARD_SELECT
+        + """
         WHERE o.organization_id = :org_id AND o.is_deleted = false
         ORDER BY o.created_at DESC
         LIMIT :limit OFFSET :offset
-    """)
+    """
+    )
     result = await db.execute(query, {"org_id": org_id, **pagination_params})
     opportunities = [dict(row._mapping) for row in result]
     meta = await _list_meta(
@@ -1723,6 +1735,174 @@ async def list_opportunities(
         "message": "Opportunities fetched.",
         "meta": meta,
     }
+
+
+# The Kanban's columns and how database stages map onto them - the same
+# mapping the board page uses (BACKEND_TO_FRONTEND_STAGE): Quotation shows as
+# Proposal, Contract as Won, and anything unrecognised as Qualification.
+OPPORTUNITY_BOARD_COLUMNS = ("Qualification", "Proposal", "Negotiation", "Won", "Lost")
+_OPPORTUNITY_BOARD_COLUMN_SQL = """
+    CASE o.stage
+        WHEN 'Quotation' THEN 'Proposal'
+        WHEN 'Negotiation' THEN 'Negotiation'
+        WHEN 'Contract' THEN 'Won'
+        WHEN 'Lost' THEN 'Lost'
+        ELSE 'Qualification'
+    END
+"""
+_OPPORTUNITY_BOARD_VALUE_RANGES = {
+    "Under 50k": "COALESCE(o.budget, 0) < 50000",
+    "50k-250k": "COALESCE(o.budget, 0) BETWEEN 50000 AND 250000",
+    "Over 250k": "COALESCE(o.budget, 0) > 250000",
+}
+# Open = not in a Won/Lost column and no recorded win/loss (the page's
+# isOpenOpportunity). "Overdue" compares calendar dates in Harare time, like
+# the page's isPastDueDate (due before the start of today, local time).
+_OPPORTUNITY_OPEN_SQL = f"(({_OPPORTUNITY_BOARD_COLUMN_SQL}) NOT IN ('Won', 'Lost') AND o.win_loss_status IS NULL)"
+_OPPORTUNITY_BOARD_SUMMARY_SQL = f"""
+    SELECT
+        COALESCE(SUM(COALESCE(o.budget, 0)), 0) AS pipeline_total,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0), 0) AS weighted_total,
+        COALESCE(SUM(COALESCE(o.expected_margin, 0)), 0)
+            / GREATEST(COUNT(*) FILTER (WHERE COALESCE(o.expected_margin, 0) <> 0), 1) AS average_margin,
+        COUNT(*) FILTER (WHERE {_OPPORTUNITY_OPEN_SQL} AND o.next_activity_due_at IS NULL) AS missing_next_action,
+        COUNT(*) FILTER (
+            WHERE {_OPPORTUNITY_OPEN_SQL}
+              AND (o.next_activity_due_at AT TIME ZONE 'Africa/Harare')::date
+                  < (NOW() AT TIME ZONE 'Africa/Harare')::date
+        ) AS overdue_next_action,
+        COUNT(*) FILTER (
+            WHERE {_OPPORTUNITY_OPEN_SQL}
+              AND o.win_loss_status IS NULL AND o.next_activity_due_at IS NULL
+              AND o.updated_at < NOW() - INTERVAL '14 days'
+        ) AS stale,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0)
+            FILTER (WHERE o.risk_level = 'High'), 0) AS weighted_high_risk,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0)
+            FILTER (WHERE o.risk_level = 'Medium' OR o.risk_level IS NULL OR o.risk_level = ''), 0) AS weighted_medium_risk,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0)
+            FILTER (WHERE o.risk_level = 'Low'), 0) AS weighted_low_risk
+    FROM crm.opportunities o
+    WHERE o.organization_id = :org_id AND o.is_deleted = false
+"""
+OPPORTUNITY_BOARD_PAGE = 50
+
+
+@router.get("/opportunities/board")
+async def opportunity_board(
+    search: Optional[str] = Query(default=None, max_length=200),
+    min_budget: Optional[float] = Query(default=None, ge=0),
+    value_range: Optional[str] = Query(default=None),
+    risk_level: Optional[str] = Query(default=None),
+    department_id: Optional[UUID] = Query(default=None),
+    column: Optional[str] = Query(default=None),
+    per_column: int = Query(default=OPPORTUNITY_BOARD_PAGE, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The opportunities Kanban, bounded per column.
+
+    Each column returns its first ``per_column`` cards (newest first) plus
+    its exact card count and budget total, so column headers stay right
+    however many cards are loaded. ``column`` + ``offset`` fetch the next
+    cards of one column ("Show more"). Filters apply to the cards and column
+    counts; ``summary`` (the stats banner and forecast) always covers the
+    whole unfiltered pipeline, as the page always did."""
+    org_id = _require_org_id(user)
+    if column is not None and column not in OPPORTUNITY_BOARD_COLUMNS:
+        raise HTTPException(status_code=422, detail=f"column must be one of: {', '.join(OPPORTUNITY_BOARD_COLUMNS)}.")
+    if value_range is not None and value_range not in _OPPORTUNITY_BOARD_VALUE_RANGES:
+        raise HTTPException(status_code=422, detail=f"value_range must be one of: {', '.join(_OPPORTUNITY_BOARD_VALUE_RANGES)}.")
+
+    filters = ["o.organization_id = :org_id", "o.is_deleted = false"]
+    params: Dict[str, Any] = {"org_id": org_id, "per_column": per_column, "offset": offset}
+    if search and search.strip():
+        filters.append("(o.name ILIKE :search OR c.contact_name ILIKE :search)")
+        params["search"] = f"%{search.strip()}%"
+    if min_budget is not None:
+        filters.append("COALESCE(o.budget, 0) >= :min_budget")
+        params["min_budget"] = min_budget
+    if value_range:
+        filters.append(_OPPORTUNITY_BOARD_VALUE_RANGES[value_range])
+    if risk_level:
+        filters.append("o.risk_level = :risk_level")
+        params["risk_level"] = risk_level
+    if department_id:
+        filters.append("o.originating_department_id = :department_id")
+        params["department_id"] = department_id
+    column_filter = ""
+    if column:
+        column_filter = "AND board_column = :column"
+        params["column"] = column
+
+    cards_sql = f"""
+        WITH filtered AS (
+            SELECT card.*, {_OPPORTUNITY_BOARD_COLUMN_SQL} AS board_column, o.created_at AS board_created_at
+            FROM ({_OPPORTUNITY_CARD_SELECT} WHERE {" AND ".join(filters)}) card
+            JOIN crm.opportunities o ON o.id = card.id
+        ),
+        ranked AS (
+            SELECT filtered.*,
+                   ROW_NUMBER() OVER (PARTITION BY board_column ORDER BY board_created_at DESC, id) AS board_rank,
+                   COUNT(*) OVER (PARTITION BY board_column) AS board_column_count,
+                   SUM(COALESCE(budget, 0)) OVER (PARTITION BY board_column) AS board_column_budget
+            FROM filtered
+        )
+        SELECT * FROM ranked
+        WHERE board_rank > :offset AND board_rank <= :offset + :per_column {column_filter}
+        ORDER BY board_column, board_rank
+    """
+
+    async def read_cards(session: AsyncSession):
+        return [dict(row._mapping) for row in await session.execute(text(cards_sql), params)]
+
+    async def read_summary(session: AsyncSession):
+        return dict((await session.execute(text(_OPPORTUNITY_BOARD_SUMMARY_SQL), {"org_id": org_id})).one()._mapping)
+
+    async def read_column_totals(session: AsyncSession):
+        # Counts/totals for every column (a column can have no card on this
+        # page - e.g. when paging past its end - and still needs its totals).
+        rows = await session.execute(
+            text(f"""
+                SELECT {_OPPORTUNITY_BOARD_COLUMN_SQL} AS board_column,
+                       COUNT(*) AS count, COALESCE(SUM(COALESCE(o.budget, 0)), 0) AS total_budget
+                FROM crm.opportunities o
+                LEFT JOIN crm.contacts c ON o.client_id = c.id
+                WHERE {" AND ".join(filters)}
+                GROUP BY 1
+            """),
+            {k: v for k, v in params.items() if k not in ("per_column", "offset", "column")},
+        )
+        return {row.board_column: row for row in rows}
+
+    reads = [read_cards, read_column_totals] + ([] if column else [read_summary])
+    results = await gather_reads(db, *reads)
+    cards, totals = results[0], results[1]
+    summary = results[2] if not column else None
+
+    columns = []
+    for key in OPPORTUNITY_BOARD_COLUMNS if not column else (column,):
+        column_cards = [
+            {k: v for k, v in card.items() if not k.startswith("board_")}
+            for card in cards
+            if card["board_column"] == key
+        ]
+        total_row = totals.get(key)
+        count = int(total_row.count) if total_row else 0
+        columns.append({
+            "key": key,
+            "count": count,
+            "total_budget": float(total_row.total_budget) if total_row else 0.0,
+            "cards": column_cards,
+            "offset": offset,
+            "has_more": offset + len(column_cards) < count,
+        })
+
+    data: Dict[str, Any] = {"columns": columns}
+    if summary is not None:
+        data["summary"] = {key: float(value or 0) if key.startswith(("pipeline", "weighted", "average")) else int(value or 0) for key, value in summary.items()}
+    return {"success": True, "data": data, "message": "Opportunity board fetched.", "meta": {"per_column": per_column}}
 
 
 @router.get("/tenders")

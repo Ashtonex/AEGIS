@@ -9,6 +9,62 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- CRM API CALLS --- //
 
+export type OpportunityBoardColumnKey = 'Qualification' | 'Proposal' | 'Negotiation' | 'Won' | 'Lost';
+
+export type OpportunityBoardColumn = {
+  key: OpportunityBoardColumnKey;
+  count: number;
+  total_budget: number;
+  cards: any[];
+  offset: number;
+  has_more: boolean;
+};
+
+export type OpportunityBoardSummary = {
+  pipeline_total: number;
+  weighted_total: number;
+  average_margin: number;
+  missing_next_action: number;
+  overdue_next_action: number;
+  stale: number;
+  weighted_high_risk: number;
+  weighted_medium_risk: number;
+  weighted_low_risk: number;
+};
+
+export type OpportunityBoardFilters = {
+  search?: string;
+  min_budget?: number;
+  value_range?: 'Under 50k' | '50k-250k' | 'Over 250k';
+  risk_level?: string;
+  department_id?: string;
+};
+
+// The opportunities Kanban, bounded per column: each column's first
+// `perColumn` cards plus its exact count and budget total. Pass `column` +
+// `offset` to fetch that column's next cards ("Show more"); `summary` (the
+// stats banner and forecast, always the whole unfiltered pipeline) is only
+// returned for full-board requests.
+export async function getCrmOpportunityBoard(
+  filters: OpportunityBoardFilters = {},
+  options: { perColumn?: number; column?: OpportunityBoardColumnKey; offset?: number } = {},
+) {
+  const search = new URLSearchParams();
+  if (filters.search?.trim()) search.set('search', filters.search.trim());
+  if (filters.min_budget !== undefined) search.set('min_budget', String(filters.min_budget));
+  if (filters.value_range) search.set('value_range', filters.value_range);
+  if (filters.risk_level) search.set('risk_level', filters.risk_level);
+  if (filters.department_id) search.set('department_id', filters.department_id);
+  if (options.perColumn) search.set('per_column', String(options.perColumn));
+  if (options.column) search.set('column', options.column);
+  if (options.offset) search.set('offset', String(options.offset));
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return await fetchApi<ApiResponse<{ columns: OpportunityBoardColumn[]; summary?: OpportunityBoardSummary }>>(
+    `/api/v1/crm/opportunities/board${qs}`,
+    { cache: 'no-store', allowFallback: false },
+  );
+}
+
 export async function getCrmOpportunities(params?: { department_id?: string }) {
   const search = new URLSearchParams();
   if (params?.department_id) search.set('department_id', params.department_id);
