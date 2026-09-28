@@ -639,6 +639,13 @@ export async function getExecutiveStatutoryLiabilities(): Promise<ApiResponse<an
   });
 }
 
+export async function getExecutiveBudgetVsActual(): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/executive/budget-vs-actual', {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
 export async function getSafetyIndex(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/executive/hse/ltifr', {
     cache: 'no-store',

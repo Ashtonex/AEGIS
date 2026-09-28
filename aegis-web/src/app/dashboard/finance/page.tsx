@@ -23,6 +23,7 @@ import {
   createFinanceCostCode,
   getFinanceVariations,
   createFinanceVariation,
+  decideFinanceVariation,
   getFinanceProgressClaims,
   createFinanceProgressClaim,
   certifyFinanceProgressClaim,
@@ -331,6 +332,26 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       await loadData();
     } catch (err) {
       setNotice(normalizeActionError(err, "Failed to create cost code."));
+    }
+  };
+
+  // The approval rules (QS review for site-originated variances, client
+  // approval where required) live in the decision endpoint; its 409 detail
+  // is shown as-is so the reason a variation can't be approved yet is visible.
+  const handleVariationDecision = async (variation: RecordData, decision: "approve" | "reject") => {
+    let reason: string | undefined;
+    if (decision === "reject") {
+      reason = window.prompt(`Reason for rejecting ${variation.variation_number || "this variation"} (required):`)?.trim() || undefined;
+      if (!reason) return;
+    } else if (!window.confirm(`Approve ${variation.variation_number || "this variation"}? Its cost and time impact will be added to the project.`)) {
+      return;
+    }
+    try {
+      await decideFinanceVariation(String(variation.id), decision, reason);
+      setNotice(decision === "approve" ? "Variation approved." : "Variation rejected.");
+      await loadData();
+    } catch (err) {
+      setNotice(normalizeActionError(err, `Failed to ${decision} variation.`));
     }
   };
 
@@ -757,12 +778,13 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                       <th className="p-4 text-right">Cost Impact</th>
                       <th className="p-4 text-right">Time (Days)</th>
                       <th className="p-4">Status</th>
+                      <th className="p-4 text-right">Decision</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-mid">
                     {variations.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="p-4 text-center text-slate">No variations recorded.</td>
+                        <td colSpan={7} className="p-4 text-center text-slate">No variations recorded.</td>
                       </tr>
                     ) : (
                       variations.map((v) => (
@@ -778,6 +800,14 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                             <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(v.status)}`}>
                               {v.status}
                             </span>
+                          </td>
+                          <td className="p-4 text-right whitespace-nowrap">
+                            {["pending", "submitted"].includes(String(v.status)) ? (
+                              <div className="inline-flex gap-1.5">
+                                <button onClick={() => void handleVariationDecision(v, "approve")} className="border border-emerald-500/40 text-emerald-300 px-2 py-0.5 rounded-sm text-[11px] hover:bg-emerald-950/30">Approve</button>
+                                <button onClick={() => void handleVariationDecision(v, "reject")} className="border border-red-500/40 text-red-300 px-2 py-0.5 rounded-sm text-[11px] hover:bg-red-950/30">Reject</button>
+                              </div>
+                            ) : <span className="text-slate text-xs">—</span>}
                           </td>
                         </tr>
                       ))

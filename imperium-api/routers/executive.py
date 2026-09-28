@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, Any, List
 
 from app.shared.events import emit_role_notification
@@ -12,6 +12,7 @@ from core.database import gather_reads, get_db
 from core.logging import logger
 from core.security import SUPERADMIN_ROLE, require_permission
 from core.analytics_ml import ml_engine
+from app.services.finance import company_budget as budgets
 router = APIRouter()
 
 PROJECT_TERMINAL_STATUSES = (
@@ -1834,9 +1835,10 @@ async def get_material_forecast_alerts(
 # requires before it will approve (see each decide_via). Deliberately left
 # out: site-level sign-offs (daily reports, GRNs, timesheets, BOQ
 # measurements, weekly site budgets, document reviews) - they belong to site
-# engineers and agents, not the executive queue - and decisions that have an
-# endpoint but no screen to make them on yet (finance variations, fleet work
-# orders, plant requests), since a queue item must link somewhere to act.
+# engineers and agents, not the executive queue - and fleet maintenance work
+# orders, which have no list screen and no approval rule of their own yet
+# (their decision endpoint sets any status), since a queue item must link
+# somewhere a real decision is made.
 # Each query returns the same shape: id, reference, amount, waiting_since,
 # detail.
 _PENDING_APPROVAL_SOURCES: List[Dict[str, Any]] = [
@@ -1960,6 +1962,37 @@ _PENDING_APPROVAL_SOURCES: List[Dict[str, Any]] = [
         """,
     },
     {
+        "type": "variation",
+        "module": "Finance",
+        "source": "finance.variations",
+        "reason": "Variation awaiting approval before its cost and time impact apply to the project.",
+        "action_url": "/dashboard/finance/variations",
+        "decide_via": "POST /api/v1/financial-performance/variations/{id}/decision",
+        "sql": """
+            SELECT v.id, COALESCE(v.variation_number, v.title) AS reference, v.cost_impact AS amount,
+                   COALESCE(v.submitted_at, v.created_at) AS waiting_since,
+                   concat_ws(' - ', p.name, v.title) AS detail
+            FROM finance.variations v
+            LEFT JOIN projects.projects p ON p.id = v.project_id AND p.organization_id = v.organization_id
+            WHERE v.organization_id = :org_id AND v.is_deleted = false AND v.status IN ('pending', 'submitted')
+        """,
+    },
+    {
+        "type": "plant_request",
+        "module": "Fleet",
+        "source": "fleet.plant_requests",
+        "reason": "Plant request awaiting approval before plant can be reserved and dispatched.",
+        "action_url": "/dashboard/fleet",
+        "decide_via": "PATCH /api/v1/fleet/plant/requests/{id}/status",
+        "sql": """
+            SELECT id, request_number AS reference, estimated_cost AS amount,
+                   updated_at AS waiting_since,
+                   concat_ws(' - ', required_asset_type, COALESCE(client_name, work_location)) AS detail
+            FROM fleet.plant_requests
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'awaiting_approval'
+        """,
+    },
+    {
         "type": "leave_request",
         "module": "HR",
         "source": "hr.leave_requests",
@@ -2039,7 +2072,7 @@ async def get_pending_approvals(
     db: AsyncSession = Depends(get_db)
 ):
     """Aggregates items genuinely awaiting a decision in their own
-    authoritative module, across Procurement, Finance, HR and Projects -
+    authoritative module, across Procurement, Finance, Fleet, HR and Projects -
     each source's filter is the state that module's own decision endpoint
     requires (purchase_orders.status = 'draft' for decide_purchase_order in
     routers/procurement.py, and so on - see _PENDING_APPROVAL_SOURCES), not
@@ -2240,6 +2273,177 @@ async def get_executive_statutory_liabilities(
             "due_soon_days": _STATUTORY_DUE_SOON_DAYS,
         },
         "message": "Statutory liabilities retrieved.",
+        "meta": {"source_errors": source_errors},
+    }
+
+
+_BUDGET_AT_RISK_PERCENT = 90.0
+
+# Per-project approved budget against cost. actual_cost_to_date and
+# committed_cost use the same definitions as the Finance project summary
+# (routers/financial_performance.py): posted cost transactions not superseded
+# by an internal-transfer charge, plus internal-transfer charge legs; and
+# active commitment balances (outstanding PO obligations).
+_EXECUTIVE_PROJECT_BUDGET_SQL = """
+    SELECT p.id AS project_id, p.name AS project_name, p.status AS project_status,
+           pb.total_amount AS approved_budget, pb.budget_version,
+           COALESCE((
+               SELECT SUM(ct.amount)
+               FROM finance.cost_transactions ct
+               WHERE ct.project_id = p.id AND ct.organization_id = :org_id
+                 AND NOT EXISTS (
+                     SELECT 1 FROM finance.department_transfers dt
+                     WHERE dt.organization_id = ct.organization_id
+                       AND dt.source_type = ct.source_type AND dt.source_id = ct.source_id
+                       AND dt.status = 'posted'
+                 )
+           ), 0)
+           + COALESCE((
+               SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+               JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+               WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'charge'
+           ), 0) AS actual_cost,
+           COALESCE((
+               SELECT SUM(c.outstanding_amount)
+               FROM finance.commitments c
+               WHERE c.project_id = p.id AND c.organization_id = :org_id
+                 AND c.status = 'active' AND c.is_deleted = false
+           ), 0) AS committed_cost
+    FROM projects.projects p
+    JOIN LATERAL (
+        SELECT total_amount, budget_version
+        FROM finance.project_budgets
+        WHERE project_id = p.id AND organization_id = :org_id
+          AND status = 'approved' AND is_deleted = false
+        ORDER BY budget_version DESC
+        LIMIT 1
+    ) pb ON true
+    WHERE p.organization_id = :org_id AND p.is_deleted = false
+      AND p.status NOT IN ('completed', 'closed', 'cancelled')
+"""
+
+
+def _project_budget_line(row: Dict[str, Any]) -> Dict[str, Any]:
+    budget = float(row.get("approved_budget") or 0)
+    actual = float(row.get("actual_cost") or 0)
+    committed = float(row.get("committed_cost") or 0)
+    exposure = actual + committed
+    spent_percent = round(actual / budget * 100, 1) if budget > 0 else None
+    exposure_percent = round(exposure / budget * 100, 1) if budget > 0 else None
+    # Bands compare raw amounts - the rounded percentages are for display.
+    if budget <= 0:
+        status = "no_budget_value"
+    elif actual > budget:
+        status = "over_budget"
+    elif exposure >= budget * _BUDGET_AT_RISK_PERCENT / 100:
+        status = "at_risk"
+    else:
+        status = "on_track"
+    return {
+        "project_id": str(row["project_id"]),
+        "project_name": row.get("project_name"),
+        "project_status": row.get("project_status"),
+        "budget_version": row.get("budget_version"),
+        "approved_budget": budget,
+        "actual_cost": actual,
+        "committed_cost": committed,
+        "remaining": budget - exposure,
+        "spent_percent": spent_percent,
+        "exposure_percent": exposure_percent,
+        "status": status,
+    }
+
+
+def _company_budget_ytd(variance: Dict[str, Any], through_month: date) -> Dict[str, Any]:
+    """Sum the company variance months up to and including through_month."""
+    months = [
+        month for month in variance.get("months", [])
+        if date.fromisoformat(str(month["month"])[:10]) <= through_month
+    ]
+    has_budget = not variance.get("no_baseline_budget")
+
+    def total(key: str):
+        if not has_budget and key.startswith("budget"):
+            return None
+        return sum(float(month.get(key) or 0) for month in months)
+
+    ytd = {
+        key: total(key)
+        for key in ("budget_revenue", "actual_revenue", "budget_cost", "actual_cost", "budget_net", "actual_net")
+    }
+    for kind in ("revenue", "cost", "net"):
+        budget = ytd[f"budget_{kind}"]
+        ytd[f"{kind}_variance"] = None if budget is None else ytd[f"actual_{kind}"] - budget
+    return {
+        "fiscal_year": variance.get("fiscal_year"),
+        "has_approved_budget": has_budget,
+        "budget_label": variance.get("budget_label"),
+        "through_month": str(through_month),
+        "ytd": ytd,
+        "months": variance.get("months", []),
+    }
+
+
+@router.get("/budget-vs-actual")
+async def get_executive_budget_vs_actual(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Budget against actual, two ways, gated by the dashboard permission so
+    an executive doesn't also need finance.company_budget.read:
+
+    - company: this calendar year's approved company budget baseline
+      (finance.company_budgets status 'approved_baseline') against actual
+      revenue and cost, year to date - the same variance the Finance budgets
+      page shows (company_budget.get_company_variance). With no approved
+      baseline, has_approved_budget is false and budget figures are None,
+      never zero.
+    - projects: each open project's current approved budget against actual
+      and committed cost, highest exposure first.
+    """
+    org_id = user["org_id"]
+    source_errors: List[Dict[str, Any]] = []
+    today = datetime.now().date()
+
+    async def company(session: AsyncSession):
+        try:
+            return await budgets.get_company_variance(session, org_id=org_id, fiscal_year=today.year)
+        except Exception as exc:
+            logger.warning("executive_budget_vs_actual_company_failed", error=str(exc))
+            source_errors.append(
+                {"source": "finance.company_budgets", "status": "unavailable", "reason": exc.__class__.__name__}
+            )
+            return None
+
+    variance, project_rows = await gather_reads(
+        db,
+        company,
+        lambda session: _rows(
+            session, _EXECUTIVE_PROJECT_BUDGET_SQL, {"org_id": org_id},
+            source="finance.project_budgets", source_errors=source_errors,
+        ),
+    )
+
+    projects = [_project_budget_line(row) for row in project_rows]
+    projects.sort(key=lambda line: -(line["exposure_percent"] or 0))
+    totals = {
+        "approved_budget": sum(line["approved_budget"] for line in projects),
+        "actual_cost": sum(line["actual_cost"] for line in projects),
+        "committed_cost": sum(line["committed_cost"] for line in projects),
+    }
+    totals["remaining"] = totals["approved_budget"] - totals["actual_cost"] - totals["committed_cost"]
+
+    return {
+        "success": True,
+        "data": {
+            "company": _company_budget_ytd(variance, today.replace(day=1)) if variance is not None else None,
+            "projects": projects,
+            "project_totals": totals,
+            "over_budget_count": sum(1 for line in projects if line["status"] == "over_budget"),
+            "at_risk_count": sum(1 for line in projects if line["status"] == "at_risk"),
+            "at_risk_percent": _BUDGET_AT_RISK_PERCENT,
+        },
+        "message": "Budget vs actual retrieved.",
         "meta": {"source_errors": source_errors},
     }
 

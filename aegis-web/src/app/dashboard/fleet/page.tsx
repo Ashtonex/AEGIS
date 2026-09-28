@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
-import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests } from "@/lib/api";
+import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests, updatePlantRequestStatus } from "@/lib/api";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
@@ -211,6 +211,32 @@ function FleetTrackerDashboard() {
     () => (Array.isArray(data.plantRequests?.data) ? data.plantRequests.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.plantRequests]
   );
+  // Requests awaiting approval go first so they are never cut off by the
+  // eight-row limit on the table below.
+  const plantRequestsForTable = useMemo(
+    () => [...plantRequests].sort((a, b) => Number(text(b, "status") === "awaiting_approval") - Number(text(a, "status") === "awaiting_approval")),
+    [plantRequests]
+  );
+
+  // Approving needs fleet.plant_requests.approve on top of the update
+  // permission - the backend enforces it, and its message is shown as-is.
+  const decidePlantRequest = async (request: FleetRecord, decision: "approved" | "rejected") => {
+    const reference = text(request, "request_number") || "this plant request";
+    let notes: string | undefined;
+    if (decision === "rejected") {
+      notes = window.prompt(`Reason for rejecting ${reference} (required):`)?.trim() || undefined;
+      if (!notes) return;
+    } else if (!window.confirm(`Approve ${reference}?`)) {
+      return;
+    }
+    try {
+      await updatePlantRequestStatus(request.id, { status: decision, notes });
+      setNotice(`Plant request ${reference} ${decision}.`);
+      void loadFleet();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : `Failed to update ${reference}.`);
+    }
+  };
   const operatorProfiles = useMemo(
     () => (Array.isArray(data.operatorProfiles?.data) ? data.operatorProfiles.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.operatorProfiles]
@@ -327,7 +353,7 @@ function FleetTrackerDashboard() {
             {plantRequests.length === 0 ? (
               <div className="p-5 text-sm text-slate-light">No controlled Plant Requests have been raised yet.</div>
             ) : (
-              <OperationalTable className="min-w-[980px]">
+              <OperationalTable className="min-w-[1100px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Request</TableHead>
@@ -338,10 +364,11 @@ function FleetTrackerDashboard() {
                     <TableHead>Pre-mobilisation</TableHead>
                     <TableHead>Risk</TableHead>
                     <TableHead>Closure</TableHead>
+                    <TableHead>Decision</TableHead>
                   </TableRow>
                 </TableHeader>
                 <tbody>
-                  {plantRequests.slice(0, 8).map((request) => {
+                  {plantRequestsForTable.slice(0, 8).map((request) => {
                     const risk = text(request, "risk_level") || "normal";
                     const blockers = plantBlockers(request);
                     const readinessStatus = text(request, "readiness_status") || "not_started";
@@ -361,6 +388,14 @@ function FleetTrackerDashboard() {
                         </TableCell>
                         <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${risk === "critical" || risk === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-green-500/30 bg-green-500/10 text-green-200"}`}>{risk}</span></TableCell>
                         <TableCell>{text(request, "closure_status").replaceAll("_", " ") || "not started"}</TableCell>
+                        <TableCell>
+                          {text(request, "status") === "awaiting_approval" ? (
+                            <div className="flex gap-1.5">
+                              <button onClick={() => void decidePlantRequest(request, "approved")} className="border border-green-500/40 px-2 py-1 text-[11px] text-green-200 hover:bg-green-500/10">Approve</button>
+                              <button onClick={() => void decidePlantRequest(request, "rejected")} className="border border-red-500/40 px-2 py-1 text-[11px] text-red-200 hover:bg-red-500/10">Reject</button>
+                            </div>
+                          ) : <span className="text-[11px] text-slate">—</span>}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
