@@ -362,6 +362,9 @@ export default function CRMDocumentsPage() {
           versions: Array.isArray(doc.versions) ? doc.versions : [],
         }));
         setDocuments(enriched);
+        if (docsRes.value.meta?.truncated) {
+          setLoadError(`Only the newest ${Number(docsRes.value.meta.cap).toLocaleString()} documents are loaded; counts, size and search cover those only.`);
+        }
       } else {
         setDocuments([]);
         setLoadError("CRM documents could not be loaded from the document service.");

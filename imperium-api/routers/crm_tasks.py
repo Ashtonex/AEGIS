@@ -10,6 +10,7 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.cache import set_reference_data_cache_headers
+from app.shared.pagination import LIST_SAFETY_CAP, apply_safety_cap
 from core.database import get_db, AsyncSessionLocal
 from core.security import require_permission, user_has_permission
 from app.shared.events import emit_notification
@@ -317,15 +318,23 @@ async def list_tasks(
         )"""
         params["caller_id"] = user["user_id"]
 
-    query_str += " ORDER BY (t.due_date IS NULL), t.due_date, t.created_at DESC"
+    # The Tasks Kanban and the Teams workload/overdue counts need the whole
+    # list, so this is capped rather than paged (see LIST_SAFETY_CAP).
+    query_str += " ORDER BY (t.due_date IS NULL), t.due_date, t.created_at DESC LIMIT :safety_limit"
+    params["safety_limit"] = LIST_SAFETY_CAP + 1
 
     result = await db.execute(text(query_str), params)
-    items = [dict(row._mapping) for row in result]
+    items, truncated = apply_safety_cap([dict(row._mapping) for row in result])
     for item in items:
         item["department"] = _effective_department(item.get("entity_type"), item.pop("project_department_name", None))
     if department_code:
         items = [item for item in items if item["department"] == department_code]
-    return {"success": True, "data": items, "message": "Tasks listed.", "meta": {"total": len(items)}}
+    return {
+        "success": True,
+        "data": items,
+        "message": "Tasks listed.",
+        "meta": {"total": len(items), "truncated": truncated, "cap": LIST_SAFETY_CAP},
+    }
 
 
 @router.get("/progress-summary")

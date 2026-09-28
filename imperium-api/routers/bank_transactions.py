@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.shared.pagination import ok, page_offset, paginated
+from app.shared.pagination import limited, ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
@@ -511,12 +511,19 @@ async def run_bank_statement_matching(
 async def list_bank_statement_lines(
     import_id: UUID,
     match_status: Optional[str] = Query(default=None),
+    # A single monthly import is ~2,300 lines; the reconciliation panel
+    # shows 200 at a time and asks for more ("Show more" re-requests the
+    # visible count from the top, so actions never lose the user's place).
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_permission("finance.reconciliation.read")),
     db: AsyncSession = Depends(get_db),
 ):
     org_id = _require_org(user)
-    items = await reconciliation.list_lines(db, org_id=org_id, import_id=import_id, match_status=match_status)
-    return ok(items, "Bank statement lines listed.")
+    rows = await reconciliation.list_lines(
+        db, org_id=org_id, import_id=import_id, match_status=match_status, limit=limit, offset=offset
+    )
+    return limited(rows, limit=limit, offset=offset, message="Bank statement lines listed.")
 
 
 @router.post("/reconciliation/lines/{line_id}/confirm", summary="Confirm a suggested match")

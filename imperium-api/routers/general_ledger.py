@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
-from app.shared.pagination import ok, page_offset, paginated
+from app.shared.pagination import limited, ok, page_offset, paginated
 from app.services.finance import general_ledger as gl
 
 router = APIRouter()
@@ -167,11 +167,16 @@ async def account_ledger(
     account_id: UUID,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    limit: int = Query(default=500, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_permission("finance.gl.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    lines = await gl.get_account_ledger(db, org_id=user["org_id"], account_id=account_id, date_from=date_from, date_to=date_to)
-    return ok(lines, "Account ledger retrieved.")
+    lines = await gl.get_account_ledger(
+        db, org_id=user["org_id"], account_id=account_id, date_from=date_from, date_to=date_to,
+        limit=limit, offset=offset,
+    )
+    return limited(lines, limit=limit, offset=offset, message="Account ledger retrieved.")
 
 
 @router.get("/trial-balance")

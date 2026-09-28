@@ -12,7 +12,7 @@ from core.config import settings
 from core.database import get_db, supabase
 from core.logging import logger
 from core.security import require_permission
-from app.shared.pagination import ok
+from app.shared.pagination import apply_safety_cap, LIST_SAFETY_CAP, ok
 from app.services.microsoft.document_service import (
     MicrosoftIntegrationNotReady,
     get_document_access,
@@ -179,11 +179,16 @@ async def list_documents(
         query_str += " AND (d.title ILIKE :search OR d.file_name ILIKE :search OR d.doc_number ILIKE :search)"
         params["search"] = f"%{search}%"
 
-    query_str += " ORDER BY d.created_at DESC"
+    # The Documents page computes category counts, total size and search
+    # over the whole list, so this is capped rather than paged.
+    query_str += " ORDER BY d.created_at DESC LIMIT :safety_limit"
+    params["safety_limit"] = LIST_SAFETY_CAP + 1
 
     result = await db.execute(text(query_str), params)
-    items = [dict(row._mapping) for row in result]
-    return ok(items, "Documents listed.")
+    items, truncated = apply_safety_cap([dict(row._mapping) for row in result])
+    response = ok(items, "Documents listed.", total=len(items))
+    response["meta"].update({"truncated": truncated, "cap": LIST_SAFETY_CAP})
+    return response
 
 
 @router.get("/for-entity")

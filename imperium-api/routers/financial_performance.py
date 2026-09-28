@@ -14,7 +14,7 @@ from core.cache import set_reference_data_cache_headers
 from core.database import get_db
 from core.security import require_permission
 from app.shared.events import emit_notification
-from app.shared.pagination import ok
+from app.shared.pagination import limited, ok
 from app.services.finance.payroll_tax import compute_statutory
 from app.services.finance.tax_rates import NoRateTableError, resolve_rate_table
 from app.services.finance.statutory_accrual import accrue_liability_line
@@ -2009,11 +2009,17 @@ async def get_cashbook(
     cash_account_id: Optional[UUID] = None,
     project_id: Optional[UUID] = None,
     department_id: Optional[UUID] = None,
+    # Newest first; the Finance cashbook table shows 200 and asks for more.
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
     user: dict = Depends(require_permission("finance.cash.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    query = "SELECT * FROM finance.cashbook_transactions WHERE organization_id = :org_id AND is_deleted = false"
-    params = {"org_id": user["org_id"]}
+    query = (
+        "SELECT *, COUNT(*) OVER () AS _total FROM finance.cashbook_transactions "
+        "WHERE organization_id = :org_id AND is_deleted = false"
+    )
+    params = {"org_id": user["org_id"], "limit": limit, "offset": offset}
     if cash_account_id:
         query += " AND cash_account_id = :cash_account_id"
         params["cash_account_id"] = cash_account_id
@@ -2023,11 +2029,11 @@ async def get_cashbook(
     if department_id:
         query += " AND (department_id = :department_id OR department_id IS NULL)"
         params["department_id"] = department_id
-    query += " ORDER BY transaction_date DESC, created_at DESC"
-    
+    query += " ORDER BY transaction_date DESC, created_at DESC LIMIT :limit OFFSET :offset"
+
     result = await db.execute(text(query), params)
-    items = [dict(row._mapping) for row in result]
-    return ok(items, "Cashbook transactions retrieved.")
+    rows = [dict(row._mapping) for row in result]
+    return limited(rows, limit=limit, offset=offset, message="Cashbook transactions retrieved.")
 
 
 @router.post("/cashbook", status_code=status.HTTP_201_CREATED)

@@ -148,11 +148,14 @@ export async function deleteFinanceCashAccount(cashAccountId: string): Promise<A
   });
 }
 
-export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
+// Newest first, paged: meta.total / meta.has_more (backend default limit 200).
+export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string; department_id?: string; limit?: number; offset?: number }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.cash_account_id) search.set("cash_account_id", params.cash_account_id);
   if (params?.project_id) search.set("project_id", params.project_id);
   if (params?.department_id) search.set("department_id", params.department_id);
+  if (params?.limit) search.set("limit", String(params.limit));
+  if (params?.offset) search.set("offset", String(params.offset));
   const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/cashbook${query}`, { cache: "no-store", allowFallback: false });
 }
@@ -222,8 +225,13 @@ export async function runBankStatementMatching(importId: string): Promise<ApiRes
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}/run-matching`, { method: "POST", allowFallback: false });
 }
 
-export async function getBankStatementLines(importId: string, matchStatus?: string): Promise<ApiResponse<any[]>> {
-  const query = matchStatus ? `?match_status=${encodeURIComponent(matchStatus)}` : "";
+// Paged in line order: meta.total / meta.has_more (backend default limit 200).
+export async function getBankStatementLines(importId: string, params?: { matchStatus?: string; limit?: number; offset?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.matchStatus) search.set("match_status", params.matchStatus);
+  if (params?.limit) search.set("limit", String(params.limit));
+  if (params?.offset) search.set("offset", String(params.offset));
+  const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}/lines${query}`, { cache: "no-store", allowFallback: false });
 }
 

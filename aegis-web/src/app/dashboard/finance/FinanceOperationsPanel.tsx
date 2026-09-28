@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BadgeCheck, Banknote, Check, CheckCircle2, CreditCard, Loader2, LockOpen, Plus, RefreshCw, Upload, Users, X } from "lucide-react";
 import {
   allocateFinanceReceipt,
@@ -45,6 +45,16 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
   const [notice, setNotice] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<RecordData[]>([]);
   const [cashbook, setCashbook] = useState<RecordData[]>([]);
+  // The cashbook is paged newest-first; "Show more" raises the visible
+  // count and re-requests that many from the top, so reloads after an
+  // action keep what the user has already expanded.
+  const [cashbookLimit, setCashbookLimit] = useState(CASHBOOK_PAGE);
+  // loadData is memoised on departmentId only, so it reads the current
+  // limit from a ref - otherwise a reload after any action would snap the
+  // cashbook back to its first page.
+  const cashbookLimitRef = useRef(CASHBOOK_PAGE);
+  const [cashbookTotal, setCashbookTotal] = useState<number | null>(null);
+  const [cashbookLoadingMore, setCashbookLoadingMore] = useState(false);
   const [supplierPayments, setSupplierPayments] = useState<RecordData[]>([]);
   const [supplierInvoices, setSupplierInvoices] = useState<RecordData[]>([]);
   const [payrollRuns, setPayrollRuns] = useState<RecordData[]>([]);
@@ -59,14 +69,17 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
     setLoading(true);
     const [accountRes, cashbookRes, paymentsRes, invoicesRes, runRes, claimsRes] = await Promise.allSettled([
       getFinanceCashAccounts(),
-      getFinanceCashbook({ department_id: departmentId || undefined }),
+      getFinanceCashbook({ department_id: departmentId || undefined, limit: cashbookLimitRef.current }),
       getFinanceSupplierPayments({ department_id: departmentId || undefined }),
       getProcurementInvoices({ status: "approved", match_status: "all" }),
       getPayrollRuns({ department_id: departmentId || undefined }),
       getFinanceProgressClaims({ department_id: departmentId || undefined }),
     ]);
     if (accountRes.status === "fulfilled") setAccounts(accountRes.value.data || []);
-    if (cashbookRes.status === "fulfilled") setCashbook(cashbookRes.value.data || []);
+    if (cashbookRes.status === "fulfilled") {
+      setCashbook(cashbookRes.value.data || []);
+      setCashbookTotal(typeof cashbookRes.value.meta?.total === "number" ? cashbookRes.value.meta.total : null);
+    }
     if (paymentsRes.status === "fulfilled") setSupplierPayments(paymentsRes.value.data || []);
     if (invoicesRes.status === "fulfilled") setSupplierInvoices((invoicesRes.value.data || []).filter((i: RecordData) => i.status !== "paid"));
     if (runRes.status === "fulfilled") setPayrollRuns(runRes.value.data || []);
@@ -74,9 +87,32 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
     setLoading(false);
   }, [departmentId]);
 
+  // A different department starts the cashbook back at its first page.
+  // Declared before the load effect so it runs first on the same change.
+  useEffect(() => {
+    cashbookLimitRef.current = CASHBOOK_PAGE;
+    setCashbookLimit(CASHBOOK_PAGE);
+  }, [departmentId]);
+
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const showMoreCashbook = async () => {
+    const nextLimit = cashbookLimit + CASHBOOK_PAGE;
+    setCashbookLoadingMore(true);
+    try {
+      const res = await getFinanceCashbook({ department_id: departmentId || undefined, limit: nextLimit });
+      setCashbook(res.data || []);
+      setCashbookTotal(typeof res.meta?.total === "number" ? res.meta.total : null);
+      cashbookLimitRef.current = nextLimit;
+      setCashbookLimit(nextLimit);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load more cashbook transactions.");
+    } finally {
+      setCashbookLoadingMore(false);
+    }
+  };
 
   const totalCash = useMemo(() => accounts.reduce((sum, account) => sum + Number(account.current_balance || 0), 0), [accounts]);
   const payableTotal = useMemo(() => supplierInvoices.reduce((sum, invoice) => sum + Number(invoice.total_amount || 0), 0), [supplierInvoices]);
@@ -165,7 +201,10 @@ export function FinanceOperationsPanel({ tab, projects, departmentId = "" }: { t
               <button disabled={busy} className={buttonClass}><BadgeCheck className="h-4 w-4" />Allocate Receipt</button>
             </form>
           </Panel>
-          <Panel title="Cashbook Ledger"><SimpleTable rows={cashbook} columns={["transaction_date", "transaction_number", "transaction_type", "counterparty_name", "amount", "current_balance"]} /></Panel>
+          <Panel title="Cashbook Ledger">
+            <SimpleTable rows={cashbook} maxRows={cashbook.length} columns={["transaction_date", "transaction_number", "transaction_type", "counterparty_name", "amount", "current_balance"]} />
+            <ShowMoreFooter shown={cashbook.length} total={cashbookTotal} noun="transactions" loading={cashbookLoadingMore} onShowMore={() => void showMoreCashbook()} />
+          </Panel>
         </section>
       )}
 
@@ -215,6 +254,12 @@ function ReconciliationPanel({ accounts }: { accounts: RecordData[] }) {
   const [imports, setImports] = useState<RecordData[]>([]);
   const [selectedImportId, setSelectedImportId] = useState<string | null>(null);
   const [lines, setLines] = useState<RecordData[]>([]);
+  // A monthly import is ~2,300 lines: show 200, "Show more" raises the
+  // visible count and every reload (after confirm/reject/etc.) re-requests
+  // that many from the top so the user keeps their place.
+  const [linesLimit, setLinesLimit] = useState(STATEMENT_LINES_PAGE);
+  const [linesTotal, setLinesTotal] = useState<number | null>(null);
+  const [linesLoadingMore, setLinesLoadingMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [uploadForm, setUploadForm] = useState({ cash_account_id: "", date: "Date", description: "Description", amount: "Amount" });
@@ -229,17 +274,38 @@ function ReconciliationPanel({ accounts }: { accounts: RecordData[] }) {
     }
   }, []);
 
-  const loadLines = useCallback(async (importId: string) => {
+  const loadLines = useCallback(async (importId: string, limit: number = linesLimit) => {
     try {
-      const res = await getBankStatementLines(importId);
+      const res = await getBankStatementLines(importId, { limit });
       setLines(res.data || []);
+      setLinesTotal(typeof res.meta?.total === "number" ? res.meta.total : null);
     } catch {
       setLines([]);
+      setLinesTotal(null);
     }
-  }, []);
+  }, [linesLimit]);
+
+  const showMoreLines = async () => {
+    if (!selectedImportId) return;
+    const nextLimit = linesLimit + STATEMENT_LINES_PAGE;
+    setLinesLoadingMore(true);
+    try {
+      await loadLines(selectedImportId, nextLimit);
+      setLinesLimit(nextLimit);
+    } finally {
+      setLinesLoadingMore(false);
+    }
+  };
 
   useEffect(() => { void loadImports(); }, [loadImports]);
-  useEffect(() => { if (selectedImportId) void loadLines(selectedImportId); }, [selectedImportId, loadLines]);
+  // A different import starts back at the first page.
+  useEffect(() => {
+    if (selectedImportId) {
+      setLinesLimit(STATEMENT_LINES_PAGE);
+      void loadLines(selectedImportId, STATEMENT_LINES_PAGE);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedImportId]);
 
   const handleUpload = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -441,14 +507,34 @@ function ReconciliationPanel({ accounts }: { accounts: RecordData[] }) {
               </tbody>
             </table>
           </div>
+          <ShowMoreFooter shown={lines.length} total={linesTotal} noun="lines" loading={linesLoadingMore} onShowMore={() => void showMoreLines()} />
         </Panel>
       )}
     </section>
   );
 }
 
-function SimpleTable({ rows, columns }: { rows: RecordData[]; columns: string[] }) {
-  return <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-ink-mid text-slate uppercase font-mono">{columns.map(col => <th key={col} className="p-2">{col.replaceAll("_", " ")}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid">{rows.length === 0 ? <tr><td className="p-3 text-slate" colSpan={columns.length}>No records.</td></tr> : rows.slice(0, 20).map((row, index) => <tr key={row.id || index}>{columns.map(col => <td key={col} className="p-2 text-paper">{col.includes("amount") || col.includes("balance") || col.includes("rate") || col === "net_pay" ? money(row[col]) : String(row[col] ?? "-")}</td>)}</tr>)}</tbody></table></div>;
+const CASHBOOK_PAGE = 50;
+const STATEMENT_LINES_PAGE = 200;
+
+// "Showing X of Y" plus a Show more button, for lists the backend pages
+// (meta.total from app.shared.pagination.limited).
+function ShowMoreFooter({ shown, total, noun, loading, onShowMore }: { shown: number; total: number | null; noun: string; loading: boolean; onShowMore: () => void }) {
+  if (total === null || shown === 0) return null;
+  return (
+    <div className="mt-3 flex items-center justify-between gap-3 border-t border-ink-mid pt-3 text-xs text-slate">
+      <span>Showing {shown.toLocaleString()} of {total.toLocaleString()} {noun}</span>
+      {shown < total && (
+        <button onClick={onShowMore} disabled={loading} className="inline-flex items-center gap-1.5 text-signal hover:underline disabled:opacity-50">
+          {loading && <Loader2 className="h-3 w-3 animate-spin" />}Show more
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SimpleTable({ rows, columns, maxRows = 20 }: { rows: RecordData[]; columns: string[]; maxRows?: number }) {
+  return <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-ink-mid text-slate uppercase font-mono">{columns.map(col => <th key={col} className="p-2">{col.replaceAll("_", " ")}</th>)}</tr></thead><tbody className="divide-y divide-ink-mid">{rows.length === 0 ? <tr><td className="p-3 text-slate" colSpan={columns.length}>No records.</td></tr> : rows.slice(0, maxRows).map((row, index) => <tr key={row.id || index}>{columns.map(col => <td key={col} className="p-2 text-paper">{col.includes("amount") || col.includes("balance") || col.includes("rate") || col === "net_pay" ? money(row[col]) : String(row[col] ?? "-")}</td>)}</tr>)}</tbody></table></div>;
 }
 
 

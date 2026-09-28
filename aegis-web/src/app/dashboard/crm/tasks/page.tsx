@@ -223,6 +223,9 @@ export default function CrmTasksPage() {
       }
       const tasksRes = tasksResult.value;
       if (tasksRes.success && Array.isArray(tasksRes.data)) setTasks(tasksRes.data);
+      if (tasksRes.meta?.truncated) {
+        setError(`Only the first ${Number(tasksRes.meta.cap).toLocaleString()} tasks are shown - narrow the filters to see the rest. Column counts cover the tasks shown.`);
+      }
 
       if (usersResult.status === "fulfilled" && usersResult.value.success && Array.isArray(usersResult.value.data)) {
         setUsers(usersResult.value.data);

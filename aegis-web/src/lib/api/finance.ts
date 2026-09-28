@@ -70,10 +70,13 @@ export async function updateChartOfAccount(accountId: string, payload: Record<st
   return fetchApi<ApiResponse<any>>(`/api/v1/finance/gl/accounts/${accountId}`, { method: 'PATCH', body: JSON.stringify(payload), allowFallback: false });
 }
 
-export async function getAccountLedger(accountId: string, params?: { date_from?: string; date_to?: string }): Promise<ApiResponse<any[]>> {
+// Oldest first, paged (backend default limit 500); running_balance is correct on every page.
+export async function getAccountLedger(accountId: string, params?: { date_from?: string; date_to?: string; limit?: number; offset?: number }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.date_from) search.set('date_from', params.date_from);
   if (params?.date_to) search.set('date_to', params.date_to);
+  if (params?.limit) search.set('limit', String(params.limit));
+  if (params?.offset) search.set('offset', String(params.offset));
   const query = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/gl/accounts/${accountId}/ledger${query}`, { cache: 'no-store', allowFallback: false });
 }
