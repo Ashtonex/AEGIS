@@ -308,6 +308,10 @@ async def decide_payment_batch(
         extra_sets = ""
         extra_params: dict = {}
 
+        if action == "approve":
+            extra_sets = ", approved_by = :approved_by, approved_at = NOW()"
+            extra_params = {"approved_by": user_id}
+
         if action == "post":
             # 1. Create cashbook transaction
             items_rows = await db.execute(
