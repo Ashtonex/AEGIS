@@ -150,7 +150,7 @@ async def create_payment_batch(
     invoice_ids = [str(i) for i in payload.supplier_invoice_ids]
     inv_rows = await db.execute(
         text("""
-            SELECT id, supplier_id, total_amount, match_status
+            SELECT id, supplier_id, total_amount, status
             FROM procurement.supplier_invoices
             WHERE id = ANY(:ids) AND organization_id = :org_id AND is_deleted = false
         """),
@@ -160,7 +160,7 @@ async def create_payment_batch(
     if len(invoices) != len(invoice_ids):
         raise HTTPException(status_code=404, detail="One or more invoices not found or already deleted.")
 
-    already_paid = [i["id"] for i in invoices if i["match_status"] == "paid"]
+    already_paid = [i["id"] for i in invoices if i["status"] == "paid"]
     if already_paid:
         raise HTTPException(status_code=409, detail=f"Invoices already paid: {already_paid}")
 
@@ -173,12 +173,12 @@ async def create_payment_batch(
                 INSERT INTO finance.supplier_payment_batches (
                     organization_id, batch_number, cash_account_id,
                     payment_date, payment_method, reference, notes,
-                    status, created_by
+                    total_amount, status, created_by
                 ) VALUES (
                     :org_id,
                     'SPB-' || LPAD(NEXTVAL('finance.supplier_payment_batch_seq')::TEXT, 5, '0'),
                     :cash_account_id, :payment_date, :payment_method,
-                    :reference, :notes, 'draft', :user_id
+                    :reference, :notes, :total_amount, 'draft', :user_id
                 )
                 RETURNING id, batch_number, status
             """),
@@ -189,6 +189,7 @@ async def create_payment_batch(
                 "payment_method": payload.payment_method,
                 "reference": payload.reference,
                 "notes": payload.notes,
+                "total_amount": total_amount,
                 "user_id": user_id,
             },
         )
@@ -278,7 +279,7 @@ async def decide_payment_batch(
     user_id = user.get("sub")
 
     batch = await db.execute(
-        text("SELECT id, status, cash_account_id, payment_date, payment_method, created_by FROM finance.supplier_payment_batches WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        text("SELECT id, batch_number, status, cash_account_id, payment_date, payment_method, reference, created_by FROM finance.supplier_payment_batches WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
         {"id": str(batch_id), "org_id": org_id},
     )
     batch_row = batch.first()
@@ -319,44 +320,62 @@ async def decide_payment_batch(
                 {"batch_id": str(batch_id)},
             )
             total_amount = float(items_rows.scalar() or 0)
+            if total_amount <= 0:
+                raise HTTPException(status_code=422, detail="Payment batch has no payable items.")
 
+            # 1. One cashbook outflow for the batch. The balance trigger on
+            # finance.cashbook_transactions updates the cash account.
             txn = await db.execute(
                 text("""
                     INSERT INTO finance.cashbook_transactions (
-                        organization_id, cash_account_id, transaction_date,
-                        transaction_type, amount, currency, payment_method,
-                        description, is_posted, posted_at, posted_by, created_by
+                        organization_id, cash_account_id, transaction_number, transaction_date,
+                        transaction_type, direction, source_type, source_id,
+                        counterparty_type, amount, currency, payment_method, reference,
+                        description, is_posted, posted_at, posted_by
                     ) VALUES (
-                        :org_id, :cash_account_id, :payment_date,
-                        'payment', :amount, 'USD', :payment_method,
-                        'Supplier payment batch posting', true, NOW(), :user_id, :user_id
+                        :org_id, :cash_account_id, :transaction_number, :payment_date,
+                        'payment', 'outflow', 'supplier_payment_batch', :batch_id,
+                        'supplier', :amount,
+                        (SELECT currency FROM finance.cash_accounts WHERE id = :cash_account_id),
+                        :payment_method, :reference,
+                        :description, true, NOW(), :user_id
                     )
                     RETURNING id
                 """),
                 {
                     "org_id": org_id,
                     "cash_account_id": str(batch_row.cash_account_id),
+                    "transaction_number": f"PMT-{batch_row.batch_number}",
                     "payment_date": batch_row.payment_date,
+                    "batch_id": str(batch_id),
                     "amount": total_amount,
                     "payment_method": batch_row.payment_method,
+                    "reference": batch_row.reference,
+                    "description": f"Supplier payment batch {batch_row.batch_number}",
                     "user_id": user_id,
                 },
             )
             cashbook_txn_id = str(txn.scalar())
 
-            # 2. Update supplier invoices to 'paid'
+            await db.execute(
+                text("UPDATE finance.supplier_payment_items SET cashbook_transaction_id = :txn_id WHERE batch_id = :batch_id"),
+                {"txn_id": cashbook_txn_id, "batch_id": str(batch_id)},
+            )
+
+            # 2. Mark the invoices paid ('paid' is a supplier_invoices.status,
+            # not a match_status)
             await db.execute(
                 text("""
                     UPDATE procurement.supplier_invoices si
-                    SET match_status = 'paid', updated_at = NOW()
+                    SET status = 'paid', paid_at = NOW(), updated_at = NOW()
                     FROM finance.supplier_payment_items spi
                     WHERE spi.batch_id = :batch_id AND spi.supplier_invoice_id = si.id
                 """),
                 {"batch_id": str(batch_id)},
             )
 
-            extra_sets = ", posted_by = :posted_by, posted_at = NOW()"
-            extra_params = {"posted_by": user_id}
+            extra_sets = ", total_amount = :total_amount, posted_by = :posted_by, posted_at = NOW()"
+            extra_params = {"total_amount": total_amount, "posted_by": user_id}
 
         await db.execute(
             text(f"""
