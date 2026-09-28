@@ -34,6 +34,15 @@ from app.services.finance.ccb_monitor import (
     run_stock_consumption_variance_check,
 )
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
+from app.services.hr.weekly_report import (
+    build_weekly_hr_report,
+    is_send_time,
+    refresh_pending_vendor_checks,
+    render_weekly_hr_report_html,
+    render_weekly_hr_report_text,
+    report_subject,
+    report_week,
+)
 from app.services.workforce_events import dispatch_workforce_events
 from app.events.bus import EventBus
 from app.shared.events import emit_notification
@@ -739,6 +748,80 @@ async def check_tax_deadline_alerts_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def weekly_hr_report_job(ctx):
+    """Hourly cron: emails the weekly HR report (app/services/hr/weekly_report.py)
+    to HR_WEEKLY_REPORT_RECIPIENTS from Friday 16:00 Harare time. It runs every
+    hour and checks the time itself rather than trusting the container's
+    timezone for arq's cron fields. A per-recipient, per-week Redis key stops
+    repeats, so a failed send is retried by the next hourly run that Friday.
+
+    Each recipient is resolved to their AEGIS user's organization and only
+    gets that organization's report; an address with no user is skipped.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        now = time_now()
+        if not is_send_time(now):
+            return {"skipped": "not Friday 16:00+ Harare time"}
+        week_start, week_end = report_week(now)
+        recipients = sorted({
+            email.strip().lower()
+            for email in settings.HR_WEEKLY_REPORT_RECIPIENTS.split(",")
+            if email.strip()
+        })
+        if not recipients:
+            return {"skipped": "no recipients configured"}
+
+        redis_pool = ctx["redis"]
+        app_url = settings.cors_origins[0] if settings.cors_origins else None
+        sent: list[str] = []
+        failed: list[str] = []
+        async with AsyncSessionLocal() as db:
+            rows = await db.execute(
+                text("""
+                    SELECT DISTINCT lower(email) AS email, organization_id
+                    FROM core.users
+                    WHERE lower(email) = ANY(:emails) AND is_deleted = false AND organization_id IS NOT NULL
+                """),
+                {"emails": recipients},
+            )
+            by_org: dict[str, list[str]] = {}
+            for row in rows.mappings():
+                by_org.setdefault(str(row["organization_id"]), []).append(row["email"])
+            unknown = set(recipients) - {email for emails in by_org.values() for email in emails}
+            if unknown:
+                logger.warning(f"Weekly HR report: no AEGIS user for {sorted(unknown)}; not sent to them.")
+
+            for org_id, emails in by_org.items():
+                dedupe = {email: f"aegis:hr_weekly_report:{org_id}:{week_end.isoformat()}:{email}" for email in emails}
+                pending = [email for email in emails if not await redis_pool.get(dedupe[email])]
+                if not pending:
+                    continue
+                await refresh_pending_vendor_checks(db, org_id=org_id)
+                await db.commit()
+                report = await build_weekly_hr_report(db, org_id=org_id, week_start=week_start, week_end=week_end)
+                subject = report_subject(report)
+                html = render_weekly_hr_report_html(report, app_url=app_url)
+                body_text = render_weekly_hr_report_text(report)
+                for email in pending:
+                    if await send_email(to=email, subject=subject, html=html, text=body_text):
+                        await redis_pool.setex(dedupe[email], 14 * 86400, "sent")
+                        sent.append(email)
+                    else:
+                        failed.append(email)
+        if sent:
+            logger.info(f"Weekly HR report for week ending {week_end} sent to {sent}.")
+        if failed:
+            logger.warning(f"Weekly HR report for week ending {week_end} failed for {failed}; next hourly run retries.")
+        return {"week_end": week_end.isoformat(), "sent": sent, "failed": failed}
+    except Exception as exc:
+        logger.exception(f"Weekly HR report failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 def time_now():
     from datetime import datetime, timezone
 
@@ -859,6 +942,7 @@ class WorkerSettings:
         run_ccb_variance_staleness_check_job,
         run_ccb_weekly_boq_pace_variance_check_job,
         check_tax_deadline_alerts_job,
+        weekly_hr_report_job,
         run_ccb_gl_proposal_stale_review_check_job,
         run_ccb_labour_headcount_mismatch_check_job,
         run_ccb_fuel_hours_variance_check_job,
@@ -897,6 +981,8 @@ class WorkerSettings:
             run_at_startup=False,
         ),
         cron(check_tax_deadline_alerts_job, hour=4, minute=0, run_at_startup=False),
+        # Hourly; the job itself only sends from Friday 16:00 Harare time.
+        cron(weekly_hr_report_job, minute=5, run_at_startup=False),
         cron(
             run_ccb_gl_proposal_stale_review_check_job,
             hour=3,
