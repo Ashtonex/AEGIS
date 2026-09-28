@@ -1830,20 +1830,224 @@ async def get_material_forecast_alerts(
     }
 
 
+# Every source below is a state the owning module's own decision endpoint
+# requires before it will approve (see each decide_via). Deliberately left
+# out: site-level sign-offs (daily reports, GRNs, timesheets, BOQ
+# measurements, weekly site budgets, document reviews) - they belong to site
+# engineers and agents, not the executive queue - and decisions that have an
+# endpoint but no screen to make them on yet (finance variations, fleet work
+# orders, plant requests), since a queue item must link somewhere to act.
+# Each query returns the same shape: id, reference, amount, waiting_since,
+# detail.
+_PENDING_APPROVAL_SOURCES: List[Dict[str, Any]] = [
+    {
+        "type": "purchase_order",
+        "module": "Procurement",
+        "source": "procurement.purchase_orders",
+        "reason": "Draft purchase order awaiting independent approval before it can be issued.",
+        "action_url": "/dashboard/procurement?tab=purchase-orders",
+        "decide_via": "POST /api/v1/procurement/purchase-orders/{id}/decision",
+        "sql": """
+            SELECT id, po_number AS reference, total_amount AS amount,
+                   created_at AS waiting_since, NULL::text AS detail
+            FROM procurement.purchase_orders
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+        """,
+    },
+    {
+        "type": "requisition",
+        "module": "Procurement",
+        "source": "procurement.purchase_requisitions",
+        "reason": "Submitted requisition awaiting approval before it can be ordered.",
+        "action_url": "/dashboard/procurement?tab=requisitions",
+        "decide_via": "POST /api/v1/procurement/requisitions/{id}/decision",
+        "sql": """
+            SELECT id, requisition_number AS reference, total_estimated AS amount,
+                   COALESCE(submitted_at, created_at) AS waiting_since,
+                   priority::text AS detail
+            FROM procurement.purchase_requisitions
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'submitted'
+        """,
+    },
+    {
+        "type": "supplier_invoice_payment",
+        "module": "Procurement",
+        "source": "procurement.supplier_invoices",
+        # Only three-way-matched invoices can be approved for payment; the
+        # unmatched ones are waiting on matching, not on a decision.
+        "reason": "Matched supplier invoice awaiting payment approval.",
+        "action_url": "/dashboard/procurement?tab=invoices",
+        "decide_via": "POST /api/v1/procurement/invoices/{id}/payment-decision",
+        "sql": """
+            SELECT id, invoice_number AS reference, total_amount AS amount,
+                   created_at AS waiting_since, NULL::text AS detail
+            FROM procurement.supplier_invoices
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND match_status = 'matched'
+              AND status NOT IN ('approved', 'paid', 'rejected', 'cancelled', 'disputed')
+        """,
+    },
+    {
+        "type": "supplier_payment_batch",
+        "module": "Finance",
+        "source": "finance.supplier_payment_batches",
+        "reason": "Draft supplier payment batch awaiting release.",
+        "action_url": "/dashboard/finance/supplier-payments",
+        "decide_via": "POST /api/v1/payments/{id}/decision",
+        "sql": """
+            SELECT id, COALESCE(batch_number, reference) AS reference, total_amount AS amount,
+                   created_at AS waiting_since, NULL::text AS detail
+            FROM finance.supplier_payment_batches
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+        """,
+    },
+    {
+        "type": "payroll_run",
+        "module": "Finance",
+        "source": "finance.payroll_runs",
+        "reason": "Draft payroll run awaiting approval before it can be posted.",
+        "action_url": "/dashboard/finance/payroll",
+        "decide_via": "POST /api/v1/payroll-runs/{id}/decision",
+        "sql": """
+            SELECT id, run_number AS reference, net_pay AS amount,
+                   created_at AS waiting_since,
+                   to_char(period_start, 'Mon YYYY') AS detail
+            FROM finance.payroll_runs
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+        """,
+    },
+    {
+        "type": "company_budget",
+        "module": "Finance",
+        "source": "finance.company_budgets",
+        "reason": "Company budget submitted for review and approval as the fiscal-year baseline.",
+        "action_url": "/dashboard/finance/budgets",
+        "decide_via": "POST /api/v1/finance/company-budgets/{id}/approve",
+        "sql": """
+            SELECT id, COALESCE(label, 'FY ' || fiscal_year::text) AS reference, NULL::numeric AS amount,
+                   COALESCE(submitted_at, created_at) AS waiting_since, status::text AS detail
+            FROM finance.company_budgets
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND status IN ('submitted', 'under_review')
+        """,
+    },
+    {
+        "type": "management_accounts_pack",
+        "module": "Finance",
+        "source": "finance.management_accounts_packs",
+        "reason": "Reviewed management accounts pack awaiting approval.",
+        "action_url": "/dashboard/finance/management-accounts",
+        "decide_via": "POST /api/v1/finance/management-accounts/packs/{id}/approve",
+        "sql": """
+            SELECT id, to_char(period_start, 'Mon YYYY') AS reference, NULL::numeric AS amount,
+                   COALESCE(reviewed_at, created_at) AS waiting_since, NULL::text AS detail
+            FROM finance.management_accounts_packs
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'reviewed'
+        """,
+    },
+    {
+        "type": "journal_proposal",
+        "module": "Finance",
+        "source": "finance.journal_entries",
+        "reason": "System-proposed journal awaiting review before it posts to the general ledger.",
+        "action_url": "/dashboard/finance/general-ledger",
+        "decide_via": "POST /api/v1/finance/gl/bridge/proposals/{id}/approve",
+        "sql": """
+            SELECT id, journal_number AS reference, total_debit AS amount,
+                   created_at AS waiting_since, description AS detail
+            FROM finance.journal_entries
+            WHERE organization_id = :org_id AND proposal_status = 'pending_review'
+        """,
+    },
+    {
+        "type": "leave_request",
+        "module": "HR",
+        "source": "hr.leave_requests",
+        "reason": "Leave request awaiting approval.",
+        "action_url": "/dashboard/hr/leave",
+        "decide_via": "POST /api/v1/hr-records/leave/{id}/decision",
+        "sql": """
+            SELECT lr.id, COALESCE(e.employee_name, 'Employee') AS reference, NULL::numeric AS amount,
+                   lr.created_at AS waiting_since,
+                   lr.leave_type || ', ' || COALESCE(lr.days_requested::text, '?') || ' days from '
+                       || to_char(lr.start_date, 'DD Mon') AS detail
+            FROM hr.leave_requests lr
+            LEFT JOIN hr.employees e ON e.id = lr.employee_id AND e.organization_id = lr.organization_id
+            WHERE lr.organization_id = :org_id AND lr.is_deleted = false AND lr.status = 'pending'
+        """,
+    },
+    {
+        "type": "vendor_verification",
+        "module": "HR",
+        "source": "crm.subcontractors",
+        "reason": "System-verified vendor profile awaiting HR approval.",
+        "action_url": "/dashboard/hr/vendor-verification",
+        "decide_via": "POST /api/v1/hr/vendor-verification/{id}/decision",
+        "sql": """
+            SELECT id, name AS reference, NULL::numeric AS amount,
+                   COALESCE(system_verified_at, updated_at, created_at) AS waiting_since,
+                   NULL::text AS detail
+            FROM crm.subcontractors
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND verification_stage = 'system_verified'
+        """,
+    },
+    {
+        "type": "project_registration",
+        "module": "Projects",
+        "source": "core.approval_instances",
+        "reason": "New project registration awaiting approval before it moves to planning.",
+        "action_url": "/dashboard/projects",
+        "decide_via": "POST /api/v1/projects/{id}/registration-decision",
+        "sql": """
+            SELECT ai.target_id AS id, COALESCE(p.name, 'Project') AS reference, NULL::numeric AS amount,
+                   COALESCE(ai.submitted_at, ai.created_at) AS waiting_since, NULL::text AS detail
+            FROM core.approval_instances ai
+            LEFT JOIN projects.projects p ON p.id = ai.target_id AND p.organization_id = ai.organization_id
+            WHERE ai.organization_id = :org_id AND ai.is_deleted = false AND ai.status = 'pending'
+              AND ai.workflow_key = 'project_field_intake_registration'
+        """,
+    },
+]
+
+
+def _pending_approval_item(source: Dict[str, Any], row: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    waiting_since = row.get("waiting_since")
+    waiting_days = None
+    if isinstance(waiting_since, datetime):
+        stamp = waiting_since if waiting_since.tzinfo else waiting_since.replace(tzinfo=now.tzinfo)
+        waiting_days = max((now - stamp).days, 0)
+    amount = row.get("amount")
+    return {
+        "id": str(row["id"]),
+        "type": source["type"],
+        "module": source["module"],
+        "reference": row.get("reference"),
+        "detail": row.get("detail"),
+        "amount": float(amount) if amount is not None else None,
+        "created_at": str(waiting_since) if waiting_since is not None else None,
+        "waiting_days": waiting_days,
+        "reason": source["reason"],
+        "action_url": source["action_url"],
+        "decide_via": source["decide_via"],
+    }
+
+
 @router.get("/approvals/pending")
 async def get_pending_approvals(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db)
 ):
     """Aggregates items genuinely awaiting a decision in their own
-    authoritative module - purchase_orders.status='draft' is the real
-    pending-approval state procurement.py's own decision endpoint checks
-    (see decide_purchase_order in routers/procurement.py), not a value
-    invented here. This endpoint is a read-only aggregation layer: it does
-    NOT expose a decide action of its own (see removal note below) - the
-    decision must be made via the module that owns the approval rule
-    (self-approval / independent-approval checks live there, not here),
-    so action_url always points at the real place to act.
+    authoritative module, across Procurement, Finance, HR and Projects -
+    each source's filter is the state that module's own decision endpoint
+    requires (purchase_orders.status = 'draft' for decide_purchase_order in
+    routers/procurement.py, and so on - see _PENDING_APPROVAL_SOURCES), not
+    a value invented here. This endpoint is a read-only aggregation layer: it
+    does NOT expose a decide action of its own - the decision must be made
+    via the module that owns the approval rule (self-approval /
+    independent-approval checks live there, not here), so action_url always
+    points at the real place to act. Longest-waiting items come first.
 
     Two categories that used to appear here were removed rather than kept
     as fake data (AEGIS truth rule: no dummy data): quotations have no
@@ -1855,41 +2059,37 @@ async def get_pending_approvals(
     renewal) - that data is already surfaced honestly, as an exception
     rather than a fabricated decision, by GET /executive/exceptions.
     """
-    org_id = user["org_id"]
+    params = {"org_id": user["org_id"]}
     source_errors: List[Dict[str, Any]] = []
 
-    pos_res = await _rows(
-        db,
-        """
-            SELECT id, po_number, total_amount, created_at, created_by
-            FROM procurement.purchase_orders
-            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
-            ORDER BY total_amount DESC, created_at ASC
-        """,
-        {"org_id": org_id},
-        source="procurement.purchase_orders",
-        source_errors=source_errors
-    )
-    pending_pos = [
-        {
-            "id": str(r["id"]),
-            "type": "purchase_order",
-            "reference": r["po_number"],
-            "amount": float(r["total_amount"]),
-            "created_at": str(r["created_at"]),
-            "reason": "Draft purchase order awaiting independent approval before it can be issued.",
-            "action_url": "/dashboard/procurement?tab=purchase-orders",
-            "decide_via": "POST /api/v1/procurement/purchase-orders/{id}/decision",
-        }
-        for r in pos_res
+    def read(source: Dict[str, Any]):
+        return lambda session: _rows(
+            session, source["sql"], params, source=source["source"], source_errors=source_errors
+        )
+
+    results = await gather_reads(db, *(read(source) for source in _PENDING_APPROVAL_SOURCES))
+    now = datetime.now().astimezone()
+    items = [
+        _pending_approval_item(source, row, now)
+        for source, rows in zip(_PENDING_APPROVAL_SOURCES, results)
+        for row in rows
     ]
+    items.sort(key=lambda item: (item["waiting_days"] is None, -(item["waiting_days"] or 0)))
+
+    by_module: Dict[str, int] = {}
+    for item in items:
+        by_module[item["module"]] = by_module.get(item["module"], 0) + 1
 
     return {
         "success": True,
-        "data": pending_pos,
+        "data": items,
         "message": "Pending executive approval queue retrieved."
-            if pending_pos else "No items currently awaiting executive-visible approval.",
-        "meta": {"source_errors": source_errors}
+            if items else "No items currently awaiting executive-visible approval.",
+        "meta": {
+            "source_errors": source_errors,
+            "by_module": by_module,
+            "sources": [source["source"] for source in _PENDING_APPROVAL_SOURCES],
+        },
     }
 
 

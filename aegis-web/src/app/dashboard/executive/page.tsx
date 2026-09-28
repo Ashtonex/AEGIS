@@ -1153,16 +1153,29 @@ function SafetyIndexPanel() {
 }
 
 // Decision Queue: read-only aggregation of items genuinely awaiting a
-// decision in their own authoritative module (procurement.purchase_orders
-// today - see GET /executive/approvals/pending). Deliberately has no
-// approve/reject button of its own: the real approval rule (segregation of
-// duties, self-approval blocked) lives in routers/procurement.py, so this
-// panel links out to where the decision is actually made rather than
-// duplicating that logic a second, drifting time.
+// decision in their own authoritative module - Procurement, Finance, HR and
+// Projects (see GET /executive/approvals/pending). Deliberately has no
+// approve/reject button of its own: each module's approval rule
+// (segregation of duties, self-approval blocked) lives in that module's
+// router, so this panel links out to where the decision is actually made
+// rather than duplicating that logic a second, drifting time.
+const APPROVALS_VISIBLE = 8;
+
+function waitingLabel(days: unknown): string | null {
+  if (days === null || days === undefined) return null;
+  const value = Number(days);
+  if (!Number.isFinite(value)) return null;
+  return value === 0 ? "Today" : `${value}d waiting`;
+}
+
 function PendingApprovalsPanel() {
   const [items, setItems] = useState<ApiData[]>([]);
+  const [byModule, setByModule] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
   const [message, setMessage] = useState<string>("");
+  const [moduleFilter, setModuleFilter] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1171,10 +1184,12 @@ function PendingApprovalsPanel() {
         const res = await getPendingApprovals();
         if (!cancelled) {
           setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
+          const meta = (res.meta || {}) as ApiData;
+          setByModule((meta.by_module as Record<string, number>) || {});
           setMessage(String(res.message || ""));
         }
       } catch {
-        if (!cancelled) setItems([]);
+        if (!cancelled) setFailed(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -1182,37 +1197,65 @@ function PendingApprovalsPanel() {
     return () => { cancelled = true; };
   }, []);
 
+  const filtered = moduleFilter ? items.filter((item) => item.module === moduleFilter) : items;
+  const visible = showAll ? filtered : filtered.slice(0, APPROVALS_VISIBLE);
+
   return (
     <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
       <div className="flex justify-between items-center border-b border-ink-mid pb-3">
         <div>
           <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Decisions Awaiting Approval</h2>
-          <p className="text-xs text-slate-light mt-1">Only items genuinely in a pending state in their own module - decide them there, not here.</p>
+          <p className="text-xs text-slate-light mt-1">Items genuinely pending in Procurement, Finance, HR and Projects, longest-waiting first. Decide them in their own module.</p>
         </div>
-        <span className="font-mono text-[10px] text-slate">{items.length} PENDING</span>
+        <span className="font-mono text-[10px] text-slate shrink-0">{items.length} PENDING</span>
       </div>
-      <div className="mt-4 space-y-2">
+      {Object.keys(byModule).length > 1 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <button onClick={() => setModuleFilter(null)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === null ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>All {items.length}</button>
+          {Object.entries(byModule).map(([module, count]) => (
+            <button key={module} onClick={() => setModuleFilter(module)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === module ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>{module} {count}</button>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 space-y-2">
         {loading ? (
           <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading pending approvals...</div>
+        ) : failed ? (
+          <p className="text-xs text-slate py-4">Pending approvals could not be loaded.</p>
         ) : items.length === 0 ? (
           <p className="text-xs text-slate py-4">{message || "No items currently awaiting executive-visible approval."}</p>
         ) : (
-          items.map((item) => (
-            <Link
-              key={String(item.id)}
-              href={String(item.action_url || "/dashboard/procurement")}
-              className="block border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal transition-colors"
-            >
-              <div className="flex flex-wrap justify-between items-start gap-3">
-                <div className="min-w-0">
-                  <span className="font-mono text-[10px] uppercase text-signal">{titleCase(String(item.type || "item"))}</span>
-                  <p className="font-semibold text-paper text-sm mt-1.5">{displayValue(item.reference)}</p>
-                  <p className="text-slate-light text-xs mt-1">{displayValue(item.reason)}</p>
-                </div>
-                <p className="font-mono text-sm text-paper shrink-0">{currencyValue(item.amount)}</p>
-              </div>
-            </Link>
-          ))
+          <>
+            {visible.map((item) => {
+              const waiting = waitingLabel(item.waiting_days);
+              const stale = Number(item.waiting_days) >= 7;
+              return (
+                <Link
+                  key={`${String(item.type)}-${String(item.id)}`}
+                  href={String(item.action_url || "/dashboard")}
+                  className="block border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal transition-colors"
+                >
+                  <div className="flex flex-wrap justify-between items-start gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-[10px] uppercase text-signal">{displayValue(item.module)} · {titleCase(String(item.type || "item"))}</span>
+                        {waiting && <span className={`font-mono text-[9px] uppercase px-1.5 border rounded ${stale ? "border-amber-500/40 text-amber-300" : "border-ink-mid text-slate-light"}`}>{waiting}</span>}
+                      </div>
+                      <p className="font-semibold text-paper text-sm mt-1.5 truncate">{displayValue(item.reference)}</p>
+                      {item.detail !== null && item.detail !== undefined && item.detail !== "" && <p className="text-slate-light text-xs mt-0.5 truncate">{String(item.detail)}</p>}
+                      <p className="text-slate text-xs mt-1">{displayValue(item.reason)}</p>
+                    </div>
+                    {item.amount !== null && item.amount !== undefined && <p className="font-mono text-sm text-paper shrink-0">{currencyValue(item.amount)}</p>}
+                  </div>
+                </Link>
+              );
+            })}
+            {filtered.length > APPROVALS_VISIBLE && (
+              <button onClick={() => setShowAll((value) => !value)} className="w-full font-mono text-[10px] uppercase text-signal hover:underline py-1">
+                {showAll ? "Show fewer" : `Show all ${filtered.length}`}
+              </button>
+            )}
+          </>
         )}
       </div>
     </section>
