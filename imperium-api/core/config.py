@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     RENDER_EXTERNAL_HOSTNAME: Optional[str] = None
     RENDER_EXTERNAL_URL: Optional[str] = None
     FRONTEND_HOSTNAME: Optional[str] = None
+    # The address people actually open AEGIS at - used for links sent OUT of
+    # the system (Teams cards, notification emails). Deliberately not derived
+    # from ALLOWED_ORIGINS: that list is for CORS, and on a dev machine (which
+    # shares the production database and so can message real people) it
+    # only holds localhost, which put localhost links in real Teams cards.
+    PUBLIC_APP_URL: str = "https://sixnineconstruction.com"
+    # The AEGIS Teams app (deploy/teams-app/manifest.json "id"). Cards link
+    # straight into its "My Tasks" tab when set.
+    TEAMS_APP_ID: Optional[str] = "7c98e29c-57c1-4f3d-bbd3-a70a17528dd3"
     # Most PaaS egress networking (Render, DigitalOcean App Platform, Railway,
     # AWS Lightsail) is IPv4-only, so Supabase's direct-connection host
     # (IPv6-only) is unreachable regardless of platform. Default to false so

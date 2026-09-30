@@ -31,6 +31,29 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["lucide-react", "framer-motion"],
   },
+  // Who may put AEGIS in a frame. Nothing was sent before, so any site
+  // could embed it (clickjacking). Now: AEGIS itself, plus the Microsoft
+  // Teams / Office hosts that load the "My Tasks" Teams tab (/teams/tasks,
+  // deploy/teams-app/). Host list per Microsoft's Teams tab CSP guidance.
+  async headers() {
+    const frameAncestors = [
+      "'self'",
+      "https://teams.microsoft.com",
+      "https://*.teams.microsoft.com",
+      "https://teams.cloud.microsoft",
+      "https://*.cloud.microsoft",
+      "https://*.office.com",
+      "https://*.office365.com",
+      "https://*.microsoft365.com",
+      "https://*.skype.com",
+    ].join(" ");
+    return [
+      {
+        source: "/:path*",
+        headers: [{ key: "Content-Security-Policy", value: `frame-ancestors ${frameAncestors}` }],
+      },
+    ];
+  },
   async redirects() {
     return [
       {

@@ -192,4 +192,7 @@ def test_teams_payload_carries_recipient_and_card():
     assert payload["attachments"][0]["content"] is card
     assert card["body"][0]["text"] == "15 new tasks assigned to you"
     assert "more in AEGIS" in card["body"][-1]["text"]
-    assert card["actions"][0]["url"].endswith("/dashboard/crm/tasks")
+    # Live-site links, never whatever host happened to send the card.
+    assert card["actions"][-1]["url"] == "https://sixnineconstruction.com/dashboard/crm/tasks"
+    assert card["actions"][0]["url"].startswith("https://teams.microsoft.com/l/entity/")
+    assert card["actions"][0]["url"].endswith("/aegis-my-tasks")
