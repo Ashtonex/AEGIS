@@ -13,12 +13,14 @@ import {
   getTaskRouting,
   previewTaskDistribution,
   testTaskRoutingTeams,
+  updateTeamsAccount,
   updateTaskRoutingRule,
   updateTaskRoutingSettings,
   type TaskDistributionPreview,
   type TaskPlanItem,
   type TaskPriority,
   type TaskRoutingConfig,
+  type TaskRoutingPerson,
   type TaskRoutingRule,
 } from "@/lib/api/crm";
 import { initials, avatarTone } from "@/lib/avatar";
@@ -580,9 +582,102 @@ export function RoutingSettingsModal({ people, onClose }: { people: Person[]; on
               )}
             </div>
           </section>
+
+          <section className="space-y-3">
+            <h3 className="font-mono text-[10px] uppercase tracking-wider text-slate-light">Teams accounts</h3>
+            <p className="text-[11px] text-slate-light">
+              Who each person is in Microsoft Teams. Staff who are guests in your Microsoft 365 sign in to Teams with a
+              personal address, not their AEGIS email - messages only reach them if this matches. Their AEGIS login is unaffected.
+            </p>
+            <div className="divide-y divide-ink-mid border border-ink-mid">
+              {config.people.map((person) => (
+                <TeamsAccountRow
+                  key={`${person.id}:${person.teams_account ?? ""}`}
+                  person={person}
+                  webhookConfigured={s.teams_webhook_configured}
+                  onSaved={setConfig}
+                />
+              ))}
+            </div>
+          </section>
         </div>
       )}
     </ModalShell>
+  );
+}
+
+function TeamsAccountRow({ person, webhookConfigured, onSaved }: {
+  person: TaskRoutingPerson;
+  webhookConfigured: boolean;
+  onSaved: (config: TaskRoutingConfig) => void;
+}) {
+  const [value, setValue] = useState(person.teams_account ?? "");
+  const [busy, setBusy] = useState<"save" | "test" | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const dirty = value.trim() !== (person.teams_account ?? "");
+
+  const save = async () => {
+    setBusy("save");
+    setNote(null);
+    try {
+      const res = await updateTeamsAccount(person.id, value.trim());
+      if (!res.success || !res.data) throw new Error("Not saved.");
+      onSaved(res.data);
+    } catch (e) {
+      setNote({ ok: false, text: errorText(e, "Not saved.") });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const test = async () => {
+    if (!window.confirm(`Send ${person.full_name} a test message in Teams?`)) return;
+    setBusy("test");
+    setNote(null);
+    try {
+      const res = await testTaskRoutingTeams(person.id);
+      if (!res.success) throw new Error("Teams did not accept it.");
+      setNote({ ok: true, text: "Sent" });
+    } catch (e) {
+      setNote({ ok: false, text: errorText(e, "Teams did not accept it.") });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center">
+      <div className="min-w-0 sm:w-48">
+        <p className="truncate text-xs text-paper">{person.full_name}</p>
+        <p className="truncate text-[10px] text-slate">{person.email}</p>
+      </div>
+      <input
+        value={value}
+        onChange={(e) => { setValue(e.target.value); setNote(null); }}
+        placeholder="Uses AEGIS email - add their Teams sign-in"
+        className={`min-w-0 flex-1 border bg-ink px-2 py-1.5 text-[11px] text-paper ${person.teams_account ? "border-ink-mid" : "border-amber-500/40"}`}
+      />
+      <div className="flex items-center gap-2">
+        {note && <span className={`text-[10px] ${note.ok ? "text-emerald-300" : "text-red-300"}`}>{note.text}</span>}
+        <button
+          type="button"
+          disabled={!dirty || busy !== null}
+          onClick={() => void save()}
+          className="border border-signal/60 px-2.5 py-1 text-[10px] uppercase tracking-wider text-signal hover:bg-signal/10 disabled:opacity-40"
+        >
+          {busy === "save" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+        </button>
+        <button
+          type="button"
+          disabled={!webhookConfigured || dirty || busy !== null}
+          onClick={() => void test()}
+          title="Send this person a test message in Teams"
+          className="border border-ink-mid px-2.5 py-1 text-[10px] uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
+        >
+          {busy === "test" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -97,7 +97,7 @@ function SignIn() {
     <form onSubmit={submit} className="mx-auto mt-10 w-full max-w-sm space-y-3 border border-ink-mid bg-ink-light/30 p-5">
       <div>
         <p className="text-base font-semibold text-paper">Sign in to AEGIS</p>
-        <p className="mt-1 text-xs text-slate-light">Once, and your tasks will show here in Teams.</p>
+        <p className="mt-1 text-xs text-slate-light">Use your AEGIS email and password - once, and your tasks will show here in Teams.</p>
       </div>
       <input
         type="email"
@@ -105,7 +105,7 @@ function SignIn() {
         required
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        placeholder="you@sixnineconstruction.com"
+        placeholder="Your AEGIS email"
         className="w-full border border-ink-mid bg-ink px-3 py-2 text-sm text-paper"
       />
       <input

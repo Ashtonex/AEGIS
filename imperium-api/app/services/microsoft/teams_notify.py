@@ -202,7 +202,9 @@ async def prepare_deliveries(
 ) -> list[tuple[str, dict[str, Any]]]:
     """assignments: {user_id: [task dicts with title/due_date/priority/
     entity_name]}. Returns nothing (and does no work) when the org hasn't
-    configured a webhook. The actor is skipped - nobody needs a DM about
+    configured a webhook. Each person is addressed by their Teams account
+    (core.users.teams_account - e.g. a guest's #EXT# UPN) when set, their
+    AEGIS login email otherwise. The actor is skipped - nobody needs a DM about
     work they just gave themselves."""
     if not assignments:
         return []
@@ -219,7 +221,8 @@ async def prepare_deliveries(
         return []
     rows = await db.execute(
         text("""
-            SELECT id::text AS id, email, full_name FROM core.users
+            SELECT id::text AS id, COALESCE(NULLIF(TRIM(teams_account), ''), email) AS email, full_name
+            FROM core.users
             WHERE id = ANY(CAST(:ids AS uuid[])) AND organization_id = :org_id
               AND is_active = true AND is_deleted = false
         """),
