@@ -162,8 +162,8 @@ async def _email_escalate(
     ).first()
     if not recipient or not recipient.email:
         return
-    origins = settings.cors_origins
-    full_url = f"{origins[0]}{action_url}" if action_url and origins else None
+    base = settings.PUBLIC_APP_URL.strip().rstrip("/")
+    full_url = f"{base}{action_url}" if action_url and base else None
     link_html = f'<p><a href="{full_url}">View details</a></p>' if full_url else ""
     await send_email(
         to=recipient.email,

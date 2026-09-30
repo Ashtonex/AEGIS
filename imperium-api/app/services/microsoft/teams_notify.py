@@ -65,12 +65,18 @@ def mask_webhook_url(url: Optional[str]) -> Optional[str]:
     return f"{parsed.scheme}://{parsed.hostname}/…"
 
 
+TEAMS_TAB_ENTITY_ID = "aegis-my-tasks"  # deploy/teams-app/manifest.json staticTabs[0].entityId
+
+
 def app_base_url() -> str:
-    if settings.FRONTEND_HOSTNAME:
-        return f"https://{settings.FRONTEND_HOSTNAME.strip().rstrip('/')}"
-    origins = settings.cors_origins
-    https = [o for o in origins if o.startswith("https://")]
-    return (https or origins or [""])[0].rstrip("/")
+    return settings.PUBLIC_APP_URL.strip().rstrip("/")
+
+
+def teams_tab_link() -> Optional[str]:
+    """Deep link that opens the AEGIS "My Tasks" tab inside Teams."""
+    if not settings.TEAMS_APP_ID:
+        return None
+    return f"https://teams.microsoft.com/l/entity/{settings.TEAMS_APP_ID}/{TEAMS_TAB_ENTITY_ID}"
 
 
 def _task_line(task: dict[str, Any]) -> dict[str, Any]:
@@ -121,12 +127,17 @@ def build_card(
             "isSubtle": True,
             "wrap": True,
         })
+    actions: list[dict[str, Any]] = []
+    tab_link = teams_tab_link()
+    if tab_link:
+        actions.append({"type": "Action.OpenUrl", "title": "Open my tasks in Teams", "url": tab_link})
+    actions.append({"type": "Action.OpenUrl", "title": "Open in AEGIS" if tab_link else "Open my tasks", "url": link})
     return {
         "type": "AdaptiveCard",
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "version": "1.4",
         "body": body,
-        "actions": [{"type": "Action.OpenUrl", "title": "Open my tasks", "url": link}],
+        "actions": actions,
     }
 
 

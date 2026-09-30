@@ -9,7 +9,9 @@ export const NavigationWrapper = ({ children }: { children: React.ReactNode }) =
   const pathname = usePathname();
 
   const isDashboardOrLogin =
-    pathname?.startsWith('/dashboard') || pathname?.startsWith('/portal') || pathname === '/login';
+    pathname?.startsWith('/dashboard') || pathname?.startsWith('/portal') || pathname === '/login'
+    // Embedded in Microsoft Teams (deploy/teams-app) - no site chrome.
+    || pathname?.startsWith('/teams');
   const shouldHideNavAndFooter = isDashboardOrLogin;
 
   return (
