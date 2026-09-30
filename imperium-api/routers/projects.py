@@ -17,6 +17,12 @@ from core.security import get_current_user, require_permission, user_has_permiss
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
+from app.shared.task_gates import (
+    COMMERCIAL_READINESS as COMMERCIAL_READINESS_GATE,
+    PROJECT_CHECK,
+    complete_stage_pack,
+    sync_tasks_from_gate,
+)
 from app.shared.project_delete import find_project_blockers, hard_delete_project, money_attached
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
@@ -1539,6 +1545,17 @@ async def confirm_project_deposit(
             "progress_claim_id": str(claim_id),
         },
     )
+    # The deposit pack (invoice / chase / confirm) was driving toward exactly
+    # this - close it off with the deposit as its evidence.
+    await complete_stage_pack(
+        db,
+        org_id=user["org_id"],
+        entity_type="project",
+        entity_id=str(project_id),
+        stage="pending_deposit",
+        evidence_ref=f"Deposit confirmed: {payload.deposit_reference or payload.deposit_received_amount}",
+        user_id=user["user_id"],
+    )
     await db.commit()
     tasks_created = await generate_task_stack(
         db,
@@ -1610,7 +1627,7 @@ async def update_pre_mobilisation_check(
                   AND project_id = :project_id
                   AND organization_id = :org_id
                   AND check_type = :check_type
-                RETURNING id
+                RETURNING id, check_name, evidence_reference
             """),
             {
                 "check_id": check_id,
@@ -1624,6 +1641,17 @@ async def update_pre_mobilisation_check(
     ).first()
     if not row:
         raise HTTPException(status_code=404, detail="Pre-mobilisation check not found.")
+    # Keep the linked task in step with the gate (app/shared/task_gates.py).
+    await sync_tasks_from_gate(
+        db,
+        org_id=user["org_id"],
+        project_id=str(project_id),
+        target_type=PROJECT_CHECK,
+        field=row.check_name,
+        done=payload.status in PRE_MOBILISATION_READY_STATUSES,
+        evidence_ref=row.evidence_reference,
+        user_id=user["user_id"],
+    )
     await db.commit()
     return _result({"id": str(check_id)}, "Pre-mobilisation check updated.")
 
@@ -1660,6 +1688,7 @@ async def update_commercial_readiness(
     await _project_or_404(db, project_id, user["org_id"])
     current = await _ensure_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
     pack = _normalize_commercial_readiness_pack(current.get("commercial_readiness_pack"))
+    pack_before = dict(pack)
     for key, value in payload.readiness_pack.items():
         if key in COMMERCIAL_READINESS_CONTROLS:
             pack[key] = bool(value)
@@ -1703,6 +1732,19 @@ async def update_commercial_readiness(
         project_id=project_id,
         event_data={"status": status, "blockers": blockers},
     )
+    # Controls ticked/unticked here complete/reopen their linked tasks.
+    for key in COMMERCIAL_READINESS_CONTROLS:
+        if bool(pack.get(key)) != bool(pack_before.get(key)):
+            await sync_tasks_from_gate(
+                db,
+                org_id=user["org_id"],
+                project_id=str(project_id),
+                target_type=COMMERCIAL_READINESS_GATE,
+                field=key,
+                done=bool(pack.get(key)),
+                evidence_ref="Ticked on the project's commercial readiness pack",
+                user_id=user["user_id"],
+            )
     await db.commit()
     return _result(
         await _commercial_readiness_summary(db, org_id=user["org_id"], project_id=project_id),

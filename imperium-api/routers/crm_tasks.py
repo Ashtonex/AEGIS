@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from uuid import UUID
@@ -14,7 +14,10 @@ from app.shared.pagination import LIST_SAFETY_CAP, apply_safety_cap
 from core.database import get_db, AsyncSessionLocal
 from core.security import require_permission, user_has_permission
 from app.shared.events import emit_notification
+from app.shared import task_routing
+from app.shared.task_gates import sync_gate_from_task
 from app.shared.task_stacks import ENTITY_DEPARTMENT_CODE, generate_task_stack
+from app.services.microsoft import teams_notify
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -95,6 +98,53 @@ async def _notify_task_reviewers(db: AsyncSession, *, org_id: str, task_id: UUID
             action_url="/dashboard/crm/tasks",
             metadata={"task_id": str(task_id), "status": "under_review"},
         )
+
+
+async def _date_and_announce_assignment(
+    db: AsyncSession,
+    background_tasks: BackgroundTasks,
+    *,
+    org_id: str,
+    task_id: UUID,
+    assignee_id: str,
+    actor_id: str,
+) -> None:
+    """After a single task lands on someone: give it a deadline if it has
+    none (same scoring/queue rules as bulk distribution) and queue the Teams
+    DM. Best-effort - the assignment itself has already been committed."""
+    try:
+        rows = await task_routing.load_tasks_for_bulk(db, org_id, [str(task_id)])
+        if not rows:
+            return
+        settings = await task_routing.load_settings(db, org_id)
+        load = await task_routing.open_load_for(db, org_id, assignee_id)
+        # A hand-assigned task keeps the priority it was given; only the
+        # missing deadline is filled in, from that priority.
+        planned = task_routing.plan_bulk_assignment(
+            rows,
+            assignee_id=assignee_id,
+            existing_load=max(load - 1, 0),
+            settings=settings,
+            today=date.today(),
+            priority_override=rows[0].get("priority") or "normal",
+        )
+        item = planned[0]
+        if not rows[0].get("due_date"):
+            await db.execute(
+                text("""
+                    UPDATE crm.tasks SET due_date = :due_date, updated_at = NOW()
+                    WHERE id = :id AND organization_id = :org_id AND due_date IS NULL
+                """),
+                {"due_date": item.due_date, "id": task_id, "org_id": org_id},
+            )
+            await db.commit()
+        deliveries = await teams_notify.prepare_deliveries(
+            db, org_id, {assignee_id: teams_notify.tasks_from_plan([item])}, actor_id=actor_id,
+        )
+        background_tasks.add_task(teams_notify.deliver, deliveries)
+    except Exception:
+        await db.rollback()
+        logger.exception("Task assigned but auto-deadline/Teams notice failed", extra={"task_id": str(task_id)})
 
 
 async def _ensure_active_org_user(
@@ -221,6 +271,69 @@ class StackAssignPayload(BaseModel):
     entity_type: str = Field(min_length=1, max_length=40)
     entity_id: UUID
     assigned_to_team_id: UUID
+
+
+class DistributePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    apply: bool = False
+
+
+class BulkAssignPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_ids: list[UUID] = Field(min_length=1, max_length=500)
+    assigned_to_user_id: UUID
+    # Omitted: every task gets its own deadline from its priority, the
+    # person's queue and the parent record's hard dates. Set: one deadline
+    # for the whole batch.
+    due_date: Optional[date] = None
+    priority: Optional[str] = Field(default=None, pattern="^(low|normal|high|urgent)$")
+    # Re-date tasks that already carry a deadline (default keeps them).
+    recalculate_due_dates: bool = False
+    preview: bool = False
+
+
+class RoutingRuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    label: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    keywords: Optional[list[str]] = Field(default=None, max_length=100)
+    entity_types: Optional[list[str]] = Field(default=None, max_length=40)
+    assignee_user_ids: Optional[list[UUID]] = Field(default=None, max_length=50)
+    sort_order: Optional[int] = Field(default=None, ge=0, le=1000)
+    is_active: Optional[bool] = None
+
+
+class RoutingRuleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    category_key: str = Field(min_length=2, max_length=40, pattern="^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=120)
+    keywords: list[str] = Field(default_factory=list, max_length=100)
+    entity_types: list[str] = Field(default_factory=list, max_length=40)
+    assignee_user_ids: list[UUID] = Field(default_factory=list, max_length=50)
+    sort_order: int = Field(default=50, ge=0, le=1000)
+
+
+class RoutingSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    auto_distribute: Optional[bool] = None
+    # "" clears the webhook; omitted leaves it as is.
+    teams_webhook_url: Optional[str] = Field(default=None, max_length=2000)
+    fallback_category: Optional[str] = Field(default=None, max_length=40)
+    due_days_urgent: Optional[int] = Field(default=None, ge=1, le=90)
+    due_days_high: Optional[int] = Field(default=None, ge=1, le=90)
+    due_days_normal: Optional[int] = Field(default=None, ge=1, le=180)
+    due_days_low: Optional[int] = Field(default=None, ge=1, le=365)
+    daily_capacity: Optional[int] = Field(default=None, ge=1, le=50)
+
+
+class TeamsTestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: Optional[UUID] = None
 
 
 class TaskTemplateCreate(BaseModel):
@@ -513,6 +626,7 @@ async def find_possible_duplicates(
 @router.post("/")
 async def create_task(
     payload: TaskCreate,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(require_permission("crm_tasks.create")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -676,6 +790,12 @@ async def create_task(
             await db.rollback()
             logger.exception("Task created but assignee notification failed", extra={"task_id": str(task_id)})
 
+    if payload.assigned_to_user_id:
+        await _date_and_announce_assignment(
+            db, background_tasks, org_id=org_id, task_id=task_id,
+            assignee_id=str(payload.assigned_to_user_id), actor_id=user["user_id"],
+        )
+
     return {"success": True, "data": {"id": str(task_id)}, "message": "Task created.", "meta": {}}
 
 
@@ -704,6 +824,7 @@ async def _check_task_contributor(task_id, user_id: str) -> bool:
 async def update_task(
     task_id: UUID,
     payload: TaskUpdate,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(require_permission("crm_tasks.update")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -714,7 +835,8 @@ async def update_task(
                 SELECT title, assigned_to_user_id, assigned_to_team_id, status,
                        depends_on_task_id, evidence_required, evidence_ref, approver_user_id,
                        review_submitted_at, review_submitted_by_user_id,
-                       gate_effect, applicability_result, created_by
+                       gate_effect, applicability_result, created_by,
+                       contribution_target_type, contribution_target_id, contribution_target_field
                 FROM crm.tasks WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             """),
             {"id": task_id, "org_id": org_id},
@@ -869,18 +991,29 @@ async def update_task(
             """),
             {"is_satisfied": values["status"] == "completed", "task_id": task_id, "org_id": org_id},
         )
+        # Same idea for project gates: a task linked to a pre-mobilisation
+        # check or commercial readiness control ticks it on verified
+        # completion (with the task's proof as the gate evidence) and
+        # unticks it on reopen - see app/shared/task_gates.py.
+        await sync_gate_from_task(
+            db,
+            org_id=org_id,
+            task=dict(current),
+            completed=values["status"] == "completed",
+            evidence_ref=values.get("evidence_ref") or current["evidence_ref"],
+        )
 
     if reviewer_alert_needed:
         await _notify_task_reviewers(db, org_id=org_id, task_id=task_id, task={**dict(current), **values})
 
     reassigned_to = values.get("assigned_to_user_id")
     previous_assignee = str(current["assigned_to_user_id"]) if current["assigned_to_user_id"] else None
-    if (
+    newly_assigned = (
         "assigned_to_user_id" in safe_keys
         and reassigned_to
         and str(reassigned_to) != previous_assignee
-        and str(reassigned_to) != user["user_id"]
-    ):
+    )
+    if newly_assigned and str(reassigned_to) != user["user_id"]:
         await emit_notification(
             db,
             org_id=org_id,
@@ -892,6 +1025,11 @@ async def update_task(
         )
 
     await db.commit()
+    if newly_assigned:
+        await _date_and_announce_assignment(
+            db, background_tasks, org_id=org_id, task_id=task_id,
+            assignee_id=str(reassigned_to), actor_id=user["user_id"],
+        )
     return {"success": True, "data": {"id": str(task_id)}, "message": "Task updated.", "meta": {}}
 
 
@@ -1031,6 +1169,409 @@ async def assign_stack_to_team(
         "success": True,
         "data": {"task_count": len(updated_ids)},
         "message": "Task stack assigned to team.",
+        "meta": {},
+    }
+
+
+_PLAN_ITEMS_RETURNED = 600
+
+
+@router.post("/distribute")
+async def distribute_tasks(
+    payload: DistributePayload,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Routes every open task that has no person to the right person by
+    kind of work, and dates it by importance/urgency (see
+    app/shared/task_routing.py). apply=false is a dry run returning the
+    plan; apply=true re-plans server-side and writes it - the client's
+    preview is never trusted as the source of what gets written. Each
+    person gets one in-app notification and one Teams DM for the batch."""
+    org_id = user["org_id"]
+    plan = await task_routing.plan_distribution(db, org_id)
+    planned = plan["planned"]
+    summary = task_routing.summarize(planned, plan["unroutable"])
+    if not payload.apply:
+        await db.commit()  # persists first-read default rules, nothing else
+        return {
+            "success": True,
+            "data": {
+                "summary": summary,
+                "items": [p.as_dict() for p in planned[:_PLAN_ITEMS_RETURNED]],
+                "unroutable": plan["unroutable"][:_PLAN_ITEMS_RETURNED],
+            },
+            "message": f"Preview: {summary['newly_assigned']} task(s) would be assigned.",
+            "meta": {"applied": False},
+        }
+
+    newly_assigned = await task_routing.apply_plan(
+        db, org_id, planned, source_event="manual_distribution", actor_id=user["user_id"],
+    )
+    await task_routing.notify_assignments(db, org_id, newly_assigned, actor_id=user["user_id"])
+    await db.commit()
+    deliveries = await teams_notify.prepare_deliveries(
+        db, org_id,
+        {uid: teams_notify.tasks_from_plan(items) for uid, items in newly_assigned.items()},
+        actor_id=user["user_id"],
+    )
+    background_tasks.add_task(teams_notify.deliver, deliveries)
+    assigned_count = sum(len(items) for items in newly_assigned.values())
+    return {
+        "success": True,
+        "data": {"summary": summary, "assigned": assigned_count, "teams_messages": len(deliveries)},
+        "message": f"Distributed {assigned_count} task(s) to {len(newly_assigned)} people.",
+        "meta": {"applied": True},
+    }
+
+
+@router.post("/bulk-assign")
+async def bulk_assign_tasks(
+    payload: BulkAssignPayload,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Gives a set of tasks to one person. Each gets its own deadline
+    (priority window, the person's queue, the parent's hard dates) unless a
+    single due_date is given for the batch. One notification + one Teams DM."""
+    org_id = user["org_id"]
+    assignee_id = str(payload.assigned_to_user_id)
+    await _ensure_active_org_user(
+        db, user_id=payload.assigned_to_user_id, org_id=org_id, not_found_detail="Assignee not found.",
+    )
+    task_ids = task_routing.coerce_uuid_list(dict.fromkeys(payload.task_ids))
+    rows = await task_routing.load_tasks_for_bulk(db, org_id, task_ids)
+    if not rows:
+        raise HTTPException(status_code=404, detail="None of those tasks are open.")
+    settings = await task_routing.load_settings(db, org_id)
+    existing_load = await task_routing.open_load_for(db, org_id, assignee_id)
+    # Tasks this person already holds are counted in existing_load; don't
+    # count them twice when queueing the batch.
+    already_theirs = sum(1 for r in rows if str(r.get("assigned_to_user_id") or "") == assignee_id)
+    planned = task_routing.plan_bulk_assignment(
+        rows,
+        assignee_id=assignee_id,
+        existing_load=max(existing_load - already_theirs, 0),
+        settings=settings,
+        today=date.today(),
+        due_date_override=payload.due_date,
+        priority_override=payload.priority,
+        keep_existing_due=not payload.recalculate_due_dates,
+    )
+    names = await task_routing.user_names(db, [assignee_id])
+    for item in planned:
+        item.assignee_name = names.get(assignee_id)
+    skipped = len(task_ids) - len(rows)
+
+    if payload.preview:
+        return {
+            "success": True,
+            "data": {
+                "summary": task_routing.summarize(planned, []),
+                "items": [p.as_dict() for p in planned],
+                "skipped_closed": skipped,
+            },
+            "message": f"Preview: {len(planned)} task(s) to {names.get(assignee_id) or 'this person'}.",
+            "meta": {"applied": False},
+        }
+
+    newly_assigned = await task_routing.apply_plan(
+        db, org_id, planned, source_event="bulk_assignment", actor_id=user["user_id"],
+    )
+    await task_routing.notify_assignments(db, org_id, newly_assigned, actor_id=user["user_id"])
+    await db.commit()
+    deliveries = await teams_notify.prepare_deliveries(
+        db, org_id,
+        {uid: teams_notify.tasks_from_plan(items) for uid, items in newly_assigned.items()},
+        actor_id=user["user_id"],
+    )
+    background_tasks.add_task(teams_notify.deliver, deliveries)
+    return {
+        "success": True,
+        "data": {
+            "assigned": len(planned),
+            "newly_assigned": sum(len(v) for v in newly_assigned.values()),
+            "skipped_closed": skipped,
+            "teams_messages": len(deliveries),
+            "items": [p.as_dict() for p in planned],
+        },
+        "message": f"{len(planned)} task(s) assigned to {names.get(assignee_id) or 'this person'}.",
+        "meta": {"applied": True},
+    }
+
+
+async def _routing_config(db: AsyncSession, org_id: str) -> dict:
+    await task_routing.ensure_default_rules(db, org_id)
+    rules = (
+        await db.execute(
+            text("""
+                SELECT r.id, r.category_key, r.label, r.keywords, r.entity_types,
+                       r.assignee_user_ids, r.sort_order, r.is_active,
+                       COALESCE((
+                           SELECT jsonb_agg(jsonb_build_object('id', u.id, 'full_name', u.full_name,
+                                                               'is_active', u.is_active AND NOT u.is_deleted)
+                                            ORDER BY a.ord)
+                           FROM unnest(r.assignee_user_ids) WITH ORDINALITY AS a(user_id, ord)
+                           JOIN core.users u ON u.id = a.user_id
+                       ), '[]'::jsonb) AS assignees
+                FROM crm.task_routing_rules r
+                WHERE r.organization_id = :org_id
+                ORDER BY r.sort_order, r.category_key
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
+    settings = await task_routing.load_settings(db, org_id)
+    last_run = (
+        await db.execute(
+            text("SELECT last_auto_run_at FROM crm.task_routing_settings WHERE organization_id = :org_id"),
+            {"org_id": org_id},
+        )
+    ).scalar()
+    return {
+        "rules": [
+            {**dict(row), "assignee_user_ids": [str(u) for u in row["assignee_user_ids"] or []]}
+            for row in rules
+        ],
+        "settings": {
+            "auto_distribute": settings.auto_distribute,
+            "teams_webhook_configured": bool(settings.teams_webhook_url),
+            "teams_webhook_hint": teams_notify.mask_webhook_url(settings.teams_webhook_url),
+            "fallback_category": settings.fallback_category,
+            "due_days_urgent": settings.due_days["urgent"],
+            "due_days_high": settings.due_days["high"],
+            "due_days_normal": settings.due_days["normal"],
+            "due_days_low": settings.due_days["low"],
+            "daily_capacity": settings.daily_capacity,
+            "last_auto_run_at": last_run,
+        },
+    }
+
+
+async def _validate_pool(db: AsyncSession, org_id: str, user_ids: list[UUID]) -> list[str]:
+    ids = list(dict.fromkeys(str(u) for u in user_ids))
+    if not ids:
+        return []
+    found = (
+        await db.execute(
+            text("""
+                SELECT id::text FROM core.users
+                WHERE id = ANY(CAST(:ids AS uuid[])) AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"ids": ids, "org_id": org_id},
+        )
+    ).scalars().all()
+    missing = set(ids) - set(found)
+    if missing:
+        raise HTTPException(status_code=404, detail="One or more people in that pool were not found.")
+    return ids
+
+
+def _clean_terms(values: list[str], *, lower: bool = True) -> list[str]:
+    cleaned = []
+    for value in values:
+        term = " ".join(str(value).split())
+        if lower:
+            term = term.lower()
+        if term and len(term) <= 60 and term not in cleaned:
+            cleaned.append(term)
+    return cleaned
+
+
+@router.get("/routing")
+async def get_task_routing(
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    config = await _routing_config(db, user["org_id"])
+    await db.commit()  # persists first-read default rules
+    return {"success": True, "data": config, "message": "Task routing loaded.", "meta": {}}
+
+
+@router.post("/routing/rules")
+async def create_task_routing_rule(
+    payload: RoutingRuleCreate,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    pool = await _validate_pool(db, org_id, payload.assignee_user_ids)
+    result = await db.execute(
+        text("""
+            INSERT INTO crm.task_routing_rules (
+                organization_id, category_key, label, keywords, entity_types, assignee_user_ids, sort_order
+            ) VALUES (
+                :org_id, :category_key, :label, :keywords, :entity_types,
+                CAST(:pool AS uuid[]), :sort_order
+            )
+            ON CONFLICT (organization_id, category_key) DO NOTHING
+            RETURNING id
+        """),
+        {
+            "org_id": org_id,
+            "category_key": payload.category_key,
+            "label": payload.label,
+            "keywords": _clean_terms(payload.keywords),
+            "entity_types": _clean_terms(payload.entity_types),
+            "pool": pool,
+            "sort_order": payload.sort_order,
+        },
+    )
+    if not result.first():
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="A category with that key already exists.")
+    await db.commit()
+    return {"success": True, "data": await _routing_config(db, org_id), "message": "Routing category added.", "meta": {}}
+
+
+@router.put("/routing/rules/{category_key}")
+async def update_task_routing_rule(
+    category_key: str,
+    payload: RoutingRuleUpdate,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    await task_routing.ensure_default_rules(db, org_id)
+    values = payload.model_dump(exclude_unset=True)
+    assignments: list[str] = []
+    params: dict = {"org_id": org_id, "category_key": category_key}
+    if "label" in values and values["label"]:
+        assignments.append("label = :label")
+        params["label"] = values["label"]
+    if values.get("keywords") is not None:
+        assignments.append("keywords = :keywords")
+        params["keywords"] = _clean_terms(values["keywords"])
+    if values.get("entity_types") is not None:
+        assignments.append("entity_types = :entity_types")
+        params["entity_types"] = _clean_terms(values["entity_types"])
+    if values.get("assignee_user_ids") is not None:
+        assignments.append("assignee_user_ids = CAST(:pool AS uuid[])")
+        params["pool"] = await _validate_pool(db, org_id, payload.assignee_user_ids or [])
+    if values.get("sort_order") is not None:
+        assignments.append("sort_order = :sort_order")
+        params["sort_order"] = values["sort_order"]
+    if values.get("is_active") is not None:
+        assignments.append("is_active = :is_active")
+        params["is_active"] = values["is_active"]
+    if not assignments:
+        raise HTTPException(status_code=422, detail="Nothing to update.")
+    result = await db.execute(
+        text(f"""
+            UPDATE crm.task_routing_rules SET {", ".join(assignments)}, updated_at = NOW()
+            WHERE organization_id = :org_id AND category_key = :category_key
+            RETURNING id
+        """),  # nosec B608 - assignments built from fixed fragments above, values bound
+        params,
+    )
+    if not result.first():
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Routing category not found.")
+    await db.commit()
+    return {"success": True, "data": await _routing_config(db, org_id), "message": "Routing category saved.", "meta": {}}
+
+
+@router.put("/routing/settings")
+async def update_task_routing_settings(
+    payload: RoutingSettingsUpdate,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = user["org_id"]
+    values = payload.model_dump(exclude_unset=True)
+    if "teams_webhook_url" in values:
+        raw = values["teams_webhook_url"] or ""
+        if raw.strip():
+            try:
+                values["teams_webhook_url"] = teams_notify.validate_webhook_url(raw)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        else:
+            values["teams_webhook_url"] = None
+    if values.get("fallback_category"):
+        exists = (
+            await db.execute(
+                text("""
+                    SELECT 1 FROM crm.task_routing_rules
+                    WHERE organization_id = :org_id AND category_key = :key
+                """),
+                {"org_id": org_id, "key": values["fallback_category"]},
+            )
+        ).first()
+        if not exists:
+            raise HTTPException(status_code=422, detail="Fallback category not found.")
+
+    columns = [
+        "auto_distribute", "teams_webhook_url", "fallback_category", "due_days_urgent",
+        "due_days_high", "due_days_normal", "due_days_low", "daily_capacity",
+    ]
+    changed = [c for c in columns if c in values and (values[c] is not None or c == "teams_webhook_url")]
+    await db.execute(
+        text("""
+            INSERT INTO crm.task_routing_settings (organization_id, updated_by)
+            VALUES (:org_id, :user_id)
+            ON CONFLICT (organization_id) DO NOTHING
+        """),
+        {"org_id": org_id, "user_id": user["user_id"]},
+    )
+    if changed:
+        set_clause = ", ".join(f"{c} = :{c}" for c in changed)
+        await db.execute(
+            text(f"""
+                UPDATE crm.task_routing_settings
+                SET {set_clause}, updated_by = :user_id, updated_at = NOW()
+                WHERE organization_id = :org_id
+            """),  # nosec B608 - columns drawn from the fixed allowlist above
+            {**{c: values[c] for c in changed}, "org_id": org_id, "user_id": user["user_id"]},
+        )
+    await db.commit()
+    return {"success": True, "data": await _routing_config(db, org_id), "message": "Routing settings saved.", "meta": {}}
+
+
+@router.post("/routing/test-teams")
+async def test_task_routing_teams(
+    payload: TeamsTestPayload,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sends a sample assignment card (to the caller, or a chosen person)
+    synchronously so the settings screen can show whether Teams accepted it."""
+    org_id = user["org_id"]
+    target_id = str(payload.user_id or user["user_id"])
+    webhook_url = (await task_routing.load_settings(db, org_id)).teams_webhook_url
+    if not webhook_url:
+        raise HTTPException(status_code=409, detail="Add the Teams Workflows webhook URL first.")
+    person = (
+        await db.execute(
+            text("""
+                SELECT email, full_name FROM core.users
+                WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"id": target_id, "org_id": org_id},
+        )
+    ).first()
+    if not person or not person.email:
+        raise HTTPException(status_code=404, detail="That person has no email address in AEGIS.")
+    sample = [{
+        "title": "Test: AEGIS task notifications are working",
+        "due_date": task_routing.add_business_days(date.today(), 2),
+        "priority": "normal",
+        "entity_name": "Teams connection test",
+    }]
+    ok, detail = await teams_notify.post_to_webhook(
+        webhook_url,
+        teams_notify.build_payload(
+            recipient_email=person.email, recipient_name=person.full_name, tasks=sample, assigned_by=None,
+        ),
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=detail)
+    return {
+        "success": True,
+        "data": {"recipient": person.email, "detail": detail},
+        "message": f"Test card sent to {person.full_name or person.email}.",
         "meta": {},
     }
 

@@ -1247,6 +1247,172 @@ export async function assignTaskStack(entityType: string, entityId: string, assi
   });
 }
 
+// ---- Task distribution (routing rules, auto-distribute, bulk assign) ----
+
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface TaskPlanItem {
+  task_id: string;
+  title: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  entity_name: string | null;
+  parent_state: string | null;
+  category_key: string | null;
+  category_label: string | null;
+  assignee_id: string | null;
+  assignee_name: string | null;
+  old_priority: TaskPriority;
+  new_priority: TaskPriority;
+  old_due_date: string | null;
+  due_date: string | null;
+  hard_deadline: string | null;
+  score: number;
+  reason: string;
+}
+
+export interface TaskPlanPerson {
+  user_id: string | null;
+  full_name: string | null;
+  count: number;
+  urgent: number;
+  high: number;
+  earliest_due: string | null;
+  latest_due: string | null;
+}
+
+export interface TaskPlanSummary {
+  total: number;
+  newly_assigned: number;
+  deadline_only: number;
+  unroutable: number;
+  by_person: TaskPlanPerson[];
+}
+
+export interface TaskDistributionPreview {
+  summary: TaskPlanSummary;
+  items: TaskPlanItem[];
+  unroutable: { task_id: string; title: string; category_label: string | null; reason: string }[];
+}
+
+export interface TaskRoutingRule {
+  id: string;
+  category_key: string;
+  label: string;
+  keywords: string[];
+  entity_types: string[];
+  assignee_user_ids: string[];
+  assignees: { id: string; full_name: string; is_active: boolean }[];
+  sort_order: number;
+  is_active: boolean;
+}
+
+export interface TaskRoutingSettings {
+  auto_distribute: boolean;
+  teams_webhook_configured: boolean;
+  teams_webhook_hint: string | null;
+  fallback_category: string | null;
+  due_days_urgent: number;
+  due_days_high: number;
+  due_days_normal: number;
+  due_days_low: number;
+  daily_capacity: number;
+  last_auto_run_at: string | null;
+}
+
+export interface TaskRoutingConfig {
+  rules: TaskRoutingRule[];
+  settings: TaskRoutingSettings;
+}
+
+export async function previewTaskDistribution(): Promise<ApiResponse<TaskDistributionPreview>> {
+  return fetchApi<ApiResponse<TaskDistributionPreview>>('/api/v1/crm-tasks/distribute', {
+    method: 'POST',
+    body: JSON.stringify({ apply: false }),
+    allowFallback: false,
+  });
+}
+
+export async function applyTaskDistribution(): Promise<ApiResponse<{ summary: TaskPlanSummary; assigned: number; teams_messages: number }>> {
+  return fetchApi<ApiResponse<{ summary: TaskPlanSummary; assigned: number; teams_messages: number }>>('/api/v1/crm-tasks/distribute', {
+    method: 'POST',
+    body: JSON.stringify({ apply: true }),
+    allowFallback: false,
+  });
+}
+
+export interface BulkAssignRequest {
+  task_ids: string[];
+  assigned_to_user_id: string;
+  due_date?: string | null;
+  priority?: TaskPriority | null;
+  recalculate_due_dates?: boolean;
+  preview?: boolean;
+}
+
+export async function bulkAssignCrmTasks(payload: BulkAssignRequest): Promise<ApiResponse<{
+  summary?: TaskPlanSummary;
+  items: TaskPlanItem[];
+  assigned?: number;
+  newly_assigned?: number;
+  skipped_closed: number;
+  teams_messages?: number;
+}>> {
+  return fetchApi('/api/v1/crm-tasks/bulk-assign', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getTaskRouting(): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing', { cache: 'no-store', allowFallback: false });
+}
+
+export async function updateTaskRoutingRule(
+  categoryKey: string,
+  payload: Partial<Pick<TaskRoutingRule, 'label' | 'keywords' | 'entity_types' | 'assignee_user_ids' | 'sort_order' | 'is_active'>>,
+): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>(`/api/v1/crm-tasks/routing/rules/${encodeURIComponent(categoryKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function createTaskRoutingRule(payload: {
+  category_key: string;
+  label: string;
+  keywords?: string[];
+  entity_types?: string[];
+  assignee_user_ids?: string[];
+  sort_order?: number;
+}): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing/rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateTaskRoutingSettings(
+  payload: Partial<Omit<TaskRoutingSettings, 'teams_webhook_configured' | 'teams_webhook_hint' | 'last_auto_run_at'>> & { teams_webhook_url?: string },
+): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function testTaskRoutingTeams(userId?: string): Promise<ApiResponse<{ recipient: string; detail: string }>> {
+  return fetchApi<ApiResponse<{ recipient: string; detail: string }>>('/api/v1/crm-tasks/routing/test-teams', {
+    method: 'POST',
+    body: JSON.stringify(userId ? { user_id: userId } : {}),
+    allowFallback: false,
+  });
+}
+
 export async function getTaskTemplates(entityType?: string): Promise<ApiResponse<any[]>> {
   const qs = entityType ? `?entity_type=${encodeURIComponent(entityType)}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-tasks/templates${qs}`, { cache: 'no-store', allowFallback: false });

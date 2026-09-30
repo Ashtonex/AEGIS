@@ -22,7 +22,7 @@ from app.services.finance.project_forecast import (
 )
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.shared.events import emit_event, emit_notification, emit_role_notification
-from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.sql import (
@@ -462,15 +462,21 @@ async def update_item(
 
         if stage_changed:
             try:
-                await supersede_entity_tasks(
-                    db,
-                    org_id=user["org_id"],
-                    entity_type="tender",
-                    entity_id=item_id,
-                    authorized_by=user.get("sub") or user.get("user_id"),
-                    reason=f"Tender moved to {next_stage}; prior-stage work superseded.",
-                )
-                await db.commit()
+                # A stage with no pack of its own (e.g. Bid Prep) keeps the
+                # prep work in flight; a stage with a pack, or a terminal
+                # one (Lost/Awarded), replaces it.
+                if await should_supersede_on_stage_change(
+                    db, org_id=user["org_id"], entity_type="tender", next_stage=next_stage,
+                ):
+                    await supersede_entity_tasks(
+                        db,
+                        org_id=user["org_id"],
+                        entity_type="tender",
+                        entity_id=item_id,
+                        authorized_by=user.get("sub") or user.get("user_id"),
+                        reason=f"Tender moved to {next_stage}; prior-stage work superseded.",
+                    )
+                    await db.commit()
             except Exception:
                 await db.rollback()
                 logger.exception(
