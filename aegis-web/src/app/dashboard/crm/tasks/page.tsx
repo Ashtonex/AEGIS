@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, Calendar, CheckCircle2, ChevronDown, Circle, ClipboardCheck, FileSpreadsheet, FileText, Layers, Link2, Loader2, Lock, Mail, MessageSquare, Phone, Plus, ShieldCheck, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
+import { AlertTriangle, Calendar, CheckCircle2, ChevronDown, Circle, ClipboardCheck, FileSpreadsheet, FileText, Layers, Link2, Loader2, Lock, Mail, MessageSquare, Phone, Plus, Settings2, ShieldCheck, Shuffle, Trash2, TrendingUp, UserCheck, Users, X } from "lucide-react";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
   getCrmTasks,
@@ -18,8 +18,10 @@ import {
   addCrmTaskContributor,
   removeCrmTaskContributor,
   getCrmTaskProgressSummary,
+  getTaskRouting,
   TaskProgressRow,
 } from "@/lib/api";
+import { BulkAssignBar, DistributeModal, RoutingSettingsModal } from "@/components/crm/TaskDistribution";
 import { initials, avatarTone } from "@/lib/avatar";
 import { EntityDocumentsPanel, type DocumentEntityType } from "@/components/documents/EntityDocumentsPanel";
 
@@ -67,6 +69,10 @@ interface Task {
   weight: number;
   gate_effect: "blocking" | "non_blocking";
   contribution_percent: number;
+  // Set when finishing this task ticks a project gate (pre-mobilisation
+  // check or commercial readiness control) - see task_gates.py.
+  contribution_target_type: string | null;
+  contribution_target_field: string | null;
 }
 
 // entity_type values the quotation builder's source picker supports (see
@@ -197,6 +203,27 @@ export default function CrmTasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [teamMembers, setTeamMembers] = useState<Record<string, TeamMember[]>>({});
   const [canUseAssignmentTools, setCanUseAssignmentTools] = useState(true);
+  // Bulk distribution needs crm_tasks.distribute - probed once, since the
+  // assignment tools above are a wider permission than this.
+  const [canDistribute, setCanDistribute] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showDistribute, setShowDistribute] = useState(false);
+  const [showRouting, setShowRouting] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
+
+  useEffect(() => {
+    getTaskRouting()
+      .then((res) => setCanDistribute(!!res.success))
+      .catch(() => setCanDistribute(false));
+  }, []);
+
+  const toggleSelected = useCallback((ids: string[], on: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  }, []);
 
   const selectedTask = useMemo(() => tasks.find((task) => task.id === selectedTaskId) ?? null, [selectedTaskId, tasks]);
 
@@ -515,6 +542,24 @@ export default function CrmTasksPage() {
           actions={
             canUseAssignmentTools ? (
               <>
+                {canDistribute && (
+                  <>
+                    <button
+                      onClick={() => setShowRouting(true)}
+                      title="Who gets which kind of work, deadline rules and Teams notifications"
+                      className="flex items-center gap-1.5 border border-ink-mid px-3 py-2 text-xs uppercase tracking-wider text-slate-light hover:text-paper"
+                    >
+                      <Settings2 className="h-3.5 w-3.5" /> Routing
+                    </button>
+                    <button
+                      onClick={() => setShowDistribute(true)}
+                      title="Assign every unassigned task to the right person with deadlines"
+                      className="flex items-center gap-1.5 border border-signal/60 px-3 py-2 text-xs uppercase tracking-wider text-signal hover:bg-signal/10"
+                    >
+                      <Shuffle className="h-3.5 w-3.5" /> Distribute All
+                    </button>
+                  </>
+                )}
                 <button
                   onClick={() => void handleBackfill()}
                   disabled={backfilling}
@@ -724,6 +769,12 @@ export default function CrmTasksPage() {
         </div>
 
         {error && <p className="text-sm text-red-300">{error}</p>}
+        {flash && (
+          <p className="flex items-center gap-2 text-sm text-emerald-300">
+            <CheckCircle2 className="h-4 w-4" /> {flash}
+            <button type="button" onClick={() => setFlash(null)} className="text-slate-light hover:text-paper" aria-label="Dismiss"><X className="h-3.5 w-3.5" /></button>
+          </p>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center py-12 text-slate-light">
@@ -742,6 +793,22 @@ export default function CrmTasksPage() {
               return (
                 <div key={key} className="border border-ink-mid">
                   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-mid bg-ink-light/40 px-4 py-2.5">
+                    <div className="flex min-w-0 items-center gap-3">
+                    {canDistribute && (() => {
+                      const openIds = groupTasks.filter((t) => !CLOSED_STATUSES.has(t.status)).map((t) => t.id);
+                      const allOn = openIds.length > 0 && openIds.every((id) => selectedIds.has(id));
+                      return (
+                        <input
+                          type="checkbox"
+                          title="Select this stack's open tasks"
+                          aria-label="Select this stack's open tasks"
+                          disabled={openIds.length === 0}
+                          checked={allOn}
+                          onChange={(e) => toggleSelected(openIds, e.target.checked)}
+                          className="h-3.5 w-3.5 shrink-0 accent-[var(--color-signal,#f5b700)]"
+                        />
+                      );
+                    })()}
                     <button
                       type="button"
                       onClick={() => setOpenStacks((current) => ({ ...current, [key]: !isOpen }))}
@@ -760,6 +827,7 @@ export default function CrmTasksPage() {
                         {doneCount}/{groupTasks.length}
                       </span>
                     </button>
+                    </div>
                     {canUseAssignmentTools && entityType && entityId && (
                       <div className="flex items-center gap-1.5">
                         <select
@@ -802,8 +870,19 @@ export default function CrmTasksPage() {
                         <li
                           key={task.id}
                           onClick={() => setSelectedTaskId(task.id)}
-                          className={`flex cursor-pointer items-start gap-3 border-l-2 p-4 transition-colors hover:bg-ink-light/25 ${PRIORITY_BORDER[task.priority]}`}
+                          className={`flex cursor-pointer items-start gap-3 border-l-2 p-4 transition-colors hover:bg-ink-light/25 ${PRIORITY_BORDER[task.priority]} ${selectedIds.has(task.id) ? "bg-signal/5" : ""}`}
                         >
+                          {canDistribute && (
+                            <input
+                              type="checkbox"
+                              aria-label={`Select "${task.title}"`}
+                              disabled={CLOSED_STATUSES.has(task.status)}
+                              checked={selectedIds.has(task.id)}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => toggleSelected([task.id], e.target.checked)}
+                              className="mt-1 h-3.5 w-3.5 shrink-0 accent-[var(--color-signal,#f5b700)] disabled:opacity-30"
+                            />
+                          )}
                           <button
                             type="button"
                             disabled={busyId === task.id || blockedByPredecessor || task.status === "superseded"}
@@ -846,6 +925,17 @@ export default function CrmTasksPage() {
                               )}
                               {task.gate_effect === "blocking" && (
                                 <span className="border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-red-200">Blocking</span>
+                              )}
+                              {task.contribution_target_field && (
+                                <span
+                                  title="Completing this task ticks the project gate (and ticking the gate completes this task)"
+                                  className="flex items-center gap-1 border border-emerald-500/30 bg-emerald-500/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-emerald-300"
+                                >
+                                  <ClipboardCheck className="h-2.5 w-2.5" />
+                                  Clears: {task.contribution_target_type === "commercial_readiness"
+                                    ? task.contribution_target_field.replace(/_/g, " ")
+                                    : `${task.contribution_target_field} gate`}
+                                </span>
                               )}
                               {task.requirement_code && (
                                 <span className="border border-ink-mid px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-slate-light">{task.requirement_code}</span>
@@ -976,6 +1066,24 @@ export default function CrmTasksPage() {
         )}
       </div>
 
+      {canDistribute && selectedIds.size > 0 && (
+        <div className="mx-auto w-full max-w-[1500px]">
+          <BulkAssignBar
+            selectedIds={Array.from(selectedIds)}
+            people={users}
+            onClear={() => setSelectedIds(new Set())}
+            onDone={(message) => { setSelectedIds(new Set()); setFlash(message); void load(); }}
+          />
+        </div>
+      )}
+      {showDistribute && (
+        <DistributeModal
+          onClose={() => setShowDistribute(false)}
+          onOpenSettings={() => { setShowDistribute(false); setShowRouting(true); }}
+          onApplied={(message) => { setShowDistribute(false); setFlash(message); void load(); }}
+        />
+      )}
+      {showRouting && <RoutingSettingsModal people={users} onClose={() => setShowRouting(false)} />}
       {showCreate && (
         <CreateTaskModal
           users={users}

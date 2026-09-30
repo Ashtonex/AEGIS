@@ -24,7 +24,7 @@ from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
 )
 from app.shared.sql import update_tenant_row_sql
-from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.vendor_verification import run_system_verification_check
@@ -2156,7 +2156,9 @@ async def update_opportunity(
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Opportunity not found")
-        if stage_changed:
+        if stage_changed and await should_supersede_on_stage_change(
+            db, org_id=org_id, entity_type="opportunity", next_stage=next_stage,
+        ):
             await supersede_entity_tasks(
                 db,
                 org_id=org_id,
@@ -2725,6 +2727,28 @@ async def mark_opportunity_won(
 
     await fire_trigger(db, org_id, user_id, "quote_accepted", {"opportunity_id": str(opportunity_id), "id": str(opportunity_id)})
     await generate_task_stack(db, org_id=org_id, entity_type="award", entity_id=pursuit_id, created_by=user_id)
+    if project_id:
+        # A project born waiting on its deposit gets the invoice / chase /
+        # confirm pack; Confirm Deposit closes it and opens the project and
+        # commercial-readiness packs (routers/projects.py). No-ops if the
+        # project isn't pending a deposit - there are no templates to match.
+        project_status = (
+            await db.execute(
+                text("SELECT status FROM projects.projects WHERE id = :id AND organization_id = :org_id"),
+                {"id": project_id, "org_id": org_id},
+            )
+        ).scalar()
+        if project_status == "pending_deposit":
+            await generate_task_stack(
+                db,
+                org_id=org_id,
+                entity_type="project",
+                entity_id=project_id,
+                created_by=user_id,
+                source_event="opportunity_won_project_created",
+                generation_reason="Won - project awaiting deposit.",
+                stage="pending_deposit",
+            )
 
     return {
         "success": True,

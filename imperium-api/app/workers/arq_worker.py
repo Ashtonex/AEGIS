@@ -38,6 +38,7 @@ from app.services.workforce_events import dispatch_workforce_events
 from app.events.bus import EventBus
 from app.shared.events import emit_notification
 from app.shared.task_stacks import generate_task_stack
+from app.shared import task_routing
 from app.services.microsoft.tender_calendar import cancel_all_for_tender
 from routers.tender_bids import _record_tender_closeout
 
@@ -549,6 +550,33 @@ async def notify_stale_pipeline_items_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def auto_distribute_tasks_job(ctx):
+    """Every 10 minutes: for each org that switched auto-distribution on,
+    routes newly generated (unowned) tasks to people and dates them - see
+    app/shared/task_routing.py. One org failing doesn't stop the others,
+    and a Teams outage never rolls back an assignment."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    assigned_total = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            org_ids = (
+                await db.execute(
+                    text("SELECT organization_id::text FROM crm.task_routing_settings WHERE auto_distribute = true")
+                )
+            ).scalars().all()
+        for org_id in org_ids:
+            try:
+                assigned_total += await task_routing.run_auto_distribution(org_id)
+            except Exception:
+                logger.exception(f"Task auto-distribution failed for org {org_id}")
+        if assigned_total:
+            logger.info(f"Auto-distributed {assigned_total} task(s).")
+        return {"assigned": assigned_total}
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def run_ccb_budget_overrun_check_job(ctx):
     """Daily cron (CCB automation Phase 2): sweeps every organization for
     projects whose estimate-at-completion has drifted past their approved
@@ -854,6 +882,7 @@ class WorkerSettings:
         poll_ticket_sla_triggers_job,
         auto_close_overdue_tenders_job,
         notify_stale_pipeline_items_job,
+        auto_distribute_tasks_job,
         run_ccb_budget_overrun_check_job,
         run_ccb_requisition_breach_check_job,
         run_ccb_variance_staleness_check_job,
@@ -877,6 +906,9 @@ class WorkerSettings:
             auto_close_overdue_tenders_job, minute={0, 15, 30, 45}, run_at_startup=False
         ),
         cron(notify_stale_pipeline_items_job, hour=6, minute=0, run_at_startup=False),
+        cron(
+            auto_distribute_tasks_job, minute={3, 13, 23, 33, 43, 53}, run_at_startup=False
+        ),
         cron(run_ccb_budget_overrun_check_job, hour=3, minute=0, run_at_startup=False),
         cron(
             run_ccb_requisition_breach_check_job,
