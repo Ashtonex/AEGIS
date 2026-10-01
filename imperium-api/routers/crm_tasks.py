@@ -1330,11 +1330,23 @@ async def _routing_config(db: AsyncSession, org_id: str) -> dict:
             {"org_id": org_id},
         )
     ).scalar()
+    people = (
+        await db.execute(
+            text("""
+                SELECT id::text AS id, full_name, email, teams_account
+                FROM core.users
+                WHERE organization_id = :org_id AND is_deleted = false AND is_active = true
+                ORDER BY full_name
+            """),
+            {"org_id": org_id},
+        )
+    ).mappings().all()
     return {
         "rules": [
             {**dict(row), "assignee_user_ids": [str(u) for u in row["assignee_user_ids"] or []]}
             for row in rules
         ],
+        "people": [dict(p) for p in people],
         "settings": {
             "auto_distribute": settings.auto_distribute,
             "teams_webhook_configured": bool(settings.teams_webhook_url),
@@ -1530,6 +1542,41 @@ async def update_task_routing_settings(
     return {"success": True, "data": await _routing_config(db, org_id), "message": "Routing settings saved.", "meta": {}}
 
 
+class TeamsAccountUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    # "" clears it (notifications fall back to the login email).
+    teams_account: str = Field(max_length=320)
+
+
+@router.put("/routing/teams-accounts/{person_id}")
+async def update_teams_account(
+    person_id: UUID,
+    payload: TeamsAccountUpdate,
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sets the identity Teams knows a person by. Separate from the login
+    email on purpose: staff who are guests in the Microsoft tenant sign in
+    to Teams with a personal address, not their AEGIS one."""
+    value = payload.teams_account.strip()
+    if value and ("@" not in value or " " in value):
+        raise HTTPException(status_code=422, detail="Enter the person's Teams sign-in (an email-style address).")
+    result = await db.execute(
+        text("""
+            UPDATE core.users SET teams_account = :teams_account, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """),
+        {"teams_account": value or None, "id": person_id, "org_id": user["org_id"]},
+    )
+    if not result.first():
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Person not found.")
+    await db.commit()
+    return {"success": True, "data": await _routing_config(db, user["org_id"]), "message": "Teams account saved.", "meta": {}}
+
+
 @router.post("/routing/test-teams")
 async def test_task_routing_teams(
     payload: TeamsTestPayload,
@@ -1546,14 +1593,14 @@ async def test_task_routing_teams(
     person = (
         await db.execute(
             text("""
-                SELECT email, full_name FROM core.users
+                SELECT COALESCE(NULLIF(TRIM(teams_account), ''), email) AS email, full_name FROM core.users
                 WHERE id = :id AND organization_id = :org_id AND is_deleted = false
             """),
             {"id": target_id, "org_id": org_id},
         )
     ).first()
     if not person or not person.email:
-        raise HTTPException(status_code=404, detail="That person has no email address in AEGIS.")
+        raise HTTPException(status_code=404, detail="That person has no Teams account or email in AEGIS.")
     sample = [{
         "title": "Test: AEGIS task notifications are working",
         "due_date": task_routing.add_business_days(date.today(), 2),

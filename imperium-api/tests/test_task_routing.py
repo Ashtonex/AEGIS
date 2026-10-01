@@ -196,3 +196,15 @@ def test_teams_payload_carries_recipient_and_card():
     assert card["actions"][-1]["url"] == "https://sixnineconstruction.com/dashboard/crm/tasks"
     assert card["actions"][0]["url"].startswith("https://teams.microsoft.com/l/entity/")
     assert card["actions"][0]["url"].endswith("/aegis-my-tasks")
+
+
+def test_teams_messages_address_the_teams_account_not_the_login_email():
+    # SNC staff are Microsoft guests on personal addresses; their AEGIS login
+    # email has no mailbox. Deliveries must prefer core.users.teams_account.
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    notify = (root / "app" / "services" / "microsoft" / "teams_notify.py").read_text(encoding="utf-8")
+    router = (root / "routers" / "crm_tasks.py").read_text(encoding="utf-8")
+    assert "COALESCE(NULLIF(TRIM(teams_account), ''), email)" in notify
+    assert "COALESCE(NULLIF(TRIM(teams_account), ''), email)" in router  # the Send-a-test path too

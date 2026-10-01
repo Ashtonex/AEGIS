@@ -1320,9 +1320,18 @@ export interface TaskRoutingSettings {
   last_auto_run_at: string | null;
 }
 
+export interface TaskRoutingPerson {
+  id: string;
+  full_name: string;
+  email: string;
+  /** The identity Teams knows them by (e.g. a guest's #EXT# sign-in). Null = falls back to email. */
+  teams_account: string | null;
+}
+
 export interface TaskRoutingConfig {
   rules: TaskRoutingRule[];
   settings: TaskRoutingSettings;
+  people: TaskRoutingPerson[];
 }
 
 export async function previewTaskDistribution(): Promise<ApiResponse<TaskDistributionPreview>> {
@@ -1401,6 +1410,14 @@ export async function updateTaskRoutingSettings(
   return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing/settings', {
     method: 'PUT',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateTeamsAccount(personId: string, teamsAccount: string): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>(`/api/v1/crm-tasks/routing/teams-accounts/${encodeURIComponent(personId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ teams_account: teamsAccount }),
     allowFallback: false,
   });
 }
