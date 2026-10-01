@@ -23,6 +23,7 @@ from app.services.finance.project_forecast import (
 from app.services.quotations.calculator import QuotationCalculator, build_calc_input_from_metadata
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
+from app.shared.stage_moves import complete_open_stage_tasks, log_stage_move, require_stage_note
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.sql import (
@@ -377,6 +378,35 @@ async def create_item(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
+@router.get("/{item_id}/activity-log")
+async def get_tender_activity_log(
+    item_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("tender_bids.read")),
+):
+    """Stage-move notes and other activities logged against a tender
+    (crm.activities.tender_id, migration 244), newest first."""
+    rows = await db.execute(
+        text("""
+            SELECT a.id, a.type, a.subject, a.description, a.status, a.created_at,
+                   u.full_name AS created_by_name
+            FROM crm.activities a
+            LEFT JOIN core.users u ON u.id = a.created_by
+            WHERE a.organization_id = :org_id AND a.tender_id = :item_id AND COALESCE(a.is_deleted, false) = false
+            ORDER BY a.created_at DESC
+            LIMIT 100
+        """),
+        {"org_id": user["org_id"], "item_id": item_id},
+    )
+    return {
+        "success": True,
+        "data": [dict(r._mapping) for r in rows],
+        "message": "Tender activity log retrieved.",
+        "meta": {},
+    }
+
+
 @router.get("/{item_id}")
 async def get_item(
     item_id: str,
@@ -412,6 +442,8 @@ async def update_item(
     _: dict = Depends(require_permission("tender_bids.update")),
 ):
     payload = await request.json()
+    # Activity-log note for a stage move - not a crm.tenders column.
+    raw_stage_note = payload.pop("stage_note", None) if isinstance(payload, dict) else None
     safe_keys = safe_payload_columns(payload.keys())
 
     if not safe_keys:
@@ -445,6 +477,9 @@ async def update_item(
                 status_code=422,
                 detail="Moving a tender to Awarded or Lost requires a close-out reason and enforced next steps.",
             )
+        previous_stage = current_stage.get("stage")
+        if stage_changed:
+            stage_note = require_stage_note(raw_stage_note)
 
     query = update_returning_id_sql("crm.tenders", safe_keys, safe_keys)
 
@@ -452,6 +487,19 @@ async def update_item(
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Item not found")
+        mover_id = user.get("sub") or user.get("user_id")
+        if stage_changed:
+            # Part of the same transaction as the move: no note, no move.
+            await log_stage_move(
+                db,
+                org_id=user["org_id"],
+                entity_type="tender",
+                entity_id=item_id,
+                from_stage=previous_stage,
+                to_stage=next_stage,
+                note=stage_note,
+                user_id=mover_id,
+            )
 
         await db.commit()
 
@@ -468,6 +516,19 @@ async def update_item(
                 if await should_supersede_on_stage_change(
                     db, org_id=user["org_id"], entity_type="tender", next_stage=next_stage,
                 ):
+                    # The stage being left is done: its open work is marked
+                    # complete with the mover's note; only gate-linked
+                    # leftovers are superseded.
+                    await complete_open_stage_tasks(
+                        db,
+                        org_id=user["org_id"],
+                        entity_type="tender",
+                        entity_id=item_id,
+                        from_stage=previous_stage,
+                        to_stage=next_stage,
+                        note=stage_note,
+                        user_id=mover_id,
+                    )
                     await supersede_entity_tasks(
                         db,
                         org_id=user["org_id"],

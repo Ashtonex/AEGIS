@@ -38,7 +38,7 @@ import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
-import { EntityDocumentsPanel } from '@/components/documents/EntityDocumentsPanel';
+import { DealDocumentsPanel } from '@/components/crm/DealDocumentsPanel';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
 
 // A deal that's already won (Contract) or lost is a decided deal - only
@@ -51,6 +51,9 @@ const LOCKED_BACKEND_STAGES = ['Contract', 'Lost'];
 const BOARD_PAGE = 50;
 const BOARD_MAX_PER_COLUMN = 200;
 const CLOSED_FRONTEND_STAGES = ['Won', 'Lost'];
+const STAGE_LOG_MIN_LENGTH = 10;
+// Backend stages that creating a quote moves into Quotation (needs a log note).
+const PRE_QUOTATION_BACKEND_STAGES = ['Inquiry', 'Qualification', 'Site Visit'];
 
 // Stages definition requested by user
 const STAGES = [
@@ -188,10 +191,13 @@ export default function OpportunitiesKanban() {
     targetFrontendStage: string;
     source: 'drag' | 'button' | 'drawer';
   } | null>(null);
+  const [isCreateQuoteOpen, setIsCreateQuoteOpen] = useState(false);
+  const [createQuoteNote, setCreateQuoteNote] = useState('');
   const [nextActionForm, setNextActionForm] = useState({
     type: 'Follow-up',
     dueDate: tomorrowDateInputValue(),
     notes: '',
+    stageLog: '',
     dealValue: ''
   });
 
@@ -478,6 +484,7 @@ export default function OpportunitiesKanban() {
       type: targetFrontendStage === 'Proposal' ? 'Email' : targetFrontendStage === 'Negotiation' ? 'Meeting' : 'Follow-up',
       dueDate: opp.next_activity_due_at ? toDateInputValue(new Date(opp.next_activity_due_at)) : tomorrowDateInputValue(),
       notes: '',
+      stageLog: '',
       dealValue: opp.budget ? String(opp.budget) : ''
     });
     setStageMoveRequest({ oppId, currentFrontendStage, targetFrontendStage, source });
@@ -503,7 +510,10 @@ export default function OpportunitiesKanban() {
     try {
       const updatePayload: Record<string, unknown> = {
         stage: backendStage,
-        next_activity_due_at: dueDate
+        next_activity_due_at: dueDate,
+        // Mandatory activity-log note; the backend records it against the
+        // deal and marks the stage-being-left's open tasks complete with it.
+        stage_note: nextActionForm.stageLog.trim()
       };
       if (request.targetFrontendStage === 'Proposal' && Number(nextActionForm.dealValue) > 0) {
         updatePayload.budget = Number(nextActionForm.dealValue);
@@ -525,14 +535,9 @@ export default function OpportunitiesKanban() {
         status: 'Planned',
         priority: request.targetFrontendStage === 'Negotiation' ? 'high' : 'normal'
       });
-      await createCrmActivity({
-        type: 'System Log',
-        ...activityLogFields(`Stage moved from ${request.currentFrontendStage} to ${request.targetFrontendStage}; next action set for ${dueDate}`),
-        opportunity_id: request.oppId
-      });
 
       setStageMoveRequest(null);
-      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '', dealValue: '' });
+      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '', stageLog: '', dealValue: '' });
       await loadData();
     } catch (err) {
       console.error('Failed to update stage:', err);
@@ -546,6 +551,7 @@ export default function OpportunitiesKanban() {
   const handleConfirmStageMove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stageMoveRequest || !nextActionForm.dueDate) return;
+    if (nextActionForm.stageLog.trim().length < STAGE_LOG_MIN_LENGTH) return;
     if (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0)) return;
     await executeStageMove(stageMoveRequest);
   };
@@ -655,6 +661,10 @@ export default function OpportunitiesKanban() {
     e.preventDefault();
     if (!selectedOpportunityId || !editForm) return;
 
+    // A stage change from this form goes through the same stage-move gate as
+    // the board (activity log note + next action), after the other
+    // parameters save - so stage is never sent from here directly.
+    let pendingStageMove: { from: string; to: string } | null = null;
     if (selectedOpp) {
       const currentFrontendStage = BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || 'Qualification';
       if (editForm.stage !== currentFrontendStage) {
@@ -662,10 +672,7 @@ export default function OpportunitiesKanban() {
           alert("Use Mark won or Mark lost so AEGIS can run the proper commercial handoff.");
           return;
         }
-        if (!editForm.next_activity_due_at) {
-          alert("Set the next action due date before moving this open deal.");
-          return;
-        }
+        pendingStageMove = { from: currentFrontendStage, to: editForm.stage };
       }
     }
 
@@ -677,7 +684,6 @@ export default function OpportunitiesKanban() {
 
       const updatePayload = {
         name: editForm.name,
-        stage: FRONTEND_TO_BACKEND_STAGE[editForm.stage] || 'Qualification',
         budget: budgetVal,
         probability: probVal,
         expected_margin: marginVal,
@@ -694,7 +700,7 @@ export default function OpportunitiesKanban() {
         try {
           await createCrmActivity({
             type: 'Update',
-            ...activityLogFields(`Updated deal parameters: Stage: ${editForm.stage}, Win Prob ${probVal}%, Est Margin ${marginVal}%, Risk: ${editForm.risk_level}`),
+            ...activityLogFields(`Updated deal parameters: Win Prob ${probVal}%, Est Margin ${marginVal}%, Risk: ${editForm.risk_level}`),
             opportunity_id: selectedOpportunityId
           });
           const actRes = await getCrmActivities();
@@ -704,6 +710,9 @@ export default function OpportunitiesKanban() {
         } catch (logErr) {
           // The deal update already succeeded - a logging hiccup shouldn't surface as an error.
           console.warn('Failed to log deal-update activity:', logErr);
+        }
+        if (pendingStageMove) {
+          openStageMoveGate(selectedOpportunityId, pendingStageMove.from, pendingStageMove.to, 'drawer');
         }
       }
     } catch (err) {
@@ -740,19 +749,33 @@ export default function OpportunitiesKanban() {
     }
   };
 
+  // Creating the first quote on an early-stage deal moves it to Quotation,
+  // so it goes through the same activity-log note as any stage move.
   const handleCreateQuotation = async () => {
+    if (!selectedOpportunityId || !selectedOpp) return;
+    if (PRE_QUOTATION_BACKEND_STAGES.includes(selectedOpp.stage) && !selectedOpp.quote_id) {
+      setCreateQuoteNote('');
+      setIsCreateQuoteOpen(true);
+      return;
+    }
+    await submitCreateQuotation();
+  };
+
+  const submitCreateQuotation = async (stageNote?: string) => {
     if (!selectedOpportunityId || !selectedOpp) return;
     setIsSubmitting(true);
     try {
       const response = await createCrmOpportunityQuotation(selectedOpportunityId, {
         quote_amount: Number(selectedOpp.budget || selectedOpp.weighted_value || 0),
-        status: "sent"
+        status: "sent",
+        ...(stageNote ? { stage_note: stageNote } : {})
       });
       if (!response?.data?.id) throw new Error("CRM quotation response did not include an id.");
+      setIsCreateQuoteOpen(false);
       await loadData();
     } catch (error) {
       console.warn("Quotation handoff failed", error);
-      alert("Quotation was not created. Check the CRM service connection and retry.");
+      alert(normalizeActionError(error, "Quotation was not created. Check the CRM service connection and retry."));
     } finally {
       setIsSubmitting(false);
     }
@@ -1368,9 +1391,27 @@ export default function OpportunitiesKanban() {
                 </div>
               </div>
 
+              <div className="space-y-1">
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">
+                  Activity log - what happened in {stageMoveRequest.currentFrontendStage} and why it is moving (required)
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  minLength={STAGE_LOG_MIN_LENGTH}
+                  value={nextActionForm.stageLog}
+                  onChange={e => setNextActionForm({ ...nextActionForm, stageLog: e.target.value })}
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all resize-none placeholder:text-slate"
+                  placeholder="e.g. Site visit done with the client's engineer on Tuesday; measurements taken, scope confirmed - ready to price."
+                />
+                <p className="font-mono text-[9px] text-slate-light">
+                  Saved to the deal&apos;s activity log. Open tasks from {stageMoveRequest.currentFrontendStage} are marked complete when the new stage&apos;s tasks come in.
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Type</label>
+                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Next Action Type</label>
                   <select
                     value={nextActionForm.type}
                     onChange={e => setNextActionForm({ ...nextActionForm, type: e.target.value })}
@@ -1415,7 +1456,7 @@ export default function OpportunitiesKanban() {
               )}
 
               <div className="space-y-1">
-                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Notes</label>
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Next Action Notes</label>
                 <textarea
                   rows={3}
                   value={nextActionForm.notes}
@@ -1435,7 +1476,7 @@ export default function OpportunitiesKanban() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || !nextActionForm.dueDate || (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0))}
+                  disabled={isSubmitting || !nextActionForm.dueDate || nextActionForm.stageLog.trim().length < STAGE_LOG_MIN_LENGTH || (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0))}
                   className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 transition-all uppercase"
                 >
                   {isSubmitting ? 'Saving...' : 'Move deal'}
@@ -1443,6 +1484,59 @@ export default function OpportunitiesKanban() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {isCreateQuoteOpen && selectedOpp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsCreateQuoteOpen(false)} />
+          <form
+            onSubmit={(e) => { e.preventDefault(); if (createQuoteNote.trim().length >= STAGE_LOG_MIN_LENGTH) void submitCreateQuotation(createQuoteNote.trim()); }}
+            className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-5 space-y-4"
+          >
+            <div className="flex justify-between items-center">
+              <h2 className="font-sans font-bold text-sm text-paper uppercase tracking-wider">Create quote</h2>
+              <button type="button" onClick={() => setIsCreateQuoteOpen(false)} className="text-slate-light hover:text-paper"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="bg-black/40 border border-white/5 p-3 rounded-sm">
+              <span className="block font-mono text-[8px] text-slate-light uppercase tracking-wider truncate">{selectedOpp.name}</span>
+              <div className="mt-1 flex items-center gap-2 text-xs text-paper">
+                <span>{BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || selectedOpp.stage}</span>
+                <ArrowRight className="w-3.5 h-3.5 text-[#D4AF37]" />
+                <span className="font-bold">Proposal</span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">
+                Activity log - what happened so far and why it is ready to quote (required)
+              </label>
+              <textarea
+                required
+                autoFocus
+                rows={3}
+                minLength={STAGE_LOG_MIN_LENGTH}
+                value={createQuoteNote}
+                onChange={e => setCreateQuoteNote(e.target.value)}
+                className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none resize-none placeholder:text-slate"
+                placeholder="e.g. Scope confirmed on site with the client; drawings received - pricing now."
+              />
+              <p className="font-mono text-[9px] text-slate-light">
+                Creating the quote moves this deal to Proposal. The note goes to the activity log and the current stage&apos;s open tasks are marked complete.
+              </p>
+            </div>
+            <div className="pt-3 border-t border-white/5 flex justify-end space-x-2">
+              <button type="button" onClick={() => setIsCreateQuoteOpen(false)} className="px-4 py-2 font-mono text-[10px] text-slate-light hover:text-paper hover:bg-white/5 rounded-sm uppercase">
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting || createQuoteNote.trim().length < STAGE_LOG_MIN_LENGTH}
+                className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 uppercase"
+              >
+                {isSubmitting ? 'Creating...' : 'Create quote'}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -1770,7 +1864,12 @@ export default function OpportunitiesKanban() {
               {/* DOCUMENTS */}
               <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
                 <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Documents</span>
-                <EntityDocumentsPanel entityType="opportunity" entityId={selectedOpp.id} />
+                <DealDocumentsPanel
+                  opportunityId={selectedOpp.id}
+                  dealValue={Number((selectedOpp as { deal_value?: number }).deal_value || selectedOpp.budget) || null}
+                  dealClosed={isOpportunityLocked(selectedOpp)}
+                  onDealChanged={loadData}
+                />
               </section>
 
               {/* ASSIGNMENT */}

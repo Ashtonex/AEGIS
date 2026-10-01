@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -25,6 +25,7 @@ from app.services.finance.project_forecast import (
 )
 from app.shared.sql import update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
+from app.shared.stage_moves import close_quote_preparation, complete_open_stage_tasks, log_stage_move, require_stage_note
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.vendor_verification import run_system_verification_check
@@ -208,6 +209,9 @@ class OpportunityUpdate(CrmPayload):
     margin_approval_required: Optional[bool] = None
     risk_approval_required: Optional[bool] = None
     approval_status: Optional[str] = Field(default=None, max_length=40)
+    # Mandatory activity-log note when `stage` actually changes; never a
+    # column on crm.opportunities (see app/shared/stage_moves.py).
+    stage_note: Optional[str] = Field(default=None, max_length=4000)
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -315,6 +319,21 @@ class CreateQuotationPayload(CrmPayload):
     quote_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     status: str = Field(default="draft", max_length=50)
     notes: Optional[str] = None
+    # Required when creating the quote moves the deal into Quotation (from
+    # Inquiry/Qualification/Site Visit) - same rule as any stage move.
+    stage_note: Optional[str] = Field(default=None, max_length=4000)
+
+
+# Deal stages before a quote exists; creating/sending a quote moves these to Quotation.
+_PRE_QUOTATION_STAGES = {"Inquiry", "Qualification", "Site Visit"}
+
+
+class ClientQuotationPayload(CrmPayload):
+    document_id: UUID
+    quote_amount: Optional[Decimal] = Field(default=None, gt=0, max_digits=15, decimal_places=2)
+    valid_until: Optional[date] = None
+    follow_up_date: Optional[date] = None
+    notes: Optional[str] = Field(default=None, max_length=4000)
 
 
 class MarkWonPayload(CrmPayload):
@@ -2088,6 +2107,8 @@ async def update_opportunity(
     params = {k: values[k] for k in safe_keys}
     stage_changed = False
     next_stage: Optional[str] = None
+    previous_stage: Optional[str] = None
+    stage_note: Optional[str] = None
     if "stage" in params and params["stage"] is not None:
         params["stage"] = params["stage"].value
         next_stage = params["stage"]
@@ -2103,6 +2124,8 @@ async def update_opportunity(
             raise HTTPException(status_code=404, detail="Opportunity not found")
         if params["stage"] != current_stage_row.get("stage"):
             await _ensure_opportunity_stage_unlocked(db, user, current_stage_row.get("stage"))
+            stage_note = require_stage_note(values.get("stage_note"))
+            previous_stage = current_stage_row.get("stage")
             # Entering Proposal (Quotation) is the point a deal stops being a
             # hunch and starts being a forecast number Sales/Exec rely on -
             # block the move rather than let a $0 opportunity silently ride
@@ -2156,16 +2179,43 @@ async def update_opportunity(
         result = await db.execute(query, params)
         if not result.first():
             raise HTTPException(status_code=404, detail="Opportunity not found")
-        if stage_changed and await should_supersede_on_stage_change(
-            db, org_id=org_id, entity_type="opportunity", next_stage=next_stage,
-        ):
-            await supersede_entity_tasks(
+        if stage_changed:
+            mover_id = user.get("sub") or user.get("user_id")
+            tasks_completed = 0
+            if await should_supersede_on_stage_change(
+                db, org_id=org_id, entity_type="opportunity", next_stage=next_stage,
+            ):
+                # The move closes the stage being left: its open work is
+                # done, with the mover's note as the outcome. Anything still
+                # open afterwards (gate-linked tasks) is superseded as before.
+                tasks_completed = await complete_open_stage_tasks(
+                    db,
+                    org_id=org_id,
+                    entity_type="opportunity",
+                    entity_id=opportunity_id,
+                    from_stage=previous_stage,
+                    to_stage=next_stage,
+                    note=stage_note,
+                    user_id=mover_id,
+                )
+                await supersede_entity_tasks(
+                    db,
+                    org_id=org_id,
+                    entity_type="opportunity",
+                    entity_id=opportunity_id,
+                    authorized_by=mover_id,
+                    reason=f"Opportunity moved to {next_stage}; prior-stage work superseded.",
+                )
+            await log_stage_move(
                 db,
                 org_id=org_id,
                 entity_type="opportunity",
                 entity_id=opportunity_id,
-                authorized_by=user.get("sub") or user.get("user_id"),
-                reason=f"Opportunity moved to {next_stage}; prior-stage work superseded.",
+                from_stage=previous_stage,
+                to_stage=next_stage,
+                note=stage_note,
+                user_id=mover_id,
+                tasks_completed=tasks_completed,
             )
         await db.commit()
         if "stage" in safe_keys:
@@ -2336,6 +2386,14 @@ async def create_opportunity_quotation(
             "meta": {},
         }
 
+    # Creating the first quote is a stage move into Quotation for an early
+    # deal, so it needs the activity-log note like any other move. A deal
+    # already at Quotation or beyond keeps its stage (this used to drag a
+    # Negotiation deal back to Quotation).
+    previous_stage = opportunity.get("stage")
+    moves_stage = previous_stage in _PRE_QUOTATION_STAGES
+    stage_note = require_stage_note(payload.stage_note) if moves_stage else None
+
     quote_amount = payload.quote_amount
     if quote_amount is None:
         quote_amount = opportunity.get("deal_value") or opportunity.get("budget") or Decimal("0")
@@ -2385,13 +2443,27 @@ async def create_opportunity_quotation(
             text("""
                 UPDATE crm.opportunities
                 SET quote_id=:quote_id,
-                    stage='Quotation',
+                    stage=CASE WHEN :move THEN 'Quotation' ELSE stage END,
                     weighted_value=COALESCE(deal_value, budget) * COALESCE(probability, 0) / 100.0,
                     updated_at=NOW()
                 WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
             """),
-            {"quote_id": quote_id, "opportunity_id": opportunity_id, "org_id": org_id},
+            {"quote_id": quote_id, "move": moves_stage, "opportunity_id": opportunity_id, "org_id": org_id},
         )
+        if moves_stage:
+            tasks_completed = await complete_open_stage_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+            )
+            await supersede_entity_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id,
+                authorized_by=user_id, reason="Opportunity moved to Quotation; prior-stage work superseded.",
+            )
+            await log_stage_move(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+                tasks_completed=tasks_completed,
+            )
         await db.execute(
             text("""
                 INSERT INTO crm.activities (
@@ -2417,12 +2489,260 @@ async def create_opportunity_quotation(
         await db.rollback()
         raise HTTPException(status_code=400, detail="Quotation handoff payload violates CRM constraints.") from exc
 
+    if moves_stage:
+        await generate_task_stack(
+            db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id, created_by=user_id,
+            source_event="opportunity_stage_changed", generation_reason="Quotation created; opportunity moved to Quotation.",
+            stage="Quotation",
+        )
     await fire_trigger(db, org_id, user_id, "quote_sent", {"opportunity_id": str(opportunity_id), "id": str(quote_id), "quote_id": str(quote_id)})
 
     return {
         "success": True,
-        "data": {"id": str(quote_id), "opportunity_id": str(opportunity_id)},
+        "data": {"id": str(quote_id), "opportunity_id": str(opportunity_id), "moved_to_quotation": moves_stage},
         "message": "Quotation created from opportunity.",
+        "meta": {},
+    }
+
+
+@router.post("/opportunities/{opportunity_id}/client-quotation")
+async def record_client_quotation(
+    opportunity_id: UUID,
+    payload: ClientQuotationPayload,
+    user: dict = Depends(require_permission("crm.opportunities.quote")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The client copy of the quotation has gone out. The uploaded document
+    (already stored via /documents) is filed as the client quotation and
+    everything that follows a sent quote happens in one go:
+      1. the opportunity's quotation is created or marked 'sent' with the
+         amount, validity and the client-copy document,
+      2. the document is linked to the opportunity and quotation as
+         'client_quotation',
+      3. a deal still in Inquiry/Qualification/Site Visit moves to Quotation
+         (logged, prior-stage tasks completed, Quotation pack issued),
+      4. the quotation-preparation tasks are completed with the document as
+         evidence,
+      5. a 'Quotation sent' activity and a planned client follow-up are
+         logged, and the next action date is set to that follow-up,
+      6. the deal owner is notified and the 'quote_sent' automations fire."""
+    org_id = _require_org_id(user)
+    user_id = _require_user_id(user)
+    opportunity = await _single_row(
+        db,
+        """
+        SELECT o.*, c.contact_name, co.name AS organization_name
+        FROM crm.opportunities o
+        LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
+        LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
+        WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        """,
+        {"opportunity_id": opportunity_id, "org_id": org_id},
+    )
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Opportunity not found.")
+    if opportunity.get("stage") in ("Contract", "Lost"):
+        raise HTTPException(status_code=409, detail="This deal is already closed - a client quotation can't be sent from it.")
+    document = await _single_row(
+        db,
+        """
+        SELECT id, title, file_name FROM core.documents
+        WHERE id=:document_id AND organization_id=:org_id AND COALESCE(is_deleted, false)=false
+        """,
+        {"document_id": payload.document_id, "org_id": org_id},
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Uploaded quotation document not found.")
+
+    effective_value = payload.quote_amount or opportunity.get("deal_value") or opportunity.get("budget")
+    follow_up = payload.follow_up_date or (datetime.now(timezone.utc).date() + timedelta(days=3))
+    doc_label = document.get("title") or document.get("file_name") or "client quotation"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    client_copy = {
+        "document_id": str(payload.document_id),
+        "file_name": document.get("file_name"),
+        "sent_at": now_iso,
+        "sent_by": user_id,
+        "quote_amount": str(payload.quote_amount) if payload.quote_amount else None,
+        "valid_until": payload.valid_until.isoformat() if payload.valid_until else None,
+        "follow_up_date": follow_up.isoformat(),
+        "notes": payload.notes,
+    }
+    client_name = opportunity.get("organization_name") or opportunity.get("contact_name") or opportunity.get("name")
+    previous_stage = opportunity.get("stage")
+    moved_to_quotation = previous_stage in _PRE_QUOTATION_STAGES and bool(effective_value and effective_value > 0)
+
+    try:
+        existing = await _single_row(
+            db,
+            """
+            SELECT id, metadata FROM finance.quotations
+            WHERE opportunity_id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+            ORDER BY created_at LIMIT 1
+            """,
+            {"opportunity_id": opportunity_id, "org_id": org_id},
+        )
+        if existing:
+            quote_id = existing["id"]
+            metadata = existing.get("metadata") or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            history = list(metadata.get("client_copy_history") or [])
+            if metadata.get("client_copy"):
+                history.append(metadata["client_copy"])
+            metadata["client_copy"] = client_copy
+            metadata["client_copy_history"] = history[-20:]
+            await db.execute(
+                text("""
+                    UPDATE finance.quotations
+                    SET status = CASE WHEN status IN ('won', 'lost', 'accepted') THEN status ELSE 'sent' END,
+                        quote_amount = COALESCE(:quote_amount, quote_amount),
+                        metadata = CAST(:metadata AS jsonb),
+                        updated_at = NOW()
+                    WHERE id=:quote_id AND organization_id=:org_id
+                """),
+                {"quote_amount": payload.quote_amount, "metadata": _json(metadata), "quote_id": quote_id, "org_id": org_id},
+            )
+        else:
+            quote_id = (
+                await db.execute(
+                    text("""
+                        INSERT INTO finance.quotations (
+                            organization_id, created_by, client_name, quote_amount, project_id,
+                            metadata, status, opportunity_id, contact_id, client_org_id
+                        ) VALUES (
+                            :org_id, :user_id, :client_name, :quote_amount, :project_id,
+                            CAST(:metadata AS jsonb), 'sent', :opportunity_id, :contact_id, :client_org_id
+                        )
+                        RETURNING id
+                    """),
+                    {
+                        "org_id": org_id,
+                        "user_id": user_id,
+                        "client_name": client_name,
+                        "quote_amount": effective_value or Decimal("0"),
+                        "project_id": opportunity.get("project_id"),
+                        "metadata": _json({"source": "client_quotation_upload", "opportunity_id": str(opportunity_id), "client_copy": client_copy}),
+                        "opportunity_id": opportunity_id,
+                        "contact_id": opportunity.get("client_id"),
+                        "client_org_id": opportunity.get("client_org_id"),
+                    },
+                )
+            ).scalar()
+
+        for entity_type, entity_id in (("opportunity", opportunity_id), ("quotation", quote_id)):
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :document_id, :entity_type, :entity_id, 'client_quotation', :user_id
+                    ) ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role)
+                      DO UPDATE SET is_deleted=false, linked_at=NOW(), linked_by=EXCLUDED.linked_by
+                """),
+                {"org_id": org_id, "document_id": payload.document_id, "entity_type": entity_type, "entity_id": entity_id, "user_id": user_id},
+            )
+
+        await db.execute(
+            text("""
+                UPDATE crm.opportunities
+                SET quote_id = :quote_id,
+                    deal_value = COALESCE(:quote_amount, deal_value),
+                    stage = CASE WHEN :move THEN 'Quotation' ELSE stage END,
+                    next_activity_due_at = :follow_up_at,
+                    weighted_value = COALESCE(:quote_amount, deal_value, budget) * COALESCE(probability, 0) / 100.0,
+                    updated_at = NOW()
+                WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+            """),
+            {
+                "quote_id": quote_id,
+                "quote_amount": payload.quote_amount,
+                "move": moved_to_quotation,
+                "follow_up_at": datetime.combine(follow_up, datetime.min.time(), tzinfo=timezone.utc).replace(hour=9),
+                "opportunity_id": opportunity_id,
+                "org_id": org_id,
+            },
+        )
+
+        if moved_to_quotation:
+            stage_note = f"Client quotation '{doc_label}' sent to the client." + (f" {payload.notes}" if payload.notes else "")
+            tasks_completed = await complete_open_stage_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+            )
+            await supersede_entity_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id,
+                authorized_by=user_id, reason="Opportunity moved to Quotation; prior-stage work superseded.",
+            )
+            await log_stage_move(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+                tasks_completed=tasks_completed,
+            )
+
+        amount_text = f" for {effective_value:,.2f}" if effective_value else ""
+        description = f"Client quotation '{doc_label}'{amount_text} sent to {client_name}."
+        if payload.valid_until:
+            description += f" Valid until {payload.valid_until.isoformat()}."
+        if payload.notes:
+            description += f"\n\n{payload.notes}"
+        await db.execute(
+            text("""
+                INSERT INTO crm.activities (
+                    organization_id, created_by, owner_user_id, client_org_id, contact_id, opportunity_id,
+                    type, subject, description, activity_date, status, priority
+                ) VALUES
+                (:org_id, :user_id, :user_id, :client_org_id, :contact_id, :opportunity_id,
+                 'Quotation', 'Quotation sent to client', :description, NOW(), 'Completed', 'normal'),
+                (:org_id, :user_id, :user_id, :client_org_id, :contact_id, :opportunity_id,
+                 'Follow-up', 'Follow up on the quotation with the client', :follow_up_description, :follow_up_at, 'Planned', 'high')
+            """),
+            {
+                "org_id": org_id,
+                "user_id": user_id,
+                "client_org_id": opportunity.get("client_org_id"),
+                "contact_id": opportunity.get("client_id"),
+                "opportunity_id": opportunity_id,
+                "description": description,
+                "follow_up_description": f"Confirm {client_name} received '{doc_label}', answer questions and agree next steps.",
+                "follow_up_at": datetime.combine(follow_up, datetime.min.time(), tzinfo=timezone.utc).replace(hour=9),
+            },
+        )
+        await db.commit()
+    except (DataError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Client quotation could not be recorded against this deal.") from exc
+
+    # Issue the Quotation pack (if the move just happened), then close the
+    # quote-preparation work the sent document evidences.
+    if moved_to_quotation:
+        await generate_task_stack(
+            db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id, created_by=user_id,
+            source_event="client_quotation_sent", generation_reason="Client quotation sent.", stage="Quotation",
+        )
+    owner_id = opportunity.get("sales_owner_id")
+    tasks_closed = await close_quote_preparation(
+        db,
+        org_id=org_id,
+        opportunity_id=str(opportunity_id),
+        evidence_ref=f"Client quotation: {doc_label}",
+        user_id=user_id,
+        notify_user_id=str(owner_id) if owner_id and str(owner_id) != str(user_id) else None,
+        notify_message=f"{opportunity.get('name')}: '{doc_label}' went to {client_name}. Follow-up due {follow_up.isoformat()}.",
+    )
+
+    await fire_trigger(db, org_id, user_id, "quote_sent", {"opportunity_id": str(opportunity_id), "id": str(quote_id), "quote_id": str(quote_id)})
+
+    return {
+        "success": True,
+        "data": {
+            "quotation_id": str(quote_id),
+            "opportunity_id": str(opportunity_id),
+            "moved_to_quotation": moved_to_quotation,
+            "tasks_completed": tasks_closed,
+            "follow_up_date": follow_up.isoformat(),
+        },
+        "message": "Client quotation recorded and follow-up scheduled.",
         "meta": {},
     }
 

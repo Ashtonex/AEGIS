@@ -454,3 +454,68 @@ export async function deleteRateBenchmark(benchmarkId: string): Promise<ApiRespo
   });
 }
 
+
+// --- BOQ WORKFLOW (deal documents -> estimations -> green light) --- //
+
+export type BoqApprovalStatus = 'pending_review' | 'approved' | 'changes_requested' | 'rejected';
+
+export async function decideBoqApproval(
+  quotationId: string,
+  decision: 'approved' | 'changes_requested' | 'rejected',
+  notes?: string,
+): Promise<ApiResponse<{ id: string; boq_approval: Record<string, any>; knowledge_lines: number }>> {
+  return fetchApi(`/api/v1/quotations/${quotationId}/boq-approval`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, notes: notes || undefined }),
+    allowFallback: false,
+  });
+}
+
+export interface PastBoqMatch {
+  id: string;
+  quotation_id: string;
+  project_title: string | null;
+  client_name: string | null;
+  description: string;
+  unit: string | null;
+  quantity: number;
+  rate: number;
+  currency: string | null;
+  approved_at: string | null;
+  score: number;
+  same_unit: boolean;
+}
+
+export interface PastBoqResult {
+  description: string;
+  unit: string | null;
+  matches: PastBoqMatch[];
+  rate_summary: { unit: string | null; samples: number; median: number; min: number; max: number } | null;
+}
+
+export async function findSimilarPastBoqLines(
+  items: Array<{ description: string; unit?: string | null }>,
+  excludeQuotationId?: string | null,
+  perItem = 5,
+): Promise<ApiResponse<{ results: PastBoqResult[]; library: { lines: number; boqs: number } }>> {
+  return fetchApi(`/api/v1/quotations/knowledge/similar`, {
+    method: 'POST',
+    body: JSON.stringify({ items, exclude_quotation_id: excludeQuotationId || undefined, per_item: perItem }),
+    allowFallback: false,
+  });
+}
+
+export async function recordClientQuotation(
+  opportunityId: string,
+  payload: { document_id: string; quote_amount?: number; valid_until?: string; follow_up_date?: string; notes?: string },
+): Promise<ApiResponse<{ quotation_id: string; moved_to_quotation: boolean; tasks_completed: number; follow_up_date: string }>> {
+  return fetchApi(`/api/v1/crm/opportunities/${opportunityId}/client-quotation`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getTenderActivityLog(tenderId: string): Promise<ApiResponse<Array<{ id: string; type: string; subject: string; description: string | null; created_at: string; created_by_name: string | null }>>> {
+  return fetchApi(`/api/v1/tender-bids/${tenderId}/activity-log`, { cache: 'no-store', allowFallback: false });
+}

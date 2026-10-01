@@ -18,6 +18,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
+import { BoqWorkflowPanel } from "./BoqWorkflowPanel";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -941,6 +942,14 @@ export default function QuotationBuilder() {
           </>
         }
       />
+
+      {editId && (
+        <BoqWorkflowPanel
+          quotationId={editId}
+          lineItems={lineItems}
+          onApplyRate={(index, rate) => setLineItems((prev) => prev.map((li, i) => (i === index ? { ...li, rate } : li)))}
+        />
+      )}
 
       {editId && selectedProjectId && (
         <div className="p-4 border border-sky-500/20 bg-sky-950/20 rounded-sm flex items-center space-x-3 text-sky-400 text-sm print:hidden">

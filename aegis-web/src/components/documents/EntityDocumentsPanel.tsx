@@ -26,6 +26,13 @@ interface DocRecord {
   uploaded_by_email: string | null;
 }
 
+// Keyed on category, not link_role: the generic link endpoint defaults every
+// link to "boq_source", so link_role can't tell a BOQ from any other file.
+const CATEGORY_BADGE: Record<string, string> = {
+  boq: "BOQ",
+  quotation: "Quotation",
+};
+
 function formatSize(bytes: number | null) {
   if (!bytes) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -44,7 +51,16 @@ function normalizeError(reason: unknown, fallback: string) {
  * upload lands in the shared feed with who uploaded it and when, there is
  * no per-uploader partitioning.
  */
-export function EntityDocumentsPanel({ entityType, entityId }: { entityType: DocumentEntityType; entityId: string }) {
+export function EntityDocumentsPanel({
+  entityType,
+  entityId,
+  refreshKey = 0,
+}: {
+  entityType: DocumentEntityType;
+  entityId: string;
+  /** Bump to reload after a sibling component attaches a document. */
+  refreshKey?: number;
+}) {
   const [docs, setDocs] = useState<DocRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +82,7 @@ export function EntityDocumentsPanel({ entityType, entityId }: { entityType: Doc
     }
   }, [entityType, entityId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, refreshKey]);
 
   const handleUploaded = async (result: UploadedDocumentResult) => {
     setNotice(null);
@@ -157,7 +173,12 @@ export function EntityDocumentsPanel({ entityType, entityId }: { entityType: Doc
               <div className="flex min-w-0 items-center gap-2.5">
                 <FileText className="h-4 w-4 shrink-0 text-signal" />
                 <div className="min-w-0">
-                  <p className="truncate text-sm text-paper">{doc.title}</p>
+                  <p className="truncate text-sm text-paper">
+                    {CATEGORY_BADGE[doc.category] && (
+                      <span className="mr-1.5 border border-signal/40 px-1 py-px align-middle font-mono text-[8px] uppercase text-signal">{CATEGORY_BADGE[doc.category]}</span>
+                    )}
+                    {doc.title}
+                  </p>
                   <p className="truncate text-[11px] text-slate-light">
                     {doc.uploaded_by_name || doc.uploaded_by_email || "Unknown uploader"} · {new Date(doc.created_at).toLocaleDateString()}
                     {doc.file_size_bytes ? ` · ${formatSize(doc.file_size_bytes)}` : ""}

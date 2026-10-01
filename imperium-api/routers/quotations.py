@@ -19,6 +19,7 @@ from app.services.documents.renderers import (
 )
 from app.services.quotations.boq_ai_analysis import analyze_boq, compute_input_hash
 from app.services.quotations.boq_importer import BOQImporter
+from app.services.quotations.boq_knowledge import find_similar_lines, parse_metadata, snapshot_approved_boq
 from app.services.quotations.calculator import (
     BOQItem,
     QuotationCalculator,
@@ -40,7 +41,7 @@ from app.services.quotations.intelligence_engine import (
     DEFAULT_ASSEMBLIES,
     RATE_BENCHMARKS,
 )
-from app.shared.events import emit_event, emit_role_notification
+from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
     refresh_project_forecast,
@@ -262,6 +263,13 @@ async def _upsert_source_quotation_from_boq(
             "warnings": import_result.warnings,
         },
         "status": "uploaded_boq_draft",
+        # A fresh upload always goes back for review before AEGIS treats it
+        # as production data (POST /{id}/boq-approval).
+        "boq_approval": {
+            "status": "pending_review",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "requested_by": user_id,
+        },
     }
     calculation = QuotationCalculator.calculate({
         "quotation_id": reference_number,
@@ -587,6 +595,185 @@ async def import_boq(
         "data": jsonable_encoder({**result.to_dict(), "linked": linked}),
         "message": "BOQ import completed.",
         "meta": {"user_id": user["user_id"], "filename": file.filename},
+    }
+
+
+class BoqApprovalDecision(BaseModel):
+    decision: Literal["approved", "changes_requested", "rejected"]
+    notes: Optional[str] = Field(default=None, max_length=4000)
+
+
+_BOQ_DECISION_LABEL = {
+    "approved": "green-lit for production",
+    "changes_requested": "sent back for changes",
+    "rejected": "rejected",
+}
+
+
+@router.post("/{item_id}/boq-approval")
+async def decide_boq_approval(
+    item_id: str,
+    payload: BoqApprovalDecision,
+    user: dict = Depends(require_permission("quotations.decide")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The green light for an uploaded/edited BOQ. Approving it:
+      - stamps metadata.boq_approval (who/when/notes, with history),
+      - snapshots every line into finance.boq_knowledge_lines so future
+        estimates can pull this project's items and rates,
+      - logs the decision on the linked opportunity / tender.
+    Sending it back or rejecting it withdraws its lines from the knowledge
+    base - only approved BOQs teach AEGIS."""
+    row = (
+        await db.execute(
+            text("""
+                SELECT id, metadata, client_name, created_by, opportunity_id, tender_id, project_id
+                FROM finance.quotations
+                WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"item_id": item_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+
+    metadata = parse_metadata(row["metadata"])
+    items = [i for i in (metadata.get("items") or []) if isinstance(i, dict) and str(i.get("description") or "").strip()]
+    notes = (payload.notes or "").strip()
+    if payload.decision == "approved":
+        if not items:
+            raise HTTPException(status_code=409, detail="This quotation has no BOQ lines to approve.")
+        if user.get("role") != SUPERADMIN_ROLE and is_self_certification(user["sub"], row["created_by"]):
+            raise HTTPException(
+                status_code=403,
+                detail="You built this BOQ and cannot also green-light it - get an independent sign-off.",
+            )
+    elif not notes:
+        raise HTTPException(status_code=422, detail="Say what needs to change (notes are required when not approving).")
+
+    now = datetime.now(timezone.utc).isoformat()
+    previous = metadata.get("boq_approval") or {}
+    history = list(previous.get("history") or [])
+    history.append({"status": payload.decision, "by": user["sub"], "at": now, "notes": notes or None})
+    metadata["boq_approval"] = {
+        **previous,
+        "status": payload.decision,
+        "decided_by": user["sub"],
+        "decided_by_name": user.get("full_name") or user.get("email"),
+        "decided_at": now,
+        "notes": notes or None,
+        "history": history[-50:],
+    }
+
+    source_type, source_id = None, None
+    for column, kind in (("opportunity_id", "opportunity"), ("tender_id", "tender"), ("project_id", "project")):
+        if row[column]:
+            source_type, source_id = kind, str(row[column])
+            break
+
+    if payload.decision == "approved":
+        lines = await snapshot_approved_boq(
+            db,
+            org_id=user["org_id"],
+            quotation_id=item_id,
+            approved_by=user["sub"],
+            metadata=metadata,
+            source_type=source_type,
+            source_id=source_id,
+            client_name=row["client_name"],
+        )
+        metadata["boq_approval"]["knowledge_lines"] = lines
+    else:
+        lines = 0
+        await db.execute(
+            text("DELETE FROM finance.boq_knowledge_lines WHERE organization_id = :org_id AND quotation_id = :qid"),
+            {"org_id": user["org_id"], "qid": item_id},
+        )
+
+    await db.execute(
+        text("""
+            UPDATE finance.quotations
+            SET metadata = CAST(:metadata AS jsonb), updated_at = NOW()
+            WHERE id = :item_id AND organization_id = :org_id
+        """),
+        {"metadata": json.dumps(metadata, default=str), "item_id": item_id, "org_id": user["org_id"]},
+    )
+
+    activity_column = {"opportunity": "opportunity_id", "tender": "tender_id"}.get(source_type or "")
+    if activity_column:
+        await db.execute(
+            text(f"""
+                INSERT INTO crm.activities (
+                    organization_id, created_by, owner_user_id, {activity_column},
+                    type, subject, description, activity_date, status, priority
+                ) VALUES (
+                    :org_id, CAST(:user_id AS uuid), CAST(:user_id AS uuid), CAST(:source_id AS uuid),
+                    'BOQ Review', :subject, :description, NOW(), 'Completed', 'normal'
+                )
+            """),  # nosec B608 - column from a fixed two-value map
+            {
+                "org_id": user["org_id"],
+                "user_id": user["sub"],
+                "source_id": source_id,
+                "subject": f"BOQ {_BOQ_DECISION_LABEL[payload.decision]}",
+                "description": notes or f"{len(items)} BOQ lines approved and added to the AEGIS rate library.",
+            },
+        )
+    if row["created_by"] and str(row["created_by"]) != str(user["sub"]):
+        await emit_notification(
+            db,
+            org_id=user["org_id"],
+            user_id=str(row["created_by"]),
+            title=f"BOQ {_BOQ_DECISION_LABEL[payload.decision]}",
+            message=notes or f"{metadata.get('project_title') or 'Your BOQ'} was approved for production.",
+            notification_type="quotation",
+            priority="high" if payload.decision != "approved" else "normal",
+            action_url=f"/dashboard/quotations/builder?edit={item_id}",
+        )
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": item_id, "boq_approval": metadata["boq_approval"], "knowledge_lines": lines},
+        "message": f"BOQ {_BOQ_DECISION_LABEL[payload.decision]}.",
+        "meta": {},
+    }
+
+
+class BoqKnowledgeQuery(BaseModel):
+    items: List[Dict[str, Any]] = Field(default_factory=list, max_length=500)
+    exclude_quotation_id: Optional[str] = None
+    per_item: int = Field(default=5, ge=1, le=20)
+
+
+@router.post("/knowledge/similar")
+async def similar_past_boq_lines(
+    payload: BoqKnowledgeQuery,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Past approved BOQ lines that look like each requested {description,
+    unit} - the "what did we price this at before" lookup."""
+    results = await find_similar_lines(
+        db,
+        org_id=user["org_id"],
+        queries=payload.items,
+        exclude_quotation_id=payload.exclude_quotation_id,
+        per_item=payload.per_item,
+    )
+    total = (
+        await db.execute(
+            text("""
+                SELECT count(*) AS lines, count(DISTINCT quotation_id) AS boqs
+                FROM finance.boq_knowledge_lines WHERE organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    return {
+        "success": True,
+        "data": {"results": results, "library": {"lines": int(total["lines"]), "boqs": int(total["boqs"])}},
+        "message": "Similar past BOQ lines.",
+        "meta": {},
     }
 
 
@@ -2337,6 +2524,54 @@ async def get_quotation_history(
     }
 
 
+# Written only by their own endpoints (/boq-approval, the CRM client-quotation
+# upload, /boq/import) - a builder save must neither drop nor forge them.
+_SERVER_OWNED_METADATA_KEYS = ("boq_approval", "client_copy", "uploaded_boq")
+
+
+def _items_fingerprint(items: Any) -> str:
+    rows = [
+        (str(i.get("description") or "").strip(), str(i.get("unit") or ""), str(i.get("quantity", i.get("qty")) or 0), str(i.get("rate") or 0))
+        for i in (items or []) if isinstance(i, dict)
+    ]
+    return hashlib.sha1(json.dumps(rows).encode("utf-8")).hexdigest()
+
+
+async def _preserve_server_owned_metadata(
+    db: AsyncSession, org_id: str, item_id: str, incoming: Dict[str, Any]
+) -> Dict[str, Any]:
+    current_row = (
+        await db.execute(
+            text("SELECT metadata FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": item_id, "org_id": org_id},
+        )
+    ).first()
+    current = parse_metadata(current_row.metadata) if current_row else {}
+    merged = dict(incoming)
+    for key in _SERVER_OWNED_METADATA_KEYS:
+        if key in current:
+            merged[key] = current[key]
+        else:
+            merged.pop(key, None)
+    approval = merged.get("boq_approval")
+    if (
+        isinstance(approval, dict)
+        and approval.get("status") == "approved"
+        and "items" in incoming
+        and _items_fingerprint(incoming.get("items")) != _items_fingerprint(current.get("items"))
+    ):
+        # Lines changed after the green light: it needs signing off again.
+        # The previously approved lines stay in the knowledge base until a
+        # new approval replaces them.
+        merged["boq_approval"] = {
+            **approval,
+            "status": "pending_review",
+            "notes": "BOQ edited after approval - needs re-approval.",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return merged
+
+
 @router.put("/{item_id}")
 async def update_item(
     item_id: str,
@@ -2357,6 +2592,9 @@ async def update_item(
             "data": {"id": item_id},
             "message": "No fields to update.",
         }
+
+    if isinstance(payload.get("metadata"), dict):
+        payload["metadata"] = await _preserve_server_owned_metadata(db, user["org_id"], item_id, payload["metadata"])
 
     json_columns = [k for k in safe_keys if isinstance(payload[k], (dict, list))]
     params = {

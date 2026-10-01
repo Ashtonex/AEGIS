@@ -36,6 +36,7 @@ import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { supabase } from '@/lib/supabase';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
+import { TenderStageMoveModal, TenderActivityLog } from '@/components/crm/TenderStageMove';
 
 // Stages definition. 'Awarded' and 'Lost' used to be a single combined
 // 'Awarded/Lost' stage with no conversion logic - now moving into 'Awarded'
@@ -198,6 +199,10 @@ export default function TendersCommand() {
 
   // Edit Drawer Form State
   const [editForm, setEditForm] = useState<Tender | null>(null);
+  // Every stage move goes through this gate: an activity-log note is
+  // mandatory, and the backend completes the stage-being-left's tasks.
+  const [stageMove, setStageMove] = useState<{ tenderId: string; tenderName: string; from: string; to: string } | null>(null);
+  const [activityLogRefresh, setActivityLogRefresh] = useState(0);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -273,24 +278,18 @@ export default function TendersCommand() {
       return;
     }
 
-    // Optimistically update local state
-    setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: targetStage } : t));
+    setStageMove({ tenderId, tenderName: tender.tender_name, from: tender.stage, to: targetStage });
+  };
 
-    try {
-      const res = await updateCrmTender(tenderId, { stage: targetStage });
-      if (!res.success) {
-        alert(res.message || "The stage move did not save. The tender has been put back where it was.");
-        await loadData();
-      }
-    } catch (err) {
-      console.error('Failed to update stage via drag-drop:', err);
-      alert(describeActionError(
-        err,
-        "You don't have permission to move this tender - it's been put back where it was.",
-        "The stage move didn't save. Check the CRM service connection and retry."
-      ));
-      loadData();
-    }
+  const handleConfirmStageMove = async (note: string) => {
+    if (!stageMove) return;
+    const { tenderId, to } = stageMove;
+    const res = await updateCrmTender(tenderId, { stage: to, stage_note: note });
+    if (!res.success) throw new Error(res.message || "The stage move did not save.");
+    setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: to } : t));
+    setStageMove(null);
+    setActivityLogRefresh(n => n + 1);
+    await loadData();
   };
 
   const handleOpenAward = async (tenderId: string) => {
@@ -465,24 +464,8 @@ export default function TendersCommand() {
       return;
     }
 
-    // Optimistically update state
-    setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: nextStage } : t));
-
-    try {
-      const res = await updateCrmTender(tenderId, { stage: nextStage });
-      if (!res.success) {
-        alert(res.message || "The stage move did not save. The tender has been put back where it was.");
-        await loadData();
-      }
-    } catch (err) {
-      console.error('Failed to update stage:', err);
-      alert(describeActionError(
-        err,
-        "You don't have permission to move this tender - it's been put back where it was.",
-        "The stage move didn't save. Check the CRM service connection and retry."
-      ));
-      loadData();
-    }
+    if (!tender) return;
+    setStageMove({ tenderId, tenderName: tender.tender_name, from: currentStage, to: nextStage });
   };
 
   const handleCreateTender = async (e: React.FormEvent) => {
@@ -593,7 +576,6 @@ export default function TendersCommand() {
         bid_number: editForm.bid_number || '',
         category: editForm.category || 'Civil Works',
         region: editForm.region?.trim() || null,
-        stage: editForm.stage,
         bid_amount: bidAmountStr !== '' ? Number(bidAmountStr) : null,
         bid_bond_secured: editForm.bid_bond_secured,
         jv_partners: editForm.jv_partners || null,
@@ -620,6 +602,14 @@ export default function TendersCommand() {
       const res = await updateCrmTender(selectedTenderId, payload);
       if (res.success) {
         await loadData();
+        // Stage changes go through the stage-move gate (activity log note)
+        // rather than riding along with the detail save.
+        const current = tenders.find(t => t.id === selectedTenderId);
+        if (current && editForm.stage !== current.stage) {
+          if (editForm.stage === 'Awarded') handleOpenAward(selectedTenderId);
+          else if (editForm.stage === 'Lost') handleOpenCloseout(selectedTenderId, 'lost');
+          else setStageMove({ tenderId: selectedTenderId, tenderName: current.tender_name, from: current.stage, to: editForm.stage });
+        }
       }
     } catch (err) {
       console.error('Failed to update tender details:', err);
@@ -2118,6 +2108,12 @@ export default function TendersCommand() {
                 <AssignmentPanel entityType="tender" entityId={selectedTender.id} />
               </div>
 
+              {/* Activity log (stage-move notes) */}
+              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
+                <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Activity Log</span>
+                <TenderActivityLog tenderId={selectedTender.id} refreshKey={activityLogRefresh} />
+              </div>
+
               {/* Bid timing panel */}
               {selectedTenderSiteVisitStatus && !isPostSubmissionStage(selectedTender.stage) && (
                 <div className="bg-[#111111] border border-[#D4AF37]/20 p-4 rounded-sm font-mono text-xs flex justify-between items-center">
@@ -2156,6 +2152,16 @@ export default function TendersCommand() {
           </div>
         )}
       </div>
+
+      {stageMove && (
+        <TenderStageMoveModal
+          tenderName={stageMove.tenderName}
+          fromStage={stageMove.from}
+          toStage={stageMove.to}
+          onCancel={() => setStageMove(null)}
+          onConfirm={handleConfirmStageMove}
+        />
+      )}
 
       {/* DELETE TENDER MODAL */}
       {isAwardModalOpen && (
