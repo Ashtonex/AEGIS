@@ -8,6 +8,65 @@ from core.logging import logger
 RESEND_API_URL = "https://api.resend.com/emails"
 
 
+def real_address_from_teams_account(teams_account: Optional[str]) -> Optional[str]:
+    """The mailbox behind a Microsoft identity.
+
+    A guest's user principal name encodes their real address with the "@"
+    replaced by "_" (ekowimbeah5@gmail.com -> ekowimbeah5_gmail.com#EXT#@
+    tenant.onmicrosoft.com). Domains can't contain "_", so the last "_" in
+    the part before #EXT# is the "@". A member identity is already an
+    address. Returns None for anything that doesn't decode cleanly.
+    """
+    value = (teams_account or "").strip()
+    if not value:
+        return None
+    if "#EXT#" in value.upper():
+        local = value[: value.upper().index("#EXT#")]
+        cut = local.rfind("_")
+        if cut <= 0 or cut == len(local) - 1:
+            return None
+        address = f"{local[:cut]}@{local[cut + 1:]}"
+    else:
+        address = value
+    name, _, domain = address.partition("@")
+    if not name or "." not in domain or " " in address:
+        return None
+    return address
+
+
+async def _delivery_address(to: str) -> str:
+    """Where an email addressed to `to` should actually go.
+
+    AEGIS login emails aren't always real mailboxes (SNC staff log in as
+    name@sixnineconstruction.com, which doesn't exist; they're Microsoft
+    guests on personal addresses). When `to` is an AEGIS user's login and
+    that user has a Teams account (core.users.teams_account), deliver to the
+    mailbox behind it. Anyone else - clients, suppliers, staff without a
+    Teams account - is untouched. Never raises: any lookup problem sends to
+    the original address, exactly as before.
+    """
+    try:
+        from core.database import AsyncSessionLocal
+        from sqlalchemy import text
+
+        async with AsyncSessionLocal() as db:
+            teams_account = (
+                await db.execute(
+                    text("""
+                        SELECT teams_account FROM core.users
+                        WHERE lower(email) = lower(:to) AND is_deleted = false
+                          AND teams_account IS NOT NULL
+                        LIMIT 1
+                    """),
+                    {"to": to.strip()},
+                )
+            ).scalar()
+        return real_address_from_teams_account(teams_account) or to
+    except Exception as exc:
+        logger.warning("Email recipient lookup failed; sending to original address", error=str(exc))
+        return to
+
+
 async def send_email(
     to: str,
     subject: str,
@@ -16,7 +75,9 @@ async def send_email(
 ) -> bool:
     """Send a transactional email via Resend. Returns True on a 2xx from
     Resend, False otherwise - callers decide whether that's fatal (fail
-    closed, don't pretend the email went out)."""
+    closed, don't pretend the email went out). Staff whose login email
+    isn't a real mailbox are delivered to via their Teams account - see
+    _delivery_address."""
     if not settings.RESEND_API_KEY or not settings.EMAIL_FROM_ADDRESS:
         logger.warning(
             "Email not sent: RESEND_API_KEY/EMAIL_FROM_ADDRESS not configured",
@@ -25,6 +86,7 @@ async def send_email(
         )
         return False
 
+    to = await _delivery_address(to)
     payload = {
         "from": settings.EMAIL_FROM_ADDRESS,
         "to": [to],
