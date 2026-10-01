@@ -252,6 +252,63 @@ async def prepare_deliveries(
     return deliveries
 
 
+def build_summary_payload(
+    *,
+    recipient_email: str,
+    recipient_name: Optional[str],
+    tasks: list[dict[str, Any]],
+    counts: dict[str, int],
+) -> dict[str, Any]:
+    """A person's whole open workload (not a new assignment): totals, then
+    their most urgent tasks. Same envelope as build_payload, so the same
+    Workflows flow delivers it."""
+    link = f"{app_base_url()}/dashboard/crm/tasks"
+    first = recipient_name.split()[0] if recipient_name else "there"
+    body: list[dict[str, Any]] = [
+        {"type": "TextBlock", "text": f"Your AEGIS tasks: {counts['open']} open", "size": "Large", "weight": "Bolder", "wrap": True},
+        {"type": "TextBlock", "text": f"Hi {first}, here's where your work stands. Most urgent first:", "wrap": True, "spacing": "Small"},
+        {
+            "type": "FactSet",
+            "facts": [
+                {"title": "Overdue", "value": str(counts["overdue"])},
+                {"title": "Due in 7 days", "value": str(counts["this_week"])},
+                {"title": "Urgent", "value": str(counts["urgent"])},
+            ],
+        },
+    ]
+    body.extend(_task_line(task) for task in tasks[:_MAX_TASKS_ON_CARD])
+    if counts["open"] > _MAX_TASKS_ON_CARD:
+        body.append({
+            "type": "TextBlock",
+            "text": f"…and {counts['open'] - _MAX_TASKS_ON_CARD} more in AEGIS.",
+            "isSubtle": True,
+            "wrap": True,
+        })
+    actions: list[dict[str, Any]] = []
+    tab_link = teams_tab_link()
+    if tab_link:
+        actions.append({"type": "Action.OpenUrl", "title": "Open my tasks in Teams", "url": tab_link})
+    actions.append({"type": "Action.OpenUrl", "title": "Open in AEGIS", "url": link})
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body,
+        "actions": actions,
+    }
+    return {
+        "type": "message",
+        "recipient": recipient_email,
+        "recipientName": recipient_name,
+        "summary": f"Your AEGIS tasks: {counts['open']} open",
+        "link": link,
+        "card": card,
+        "attachments": [
+            {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}
+        ],
+    }
+
+
 def tasks_from_plan(items: Iterable[Any]) -> list[dict[str, Any]]:
     """PlannedTask -> the plain dicts the card needs, most urgent first."""
     rank = {"urgent": 0, "high": 1, "normal": 2, "low": 3}

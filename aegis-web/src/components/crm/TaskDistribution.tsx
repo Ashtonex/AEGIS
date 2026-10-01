@@ -12,6 +12,7 @@ import {
   bulkAssignCrmTasks,
   getTaskRouting,
   previewTaskDistribution,
+  sendTaskSummaryToEveryone,
   testTaskRoutingTeams,
   updateTeamsAccount,
   updateTaskRoutingRule,
@@ -380,6 +381,7 @@ export function RoutingSettingsModal({ people, onClose }: { people: Person[]; on
   const [savingSettings, setSavingSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
+  const [sendingSummary, setSendingSummary] = useState(false);
   const [days, setDays] = useState({ due_days_urgent: 2, due_days_high: 5, due_days_normal: 10, due_days_low: 20, daily_capacity: 4 });
 
   useEffect(() => {
@@ -435,6 +437,26 @@ export function RoutingSettingsModal({ people, onClose }: { people: Person[]; on
       setError(errorText(e, "Teams did not accept the test."));
     } finally {
       setTesting(false);
+    }
+  };
+
+  const sendSummary = async () => {
+    if (!window.confirm("Send everyone with open tasks a summary of their tasks - one Teams message and one email each?")) return;
+    setSendingSummary(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await sendTaskSummaryToEveryone();
+      if (!res.success || !res.data) throw new Error("The summary could not be sent.");
+      if (res.data.failed.length) {
+        setError(`${res.message ?? ""} Failed: ${res.data.failed.join("; ")}`);
+      } else {
+        setNotice(res.message ?? "Summary sent.");
+      }
+    } catch (e) {
+      setError(errorText(e, "The summary could not be sent."));
+    } finally {
+      setSendingSummary(false);
     }
   };
 
@@ -569,6 +591,15 @@ export function RoutingSettingsModal({ people, onClose }: { people: Person[]; on
                     className="flex items-center gap-1.5 border border-ink-mid px-3 py-1.5 text-xs uppercase tracking-wider text-slate-light hover:text-paper disabled:opacity-40"
                   >
                     {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />} Send me a test
+                  </button>
+                  <button
+                    type="button"
+                    disabled={sendingSummary}
+                    onClick={() => void sendSummary()}
+                    title="One Teams message and one email to each person, listing their open tasks"
+                    className="flex items-center gap-1.5 border border-signal/60 px-3 py-1.5 text-xs uppercase tracking-wider text-signal hover:bg-signal/10 disabled:opacity-40"
+                  >
+                    {sendingSummary ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />} Send everyone their task summary
                   </button>
                   <button
                     type="button"
