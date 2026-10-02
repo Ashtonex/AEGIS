@@ -309,6 +309,52 @@ export async function getProjectMoneyWorkspace(projectId: string): Promise<ApiRe
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/projects/${projectId}/workspace`, { cache: "no-store", allowFallback: false });
 }
 
+export type ProjectMoneyEntryInput = {
+  direction: "in" | "out";
+  paid_via: "bank" | "cash";
+  entry_date: string;
+  amount: number;
+  category?: string | null;
+  counterparty_name?: string | null;
+  reference?: string | null;
+  description?: string | null;
+  pays_claim_id?: string | null;
+};
+
+const PROJECT_ENTRIES = "/api/v1/bank-transactions/reconciliation/project-entries";
+
+export async function createProjectMoneyEntry(projectId: string, entry: ProjectMoneyEntryInput): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/projects/${projectId}/entries`, {
+    method: "POST", body: JSON.stringify(entry), allowFallback: false,
+  });
+}
+
+export async function updateProjectMoneyEntry(entryId: string, changes: Partial<ProjectMoneyEntryInput> & { project_id?: string }): Promise<ApiResponse<any>> {
+  const { direction: _direction, ...rest } = changes;
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}`, { method: "PATCH", body: JSON.stringify(rest), allowFallback: false });
+}
+
+export async function voidProjectMoneyEntry(entryId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}`, { method: "DELETE", allowFallback: false });
+}
+
+export async function getProjectEntryCandidates(entryId: string, q?: string): Promise<ApiResponse<any[]>> {
+  const query = compactQuery({ q: q || undefined });
+  return fetchApi<ApiResponse<any[]>>(`${PROJECT_ENTRIES}/${entryId}/candidates${query ? `?${query}` : ""}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function matchProjectEntry(entryId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/match`, { method: "POST", body: JSON.stringify({ line_id: lineId }), allowFallback: false });
+}
+
+export async function unmatchProjectEntry(entryId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/unmatch`, { method: "POST", allowFallback: false });
+}
+
+export async function dismissProjectEntrySuggestion(entryId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/dismiss`, { method: "POST", body: JSON.stringify({ line_id: lineId }), allowFallback: false });
+}
+
 export async function getBankLineAllocations(lineId: string): Promise<ApiResponse<BankLineAllocation[]>> {
   return fetchApi<ApiResponse<BankLineAllocation[]>>(`/api/v1/bank-transactions/reconciliation/lines/${lineId}/allocations`, { cache: "no-store", allowFallback: false });
 }

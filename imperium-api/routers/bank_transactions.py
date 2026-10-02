@@ -21,6 +21,7 @@ from core.security import get_current_user, require_permission
 from app.services.finance import bank_reconciliation as reconciliation
 from app.services.finance import bank_books
 from app.services.finance import bank_rules
+from app.services.finance import project_entries
 from app.services.finance import bank_statement_pdf as statement_pdf
 from app.services.jobs.queue import enqueue_background_job
 from app.services.microsoft import bank_workbook
@@ -378,6 +379,9 @@ async def _books_after_import(db: AsyncSession, *, org_id: str, user_id: str, su
         new_ids = [r.id for r in await db.execute(
             text("SELECT id FROM finance.bank_statement_lines WHERE import_id = :i"), {"i": summary["import_id"]})]
         summary["auto_tagged"] = (await bank_rules.apply(db, org_id=org_id, user_id=user_id, line_ids=new_ids))["lines_tagged"]
+        # Pair the new lines with money already recorded on projects, before
+        # they are journalled, so a paired line posts against 1070 first time.
+        summary["project_entries"] = await project_entries.match(db, org_id=org_id, user_id=user_id, line_ids=new_ids)
         summary["books"] = await bank_books.sync(db, org_id=org_id, user_id=user_id, line_ids=new_ids)
         await db.commit()
     except GeneralLedgerError as exc:
@@ -780,6 +784,158 @@ async def get_project_money_workspace(
     if workspace is None:
         raise HTTPException(status_code=404, detail="Project not found.")
     return ok(workspace, "Project workspace retrieved.")
+
+
+# ---------------------------------------------------------------------------
+# Money recorded directly on a project (project_entries.py). Goes into the
+# books at once; paired with its bank line when the statement is imported.
+# ---------------------------------------------------------------------------
+
+class ProjectEntryFields(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    direction: str = Field(pattern=LINE_DIRECTIONS)
+    paid_via: str = Field(default="bank", pattern=r"^(bank|cash)$")
+    entry_date: date
+    amount: float = Field(gt=0)
+    category: Optional[str] = Field(default=None, max_length=60)
+    counterparty_name: Optional[str] = Field(default=None, max_length=200)
+    reference: Optional[str] = Field(default=None, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    pays_claim_id: Optional[UUID] = None
+
+
+class ProjectEntryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    project_id: Optional[UUID] = None
+    paid_via: Optional[str] = Field(default=None, pattern=r"^(bank|cash)$")
+    entry_date: Optional[date] = None
+    amount: Optional[float] = Field(default=None, gt=0)
+    category: Optional[str] = Field(default=None, max_length=60)
+    counterparty_name: Optional[str] = Field(default=None, max_length=200)
+    reference: Optional[str] = Field(default=None, max_length=160)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    pays_claim_id: Optional[UUID] = None
+
+
+class ProjectEntryLineRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    line_id: UUID
+
+
+async def _entry_write(org_id: str, db: AsyncSession, action):
+    try:
+        result = await action()
+        await db.commit()
+    except GeneralLedgerError as exc:
+        await db.rollback()
+        _raise(exc)
+    await _queue_workbook_publish(org_id)
+    return result
+
+
+@router.post("/reconciliation/projects/{project_id}/entries", status_code=status.HTTP_201_CREATED,
+             summary="Record money in or out directly on a project")
+async def create_project_entry(
+    project_id: UUID,
+    payload: ProjectEntryFields,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    values = {**payload.model_dump(), "project_id": project_id}
+    entry = await _entry_write(org_id, db, lambda: project_entries.create(db, org_id=org_id, user_id=user["sub"], values=values))
+    message = {
+        "matched": "Recorded and matched to the bank statement.",
+        "suggested": "Recorded. Possible bank lines found - confirm which one it is.",
+        "not_bank": "Cash entry recorded through HQ Petty Cash.",
+    }.get(entry["match_status"], "Recorded. It will be matched when the bank statement is uploaded.")
+    return ok(entry, message)
+
+
+@router.patch("/reconciliation/project-entries/{entry_id}", summary="Change a recorded project entry")
+async def update_project_entry(
+    entry_id: UUID,
+    payload: ProjectEntryUpdate,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    changes = {k: v for k, v in payload.model_dump().items() if k in payload.model_fields_set}
+    for required in ("project_id", "paid_via", "entry_date", "amount"):
+        if required in changes and changes[required] is None:
+            raise HTTPException(status_code=422, detail=f"{required} cannot be cleared.")
+    entry = await _entry_write(org_id, db, lambda: project_entries.update(
+        db, org_id=org_id, user_id=user["sub"], entry_id=entry_id, changes=changes))
+    return ok(entry, "Entry updated.")
+
+
+@router.delete("/reconciliation/project-entries/{entry_id}", summary="Remove a recorded project entry")
+async def void_project_entry(
+    entry_id: UUID,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    result = await _entry_write(org_id, db, lambda: project_entries.void(
+        db, org_id=org_id, user_id=user["sub"], entry_id=entry_id))
+    kept = " The bank line now carries the books itself." if result.get("bank_line_kept") else ""
+    return ok(result, "Entry removed." + kept)
+
+
+@router.get("/reconciliation/project-entries/{entry_id}/candidates", summary="Bank lines that could be this entry")
+async def project_entry_candidates(
+    entry_id: UUID,
+    q: Optional[str] = Query(default=None, max_length=100),
+    user: dict = Depends(require_permission("finance.reconciliation.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    try:
+        rows = await project_entries.candidates(db, org_id=org_id, entry_id=entry_id, q=q)
+    except GeneralLedgerError as exc:
+        _raise(exc)
+    return ok(rows, "Candidate bank lines listed.")
+
+
+@router.post("/reconciliation/project-entries/{entry_id}/match", summary="Confirm which bank line this entry is")
+async def match_project_entry(
+    entry_id: UUID,
+    payload: ProjectEntryLineRef,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    entry = await _entry_write(org_id, db, lambda: project_entries.confirm(
+        db, org_id=org_id, user_id=user["sub"], entry_id=entry_id, line_id=payload.line_id))
+    return ok(entry, "Matched to the bank statement.")
+
+
+@router.post("/reconciliation/project-entries/{entry_id}/unmatch", summary="Undo an entry's bank match")
+async def unmatch_project_entry(
+    entry_id: UUID,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    entry = await _entry_write(org_id, db, lambda: project_entries.unmatch(
+        db, org_id=org_id, user_id=user["sub"], entry_id=entry_id))
+    return ok(entry, "Unmatched. The bank line no longer carries this project.")
+
+
+@router.post("/reconciliation/project-entries/{entry_id}/dismiss", summary="This suggested bank line is not the entry")
+async def dismiss_project_entry_suggestion(
+    entry_id: UUID,
+    payload: ProjectEntryLineRef,
+    user: dict = Depends(require_permission("finance.reconciliation.match")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    entry = await _entry_write(org_id, db, lambda: project_entries.dismiss_suggestion(
+        db, org_id=org_id, entry_id=entry_id, line_id=payload.line_id))
+    return ok(entry, "Suggestion dismissed.")
 
 
 @router.get("/reconciliation/audit", summary="Prove the bank statement is fully carried into the books")

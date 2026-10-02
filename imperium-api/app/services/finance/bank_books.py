@@ -18,7 +18,11 @@ re-run at any time (it only changes what is out of step):
                                 against what the line was
      every use of cash       -> one posted journal against HQ Petty Cash (1010)
    A line whose tags change has its journal reversed and a new one posted.
-4. Nothing else: no cashbook entry for the bank side (the statement import
+4. Lines paired with money recorded directly on a project (project_entry_id,
+   see project_entries.py): the entry already carries the claim/cost, so
+   the line creates neither and its journal is Bank against 1070
+   "Recorded, awaiting bank statement", which clears the entry's side.
+5. Nothing else: no cashbook entry for the bank side (the statement import
    is already the cash record, so the reconciled account balance must not
    move), no VAT accrual, no AR aging entries.
 
@@ -52,6 +56,7 @@ HQ_PETTY_CASH_NAME = "HQ Petty Cash"
 
 # GL account codes (see migration 228 for 1010/1060/5950/6900/7800)
 BANK, HQ_PETTY, RECEIVABLE, INTER_ACCOUNT, SUSPENSE = "1000", "1010", "1100", "1060", "1900"
+AWAITING_BANK = "1070"   # money recorded on a project, not yet on a statement (migration 246)
 DIRECTORS, SHAREHOLDERS, REVENUE, OTHER_INCOME = "3200", "3300", "4100", "4900"
 UNCLASSIFIED_PROJECT_COST = "5950"
 HISTORICAL_CASH_USE = "historical_cash_use"   # pre-Sept 2026 cash spent without vouchers (migration 245)
@@ -141,6 +146,10 @@ class Line:
         return Decimal(str(self.row["amount"]))
 
     @property
+    def settles_entry(self) -> bool:
+        return self.row.get("project_entry_id") is not None
+
+    @property
     def is_cash_withdrawal(self) -> bool:
         return self.row["category"] == CASH_WITHDRAWAL and self.amount < 0
 
@@ -196,7 +205,7 @@ async def _load_lines(db: AsyncSession, org_id: str, line_ids: Optional[list[UUI
         text(f"""
             SELECT bsl.id, bsl.transaction_date, bsl.amount, bsl.category, bsl.project_id, bsl.counterparty_name,
                    left(regexp_replace(COALESCE(bsl.description, ''), '\\s+', ' ', 'g'), 400) AS description,
-                   bsl.reference, bsl.books_claim_id, bsl.gl_journal_id, bsl.gl_signature,
+                   bsl.reference, bsl.books_claim_id, bsl.gl_journal_id, bsl.gl_signature, bsl.project_entry_id,
                    EXISTS (
                        SELECT 1 FROM finance.cashbook_transactions ct
                        WHERE ct.id = bsl.matched_cashbook_transaction_id
@@ -290,7 +299,7 @@ async def ensure_project_petty_cash(db: AsyncSession, org_id: str, user_id: str,
 
 def _claim_wanted(line: Line, part: Part) -> bool:
     return (
-        line.amount > 0 and part.project_id is not None
+        line.amount > 0 and part.project_id is not None and not line.settles_entry
         and (part.category or "") not in EXCLUDED_FROM_PROJECT_BOOKS
         and not line.row["receipt_already_in_books"]
     )
@@ -349,7 +358,7 @@ async def _sync_costs(db: AsyncSession, org_id: str, user_id: str, lines: list[L
     ('bank_statement_line') or an allocation ('bank_line_allocation')."""
     wanted: dict[tuple[str, UUID], dict] = {}
     for line in lines:
-        if line.amount >= 0:
+        if line.amount >= 0 or line.settles_entry:
             continue
         parts = line.cash_uses() if line.is_cash_withdrawal else line.parts()
         for part in parts:
@@ -614,6 +623,11 @@ def _line_journal(line: Line, accounts: dict[str, UUID]) -> tuple[list[dict], st
     label = f"Bank {line.row['transaction_date']} {line.row['reference'] or ''}".strip()
     detail = f"{label}: {who + ' - ' if who else ''}{line.row['description']}"
     gl: list[dict] = []
+    if line.settles_entry and not line.is_cash_withdrawal:
+        debit, credit = (BANK, AWAITING_BANK) if line.amount > 0 else (AWAITING_BANK, BANK)
+        gl = [{"code": debit, "debit_amount": amount, "description": detail},
+              {"code": credit, "credit_amount": amount, "description": detail}]
+        return _resolve(gl, accounts), detail
     if line.amount > 0:
         gl.append({"code": BANK, "debit_amount": amount, "description": detail})
         for part in line.parts():
@@ -994,6 +1008,8 @@ async def project_workspace(db: AsyncSession, *, org_id: str, project_id: UUID) 
                                       "allocation_date": next((a["allocation_date"] for a in line.allocations
                                                                if a["id"] == use.allocation_id), line.row["transaction_date"])})
             continue
+        if line.settles_entry:
+            continue   # shown as the recorded entry it settles
         for part in line.parts():
             if part.project_id != project_id:
                 continue
@@ -1035,6 +1051,10 @@ async def project_workspace(db: AsyncSession, *, org_id: str, project_id: UUID) 
         WHERE organization_id = :org_id AND project_id = :project_id AND is_petty_cash = true AND is_deleted = false
     """)).mappings()]
 
+    from app.services.finance import project_entries   # imports this module
+    entries = await project_entries.list_for_project(db, org_id=org_id, project_id=project_id)
+    payable_claims = await project_entries.payable_claims(db, org_id=org_id, project_id=project_id)
+
     total = lambda rows: sum((Decimal(str(r["amount"])) for r in rows), Decimal("0"))
     collected = sum((Decimal(str(c["net_claim_amount"] or 0)) for c in claims if c["status"] == "paid"), Decimal("0"))
     certified = sum((Decimal(str(c["certified_amount"] or 0)) for c in claims if c["status"] in ("certified", "paid")), Decimal("0"))
@@ -1054,7 +1074,10 @@ async def project_workspace(db: AsyncSession, *, org_id: str, project_id: UUID) 
             "bank_in": total(money_in),
             "bank_out": total(money_out),
             "cash_used": total(cash_uses),
+            **project_entries.summary(entries),
         },
+        "entries": entries,
+        "payable_claims": payable_claims,
         "money_in": money_in,
         "money_out": money_out,
         "cash_uses": cash_uses,
@@ -1096,9 +1119,10 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
         JOIN finance.journal_lines jl ON jl.account_id = a.id
         JOIN finance.journal_entries je ON je.id = jl.journal_entry_id AND je.status = 'posted'
         WHERE a.organization_id = :org_id
-          AND (je.source_type IN ('bank_statement_line', 'bank_line_allocation')
+          AND (je.source_type IN ('bank_statement_line', 'bank_line_allocation', 'project_money_entry')
                OR je.reverses_journal_id IN (SELECT id FROM finance.journal_entries
-                                             WHERE source_type IN ('bank_statement_line', 'bank_line_allocation')))
+                                             WHERE source_type IN ('bank_statement_line', 'bank_line_allocation',
+                                                                   'project_money_entry')))
         GROUP BY a.account_code, a.account_name
     """)).mappings()}
     net = sum((Decimal(str(i["net_movement"])) for i in imports), Decimal("0"))
@@ -1126,6 +1150,15 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
           (SELECT COALESCE(sum(amount), 0) FROM finance.cost_transactions WHERE organization_id = :org_id AND source_type IN ('bank_statement_line', 'bank_line_allocation')) AS bank_costs_total
     """)).mappings().one()
 
+    awaiting = (await q("""
+        SELECT count(*) AS entries,
+               COALESCE(sum(amount) FILTER (WHERE direction = 'in'), 0) AS money_in,
+               COALESCE(sum(amount) FILTER (WHERE direction = 'out'), 0) AS money_out,
+               count(*) FILTER (WHERE match_status = 'suggested') AS needs_decision
+        FROM finance.project_money_entries
+        WHERE organization_id = :org_id AND NOT is_void AND paid_via = 'bank' AND match_status IN ('awaiting', 'suggested')
+    """)).mappings().one()
+
     def bal(code: str) -> Decimal:
         return Decimal(str(gl[code]["balance"])) if code in gl else Decimal("0")
 
@@ -1144,6 +1177,9 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
          "detail": f"{lines['missing_journal']} missing, {stale} out of date"},
         {"check": "Ledger Cash and Bank from the statement equals the statement",
          "ok": bal(BANK) == net, "detail": f"GL {bal(BANK)} vs statement {net}"},
+        {"check": "Money recorded on projects and still awaiting the bank equals the 1070 clearing balance",
+         "ok": bal(AWAITING_BANK) == Decimal(str(awaiting["money_in"])) - Decimal(str(awaiting["money_out"])),
+         "detail": f"GL {bal(AWAITING_BANK)} vs awaiting in {awaiting['money_in']} less out {awaiting['money_out']}"},
         {"check": "HQ Petty Cash in the ledger equals HQ Petty Cash plus cash handed to site floats",
          "ok": bal(HQ_PETTY) == Decimal(str(hq_balance)) + Decimal(str(handed_to_sites)),
          "detail": f"GL {bal(HQ_PETTY)} vs HQ {hq_balance} + sites {handed_to_sites}"},
@@ -1159,6 +1195,7 @@ async def audit(db: AsyncSession, *, org_id: str) -> dict:
             "suspense_balance": bal(SUSPENSE),
             "hq_petty_cash_not_yet_accounted_for": hq_balance,
             "unclassified_project_costs": bal(UNCLASSIFIED_PROJECT_COST),
+            "recorded_awaiting_bank": dict(awaiting),
         },
         "books": dict(project_parts),
         "ledger_by_account": [
