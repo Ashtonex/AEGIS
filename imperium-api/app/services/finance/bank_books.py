@@ -54,8 +54,10 @@ HQ_PETTY_CASH_NAME = "HQ Petty Cash"
 BANK, HQ_PETTY, RECEIVABLE, INTER_ACCOUNT, SUSPENSE = "1000", "1010", "1100", "1060", "1900"
 DIRECTORS, SHAREHOLDERS, REVENUE, OTHER_INCOME = "3200", "3300", "4100", "4900"
 UNCLASSIFIED_PROJECT_COST = "5950"
+HISTORICAL_CASH_USE = "historical_cash_use"   # pre-Sept 2026 cash spent without vouchers (migration 245)
 
 _MONEY_OUT_ACCOUNTS = {
+    HISTORICAL_CASH_USE: "5960",
     "supplier_payment": "5000",
     "subcontractor": "5200",
     "equipment_hire": "5300",
