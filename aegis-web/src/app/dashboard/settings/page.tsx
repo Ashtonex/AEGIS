@@ -78,6 +78,8 @@ export type ManagedAccountDraft = {
   trading_name: string;
   registration_number: string;
   tax_number: string;
+  vat_status: "" | "registered" | "not_registered";
+  vat_number: string;
   praz_number: string;
   nssa_number: string;
   industry: string;
@@ -131,6 +133,8 @@ export const EMPTY_MANAGED_ACCOUNT: ManagedAccountDraft = {
   trading_name: "",
   registration_number: "",
   tax_number: "",
+  vat_status: "",
+  vat_number: "",
   praz_number: "",
   nssa_number: "",
   industry: "",

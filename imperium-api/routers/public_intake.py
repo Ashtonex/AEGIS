@@ -3,11 +3,11 @@
 import json
 import re
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,9 +55,13 @@ class EnquiryPayload(IntakePayload):
 
 
 class SupplierPayload(IntakePayload):
+    # Registered company name, company registration number, tax clearance
+    # and VAT are the key vendor requirements (app.shared.vendor_verification).
     companyName: str = Field(min_length=2, max_length=255)
     registrationNumber: str = Field(min_length=2, max_length=100)
     taxClearanceNumber: str = Field(min_length=2, max_length=100)
+    vatStatus: Literal["registered", "not_registered"]
+    vatNumber: Optional[str] = Field(default=None, max_length=100)
     prazNumber: Optional[str] = Field(default=None, max_length=100)
     yearEstablished: int = Field(ge=1800, le=2100)
     employees: int = Field(ge=1, le=10_000_000)
@@ -80,6 +84,15 @@ class SupplierPayload(IntakePayload):
             raise ValueError("List values must be unique")
         return cleaned
 
+    @model_validator(mode="after")
+    def vat_number_when_registered(self) -> "SupplierPayload":
+        if self.vatStatus == "registered":
+            if not self.vatNumber or len(self.vatNumber) < 2:
+                raise ValueError("A VAT number is required for a VAT-registered company")
+        else:
+            self.vatNumber = None
+        return self
+
 
 def _document_link(value: Optional[str]) -> Optional[str]:
     """Accept an actual document URL, never a client-side placeholder."""
@@ -101,11 +114,12 @@ class SupplierDocuments(BaseModel):
     profileUrl: Optional[str] = Field(default=None, max_length=2048)
     taxClearanceUrl: Optional[str] = Field(default=None, max_length=2048)
     incorporationUrl: Optional[str] = Field(default=None, max_length=2048)
+    vatUrl: Optional[str] = Field(default=None, max_length=2048)
     prazUrl: Optional[str] = Field(default=None, max_length=2048)
     isoUrl: Optional[str] = Field(default=None, max_length=2048)
 
     _validate_document_links = field_validator(
-        "profileUrl", "taxClearanceUrl", "incorporationUrl", "prazUrl", "isoUrl"
+        "profileUrl", "taxClearanceUrl", "incorporationUrl", "vatUrl", "prazUrl", "isoUrl"
     )(_document_link)
 
 
@@ -393,8 +407,8 @@ async def submit_supplier(
             return _receipt(reference, "Supplier registration received.")
         result = await db.execute(
             text("""
-            INSERT INTO crm.subcontractors (organization_id, name, capability_tags, compliance_status, praz_number, registration_number, tax_clearance_number, contact_name, contact_email, contact_phone, address, coverage_provinces, submission_data)
-            VALUES (:org_id, :name, :tags, 'pending_review', :praz, :registration, :tax, :contact, :email, :phone, :address, :provinces, CAST(:payload AS jsonb))
+            INSERT INTO crm.subcontractors (organization_id, name, capability_tags, compliance_status, praz_number, registration_number, tax_clearance_number, vat_status, vat_number, contact_name, contact_email, contact_phone, address, coverage_provinces, submission_data)
+            VALUES (:org_id, :name, :tags, 'pending_review', :praz, :registration, :tax, :vat_status, :vat_number, :contact, :email, :phone, :address, :provinces, CAST(:payload AS jsonb))
             ON CONFLICT (organization_id, registration_number) WHERE registration_number IS NOT NULL AND is_deleted = false DO UPDATE SET updated_at = NOW()
             RETURNING id
         """),
@@ -405,6 +419,8 @@ async def submit_supplier(
                 "praz": payload.prazNumber,
                 "registration": payload.registrationNumber,
                 "tax": payload.taxClearanceNumber,
+                "vat_status": payload.vatStatus,
+                "vat_number": payload.vatNumber,
                 "contact": payload.contactPerson,
                 "email": str(payload.email),
                 "phone": payload.phone,

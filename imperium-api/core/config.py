@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     RESEND_API_KEY: Optional[str] = None
     EMAIL_FROM_ADDRESS: Optional[str] = None
 
+    # Friday HR report (app/services/hr/weekly_report.py), comma-separated.
+    # Each address must belong to an AEGIS user: the report is built for that
+    # user's organization, so it can never carry another tenant's data.
+    HR_WEEKLY_REPORT_RECIPIENTS: str = (
+        "nyasha@sixnineconstruction.com,admin@sixnineconstruction.com,cosmas@sixnineconstruction.com"
+    )
+
     # AI Financial Control Assistant (Phase 10B) - read-only, tool-calling
     # only against the allow-list in app/services/finance/ai_assistant_tools.py.
     # Unset by default: the assistant endpoint fails closed with a clear

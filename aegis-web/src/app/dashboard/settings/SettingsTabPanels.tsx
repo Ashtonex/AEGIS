@@ -415,6 +415,8 @@ export function ManagedAccountsTab({ overview, saving, createManagedAccount }: {
       trading_name: draft.trading_name || null,
       registration_number: draft.registration_number || null,
       tax_number: draft.tax_number || null,
+      vat_status: draft.vat_status || null,
+      vat_number: draft.vat_status === "registered" ? draft.vat_number || null : null,
       praz_number: draft.praz_number || null,
       nssa_number: draft.nssa_number || null,
       industry: draft.industry || null,
@@ -478,15 +480,23 @@ export function ManagedAccountsTab({ overview, saving, createManagedAccount }: {
       <div className="grid gap-5 xl:grid-cols-[360px_1fr]">
         <div className="space-y-4 border border-ink-mid/70 p-4">
           <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Account type</span><select value={draft.account_type} onChange={(event) => updateDraft("account_type", event.target.value as ManagedAccountType)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper"><option value="client">Client</option><option value="supplier">Supplier</option><option value="subcontractor">Subcontractor</option></select></label>
-          <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Company name</span><input value={draft.company_name} onChange={(event) => updateDraft("company_name", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
+          <label className="block"><span className="font-mono text-[10px] uppercase text-slate">{draft.account_type === "client" ? "Company name" : "Registered company name"}</span><input value={draft.company_name} onChange={(event) => updateDraft("company_name", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
           <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Trading name</span><input value={draft.trading_name} onChange={(event) => updateDraft("trading_name", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
           <div className="grid grid-cols-2 gap-3">
-            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Registration</span><input value={draft.registration_number} onChange={(event) => updateDraft("registration_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
-            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Tax number</span><input value={draft.tax_number} onChange={(event) => updateDraft("tax_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
+            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Company reg. number</span><input value={draft.registration_number} onChange={(event) => updateDraft("registration_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
+            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Tax clearance number</span><input value={draft.tax_number} onChange={(event) => updateDraft("tax_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
           </div>
+          {draft.account_type !== "client" && (
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block"><span className="font-mono text-[10px] uppercase text-slate">VAT registration</span><select value={draft.vat_status} onChange={(event) => updateDraft("vat_status", event.target.value as ManagedAccountDraft["vat_status"])} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal"><option value="">Not answered</option><option value="registered">VAT registered</option><option value="not_registered">Not VAT registered</option></select></label>
+              {draft.vat_status === "registered" && (
+                <label className="block"><span className="font-mono text-[10px] uppercase text-slate">VAT number</span><input value={draft.vat_number} onChange={(event) => updateDraft("vat_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
+              )}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
-            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">PRAZ</span><input value={draft.praz_number} onChange={(event) => updateDraft("praz_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
-            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">NSSA</span><input value={draft.nssa_number} onChange={(event) => updateDraft("nssa_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
+            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">PRAZ (optional)</span><input value={draft.praz_number} onChange={(event) => updateDraft("praz_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
+            <label className="block"><span className="font-mono text-[10px] uppercase text-slate">NSSA (optional)</span><input value={draft.nssa_number} onChange={(event) => updateDraft("nssa_number", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
           </div>
           <label className="block"><span className="font-mono text-[10px] uppercase text-slate">Capability tags</span><input placeholder="Civil works, electrical, concrete" value={draft.capability_tags} onChange={(event) => updateDraft("capability_tags", event.target.value)} className="mt-1.5 w-full border border-ink-mid bg-ink px-3 py-2 text-xs text-paper outline-none focus:border-signal" /></label>
           <div className="grid grid-cols-2 gap-3">

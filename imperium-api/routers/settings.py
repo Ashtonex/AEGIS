@@ -156,6 +156,8 @@ class ManagedAccountPayload(Payload):
     trading_name: Optional[str] = Field(default=None, max_length=255)
     registration_number: Optional[str] = Field(default=None, max_length=100)
     tax_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     industry: Optional[str] = Field(default=None, max_length=100)
@@ -175,6 +177,10 @@ class ManagedAccountPayload(Payload):
         if any(len(value) > 80 for value in normalized):
             raise ValueError("Capability tags must be 80 characters or fewer.")
         return normalized
+
+    @property
+    def vat_number_if_registered(self) -> Optional[str]:
+        return None if self.vat_status == "not_registered" else self.vat_number
 
 
 PAGE_ACCESS = [
@@ -1041,11 +1047,13 @@ async def _create_supplier_account(
         text("""
         INSERT INTO procurement.suppliers (
             organization_id, created_by, supplier_name, trading_name, registration_number, tax_number,
+            vat_status, vat_registration_number, is_vat_registered,
             praz_number, nssa_number, primary_contact_name, primary_contact_email, primary_contact_phone,
             currency, status, compliance_status
         )
         VALUES (
             :org_id, :user_id, :supplier_name, :trading_name, :registration_number, :tax_number,
+            :vat_status, :vat_number, :is_vat_registered,
             :praz_number, :nssa_number, :primary_contact_name, :primary_contact_email, :primary_contact_phone,
             'USD', 'pending_approval', :compliance_status
         )
@@ -1058,6 +1066,9 @@ async def _create_supplier_account(
             "trading_name": payload.trading_name,
             "registration_number": payload.registration_number,
             "tax_number": payload.tax_number,
+            "vat_status": payload.vat_status,
+            "vat_number": payload.vat_number_if_registered,
+            "is_vat_registered": payload.vat_status == "registered",
             "praz_number": payload.praz_number,
             "nssa_number": payload.nssa_number,
             "primary_contact_name": payload.employees[0].full_name,
@@ -1075,12 +1086,14 @@ async def _create_subcontractor_profile(
     row = await db.execute(
         text("""
         INSERT INTO crm.subcontractors (
-            organization_id, name, capability_tags, compliance_status, nssa_number, praz_number,
+            organization_id, name, capability_tags, compliance_status,
+            registration_number, tax_clearance_number, vat_status, vat_number, nssa_number, praz_number,
             reliability_score, authorization_tier, contact_name, contact_email, contact_phone,
             address, submission_data, created_by
         )
         VALUES (
-            :org_id, :name, CAST(:capability_tags AS text[]), :compliance_status, :nssa_number, :praz_number,
+            :org_id, :name, CAST(:capability_tags AS text[]), :compliance_status,
+            :registration_number, :tax_clearance_number, :vat_status, :vat_number, :nssa_number, :praz_number,
             0, :authorization_tier, :contact_name, :contact_email, :contact_phone,
             :address, CAST(:submission_data AS jsonb), :user_id
         )
@@ -1091,6 +1104,10 @@ async def _create_subcontractor_profile(
             "name": payload.company_name,
             "capability_tags": payload.capability_tags,
             "compliance_status": payload.compliance_status,
+            "registration_number": payload.registration_number,
+            "tax_clearance_number": payload.tax_number,
+            "vat_status": payload.vat_status,
+            "vat_number": payload.vat_number_if_registered,
             "nssa_number": payload.nssa_number,
             "praz_number": payload.praz_number,
             "authorization_tier": payload.authorization_tier,

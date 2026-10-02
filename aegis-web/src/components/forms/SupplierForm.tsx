@@ -25,6 +25,7 @@ export function SupplierForm({ className }: SupplierFormProps) {
     register,
     handleSubmit,
     trigger,
+    watch,
     formState: { errors },
   } = useForm<SupplierRegistrationPayload>({
     resolver: zodResolver(SupplierRegistrationSchema),
@@ -34,9 +35,11 @@ export function SupplierForm({ className }: SupplierFormProps) {
     }
   });
 
+  const vatStatus = watch("vatStatus");
+
   const nextStep = async () => {
     let fieldsToValidate: any[] = [];
-    if (step === 1) fieldsToValidate = ["companyName", "registrationNumber", "taxClearanceNumber", "prazNumber", "yearEstablished", "employees", "address", "contactPerson", "email", "phone", "website"];
+    if (step === 1) fieldsToValidate = ["companyName", "registrationNumber", "taxClearanceNumber", "vatStatus", "vatNumber", "prazNumber", "yearEstablished", "employees", "address", "contactPerson", "email", "phone", "website"];
     if (step === 2) fieldsToValidate = ["categories", "description", "provinces", "references"];
     
     const isStepValid = await trigger(fieldsToValidate as any);
@@ -46,7 +49,7 @@ export function SupplierForm({ className }: SupplierFormProps) {
   const onSubmit = async (data: SupplierRegistrationPayload) => {
     setStatus("submitting");
     try {
-      await registerSupplier(data);
+      await registerSupplier(data.vatStatus === "registered" ? data : { ...data, vatNumber: undefined });
       setStatus("success");
     } catch (err: any) {
       setStatus("error");
@@ -89,9 +92,24 @@ export function SupplierForm({ className }: SupplierFormProps) {
           </div>
           
           <div className="grid md:grid-cols-2 gap-6">
-            <FormField label="Legal Company Name" {...register("companyName")} error={errors.companyName?.message} />
-            <FormField label="Registration Number" {...register("registrationNumber")} error={errors.registrationNumber?.message} />
+            <FormField label="Registered Company Name" {...register("companyName")} error={errors.companyName?.message} />
+            <FormField label="Company Registration Number" {...register("registrationNumber")} error={errors.registrationNumber?.message} />
             <FormField label="Tax Clearance Number" {...register("taxClearanceNumber")} error={errors.taxClearanceNumber?.message} />
+            <div className="space-y-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-[var(--dxl-slate-light)]">VAT Registration</span>
+              <div className="flex gap-4 pt-2">
+                <label className="flex items-center gap-2 text-sm text-[var(--dxl-paper)] cursor-pointer">
+                  <input type="radio" value="registered" {...register("vatStatus")} /> VAT registered
+                </label>
+                <label className="flex items-center gap-2 text-sm text-[var(--dxl-paper)] cursor-pointer">
+                  <input type="radio" value="not_registered" {...register("vatStatus")} /> Not VAT registered
+                </label>
+              </div>
+              {errors.vatStatus && <p className="text-[10px] text-[var(--dxl-danger)] mt-1 font-medium">{errors.vatStatus.message}</p>}
+            </div>
+            {vatStatus === "registered" && (
+              <FormField label="VAT Number" {...register("vatNumber")} error={errors.vatNumber?.message} />
+            )}
             <FormField label="PRAZ Number (Optional)" {...register("prazNumber")} error={errors.prazNumber?.message} />
             <FormField label="Year Established" type="number" {...register("yearEstablished", { valueAsNumber: true })} error={errors.yearEstablished?.message} />
             <FormField label="Number of Employees" type="number" {...register("employees", { valueAsNumber: true })} error={errors.employees?.message} />
@@ -168,7 +186,7 @@ export function SupplierForm({ className }: SupplierFormProps) {
             <p className="text-sm text-[var(--dxl-slate-light)]">Step 3 of 3: Confirm your registration details.</p>
           </div>
 
-          <p className="text-sm text-[var(--dxl-slate-light)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form.</p>
+          <p className="text-sm text-[var(--dxl-slate-light)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form. Have your tax clearance certificate, company registration certificate and VAT certificate (if VAT registered) ready - verification can't complete without them.</p>
 
           <div className="pt-6 space-y-4">
             <div className="flex items-start gap-3">
