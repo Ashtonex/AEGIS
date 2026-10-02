@@ -3,10 +3,16 @@ name: Send Weekly HR Report
 # Runs the real weekly_hr_report_job inside the worker container, with the
 # clock pinned to 16:30 Harare on the most recent Friday so the job's
 # "Friday 16:00+" gate passes. The job's per-recipient Redis key still
-# applies, so anyone who already got that week's report is skipped.
+# applies, so anyone who already got that week's report is skipped -
+# unless "resend" is ticked, which clears those keys first.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      resend:
+        description: "Send again to people who already got this week's report"
+        type: boolean
+        default: false
 
 jobs:
   send:
@@ -21,7 +27,8 @@ jobs:
           script: |
             set -e
             cd /opt/aegis
-            docker compose -f deploy/digitalocean/docker-compose.yml exec -T imperium-worker python - <<'PY'
+            docker compose -f deploy/digitalocean/docker-compose.yml exec -T -e RESEND="${{ inputs.resend }}" imperium-worker python - <<'PY'
+            import os
             import asyncio
             from datetime import datetime, timedelta, timezone
 
@@ -38,6 +45,11 @@ jobs:
             async def main():
                 pool = await create_pool(worker.WorkerSettings.redis_settings)
                 try:
+                    if os.environ.get("RESEND") == "true":
+                        keys = await pool.keys(f"aegis:hr_weekly_report:*:{pinned.date().isoformat()}:*")
+                        if keys:
+                            await pool.delete(*keys)
+                        print("cleared", len(keys), "sent markers")
                     result = await worker.weekly_hr_report_job({"redis": pool, "job_id": "manual-hr-report"})
                     print("as_of", pinned.isoformat(), "result", result)
                 finally:
