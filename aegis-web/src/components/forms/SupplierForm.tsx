@@ -186,7 +186,7 @@ export function SupplierForm({ className }: SupplierFormProps) {
             <p className="text-sm text-[var(--dxl-slate-light)]">Step 3 of 3: Confirm your registration details.</p>
           </div>
 
-          <p className="text-sm text-[var(--dxl-slate-light)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form. Have your tax clearance certificate, company registration certificate and VAT certificate (if VAT registered) ready - verification can't complete without them.</p>
+          <p className="text-sm text-[var(--dxl-slate-light)]">Supporting documents are requested by procurement during the review process. They are not uploaded through this registration form. Have your tax clearance certificate, company registration certificate and VAT certificate (if VAT registered) ready - verification can&apos;t complete without them.</p>
 
           <div className="pt-6 space-y-4">
             <div className="flex items-start gap-3">
