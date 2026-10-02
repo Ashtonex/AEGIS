@@ -1,0 +1,47 @@
+name: Send Weekly HR Report
+
+# Runs the real weekly_hr_report_job inside the worker container, with the
+# clock pinned to 16:30 Harare on the most recent Friday so the job's
+# "Friday 16:00+" gate passes. The job's per-recipient Redis key still
+# applies, so anyone who already got that week's report is skipped.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and run the job
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/aegis
+            docker compose -f deploy/digitalocean/docker-compose.yml exec -T imperium-worker python - <<'PY'
+            import asyncio
+            from datetime import datetime, timedelta, timezone
+
+            from arq import create_pool
+
+            import app.workers.arq_worker as worker
+
+            harare = timezone(timedelta(hours=2))
+            local = datetime.now(harare)
+            friday = local - timedelta(days=(local.weekday() - 4) % 7)
+            pinned = friday.replace(hour=16, minute=30, second=0, microsecond=0)
+            worker.time_now = lambda: pinned.astimezone(timezone.utc)
+
+            async def main():
+                pool = await create_pool(worker.WorkerSettings.redis_settings)
+                try:
+                    result = await worker.weekly_hr_report_job({"redis": pool, "job_id": "manual-hr-report"})
+                    print("as_of", pinned.isoformat(), "result", result)
+                finally:
+                    await pool.close()
+
+            asyncio.run(main())
+            PY

@@ -1,4 +1,6 @@
+import html
 import json
+import re
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -41,6 +43,26 @@ def conditions_match(conditions: Any, event: Dict[str, Any]) -> bool:
     if operator == "contains":
         return str(expected).lower() in str(actual).lower()
     return False
+
+
+_PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def render_template(template: str, event: Dict[str, Any], escape: bool = False) -> str:
+    """Fills {{field}} placeholders from the event payload. A field the event
+    doesn't have renders blank rather than as a raw placeholder, and a lead
+    logged for an individual (no company) falls back to the contact's name
+    for {{company_name}}."""
+    values = dict(event)
+    if not values.get("company_name") and values.get("contact_name"):
+        values["company_name"] = values["contact_name"]
+
+    def fill(match: "re.Match[str]") -> str:
+        value = values.get(match.group(1))
+        rendered = "" if value is None else str(value)
+        return html.escape(rendered) if escape else rendered
+
+    return _PLACEHOLDER.sub(fill, template)
 
 
 async def execute_action(
@@ -197,11 +219,8 @@ async def execute_action(
             recipients.extend(role_emails)
         recipients = list(dict.fromkeys(recipients))  # de-dupe, keep order
 
-        subject = action_config.get("subject") or rule.get("name") or "AEGIS notification"
-        body = action_config.get("body") or ""
-        for key, value in event.items():
-            body = body.replace(f"{{{{{key}}}}}", str(value))
-            subject = subject.replace(f"{{{{{key}}}}}", str(value))
+        subject = render_template(action_config.get("subject") or rule.get("name") or "AEGIS notification", event)
+        body = render_template(action_config.get("body") or "", event, escape=True)
 
         if not recipients:
             comm = await db.execute(
