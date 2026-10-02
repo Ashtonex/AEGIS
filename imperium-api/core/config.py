@@ -68,8 +68,10 @@ class Settings(BaseSettings):
     # Friday HR report (app/services/hr/weekly_report.py), comma-separated.
     # Each address must belong to an AEGIS user: the report is built for that
     # user's organization, so it can never carry another tenant's data.
+    # admin@ has no live AEGIS user; ashton@admin.com stands in for it and
+    # EMAIL_REDIRECTS delivers that to admin@sixnineconstruction.com.
     HR_WEEKLY_REPORT_RECIPIENTS: str = (
-        "nyasha@sixnineconstruction.com,admin@sixnineconstruction.com,cosmas@sixnineconstruction.com"
+        "nyasha@sixnineconstruction.com,ashton@admin.com,cosmas@sixnineconstruction.com"
     )
 
     # AI Financial Control Assistant (Phase 10B) - read-only, tool-calling

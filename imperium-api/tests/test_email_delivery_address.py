@@ -1,4 +1,4 @@
-"""Emails to staff reach the mailbox behind their Teams account."""
+"""Emails to staff reach their login address and the mailbox behind their Teams account."""
 
 import asyncio
 
@@ -39,10 +39,58 @@ def test_lookup_failure_falls_back_to_the_original_address(monkeypatch):
             raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(core.database, "AsyncSessionLocal", Boom())
-    assert asyncio.run(email_module._delivery_address("client@example.com")) == "client@example.com"
+    assert asyncio.run(email_module._delivery_addresses("client@example.com")) == ["client@example.com"]
 
 
-def test_send_email_resolves_the_recipient_before_sending():
-    source = open(email_module.__file__, encoding="utf-8").read()
-    send_body = source[source.index("async def send_email("):]
-    assert "to = await _delivery_address(to)" in send_body
+class _FakeSession:
+    def __init__(self, teams_account):
+        self.teams_account = teams_account
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, *args, **kwargs):
+        teams_account = self.teams_account
+
+        class Result:
+            def scalar(self):
+                return teams_account
+
+        return Result()
+
+
+def test_staff_with_teams_account_get_both_mailboxes(monkeypatch):
+    monkeypatch.setattr(
+        core.database, "AsyncSessionLocal",
+        lambda: _FakeSession("cossiemudekwa_gmail.com#EXT#@SixNineConstruction.onmicrosoft.com"),
+    )
+    assert asyncio.run(email_module._delivery_addresses("cosmas@sixnineconstruction.com")) == [
+        "cosmas@sixnineconstruction.com", "cossiemudekwa@gmail.com",
+    ]
+
+
+def test_no_teams_account_sends_to_the_address_only(monkeypatch):
+    monkeypatch.setattr(core.database, "AsyncSessionLocal", lambda: _FakeSession(None))
+    assert asyncio.run(email_module._delivery_addresses("client@example.com")) == ["client@example.com"]
+
+
+def test_each_mailbox_is_a_separate_send_and_one_success_counts(monkeypatch):
+    sent = []
+
+    async def fake_addresses(to):
+        return [to, "personal@gmail.com"]
+
+    async def fake_send_one(to, subject, html, text):
+        sent.append(to)
+        return to == "personal@gmail.com"  # work address bounces
+
+    monkeypatch.setattr(email_module, "_delivery_addresses", fake_addresses)
+    monkeypatch.setattr(email_module, "_send_one", fake_send_one)
+    monkeypatch.setattr(email_module.settings, "RESEND_API_KEY", "key")
+    monkeypatch.setattr(email_module.settings, "EMAIL_FROM_ADDRESS", "AEGIS <a@b.com>")
+    ok = asyncio.run(email_module.send_email("work@sixnineconstruction.com", "s", "<p>h</p>"))
+    assert ok is True
+    assert sent == ["work@sixnineconstruction.com", "personal@gmail.com"]

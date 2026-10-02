@@ -34,16 +34,17 @@ def real_address_from_teams_account(teams_account: Optional[str]) -> Optional[st
     return address
 
 
-async def _delivery_address(to: str) -> str:
-    """Where an email addressed to `to` should actually go.
+async def _delivery_addresses(to: str) -> list[str]:
+    """Every mailbox an email addressed to `to` should go to.
 
-    AEGIS login emails aren't always real mailboxes (SNC staff log in as
-    name@sixnineconstruction.com, which doesn't exist; they're Microsoft
-    guests on personal addresses). When `to` is an AEGIS user's login and
-    that user has a Teams account (core.users.teams_account), deliver to the
-    mailbox behind it. Anyone else - clients, suppliers, staff without a
-    Teams account - is untouched. Never raises: any lookup problem sends to
-    the original address, exactly as before.
+    Always the address itself. SNC staff log in as name@sixnineconstruction.com
+    but sign into Teams as Microsoft guests on personal addresses, and it
+    isn't certain every login has a work mailbox. So when `to` is an AEGIS
+    user's login and that user has a Teams account
+    (core.users.teams_account), the mailbox behind it gets a copy too.
+    Anyone else - clients, suppliers, staff without a Teams account - is
+    untouched. Never raises: any lookup problem sends to the original
+    address only.
     """
     try:
         from core.database import AsyncSessionLocal
@@ -61,10 +62,13 @@ async def _delivery_address(to: str) -> str:
                     {"to": to.strip()},
                 )
             ).scalar()
-        return real_address_from_teams_account(teams_account) or to
     except Exception as exc:
         logger.warning("Email recipient lookup failed; sending to original address", error=str(exc))
-        return to
+        return [to]
+    personal = real_address_from_teams_account(teams_account)
+    if personal and personal.lower() != to.strip().lower():
+        return [to, personal]
+    return [to]
 
 
 async def send_email(
@@ -73,12 +77,13 @@ async def send_email(
     html: str,
     text: Optional[str] = None,
 ) -> bool:
-    """Send a transactional email via Resend. Returns True on a 2xx from
-    Resend, False otherwise - callers decide whether that's fatal (fail
-    closed, don't pretend the email went out). A login-only address is
-    swapped for its real mailbox (settings.EMAIL_REDIRECTS); staff whose
-    login email isn't a real mailbox are delivered to via their Teams
-    account - see _delivery_address."""
+    """Send a transactional email via Resend. Returns True when Resend
+    accepted it for at least one mailbox, False otherwise - callers decide
+    whether that's fatal (fail closed, don't pretend the email went out). A
+    login-only address is swapped for its real mailbox
+    (settings.EMAIL_REDIRECTS); staff with a Teams account also get a copy
+    at the mailbox behind it - see _delivery_addresses. Each mailbox is a
+    separate send, so a bounce or suppression on one can't block the other."""
     to = settings.email_redirects.get(to.strip().lower(), to)
     if not settings.RESEND_API_KEY or not settings.EMAIL_FROM_ADDRESS:
         logger.warning(
@@ -88,7 +93,14 @@ async def send_email(
         )
         return False
 
-    to = await _delivery_address(to)
+    results = [
+        await _send_one(address, subject, html, text)
+        for address in await _delivery_addresses(to)
+    ]
+    return any(results)
+
+
+async def _send_one(to: str, subject: str, html: str, text: Optional[str]) -> bool:
     payload = {
         "from": settings.EMAIL_FROM_ADDRESS,
         "to": [to],
