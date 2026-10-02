@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     PERPLEXITY_API_KEY: Optional[str] = None
     QUOTATION_AI_ANALYSIS_MODEL: str = "sonar-reasoning-pro"
 
+    # Login-only addresses that can't receive mail, as "from=to" pairs,
+    # comma-separated. core/email.py delivers mail for the left address to
+    # the right one; the login itself is untouched.
+    EMAIL_REDIRECTS: str = "ashton@admin.com=admin@sixnineconstruction.com"
+
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
@@ -265,6 +270,11 @@ class Settings(BaseSettings):
             for origin in self.ALLOWED_ORIGINS.split(",")
             if origin.strip()
         ]
+
+    @property
+    def email_redirects(self) -> dict[str, str]:
+        pairs = (pair.split("=", 1) for pair in self.EMAIL_REDIRECTS.split(",") if "=" in pair)
+        return {src.strip().lower(): dst.strip() for src, dst in pairs if src.strip() and dst.strip()}
 
     @property
     def cors_origins(self) -> List[str]:
