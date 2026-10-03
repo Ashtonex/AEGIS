@@ -1,4 +1,4 @@
-"""Emails to staff reach their login address and the mailbox behind their Teams account."""
+"""Emails to staff reach one working mailbox: their work address if it is a real mailbox, else the one behind their Teams account."""
 
 import asyncio
 
@@ -62,14 +62,27 @@ class _FakeSession:
         return Result()
 
 
-def test_staff_with_teams_account_get_both_mailboxes(monkeypatch):
+def test_staff_with_a_real_work_mailbox_get_it_only(monkeypatch):
+    def boom():
+        raise AssertionError("no lookup needed for a known work mailbox")
+
+    monkeypatch.setattr(core.database, "AsyncSessionLocal", boom)
+    assert asyncio.run(email_module._delivery_addresses("Cosmas@SixNineConstruction.com")) == [
+        "Cosmas@SixNineConstruction.com",
+    ]
+
+
+def test_staff_without_a_work_mailbox_get_their_teams_mailbox_only(monkeypatch):
     monkeypatch.setattr(
         core.database, "AsyncSessionLocal",
-        lambda: _FakeSession("cossiemudekwa_gmail.com#EXT#@SixNineConstruction.onmicrosoft.com"),
+        lambda: _FakeSession("ekowimbeah5_gmail.com#EXT#@SixNineConstruction.onmicrosoft.com"),
     )
-    assert asyncio.run(email_module._delivery_addresses("cosmas@sixnineconstruction.com")) == [
-        "cosmas@sixnineconstruction.com", "cossiemudekwa@gmail.com",
-    ]
+    assert asyncio.run(email_module._delivery_addresses("ekow@sixnineconstruction.com")) == ["ekowimbeah5@gmail.com"]
+
+
+def test_undecodable_teams_account_keeps_the_original_address(monkeypatch):
+    monkeypatch.setattr(core.database, "AsyncSessionLocal", lambda: _FakeSession("not-an-address"))
+    assert asyncio.run(email_module._delivery_addresses("ekow@sixnineconstruction.com")) == ["ekow@sixnineconstruction.com"]
 
 
 def test_no_teams_account_sends_to_the_address_only(monkeypatch):

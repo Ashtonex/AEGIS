@@ -35,17 +35,21 @@ def real_address_from_teams_account(teams_account: Optional[str]) -> Optional[st
 
 
 async def _delivery_addresses(to: str) -> list[str]:
-    """Every mailbox an email addressed to `to` should go to.
+    """The one mailbox an email addressed to `to` should go to.
 
-    Always the address itself. SNC staff log in as name@sixnineconstruction.com
-    but sign into Teams as Microsoft guests on personal addresses, and it
-    isn't certain every login has a work mailbox. So when `to` is an AEGIS
-    user's login and that user has a Teams account
-    (core.users.teams_account), the mailbox behind it gets a copy too.
-    Anyone else - clients, suppliers, staff without a Teams account - is
-    untouched. Never raises: any lookup problem sends to the original
-    address only.
+    SNC staff log in as name@sixnineconstruction.com but sign into Teams as
+    Microsoft guests on personal addresses, and only some logins are real
+    mailboxes (settings.WORK_MAILBOXES). So:
+      - a login that is a real work mailbox gets the email there;
+      - any other AEGIS login with a Teams account (core.users.teams_account)
+        gets it at the mailbox behind that account instead, since its work
+        address would only land in the domain's catch-all;
+      - anyone else - clients, suppliers, staff without a Teams account - is
+        untouched.
+    Never raises: any lookup problem sends to the original address.
     """
+    if to.strip().lower() in settings.work_mailboxes:
+        return [to]
     try:
         from core.database import AsyncSessionLocal
         from sqlalchemy import text
@@ -66,9 +70,7 @@ async def _delivery_addresses(to: str) -> list[str]:
         logger.warning("Email recipient lookup failed; sending to original address", error=str(exc))
         return [to]
     personal = real_address_from_teams_account(teams_account)
-    if personal and personal.lower() != to.strip().lower():
-        return [to, personal]
-    return [to]
+    return [personal] if personal else [to]
 
 
 async def send_email(
@@ -81,9 +83,8 @@ async def send_email(
     accepted it for at least one mailbox, False otherwise - callers decide
     whether that's fatal (fail closed, don't pretend the email went out). A
     login-only address is swapped for its real mailbox
-    (settings.EMAIL_REDIRECTS); staff with a Teams account also get a copy
-    at the mailbox behind it - see _delivery_addresses. Each mailbox is a
-    separate send, so a bounce or suppression on one can't block the other."""
+    (settings.EMAIL_REDIRECTS), and a staff login goes to that person's one
+    working mailbox - see _delivery_addresses."""
     to = settings.email_redirects.get(to.strip().lower(), to)
     if not settings.RESEND_API_KEY or not settings.EMAIL_FROM_ADDRESS:
         logger.warning(

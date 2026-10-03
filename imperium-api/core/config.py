@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     # comma-separated. core/email.py delivers mail for the left address to
     # the right one; the login itself is untouched.
     EMAIL_REDIRECTS: str = "ashton@admin.com=admin@sixnineconstruction.com"
+    # Staff logins that are real, working mailboxes. sixnineconstruction.com
+    # is split-delivered (2026-10-03): Microsoft 365 holds admin@/operations@
+    # and relays every other address to Namecheap Private Email, where these
+    # mailboxes exist. Staff on this list get email at their work address
+    # only; other staff with a Teams account get it at the mailbox behind
+    # that account instead (core/email.py _delivery_addresses).
+    WORK_MAILBOXES: str = (
+        "nyasha@sixnineconstruction.com,cosmas@sixnineconstruction.com,"
+        "hitler@sixnineconstruction.com,pheobe@sixnineconstruction.com"
+    )
 
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
@@ -277,6 +287,10 @@ class Settings(BaseSettings):
     def email_redirects(self) -> dict[str, str]:
         pairs = (pair.split("=", 1) for pair in self.EMAIL_REDIRECTS.split(",") if "=" in pair)
         return {src.strip().lower(): dst.strip() for src, dst in pairs if src.strip() and dst.strip()}
+
+    @property
+    def work_mailboxes(self) -> set[str]:
+        return {a.strip().lower() for a in self.WORK_MAILBOXES.split(",") if a.strip()}
 
     @property
     def cors_origins(self) -> List[str]:
