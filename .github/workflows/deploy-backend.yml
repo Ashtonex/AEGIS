@@ -8,6 +8,13 @@ on:
       - "deploy/digitalocean/**"
   workflow_dispatch: {}
 
+# Only one deploy at a time. Overlapping runs share /opt/aegis on the droplet
+# and collided on git's index.lock and on recreating the worker container.
+# Queue instead of cancelling so a run never dies mid docker compose down/up.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
