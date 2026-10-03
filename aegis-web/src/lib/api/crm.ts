@@ -1422,6 +1422,13 @@ export async function updateTeamsAccount(personId: string, teamsAccount: string)
   });
 }
 
+export async function sendTaskSummaryToEveryone(): Promise<ApiResponse<{ people: number; teams_sent: number; emails_sent: number; failed: string[] }>> {
+  return fetchApi<ApiResponse<{ people: number; teams_sent: number; emails_sent: number; failed: string[] }>>('/api/v1/crm-tasks/routing/send-summary', {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
 export async function testTaskRoutingTeams(userId?: string): Promise<ApiResponse<{ recipient: string; detail: string }>> {
   return fetchApi<ApiResponse<{ recipient: string; detail: string }>>('/api/v1/crm-tasks/routing/test-teams', {
     method: 'POST',

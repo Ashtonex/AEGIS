@@ -1577,6 +1577,24 @@ async def update_teams_account(
     return {"success": True, "data": await _routing_config(db, user["org_id"]), "message": "Teams account saved.", "meta": {}}
 
 
+@router.post("/routing/send-summary")
+async def send_task_summary_to_everyone(
+    user: dict = Depends(require_permission("crm_tasks.distribute")),
+):
+    """Sends every person with open tasks one Teams card and one email
+    summarising their workload (app/services/task_summary.py)."""
+    from app.services.task_summary import send_task_summaries
+
+    result = await send_task_summaries(user["org_id"])
+    message = (
+        f"Sent to {result['people']} people: {result['teams_sent']} Teams message(s), "
+        f"{result['emails_sent']} email(s)."
+    )
+    if result["failed"]:
+        message += f" {len(result['failed'])} failed."
+    return {"success": True, "data": result, "message": message, "meta": {}}
+
+
 @router.post("/routing/test-teams")
 async def test_task_routing_teams(
     payload: TeamsTestPayload,
