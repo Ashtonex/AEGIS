@@ -2453,14 +2453,31 @@ async def dispatch_plant_asset(
     db: AsyncSession = Depends(get_db),
 ):
     asset = await asset_or_404(db, payload.fleet_id, user["org_id"])
+    # The plant request and the open-critical-defect count are independent of
+    # each other, so they are resolved in a single round trip rather than two
+    # sequential ones. (They can't be run concurrently on this session -
+    # SQLAlchemy's AsyncSession forbids concurrent operations on one
+    # connection - so merging the statements is the correct way to cut the
+    # round trip, not asyncio.gather.)
     request = (
         (
             await db.execute(
                 text("""
-        SELECT * FROM fleet.plant_requests
-        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+        SELECT pr.*, (
+            SELECT COUNT(*) FROM fleet.fleet_defects fd
+            WHERE fd.organization_id = :org_id AND fd.fleet_id = :fleet_id
+              AND fd.is_deleted = false
+              AND fd.status IN ('open','triaged','in_repair')
+              AND fd.severity IN ('high','critical')
+        ) AS open_critical_defect_count
+        FROM fleet.plant_requests pr
+        WHERE pr.id=:id AND pr.organization_id=:org_id AND pr.is_deleted=false
     """),
-                {"id": plant_request_id, "org_id": user["org_id"]},
+                {
+                    "id": plant_request_id,
+                    "org_id": user["org_id"],
+                    "fleet_id": payload.fleet_id,
+                },
             )
         )
         .mappings()
@@ -2488,16 +2505,8 @@ async def dispatch_plant_asset(
         operator_required=bool(request["operator_required"]),
         has_operator=bool(payload.operator_employee_id) or bool(readiness_pack.get("operator_verified")),
     )
-    critical_defects = await db.execute(
-        text("""
-        SELECT COUNT(*) FROM fleet.fleet_defects
-        WHERE organization_id=:org_id AND fleet_id=:fleet_id AND is_deleted=false
-          AND status IN ('open','triaged','in_repair')
-          AND severity IN ('high','critical')
-    """),
-        {"org_id": user["org_id"], "fleet_id": payload.fleet_id},
-    )
-    if int(critical_defects.scalar() or 0) > 0:
+    # Already resolved alongside the plant request above.
+    if int(request["open_critical_defect_count"] or 0) > 0:
         readiness_blockers.append("Critical defects remain open")
     if readiness_blockers:
         await db.execute(

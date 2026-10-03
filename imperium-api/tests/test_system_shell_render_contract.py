@@ -8,6 +8,13 @@ WEB_ROOT = ROOT.parent / "aegis-web" / "src"
 DASHBOARD_SHELL = (WEB_ROOT / "app" / "dashboard" / "DashboardShell.tsx").read_text(
     encoding="utf-8"
 )
+# The sidebar group renderer was extracted out of DashboardShell.tsx into a
+# memoized component so that the shell's per-second clock stops re-rendering
+# every nav link once a second. The render-side assertions below therefore
+# read this file, while the group *data* assertions still read the shell.
+SHELL_NAV_GROUPS = (
+    WEB_ROOT / "components" / "shell" / "ShellNavGroups.tsx"
+).read_text(encoding="utf-8")
 PORTAL_LAYOUT = (WEB_ROOT / "app" / "portal" / "layout.tsx").read_text(encoding="utf-8")
 NAVIGATION_WRAPPER = (WEB_ROOT / "components" / "layout" / "NavigationWrapper.tsx").read_text(
     encoding="utf-8"
@@ -61,13 +68,23 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn('w-[min(360px,calc(100vw-1rem))]', NOTIFICATION_BELL)
 
     def test_single_destination_groups_render_as_direct_links(self):
-        self.assertIn("directLink?: boolean", DASHBOARD_SHELL)
+        self.assertIn("directLink?: boolean", SHELL_NAV_GROUPS)
         for name in ("Executive", "Messages", "Notifications"):
             group_start = DASHBOARD_SHELL.index(f'name: "{name}"')
             group_end = DASHBOARD_SHELL.index("subItems:", group_start)
             self.assertIn("directLink: true", DASHBOARD_SHELL[group_start:group_end])
-        self.assertIn("if (group.directLink)", DASHBOARD_SHELL)
-        self.assertIn("href={group.href}", DASHBOARD_SHELL)
+        self.assertIn("if (group.directLink)", SHELL_NAV_GROUPS)
+        self.assertIn("href={group.href}", SHELL_NAV_GROUPS)
+
+    def test_nav_group_renderer_is_memoized_away_from_the_clock(self):
+        """The shell used to hold a `setInterval(updateTime, 1000)` in the same
+        component that rendered all 149 sidebar links, so the whole navigation
+        tree re-rendered once a second for as long as a dashboard tab was open.
+        The clock and the group renderer must stay in separate components, and
+        the renderer must stay memoized."""
+        self.assertIn("memo(", SHELL_NAV_GROUPS)
+        self.assertNotIn("setInterval", DASHBOARD_SHELL)
+        self.assertNotIn("setInterval", SHELL_NAV_GROUPS)
 
     def test_module_pages_do_not_render_duplicate_horizontal_navigation(self):
         for source in MODULE_PAGES_WITH_SIDENAV_ONLY:

@@ -40,13 +40,40 @@ from core.config import settings
 # still removes the dominant cost (the handshake, ~1.4s of the old ~2.6s).
 _APP_DATABASE_URL = settings.DATABASE_URL.replace(":5432/", ":6543/")
 
+# Pool sizing is configurable (see core/config.py) because the right value
+# depends on worker count. The old hardcoded 10+10 was the binding constraint
+# on concurrency: get_db() holds its connection for the whole request (a
+# SQLAlchemy Session keeps the connection from its first statement until
+# commit/rollback/close), and a dashboard page fires 10-15 concurrent calls,
+# so *one* user could occupy most of a 20-connection pool and a second user
+# would queue behind pool_timeout. That queueing - not Supabase - is what
+# produced the 8-45s response times recorded in aegis-web/src/lib/api.ts.
+#
+# Two changes address it together, and the second matters more than the first:
+#   1. A larger pool (default 12+12 per worker). Safe on transaction mode,
+#      which multiplexes logical clients over few backend connections.
+#   2. A much shorter *hold time* per request. Caching the authorization
+#      context (core/cache.py + core/security.py) removes four sequential
+#      round trips - roughly 0.9s at ~220ms RTT - from every authenticated
+#      request, and asyncio.gather in the hot routers removes more. Required
+#      pool size is arrival rate x hold time, so cutting hold time ~60% is
+#      equivalent to a 2.5x pool increase and costs no extra DB resources.
+#
+# pool_timeout is set explicitly and low: waiting 30s (the SQLAlchemy default)
+# for a connection just converts pool exhaustion into a mystery hang. Failing
+# in 10s surfaces it as the capacity problem it is.
 engine = create_async_engine(
     _APP_DATABASE_URL,
     echo=(settings.ENVIRONMENT == "development" and settings.DEBUG),
     future=True,
-    pool_size=10,
-    max_overflow=10,
-    pool_recycle=180,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+    pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
+    # Transaction-mode poolers can hand back a connection whose server-side
+    # state died between checkouts; pre_ping turns that into a transparent
+    # reconnect instead of a failed request.
+    pool_pre_ping=True,
     connect_args={
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
@@ -67,6 +94,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
+            # Roll back before closing. Read-only endpoints never commit, so
+            # without this the implicit transaction SQLAlchemy opened on the
+            # first SELECT is returned to the pooler still open, and the next
+            # checkout inherits an idle-in-transaction connection. Explicitly
+            # ending it also releases any transaction-scoped state (e.g. the
+            # request.jwt.claim.sub set_config used by the audit trigger) so
+            # it can never leak into another request on a reused connection.
+            await session.rollback()
             await session.close()
 
 

@@ -152,8 +152,12 @@ class FrontendApiContractTests(unittest.TestCase):
     def test_executive_page_spacing_and_missing_units_are_stable(self):
         self.assertIn("function metricWithUnit", EXECUTIVE_PAGE)
         self.assertIn('displayed === "Not recorded" ? displayed', EXECUTIVE_PAGE)
-        self.assertIn("leading-[1.08]", EXECUTIVE_PAGE)
-        self.assertIn("tracking-normal", EXECUTIVE_PAGE)
+        # The greeting used to be a hand-rolled <h1> with pinned leading and
+        # tracking. It is now rendered through the shared DashboardPageHeader
+        # so every dashboard route orients the user the same way; pin that
+        # instead of per-page typography classes.
+        self.assertIn("<DashboardPageHeader", EXECUTIVE_PAGE)
+        self.assertIn("title={`${greetingForNow(currentTime)}, ${displayName}.`}", EXECUTIVE_PAGE)
         self.assertIn("mainScrollRef.current?.scrollTo({ top: 0, left: 0 })", DASHBOARD_SHELL)
 
     def test_finance_cost_freshness_does_not_trigger_executive_warning_banner(self):

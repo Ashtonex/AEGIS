@@ -43,6 +43,11 @@ def create_app() -> FastAPI:
             yield
         finally:
             await stop_listener()
+            # Release the shared cache's Redis connection so a reload or
+            # rolling restart doesn't leak it.
+            from core.cache import close_cache
+
+            await close_cache()
 
     app = FastAPI(
         title="Project Imperium API",
@@ -57,6 +62,17 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
+
+    # Cache-Control on safe reference reads (and no-store everywhere else),
+    # plus the backstop that clears cached authorization contexts after any
+    # successful identity-administration write. See core/http_cache.py.
+    from core.http_cache import (
+        AuthCacheInvalidationMiddleware,
+        ReferenceCacheHeadersMiddleware,
+    )
+
+    app.add_middleware(ReferenceCacheHeadersMiddleware)
+    app.add_middleware(AuthCacheInvalidationMiddleware)
 
     app.add_middleware(StructuredLoggingMiddleware)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)

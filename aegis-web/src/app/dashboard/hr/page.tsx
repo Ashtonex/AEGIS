@@ -21,6 +21,7 @@ import {
   getInternalProjects
 } from "@/lib/api";
 import { VendorVerificationPanel } from "./VendorVerificationPanel";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 type HRTab = "employees" | "recruitment" | "documents" | "credentials" | "performance" | "assets" | "training" | "org-chart" | "planning" | "attendance" | "leave" | "payroll" | "vendor-verification";
@@ -463,28 +464,34 @@ function HRWorkspace() {
       )}
 
       {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">HR & Workforce</h1>
-          <p className="text-sm text-slate-light font-sans mt-0.5">Six Nine Construction workforce, competence registers, and attendance controls.</p>
-        </div>
-        <div className="flex space-x-2">
-          <button
-            onClick={() => setShowAttendanceModal(true)}
-            className="flex items-center space-x-2 bg-ink-light border border-ink-mid hover:bg-ink-mid/30 text-paper font-medium px-4 py-2 rounded-sm text-sm transition-colors"
-          >
-            <CalendarCheck className="h-4 w-4 text-signal" />
-            <span>Log Attendance</span>
-          </button>
-          <button
-            onClick={() => setShowLeaveModal(true)}
-            className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            <span>Apply Leave</span>
-          </button>
-        </div>
-      </div>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "HR" },
+        ]}
+        title="HR & Workforce"
+        description="Six Nine Construction workforce, competence registers, and attendance controls."
+        actions={
+          <>
+          <div className="flex space-x-2">
+            <button
+              onClick={() => setShowAttendanceModal(true)}
+              className="flex items-center space-x-2 bg-ink-light border border-ink-mid hover:bg-ink-mid/30 text-paper font-medium px-4 py-2 rounded-sm text-sm transition-colors"
+            >
+              <CalendarCheck className="h-4 w-4 text-signal" />
+              <span>Log Attendance</span>
+            </button>
+            <button
+              onClick={() => setShowLeaveModal(true)}
+              className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Apply Leave</span>
+            </button>
+          </div>
+          </>
+        }
+      />
 
       {/* KPI strip */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">

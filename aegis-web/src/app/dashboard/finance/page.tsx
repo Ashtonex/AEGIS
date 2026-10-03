@@ -45,6 +45,7 @@ import {
   getFinanceDepartmentPnl,
   getInternalProjects
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace";
@@ -404,21 +405,24 @@ function FinanceWorkspace() {
       )}
 
       {/* Title & Subtitle */}
-      <div className="flex justify-between items-center" data-tour="finance-title">
-        <div className="flex items-center gap-2">
-          <div>
-            <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Finance & Cost Control</h1>
-            <p className="text-sm text-slate-light font-sans mt-0.5">SNC authoritative financial ledger and budget controls.</p>
-          </div>
-          <button
-            onClick={financeTour.openTour}
-            className="text-slate hover:text-paper transition-colors"
-            title="Replay Finance tour"
-            aria-label="Replay Finance tour"
-          >
-            <CircleHelp className="w-5 h-5" />
-          </button>
-        </div>
+      <DashboardPageHeader
+        data-tour="finance-title"
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Finance" },
+        ]}
+        title="Finance & Cost Control"
+        description="SNC authoritative financial ledger and budget controls."
+        actions={
+        <>
+        <button
+          onClick={financeTour.openTour}
+          className="text-slate hover:text-paper transition-colors"
+          title="Replay Finance tour"
+          aria-label="Replay Finance tour"
+        >
+          <CircleHelp className="w-5 h-5" />
+        </button>
         <div className="flex items-center space-x-2">
           <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider" data-tour="finance-departments">
             <button
@@ -476,7 +480,9 @@ function FinanceWorkspace() {
             </button>
           )}
         </div>
-      </div>
+        </>
+        }
+      />
 
       {/* KPI Cards Strip */}
       <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4" data-tour="finance-kpis">

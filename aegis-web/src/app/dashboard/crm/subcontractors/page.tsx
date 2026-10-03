@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { getSubcontractors, createSubcontractor, updateSubcontractor } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 // ---- Types ------------------------------------------------------------------
 
@@ -413,17 +414,26 @@ export default function SubcontractorRegistry() {
           <Link href="/dashboard/crm" className="inline-flex items-center text-data-sm font-mono text-slate hover:text-signal transition-colors mb-4">
             <ArrowLeft className="w-3.5 h-3.5 mr-2" />BACK TO CRM
           </Link>
-          <div className="flex items-end justify-between border-b border-ink-mid pb-5">
-            <div>
-              <div className="font-mono text-[10px] text-signal tracking-widest mb-1">-- VENDOR INTELLIGENCE HUB</div>
-              <h1 className="font-display text-headline-xl tracking-tight text-paper">Vendor Registry</h1>
-              <p className="text-body-sm text-slate-light font-mono tracking-widest uppercase mt-1">Asset-Light Scale Infrastructure</p>
-            </div>
-            <button onClick={openAddModal}
-              className="inline-flex items-center gap-2 bg-signal text-ink font-mono text-data-sm font-bold px-4 py-2.5 hover:bg-yellow-500 transition-colors">
-              <Plus className="w-4 h-4" />REGISTER SUBCONTRACTOR
-            </button>
-          </div>
+          <DashboardPageHeader
+            className="border-b border-ink-mid pb-5"
+            divider={false}
+            breadcrumbs={[
+              { label: "Dashboard", href: "/dashboard" },
+              { label: "CRM", href: "/dashboard/crm" },
+              { label: "Subcontractors" },
+            ]}
+            eyebrow="Vendor intelligence hub"
+            title="Vendor Registry"
+            description="Asset-light scale infrastructure: subcontractor and supplier registry with clearance and reliability telemetry."
+            actions={
+              <>
+          <button onClick={openAddModal}
+            className="inline-flex items-center gap-2 bg-signal text-ink font-mono text-data-sm font-bold px-4 py-2.5 hover:bg-yellow-500 transition-colors">
+            <Plus className="w-4 h-4" />REGISTER SUBCONTRACTOR
+          </button>
+              </>
+            }
+          />
         </header>
 
         <div className="mb-4 flex flex-wrap gap-2 border-b border-ink-mid">

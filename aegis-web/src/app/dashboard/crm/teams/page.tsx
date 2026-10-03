@@ -31,6 +31,7 @@ import {
   setTeamMemberLead,
 } from "@/lib/api";
 import { avatarTone, initials } from "@/lib/avatar";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 interface Team {
   id: string;
@@ -309,30 +310,37 @@ export default function TeamsPage() {
           <Link href="/dashboard/crm" className="inline-flex items-center gap-1.5 text-xs text-slate-light hover:text-paper">
             <ArrowLeft className="h-3.5 w-3.5" /> Back to CRM
           </Link>
-          <div className="mt-4 flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <p className="font-mono text-xs uppercase tracking-widest text-signal">Team Command Centre</p>
-              <h1 className="mt-2 font-display text-3xl font-semibold text-paper">Teams</h1>
-              <p className="mt-2 max-w-4xl text-sm text-slate-light">
-                Build accountable squads, validate whether they are staffed correctly, and see how work assigned to teams is converting into business progress.
-              </p>
-            </div>
-            <form onSubmit={handleCreate} className="flex w-full gap-2 xl:max-w-xl">
-              <input
-                value={newTeamName}
-                onChange={(e) => setNewTeamName(e.target.value)}
-                placeholder="Create team, e.g. Tender Response Squad"
-                className="h-11 min-w-0 flex-1 border border-ink-mid bg-ink-light px-3 text-sm text-paper outline-none placeholder:text-slate focus:border-signal"
-              />
-              <button
-                type="submit"
-                disabled={creating || !newTeamName.trim()}
-                className="inline-flex h-11 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-40"
-              >
-                {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Build Team
-              </button>
-            </form>
-          </div>
+          <DashboardPageHeader
+            className="mt-4"
+            divider={false}
+            breadcrumbs={[
+              { label: "Dashboard", href: "/dashboard" },
+              { label: "CRM", href: "/dashboard/crm" },
+              { label: "Teams" },
+            ]}
+            eyebrow="Team command centre"
+            title="Teams"
+            description="Build accountable squads, validate whether they are staffed correctly, and see how work assigned to teams is converting into business progress."
+            actions={
+              <>
+          <form onSubmit={handleCreate} className="flex w-full gap-2 xl:max-w-xl">
+            <input
+              value={newTeamName}
+              onChange={(e) => setNewTeamName(e.target.value)}
+              placeholder="Create team, e.g. Tender Response Squad"
+              className="h-11 min-w-0 flex-1 border border-ink-mid bg-ink-light px-3 text-sm text-paper outline-none placeholder:text-slate focus:border-signal"
+            />
+            <button
+              type="submit"
+              disabled={creating || !newTeamName.trim()}
+              className="inline-flex h-11 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-40"
+            >
+              {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Build Team
+            </button>
+          </form>
+              </>
+            }
+          />
         </header>
 
         {error && (

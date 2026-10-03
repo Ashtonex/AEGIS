@@ -29,6 +29,7 @@ import {
   saveCrmConnectedAccount,
   updateCrmAiRecommendation,
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type Provider = {
   provider: string;
@@ -273,19 +274,26 @@ export default function CrmIntegrationsPage() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-paper p-6">
-      <header className="mb-6 flex items-end justify-between border-b border-white/5 pb-4">
-        <div>
-          <div className="mb-1 flex items-center gap-2">
-            <Plug className="h-4 w-4 text-[#D4AF37]" />
-            <span className="font-mono text-[9px] uppercase tracking-widest text-[#D4AF37]">CRM operating layer</span>
-          </div>
-          <h1 className="font-sans text-2xl font-black uppercase tracking-tight">Connected Apps</h1>
-        </div>
-        <Link href="/dashboard/crm" className="flex items-center gap-1.5 border border-white/10 bg-white/[0.02] px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-slate-light hover:bg-white/[0.05]">
-          <ArrowLeft className="h-3.5 w-3.5" />
-          CRM Command
-        </Link>
-      </header>
+      <DashboardPageHeader
+        className="mb-6 border-b border-white/5 pb-4"
+        divider={false}
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "CRM", href: "/dashboard/crm" },
+          { label: "Integrations" },
+        ]}
+        eyebrow="CRM operating layer"
+        title="Connected Apps"
+        description="Third-party services wired into the CRM operating layer."
+        actions={
+          <>
+          <Link href="/dashboard/crm" className="flex items-center gap-1.5 border border-white/10 bg-white/[0.02] px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest text-slate-light hover:bg-white/[0.05]">
+            <ArrowLeft className="h-3.5 w-3.5" />
+            CRM Command
+          </Link>
+          </>
+        }
+      />
 
       {(notice || error) && (
         <div className={`mb-4 flex items-start gap-2 border px-4 py-3 text-sm ${error ? "border-red-500/25 bg-red-950/20 text-red-100" : "border-emerald-500/25 bg-emerald-950/20 text-emerald-100"}`}>

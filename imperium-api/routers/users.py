@@ -4,7 +4,7 @@ from sqlalchemy import text
 from uuid import UUID
 
 from core.database import get_db
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, invalidate_user_auth, require_permission
 from schemas.users import UserUpdate, UserRoleAssign
 
 router = APIRouter()
@@ -122,6 +122,11 @@ async def update_user(
     updated = result.fetchone()
     await db.commit()
 
+    # is_active is part of the cached authorization context, so a
+    # deactivation must take effect on the target's very next request rather
+    # than after the cache TTL.
+    await invalidate_user_auth(str(id))
+
     if not updated:
         raise HTTPException(status_code=404, detail="User not found.")
 
@@ -144,6 +149,10 @@ async def delete_user(
     )
     await db.execute(query, {"id": id, "org_id": user["org_id"]})
     await db.commit()
+
+    # Revoke immediately - a soft-deleted user must not keep working off a
+    # cached authorization context.
+    await invalidate_user_auth(str(id))
 
     return {"success": True, "data": None, "message": "User soft deleted.", "meta": {}}
 
@@ -171,6 +180,9 @@ async def assign_role(
             status_code=404, detail="User or role was not found in this organization."
         )
     await db.commit()
+
+    # The new role's permissions must be live on the target's next request.
+    await invalidate_user_auth(str(id))
 
     return {
         "success": True,

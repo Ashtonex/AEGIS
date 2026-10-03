@@ -15,6 +15,7 @@ import {
   approveReport,
   getInternalProjects
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 
@@ -211,11 +212,14 @@ function ReportsWorkspace() {
         </div>
       )}
 
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Automated Reporting</h1>
-        <p className="text-sm text-slate-light font-sans mt-0.5">SNC report generator, scheduled distribution lists, and PDF publish gates.</p>
-      </div>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Reports" },
+        ]}
+        title="Automated Reporting"
+        description="SNC report generator, scheduled distribution lists, and PDF publish gates."
+      />
 
       {/* Category Card Grid */}
       <div>

@@ -14,6 +14,7 @@ import {
   getAnalyticsProcurement,
   getAnalyticsWorkforce
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 type AnalyticsTab = "projects" | "equipment" | "procurement" | "workforce";
@@ -148,11 +149,14 @@ function AnalyticsWorkspace() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Title */}
-      <div>
-        <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Analytics & Decision Intelligence</h1>
-        <p className="text-sm text-slate-light font-sans mt-0.5">SNC predictive metrics, automated margin erosion exceptions, and project utilization logs.</p>
-      </div>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Analytics" },
+        ]}
+        title="Analytics & Decision Intelligence"
+        description="SNC predictive metrics, automated margin erosion exceptions, and project utilization logs."
+      />
       {error && (
         <div className="flex items-start gap-2 rounded border border-red-500/40 bg-red-950/20 px-4 py-3 text-sm text-red-100">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-300" />

@@ -59,19 +59,52 @@ def user(role: str = "authenticated") -> dict[str, str]:
     }
 
 
+def auth_row(
+    *,
+    exists: bool = True,
+    org_id: str | None = "org-1",
+    is_active: bool = True,
+    is_deleted: bool = False,
+    roles: list[dict] | None = None,
+    permissions: list[str] | None = None,
+):
+    """One row of the consolidated authorization-context query.
+
+    Identity, organization, account status, role precedence and the full
+    permission key set used to be four separate queries issued on every single
+    authenticated request. They are now resolved in one round trip
+    (core.security._AUTH_CONTEXT_SQL), so these fixtures queue one result
+    where they used to queue several - and the call-count assertions below are
+    what hold that property in place.
+    """
+    return SimpleNamespace(
+        user_exists=exists,
+        organization_id=org_id,
+        is_active=is_active,
+        is_deleted=is_deleted,
+        roles=roles if roles is not None else [],
+        permission_keys=permissions if permissions is not None else [],
+    )
+
+
+def token(org_id: str = "org-1", role: str | None = None) -> dict:
+    payload: dict = {
+        "sub": "user-1",
+        "email": "user@example.com",
+        "app_metadata": {"org_id": org_id},
+    }
+    if role is not None:
+        payload["role"] = role
+    return payload
+
+
 @pytest.mark.asyncio
 async def test_get_current_user_rejects_inactive_or_unassigned_identity():
+    # No authorization context, and no default organization to provision into.
     db = FakeDb(FakeResult(row=None), FakeResult(row=None))
 
     with pytest.raises(HTTPException) as exc:
-        await get_current_user(
-            {
-                "sub": "user-1",
-                "email": "user@example.com",
-                "app_metadata": {"org_id": "org-1"},
-            },
-            db,
-        )
+        await get_current_user(FakeRequest("GET"), token(), db)
 
     assert exc.value.status_code == 403
     assert "inactive" in exc.value.detail
@@ -84,17 +117,10 @@ async def test_get_current_user_rejects_deactivated_identity_without_reprovision
     # distinguish "deactivated" from "never existed"), it would try to
     # INSERT/UPDATE the user back to is_active=true and raise
     # AssertionError("Unexpected database query.") here instead.
-    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=False, is_deleted=False)))
+    db = FakeDb(FakeResult(row=auth_row(is_active=False)))
 
     with pytest.raises(HTTPException) as exc:
-        await get_current_user(
-            {
-                "sub": "user-1",
-                "email": "user@example.com",
-                "app_metadata": {"org_id": "org-1"},
-            },
-            db,
-        )
+        await get_current_user(FakeRequest("GET"), token(), db)
 
     assert exc.value.status_code == 403
     assert "inactive" in exc.value.detail
@@ -103,17 +129,10 @@ async def test_get_current_user_rejects_deactivated_identity_without_reprovision
 
 @pytest.mark.asyncio
 async def test_get_current_user_rejects_token_tenant_mismatch():
-    db = FakeDb(FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)))
+    db = FakeDb(FakeResult(row=auth_row(org_id="org-1")))
 
     with pytest.raises(HTTPException) as exc:
-        await get_current_user(
-            {
-                "sub": "user-1",
-                "email": "user@example.com",
-                "app_metadata": {"org_id": "org-2"},
-            },
-            db,
-        )
+        await get_current_user(FakeRequest("GET"), token(org_id="org-2"), db)
 
     assert exc.value.status_code == 403
     assert "tenant" in exc.value.detail
@@ -121,24 +140,50 @@ async def test_get_current_user_rejects_token_tenant_mismatch():
 
 @pytest.mark.asyncio
 async def test_get_current_user_resolves_superadmin_from_database_role():
-    db = FakeDb(
-        FakeResult(row=SimpleNamespace(organization_id="org-1", is_active=True, is_deleted=False)),
-        FakeResult(rows=[SimpleNamespace(name=SUPERADMIN_ROLE)]),
-        FakeResult(),  # SELECT set_config(...) - makes the actor visible to core.audit_log's trigger
-    )
+    # The role assignment in core is authoritative over the token's
+    # app_metadata.role claim, which nothing keeps in sync.
+    db = FakeDb(FakeResult(row=auth_row(roles=[{"name": SUPERADMIN_ROLE, "path": None}])))
 
-    resolved = await get_current_user(
-        {
-            "sub": "user-1",
-            "email": "user@example.com",
-            "role": "authenticated",
-            "app_metadata": {"org_id": "org-1"},
-        },
-        db,
-    )
+    resolved = await get_current_user(FakeRequest("GET"), token(role="authenticated"), db)
 
     assert resolved["role"] == SUPERADMIN_ROLE
     assert resolved["org_id"] == "org-1"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_resolves_identity_in_a_single_read_query():
+    """Regression guard for the request-latency fix.
+
+    Authenticating a read used to cost four sequential round trips - identity,
+    role resolution, permission set, and an unconditional
+    `SELECT set_config('request.jwt.claim.sub', ...)`. On a pooled connection
+    where a round trip is ~200ms that was most of a second of pure overhead on
+    every request in the system. A GET must now issue exactly one query.
+    """
+    db = FakeDb(FakeResult(row=auth_row(roles=[{"name": "EMPLOYEE", "path": None}])))
+
+    resolved = await get_current_user(FakeRequest("GET"), token(), db)
+
+    assert resolved["role"] == "EMPLOYEE"
+    assert len(db.calls) == 1, f"expected 1 query, got {len(db.calls)}"
+    assert "set_config" not in db.calls[0]["query"]
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_sets_audit_actor_on_writes():
+    """The set_config round trip is skipped on reads, but it must still run for
+    anything that can write: core.process_audit_log() reads that session
+    variable, and without it every audit_log row's created_by is NULL."""
+    db = FakeDb(
+        FakeResult(row=auth_row(roles=[{"name": "EMPLOYEE", "path": None}])),
+        FakeResult(),  # SELECT set_config(...)
+    )
+
+    await get_current_user(FakeRequest("POST"), token(), db)
+
+    assert len(db.calls) == 2
+    assert "set_config" in db.calls[1]["query"]
+    assert db.calls[1]["params"]["uid"] == "user-1"
 
 
 @pytest.mark.asyncio
@@ -154,18 +199,18 @@ async def test_require_permission_allows_superadmin_without_permission_query():
 
 @pytest.mark.asyncio
 async def test_require_permission_allows_granted_role_permission():
-    db = FakeDb(FakeResult(scalar_value=1))
+    db = FakeDb(FakeResult(row=auth_row(permissions=["fleet.create", "fleet.read"])))
     checker = require_permission("fleet.create")
 
     resolved = await checker(user(), db)
 
     assert resolved["user_id"] == "user-1"
-    assert db.calls[0]["params"]["permission_key"] == "fleet.create"
+    assert db.calls[0]["params"]["user_id"] == "user-1"
 
 
 @pytest.mark.asyncio
 async def test_require_permission_denies_missing_role_permission():
-    db = FakeDb(FakeResult(scalar_value=None))
+    db = FakeDb(FakeResult(row=auth_row(permissions=["fleet.read"])))
     checker = require_permission("fleet.delete")
 
     with pytest.raises(HTTPException) as exc:
@@ -199,13 +244,14 @@ async def test_require_permission_gates_consolidated_crm_permissions(permission:
     exact permission keys (support tickets, automation execution, import/export,
     reports, marketing, customer-360, opportunity quote/close). Each must be
     independently grantable and independently deniable through require_permission."""
-    allow_db = FakeDb(FakeResult(scalar_value=1))
+    allow_db = FakeDb(FakeResult(row=auth_row(permissions=[permission])))
     allow_checker = require_permission(permission)
     resolved = await allow_checker(user(), allow_db)
     assert resolved["user_id"] == "user-1"
-    assert allow_db.calls[0]["params"]["permission_key"] == permission
 
-    deny_db = FakeDb(FakeResult(scalar_value=None))
+    # Granting only this key must not implicitly grant it to someone who
+    # holds an unrelated one.
+    deny_db = FakeDb(FakeResult(row=auth_row(permissions=["unrelated.read"])))
     deny_checker = require_permission(permission)
     with pytest.raises(HTTPException) as exc:
         await deny_checker(user(), deny_db)
@@ -227,13 +273,21 @@ async def test_require_permission_gates_consolidated_crm_permissions(permission:
 async def test_require_resource_permission_maps_http_methods_to_actions(
     method: str, permission: str
 ):
-    db = FakeDb(FakeResult(scalar_value=1))
+    # Granting exactly the expected key must let the method through...
+    allow_db = FakeDb(FakeResult(row=auth_row(permissions=[permission])))
     checker = require_resource_permission("projects")
 
-    resolved = await checker(FakeRequest(method), user(), db)
-
+    resolved = await checker(FakeRequest(method), user(), allow_db)
     assert resolved["user_id"] == "user-1"
-    assert db.calls[0]["params"]["permission_key"] == permission
+
+    # ...and withholding it must deny while naming that exact key, which is
+    # what pins the method-to-action mapping now that the check reads a
+    # permission set rather than passing the key into SQL.
+    deny_db = FakeDb(FakeResult(row=auth_row(permissions=[])))
+    with pytest.raises(HTTPException) as exc:
+        await checker(FakeRequest(method), user(), deny_db)
+    assert exc.value.status_code == 403
+    assert exc.value.detail == f"Missing required permission: {permission}"
 
 
 @pytest.mark.asyncio

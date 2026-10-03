@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import { getMyPermissions, workforceFoundation } from "@/lib/api";
 import WorkerPicker from "../WorkerPicker";
 import WorkforceEngagements from "../WorkforceEngagements";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type Person = { id: string; employee_name: string; employee_number: string | null; job_title: string | null; work_location: string | null; employment_status: string; category_id: string | null; category_name?: string; version: number };
 type Choice = { id: string; name: string; code: string };
@@ -131,11 +132,15 @@ export default function WorkforcePeople() {
   }
 
   return <main className="min-h-full space-y-6 bg-ink p-4 text-paper sm:p-6">
-    <header className="space-y-2 border-b border-ink-mid pb-5">
-      <Link className="text-sm text-signal underline" href="/dashboard/workforce">Back to Workforce Command</Link>
-      <h1 className="font-display text-3xl">People and organisation</h1>
-      <p className="max-w-3xl text-sm text-slate-light">Maintain the worker register, reporting authority and dated availability. Changes require an online server receipt.</p>
-    </header>
+    <DashboardPageHeader
+      breadcrumbs={[
+        { label: "Dashboard", href: "/dashboard" },
+        { label: "Workforce", href: "/dashboard/workforce" },
+        { label: "People Register" },
+      ]}
+      title="People and Organisation"
+      description="Maintain the worker register, reporting authority and dated availability. Changes require an online server receipt."
+    />
     {error && <p role="alert" className="border border-red-500/40 p-3 text-red-200">{error}</p>}
     <p role="status" aria-live="polite" className="text-sm text-emerald-300">{message}</p>
     <section className="space-y-4" aria-label="Worker register">

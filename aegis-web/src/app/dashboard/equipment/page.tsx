@@ -46,6 +46,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1731,45 +1732,44 @@ function EquipmentDashboard() {
       {/* Header */}
       <header className="border-b border-ink-mid px-6 py-5">
         <div className="mx-auto max-w-[1800px]">
-          <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
-            <div>
-              <div className="mb-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.18em] text-slate">
-                <Cpu size={13} />
-                Operations / Equipment Intelligence
-              </div>
-              <h1 className="text-2xl font-semibold tracking-wide text-paper">
-                Equipment Intelligence
-              </h1>
-              <p className="mt-1 text-sm text-slate-light">
-                Asset profitability, utilization, and maintenance command center
-                for the full equipment register.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              {lastUpdated && (
-                <span className="font-mono text-[10px] uppercase tracking-wider text-slate">
-                  Updated {lastUpdated.toLocaleTimeString()}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => void loadAssets()}
-                disabled={loading}
-                className="inline-flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs font-medium text-paper hover:border-slate disabled:opacity-50"
-              >
-                <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
-                Refresh
-              </button>
-              <button
-                type="button"
-                onClick={() => handleAction("register")}
-                className="inline-flex items-center gap-2 bg-signal px-3 py-2 text-xs font-semibold text-ink hover:bg-signal/90"
-              >
-                <Plus size={13} />
-                Register Equipment
-              </button>
-            </div>
+          <DashboardPageHeader
+            divider={false}
+            breadcrumbs={[
+              { label: "Dashboard", href: "/dashboard" },
+              { label: "Equipment" },
+            ]}
+            eyebrow="Operations / Equipment intelligence"
+            title="Equipment Intelligence"
+            description="Asset profitability, utilization, and maintenance command center for the full equipment register."
+            actions={
+              <>
+          <div className="flex items-center gap-3">
+            {lastUpdated && (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-slate">
+                Updated {lastUpdated.toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => void loadAssets()}
+              disabled={loading}
+              className="inline-flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2 text-xs font-medium text-paper hover:border-slate disabled:opacity-50"
+            >
+              <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAction("register")}
+              className="inline-flex items-center gap-2 bg-signal px-3 py-2 text-xs font-semibold text-ink hover:bg-signal/90"
+            >
+              <Plus size={13} />
+              Register Equipment
+            </button>
           </div>
+              </>
+            }
+          />
         </div>
       </header>
 

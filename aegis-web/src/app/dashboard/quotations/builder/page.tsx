@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 const BUILDER_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -896,61 +897,55 @@ export default function QuotationBuilder() {
       `}</style>
 
       {/* Header (hidden on print) */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-ink-mid pb-6 print:hidden">
-        <div>
-          <div className="flex items-center space-x-2">
-            <Link 
-              href="/dashboard/quotations" 
-              className="text-xs font-mono text-slate hover:text-white flex items-center gap-1 uppercase transition-colors"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" /> Back to Dashboard
-            </Link>
-          </div>
-          <div className="flex items-center gap-2 mt-2">
-            <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-              <Sliders className="w-6 h-6 text-signal" />
-              {editId ? "Edit Estimating Cost Proposal" : "Interactive Cost Proposal Builder"}
-            </h1>
+      <DashboardPageHeader
+        className="border-b border-ink-mid pb-6 print:hidden"
+        divider={false}
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Estimating & Quotations", href: "/dashboard/quotations" },
+          { label: "Quotation Builder" },
+        ]}
+        title={editId ? "Edit Estimating Cost Proposal" : "Interactive Cost Proposal Builder"}
+        description="Formulate complex construction rate-buildups, manage corporate overhead allocations, and monitor margin risks."
+        actions={
+          <>
+          <button
+            onClick={builderTour.openTour}
+            className="text-slate hover:text-paper transition-colors"
+            title="Replay Builder tour"
+            aria-label="Replay Builder tour"
+          >
+            <CircleHelp className="w-5 h-5" />
+          </button>
+          <div className="flex items-center space-x-3" data-tour="builder-import">
             <button
-              onClick={builderTour.openTour}
-              className="text-slate hover:text-paper transition-colors"
-              title="Replay Builder tour"
-              aria-label="Replay Builder tour"
+              type="button"
+              onClick={() => setShowImporter(!showImporter)}
+              className="flex items-center space-x-1.5 bg-ink border border-ink-mid text-slate hover:text-white px-3 py-1.5 text-xs font-semibold rounded-sm transition-all"
             >
-              <CircleHelp className="w-5 h-5" />
+              <Upload className="w-3.5 h-3.5 text-signal" />
+              <span>Paste BOQ CSV</span>
+            </button>
+            <input
+              ref={boqFileInputRef}
+              type="file"
+              accept=".xlsx,.xlsm,.xltx,.xls,.csv,.tsv,.txt"
+              className="hidden"
+              onChange={handleBoqFileImport}
+            />
+            <button
+              type="button"
+              onClick={() => boqFileInputRef.current?.click()}
+              disabled={importingBoqFile}
+              className="flex items-center space-x-1.5 bg-ink border border-ink-mid text-slate hover:text-white px-3 py-1.5 text-xs font-semibold rounded-sm transition-all disabled:opacity-50"
+            >
+              {importingBoqFile ? <Loader2 className="w-3.5 h-3.5 text-signal animate-spin" /> : <Upload className="w-3.5 h-3.5 text-signal" />}
+              <span>Upload BOQ File (Excel/CSV)</span>
             </button>
           </div>
-          <p className="text-xs text-slate mt-1">
-            Formulate complex construction rate-buildups, manage corporate overhead allocations, and monitor margin risks.
-          </p>
-        </div>
-        <div className="flex items-center space-x-3" data-tour="builder-import">
-          <button
-            type="button"
-            onClick={() => setShowImporter(!showImporter)}
-            className="flex items-center space-x-1.5 bg-ink border border-ink-mid text-slate hover:text-white px-3 py-1.5 text-xs font-semibold rounded-sm transition-all"
-          >
-            <Upload className="w-3.5 h-3.5 text-signal" />
-            <span>Paste BOQ CSV</span>
-          </button>
-          <input
-            ref={boqFileInputRef}
-            type="file"
-            accept=".xlsx,.xlsm,.xltx,.xls,.csv,.tsv,.txt"
-            className="hidden"
-            onChange={handleBoqFileImport}
-          />
-          <button
-            type="button"
-            onClick={() => boqFileInputRef.current?.click()}
-            disabled={importingBoqFile}
-            className="flex items-center space-x-1.5 bg-ink border border-ink-mid text-slate hover:text-white px-3 py-1.5 text-xs font-semibold rounded-sm transition-all disabled:opacity-50"
-          >
-            {importingBoqFile ? <Loader2 className="w-3.5 h-3.5 text-signal animate-spin" /> : <Upload className="w-3.5 h-3.5 text-signal" />}
-            <span>Upload BOQ File (Excel/CSV)</span>
-          </button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {editId && selectedProjectId && (
         <div className="p-4 border border-sky-500/20 bg-sky-950/20 rounded-sm flex items-center space-x-3 text-sky-400 text-sm print:hidden">

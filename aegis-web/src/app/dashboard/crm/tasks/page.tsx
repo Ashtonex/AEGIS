@@ -21,6 +21,7 @@ import {
 } from "@/lib/api";
 import { initials, avatarTone } from "@/lib/avatar";
 import { EntityDocumentsPanel, type DocumentEntityType } from "@/components/documents/EntityDocumentsPanel";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type TaskStatus = "planned" | "not_started" | "ready" | "in_progress" | "waiting_on_third_party" | "blocked" | "under_review" | "completed" | "rejected" | "not_applicable" | "cancelled" | "superseded";
 
@@ -503,14 +504,16 @@ export default function CrmTasksPage() {
   return (
     <div className="min-h-screen bg-ink px-4 py-6 text-paper sm:px-6 xl:px-8">
       <div className="mx-auto w-full max-w-[1500px] space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <Link href="/dashboard/crm" className="inline-flex items-center gap-1.5 text-xs text-slate-light hover:text-paper">
-              <ArrowLeft className="h-3.5 w-3.5" /> Back to CRM
-            </Link>
-            <h1 className="mt-2 font-display text-2xl font-semibold text-paper">Tasks</h1>
-            <p className="mt-1 text-sm text-slate-light">Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people.</p>
-          </div>
+        <DashboardPageHeader
+          breadcrumbs={[
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "CRM", href: "/dashboard/crm" },
+            { label: "Tasks" },
+          ]}
+          title="Tasks"
+          description="Grouped by the lead/opportunity/tender/project they belong to. Assign a whole stack to a team, then distribute individual items to people."
+          actions={
+            <>
           {canUseAssignmentTools && (
             <div className="flex items-center gap-2">
               <button
@@ -529,7 +532,9 @@ export default function CrmTasksPage() {
               </button>
             </div>
           )}
-        </div>
+            </>
+          }
+        />
 
         <div className="grid gap-3 md:grid-cols-4">
           <button

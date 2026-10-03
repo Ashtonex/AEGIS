@@ -10,6 +10,7 @@ import {
   getCrmSupportDashboard,
   getCrmExecutiveCrmReport,
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 type ReportTab = "marketing" | "sales" | "support" | "executive";
@@ -110,12 +111,23 @@ function ReportsWorkspace() {
         <ArrowLeft className="h-4 w-4" /> Back to CRM
       </Link>
 
-      <div className="mt-6">
-        <h1 className="text-2xl font-black uppercase tracking-tight">CRM Reports</h1>
-        <p className="mt-1 max-w-3xl text-sm text-slate-light">
-          Marketing, sales, support, and executive visibility across the CRM lifecycle.
-        </p>
-      </div>
+      <DashboardPageHeader
+        className="mt-6"
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "CRM", href: "/dashboard/crm" },
+          { label: "Reports" },
+        ]}
+        title="CRM Reports"
+        description="Marketing, sales, support, and executive visibility across the CRM lifecycle."
+        actions={
+          <>
+          <p className="mt-1 max-w-3xl text-sm text-slate-light">
+            Marketing, sales, support, and executive visibility across the CRM lifecycle.
+          </p>
+          </>
+        }
+      />
 
       {warnings.length > 0 && (
         <div className="mt-5 rounded border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">

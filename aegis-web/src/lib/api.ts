@@ -50,14 +50,45 @@ const OPERATIONAL_DASHBOARD_PREFIXES = [
   "/api/v1/notifications/",
 ];
 
-// Settings, CRM, and tender-bids calls have been observed taking 8-45s
-// against this deployment's Supabase pooler even for simple single-table
-// reads/writes, and multi-step actions (e.g. inviting a user) can exceed
-// that. The default API_TIMEOUT_MS then fires on a request that actually
-// succeeded server-side, surfacing a false "timed out" error. Give every
-// call into these domains a generous budget by default instead of relying
-// on each call site to opt in individually.
-const SLOW_DOMAIN_TIMEOUT_MS = 120000;
+// Settings, CRM, and tender-bids calls were observed taking 8-45s against
+// this deployment's Supabase pooler even for simple single-table
+// reads/writes, so these domains were given a 120s budget to stop the
+// default timeout firing on requests that had actually succeeded.
+//
+// That 120s was a symptom, not a setting. The dominant cause of the 8-45s
+// figure was server-side: every single authenticated request re-ran four
+// sequential authorization round trips (identity, role resolution,
+// permission set, plus an unconditional `set_config` even on reads) against
+// a pooler where each round trip costs roughly 200ms, and the API ran on a
+// single uvicorn worker so those requests also queued behind one another.
+// Both are now fixed (see imperium-api/core/security.py and the --workers
+// flag in imperium-api/Dockerfile), so the budgets below are brought back to
+// values that surface a genuine problem instead of hiding it for two
+// minutes.
+//
+// Reads and writes are budgeted separately on purpose. A read that times out
+// is cheap - the user retries, and failing fast is what makes a UI feel
+// responsive rather than hung. A write that times out is expensive and
+// ambiguous, because the mutation may well have committed server-side, so
+// writes keep a deliberately generous budget.
+//
+// Tune via env rather than by editing these constants.
+function envTimeout(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const READ_TIMEOUT_MS = envTimeout(process.env.NEXT_PUBLIC_AEGIS_READ_TIMEOUT_MS, 20000);
+const WRITE_TIMEOUT_MS = envTimeout(process.env.NEXT_PUBLIC_AEGIS_WRITE_TIMEOUT_MS, 45000);
+const SLOW_DOMAIN_READ_TIMEOUT_MS = envTimeout(
+  process.env.NEXT_PUBLIC_AEGIS_SLOW_READ_TIMEOUT_MS,
+  45000,
+);
+const SLOW_DOMAIN_WRITE_TIMEOUT_MS = envTimeout(
+  process.env.NEXT_PUBLIC_AEGIS_SLOW_WRITE_TIMEOUT_MS,
+  90000,
+);
+
 const SLOW_DOMAIN_PREFIXES = [
   "/api/v1/settings/",
   "/api/v1/crm/",
@@ -72,8 +103,17 @@ const SLOW_DOMAIN_PREFIXES = [
   "/api/v1/finance/assistant/",
 ];
 
-function defaultTimeoutFor(endpoint: string): number {
-  return SLOW_DOMAIN_PREFIXES.some((prefix) => endpoint.startsWith(prefix)) ? SLOW_DOMAIN_TIMEOUT_MS : API_TIMEOUT_MS;
+const SAFE_METHODS = new Set(["GET", "HEAD"]);
+
+function defaultTimeoutFor(endpoint: string, method?: string): number {
+  // Absent method means fetch's default, which is GET.
+  const isRead = SAFE_METHODS.has((method ?? "GET").toUpperCase());
+  const isSlowDomain = SLOW_DOMAIN_PREFIXES.some((prefix) => endpoint.startsWith(prefix));
+
+  if (isSlowDomain) {
+    return isRead ? SLOW_DOMAIN_READ_TIMEOUT_MS : SLOW_DOMAIN_WRITE_TIMEOUT_MS;
+  }
+  return isRead ? READ_TIMEOUT_MS : WRITE_TIMEOUT_MS;
 }
 
 const SERVER_ROUTE_ALIASES: Record<string, string> = {
@@ -462,7 +502,7 @@ async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): P
   const allowFallback = shouldUseFallback(endpoint, options);
   const timeoutMs = process.env.AEGIS_BUILD_PHASE === "true"
     ? Math.min(options.timeoutMs ?? BUILD_API_TIMEOUT_MS, BUILD_API_TIMEOUT_MS)
-    : options.timeoutMs ?? defaultTimeoutFor(endpoint);
+    : options.timeoutMs ?? defaultTimeoutFor(endpoint, options.method);
 
   // IMMEDIATELY RETURN MOCK DURING BUILD TO PREVENT TCP HANGS
   if (process.env.AEGIS_BUILD_PHASE === "true" && allowFallback) {

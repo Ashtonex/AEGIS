@@ -24,6 +24,8 @@ import {
   getPendingApprovals,
   ApiError,
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
+import { useResource } from "@/lib/data";
 
 type ApiData = Record<string, unknown>;
 type SettledApiResult = PromiseSettledResult<{ data?: unknown; meta?: unknown }>;
@@ -195,19 +197,57 @@ export default function ExecutiveCommandCentre() {
   );
 }
 
+type ExecutiveDashboardData = {
+  kpis: ApiData;
+  stats: ApiData;
+  modules: ApiData[];
+  regions: ApiData[];
+  activeProjects: ApiData[];
+  dataHealth: ApiData[];
+  exceptions: ApiData[];
+  warnings: string[];
+};
+
+const EMPTY_RECORD: ApiData = {};
+const EMPTY_LIST: ApiData[] = [];
+const EMPTY_WARNINGS: string[] = [];
+
+async function loadExecutiveDashboard(accessToken: string | undefined): Promise<ExecutiveDashboardData> {
+  const [kpiResult, statsResult, moduleResult, regionResult, projectResult, healthResult, exceptionResult] =
+    await Promise.allSettled([
+      getExecutiveKPIs(accessToken),
+      getExecutiveStats(accessToken),
+      getModulesStatus(accessToken),
+      getExecutiveRegions(accessToken),
+      getActiveExecutiveProjects(accessToken),
+      getExecutiveDataHealth(accessToken),
+      getExecutiveExceptions(accessToken),
+    ]);
+  const pick = <T,>(result: SettledApiResult, fallback: T): T =>
+    result.status === "fulfilled" ? ((result.value.data as T) || fallback) : fallback;
+  return {
+    kpis: pick<ApiData>(kpiResult, {}),
+    stats: pick<ApiData>(statsResult, {}),
+    modules: pick<ApiData[]>(moduleResult, []),
+    regions: pick<ApiData[]>(regionResult, []),
+    activeProjects: pick<ApiData[]>(projectResult, []),
+    dataHealth: pick<ApiData[]>(healthResult, []),
+    exceptions: pick<ApiData[]>(exceptionResult, []),
+    warnings: [
+      ...sourceWarningsFrom(kpiResult, "Executive KPIs"),
+      ...sourceWarningsFrom(statsResult, "Operational control ledger"),
+      ...sourceWarningsFrom(moduleResult, "Module gateway"),
+      ...sourceWarningsFrom(regionResult, "Regional footprint"),
+      ...sourceWarningsFrom(projectResult, "Active projects"),
+      ...sourceWarningsFrom(healthResult, "Data confidence"),
+      ...sourceWarningsFrom(exceptionResult, "Executive exceptions"),
+    ],
+  };
+}
+
 function ExecutiveCommandCentreWorkspace() {
   const { session, role } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [kpis, setKpis] = useState<ApiData>({});
-  const [stats, setStats] = useState<ApiData>({});
-  const [modules, setModules] = useState<ApiData[]>([]);
-  const [regions, setRegions] = useState<ApiData[]>([]);
-  const [activeProjects, setActiveProjects] = useState<ApiData[]>([]);
-  const [dataHealth, setDataHealth] = useState<ApiData[]>([]);
-  const [exceptions, setExceptions] = useState<ApiData[]>([]);
   const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<ApiData | null>(null);
   const [projectDetail, setProjectDetail] = useState<ApiData | null>(null);
@@ -218,50 +258,39 @@ function ExecutiveCommandCentreWorkspace() {
   const displayName = userEmail.split("@")[0].replace(/\b\w/g, (letter) => letter.toUpperCase());
   const userRole = role || "User";
 
-  const loadDashboard = useCallback(async () => {
-    setRefreshing(true);
-    const accessToken = session?.access_token;
-    const [kpiResult, statsResult, moduleResult] = await Promise.allSettled([
-      getExecutiveKPIs(accessToken),
-      getExecutiveStats(accessToken),
-      getModulesStatus(accessToken),
-    ]);
-    if (kpiResult.status === "fulfilled") setKpis(kpiResult.value.data || {});
-    if (statsResult.status === "fulfilled") setStats(statsResult.value.data || {});
-    if (moduleResult.status === "fulfilled") setModules(moduleResult.value.data || []);
+  // All seven executive sources are independent, so they are fetched in one
+  // parallel wave. This used to run as three sequential waves (3, then 3,
+  // then 1), so the page's first paint waited for the slowest request in
+  // each wave one after another rather than once.
+  //
+  // The result lives in the shared SWR cache keyed per user. Coming back to
+  // this page paints the last-known numbers instantly and refreshes behind
+  // them, instead of showing a full-page spinner on every visit.
+  const accessToken = session?.access_token;
+  const {
+    data: dashboard,
+    isLoading: dashboardLoading,
+    isRefreshing,
+    refresh: refreshDashboard,
+  } = useResource<ExecutiveDashboardData>(
+    session ? `executive:dashboard:${session.user?.id ?? "anon"}` : null,
+    () => loadExecutiveDashboard(accessToken),
+  );
+  const loadDashboard = refreshDashboard;
+  const loading = dashboardLoading && !dashboard;
+  const refreshing = isRefreshing;
+  const kpis = dashboard?.kpis ?? EMPTY_RECORD;
+  const stats = dashboard?.stats ?? EMPTY_RECORD;
+  const modules = dashboard?.modules ?? EMPTY_LIST;
+  const regions = dashboard?.regions ?? EMPTY_LIST;
+  const activeProjects = dashboard?.activeProjects ?? EMPTY_LIST;
+  const dataHealth = dashboard?.dataHealth ?? EMPTY_LIST;
+  const exceptions = dashboard?.exceptions ?? EMPTY_LIST;
+  const loadWarnings = dashboard?.warnings ?? EMPTY_WARNINGS;
 
-    const [regionResult, projectResult, healthResult] = await Promise.allSettled([
-      getExecutiveRegions(accessToken),
-      getActiveExecutiveProjects(accessToken),
-      getExecutiveDataHealth(accessToken),
-    ]);
-    if (regionResult.status === "fulfilled") setRegions(regionResult.value.data || []);
-    if (projectResult.status === "fulfilled") setActiveProjects(projectResult.value.data || []);
-    if (healthResult.status === "fulfilled") setDataHealth(healthResult.value.data || []);
-
-    const exceptionResult = await getExecutiveExceptions(accessToken)
-      .then((value) => ({ status: "fulfilled" as const, value }))
-      .catch((reason) => ({ status: "rejected" as const, reason }));
-    if (exceptionResult.status === "fulfilled") setExceptions(exceptionResult.value.data || []);
-    setLoadWarnings([
-      ...sourceWarningsFrom(kpiResult, "Executive KPIs"),
-      ...sourceWarningsFrom(statsResult, "Operational control ledger"),
-      ...sourceWarningsFrom(moduleResult, "Module gateway"),
-      ...sourceWarningsFrom(regionResult, "Regional footprint"),
-      ...sourceWarningsFrom(projectResult, "Active projects"),
-      ...sourceWarningsFrom(healthResult, "Data confidence"),
-      ...sourceWarningsFrom(exceptionResult, "Executive exceptions"),
-    ]);
-    setLoading(false);
-    setRefreshing(false);
-  }, [session]);
-
-  useEffect(() => { if (session) void loadDashboard(); }, [session, loadDashboard]);
-
-  // loadDashboard() only shows the full-page spinner on the very first
-  // mount (loading starts true and is never set back to true afterward) -
-  // every subsequent call, including these, just spins the small refresh
-  // icon via `refreshing` while the existing numbers stay on screen.
+  // Live change signals trigger a background revalidation: the spinner only
+  // ever shows on a cold cache, and every later refresh just spins the small
+  // refresh icon while the existing numbers stay on screen.
   useLiveTable("finance.quotations", () => { if (session) void loadDashboard(); });
   useLiveTable("crm.opportunities", () => { if (session) void loadDashboard(); });
   useLiveTable("projects.projects", () => { if (session) void loadDashboard(); });
@@ -305,10 +334,19 @@ function ExecutiveCommandCentreWorkspace() {
 
   const selectedCard = metricCards.find((card) => card.key === selectedMetric);
   return <div className="h-full min-h-0 overflow-y-auto px-4 pb-6 pt-7 sm:px-6 sm:pt-8 space-y-4">
-    <header className="flex flex-wrap items-end justify-between gap-3">
-      <div><h1 className="font-display text-3xl leading-[1.08] tracking-normal text-paper sm:text-4xl">{greetingForNow(currentTime)}, {displayName}.</h1><p className="mt-1 text-sm text-slate-light">{userRole} · Live ERP view</p></div>
-      <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
-    </header>
+    <DashboardPageHeader
+      divider={false}
+      breadcrumbs={[
+        { label: "Dashboard", href: "/dashboard" },
+        { label: "Executive" },
+      ]}
+      eyebrow="Executive overview"
+      title={`${greetingForNow(currentTime)}, ${displayName}.`}
+      description={`${userRole} · Live ERP view`}
+      actions={
+        <button onClick={() => void loadDashboard()} disabled={refreshing} title="Refresh executive data" className="p-2 border border-ink-mid rounded-sm text-slate-light hover:text-paper hover:border-signal disabled:opacity-50"><RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} /></button>
+      }
+    />
 
     <DataConfidence sources={dataHealth} />
     <SourceWarnings warnings={loadWarnings} />

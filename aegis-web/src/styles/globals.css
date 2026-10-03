@@ -15,10 +15,14 @@
 
 @layer base {
   :root {
-    /* Self-hosted via @fontsource (npm-bundled woff2, no remote fetches — build stays fully offline-safe). */
-    --font-body: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-display: "Archivo", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-jetbrains-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    /* Self-hosted via next/font (src/app/layout.tsx) — the font files are
+       downloaded and inlined at build time, so runtime has no blocking CSS
+       request. --font-inter / --font-archivo / --font-jetbrains are the
+       next/font variables set on <html>; the literal family names are kept
+       as fallbacks so anything still self-hosting those faces keeps working. */
+    --font-body: var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-display: var(--font-archivo), "Archivo", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-jetbrains-mono: var(--font-jetbrains), "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
     /* ── Volume II Core Tokens ──────────────────────────────────────────────── */
     /* Primary Ink — deep navy, primary surfaces */

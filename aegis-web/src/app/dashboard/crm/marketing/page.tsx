@@ -16,6 +16,7 @@ import {
   createCrmSequenceStep,
   sendCrmCampaign,
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 
@@ -169,12 +170,23 @@ export default function CRMMarketingPage() {
         <ArrowLeft className="h-4 w-4" /> Back to CRM
       </Link>
 
-      <div className="mt-6 flex flex-col gap-2">
-        <h1 className="text-2xl font-black uppercase tracking-tight">CRM Marketing Command</h1>
-        <p className="max-w-3xl text-sm text-slate-light">
-          Campaign attribution, lead-source performance, and reusable outreach templates. This layer feeds the existing leads, opportunities, quotations, and communications modules.
-        </p>
-      </div>
+      <DashboardPageHeader
+        className="mt-6 mt-6"
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "CRM", href: "/dashboard/crm" },
+          { label: "Marketing" },
+        ]}
+        title="CRM Marketing Command"
+        description="Campaign attribution, lead-source performance, and reusable outreach templates. This layer feeds the existing leads, opportunities, quotations, and communications modules."
+        actions={
+          <>
+          <p className="max-w-3xl text-sm text-slate-light">
+            Campaign attribution, lead-source performance, and reusable outreach templates. This layer feeds the existing leads, opportunities, quotations, and communications modules.
+          </p>
+          </>
+        }
+      />
 
       {warnings.length > 0 && (
         <div className="mt-5 rounded border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">

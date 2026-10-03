@@ -47,4 +47,12 @@ EXPOSE 8000
 # (crm-leads, notifications, etc). imperium-api is only reachable from Caddy
 # on the internal compose network (not published to the host), so trusting
 # all forwarded-for IPs here is safe.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+#
+# --workers: the API previously ran single-process, so every request in the
+# entire system was serialised behind one Python interpreter and a single slow
+# query blocked every other user's page. Safe to scale out because
+# core/realtime.py is process-local by design and the arq background worker
+# runs in a separate container. Override with API_WORKERS; note DB_POOL_SIZE
+# is per-worker, so the two must be tuned together.
+ENV API_WORKERS=4
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*' --workers \"${API_WORKERS}\""]

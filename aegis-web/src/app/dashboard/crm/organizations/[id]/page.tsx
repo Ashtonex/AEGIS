@@ -4,6 +4,7 @@ import React, { use, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Briefcase, FileText, MessageSquare, Ticket, Users } from "lucide-react";
 import { getCrmCustomer360 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 
@@ -55,15 +56,25 @@ export default function CRMCustomer360Page({ params }: { params: Promise<{ id: s
 
       {!loading && !error && data && (
         <>
-          <header className="mt-6 rounded border border-white/10 bg-white/[0.03] p-5">
-            <p className="text-xs uppercase tracking-wider text-slate-light">Customer 360</p>
-            <h1 className="mt-1 text-3xl font-black tracking-tight">{organization.name}</h1>
-            <p className="mt-2 max-w-4xl text-sm text-slate-light">
-              {organization.industry || "Unclassified industry"} · {organization.lifecycle_stage || "prospect"} · {organization.account_status || "active"}
-            </p>
-            <p className="mt-2 text-xs text-slate-light">
-              Financial summary: {String(data.financial_summary?.awarded_value ?? 0)} · Risk flags: {String(data.risk_compliance_flags?.risk_rating ?? "not set")}
-            </p>
+          <DashboardPageHeader
+            className="mt-6 rounded border border-white/10 bg-white/[0.03] p-5"
+            divider={false}
+            breadcrumbs={[
+              { label: "Dashboard", href: "/dashboard" },
+              { label: "CRM", href: "/dashboard/crm" },
+              { label: "Organizations", href: "/dashboard/crm/organizations" },
+              { label: organization.name || "Organization" },
+            ]}
+            eyebrow="Customer 360"
+            title={organization.name || "Organization"}
+            description={
+              <>
+                {organization.industry || "Unclassified industry"} · {organization.lifecycle_stage || "prospect"} · {organization.account_status || "active"}
+                <br />
+                Financial summary: {String(data.financial_summary?.awarded_value ?? 0)} · Risk flags: {String(data.risk_compliance_flags?.risk_rating ?? "not set")}
+              </>
+            }
+          >
             <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
               <Metric icon={<Users />} label="Contacts" value={data.primary_contacts?.length || 0} />
               <Metric icon={<Briefcase />} label="Opportunities" value={data.active_opportunities?.length || 0} />
@@ -71,7 +82,7 @@ export default function CRMCustomer360Page({ params }: { params: Promise<{ id: s
               <Metric icon={<Ticket />} label="Tickets" value={data.open_support_tickets?.length || 0} />
               <Metric icon={<MessageSquare />} label="Comms" value={data.recent_communications?.length || 0} />
             </div>
-          </header>
+          </DashboardPageHeader>
 
           <nav className="mt-5 flex flex-wrap gap-2">
             {customer360Tabs.map((tab) => (

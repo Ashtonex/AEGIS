@@ -11,9 +11,108 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from core.database import get_db
 from core.config import settings
+from core.cache import cache_delete, cache_delete_prefix, cache_get_json, cache_set_json
 from core.resilience import CircuitBreaker, CircuitBreakerOpen
 
 security = HTTPBearer()
+
+# ---------------------------------------------------------------------------
+# Authorization context cache
+# ---------------------------------------------------------------------------
+# Resolving who the caller is and what they may do used to cost four
+# sequential database round trips on *every* authenticated request:
+#   1. SELECT ... FROM core.users            (identity + tenant)
+#   2. resolve_primary_role()                (role precedence)
+#   3. SELECT set_config('request.jwt...')   (audit trigger plumbing)
+#   4. require_permission/_resource_permission (the actual check)
+# At the ~220ms RTT to Supabase in eu-west-1 that is ~0.9s of authorization
+# latency per call, on pages that fire 10-15 calls - and it held the pooled
+# connection for that whole time, which is what exhausted the pool.
+#
+# Steps 1, 2 and 4 are now a single query (_AUTH_CONTEXT_SQL) whose result is
+# cached per user, so a warm request spends zero round trips on authorization.
+# Step 3 is only issued for state-changing methods, since the audit trigger it
+# feeds only fires on writes.
+#
+# Staleness: a cached permission set means a revoked role stays effective
+# until the entry expires. Two things bound that - a short TTL
+# (settings.AUTH_CACHE_TTL_SECONDS, default 60s) and explicit invalidation
+# from every code path that changes roles, permissions or account status
+# (invalidate_user_auth / invalidate_all_auth). Anything that mutates
+# core.users, core.user_roles, core.roles, core.role_permissions or
+# core.permissions MUST call one of those.
+_AUTH_CACHE_PREFIX = "aegis:authctx:v1:"
+
+
+def _auth_cache_key(user_id: str) -> str:
+    return f"{_AUTH_CACHE_PREFIX}{user_id}"
+
+
+async def invalidate_user_auth(user_id: str | None) -> None:
+    """Drop one user's cached authorization context. Call this immediately
+    after changing that user's roles, permissions, organization or active/
+    deleted status, so the change takes effect on their next request instead
+    of up to AUTH_CACHE_TTL_SECONDS later."""
+    if not user_id:
+        return
+    await cache_delete(_auth_cache_key(str(user_id)))
+
+
+async def invalidate_all_auth() -> None:
+    """Drop every cached authorization context. Use for changes whose blast
+    radius isn't a single user - editing a role's permission set, deleting a
+    role, or changing the permission catalogue. These are rare admin actions,
+    so clearing the whole prefix is cheaper to reason about than working out
+    which users were affected, and it cannot under-invalidate."""
+    await cache_delete_prefix(_AUTH_CACHE_PREFIX)
+
+
+# One round trip for identity, role precedence and the full permission key
+# set. The role ordering is applied inside json_agg (not in the CTE) because
+# a CTE's ORDER BY is not guaranteed to survive aggregation. It mirrors
+# resolve_primary_role() exactly: SUPERADMIN first, then any functional role,
+# then EMPLOYEE last, then alphabetical.
+_AUTH_CONTEXT_SQL = text("""
+WITH u AS (
+    SELECT organization_id, is_active, is_deleted
+    FROM core.users
+    WHERE id = :user_id
+),
+r AS (
+    SELECT r.name AS name,
+           r.default_landing_path AS path,
+           (r.name = :superadmin) AS is_super,
+           (r.name = 'EMPLOYEE') AS is_employee
+    FROM core.user_roles ur
+    JOIN core.roles r ON r.id = ur.role_id
+    WHERE ur.user_id = :user_id
+      AND ur.organization_id = (SELECT organization_id FROM u)
+      AND r.organization_id = (SELECT organization_id FROM u)
+      AND r.is_deleted = false
+),
+p AS (
+    SELECT DISTINCT perm.key AS key
+    FROM core.permissions perm
+    JOIN core.role_permissions rp ON rp.permission_id = perm.id
+    JOIN core.user_roles ur ON ur.role_id = rp.role_id
+    JOIN core.roles r ON r.id = ur.role_id
+    WHERE ur.user_id = :user_id
+      AND ur.organization_id = (SELECT organization_id FROM u)
+      AND r.organization_id = (SELECT organization_id FROM u)
+      AND r.is_deleted = false
+)
+SELECT
+    (SELECT EXISTS (SELECT 1 FROM u))                        AS user_exists,
+    (SELECT organization_id FROM u)                          AS organization_id,
+    COALESCE((SELECT is_active FROM u), false)               AS is_active,
+    COALESCE((SELECT is_deleted FROM u), false)              AS is_deleted,
+    COALESCE((
+        SELECT json_agg(json_build_object('name', name, 'path', path)
+                        ORDER BY is_super DESC, is_employee ASC, name)
+        FROM r
+    ), '[]'::json)                                           AS roles,
+    COALESCE((SELECT json_agg(key ORDER BY key) FROM p), '[]'::json) AS permission_keys
+""")
 
 # Tracks the Supabase Auth API specifically (the network fallback path in
 # verify_token below) so a struggling/unreachable Supabase fails fast for a
@@ -352,8 +451,94 @@ async def resolve_primary_role(
     return fallback_role, None
 
 
+_EMPTY_AUTH_CONTEXT: dict = {
+    "user_exists": False,
+    "org_id": None,
+    "is_active": False,
+    "is_deleted": False,
+    "role": None,
+    "landing_path": None,
+    "permissions": [],
+}
+
+
+async def _fetch_auth_context(db: AsyncSession, user_id: str) -> dict:
+    """Identity, role precedence and the full permission key set in a single
+    round trip. Returns the raw shape; callers decide what to do about a
+    missing/inactive user."""
+    result = await db.execute(
+        _AUTH_CONTEXT_SQL, {"user_id": user_id, "superadmin": SUPERADMIN_ROLE}
+    )
+    row = result.fetchone()
+
+    # No row at all is the same situation as a row saying the user doesn't
+    # exist: nothing usable to authorize with. Returning the empty shape here
+    # rather than indexing into None keeps the not-provisioned path in
+    # get_current_user as the single place that decides what to do about it.
+    if row is None:
+        return _EMPTY_AUTH_CONTEXT.copy()
+
+    roles = row.roles if isinstance(row.roles, list) else []
+    permission_keys = row.permission_keys if isinstance(row.permission_keys, list) else []
+    primary = roles[0] if roles else None
+    return {
+        "user_exists": bool(row.user_exists),
+        "org_id": str(row.organization_id) if row.organization_id else None,
+        "is_active": bool(row.is_active),
+        "is_deleted": bool(row.is_deleted),
+        "role": primary["name"] if primary else None,
+        "landing_path": primary.get("path") if primary else None,
+        "permissions": permission_keys,
+    }
+
+
+async def get_auth_context(
+    db: AsyncSession, user_id: str, *, allow_cache: bool = True
+) -> dict | None:
+    """Cached wrapper around _fetch_auth_context.
+
+    Returns None when the user has no usable record, leaving the
+    auto-provisioning decision to get_current_user. A cache hit costs zero
+    database round trips, which is the entire point of this module - see the
+    block comment at the top of the file.
+
+    Only *usable* contexts are cached. An inactive, deleted or unprovisioned
+    user is never written to the cache, so a revocation can't be masked by a
+    stale positive entry and a freshly provisioned account isn't shadowed by a
+    cached negative one.
+    """
+    cache_enabled = allow_cache and settings.AUTH_CACHE_ENABLED and settings.AUTH_CACHE_TTL_SECONDS > 0
+
+    if cache_enabled:
+        hit, cached = await cache_get_json(_auth_cache_key(user_id))
+        if hit and isinstance(cached, dict):
+            return cached
+
+    context = await _fetch_auth_context(db, user_id)
+    if not context["user_exists"] or not context["org_id"]:
+        return None
+    if not context["is_active"] or context["is_deleted"]:
+        # Surfaced to the caller as a revoked account, and deliberately not
+        # cached - see the docstring.
+        return context
+
+    if cache_enabled:
+        await cache_set_json(
+            _auth_cache_key(user_id), context, settings.AUTH_CACHE_TTL_SECONDS
+        )
+    return context
+
+
+# Methods that can write, and therefore need request.jwt.claim.sub set for
+# core.process_audit_log(). GET/HEAD/OPTIONS never fire the audit trigger, so
+# issuing the set_config round trip for them was pure latency.
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
 async def get_current_user(
-    payload: dict = Depends(verify_token), db: AsyncSession = Depends(get_db)
+    request: Request,
+    payload: dict = Depends(verify_token),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Extracts user identity and organization from the verified token payload."""
     user_id = payload.get("sub")
@@ -373,26 +558,22 @@ async def get_current_user(
             detail="User ID not found in token.",
         )
 
-    identity = await db.execute(
-        text("""
-        SELECT organization_id, is_active, is_deleted FROM core.users
-        WHERE id = :user_id
-    """),
-        {"user_id": user_id},
-    )
-    identity_row = identity.fetchone()
+    # One cached lookup replaces the identity SELECT, the role-resolution
+    # query and the permission query. On a warm cache this costs no database
+    # round trips at all.
+    auth_context = await get_auth_context(db, str(user_id))
 
     # A row that exists but is deactivated/soft-deleted was deliberately
     # revoked - reject it outright. Falling through to the auto-provisioning
     # block below would silently reactivate it, since that block can't tell
     # "revoked" apart from "never existed".
-    if identity_row and (not identity_row.is_active or identity_row.is_deleted):
+    if auth_context and (not auth_context["is_active"] or auth_context["is_deleted"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive, unassigned, or revoked.",
         )
 
-    if not identity_row or not identity_row.organization_id:
+    if not auth_context:
         default_org_id = "00000000-0000-0000-0000-000000000001"
         org_check = await db.execute(
             text("SELECT id FROM core.organizations WHERE id = :org_id AND is_deleted = false"),
@@ -437,14 +618,22 @@ async def get_current_user(
                 {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
             )
             await db.commit()
-            database_org_id = default_org_id
+            # Re-resolve after provisioning so role and permissions reflect
+            # the freshly inserted EMPLOYEE assignment. allow_cache=False
+            # because the pre-provisioning state must not be read back here.
+            auth_context = await get_auth_context(db, str(user_id), allow_cache=False)
+            if not auth_context:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account is inactive, unassigned, or revoked.",
+                )
         else:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive, unassigned, or revoked.",
             )
-    else:
-        database_org_id = str(identity_row.organization_id)
+
+    database_org_id = auth_context["org_id"]
 
     if org_id and str(org_id) != database_org_id:
         raise HTTPException(
@@ -455,9 +644,11 @@ async def get_current_user(
 
     # The role assignment in core is authoritative. Nothing keeps Supabase's
     # app_metadata.role claim in sync with core.user_roles once an admin
-    # assigns a functional role via Settings, so the actual role name is
-    # looked up here rather than trusted from the token.
-    resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id, fallback_role=role)
+    # assigns a functional role via Settings, so the actual role name comes
+    # from the resolved context rather than the token. Falls back to the
+    # token-derived role only when the user holds no role assignment at all,
+    # matching resolve_primary_role's fallback_role behaviour.
+    resolved_role = auth_context["role"] or role
 
     # Makes the acting user visible to core.process_audit_log() (the DB
     # trigger backing core.audit_log) for the rest of this request's
@@ -466,7 +657,16 @@ async def get_current_user(
     # this once here - rather than once per router - covers every module.
     # Without it, every audit_log row's created_by is silently NULL: the
     # trigger reads this session variable and nothing ever set it.
-    await db.execute(text("SELECT set_config('request.jwt.claim.sub', :uid, true)"), {"uid": str(user_id)})
+    #
+    # Only issued for methods that can write. The audit trigger fires on
+    # INSERT/UPDATE/DELETE only, so spending a ~220ms round trip on this for
+    # every GET bought nothing - and GETs are the overwhelming majority of
+    # traffic on a dashboard that fires 10-15 reads per page.
+    if request.method in _MUTATING_METHODS:
+        await db.execute(
+            text("SELECT set_config('request.jwt.claim.sub', :uid, true)"),
+            {"uid": str(user_id)},
+        )
 
     return {
         "user_id": user_id,
@@ -500,20 +700,13 @@ async def user_has_permission(db: AsyncSession, user: dict, permission_key: str)
         return True
     if not user.get("org_id"):
         return False
-    result = await db.execute(
-        text("""
-            SELECT 1
-            FROM core.permissions p
-            JOIN core.role_permissions rp ON p.id = rp.permission_id
-            JOIN core.user_roles ur ON rp.role_id = ur.role_id
-            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
-            WHERE ur.user_id = :user_id
-              AND ur.organization_id = :org_id
-              AND p.key = :permission_key
-        """),
-        {"user_id": user.get("user_id"), "org_id": user.get("org_id"), "permission_key": permission_key},
-    )
-    return bool(result.scalar())
+    # Reads the same cached authorization context get_current_user resolved
+    # earlier in this request, so this is a set membership test rather than a
+    # database round trip.
+    context = await get_auth_context(db, str(user.get("user_id")))
+    if not context:
+        return False
+    return permission_key in set(context.get("permissions") or [])
 
 
 async def get_user_permission_keys(db: AsyncSession, user: dict) -> set[str]:
@@ -526,19 +719,10 @@ async def get_user_permission_keys(db: AsyncSession, user: dict) -> set[str]:
         return {row[0] for row in result.fetchall()}
     if not user.get("org_id"):
         return set()
-    result = await db.execute(
-        text("""
-            SELECT DISTINCT p.key
-            FROM core.permissions p
-            JOIN core.role_permissions rp ON p.id = rp.permission_id
-            JOIN core.user_roles ur ON rp.role_id = ur.role_id
-            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
-            WHERE ur.user_id = :user_id
-              AND ur.organization_id = :org_id
-        """),
-        {"user_id": user.get("user_id"), "org_id": user.get("org_id")},
-    )
-    return {row[0] for row in result.fetchall()}
+    context = await get_auth_context(db, str(user.get("user_id")))
+    if not context:
+        return set()
+    return set(context.get("permissions") or [])
 
 
 def require_permission(permission_key: str):
@@ -561,29 +745,14 @@ def require_permission(permission_key: str):
                 detail="User does not belong to an organization.",
             )
 
-        # Execute query to verify permission link: users -> user_roles -> roles -> role_permissions -> permissions
-        # Table names qualified with 'core.' schema prefix
-        query = text("""
-            SELECT 1 
-            FROM core.permissions p
-            JOIN core.role_permissions rp ON p.id = rp.permission_id
-            JOIN core.user_roles ur ON rp.role_id = ur.role_id
-            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
-            WHERE ur.user_id = :user_id 
-              AND ur.organization_id = :org_id 
-              AND p.key = :permission_key
-        """)
+        # Verifies the same link the old query walked (users -> user_roles ->
+        # roles -> role_permissions -> permissions) but against the permission
+        # set already resolved and cached by get_current_user for this
+        # request, so the check costs no additional round trip.
+        context = await get_auth_context(db, str(user.get("user_id")))
+        granted = set(context.get("permissions") or []) if context else set()
 
-        result = await db.execute(
-            query,
-            {
-                "user_id": user.get("user_id"),
-                "org_id": user.get("org_id"),
-                "permission_key": permission_key,
-            },
-        )
-
-        if not result.scalar():
+        if permission_key not in granted:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing required permission: {permission_key}",
@@ -618,21 +787,11 @@ def require_resource_permission(resource: str):
         if user.get("role") == SUPERADMIN_ROLE:
             return user
         permission_key = f"{resource}.{action}"
-        result = await db.execute(
-            text("""
-            SELECT 1 FROM core.permissions p
-            JOIN core.role_permissions rp ON rp.permission_id = p.id
-            JOIN core.user_roles ur ON ur.role_id = rp.role_id AND ur.user_id = :user_id AND ur.organization_id = :org_id
-            JOIN core.roles r ON r.id = ur.role_id AND r.organization_id = :org_id AND r.is_deleted = false
-            WHERE p.key = :permission_key
-        """),
-            {
-                "user_id": user["user_id"],
-                "org_id": user["org_id"],
-                "permission_key": permission_key,
-            },
-        )
-        if not result.scalar():
+        # Cached permission set - the fourth and last of the four per-request
+        # authorization round trips this refactor removed.
+        context = await get_auth_context(db, str(user["user_id"]))
+        granted = set(context.get("permissions") or []) if context else set()
+        if permission_key not in granted:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing required permission: {permission_key}",

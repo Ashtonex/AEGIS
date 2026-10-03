@@ -23,6 +23,7 @@ import {
 import { useApiQueries } from '@/hooks/useApiQueries';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@/components/ui/OperationalTable';
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 interface Contact {
   id: string;
@@ -367,28 +368,37 @@ export default function ContactsRegistry() {
             <ArrowLeft className="w-3.5 h-3.5 mr-1" />
             BACK TO CRM ENGINE
           </Link>
-          <div className="flex justify-between items-end border-b border-ink-mid pb-3">
-            <div>
-              <h1 className="font-sans font-black text-xl tracking-wide uppercase text-paper">Key Account Contacts</h1>
-              <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase">Decision-Maker Directory & Interaction History</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Link
-                href="/dashboard/crm/import"
-                className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
-              >
-                <UploadCloud className="w-3.5 h-3.5" />
-                <span>IMPORT / EXPORT</span>
-              </Link>
-              <button
-                onClick={() => setIsContactModalOpen(true)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>ADD NEW CONTACT</span>
-              </button>
-            </div>
+          <DashboardPageHeader
+            className="border-b border-ink-mid pb-3"
+            divider={false}
+            breadcrumbs={[
+              { label: "Dashboard", href: "/dashboard" },
+              { label: "CRM", href: "/dashboard/crm" },
+              { label: "Contacts" },
+            ]}
+            title="Key Account Contacts"
+            description="Decision-maker directory & interaction history."
+            actions={
+              <>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/dashboard/crm/import"
+              className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>IMPORT / EXPORT</span>
+            </Link>
+            <button
+              onClick={() => setIsContactModalOpen(true)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>ADD NEW CONTACT</span>
+            </button>
           </div>
+              </>
+            }
+          />
         </header>
 
         {/* Toast Toast Notifications */}

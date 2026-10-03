@@ -20,6 +20,7 @@ import {
   describeActionError
 } from '@/lib/api';
 import { useAuth } from '@/lib/auth/AuthContext';
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 interface Organization {
   id: string;
@@ -435,28 +436,37 @@ export default function ClientOrganizationsRegistry() {
             <ArrowLeft className="w-3.5 h-3.5 mr-1" />
             BACK TO CRM ENGINE
           </Link>
-          <div className="flex justify-between items-end border-b border-ink-mid pb-3">
-            <div>
-              <h1 className="font-sans font-black text-xl tracking-wide uppercase text-paper">Organizations & Corporate Accounts</h1>
-              <p className="text-[10px] text-slate-light font-mono tracking-widest uppercase">Structured Account Tree, Credit Limit & Risk Telemetry</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Link
-                href="/dashboard/crm/import"
-                className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
-              >
-                <UploadCloud className="w-3.5 h-3.5" />
-                <span>IMPORT / EXPORT</span>
-              </Link>
-              <button
-                onClick={() => setIsModalOpen(true)}
-                className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>REGISTER ACCOUNT</span>
-              </button>
-            </div>
+          <DashboardPageHeader
+            className="border-b border-ink-mid pb-3"
+            divider={false}
+            breadcrumbs={[
+              { label: "Dashboard", href: "/dashboard" },
+              { label: "CRM", href: "/dashboard/crm" },
+              { label: "Organizations" },
+            ]}
+            title="Organizations & Corporate Accounts"
+            description="Structured account tree, credit limit & risk telemetry."
+            actions={
+              <>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/dashboard/crm/import"
+              className="flex items-center space-x-1.5 px-3 py-1.5 border border-ink-mid hover:border-signal text-slate-light hover:text-signal font-mono text-data-sm transition-all"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>IMPORT / EXPORT</span>
+            </Link>
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 border border-signal hover:bg-signal/10 text-signal font-mono text-data-sm transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>REGISTER ACCOUNT</span>
+            </button>
           </div>
+              </>
+            }
+          />
         </header>
 
         {/* Toast Toast Notifications */}

@@ -29,6 +29,7 @@ import {
   getInternalProjects,
   getFleet
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RecordData = Record<string, any>;
 type ComplianceTab = "obligations" | "employees" | "equipment" | "deployment-gates" | "corrective-actions" | "incidents";
@@ -366,12 +367,14 @@ function ComplianceWorkspace() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold text-paper tracking-tight font-display">Compliance, Legal & Assurance</h1>
-          <p className="text-sm text-slate-light font-sans mt-0.5">SNC compliance gates, regulatory filings, corrective action plans and incident logs.</p>
-        </div>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Compliance" },
+        ]}
+        title="Compliance, Legal & Assurance"
+        description="SNC compliance gates, regulatory filings, corrective action plans and incident logs."
+        actions={
         <div className="flex space-x-2">
           {activeTab === "obligations" && (
             <button
@@ -419,7 +422,8 @@ function ComplianceWorkspace() {
             </button>
           )}
         </div>
-      </div>
+        }
+      />
 
       {/* Compliance Stats strip */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">

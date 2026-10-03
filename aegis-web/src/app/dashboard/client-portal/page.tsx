@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { ApiError, ClientPortalTicket, getClientPortalTickets } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 function formatDate(value?: string) {
   if (!value) return "Not recorded";
@@ -96,14 +97,16 @@ export default function ClientPortalDashboardPage() {
 
   return (
     <div className="min-h-screen bg-ink text-paper p-6">
-      <section className="mb-8 flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <p className="font-mono text-[10px] tracking-widest text-signal uppercase">Portal administration</p>
-          <h1 className="font-display text-4xl mt-2">Client Portal</h1>
-          <p className="text-slate-light mt-3 max-w-2xl">
-            View client-submitted requests and confirm the external portal is receiving source-backed records.
-          </p>
-        </div>
+      <DashboardPageHeader
+        className="mb-8"
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Client Portal" },
+        ]}
+        eyebrow="Portal administration"
+        title="Client Portal"
+        description="View client-submitted requests and confirm the external portal is receiving source-backed records."
+        actions={
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <div className="border border-ink-mid bg-ink-light px-4 py-3">
             <p className="font-mono text-[10px] text-slate-light uppercase">Requests</p>
@@ -120,7 +123,8 @@ export default function ClientPortalDashboardPage() {
             </p>
           </div>
         </div>
-      </section>
+        }
+      />
 
       <section className="border border-ink-mid bg-ink-light">
         <div className="p-5 border-b border-ink-mid flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

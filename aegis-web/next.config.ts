@@ -8,6 +8,27 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: process.env.AEGIS_SKIP_NEXT_TYPECHECK === "1",
   },
+  images: {
+    // Modern formats first; Next falls back to the original encoding for
+    // browsers that don't advertise support.
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: [
+      // Supabase Storage public objects (broadcast feed images, drawing
+      // thumbnails, avatars) — the project ref comes from
+      // NEXT_PUBLIC_SUPABASE_URL at runtime, hence the wildcard subdomain.
+      {
+        protocol: "https",
+        hostname: "*.supabase.co",
+        pathname: "/storage/v1/object/public/**",
+      },
+    ],
+  },
+  experimental: {
+    // Barrel-heavy packages: lucide-react is imported in ~147 modules and
+    // framer-motion in ~28. Rewriting these to direct per-module imports
+    // keeps dev compiles and client bundles from pulling whole barrels.
+    optimizePackageImports: ["lucide-react", "framer-motion"],
+  },
   async redirects() {
     return [
       {

@@ -15,6 +15,7 @@ import {
   updateCrmSupportTicket,
   upsertCrmSlaPolicy,
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 const SLA_PRIORITIES = ["urgent", "high", "normal", "low"] as const;
 const DEFAULT_SLA_HOURS: Record<string, { response_hours: number; resolution_hours: number }> = {
@@ -145,20 +146,26 @@ export default function CRMSupportPage() {
         <ArrowLeft className="h-4 w-4" /> Back to CRM
       </Link>
 
-      <div className="mt-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div className="flex flex-col gap-2">
-          <h1 className="text-2xl font-black uppercase tracking-tight">CRM Support Desk</h1>
-          <p className="max-w-3xl text-sm text-slate-light">
-            Client issues, SLA visibility, lifecycle status, and post-sale support context linked back to organizations, contacts, opportunities, and projects.
-          </p>
-        </div>
-        <Link
-          href="/dashboard/crm/tickets"
-          className="inline-flex shrink-0 items-center gap-2 rounded border border-white/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-light hover:border-signal hover:text-signal"
-        >
-          <Ticket className="h-4 w-4" /> View Full Ticket List &amp; Comments
-        </Link>
-      </div>
+      <DashboardPageHeader
+        className="mt-6 md:items-end md:justify-between mt-6"
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "CRM", href: "/dashboard/crm" },
+          { label: "Support" },
+        ]}
+        title="CRM Support Desk"
+        description="Client issues, SLA visibility, lifecycle status, and post-sale support context linked back to organizations, contacts, opportunities, and projects."
+        actions={
+          <>
+          <Link
+            href="/dashboard/crm/tickets"
+            className="inline-flex shrink-0 items-center gap-2 rounded border border-white/10 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-light hover:border-signal hover:text-signal"
+          >
+            <Ticket className="h-4 w-4" /> View Full Ticket List &amp; Comments
+          </Link>
+          </>
+        }
+      />
 
       {warnings.length > 0 && (
         <div className="mt-5 rounded border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">

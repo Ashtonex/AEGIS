@@ -11,6 +11,8 @@ import { PwaPushButton } from "@/components/pwa/PwaPushButton";
 import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
 import { matchesRole } from "@/lib/rbacMatch";
+import { ShellClock } from "@/components/shell/ShellClock";
+import { ShellNavGroups, type ModuleGroup, type ModuleNavItem } from "@/components/shell/ShellNavGroups";
 import {
   Search, Bell, CircleHelp, User, LayoutDashboard, Briefcase,
   HardHat, Activity, Users, Truck, Wrench, ShoppingCart,
@@ -21,43 +23,11 @@ import {
   Megaphone, Upload, LifeBuoy, Ticket, TrendingUp, Brain, Layers, Scale, Menu, X, Bot, FileSearch
 } from "lucide-react";
 
-type ModuleNavItem = {
-  name: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  // Roles allowed to see this item, mirroring the allowedRoles already
-  // passed to <RBACGuard> on the page it links to. Omit to leave the item
-  // visible to everyone (matches pages with no RBACGuard today).
-  allowedRoles?: string[];
-  // Roles explicitly denied this item, on top of whatever allowedRoles
-  // permits. For carving a narrow exception (e.g. one restricted role) out
-  // of an item that's otherwise open to everyone, without having to convert
-  // it into a full allow-list and enumerate every other role that currently
-  // relies on the open-by-default behavior.
-  restrictedRoles?: string[];
-  // Permission key that also grants visibility, on top of allowedRoles -
-  // backfilled from PAGE_ACCESS in imperium-api/routers/settings.py so a
-  // brand-new self-service role (with no allowedRoles entry at all) still
-  // gets this item once granted the matching permission. Undefined items
-  // keep today's role-only gating unchanged.
-  requiredPermission?: string;
-};
-
-type ModuleGroup = {
-  name: string;
-  href: string;
-  icon: React.ComponentType<{ className?: string }>;
-  subItems: ModuleNavItem[];
-  directLink?: boolean;
-  // Roles allowed to see the whole group. Harvested from the RBACGuard on
-  // the group's root page - sub-items don't carry their own RBACGuard today
-  // so this is the closest real signal for "who should see this module".
-  allowedRoles?: string[];
-  // See ModuleNavItem.restrictedRoles.
-  restrictedRoles?: string[];
-  // See ModuleNavItem.requiredPermission.
-  requiredPermission?: string;
-};
+// ModuleNavItem / ModuleGroup now live alongside the memoized nav renderer
+// in src/components/shell/ShellNavGroups.tsx (same shape, same comments) so
+// both files agree on one definition. Re-exported here because the nav data
+// below is still authored in this file.
+export type { ModuleNavItem, ModuleGroup };
 
 // Plain case-insensitive membership check for restrictedRoles. Deliberately
 // not matchesRole - that helper always returns true for SUPERADMIN, which
@@ -395,7 +365,6 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const router = useRouter();
   const { session, role, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
-  const [time, setTime] = useState("");
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [tourOpen, setTourOpen] = useState(false);
   const [tourReady, setTourReady] = useState(false);
@@ -509,15 +478,9 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      setTime(now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Harare' }) + ' CAT');
-    };
-    updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
-  }, []);
+  // The wall clock used to live here as per-second `setTime` state, which
+  // re-rendered this entire shell (including all 149 nav links) once a
+  // second. It now owns its own interval inside <ShellClock />.
 
   const portalHome = useMemo(() => {
     if (pathname?.startsWith("/portal/client")) return { name: "Client Portal", href: "/portal/client", icon: LockKeyhole };
@@ -654,72 +617,22 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, tourStorageKey]);
 
-  const renderNavGroups = () => (
-    <>
-      {visibleGroups.map((group) => {
-        const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
-        const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
-        if (group.directLink) {
-          return (
-            <Link
-              key={group.name}
-              href={group.href}
-              prefetch
-              onMouseEnter={() => prefetchRoute(group.href)}
-              onFocus={() => prefetchRoute(group.href)}
-              className={`mb-1 flex min-w-0 items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors ${
-                isCurrent ? "bg-signal/5 text-signal" : "text-slate-light hover:bg-ink-light hover:text-paper"
-              }`}
-            >
-              <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? "text-signal" : "text-slate"}`} />
-              <span className="truncate">{group.name}</span>
-            </Link>
-          );
-        }
+  const toggleGroup = useCallback((groupName: string, nextOpen: boolean) => {
+    setOpenGroups((current) => ({ ...current, [groupName]: nextOpen }));
+  }, []);
 
-        return (
-          <div key={group.name} className="mb-1">
-            <button
-              onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
-              className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${
-                isCurrent ? "text-signal bg-signal/5" : "text-slate-light hover:text-paper hover:bg-ink-light"
-              }`}
-            >
-              <div className="flex min-w-0 items-center space-x-3">
-                <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? "text-signal" : "text-slate"}`} />
-                <span className="truncate">{group.name}</span>
-              </div>
-              {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-slate" /> : <ChevronRight className="h-4 w-4 shrink-0 text-slate" />}
-            </button>
-
-            {isOpen && (
-              <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
-                {group.subItems.map((sub) => {
-                  const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
-                  return (
-                    <Link
-                      key={sub.name}
-                      href={sub.href}
-                      prefetch
-                      onMouseEnter={() => prefetchRoute(sub.href)}
-                      onFocus={() => prefetchRoute(sub.href)}
-                      className={`flex min-w-0 items-center space-x-3 py-1.5 pl-10 pr-3 rounded-sm text-xs transition-colors relative ${
-                        isSubCurrent
-                          ? "text-paper bg-ink-light before:absolute before:left-[19px] before:top-1/2 before:-translate-y-1/2 before:w-1.5 before:h-1.5 before:rounded-full before:bg-signal"
-                          : "text-slate hover:text-paper hover:bg-ink-light/50"
-                      }`}
-                    >
-                      <sub.icon className={`h-3.5 w-3.5 shrink-0 ${isSubCurrent ? "text-signal" : "text-slate-light"}`} />
-                      <span className="truncate">{sub.name}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </>
+  // Previously an inline renderNavGroups() closure invoked twice per render
+  // (desktop aside + mobile drawer). Now a memoized component: unrelated
+  // shell state (top-bar auto-hide, user menu, tour) no longer re-walks the
+  // 149 nav links. All props below are memoized/stable.
+  const navGroups = (
+    <ShellNavGroups
+      groups={visibleGroups}
+      pathname={pathname}
+      openGroups={openGroups}
+      onToggleGroup={toggleGroup}
+      onPrefetch={prefetchRoute}
+    />
   );
 
   // Don't render dashboard chrome/content until the session and assigned
@@ -842,9 +755,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <CircleHelp className="w-5 h-5" />
           </button>
 
-          <div className="hidden lg:block font-mono text-data-sm text-slate-light tracking-widest">
-            {time}
-          </div>
+          <ShellClock />
 
           <div className="relative" ref={userMenuRef} data-tour="dashboard-profile">
             <button
@@ -930,7 +841,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         {/* FIXED LEFT SIDEBAR (desktop) */}
         <aside className="hidden md:flex md:flex-col w-56 flex-shrink-0 border-r border-ink-mid bg-ink z-20">
           <nav className="flex-1 py-4 overflow-y-auto no-scrollbar flex flex-col px-3" data-tour="dashboard-nav">
-            {renderNavGroups()}
+            {navGroups}
           </nav>
         </aside>
 
@@ -958,7 +869,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
               </button>
             </div>
             <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 py-4">
-              {renderNavGroups()}
+              {navGroups}
             </nav>
           </aside>
         </div>

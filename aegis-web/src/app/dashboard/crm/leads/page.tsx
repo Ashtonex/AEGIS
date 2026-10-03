@@ -38,6 +38,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesRole } from '@/lib/rbacMatch';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 // Roles allowed to change the status of a lead that's already been decided
 // (converted/qualified or disqualified) - matches the backend's
@@ -647,46 +648,52 @@ export default function CRMLeadsApp() {
       )}
 
       {/* Header bar */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-[#1E293B] pb-6 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-            <Target className="h-6 w-6 text-[#3B82F6]" />
-            Leads Management & Signals
-          </h1>
-          <p className="text-slate-400 text-xs mt-1">Qualify automatic signals, discover duplicates, and route telemetry sources.</p>
-        </div>
-        <div className="flex gap-2">
-          <select
-            value={departmentFilter}
-            onChange={(e) => setDepartmentFilter(e.target.value)}
-            className="px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] text-white"
-          >
-            <option value="">All Departments</option>
-            {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
-          <button
-            onClick={() => setViewMode(prev => prev === 'list' ? 'kanban' : 'list')}
-            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-white"
-          >
-            <Layout className="h-4 w-4 text-slate-400" />
-            {viewMode === 'list' ? 'Kanban Board' : 'Table Feed'}
-          </button>
-          <Link
-            href="/dashboard/crm/import"
-            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-white"
-          >
-            <UploadCloud className="h-4 w-4 text-slate-400" />
-            Import / Export
-          </Link>
-          <button
-            onClick={openCreateLeadModal}
-            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] transition text-white"
-          >
-            <Plus className="h-4 w-4" />
-            Log Manual Lead
-          </button>
-        </div>
-      </div>
+      <DashboardPageHeader
+        className="border-b border-[#1E293B] pb-6 mb-6"
+        divider={false}
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "CRM", href: "/dashboard/crm" },
+          { label: "Leads" },
+        ]}
+        title="Leads Management & Signals"
+        description="Qualify automatic signals, discover duplicates, and route telemetry sources."
+        actions={
+          <>
+          <div className="flex gap-2">
+            <select
+              value={departmentFilter}
+              onChange={(e) => setDepartmentFilter(e.target.value)}
+              className="px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] text-white"
+            >
+              <option value="">All Departments</option>
+              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+            <button
+              onClick={() => setViewMode(prev => prev === 'list' ? 'kanban' : 'list')}
+              className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-white"
+            >
+              <Layout className="h-4 w-4 text-slate-400" />
+              {viewMode === 'list' ? 'Kanban Board' : 'Table Feed'}
+            </button>
+            <Link
+              href="/dashboard/crm/import"
+              className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#111827] border border-[#1E293B] hover:bg-[#1F2937] transition text-white"
+            >
+              <UploadCloud className="h-4 w-4 text-slate-400" />
+              Import / Export
+            </Link>
+            <button
+              onClick={openCreateLeadModal}
+              className="flex items-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg bg-[#3B82F6] hover:bg-[#2563EB] transition text-white"
+            >
+              <Plus className="h-4 w-4" />
+              Log Manual Lead
+            </button>
+          </div>
+          </>
+        }
+      />
 
       {/* Tabs */}
       <div className="flex border-b border-[#1E293B] overflow-x-auto no-scrollbar gap-2 mb-6">

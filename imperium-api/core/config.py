@@ -69,6 +69,42 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
     BACKGROUND_JOBS_ENABLED: bool = False
     WORKER_QUEUE_NAME: str = "aegis:jobs"
+
+    # --- Performance / caching -------------------------------------------
+    # How long a resolved authorization context (org, role, permission keys)
+    # stays cached. This is the single biggest latency lever in the API: it
+    # replaces four sequential DB round trips per request with one cached
+    # read. Kept deliberately short because a cached permission set means a
+    # revoked role survives until expiry - writes that change roles call
+    # core.security.invalidate_user_auth() to cut that window to zero, and
+    # this TTL is only the backstop for changes made outside the API (e.g.
+    # direct SQL).
+    AUTH_CACHE_TTL_SECONDS: int = Field(default=60, ge=0, le=900)
+    AUTH_CACHE_ENABLED: bool = True
+
+    # Emits Cache-Control on safe, read-only reference endpoints. Values are
+    # seconds; 0 disables. `stale-while-revalidate` lets the browser paint
+    # instantly from cache while refreshing behind it.
+    HTTP_CACHE_REFERENCE_MAX_AGE: int = Field(default=60, ge=0)
+    HTTP_CACHE_REFERENCE_SWR: int = Field(default=300, ge=0)
+
+    # SQLAlchemy pool sizing. Supavisor transaction mode (port 6543)
+    # multiplexes many logical clients over few backend connections, so this
+    # can safely exceed the 15-connection session-mode ceiling. Per *worker*:
+    # the effective total is this multiplied by API_WORKERS, so raise with
+    # care. Defaults give 4 workers x (12+12) = 96 logical clients.
+    DB_POOL_SIZE: int = Field(default=12, ge=1, le=100)
+    DB_MAX_OVERFLOW: int = Field(default=12, ge=0, le=100)
+    DB_POOL_TIMEOUT_SECONDS: int = Field(default=10, ge=1, le=120)
+    DB_POOL_RECYCLE_SECONDS: int = Field(default=180, ge=30)
+
+    # Uvicorn worker processes. The API ran on a single worker, so every
+    # request in the whole system queued behind one Python process - one slow
+    # query stalled every other user. Safe to scale out here because
+    # core/realtime.py is explicitly process-local (each worker relays only to
+    # the WebSocket connections it holds) and the arq worker runs in its own
+    # container. Read by the container entrypoint, not by the app itself.
+    API_WORKERS: int = Field(default=4, ge=1, le=32)
     WORKER_JOB_TIMEOUT_SECONDS: int = Field(default=300, ge=1)
     WORKER_JOB_MAX_TRIES: int = Field(default=3, ge=1)
 

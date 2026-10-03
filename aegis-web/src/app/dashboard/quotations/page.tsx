@@ -15,6 +15,7 @@ import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import SopChecklistModal from "./SopChecklistModal";
 import QuotationHistoryModal from "./QuotationHistoryModal";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 const QUOTATIONS_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -292,17 +293,15 @@ export default function QuotationsDashboard() {
     <div className="p-8 max-w-7xl mx-auto space-y-8 text-paper">
       
       {/* Page Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="flex items-center gap-2" data-tour="quotations-title">
-          <div>
-            <h1 className="font-display text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-              <Layers className="w-7 h-7 text-signal" />
-              Estimating &amp; Quotations Command
-            </h1>
-            <p className="text-sm text-slate mt-1">
-              Build robust cost structures, manage margins, and run commercial controls across all construction projects.
-            </p>
-          </div>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Estimating & Quotations" },
+        ]}
+        title="Estimating & Quotations Command"
+        description="Build robust cost structures, manage margins, and run commercial controls across all construction projects."
+        actions={
+          <>
           <button
             onClick={quotationsTour.openTour}
             className="text-slate hover:text-paper transition-colors"
@@ -311,52 +310,53 @@ export default function QuotationsDashboard() {
           >
             <CircleHelp className="w-5 h-5" />
           </button>
-        </div>
-        <div className="flex flex-wrap items-center gap-3" data-tour="quotations-tools">
-          <button
-            onClick={loadData}
-            className="p-2 border border-ink-mid rounded-sm bg-ink hover:border-signal/50 text-slate hover:text-white transition-all"
-            title="Refresh database records"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-signal' : ''}`} />
-          </button>
-          <Link
-            href="/dashboard/quotations/builder"
-            className="flex items-center space-x-2 border border-signal/40 text-signal px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-signal/10 transition-all"
-          >
-            <Plus className="w-3.5 h-3.5 stroke-[3px]" />
-            <span>Manual Calculator / Builder</span>
-          </Link>
-          <Link
-            href="/dashboard/quotations/drawings"
-            className="flex items-center space-x-2 border border-emerald-500/40 text-emerald-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-emerald-500/10 transition-all"
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span>Drawing Takeoff</span>
-          </Link>
-          <Link
-            href="/dashboard/quotations/rates"
-            className="flex items-center space-x-2 border border-sky-500/40 text-sky-300 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-sky-500/10 transition-all"
-          >
-            <Scale className="w-3.5 h-3.5" />
-            <span>Rate Build-Up</span>
-          </Link>
-          <Link
-            href="/dashboard/quotations/ccb"
-            className="flex items-center space-x-2 border border-amber-500/40 text-amber-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-amber-500/10 transition-all"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Commercial Control Brain (CCB)</span>
-          </Link>
-          <Link
-            href="/dashboard/quotations/intelligence"
-            className="flex items-center space-x-2 bg-gradient-to-r from-signal via-amber-400 to-amber-500 text-ink px-4 py-2 text-xs font-bold rounded-sm hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
-          >
-            <Brain className="w-4 h-4 text-ink" />
-            <span>Quotation Intelligence Engine</span>
-          </Link>
-        </div>
-      </div>
+          <div className="flex flex-wrap items-center gap-3" data-tour="quotations-tools">
+            <button
+              onClick={loadData}
+              className="p-2 border border-ink-mid rounded-sm bg-ink hover:border-signal/50 text-slate hover:text-white transition-all"
+              title="Refresh database records"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-signal' : ''}`} />
+            </button>
+            <Link
+              href="/dashboard/quotations/builder"
+              className="flex items-center space-x-2 border border-signal/40 text-signal px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-signal/10 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5 stroke-[3px]" />
+              <span>Manual Calculator / Builder</span>
+            </Link>
+            <Link
+              href="/dashboard/quotations/drawings"
+              className="flex items-center space-x-2 border border-emerald-500/40 text-emerald-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-emerald-500/10 transition-all"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Drawing Takeoff</span>
+            </Link>
+            <Link
+              href="/dashboard/quotations/rates"
+              className="flex items-center space-x-2 border border-sky-500/40 text-sky-300 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-sky-500/10 transition-all"
+            >
+              <Scale className="w-3.5 h-3.5" />
+              <span>Rate Build-Up</span>
+            </Link>
+            <Link
+              href="/dashboard/quotations/ccb"
+              className="flex items-center space-x-2 border border-amber-500/40 text-amber-400 px-3.5 py-2 text-xs font-semibold rounded-sm hover:bg-amber-500/10 transition-all"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Commercial Control Brain (CCB)</span>
+            </Link>
+            <Link
+              href="/dashboard/quotations/intelligence"
+              className="flex items-center space-x-2 bg-gradient-to-r from-signal via-amber-400 to-amber-500 text-ink px-4 py-2 text-xs font-bold rounded-sm hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
+            >
+              <Brain className="w-4 h-4 text-ink" />
+              <span>Quotation Intelligence Engine</span>
+            </Link>
+          </div>
+          </>
+        }
+      />
 
       {errorMsg && (
         <div className="p-4 border border-red-500/20 bg-red-950/20 rounded-sm flex items-center space-x-3 text-red-400 text-sm">

@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -235,59 +235,89 @@ async def get_data_room_tree(
     )
     projects = [dict(r._mapping) for r in projects_res]
 
-    # Ensure system default folders are populated if missing
-    for sec in STANDARD_SECTIONS:
-        await db.execute(
-            text("""
-                INSERT INTO finance.data_room_folders (
-                    organization_id, parent_path, folder_name, folder_path, section_code, is_system
-                ) VALUES (
-                    :org_id, '', :name, :name, :code, true
-                ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-            """),
-            {"org_id": org_id, "name": sec["name"], "code": sec["code"]},
-        )
-    # Ensure banking years
-    for yr in ["2024", "2025", "2026"]:
-        await db.execute(
-            text("""
-                INSERT INTO finance.data_room_folders (
-                    organization_id, parent_path, folder_name, folder_path, section_code, is_system
-                ) VALUES (
-                    :org_id, '02 BANKING', :yr, :path, '02_BANKING', true
-                ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-            """),
-            {"org_id": org_id, "yr": yr, "path": f"02 BANKING/{yr}"},
-        )
+    # Ensure the standard folder skeleton exists: the fixed sections, the
+    # banking years, and a per-project subtree under 05 PROJECTS.
+    #
+    # This used to issue one INSERT per folder inside nested Python loops, so
+    # loading the tree cost 1 + 3 + (projects x 5) round trips *on every GET*.
+    # At 20 registered projects that is 104 sequential round trips to render a
+    # read-only screen - which is the single largest reason this page felt
+    # slow. The rows are now assembled in Python and inserted in one
+    # set-based statement, so the cost is constant (one round trip) no matter
+    # how many projects exist.
+    project_subfolders = (
+        "Receipts & Invoices",
+        "Contracts & Agreements",
+        "Progress Claims",
+        "BOQ & Variations",
+    )
 
-    # Ensure registered projects have subfolders under 05 PROJECTS
+    skeleton: list[dict[str, Any]] = []
+    for sec in STANDARD_SECTIONS:
+        skeleton.append(
+            {
+                "parent_path": "",
+                "folder_name": sec["name"],
+                "folder_path": sec["name"],
+                "section_code": sec["code"],
+                "project_id": None,
+            }
+        )
+    for yr in ("2024", "2025", "2026"):
+        skeleton.append(
+            {
+                "parent_path": "02 BANKING",
+                "folder_name": yr,
+                "folder_path": f"02 BANKING/{yr}",
+                "section_code": "02_BANKING",
+                "project_id": None,
+            }
+        )
     for p in projects:
         p_name = p["name"]
         p_root = f"05 PROJECTS/{p_name}"
+        p_id = str(p["id"])
+        skeleton.append(
+            {
+                "parent_path": "05 PROJECTS",
+                "folder_name": p_name,
+                "folder_path": p_root,
+                "section_code": "05_PROJECTS",
+                "project_id": p_id,
+            }
+        )
+        for sub in project_subfolders:
+            skeleton.append(
+                {
+                    "parent_path": p_root,
+                    "folder_name": sub,
+                    "folder_path": f"{p_root}/{sub}",
+                    "section_code": "05_PROJECTS",
+                    "project_id": p_id,
+                }
+            )
+
+    if skeleton:
         await db.execute(
             text("""
                 INSERT INTO finance.data_room_folders (
-                    organization_id, parent_path, folder_name, folder_path, section_code, project_id, is_system
-                ) VALUES (
-                    :org_id, '05 PROJECTS', :name, :path, '05_PROJECTS', :project_id, true
-                ) ON CONFLICT (organization_id, folder_path) DO NOTHING
+                    organization_id, parent_path, folder_name, folder_path,
+                    section_code, project_id, is_system
+                )
+                SELECT :org_id, r.parent_path, r.folder_name, r.folder_path,
+                       r.section_code, r.project_id, true
+                FROM jsonb_to_recordset(CAST(:rows AS jsonb)) AS r(
+                    parent_path text,
+                    folder_name text,
+                    folder_path text,
+                    section_code text,
+                    project_id uuid
+                )
+                ON CONFLICT (organization_id, folder_path) DO NOTHING
             """),
-            {"org_id": org_id, "name": p_name, "path": p_root, "project_id": p["id"]},
+            {"org_id": org_id, "rows": json.dumps(skeleton)},
         )
-        for sub in ["Receipts & Invoices", "Contracts & Agreements", "Progress Claims", "BOQ & Variations"]:
-            sub_path = f"{p_root}/{sub}"
-            await db.execute(
-                text("""
-                    INSERT INTO finance.data_room_folders (
-                        organization_id, parent_path, folder_name, folder_path, section_code, project_id, is_system
-                    ) VALUES (
-                        :org_id, :parent, :sub, :sub_path, '05_PROJECTS', :project_id, true
-                    ) ON CONFLICT (organization_id, folder_path) DO NOTHING
-                """),
-                {"org_id": org_id, "parent": p_root, "sub": sub, "sub_path": sub_path, "project_id": p["id"]},
-            )
-
-    await db.commit()
+        await db.commit()
 
     # 2. Fetch all folders
     folders_res = await db.execute(

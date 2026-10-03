@@ -42,6 +42,7 @@ import {
   requestSiteMaterial,
   submitDailySiteReport,
 } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type ApiRecord = Record<string, any> & { id: string };
 type Detail = { report: ApiRecord; labour: ApiRecord[]; equipment: ApiRecord[]; materials: ApiRecord[]; documents: ApiRecord[]; approvals: ApiRecord[] };
@@ -326,14 +327,22 @@ function SiteOperationsWorkspace() {
 
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-ink-mid pb-5">
-        <div>
-          <p className="mb-1 flex items-center gap-2 font-mono text-xs uppercase tracking-widest text-signal"><ClipboardCheck className="h-4 w-4" /> Site Operations Command</p>
-          <h1 className="font-display text-3xl font-bold uppercase tracking-tight">Approved Daily Site Report</h1>
-          <p className="mt-1 max-w-3xl text-sm text-slate-light">Record labour, plant, materials and site evidence, then push the approved report into cost, inventory, reporting and executive intelligence.</p>
-        </div>
-        <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh</button>
-      </header>
+      <DashboardPageHeader
+        className="mb-6 border-b border-ink-mid pb-5"
+        divider={false}
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Site Operations" },
+        ]}
+        eyebrow="Site operations command"
+        title="Approved Daily Site Report"
+        description="Record labour, plant, materials and site evidence, then push the approved report into cost, inventory, reporting and executive intelligence."
+        actions={
+          <>
+          <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh</button>
+          </>
+        }
+      />
 
       <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric icon={<FileText />} label="Daily reports" value={loading ? "..." : String(metrics.total)} />

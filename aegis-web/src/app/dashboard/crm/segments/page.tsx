@@ -5,6 +5,7 @@ import type { FormEvent } from "react";
 import Link from "next/link";
 import { ArrowLeft, Plus, Users } from "lucide-react";
 import { createCrmSegment, getCrmSegments } from "@/lib/api";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 export default function CrmSegmentsPage() {
   const [segments, setSegments] = useState<any[]>([]);
@@ -48,13 +49,19 @@ export default function CrmSegmentsPage() {
           <ArrowLeft className="h-4 w-4" />
           Back to marketing
         </Link>
-        <header className="border-b border-ink-mid pb-4">
-          <div className="flex items-center gap-2 text-signal">
-            <Users className="h-5 w-5" />
-            <span className="font-mono text-[10px] uppercase tracking-widest">CRM segments</span>
-          </div>
-          <h1 className="mt-2 text-2xl font-black uppercase">Target Segments</h1>
-        </header>
+        <DashboardPageHeader
+          className="border-b border-ink-mid pb-4"
+          divider={false}
+          breadcrumbs={[
+            { label: "Dashboard", href: "/dashboard" },
+            { label: "CRM", href: "/dashboard/crm" },
+            { label: "Marketing", href: "/dashboard/crm/marketing" },
+            { label: "Segments" },
+          ]}
+          eyebrow="CRM segments"
+          title="Target Segments"
+          description="Reusable audience segments driving campaigns and outreach templates."
+        />
         {error && <div className="border border-red-500/30 bg-red-950/20 p-3 text-sm text-red-200">{error}</div>}
         <form onSubmit={submitSegment} className="grid gap-3 border border-ink-mid bg-ink-light p-4 md:grid-cols-[220px_1fr_auto]">
           <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Segment name" className="border border-ink-mid bg-ink px-3 py-2 text-sm text-paper outline-none focus:border-signal" />

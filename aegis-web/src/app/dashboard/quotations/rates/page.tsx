@@ -31,6 +31,7 @@ import {
   listRateBenchmarks,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { DashboardPageHeader } from "@/components/ui/DashboardPageHeader";
 
 type RateBenchmark = {
   id: string;
@@ -620,40 +621,36 @@ export default function RateBuildUpPage() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-8 p-8 text-paper">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-3">
-          <Link href="/dashboard/quotations" className="inline-flex items-center gap-2 font-mono text-xs uppercase text-slate transition-colors hover:text-white">
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Quotations
-          </Link>
-          <div>
-            <h1 className="flex items-center gap-3 font-display text-2xl font-bold tracking-tight text-white">
-              <Scale className="h-7 w-7 text-signal" />
-              Rate Build-Up
-            </h1>
-            <p className="mt-1 max-w-3xl text-sm text-slate">
-              Build task rates from their cost parts, test them against company intelligence, and publish owner-approved standards across quotations.
-            </p>
+      <DashboardPageHeader
+        breadcrumbs={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Estimating & Quotations", href: "/dashboard/quotations" },
+          { label: "Rate Build-Up" },
+        ]}
+        title="Rate Build-Up"
+        description="Build task rates from their cost parts, test them against company intelligence, and publish owner-approved standards across quotations."
+        actions={
+          <>
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => void loadBenchmarks()}
+              className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3.5 py-2 text-xs font-semibold text-slate transition-all hover:border-signal/50 hover:text-white"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin text-signal" : ""}`} />
+              Refresh
+            </button>
+            <Link
+              href="/dashboard/crm/tasks"
+              className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3.5 py-2 text-xs font-semibold text-paper transition-all hover:border-signal/50"
+            >
+              <FileText className="h-3.5 w-3.5 text-signal" />
+              CRM Tasks
+            </Link>
           </div>
-        </div>
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => void loadBenchmarks()}
-            className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3.5 py-2 text-xs font-semibold text-slate transition-all hover:border-signal/50 hover:text-white"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin text-signal" : ""}`} />
-            Refresh
-          </button>
-          <Link
-            href="/dashboard/crm/tasks"
-            className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3.5 py-2 text-xs font-semibold text-paper transition-all hover:border-signal/50"
-          >
-            <FileText className="h-3.5 w-3.5 text-signal" />
-            CRM Tasks
-          </Link>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {errorMsg && (
         <div className="flex items-center gap-3 border border-red-500/25 bg-red-950/20 p-4 text-sm text-red-300">
