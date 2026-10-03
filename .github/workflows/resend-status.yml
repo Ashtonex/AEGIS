@@ -1,0 +1,51 @@
+name: Resend Delivery Status
+
+# Read-only: lists the most recent emails Resend has for this account, with
+# each one's latest delivery event, using the API key on the droplet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many recent emails to list"
+        default: "25"
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH and list
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/aegis
+            docker compose -f deploy/digitalocean/docker-compose.yml exec -T -e LIMIT="${{ inputs.limit }}" imperium-worker python - <<'PY'
+            import os
+
+            import httpx
+
+            from core.config import settings
+
+            response = httpx.get(
+                "https://api.resend.com/emails",
+                params={"limit": os.environ.get("LIMIT") or "25"},
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                timeout=20,
+            )
+            print("status", response.status_code)
+            body = response.json()
+            for email in body.get("data", []):
+                print(
+                    "EMAIL",
+                    email.get("created_at", "")[:19],
+                    "|", ",".join(email.get("to") or []),
+                    "|", email.get("last_event"),
+                    "|", (email.get("subject") or "")[:70],
+                )
+            if "data" not in body:
+                print(body)
+            PY
