@@ -8,16 +8,22 @@ on:
       - "deploy/digitalocean/**"
   workflow_dispatch: {}
 
-# Only one deploy at a time. Overlapping runs share /opt/aegis on the droplet
-# and collided on git's index.lock and on recreating the worker container.
-# Queue instead of cancelling so a run never dies mid docker compose down/up.
-concurrency:
-  group: deploy-backend
-  cancel-in-progress: false
-
 jobs:
+  # The deploy only runs if the backend test suite passes for this commit.
+  tests:
+    uses: ./.github/workflows/backend-tests.yml
+
   deploy:
+    needs: tests
     runs-on: ubuntu-latest
+    # Only one deploy at a time. Overlapping runs share /opt/aegis on the
+    # droplet and collided on git's index.lock and on recreating the worker
+    # container. Queue instead of cancelling so a run never dies mid docker
+    # compose down/up. Set on the job, not the workflow, so tests for a newer
+    # push can run while an older deploy is still going.
+    concurrency:
+      group: deploy-backend
+      cancel-in-progress: false
     steps:
       - name: SSH and redeploy
         uses: appleboy/ssh-action@v1
