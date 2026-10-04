@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
   ShieldCheck, TrendingUp, TrendingDown, Users, X, BarChart3, Receipt,
-  FileText, ClipboardList, CheckCircle2, CircleHelp
+  FileText, ClipboardList, CheckCircle2, CircleHelp, ChevronDown, ChevronRight, FolderKanban, PanelRightOpen
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -67,11 +67,21 @@ const ManagementAccountsPanel = dynamic(() => import("./ManagementAccountsPanel"
 const ProjectPortfolioPanel = dynamic(() => import("./ProjectPortfolioPanel").then((m) => m.ProjectPortfolioPanel), { loading: PanelLoading });
 const BankStatementReviewPanel = dynamic(() => import("./BankStatementReviewPanel").then((m) => m.BankStatementReviewPanel), { loading: PanelLoading });
 const AuditWorkspacePanel = dynamic(() => import("./AuditWorkspacePanel").then((m) => m.AuditWorkspacePanel), { loading: PanelLoading });
+const FinanceOverviewDashboard = dynamic(() => import("./FinanceOverviewDashboard").then((m) => m.FinanceOverviewDashboard), { loading: PanelLoading, ssr: false });
+const SupplierPaymentsPanel = dynamic(() => import("./SupplierPaymentsPanel").then((m) => m.SupplierPaymentsPanel), { loading: PanelLoading });
+const ProjectBudgetsPanel = dynamic(() => import("./ProjectBudgetsPanel").then((m) => m.ProjectBudgetsPanel), { loading: PanelLoading });
+const CostCodesByProjectPanel = dynamic(() => import("./CostCodesByProjectPanel").then((m) => m.CostCodesByProjectPanel), { loading: PanelLoading });
+
+// Pages where entering a project's budget / variation / claim is relevant
+// get the "Project quick entry" dropdown in the header, instead of a
+// permanent side column that squeezed the main content.
+const QUICK_ENTRY_TABS: FinanceTab[] = ["project-financials", "cost-codes", "variations", "progress-claims", "earned-value", "close-out", "budgets", "project-portfolio"];
 
 type RecordData = Record<string, any>;
-type FinanceTab = "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace" | "bank-review";
+type FinanceTab = "overview" | "project-financials" | "cost-codes" | "variations" | "progress-claims" | "earned-value" | "close-out" | "budgets" | "banking" | "cash-accounts" | "cashbook" | "supplier-payments" | "payroll" | "transfers" | "department-pnl" | "statutory" | "vendor-payments" | "client-payments" | "historical-entry" | "financial-statements" | "data-room" | "general-ledger" | "cash-forecast" | "ai-assistant" | "management-accounts" | "project-portfolio" | "audit-workspace" | "bank-review";
 
 const TAB_ROUTES: Record<FinanceTab, string> = {
+  overview: "/dashboard/finance",
   "project-financials": "/dashboard/finance/project-financials",
   "cost-codes": "/dashboard/finance/cost-codes",
   variations: "/dashboard/finance/variations",
@@ -180,11 +190,12 @@ function statusClass(status: string) {
 }
 
 export default function FinanceDashboard() {
-  return <FinancePage initialTab="project-financials" />;
+  return <FinancePage initialTab="overview" />;
 }
 
 const FINANCE_TAB_LABELS: Record<FinanceTab, string> = {
-  "project-financials": "Finance & Cost Control",
+  overview: "Finance & Cost Control",
+  "project-financials": "Project Financials",
   "cost-codes": "Cost Codes",
   variations: "Variations",
   "progress-claims": "Progress Claims",
@@ -238,6 +249,21 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const [moneyProjectId, setMoneyProjectId] = useState<string>("");
   const [departmentId, setDepartmentId] = useState<string>("");
   const [budgetsSubView, setBudgetsSubView] = useState<"project" | "company">("project");
+  const [quickEntryOpen, setQuickEntryOpen] = useState(false);
+  const [claimGroupsOpen, setClaimGroupsOpen] = useState<Record<string, boolean>>({});
+  const quickEntryRef = useRef<HTMLDivElement>(null);
+
+  // The quick-entry dropdown closes on an outside click or Escape.
+  useEffect(() => {
+    if (!quickEntryOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (quickEntryRef.current && !quickEntryRef.current.contains(e.target as Node)) setQuickEntryOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setQuickEntryOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [quickEntryOpen]);
 
   const [detailLoading, setDetailLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -416,7 +442,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   };
 
   // Aggregated KPIs
-  const operationalTabs: FinanceTab[] = ["banking", "cash-accounts", "cashbook", "supplier-payments"];
+  const operationalTabs: FinanceTab[] = ["banking", "cash-accounts", "cashbook"];
 
   const kpis = useMemo(() => {
     let contractTotal = 0;
@@ -448,6 +474,25 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       marginPct
     };
   }, [projectSummaries]);
+
+  // Claims grouped by project, newest claim first inside each; projects
+  // with claims still awaiting certification float to the top.
+  const claimGroups = useMemo(() => {
+    const map = new Map<string, { key: string; name: string; rows: RecordData[]; claimed: number; certified: number; retention: number; pending: number }>();
+    for (const c of claims) {
+      const key = String(c.project_id || "none");
+      const g = map.get(key) || { key, name: String(c.project_name || "No project"), rows: [], claimed: 0, certified: 0, retention: 0, pending: 0 };
+      g.rows.push(c);
+      g.claimed += Number(c.this_claim_amount || 0);
+      g.certified += Number(c.certified_amount || 0);
+      g.retention += Number(c.retention_amount || 0);
+      if (c.status === "submitted") g.pending += 1;
+      map.set(key, g);
+    }
+    const groups = Array.from(map.values());
+    groups.forEach((g) => g.rows.sort((a, b) => String(b.claim_period_end || b.created_at || "").localeCompare(String(a.claim_period_end || a.created_at || ""))));
+    return groups.sort((a, b) => b.pending - a.pending || a.name.localeCompare(b.name));
+  }, [claims]);
 
   if (loading) {
     return (
@@ -519,8 +564,40 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                 </button>
               ))}
             </div>
+            {QUICK_ENTRY_TABS.includes(activeTab) && (
+              <div className="relative" ref={quickEntryRef}>
+                <button
+                  onClick={() => setQuickEntryOpen((v) => !v)}
+                  aria-expanded={quickEntryOpen}
+                  className={`flex items-center space-x-1.5 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+                    quickEntryOpen ? "bg-ink-mid border-signal/60 text-paper" : "border-ink-mid text-slate-light hover:text-paper hover:border-signal/40"
+                  }`}
+                >
+                  <PanelRightOpen className="h-4 w-4" />
+                  <span>Project quick entry</span>
+                  {selectedProjectId && <span className="h-1.5 w-1.5 rounded-full bg-signal" />}
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${quickEntryOpen ? "rotate-180" : ""}`} />
+                </button>
+                {quickEntryOpen && (
+                  <div className="absolute right-0 top-full mt-2 z-40 w-[min(460px,calc(100vw-2rem))] max-h-[calc(100vh-140px)] overflow-y-auto rounded-lg shadow-[0_24px_48px_-12px_rgba(0,0,0,0.7)] animate-in fade-in slide-in-from-top-1 duration-fast">
+                    <ProjectFinancialsWorkspace
+                      projects={projects}
+                      budgets={budgets}
+                      selectedProjectId={selectedProjectId}
+                      onSelectProject={(id) => void loadProjectDetail(id)}
+                      projectDetail={projectDetail}
+                      detailLoading={detailLoading}
+                      onDataChanged={async () => {
+                        await loadData();
+                        if (selectedProjectId) await loadProjectDetail(selectedProjectId);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             <button
-              onClick={() => router.push(activeTab === "data-room" ? TAB_ROUTES["project-financials"] : TAB_ROUTES["data-room"])}
+              onClick={() => router.push(activeTab === "data-room" ? TAB_ROUTES.overview : TAB_ROUTES["data-room"])}
               className={`flex items-center space-x-1.5 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
                 activeTab === "data-room"
                   ? "bg-signal text-ink border-signal font-semibold"
@@ -561,7 +638,10 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
         }
       />
 
-      {/* KPI Cards Strip */}
+      {/* Portfolio KPI strip - only on Project Financials, where these
+          ledger totals are what the page is about. Other pages carry their
+          own page-specific summary (or none). */}
+      {activeTab === "project-financials" && (
       <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4" data-tour="finance-kpis">
         <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Total Contract Value</p>
@@ -601,19 +681,23 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
           </div>
         </div>
       </div>
+      )}
 
       {/* Tab Panels */}
-      {activeTab === "data-room" ? (
+      {activeTab === "overview" ? (
+        <FinanceOverviewDashboard projectSummaries={projectSummaries} departmentId={departmentId} unassignedBankOut={unassignedBankOut} />
+      ) : activeTab === "data-room" ? (
         <DataRoomPanel />
       ) : activeTab === "bank-review" ? (
         <BankStatementReviewPanel projects={projects} />
       ) : activeTab === "payroll" ? (
         <PayrollPanel projects={projects} departmentId={departmentId} />
+      ) : activeTab === "supplier-payments" ? (
+        <SupplierPaymentsPanel />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-6">
+        <div className="space-y-6">
           {operationalTabs.includes(activeTab) && (
-            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook" | "supplier-payments"} projects={projects} departmentId={departmentId} />
+            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook"} projects={projects} departmentId={departmentId} />
           )}
 
           {activeTab === "transfers" && (
@@ -729,39 +813,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
             </div>
           )}
 
-          {activeTab === "cost-codes" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
-                <span className="font-mono text-xs tracking-wider uppercase text-slate">Cost Code Ledger Structure</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
-                      <th className="p-4">Code</th>
-                      <th className="p-4">Name</th>
-                      <th className="p-4">Category</th>
-                      <th className="p-4">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {costCodes.map((c) => (
-                      <tr key={c.id} className="hover:bg-ink-mid/10">
-                        <td className="p-4 font-mono text-signal">{c.code}</td>
-                        <td className="p-4 text-paper font-medium">{c.name}</td>
-                        <td className="p-4 text-slate-light capitalize">{c.category}</td>
-                        <td className="p-4">
-                          <span className="border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider">
-                            Active
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          {activeTab === "cost-codes" && <CostCodesByProjectPanel departmentId={departmentId} refreshKey={costCodes.length} />}
 
           {activeTab === "variations" && (
             <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
@@ -819,63 +871,78 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
           )}
 
           {activeTab === "progress-claims" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
-                <span className="font-mono text-xs tracking-wider uppercase text-slate">Contract Claim Register</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
-                      <th className="p-4">Claim #</th>
-                      <th className="p-4">Project</th>
-                      <th className="p-4 text-right">Claim Amount</th>
-                      <th className="p-4 text-right">Retention Held</th>
-                      <th className="p-4 text-right">Net Claim</th>
-                      <th className="p-4 text-right">Certified</th>
-                      <th className="p-4">Status</th>
-                      <th className="p-4">Fiscal Invoice #</th>
-                      <th className="p-4"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {claims.length === 0 ? (
-                      <tr>
-                        <td colSpan={9} className="p-4 text-center text-slate">No progress claims recorded.</td>
-                      </tr>
-                    ) : (
-                      claims.map((c) => (
-                        <tr key={c.id} className="hover:bg-ink-mid/10">
-                          <td className="p-4 font-mono text-paper font-medium">{c.claim_number}</td>
-                          <td className="p-4 text-slate-light">{c.project_name || c.project_id}</td>
-                          <td className="p-4 text-right text-paper">{money(c.this_claim_amount)}</td>
-                          <td className="p-4 text-right text-amber-400">{money(c.retention_amount)}</td>
-                          <td className="p-4 text-right text-paper font-medium">{money(c.net_claim_amount)}</td>
-                          <td className="p-4 text-right text-emerald-400">{c.certified_amount ? money(c.certified_amount) : "—"}</td>
-                          <td className="p-4">
-                            <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(c.status)}`}>
-                              {c.status}
-                            </span>
-                          </td>
-                          <td className="p-4 text-slate-light font-mono text-xs">{c.fiscal_invoice_number || "—"}</td>
-                          <td className="p-4 text-right whitespace-nowrap">
-                            {c.status === "submitted" && (
-                              <button onClick={() => void handleCertifyClaim(c.id)} className="text-xs text-signal hover:underline">
-                                Certify
-                              </button>
-                            )}
-                            {c.status === "certified" && (
-                              <button onClick={() => void handleRecordFiscalInvoice(c.id)} className="text-xs text-signal hover:underline">
-                                Record Fiscal Invoice
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
+            <div className="space-y-3">
+              {claimGroups.length === 0 ? (
+                <div className="bg-ink-light border border-ink-mid rounded-lg p-6 text-center text-sm text-slate">No progress claims recorded.</div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-slate-light">{claimGroups.length} projects · {claims.length} claims</span>
+                    <button onClick={() => setClaimGroupsOpen(Object.fromEntries(claimGroups.map((g) => [g.key, true])))} className="text-signal hover:underline ml-auto">Expand all</button>
+                    <button onClick={() => setClaimGroupsOpen(Object.fromEntries(claimGroups.map((g) => [g.key, false])))} className="text-signal hover:underline">Collapse all</button>
+                  </div>
+                  {claimGroups.map((g) => {
+                    const open = claimGroupsOpen[g.key] ?? g.pending > 0;
+                    return (
+                      <section key={g.key} className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
+                        <button onClick={() => setClaimGroupsOpen((o) => ({ ...o, [g.key]: !open }))} className="w-full px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-left bg-ink/30 hover:bg-ink-mid/20">
+                          {open ? <ChevronDown className="h-4 w-4 text-slate" /> : <ChevronRight className="h-4 w-4 text-slate" />}
+                          <FolderKanban className="h-4 w-4 text-signal" />
+                          <span className="text-paper font-medium flex-1 min-w-[180px]">{g.name}</span>
+                          <span className="text-[11px] text-slate">{g.rows.length} claim{g.rows.length === 1 ? "" : "s"}</span>
+                          {g.pending > 0 && <span className="text-[11px] text-sky-300">{g.pending} awaiting certification</span>}
+                          <span className="text-xs text-slate-light">Claimed <span className="text-paper tabular-nums">{money(g.claimed)}</span></span>
+                          <span className="text-xs text-slate-light">Certified <span className="text-emerald-400 tabular-nums">{money(g.certified)}</span></span>
+                          <span className="text-xs text-slate-light">Retention <span className="text-amber-400 tabular-nums">{money(g.retention)}</span></span>
+                        </button>
+                        {open && (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse text-sm">
+                              <thead>
+                                <tr className="border-y border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider">
+                                  <th className="px-4 py-2">Claim #</th>
+                                  <th className="px-4 py-2">Period</th>
+                                  <th className="px-4 py-2 text-right">Claim Amount</th>
+                                  <th className="px-4 py-2 text-right">Retention Held</th>
+                                  <th className="px-4 py-2 text-right">Net Claim</th>
+                                  <th className="px-4 py-2 text-right">Certified</th>
+                                  <th className="px-4 py-2">Status</th>
+                                  <th className="px-4 py-2">Fiscal Invoice #</th>
+                                  <th className="px-4 py-2"></th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-ink-mid">
+                                {g.rows.map((c) => (
+                                  <tr key={c.id} className="hover:bg-ink-mid/10">
+                                    <td className="px-4 py-2 font-mono text-paper font-medium">{c.claim_number}</td>
+                                    <td className="px-4 py-2 text-slate-light text-xs whitespace-nowrap">{c.claim_period_start ? `${String(c.claim_period_start).slice(0, 10)} → ${String(c.claim_period_end || "").slice(0, 10)}` : "—"}</td>
+                                    <td className="px-4 py-2 text-right text-paper">{money(c.this_claim_amount)}</td>
+                                    <td className="px-4 py-2 text-right text-amber-400">{money(c.retention_amount)}</td>
+                                    <td className="px-4 py-2 text-right text-paper font-medium">{money(c.net_claim_amount)}</td>
+                                    <td className="px-4 py-2 text-right text-emerald-400">{c.certified_amount ? money(c.certified_amount) : "—"}</td>
+                                    <td className="px-4 py-2">
+                                      <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(c.status)}`}>{c.status}</span>
+                                    </td>
+                                    <td className="px-4 py-2 text-slate-light font-mono text-xs">{c.fiscal_invoice_number || "—"}</td>
+                                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                                      {c.status === "submitted" && (
+                                        <button onClick={() => void handleCertifyClaim(c.id)} className="text-xs text-signal hover:underline">Certify</button>
+                                      )}
+                                      {c.status === "certified" && (
+                                        <button onClick={() => void handleRecordFiscalInvoice(c.id)} className="text-xs text-signal hover:underline">Record Fiscal Invoice</button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </section>
+                    );
+                  })}
+                </>
+              )}
             </div>
           )}
 
@@ -890,70 +957,13 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
                 <button onClick={() => setBudgetsSubView("company")} className={`px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px ${budgetsSubView === "company" ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}>Company &amp; Department</button>
               </div>
 
-              {budgetsSubView === "project" && (
-                <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-                  <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
-                    <span className="font-mono text-xs tracking-wider uppercase text-slate">Project Approved Budgets</span>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse text-sm">
-                      <thead>
-                        <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
-                          <th className="p-4">Project</th>
-                          <th className="p-4">Budget Version</th>
-                          <th className="p-4">Effective Date</th>
-                          <th className="p-4 text-right">Total Amount</th>
-                          <th className="p-4">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-ink-mid">
-                        {budgets.length === 0 ? (
-                          <tr>
-                            <td colSpan={5} className="p-4 text-center text-slate">No budgets registered.</td>
-                          </tr>
-                        ) : (
-                          budgets.map((b) => (
-                            <tr key={b.id} className="hover:bg-ink-mid/10">
-                              <td className="p-4 text-paper font-medium">{b.project_name || b.project_id}</td>
-                              <td className="p-4 font-mono text-slate-light">v{b.budget_version}</td>
-                              <td className="p-4 text-slate-light">{new Date(b.effective_date).toLocaleDateString()}</td>
-                              <td className="p-4 text-right text-paper font-semibold">{money(b.allocated_amount || b.total_amount)}</td>
-                              <td className="p-4">
-                                <span className={`border px-2 py-0.5 rounded-sm text-[10px] uppercase font-mono tracking-wider ${statusClass(b.status)}`}>
-                                  {b.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+              {budgetsSubView === "project" && <ProjectBudgetsPanel budgets={budgets} onChanged={() => loadData()} />}
 
               {budgetsSubView === "company" && <CompanyBudgetPanel />}
             </div>
           )}
 
         </div>
-
-        {/* Project Financials Right Sidebar / Panel */}
-        <div className="space-y-6">
-          <ProjectFinancialsWorkspace
-            projects={projects}
-            budgets={budgets}
-            selectedProjectId={selectedProjectId}
-            onSelectProject={(id) => void loadProjectDetail(id)}
-            projectDetail={projectDetail}
-            detailLoading={detailLoading}
-            onDataChanged={async () => {
-              await loadData();
-              if (selectedProjectId) await loadProjectDetail(selectedProjectId);
-            }}
-          />
-        </div>
-      </div>
       )}
 
       {moneyProjectId && (

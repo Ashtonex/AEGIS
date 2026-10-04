@@ -11,6 +11,7 @@ export * from "./api/procurement";
 export * from "./api/fleet";
 export * from "./api/finance";
 export * from "./api/inventory";
+export * from "./api/finance-ops";
 export * from "./api/hr";
 export * from "./api/compliance";
 export * from "./api/documents";

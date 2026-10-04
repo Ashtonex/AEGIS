@@ -49,6 +49,8 @@ ALLOWED_UNBOUNDED = {
     ("documents", "get_signed_url"): "single document",
     ("documents", "get_access"): "single document",
     ("executive", "get_executive_stats"): "counts only",
+    ("finance_ops", "finance_dashboard"): "aggregates only: one row per month / cost category / budget status",
+    ("finance_ops", "cost_codes_by_project"): "aggregate: one row per project x cost code",
     ("financial_performance", "get_historical_reconciliation"): "one row per historical project",
     ("financial_performance", "get_project_petty_cash"): "a single project's petty cash",
     ("notifications", "notification_summary"): "counts only",

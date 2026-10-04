@@ -34,6 +34,7 @@ from app.services.finance.ccb_monitor import (
     run_stock_consumption_variance_check,
 )
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
+from app.services.finance import draft_budget_reminders
 from app.services.hr.weekly_report import (
     build_weekly_hr_report,
     is_send_time,
@@ -906,6 +907,43 @@ async def publish_bank_workbooks_nightly_job(ctx):
     return results
 
 
+async def draft_budget_reminder_job(ctx):
+    """Hourly cron: from 07:00 Harare time on weekdays, emails each QS, PM,
+    the MD and Finance oversight one digest of the project budgets still in
+    draft (app/services/finance/draft_budget_reminders.py). A per-person,
+    per-day Redis key means each person gets at most one reminder a day and
+    a failed send is retried by the next hourly run."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        now = time_now()
+        if not draft_budget_reminders.is_send_time(now):
+            return {"skipped": "not a weekday after 07:00 Harare time"}
+        day = now.astimezone(draft_budget_reminders.HARARE).date().isoformat()
+        redis_pool = ctx["redis"]
+        sent: list[str] = []
+        failed: list[str] = []
+        async with AsyncSessionLocal() as db:
+            plan = await draft_budget_reminders.plan_reminders(db)
+        for email, entry in sorted(plan.items()):
+            key = f"aegis:draft_budget_reminder:{day}:{email}"
+            if await redis_pool.get(key):
+                continue
+            if await draft_budget_reminders.send_digest(email, entry):
+                await redis_pool.setex(key, 3 * 86400, "sent")
+                sent.append(email)
+            else:
+                failed.append(email)
+        if failed:
+            logger.warning(f"Draft budget reminders failed for {failed}")
+        return {"sent": sent, "failed": failed}
+    except Exception as exc:
+        logger.exception(f"Draft budget reminder job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def on_job_failure(ctx, exp: Exception):
     job_id = ctx.get("job_id", "unknown")
     logger.error(f"Arq Job {job_id} encountered execution failure: {str(exp)}")
@@ -979,6 +1017,7 @@ class WorkerSettings:
         publish_bank_workbook_job,
         publish_bank_workbooks_nightly_job,
         sync_bank_workbooks_job,
+        draft_budget_reminder_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -1041,6 +1080,8 @@ class WorkerSettings:
         ),
         cron(publish_bank_workbooks_nightly_job, hour=2, minute=30, run_at_startup=False),
         cron(sync_bank_workbooks_job, minute=set(range(1, 60, 2)), run_at_startup=False),
+        # Hourly; the job itself only sends weekdays from 07:00 Harare time.
+        cron(draft_budget_reminder_job, minute=20, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

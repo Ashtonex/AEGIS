@@ -74,6 +74,13 @@ class Settings(BaseSettings):
         "nyasha@sixnineconstruction.com,ashton@admin.com,cosmas@sixnineconstruction.com"
     )
 
+    # Draft project budget reminders (app/services/finance/draft_budget_reminders.py):
+    # copied on every weekday reminder alongside the project's QS and PM.
+    # cosmas@ is the MD; nyasha@ asked to be on every draft.
+    DRAFT_BUDGET_REMINDER_ALWAYS: str = (
+        "cosmas@sixnineconstruction.com,nyasha@sixnineconstruction.com"
+    )
+
     # AI Financial Control Assistant (Phase 10B) - read-only, tool-calling
     # only against the allow-list in app/services/finance/ai_assistant_tools.py.
     # Unset by default: the assistant endpoint fails closed with a clear

@@ -387,7 +387,11 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         {isOpen && (
           <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
             {group.subItems.map((sub) => {
-              const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
+              // Highlight only the most specific match: a landing item like
+              // /dashboard/finance must not light up alongside
+              // /dashboard/finance/payroll when that page is open.
+              const matches = (href: string) => pathname === href || !!pathname?.startsWith(`${href}/`);
+              const isSubCurrent = matches(sub.href) && !group.subItems.some((other) => other.href.length > sub.href.length && matches(other.href));
               return (
                 <Link
                   key={sub.name}
