@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useAuth } from "@/lib/auth/AuthContext";
 import { resolveBackendOrigin } from "@/lib/backend-url";
@@ -16,7 +16,7 @@ import { resolveBackendOrigin } from "@/lib/backend-url";
 type LiveEvent = { type: "notification"; data: Record<string, unknown> } | { type: "table_change"; table: string; op: string; id: string };
 type Listener = (event: LiveEvent) => void;
 
-const LiveDataContext = createContext<{ subscribe: (key: string, listener: Listener) => () => void } | null>(null);
+const LiveDataContext = createContext<{ subscribe: (key: string, listener: Listener) => () => void; connected: boolean } | null>(null);
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
@@ -25,6 +25,23 @@ const RECONNECT_JITTER_MS = 500;
 function wsUrl(token: string): string {
   const origin = resolveBackendOrigin().replace(/^http/, "ws");
   return `${origin}/api/v1/notifications/ws?token=${encodeURIComponent(token)}`;
+}
+
+// Closing a socket that is still CONNECTING makes the browser log a failed
+// connection (seen on every page load when the session token refreshes
+// right after mount and replaces the first socket). Let it finish opening,
+// then close it; handlers are detached so it can't trigger a reconnect.
+function retire(socket: WebSocket | null) {
+  if (!socket) return;
+  socket.onmessage = null;
+  socket.onclose = null;
+  socket.onerror = null;
+  if (socket.readyState === WebSocket.CONNECTING) {
+    socket.onopen = () => socket.close();
+  } else {
+    socket.onopen = null;
+    socket.close();
+  }
 }
 
 function keyFor(event: LiveEvent): string {
@@ -47,7 +64,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
-      socketRef.current?.close();
+      retire(socketRef.current);
       socketRef.current = null;
       reconnectAttemptRef.current = 0;
       setConnected(false);
@@ -71,7 +88,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (cancelled || connectionSeq !== connectionSeqRef.current) return;
       clearReconnectTimer();
-      socketRef.current?.close();
+      retire(socketRef.current);
       const socket = new WebSocket(wsUrl(token));
       socketRef.current = socket;
 
@@ -115,7 +132,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       connectionSeqRef.current += 1;
       clearReconnectTimer();
-      socketRef.current?.close();
+      retire(socketRef.current);
       socketRef.current = null;
       setConnected(false);
     };
@@ -131,13 +148,8 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // `connected` is read nowhere in this component - it's only here so a
-  // provider consumer *could* surface connection state later. Referencing
-  // it avoids an unused-variable lint failure without inventing UI for it
-  // now.
-  void connected;
-
-  return <LiveDataContext.Provider value={{ subscribe }}>{children}</LiveDataContext.Provider>;
+  const value = useMemo(() => ({ subscribe, connected }), [subscribe, connected]);
+  return <LiveDataContext.Provider value={value}>{children}</LiveDataContext.Provider>;
 }
 
 function useLiveSubscription(key: string, listener: Listener) {
@@ -164,4 +176,11 @@ export function useLiveNotification(onNotification: (data: Record<string, unknow
   useLiveSubscription("notification", (event) => {
     if (event.type === "notification") onNotification(event.data);
   });
+}
+
+/** Whether the shared live connection is currently open - lets a hook poll
+ * often only while live push is down, instead of all the time. False
+ * outside a LiveDataProvider. */
+export function useLiveConnected(): boolean {
+  return useContext(LiveDataContext)?.connected ?? false;
 }
