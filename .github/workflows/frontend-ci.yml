@@ -4,8 +4,8 @@ name: Frontend CI
 # before it reached main (see AEGIS Performance Audit, Part 4 "No
 # performance testing anywhere" / Part 5 item 4.8) - this is the first gate:
 # typecheck, lint and a full production build on every change to aegis-web.
-# Lighthouse/bundle-size/web-vitals budgets are a follow-up once this base
-# gate has run for a while and real budget numbers can be set from it.
+# The shared-bundle size budget runs after the build; Lighthouse/web-vitals
+# budgets are still a follow-up.
 
 on:
   pull_request:
@@ -44,3 +44,11 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Shared client JS that every route downloads, gzipped. Baseline was
+      # 165.8 kB on 2026-10-03; the budget leaves headroom so it
+      # catches real growth, not unrelated work. Lower it as splitting lands.
+      - name: Bundle budget
+        run: node scripts/check-bundle-budget.js
+        env:
+          FIRST_LOAD_BUDGET_KB: "200"

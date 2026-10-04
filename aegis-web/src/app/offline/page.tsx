@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, RefreshCw, WifiOff } from "lucide-react";
@@ -26,7 +27,7 @@ const MODULE_LABELS: Record<string, string> = {
   profile: "Profile",
 };
 
-export default function OfflinePage() {
+function OfflineContent() {
   const searchParams = useSearchParams();
   const moduleKey = searchParams?.get("module")?.toLowerCase() || "dashboard";
   const moduleLabel = MODULE_LABELS[moduleKey] || moduleKey.replace(/-/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
@@ -64,5 +65,16 @@ export default function OfflinePage() {
         </div>
       </section>
     </main>
+  );
+}
+
+// useSearchParams() needs a Suspense boundary above it now that the root
+// layout no longer forces every route dynamic, otherwise the static export of
+// this page fails at build time.
+export default function OfflinePage() {
+  return (
+    <Suspense fallback={null}>
+      <OfflineContent />
+    </Suspense>
   );
 }

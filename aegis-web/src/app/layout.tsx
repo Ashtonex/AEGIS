@@ -9,8 +9,6 @@ import { cn } from "@/lib/utils";
 import { AuthProvider } from "@/lib/auth/AuthContext";
 import { AppThemeProvider } from "@/components/theme/AppThemeProvider";
 
-export const dynamic = "force-dynamic";
-
 export const metadata: Metadata = constructMetadata();
 
 export default function RootLayout({
