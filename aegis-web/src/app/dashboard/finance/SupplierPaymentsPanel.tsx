@@ -43,6 +43,9 @@ function fmtDate(value: unknown) {
   const d = new Date(String(value));
   return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" });
 }
+function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -183,9 +186,9 @@ export function SupplierPaymentsPanel() {
     <div className="space-y-5">
       {/* Headline */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-        <Stat icon={CircleDollarSign} label="Total owed to suppliers" value={money(summary.total_outstanding)} sub={`${summary.count || 0} unpaid invoices`} />
-        <Stat icon={AlertTriangle} label="Overdue" value={money(summary.overdue)} tone={Number(summary.overdue) > 0 ? "text-red-400" : "text-paper"} sub={`${invoices.filter((i) => i.days_overdue > 0).length} invoices past due`} />
-        <Stat icon={CheckCircle2} label="Approved, ready to pay" value={money(summary.payable_now)} tone="text-emerald-400" sub={`${invoices.filter((i) => i.payable_now).length} invoices`} />
+        <Stat icon={CircleDollarSign} label="Total owed to suppliers" value={money(summary.total_outstanding)} sub={`${plural(summary.count || 0, "unpaid invoice")}`} />
+        <Stat icon={AlertTriangle} label="Overdue" value={money(summary.overdue)} tone={Number(summary.overdue) > 0 ? "text-red-400" : "text-paper"} sub={`${plural(invoices.filter((i) => i.days_overdue > 0).length, "invoice")} past due`} />
+        <Stat icon={CheckCircle2} label="Approved, ready to pay" value={money(summary.payable_now)} tone="text-emerald-400" sub={plural(invoices.filter((i) => i.payable_now).length, "invoice")} />
         <Stat icon={ShieldAlert} label="Awaiting approval" value={money(summary.awaiting_approval)} tone="text-amber-400" sub="PO / GRN / invoice match incomplete" />
         <Stat icon={Clock} label="Avg. days outstanding" value={`${summary.weighted_days_outstanding ?? 0} days`} sub={`Due date assumed ${summary.assumed_terms_days || 30} days where none is set`} />
       </div>
@@ -208,7 +211,7 @@ export function SupplierPaymentsPanel() {
             >
               <span className="flex items-center gap-1.5 text-[11px] text-slate-light"><span className={`h-2 w-2 rounded-full ${b.bar}`} />{b.label}</span>
               <span className={`block text-base font-semibold tabular-nums ${b.text}`}>{money(aging[b.key]?.amount)}</span>
-              <span className="text-[10px] text-slate">{aging[b.key]?.count || 0} invoices</span>
+              <span className="text-[10px] text-slate">{plural(aging[b.key]?.count || 0, "invoice")}</span>
             </button>
           ))}
         </div>
@@ -242,7 +245,7 @@ export function SupplierPaymentsPanel() {
             {(data?.by_project || []).map((p: RecordData) => (
               <li key={String(p.project_id || "none")} className="flex items-center gap-2 text-xs px-2 py-1.5">
                 <span className="text-paper flex-1 truncate">{p.project_name}</span>
-                <span className="text-slate">{p.count} invoices</span>
+                <span className="text-slate">{plural(p.count, "invoice")}</span>
                 <span className="text-paper tabular-nums w-20 text-right">{money(p.outstanding)}</span>
               </li>
             ))}

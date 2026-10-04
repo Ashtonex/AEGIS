@@ -113,7 +113,10 @@ export function DashboardPageHeader({
           title
         )}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {/* Capped at the viewport and allowed to wrap, so a wide row of
+          actions (e.g. Finance's department switcher) can't run off a
+          phone screen; on desktop there's room and nothing wraps. */}
+      {actions && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{actions}</div>}
     </header>
   );
 }

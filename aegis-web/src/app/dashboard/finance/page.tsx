@@ -538,7 +538,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
         subtitle="SNC authoritative financial ledger and budget controls."
         className="items-center"
         actions={
-          <div className="flex items-center space-x-2" data-tour="finance-title">
+          <div className="flex flex-wrap items-center gap-2 min-w-0 max-w-full" data-tour="finance-title">
             <button
               onClick={financeTour.openTour}
               className="text-slate hover:text-paper transition-colors"
@@ -547,7 +547,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
             >
               <CircleHelp className="w-5 h-5" />
             </button>
-            <div className="flex items-center border border-ink-mid rounded-sm overflow-hidden font-mono text-[11px] uppercase tracking-wider" data-tour="finance-departments">
+            <div className="flex items-center border border-ink-mid rounded-sm overflow-x-auto max-w-full whitespace-nowrap font-mono text-[11px] uppercase tracking-wider" data-tour="finance-departments">
               <button
                 onClick={() => setDepartmentId("")}
                 className={`px-3 py-2 transition-colors ${departmentId === "" ? "bg-signal text-ink font-semibold" : "text-slate hover:text-paper"}`}
