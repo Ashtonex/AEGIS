@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
-import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests, updatePlantRequestStatus } from "@/lib/api";
+import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests, updatePlantRequestStatus, getFleetWorkOrders, decideFleetWorkOrder, decideFleetWorkOrderApproval } from "@/lib/api";
+import { useAuth } from "@/lib/auth/AuthContext";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
@@ -192,11 +193,12 @@ function FleetTrackerDashboard() {
       gates: () => getComplianceDeploymentGateChecks({ limit: 50 }),
       plantSummary: () => getPlantLifecycleSummary(),
       plantRequests: () => getPlantRequests(),
+      workOrders: () => getFleetWorkOrders(),
       operatorProfiles: () => getFleetOperatorProfiles(),
       externalHire: () => getExternalPlantHireAgreements(),
     },
     [],
-    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests", operatorProfiles: "Operator profiles", externalHire: "External hire agreements" } }
+    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests", workOrders: "Maintenance work orders", operatorProfiles: "Operator profiles", externalHire: "External hire agreements" } }
   );
 
   const assets = useMemo(
@@ -211,6 +213,43 @@ function FleetTrackerDashboard() {
     () => (Array.isArray(data.plantRequests?.data) ? data.plantRequests.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.plantRequests]
   );
+  const { user } = useAuth();
+  const currentUserId = user?.id ?? null;
+  // The API already returns awaiting_approval first.
+  const workOrders = useMemo(
+    () => (Array.isArray(data.workOrders?.data) ? data.workOrders.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.workOrders]
+  );
+
+  const submitWorkOrderForApproval = async (wo: FleetRecord) => {
+    const reference = text(wo, "work_order_number") || "this work order";
+    try {
+      await decideFleetWorkOrder(wo.id, { status: "awaiting_approval" });
+      setNotice(`Work order ${reference} submitted for approval.`);
+      void loadFleet();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : `Failed to submit ${reference}.`);
+    }
+  };
+
+  const decideWorkOrder = async (wo: FleetRecord, decision: "approve" | "reject") => {
+    const reference = text(wo, "work_order_number") || "this work order";
+    let reason: string | undefined;
+    if (decision === "reject") {
+      reason = window.prompt(`Reason for rejecting ${reference} (required):`)?.trim() || undefined;
+      if (!reason) return;
+    } else if (!window.confirm(`Approve the repair on ${reference}?`)) {
+      return;
+    }
+    try {
+      await decideFleetWorkOrderApproval(wo.id, decision, reason);
+      setNotice(`Work order ${reference} ${decision === "approve" ? "approved" : "rejected"}.`);
+      void loadFleet();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : `Failed to ${decision} ${reference}.`);
+    }
+  };
+
   // Requests awaiting approval go first so they are never cut off by the
   // eight-row limit on the table below.
   const plantRequestsForTable = useMemo(
@@ -394,6 +433,65 @@ function FleetTrackerDashboard() {
                               <button onClick={() => void decidePlantRequest(request, "approved")} className="border border-green-500/40 px-2 py-1 text-[11px] text-green-200 hover:bg-green-500/10">Approve</button>
                               <button onClick={() => void decidePlantRequest(request, "rejected")} className="border border-red-500/40 px-2 py-1 text-[11px] text-red-200 hover:bg-red-500/10">Reject</button>
                             </div>
+                          ) : <span className="text-[11px] text-slate">—</span>}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </tbody>
+              </OperationalTable>
+            )}
+          </section>
+
+          <section className="mb-6 border border-ink-mid bg-ink">
+            <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-4">
+              <div>
+                <h2 className="text-sm font-semibold">Maintenance Work Orders</h2>
+                <p className="mt-1 text-xs text-slate-light">Open work orders. Repairs awaiting approval need someone other than the person who raised them.</p>
+              </div>
+              <span className="font-mono text-[10px] uppercase text-slate">{workOrders.filter((wo) => text(wo, "status") === "awaiting_approval").length} awaiting approval</span>
+            </div>
+            {workOrders.length === 0 ? (
+              <div className="p-5 text-sm text-slate-light">No open maintenance work orders.</div>
+            ) : (
+              <OperationalTable className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Work Order</TableHead>
+                    <TableHead>Asset</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Priority</TableHead>
+                    <TableHead>Est. Cost</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <tbody>
+                  {workOrders.slice(0, 12).map((wo) => {
+                    const status = text(wo, "status");
+                    const priority = text(wo, "priority") || "medium";
+                    const raisedByMe = Boolean(currentUserId) && text(wo, "created_by") === currentUserId;
+                    const cost = Number(wo.estimated_cost);
+                    return (
+                      <TableRow key={wo.id}>
+                        <TableCell><p className="font-medium text-paper">{text(wo, "work_order_number") || wo.id.slice(0, 8)}</p><p className="mt-1 max-w-64 truncate text-[11px] text-slate-light" title={text(wo, "description")}>{text(wo, "description")}</p></TableCell>
+                        <TableCell><p className="text-paper">{text(wo, "asset_reference") || "Not recorded"}</p><p className="mt-1 text-[11px] text-slate-light">{text(wo, "asset_description")}</p></TableCell>
+                        <TableCell>{text(wo, "maintenance_type")}</TableCell>
+                        <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${priority === "critical" || priority === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-slate/40 bg-ink-light text-slate-light"}`}>{priority}</span></TableCell>
+                        <TableCell className="font-mono">{wo.estimated_cost === null || wo.estimated_cost === undefined || !Number.isFinite(cost) ? "Not recorded" : `$${cost.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</TableCell>
+                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{status.replaceAll("_", " ")}</span></TableCell>
+                        <TableCell>
+                          {status === "awaiting_approval" ? (
+                            raisedByMe ? (
+                              <span className="text-[11px] text-amber-200">Needs another approver</span>
+                            ) : (
+                              <div className="flex gap-1.5">
+                                <button onClick={() => void decideWorkOrder(wo, "approve")} className="border border-green-500/40 px-2 py-1 text-[11px] text-green-200 hover:bg-green-500/10">Approve</button>
+                                <button onClick={() => void decideWorkOrder(wo, "reject")} className="border border-red-500/40 px-2 py-1 text-[11px] text-red-200 hover:bg-red-500/10">Reject</button>
+                              </div>
+                            )
+                          ) : status === "reported" || status === "assessed" ? (
+                            <button onClick={() => void submitWorkOrderForApproval(wo)} className="border border-slate/40 px-2 py-1 text-[11px] text-slate-light hover:text-paper hover:border-signal">Submit for approval</button>
                           ) : <span className="text-[11px] text-slate">—</span>}
                         </TableCell>
                       </TableRow>

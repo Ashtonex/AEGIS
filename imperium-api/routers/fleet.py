@@ -297,6 +297,11 @@ class WorkOrderDecision(Payload):
     completion_notes: Optional[str] = None
 
 
+class WorkOrderApproval(Payload):
+    decision: Literal["approve", "reject"]
+    reason: Optional[str] = Field(default=None, max_length=1000)
+
+
 class FuelPayload(Payload):
     fleet_id: UUID
     assignment_id: Optional[UUID] = None
@@ -1780,6 +1785,124 @@ async def create_work_order(
     return result({"id": str(row.scalar())}, "Maintenance work order created.")
 
 
+@router.get("/work-orders")
+async def list_work_orders(
+    status_filter: Optional[str] = None,
+    include_closed: bool = False,
+    user: dict = Depends(require_permission("fleet.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Maintenance work orders, open ones by default, awaiting_approval first
+    then newest. created_by comes back so the UI can hide Approve from the
+    person who raised the work order (the approval endpoint blocks it too)."""
+    rows = await db.execute(
+        text("""
+        SELECT wo.id, wo.fleet_id, wo.work_order_number, wo.maintenance_type, wo.priority, wo.status,
+               wo.vendor_name, wo.scheduled_for, wo.estimated_cost, wo.actual_cost, wo.description,
+               wo.diagnosis, wo.parts_request_reference, wo.estimated_downtime_hours,
+               wo.created_by, wo.created_at, wo.updated_at,
+               wo.repair_approved_by, wo.repair_approved_at, wo.rejection_reason,
+               COALESCE(f.asset_code, f.vehicle_registration) AS asset_reference,
+               concat_ws(' ', f.make, f.model) AS asset_description,
+               u.full_name AS created_by_name
+        FROM fleet.maintenance_work_orders wo
+        LEFT JOIN fleet.fleet f ON f.id=wo.fleet_id AND f.organization_id=wo.organization_id
+        LEFT JOIN core.users u ON u.id=wo.created_by
+        WHERE wo.organization_id=:org_id AND wo.is_deleted=false
+          AND (CAST(:include_closed AS boolean) OR wo.status NOT IN ('completed','returned_to_service','closed','cancelled'))
+          AND (CAST(:status_filter AS VARCHAR) IS NULL OR wo.status=CAST(:status_filter AS VARCHAR))
+        ORDER BY (wo.status='awaiting_approval') DESC, wo.created_at DESC
+        LIMIT 500
+    """),
+        {"org_id": user["org_id"], "status_filter": status_filter, "include_closed": include_closed},
+    )
+    return result([dict(r._mapping) for r in rows], "Maintenance work orders listed.")
+
+
+@router.post("/work-orders/{work_order_id}/approval")
+async def approve_work_order(
+    work_order_id: UUID,
+    payload: WorkOrderApproval,
+    user: dict = Depends(require_permission("fleet.work_order.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The only way out of 'awaiting_approval' other than cancelling.
+    Approving moves the work order on to 'awaiting_parts' when a parts
+    request is recorded, otherwise to 'scheduled'. The person who raised the
+    work order can't decide it, and a rejection needs a reason."""
+    work_order = (
+        (
+            await db.execute(
+                text("""
+        SELECT id, work_order_number, status, created_by, parts_request_reference, project_id
+        FROM fleet.maintenance_work_orders
+        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+    """),
+                {"id": work_order_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not work_order:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if work_order["status"] != "awaiting_approval":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only work orders awaiting approval can be decided. This one is '{work_order['status']}'.",
+        )
+    if work_order["created_by"] and str(work_order["created_by"]) == str(user["sub"]):
+        raise HTTPException(status_code=403, detail="You raised this work order, so someone else must approve it.")
+    reason = (payload.reason or "").strip() or None
+    if payload.decision == "reject" and not reason:
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
+
+    approved = payload.decision == "approve"
+    new_status = (
+        ("awaiting_parts" if work_order["parts_request_reference"] else "scheduled")
+        if approved
+        else "cancelled"
+    )
+    row = await db.execute(
+        text("""
+        UPDATE fleet.maintenance_work_orders
+        SET status=CAST(:status AS varchar),
+            repair_approved_by=CASE WHEN :approved THEN CAST(:user_id AS uuid) ELSE repair_approved_by END,
+            repair_approved_at=CASE WHEN :approved THEN NOW() ELSE repair_approved_at END,
+            repair_rejected_by=CASE WHEN :approved THEN repair_rejected_by ELSE CAST(:user_id AS uuid) END,
+            repair_rejected_at=CASE WHEN :approved THEN repair_rejected_at ELSE NOW() END,
+            rejection_reason=CASE WHEN :approved THEN rejection_reason ELSE :reason END,
+            updated_at=NOW()
+        WHERE id=:id AND organization_id=:org_id AND is_deleted=false AND status='awaiting_approval'
+        RETURNING id
+    """),
+        {
+            "status": new_status,
+            "approved": approved,
+            "user_id": user["sub"],
+            "reason": reason,
+            "id": work_order_id,
+            "org_id": user["org_id"],
+        },
+    )
+    if not row.scalar():
+        raise HTTPException(status_code=409, detail="Work order was decided by someone else first.")
+    await emit_event(
+        db,
+        user=user,
+        event_type=f"fleet.work_order_{'approved' if approved else 'rejected'}.v1",
+        aggregate_type="maintenance_work_order",
+        aggregate_id=work_order_id,
+        project_id=work_order["project_id"],
+        event_payload={"status": new_status, "reason": reason},
+    )
+    await db.commit()
+    return result(
+        {"id": str(work_order_id), "status": new_status},
+        f"Work order {work_order['work_order_number']} {'approved' if approved else 'rejected'}.",
+    )
+
+
 @router.patch("/work-orders/{work_order_id}/decision")
 async def decide_work_order(
     work_order_id: UUID,
@@ -1805,6 +1928,11 @@ async def decide_work_order(
     )
     if not work_order:
         raise HTTPException(status_code=404, detail="Work order not found")
+    if work_order["status"] == "awaiting_approval" and payload.status not in ("awaiting_approval", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail="This work order is awaiting approval. Approve or reject it via POST /fleet/work-orders/{id}/approval.",
+        )
     project_id = work_order["project_id"] or work_order["assignment_project_id"]
     row = await db.execute(
         text("""UPDATE fleet.maintenance_work_orders SET status=CAST(:status AS varchar),actual_cost=COALESCE(:actual_cost,actual_cost),completion_notes=COALESCE(:completion_notes,completion_notes),

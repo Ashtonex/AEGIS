@@ -273,6 +273,25 @@ export async function decideFleetWorkOrder(workOrderId: string, payload: Record<
   });
 }
 
+export async function getFleetWorkOrders(params?: { status?: string; includeClosed?: boolean }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.status) search.set('status_filter', params.status);
+  if (params?.includeClosed) search.set('include_closed', 'true');
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/fleet/work-orders${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+// Repair approval - the only way out of awaiting_approval besides cancelling.
+// Needs fleet.work_order.approve, and the person who raised the work order
+// can't decide it (the backend enforces both).
+export async function decideFleetWorkOrderApproval(workOrderId: string, decision: 'approve' | 'reject', reason?: string): Promise<ApiResponse<{ id: string; status: string }>> {
+  return fetchApi<ApiResponse<{ id: string; status: string }>>(`/api/v1/fleet/work-orders/${workOrderId}/approval`, {
+    method: 'POST',
+    body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
 export const createEquipmentWorkOrder = createFleetWorkOrder;
 export const decideEquipmentWorkOrder = decideFleetWorkOrder;
 

@@ -1835,10 +1835,7 @@ async def get_material_forecast_alerts(
 # requires before it will approve (see each decide_via). Deliberately left
 # out: site-level sign-offs (daily reports, GRNs, timesheets, BOQ
 # measurements, weekly site budgets, document reviews) - they belong to site
-# engineers and agents, not the executive queue - and fleet maintenance work
-# orders, which have no list screen and no approval rule of their own yet
-# (their decision endpoint sets any status), since a queue item must link
-# somewhere a real decision is made.
+# engineers and agents, not the executive queue.
 # Each query returns the same shape: id, reference, amount, waiting_since,
 # detail.
 _PENDING_APPROVAL_SOURCES: List[Dict[str, Any]] = [
@@ -1990,6 +1987,22 @@ _PENDING_APPROVAL_SOURCES: List[Dict[str, Any]] = [
                    concat_ws(' - ', required_asset_type, COALESCE(client_name, work_location)) AS detail
             FROM fleet.plant_requests
             WHERE organization_id = :org_id AND is_deleted = false AND status = 'awaiting_approval'
+        """,
+    },
+    {
+        "type": "work_order",
+        "module": "Fleet",
+        "source": "fleet.maintenance_work_orders",
+        "reason": "Maintenance work order awaiting repair approval before work can be scheduled.",
+        "action_url": "/dashboard/fleet",
+        "decide_via": "POST /api/v1/fleet/work-orders/{id}/approval",
+        "sql": """
+            SELECT wo.id, wo.work_order_number AS reference, wo.estimated_cost AS amount,
+                   wo.updated_at AS waiting_since,
+                   concat_ws(' - ', COALESCE(f.asset_code, f.vehicle_registration), wo.priority || ' priority') AS detail
+            FROM fleet.maintenance_work_orders wo
+            LEFT JOIN fleet.fleet f ON f.id = wo.fleet_id AND f.organization_id = wo.organization_id
+            WHERE wo.organization_id = :org_id AND wo.is_deleted = false AND wo.status = 'awaiting_approval'
         """,
     },
     {
