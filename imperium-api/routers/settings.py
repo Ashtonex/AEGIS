@@ -1171,8 +1171,12 @@ async def _create_employee_record(
     (e.g. if invite_user retries)."""
     row = await db.execute(
         text("""
-        INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, linked_user_id, employment_status)
-        VALUES (:org_id, :user_id, :employee_name, :job_title, :linked_user_id, 'active')
+        INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, linked_user_id, employment_status, employee_number, position_id, category_id, department_id)
+        SELECT CAST(:org_id AS uuid), CAST(:user_id AS uuid), CAST(:employee_name AS text), CAST(:job_title AS text), CAST(:linked_user_id AS uuid), 'active',
+               hr.next_worker_number(CAST(:org_id AS uuid)), p.id, p.category_id, p.department_id
+        FROM (SELECT 1) one
+        LEFT JOIN hr.positions p ON p.organization_id = CAST(:org_id AS uuid) AND p.is_deleted = false
+             AND lower(p.name) = lower(trim(CAST(:job_title AS text)))
         ON CONFLICT DO NOTHING
         RETURNING id
     """),

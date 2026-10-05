@@ -10,6 +10,7 @@ import { NotificationBell } from "@/components/layout/dashboard/NotificationBell
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
 import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
+import { AttendanceCheckIn } from "@/components/people/AttendanceCheckIn";
 import { matchesRole } from "@/lib/rbacMatch";
 import {
   Search, Bell, CircleHelp, User, ShieldAlert,
@@ -681,6 +682,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           }`}
         >
           {children}
+          {!isPortalRoute && <AttendanceCheckIn />}
         </main>
       </div>
 

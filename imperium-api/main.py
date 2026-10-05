@@ -18,6 +18,9 @@ from routers import gl_bridge
 from routers import company_budgets
 from routers import cash_forecast
 from routers import finance_ops
+from routers import hr_people
+from routers import hr_files
+from routers import hr_time
 from routers import corporate_credentials
 from routers import tender_requirement_templates
 from routers import finance_assistant
@@ -137,6 +140,9 @@ def create_app() -> FastAPI:
     app.include_router(sop_compliance.router, prefix="/api/v1/sop-compliance", tags=["SOP Compliance"], dependencies=[Depends(require_resource_permission("sop_compliance"))])  # fmt: skip
     app.include_router(hr_records.router, prefix="/api/v1/hr-records", tags=["Hr Records"])  # fmt: skip
     app.include_router(hr_operations.router, prefix="/api/v1/hr/operations", tags=["Hr Operations"])
+    app.include_router(hr_people.router, prefix="/api/v1/hr/people", tags=["Hr People"])
+    app.include_router(hr_files.router, prefix="/api/v1/hr/files", tags=["Hr Files"])
+    app.include_router(hr_time.router, prefix="/api/v1/hr/time", tags=["Hr Time"])
     app.include_router(hr_verification.router, prefix="/api/v1/hr/vendor-verification", tags=["Hr Vendor Verification"])
     from routers import compliance_foundation
     app.include_router(compliance_foundation.router, prefix="/api/v1/compliance/foundation", tags=["Compliance foundation"])

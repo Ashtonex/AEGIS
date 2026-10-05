@@ -1,201 +1,324 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { getMyPermissions, workforceFoundation } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Loader2, Plus, Search, Settings2, UserPlus } from "lucide-react";
+import {
+  getMyPermissions, getPeopleCatalogue, getPeopleRegister, workforceFoundation,
+  type PeopleCatalogue, type RegisterRow,
+} from "@/lib/api";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
-import WorkerPicker from "../WorkerPicker";
-import WorkforceEngagements from "../WorkforceEngagements";
+import { PersonCardModal } from "@/components/people/PersonCardModal";
+import {
+  EMPLOYMENT_TYPES, Field, StatusPill, inputClass, primaryButton, secondaryButton, today,
+} from "@/components/people/ui";
 
-type Person = { id: string; employee_name: string; employee_number: string | null; job_title: string | null; work_location: string | null; employment_status: string; category_id: string | null; category_name?: string; version: number };
-type Choice = { id: string; name: string; code: string };
-type Catalogues = { categories: Choice[]; positions: Choice[]; departments: Choice[] };
-type History = { id: string; action: string; created_at: string; reason: string | null; version: string | null };
-type Readiness = { available: boolean; unallocated: boolean; restrictions: { source: string; reason?: string; status?: string }[]; existing_allocations: { id: string; starts_on: string; ends_on: string; allocation_percent: number }[]; qualification_match: string };
-type Evidence = Record<string, { id: string; certification_name?: string; skill_name?: string; title?: string; training_name?: string; status?: string; verification_status?: string; starts_on?: string; ends_on?: string; expires_on?: string; proficiency?: string }[]>;
-const control = "min-h-11 w-full border border-ink-mid bg-ink-light px-3 py-2 text-sm text-paper";
-const button = "min-h-11 border border-ink-mid px-4 py-2 text-sm text-signal hover:border-signal disabled:opacity-40";
-const blankCatalogues: Catalogues = { categories: [], positions: [], departments: [] };
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : "The request could not be completed.";
+const errorText = (reason: unknown) => (reason instanceof Error ? reason.message : "The request could not be completed.");
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return <label className="grid gap-1 text-sm text-slate-light"><span>{label}</span>{children}</label>;
+/** Mirrors the server's code_stem so the preview matches what will be saved. */
+function codeStem(name: string) {
+  const words = name.split(/[^A-Za-z0-9]+/).filter((w) => w && !["and", "of", "the", "for"].includes(w.toLowerCase()));
+  if (!words.length) return "";
+  return words.length === 1 ? words[0].slice(0, 3).toUpperCase() : words.slice(0, 5).map((w) => w[0]).join("").toUpperCase();
+}
+
+function previewCode(name: string, taken: string[]) {
+  const stem = codeStem(name);
+  if (!stem) return "";
+  const used = new Set(taken.map((c) => c.toUpperCase()));
+  if (!used.has(stem)) return stem;
+  let n = 2;
+  while (used.has(`${stem}${n}`)) n += 1;
+  return `${stem}${n}`;
 }
 
 export default function WorkforcePeople() {
   const [permissions, setPermissions] = useState<string[]>([]);
-  const [people, setPeople] = useState<Person[]>([]);
-  const [catalogues, setCatalogues] = useState<Catalogues>(blankCatalogues);
+  const [rows, setRows] = useState<RegisterRow[]>([]);
+  const [catalogue, setCatalogue] = useState<PeopleCatalogue | null>(null);
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("");
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [next, setNext] = useState<string | null>(null);
+  const [status, setStatus] = useState("current");
+  const [categoryId, setCategoryId] = useState("");
+  const [departmentId, setDepartmentId] = useState("");
   const [revision, setRevision] = useState(0);
-  const [selected, setSelected] = useState<Person | null>(null);
-  const [history, setHistory] = useState<History[]>([]);
-  const [evidence, setEvidence] = useState<Evidence | null>(null);
-  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const locked = useRef(false);
-  const retry = useRef<{ fingerprint: string; key: string } | null>(null);
-  const detailGeneration = useRef(0);
-  const can = (permission: string) => permissions.includes(permission) || permissions.includes("*");
+  const [message, setMessage] = useState("");
+  const can = (key: string) => permissions.includes(key) || permissions.includes("*");
 
   useEffect(() => {
-    let active = true;
-    void getMyPermissions().then(result => {
-      if (active) setPermissions(Array.isArray(result.data) ? result.data : []);
-    }).catch(reason => { if (active) setError(errorMessage(reason)); });
-    return () => { active = false; };
+    void getMyPermissions().then((r) => setPermissions(Array.isArray(r.data) ? r.data : [])).catch(() => setPermissions([]));
   }, []);
 
   useEffect(() => {
     let active = true;
-    const params = new URLSearchParams({ q: search, limit: "50" });
-    if (status) params.set("status", status);
-    if (cursor) params.set("after", cursor);
     setLoading(true);
-    void workforceFoundation<Person[]>(`people?${params}`).then(result => {
-      if (!active) return;
-      setPeople(result.data); setNext(result.meta.next_cursor ?? null);
-    }).catch(reason => {
-      if (active) { setPeople([]); setNext(null); setError(errorMessage(reason)); }
-    }).finally(() => { if (active) setLoading(false); });
+    getPeopleRegister({ q: search, status, category_id: categoryId, department_id: departmentId })
+      .then((r) => { if (active) { setRows(r.data); setError(""); } })
+      .catch((reason) => { if (active) { setRows([]); setError(errorText(reason)); } })
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [search, status, cursor, revision]);
+  }, [search, status, categoryId, departmentId, revision]);
 
   useEffect(() => {
-    if (!permissions.includes("workforce.organisation.read") && !permissions.includes("*")) return;
     let active = true;
-    void workforceFoundation<Catalogues>("catalogues").then(result => {
-      if (active) setCatalogues(result.data);
-    }).catch(reason => { if (active) setError(errorMessage(reason)); });
+    getPeopleCatalogue().then((r) => { if (active) setCatalogue(r.data); }).catch((reason) => { if (active) setError(errorText(reason)); });
     return () => { active = false; };
-  }, [permissions, revision]);
+  }, [revision]);
 
-  const command = useCallback(async (path: string, payload: object, method: "POST" | "PATCH" = "POST") => {
-    if (locked.current) return false;
-    locked.current = true; setBusy(true); setError(""); setMessage("");
-    const fingerprint = JSON.stringify({ path, method, payload });
-    if (retry.current?.fingerprint !== fingerprint) retry.current = { fingerprint, key: crypto.randomUUID() };
-    try {
-      await workforceFoundation(path, { method, key: retry.current.key, payload });
-      retry.current = null;
-      setMessage("Saved and confirmed by the server.");
-      setRevision(value => value + 1);
-      return true;
-    } catch (reason) { setError(errorMessage(reason)); return false; }
-    finally { locked.current = false; setBusy(false); }
-  }, []);
+  const refresh = useCallback(() => setRevision((v) => v + 1), []);
 
-  async function submitPerson(event: FormEvent<HTMLFormElement>) {
+  return (
+    <main className="min-h-full space-y-6 bg-ink p-4 text-paper sm:p-6">
+      <DashboardPageHeader
+        backHref="/dashboard/workforce"
+        backLabel="Back to Workforce Command"
+        title="People Register"
+        subtitle="Everyone who works for Six Nine Construction. Open a person to build their card: role, projects, pay, personal details and assessments."
+      />
+      {error && <p role="alert" className="rounded-sm border border-red-500/40 bg-red-950/30 p-3 text-sm text-red-200">{error}</p>}
+      {message && <p role="status" className="rounded-sm border border-emerald-500/30 bg-emerald-950/30 p-3 text-sm text-emerald-200">{message}</p>}
+
+      <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); setSearch(query); }}>
+        <div className="min-w-56 flex-1">
+          <Field label="Search">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate" />
+              <input className={`${inputClass} pl-9`} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Name, SNC number, role…" maxLength={160} />
+            </div>
+          </Field>
+        </div>
+        <Field label="Status">
+          <select className={inputClass} value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="current">Current staff</option>
+            <option value="active">Active</option>
+            <option value="on_leave">On leave</option>
+            <option value="suspended">Suspended</option>
+            <option value="terminated">Left the organisation</option>
+            <option value="all">Everyone, including leavers</option>
+          </select>
+        </Field>
+        <Field label="Discipline">
+          <select className={inputClass} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+            <option value="">All disciplines</option>
+            {catalogue?.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Department">
+          <select className={inputClass} value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
+            <option value="">All departments</option>
+            {catalogue?.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <button className={secondaryButton}>Search</button>
+      </form>
+
+      <div className="overflow-x-auto rounded-sm border border-ink-mid" aria-busy={loading}>
+        <table className="w-full min-w-[960px] text-left text-sm">
+          <caption className="p-3 text-left text-slate-light">{loading ? "Loading…" : `${rows.length} ${rows.length === 1 ? "person" : "people"}`}</caption>
+          <thead className="bg-ink-light font-mono text-[11px] uppercase tracking-wider text-slate">
+            <tr>{["Number", "Name", "Discipline", "Role", "Department", "Line manager", "Status", ""].map((h) => <th key={h} className="p-3" scope="col">{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id} className="cursor-pointer border-t border-ink-mid hover:bg-ink-mid/20" onClick={() => setOpenId(row.id)}>
+                <td className="p-3 font-mono text-signal">{row.employee_number || "—"}</td>
+                <td className="p-3 font-medium text-paper">
+                  {row.employee_name}
+                  {row.login_active === false && row.employment_status !== "terminated" && <span className="ml-2 rounded-sm border border-amber-500/30 px-1.5 py-0.5 text-[10px] text-amber-300">login disabled</span>}
+                </td>
+                <td className="p-3 text-slate-light">{row.category_name || <span className="text-amber-300">Not set</span>}</td>
+                <td className="p-3 text-paper">{row.position_name || row.job_title || <span className="text-amber-300">Not set</span>}</td>
+                <td className="p-3 text-slate-light">{row.department_name || "—"}</td>
+                <td className="p-3 text-slate-light">{row.line_manager_name || "—"}</td>
+                <td className="p-3"><StatusPill status={row.employment_status} /></td>
+                <td className="p-3 text-right"><button className={secondaryButton} onClick={(e) => { e.stopPropagation(); setOpenId(row.id); }} aria-label={`Open ${row.employee_name}`}>Open</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!loading && rows.length === 0 && <p className="p-4 text-sm text-slate-light">Nobody matches these filters.</p>}
+      </div>
+
+      {can("workforce.people.create") && catalogue && (
+        <RegisterPerson catalogue={catalogue} onCreated={(number, id) => { setMessage(`Registered as ${number}. Their card is open so you can finish it.`); refresh(); setOpenId(id); }} />
+      )}
+      {can("workforce.organisation.manage") && catalogue && <CatalogueSettings catalogue={catalogue} onChanged={refresh} />}
+
+      {openId && <PersonCardModal employeeId={openId} onClose={() => setOpenId(null)} onChanged={refresh} />}
+    </main>
+  );
+}
+
+function RegisterPerson({ catalogue, onCreated }: { catalogue: PeopleCatalogue; onCreated: (number: string, id: string) => void }) {
+  const [categoryId, setCategoryId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const retry = useRef<{ fingerprint: string; key: string } | null>(null);
+  const roles = catalogue.positions.filter((p) => !categoryId || p.category_id === categoryId);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
     const values = new FormData(form);
-    const saved = await command("people", {
-      employee_name: values.get("employee_name"), employee_number: values.get("employee_number"),
-      category_id: values.get("category_id"), job_title: values.get("job_title") || null,
-      position_id: values.get("position_id") || null, department_id: values.get("department_id") || null,
+    const payload = {
+      employee_name: values.get("employee_name"),
+      category_id: values.get("category_id") || null,
+      position_id: values.get("position_id") || null,
+      department_id: values.get("department_id") || null,
+      employment_type: values.get("employment_type") || null,
+      start_date: values.get("start_date") || null,
       work_location: values.get("work_location") || null,
-    });
-    if (saved) form.reset();
-  }
-
-  function choose(worker: Person) {
-    detailGeneration.current += 1;
-    setSelected(worker); setHistory([]); setEvidence(null); setReadiness(null); setError("");
-  }
-
-  async function loadHistory() {
-    if (!selected) return;
-    const generation = detailGeneration.current;
+    };
+    const fingerprint = JSON.stringify(payload);
+    if (retry.current?.fingerprint !== fingerprint) retry.current = { fingerprint, key: crypto.randomUUID() };
+    setBusy(true);
+    setError("");
     try {
-      const result = await workforceFoundation<History[]>(`people/${selected.id}/history`);
-      if (generation === detailGeneration.current) setHistory(result.data);
-    } catch (reason) { if (generation === detailGeneration.current) setError(errorMessage(reason)); }
+      const result = await workforceFoundation<{ id: string; employee_number: string }>("people", { method: "POST", key: retry.current.key, payload });
+      retry.current = null;
+      form.reset();
+      setCategoryId("");
+      onCreated(result.data.employee_number, result.data.id);
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function checkReadiness(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selected) return;
-    const generation = detailGeneration.current;
-    const values = new FormData(event.currentTarget);
-    const params = new URLSearchParams({ starts_on: String(values.get("start")), ends_on: String(values.get("end")) });
-    try {
-      const result = await workforceFoundation<Readiness>(`people/${selected.id}/availability?${params}`);
-      if (generation === detailGeneration.current) setReadiness(result.data);
-    } catch (reason) { if (generation === detailGeneration.current) setError(errorMessage(reason)); }
-  }
-
-  return <main className="min-h-full space-y-6 bg-ink p-4 text-paper sm:p-6">
-    <DashboardPageHeader
-      backHref="/dashboard/workforce"
-      backLabel="Back to Workforce Command"
-      title="People and Organisation"
-      subtitle="Maintain the worker register, reporting authority and dated availability. Changes require an online server receipt."
-    />
-    {error && <p role="alert" className="border border-red-500/40 p-3 text-red-200">{error}</p>}
-    <p role="status" aria-live="polite" className="text-sm text-emerald-300">{message}</p>
-    <section className="space-y-4" aria-label="Worker register">
-      <form className="flex flex-wrap items-end gap-3" onSubmit={event => { event.preventDefault(); setCursor(null); setSearch(query); setError(""); }}>
-        <Field label="Name or worker number"><input className={control} value={query} onChange={event => setQuery(event.target.value)} maxLength={160} /></Field>
-        <Field label="Employment status"><select className={control} value={status} onChange={event => { setStatus(event.target.value); setCursor(null); }}><option value="">All statuses</option>{["active", "on_leave", "suspended", "terminated"].map(value => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></Field>
-        <button className={button} disabled={loading}>Search</button>
-        <button className={button} type="button" disabled={loading} onClick={() => { setError(""); setRevision(value => value + 1); }}>Refresh</button>
+  return (
+    <details className="rounded-sm border border-ink-mid bg-ink-light p-4">
+      <summary className="flex cursor-pointer items-center gap-2 text-lg"><UserPlus className="h-5 w-5 text-signal" />Register a new person</summary>
+      <form className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={submit}>
+        <Field label="Full name"><input className={inputClass} name="employee_name" required maxLength={255} /></Field>
+        <Field label="Discipline">
+          <select className={inputClass} name="category_id" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+            <option value="">Choose discipline</option>
+            {catalogue.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Role">
+          <select className={inputClass} name="position_id" required defaultValue="">
+            <option value="" disabled>Choose role</option>
+            {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Department" hint="Leave blank to use the role's department.">
+          <select className={inputClass} name="department_id" defaultValue="">
+            <option value="">From role</option>
+            {catalogue.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Employment type">
+          <select className={inputClass} name="employment_type" defaultValue="permanent">
+            {EMPLOYMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Day work started"><input className={inputClass} type="date" name="start_date" max={today()} /></Field>
+        <Field label="Base / site"><input className={inputClass} name="work_location" maxLength={255} placeholder="Head office, Harare" /></Field>
+        <div className="flex items-end"><button className={primaryButton} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Register</button></div>
+        <p className="text-xs text-slate sm:col-span-2 lg:col-span-3">The SNC worker number is issued automatically. The new card opens straight away so you can add pay, personal details and projects.</p>
+        {error && <p role="alert" className="text-sm text-red-300 sm:col-span-2 lg:col-span-3">{error}</p>}
       </form>
-      <div className="overflow-x-auto border border-ink-mid" aria-busy={loading}>
-        <table className="w-full text-left text-sm"><caption className="p-3 text-left text-slate-light">{loading ? "Loading workers…" : `${people.length} workers on this page`}</caption>
-          <thead className="bg-ink-light"><tr>{["Worker", "Number", "Category", "Role", "Status", "Profile"].map(label => <th key={label} className="p-3" scope="col">{label}</th>)}</tr></thead>
-          <tbody>{people.map(worker => <tr key={worker.id} className="border-t border-ink-mid"><td className="p-3">{worker.employee_name}</td><td className="p-3">{worker.employee_number || "Not assigned"}</td><td className="p-3">{worker.category_name || "Not assigned"}</td><td className="p-3">{worker.job_title || "Not recorded"}</td><td className="p-3">{worker.employment_status.replaceAll("_", " ")}</td><td className="p-3"><button className={button} onClick={() => choose(worker)} aria-label={`Open ${worker.employee_name}`}>Open</button></td></tr>)}</tbody>
-        </table>
-        {!loading && !people.length && <p className="p-4 text-slate-light">No accessible workers match this search.</p>}
+    </details>
+  );
+}
+
+function CatalogueSettings({ catalogue, onChanged }: { catalogue: PeopleCatalogue; onChanged: () => void }) {
+  const [kind, setKind] = useState<"positions" | "categories">("positions");
+  const [name, setName] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState("");
+  const taken = useMemo(() => (kind === "positions" ? catalogue.positions : catalogue.categories).map((x) => x.code), [kind, catalogue]);
+  const code = previewCode(name, taken);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    setBusy(true);
+    setError("");
+    setSaved("");
+    try {
+      const result = await workforceFoundation<{ code: string }>(`catalogues/${kind}`, {
+        method: "POST",
+        key: crypto.randomUUID(),
+        payload: kind === "positions"
+          ? { name, category_id: categoryId || null, department_id: values.get("department_id") || null, grade: values.get("grade") || null }
+          : { name, payroll_eligible: values.get("payroll_eligible") === "on", description: values.get("description") || null },
+      });
+      setSaved(`Added "${name}" as ${result.data.code}.`);
+      setName("");
+      onChanged();
+    } catch (reason) {
+      setError(errorText(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details className="rounded-sm border border-ink-mid bg-ink-light p-4">
+      <summary className="flex cursor-pointer items-center gap-2 text-lg"><Settings2 className="h-5 w-5 text-signal" />Disciplines and roles</summary>
+      <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_22rem]">
+        <div className="grid max-h-[28rem] gap-3 overflow-y-auto pr-1 sm:grid-cols-2">
+          {catalogue.categories.map((c) => {
+            const roles = catalogue.positions.filter((p) => p.category_id === c.id);
+            return (
+              <div key={c.id} className="rounded-sm border border-ink-mid bg-ink p-3">
+                <p className="text-sm font-semibold text-paper"><span className="font-mono text-signal">{c.code}</span> · {c.name}</p>
+                <ul className="mt-2 space-y-1">
+                  {roles.map((r) => (
+                    <li key={r.id} className="flex justify-between text-xs text-slate-light">
+                      <span><span className="font-mono text-slate">{r.code}</span> {r.name}</span>
+                      {r.people > 0 && <span className="text-paper">{r.people}</span>}
+                    </li>
+                  ))}
+                  {!roles.length && <li className="text-xs text-slate">No roles yet</li>}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+        <form onSubmit={submit} className="space-y-3 rounded-sm border border-ink-mid bg-ink p-4">
+          <Field label="Add a">
+            <select className={inputClass} value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+              <option value="positions">Role (e.g. Land Surveyor)</option>
+              <option value="categories">Discipline (e.g. Surveying)</option>
+            </select>
+          </Field>
+          <Field label="Name"><input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} required maxLength={160} /></Field>
+          <Field label="Code" hint="Generated automatically from the name."><input className={`${inputClass} font-mono`} value={code} disabled placeholder="—" /></Field>
+          {kind === "positions" ? (
+            <>
+              <Field label="Discipline">
+                <select className={inputClass} value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required>
+                  <option value="">Choose discipline</option>
+                  {catalogue.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Department">
+                <select className={inputClass} name="department_id" defaultValue="">
+                  <option value="">Not set</option>
+                  {catalogue.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              </Field>
+              <Field label="Grade"><input className={inputClass} name="grade" maxLength={80} placeholder="Senior, Professional, Artisan…" /></Field>
+            </>
+          ) : (
+            <>
+              <Field label="Description"><input className={inputClass} name="description" maxLength={1000} /></Field>
+              <label className="flex items-center gap-2 text-sm text-slate-light"><input type="checkbox" name="payroll_eligible" defaultChecked />Paid through payroll (not by invoice)</label>
+            </>
+          )}
+          <button className={primaryButton} disabled={busy || !name.trim()}>{busy ? "Adding…" : "Add"}</button>
+          {saved && <p className="text-sm text-emerald-300">{saved}</p>}
+          {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+        </form>
       </div>
-      <div className="flex gap-3"><button className={button} disabled={!cursor || loading} onClick={() => setCursor(null)}>First page</button><button className={button} disabled={!next || loading} onClick={() => setCursor(next)}>Next page</button></div>
-    </section>
-
-    {selected && <section className="space-y-4 border border-ink-mid p-4" aria-label={`Profile for ${selected.employee_name}`}>
-      <h2 className="text-xl">{selected.employee_name} <span className="text-sm text-slate-light">Revision {selected.version}</span></h2>
-      {can("hr.engagement.read") && <WorkforceEngagements key={selected.id} employeeId={selected.id} permissions={permissions} categories={catalogues.categories} revision={revision} busy={busy} command={command} />}
-      <button className={button} onClick={async () => { const generation = detailGeneration.current; try { const result = await workforceFoundation<Evidence>(`people/${selected.id}/evidence`); if (generation === detailGeneration.current) setEvidence(result.data); } catch (reason) { if (generation === detailGeneration.current) setError(errorMessage(reason)); } }}>Load contract and qualification status</button>
-      {evidence && <div className="grid gap-3 sm:grid-cols-2">{Object.entries(evidence).map(([kind, records]) => <section key={kind} className="border border-ink-mid p-3"><h3 className="mb-2 capitalize">{kind}</h3><p className="text-xs text-slate-light">Up to 200 records; source status is shown without implying deployment approval.</p><ul className="mt-2 space-y-2 text-sm">{records.map(record => <li key={record.id}>{record.certification_name || record.skill_name || record.title || record.training_name || `Engagement ${record.starts_on ?? ""}`} · {record.verification_status || record.status || record.proficiency || "Recorded"}{(record.expires_on || record.ends_on) ? ` · Until ${record.expires_on || record.ends_on}` : ""}</li>)}</ul>{!records.length && <p className="mt-2 text-sm text-slate-light">No records found.</p>}</section>)}</div>}
-      {can("workforce.people.update") && <form key={`${selected.id}:${selected.version}`} className="grid gap-3 sm:grid-cols-2" onSubmit={async event => {
-        event.preventDefault(); const values = new FormData(event.currentTarget);
-        const saved = await command(`people/${selected.id}`, { expected_version: selected.version, reason: values.get("reason"), employee_name: values.get("employee_name"), job_title: values.get("job_title") || null, work_location: values.get("work_location") || null }, "PATCH");
-        if (saved) { detailGeneration.current += 1; setSelected(null); }
-      }}>
-        <Field label="Worker name"><input name="employee_name" className={control} defaultValue={selected.employee_name} required maxLength={255} /></Field>
-        <Field label="Job title"><input name="job_title" className={control} defaultValue={selected.job_title ?? ""} maxLength={100} /></Field>
-        <Field label="Base location"><input name="work_location" className={control} defaultValue={selected.work_location ?? ""} maxLength={255} /></Field>
-        <Field label="Reason for revision"><input name="reason" className={control} required minLength={3} maxLength={2000} /></Field>
-        <button className={button} disabled={busy}>Save revision</button>
-      </form>}
-      {can("workforce.availability.read") && <form className="flex flex-wrap items-end gap-3" onSubmit={checkReadiness}><Field label="Period starts"><input className={control} type="date" name="start" required /></Field><Field label="Period ends"><input className={control} type="date" name="end" required /></Field><button className={button}>Check availability</button></form>}
-      {can("workforce.availability.manage") && <details className="border border-ink-mid p-3"><summary className="cursor-pointer">Record availability</summary><form className="mt-3 grid gap-3 sm:grid-cols-2" onSubmit={async event => { event.preventDefault(); const form = event.currentTarget; const values = new FormData(form); const state = String(values.get("status")); if (await command("availability", { employee_id: selected.id, available_from: values.get("from"), available_to: values.get("to"), status: state, capacity_percent: state === "available" ? Number(values.get("capacity")) : 0, notes: values.get("notes") })) { form.reset(); setReadiness(null); } }}>
-        <Field label="From"><input type="date" name="from" className={control} required /></Field><Field label="Through"><input type="date" name="to" className={control} required /></Field><Field label="Availability"><select name="status" className={control}><option value="unavailable">Unavailable</option><option value="training">Training</option><option value="available">Available</option></select></Field><Field label="Capacity when available (%)"><input name="capacity" type="number" defaultValue={100} min={0} max={100} step={1} className={control} required /></Field><Field label="Reason"><input name="notes" className={control} required minLength={3} maxLength={2000} /></Field><button className={button} disabled={busy}>Record availability</button><p className="text-sm text-slate-light">Approved HR leave and clearance restrictions take precedence. Unavailable and training periods have zero capacity.</p>
-      </form></details>}
-      {can("workforce.organisation.manage") && <details className="border border-ink-mid p-3"><summary className="cursor-pointer">Assign reporting authority</summary><form className="mt-3 grid gap-3 sm:grid-cols-2" onSubmit={async event => { event.preventDefault(); const values = new FormData(event.currentTarget); await command("reporting-lines", { employee_id: selected.id, manager_employee_id: values.get("manager"), effective_from: values.get("from"), effective_to: values.get("to") || null, relationship_type: values.get("relationship") }); }}><WorkerPicker name="manager" label="Manager" /><div className="grid gap-3"><Field label="Effective from"><input className={control} name="from" type="date" required /></Field><Field label="Effective through (optional)"><input className={control} name="to" type="date" /></Field><Field label="Relationship"><select className={control} name="relationship">{["line_manager", "project_manager", "mentor", "dotted_line"].map(value => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</select></Field></div><button className={button} disabled={busy}>Assign authority</button></form></details>}
-      {readiness && <div className="space-y-2 text-sm"><p>{readiness.available ? "No availability restriction found for this period." : "Availability restrictions require attention."} {readiness.unallocated ? "No existing allocation overlaps." : "Existing allocations overlap this period."}</p><ul className="list-inside list-disc">{readiness.restrictions.map((item, index) => <li key={`${item.source}:${index}`}>{item.source.replaceAll("_", " ")}: {item.reason || item.status || "Review required"}</li>)}</ul><p className="text-slate-light">{readiness.qualification_match}</p></div>}
-      {can("workforce.audit.read") && <div><button className={button} onClick={() => void loadHistory()}>Load change history</button><ul className="mt-3 space-y-2 text-sm">{history.map(item => <li key={item.id}>{new Date(item.created_at).toLocaleString()} · {item.action} · {item.reason || "Record created"} · Revision {item.version ?? "—"}</li>)}</ul></div>}
-      {can("workforce.people.archive") && <form className="flex flex-wrap items-end gap-3 border-t border-ink-mid pt-4" onSubmit={async event => { event.preventDefault(); const values = new FormData(event.currentTarget); if (await command(`people/${selected.id}/archive`, { expected_version: selected.version, reason: values.get("reason") })) { detailGeneration.current += 1; setSelected(null); } }}><Field label="Archive reason"><input className={control} name="reason" required minLength={3} maxLength={2000} /></Field><button className={button} disabled={busy}>Archive worker</button></form>}
-    </section>}
-
-    {can("workforce.people.create") && <details className="border border-ink-mid p-4"><summary className="cursor-pointer text-lg">Register a worker</summary><form className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={submitPerson}>
-      <Field label="Full name"><input className={control} name="employee_name" required maxLength={255} /></Field>
-      <Field label="Worker number"><input className={control} name="employee_number" required maxLength={80} /></Field>
-      <Field label="Worker category"><select className={control} name="category_id" required defaultValue=""><option value="" disabled>Select category</option>{catalogues.categories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-      <Field label="Job title"><input className={control} name="job_title" maxLength={100} /></Field>
-      <Field label="Position"><select className={control} name="position_id"><option value="">Not assigned</option>{catalogues.positions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-      <Field label="Department"><select className={control} name="department_id"><option value="">Not assigned</option>{catalogues.departments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-      <Field label="Base location"><input className={control} name="work_location" maxLength={255} /></Field>
-      <button className={button} disabled={busy || !catalogues.categories.length}>Register worker</button>
-      {!catalogues.categories.length && <p className="text-sm text-amber-200">An accessible worker category is required. Organisation access and at least one category must be configured.</p>}
-    </form></details>}
-
-    {can("workforce.organisation.manage") && <details className="border border-ink-mid p-4"><summary className="cursor-pointer text-lg">Organisation settings</summary><form className="mt-4 grid gap-3 sm:grid-cols-3" onSubmit={async event => { event.preventDefault(); const form = event.currentTarget; const values = new FormData(form); if (await command(`catalogues/${values.get("kind")}`, { code: values.get("code"), name: values.get("name"), payroll_eligible: values.get("payroll_eligible") === "on" })) form.reset(); }}>
-      <Field label="Catalogue"><select name="kind" className={control}><option value="categories">Worker categories</option><option value="positions">Positions</option></select></Field><Field label="Code"><input name="code" className={control} required pattern="[A-Za-z0-9_-]+" maxLength={40} /></Field><Field label="Name"><input name="name" className={control} required maxLength={160} /></Field><label className="flex items-center gap-2 text-sm"><input type="checkbox" name="payroll_eligible" />Category permits payroll eligibility checks</label><button className={button} disabled={busy}>Add catalogue entry</button>
-    </form><p className="mt-3 text-sm text-slate-light">Category eligibility alone does not authorise payroll.</p></details>}
-  </main>;
+    </details>
+  );
 }

@@ -230,7 +230,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     subItems: [
       { name: "Overview", href: "/dashboard/workforce", icon: Users, requiredPermission: "workforce.read" },
       { name: "People Register", href: "/dashboard/workforce/people", icon: Users, requiredPermission: "workforce.people.read" },
-      { name: "Reporting Authority", href: "/dashboard/workforce/organisation", icon: Users, requiredPermission: "workforce.organisation.read" },
+      { name: "Reporting Lines", href: "/dashboard/workforce/organisation", icon: Users, requiredPermission: "workforce.organisation.read" },
       { name: "My Profile", href: "/dashboard/workforce/me", icon: Users },
     ],
   },
@@ -339,7 +339,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     allowedRoles: ["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"],
     restrictedRoles: ["CRM Associate"],
     subItems: [
-      { name: "HR & Workforce", href: "/dashboard/hr", icon: LayoutDashboard },
+      { name: "HR Dashboard", href: "/dashboard/hr", icon: LayoutDashboard },
       { name: "Employee Register", href: "/dashboard/hr/employees", icon: Users },
       { name: "Recruitment", href: "/dashboard/hr/recruitment", icon: Briefcase },
       { name: "Contracts & Docs", href: "/dashboard/hr/documents", icon: FileText },

@@ -174,10 +174,13 @@ async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> Non
 
 @router.get("/")
 async def list_employees(
+    status_filter: Optional[str] = Query(default=None, alias="status", max_length=20),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("workforce.read")),
 ):
+    """Pickers across AEGIS call this. With no status, people who have left are
+    excluded; ?status=all includes them; any other value filters exactly."""
     rows = await db.execute(
         text("""
         SELECT e.id,e.employee_name,e.employee_number,e.job_title,e.employment_status,
@@ -185,9 +188,12 @@ async def list_employees(
                COUNT(c.id) FILTER (WHERE c.expires_on < CURRENT_DATE AND c.is_deleted = false) AS expired_certifications
         FROM hr.employees e LEFT JOIN hr.employee_certifications c ON c.employee_id = e.id AND c.organization_id = e.organization_id
         WHERE e.organization_id = :org_id AND e.is_deleted = false
+          AND (CAST(:status AS text) = 'all'
+               OR (CAST(:status AS text) IS NULL AND e.employment_status <> 'terminated')
+               OR e.employment_status = CAST(:status AS text))
         GROUP BY e.id ORDER BY e.employee_name LIMIT 250
     """),
-        {"org_id": user["org_id"]},
+        {"org_id": user["org_id"], "status": status_filter},
     )
     items = [dict(row._mapping) for row in rows]
     return result(items, "Workforce listed.", len(items))

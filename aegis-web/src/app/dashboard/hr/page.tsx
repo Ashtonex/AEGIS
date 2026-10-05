@@ -1,26 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import {
-  AlertTriangle, BadgeCheck, Loader2, Plus, RefreshCw,
-  ShieldCheck, Users, X, CalendarCheck, CalendarDays, Award, Briefcase, CheckCircle2
-} from "lucide-react";
+import { AlertTriangle, Loader2, Plus, X } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { Skeleton } from "@/components/ui/Skeleton";
 import {
   getHREmployees,
-  getHREmployee,
-  getHREmployeeSkills,
-  getHREmployeeCertifications,
-  getHRAttendance,
-  recordHRAttendance,
   getHRLeaveRequests,
   createHRLeaveRequest,
   approveHRLeaveRequest,
-  getHROperationsSummary,
-  getInternalProjects
+  getHROperationsSummary
 } from "@/lib/api";
 
 // Only the active tab's panel ships to the browser instead of all at once.
@@ -28,16 +19,21 @@ function PanelLoading() {
   return <Skeleton className="h-64 w-full" />;
 }
 const VendorVerificationPanel = dynamic(() => import("./VendorVerificationPanel").then((m) => m.VendorVerificationPanel), { loading: PanelLoading });
-const EmployeesTab = dynamic(() => import("./HRTabPanels").then((m) => m.EmployeesTab), { loading: PanelLoading });
-const AttendanceTab = dynamic(() => import("./HRTabPanels").then((m) => m.AttendanceTab), { loading: PanelLoading });
+const ReportingTree = dynamic(() => import("@/components/people/ReportingTree").then((m) => m.ReportingTree), { loading: PanelLoading });
+const HRFilesPage = dynamic(() => import("./HRFilesPage").then((m) => m.HRFilesPage), { loading: PanelLoading });
+const HRAttendancePage = dynamic(() => import("./HRAttendancePage").then((m) => m.HRAttendancePage), { loading: PanelLoading });
+const AbsencePanel = dynamic(() => import("./HRAttendancePage").then((m) => m.AbsencePanel), { loading: PanelLoading });
+const HRHome = dynamic(() => import("./HRHome").then((m) => m.HRHome), { loading: PanelLoading });
+const HREmployeeRegister = dynamic(() => import("./HREmployeeRegister").then((m) => m.HREmployeeRegister), { loading: PanelLoading });
 const LeaveTab = dynamic(() => import("./HRTabPanels").then((m) => m.LeaveTab), { loading: PanelLoading });
 const OperationList = dynamic(() => import("./HRTabPanels").then((m) => m.OperationList), { loading: PanelLoading });
 const RecruitmentAssessmentsPanel = dynamic(() => import("./RecruitmentAssessmentsPanel").then((m) => m.RecruitmentAssessmentsPanel), { loading: PanelLoading });
 
 type RecordData = Record<string, any>;
-type HRTab = "employees" | "recruitment" | "documents" | "credentials" | "performance" | "assets" | "training" | "org-chart" | "planning" | "attendance" | "leave" | "payroll" | "vendor-verification";
+type HRTab = "home" | "employees" | "recruitment" | "documents" | "credentials" | "performance" | "assets" | "training" | "org-chart" | "planning" | "attendance" | "leave" | "payroll" | "vendor-verification";
 
 const TAB_ROUTES: Record<HRTab, string> = {
+  home: "/dashboard/hr",
   employees: "/dashboard/hr/employees",
   recruitment: "/dashboard/hr/recruitment",
   documents: "/dashboard/hr/documents",
@@ -54,7 +50,8 @@ const TAB_ROUTES: Record<HRTab, string> = {
 };
 
 const HR_TAB_LABELS: Record<HRTab, string> = {
-  employees: "HR & Workforce",
+  home: "HR Dashboard",
+  employees: "Employee Register",
   recruitment: "Recruitment",
   documents: "Contracts & Docs",
   credentials: "Credentials",
@@ -63,7 +60,7 @@ const HR_TAB_LABELS: Record<HRTab, string> = {
   training: "Training Matrix",
   "org-chart": "Org Chart",
   planning: "Workforce Planning",
-  attendance: "Attendance Log",
+  attendance: "Attendance",
   leave: "Leave Management",
   payroll: "Payroll",
   "vendor-verification": "Vendor Verification",
@@ -119,15 +116,35 @@ function normalizeActionError(reason: unknown, fallback: string) {
   return clean || fallback;
 }
 export default function HRDashboard() {
-  return <HRPage initialTab="employees" />;
+  return <HRPage initialTab="home" />;
 }
+
+/** One-line description per page instead of the same subtitle everywhere. */
+const HR_TAB_SUBTITLES: Partial<Record<HRTab, string>> = {
+  recruitment: "Candidates, their assessment scores and onboarding tasks.",
+  documents: "Employment contracts and employee documents with expiry dates.",
+  credentials: "Certifications, licences, medicals and inductions per employee.",
+  performance: "Performance reviews and disciplinary records.",
+  assets: "PPE, tools, vehicles and equipment issued to employees.",
+  training: "Training required per role and project, and who has it.",
+  "org-chart": "Who reports to whom, drawn from each person's line manager.",
+  planning: "Headcount needed per project and site against people assigned.",
+  attendance: "Daily check-in and check-out per employee.",
+  leave: "How many days each person was away, plus leave requests, approvals and the calendar.",
+  payroll: "PAYE, NSSA, loans, advances and other payroll adjustments.",
+  "vendor-verification": "Suppliers and subcontractors awaiting verification.",
+};
 
 /** Shared HR workspace, rendered by a real route per tab (see the sibling
  * folders here) instead of the old hr/[tab] -> redirect() -> ?tab= shim. */
 export function HRPage({ initialTab }: { initialTab: HRTab }) {
   return (
     <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"]}>
-      <HRWorkspace initialTab={initialTab} />
+      {initialTab === "home" ? <HRHome />
+        : initialTab === "employees" ? <HREmployeeRegister />
+        : initialTab === "documents" || initialTab === "credentials" || initialTab === "assets" ? <HRFilesPage kind={initialTab === "documents" ? "contracts" : initialTab} />
+        : initialTab === "attendance" ? <HRAttendancePage />
+        : <HRWorkspace initialTab={initialTab} />}
     </RBACGuard>
   );
 }
@@ -135,117 +152,53 @@ export function HRPage({ initialTab }: { initialTab: HRTab }) {
 function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
   const activeTab = initialTab;
   const [employees, setEmployees] = useState<RecordData[]>([]);
-  const [attendance, setAttendance] = useState<RecordData[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<RecordData[]>([]);
-  const [projects, setProjects] = useState<RecordData[]>([]);
   const [operations, setOperations] = useState<RecordData>({});
 
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("");
-  const [employeeDetail, setEmployeeDetail] = useState<RecordData | null>(null);
-  const [employeeSkills, setEmployeeSkills] = useState<RecordData[]>([]);
-  const [employeeCerts, setEmployeeCerts] = useState<RecordData[]>([]);
-
   const [loading, setLoading] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
 
-  // Filters
-  const [searchQuery, setSearchQuery] = useState("");
-  const [deptFilter, setDeptFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
-
-  // Modals
-  const [showAttendanceModal, setShowAttendanceModal] = useState(false);
+  // Each modal is only reachable from its own page.
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
   // Form Fields
-  const [attendanceForm, setAttendanceForm] = useState({ employee_id: "", project_id: "", site_id: "", attendance_date: new Date().toISOString().slice(0, 10), status: "present", regular_hours: "8", overtime_hours: "0", notes: "" });
   const [leaveForm, setLeaveForm] = useState({ employee_id: "", leave_type: "annual", start_date: "", end_date: "", days_requested: "1", reason: "" });
+
+  // Only fetch what this page shows.
+  const needsPeople = activeTab === "leave";
+  const needsOperations = activeTab !== "vendor-verification";
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [empRes, attendRes, leaveRes, projRes, opsRes] = await Promise.allSettled([
-        getHREmployees(),
-        getHRAttendance({ date: attendanceDate }),
-        getHRLeaveRequests(),
-        getInternalProjects(),
-        getHROperationsSummary()
+      const none = { data: [] as RecordData[] };
+      const [empRes, leaveRes, opsRes] = await Promise.allSettled([
+        needsPeople ? getHREmployees() : Promise.resolve(none),
+        activeTab === "leave" ? getHRLeaveRequests() : Promise.resolve(none),
+        needsOperations ? getHROperationsSummary() : Promise.resolve({ data: {} as RecordData }),
       ]);
       const warnings: string[] = [];
-      if (empRes.status === "fulfilled") setEmployees(empRes.value.data || []);
+      // Leavers never appear in the leave picker.
+      if (empRes.status === "fulfilled") setEmployees((empRes.value.data || []).filter((e: RecordData) => e.employment_status !== "terminated"));
       else warnings.push("Employee register could not be loaded.");
-      if (attendRes.status === "fulfilled") setAttendance(attendRes.value.data || []);
-      else warnings.push("Attendance register could not be loaded.");
       if (leaveRes.status === "fulfilled") setLeaveRequests(leaveRes.value.data || []);
       else warnings.push("Leave register could not be loaded.");
-      if (projRes.status === "fulfilled") setProjects(projRes.value.data || []);
-      else warnings.push("Project register could not be loaded.");
       if (opsRes.status === "fulfilled") setOperations(opsRes.value.data || {});
       else warnings.push("HR operating layer could not be loaded.");
       setSourceWarnings(warnings);
-      if (empRes.status === "rejected") {
-        throw new Error(loadFailureMessage(empRes.reason));
-      }
     } catch (err) {
       setError(loadFailureMessage(err));
     } finally {
       setLoading(false);
     }
-  }, [attendanceDate]);
+  }, [activeTab, needsPeople, needsOperations]);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
-
-  const loadEmployeeDetail = async (id: string) => {
-    setSelectedEmployeeId(id);
-    if (!id) {
-      setEmployeeDetail(null);
-      setEmployeeSkills([]);
-      setEmployeeCerts([]);
-      return;
-    }
-    setDetailLoading(true);
-    try {
-      const [empRes, skillsRes, certsRes] = await Promise.allSettled([
-        getHREmployee(id),
-        getHREmployeeSkills(id),
-        getHREmployeeCertifications(id)
-      ]);
-      if (empRes.status === "fulfilled") setEmployeeDetail(empRes.value.data || null);
-      if (skillsRes.status === "fulfilled") setEmployeeSkills(skillsRes.value.data || []);
-      if (certsRes.status === "fulfilled") setEmployeeCerts(certsRes.value.data || []);
-      if (empRes.status === "rejected") {
-        throw new Error(loadFailureMessage(empRes.reason));
-      }
-    } catch (err) {
-      setNotice(loadFailureMessage(err));
-    } finally {
-      setDetailLoading(false);
-    }
-  };
-
-  const handleRecordAttendance = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!attendanceForm.employee_id) return;
-    try {
-      await recordHRAttendance({
-        ...attendanceForm,
-        regular_hours: Number(attendanceForm.regular_hours),
-        overtime_hours: Number(attendanceForm.overtime_hours)
-      });
-      setNotice("Attendance logged successfully.");
-      setShowAttendanceModal(false);
-      await loadData();
-    } catch (err) {
-      setNotice(normalizeActionError(err, "Failed to log attendance."));
-    }
-  };
 
   const handleCreateLeaveRequest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -289,36 +242,6 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
     }
   };
 
-  // KPIs
-  const kpis = useMemo(() => {
-    const total = employees.length;
-    const active = employees.filter(e => e.employment_status === "active").length;
-    const leave = employees.filter(e => e.employment_status === "on_leave").length;
-    const suspended = employees.filter(e => e.employment_status === "suspended").length;
-    
-    // Simple skills summary
-    const uniqueSkills = new Set();
-    employees.forEach(e => {
-      if (Array.isArray(e.skills)) {
-        e.skills.forEach((s: any) => uniqueSkills.add(s.skill_name));
-      }
-    });
-
-    return { total, active, leave, suspended, skillsCount: uniqueSkills.size };
-  }, [employees]);
-
-  // Filtered employees
-  const filteredEmployees = useMemo(() => {
-    return employees.filter(e => {
-      const matchSearch = searchQuery ? (e.employee_name || e.name || "").toLowerCase().includes(searchQuery.toLowerCase()) || 
-                            (e.employee_number || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-                            (e.job_title || "").toLowerCase().includes(searchQuery.toLowerCase()) : true;
-      const matchDept = deptFilter !== "all" ? e.department === deptFilter : true;
-      const matchStatus = statusFilter !== "all" ? e.employment_status === statusFilter : true;
-      return matchSearch && matchDept && matchStatus;
-    });
-  }, [employees, searchQuery, deptFilter, statusFilter]);
-
   if (loading) {
     return (
       <div className="flex h-96 items-center justify-center bg-ink">
@@ -360,16 +283,9 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
 
       <DashboardPageHeader
         title={HR_TAB_LABELS[activeTab]}
-        subtitle="Six Nine Construction workforce, competence registers, and attendance controls."
+        subtitle={HR_TAB_SUBTITLES[activeTab]}
         actions={
-          <>
-            <button
-              onClick={() => setShowAttendanceModal(true)}
-              className="flex items-center space-x-2 bg-ink-light border border-ink-mid hover:bg-ink-mid/30 text-paper font-medium px-4 py-2 rounded-sm text-sm transition-colors"
-            >
-              <CalendarCheck className="h-4 w-4 text-signal" />
-              <span>Log Attendance</span>
-            </button>
+          activeTab === "leave" ? (
             <button
               onClick={() => setShowLeaveModal(true)}
               className="flex items-center space-x-2 bg-signal text-ink font-semibold px-4 py-2 rounded-sm text-sm hover:bg-signal/95 transition-colors"
@@ -377,33 +293,9 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
               <Plus className="h-4 w-4" />
               <span>Apply Leave</span>
             </button>
-          </>
+          ) : undefined
         }
       />
-
-      {/* KPI strip */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-          <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Total Headcount</p>
-          <p className="text-xl font-semibold text-paper tracking-tight mt-1">{kpis.total}</p>
-        </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-          <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Active Deployed</p>
-          <p className="text-xl font-semibold text-emerald-400 tracking-tight mt-1">{kpis.active}</p>
-        </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-          <p className="text-[10px] uppercase font-mono tracking-widest text-slate">On Approved Leave</p>
-          <p className="text-xl font-semibold text-blue-400 tracking-tight mt-1">{kpis.leave}</p>
-        </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-          <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Suspended / Inactive</p>
-          <p className="text-xl font-semibold text-amber-500 tracking-tight mt-1">{kpis.suspended}</p>
-        </div>
-        <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-          <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Competence Registered SKUs</p>
-          <p className="text-xl font-semibold text-paper tracking-tight mt-1">{kpis.skillsCount}</p>
-        </div>
-      </div>
 
       {activeTab === "vendor-verification" && (
         <div className="bg-ink-light border border-ink-mid p-4 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
@@ -411,27 +303,8 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
         </div>
       )}
 
-      {/* Main Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          {activeTab === "employees" && (
-            <EmployeesTab
-              filteredEmployees={filteredEmployees}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              deptFilter={deptFilter}
-              onDeptChange={setDeptFilter}
-              statusFilter={statusFilter}
-              onStatusChange={setStatusFilter}
-              selectedEmployeeId={selectedEmployeeId}
-              onSelectEmployee={(id) => void loadEmployeeDetail(id)}
-            />
-          )}
-
-          {activeTab === "attendance" && (
-            <AttendanceTab attendance={attendance} attendanceDate={attendanceDate} onDateChange={setAttendanceDate} />
-          )}
-
+      <div className="space-y-6">
+          {activeTab === "leave" && <AbsencePanel />}
           {activeTab === "leave" && (
             <LeaveTab calendarRows={operations.leave_calendar || leaveRequests} leaveRequests={leaveRequests} onDecide={handleDecideLeave} />
           )}
@@ -451,225 +324,20 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
               <OperationList title="Recruitment and onboarding pipeline" rows={[...(operations.recruitment || []), ...(operations.onboarding || [])]} columns={["candidate_name", "employee_name", "role_applied_for", "task_name", "stage", "status", "due_date"]} empty="No recruitment candidates or onboarding tasks have been recorded." />
             </div>
           )}
-          {activeTab === "documents" && (
-            <OperationList title="Employee contracts and document expiry tracking" rows={operations.documents || []} columns={["employee_name", "document_type", "title", "document_number", "expires_on", "status"]} empty="No contract or employee document alerts." />
-          )}
-          {activeTab === "credentials" && (
-            <OperationList title="Certifications, medicals, inductions and license alerts" rows={[...(operations.certifications || []), ...(operations.medicals || [])]} columns={["employee_name", "certification_name", "check_type", "title", "expires_on", "verification_status", "status"]} empty="No certification, medical, induction or license alerts." />
-          )}
           {activeTab === "performance" && (
             <OperationList title="Performance reviews and disciplinary records" rows={[...(operations.performance || []), ...(operations.discipline || [])]} columns={["employee_name", "outcome", "rating", "next_review_date", "category", "severity", "status"]} empty="No performance reviews or disciplinary records have been recorded." />
-          )}
-          {activeTab === "assets" && (
-            <OperationList title="PPE, tools, vehicle and asset assignments" rows={operations.assets || []} columns={["employee_name", "asset_type", "asset_label", "asset_reference", "issued_on", "due_back_on", "status"]} empty="No employee asset assignments have been recorded." />
           )}
           {activeTab === "training" && (
             <OperationList title="Training matrix by role and project" rows={operations.training || []} columns={["role_name", "training_name", "project_name", "mandatory", "employees_in_role", "current_records"]} empty="No training requirements have been recorded." />
           )}
           {activeTab === "org-chart" && (
-            <OperationList title="Org chart and reporting lines" rows={operations.org_chart || []} columns={["manager_name", "manager_job_title", "employee_name", "job_title", "relationship_type", "effective_from"]} empty="No reporting lines have been recorded." />
+            // "Org chart and reporting lines": drawn from line managers until the interactive chart (phase 5).
+            <ReportingTree canEdit />
           )}
           {activeTab === "planning" && (
             <OperationList title="Workforce planning by project and site" rows={operations.workforce_plans || []} columns={["project_name", "role_name", "required_headcount", "assigned_count", "shortfall", "status", "planned_start"]} empty="No workforce plans have been recorded." />
           )}
-        </div>
-
-        {/* Detailed Side Panel */}
-        <div className="space-y-6">
-          <div className="bg-ink-light border border-ink-mid p-5 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)]">
-            <h2 className="text-sm font-semibold text-paper tracking-wider uppercase font-mono border-b border-ink-mid pb-3">Workforce Intelligence</h2>
-            {detailLoading ? (
-              <div className="flex h-48 items-center justify-center">
-                <Loader2 className="h-6 w-6 animate-spin text-signal" />
-              </div>
-            ) : employeeDetail ? (
-              <div className="space-y-6 mt-4">
-                <div>
-                  <h3 className="text-base font-semibold text-paper">{employeeDetail.employee_name || employeeDetail.name}</h3>
-                  <p className="text-xs text-slate-light font-mono mt-0.5">{employeeDetail.job_title || "Role not assigned"}</p>
-                </div>
-
-                <div className="space-y-2 text-xs border-t border-b border-ink-mid py-4">
-                  <div className="flex justify-between">
-                    <span className="text-slate">Employee Code:</span>
-                    <span className="font-mono text-paper font-semibold">{employeeDetail.employee_number || "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate">Department:</span>
-                    <span className="text-paper">{employeeDetail.department || "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate">Employment Type:</span>
-                    <span className="text-paper">{employeeDetail.employment_type || "—"}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate">Start Date:</span>
-                    <span className="text-paper">{dateValue(employeeDetail.start_date)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate">Deployment Hub:</span>
-                    <span className="text-paper">{employeeDetail.work_location || "Headquarters"}</span>
-                  </div>
-                </div>
-
-                {/* Skills register */}
-                <div className="space-y-2">
-                  <h4 className="text-[10px] uppercase font-mono tracking-widest text-slate">Skill Qualifications</h4>
-                  {employeeSkills.length === 0 ? (
-                    <p className="text-[11px] text-slate italic">No validated skills recorded in competency registry.</p>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {employeeSkills.map((s) => (
-                        <span key={s.id} className="bg-ink border border-ink-mid px-2.5 py-1 rounded text-xs text-paper flex items-center space-x-1.5">
-                          <span>{s.skill_name}</span>
-                          <span className="text-[10px] font-mono text-signal uppercase">[{s.proficiency}]</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Certifications Register */}
-                <div className="space-y-2">
-                  <h4 className="text-[10px] uppercase font-mono tracking-widest text-slate">Certificates & Clearances</h4>
-                  {employeeCerts.length === 0 ? (
-                    <p className="text-[11px] text-slate italic">No professional certifications on file.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {employeeCerts.map((c) => (
-                        <div key={c.id} className="bg-ink border border-ink-mid p-2.5 rounded flex items-center justify-between">
-                          <div>
-                            <p className="text-xs font-semibold text-paper">{c.certification_name}</p>
-                            <p className="text-[10px] text-slate-light font-mono mt-0.5">Expires: {dateValue(c.expires_on)}</p>
-                          </div>
-                          <span className={`px-2 py-0.5 rounded-sm text-[9px] uppercase font-mono border ${statusClass(c.verification_status)}`}>
-                            {c.verification_status}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-slate mt-4 text-center">Select an employee record to view comprehensive details, skills, and certifications.</p>
-            )}
-          </div>
-        </div>
       </div>
-
-      {/* Attendance Modal */}
-      {showAttendanceModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm">
-          <div className="bg-ink-light border border-ink-mid w-full max-w-md p-6 rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] space-y-4">
-            <div className="flex justify-between items-center border-b border-ink-mid pb-3">
-              <span className="text-base font-semibold text-paper">Log Attendance</span>
-              <button onClick={() => setShowAttendanceModal(false)} className="text-slate hover:text-paper">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleRecordAttendance} className="space-y-4">
-              <div>
-                <label className="block text-xs font-mono uppercase text-slate mb-1">Employee</label>
-                <select
-                  required
-                  value={attendanceForm.employee_id}
-                  onChange={(e) => setAttendanceForm({ ...attendanceForm, employee_id: e.target.value })}
-                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                >
-                  <option value="">Select Employee</option>
-                  {employees.map(e => (
-                    <option key={e.id} value={e.id}>{e.employee_name || e.name || e.full_name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">Project</label>
-                  <select
-                    value={attendanceForm.project_id}
-                    onChange={(e) => setAttendanceForm({ ...attendanceForm, project_id: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  >
-                    <option value="">Select Project (Optional)</option>
-                    {projects.map(p => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={attendanceForm.attendance_date}
-                    onChange={(e) => setAttendanceForm({ ...attendanceForm, attendance_date: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">Status</label>
-                  <select
-                    value={attendanceForm.status}
-                    onChange={(e) => setAttendanceForm({ ...attendanceForm, status: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  >
-                    <option value="present">Present</option>
-                    <option value="late">Late</option>
-                    <option value="half_day">Half Day</option>
-                    <option value="absent">Absent</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">Reg Hours</label>
-                  <input
-                    type="number"
-                    value={attendanceForm.regular_hours}
-                    onChange={(e) => setAttendanceForm({ ...attendanceForm, regular_hours: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-mono uppercase text-slate mb-1">OT Hours</label>
-                  <input
-                    type="number"
-                    value={attendanceForm.overtime_hours}
-                    onChange={(e) => setAttendanceForm({ ...attendanceForm, overtime_hours: e.target.value })}
-                    className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-mono uppercase text-slate mb-1">Notes</label>
-                <input
-                  type="text"
-                  placeholder="Additional attendance comments..."
-                  value={attendanceForm.notes}
-                  onChange={(e) => setAttendanceForm({ ...attendanceForm, notes: e.target.value })}
-                  className="w-full bg-ink border border-ink-mid rounded px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50"
-                />
-              </div>
-              <div className="flex justify-end space-x-3 pt-3 border-t border-ink-mid">
-                <button
-                  type="button"
-                  onClick={() => setShowAttendanceModal(false)}
-                  className="px-4 py-2 border border-ink-mid text-paper rounded text-sm hover:bg-ink-mid/30"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-signal text-ink font-semibold rounded text-sm hover:bg-signal/95"
-                >
-                  Log Attendance
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* Leave Modal */}
       {showLeaveModal && (

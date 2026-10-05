@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     DRAFT_BUDGET_REMINDER_ALWAYS: str = (
         "cosmas@sixnineconstruction.com,nyasha@sixnineconstruction.com"
     )
+    # HR expiry warnings (app/services/hr/expiry_alerts.py): contracts,
+    # credentials and assets due back. The employee is always told as well.
+    HR_EXPIRY_ALERT_ALWAYS: str = "nyasha@sixnineconstruction.com"
+    # Not-safe-for-business supplier alerts (phase 6) go to these plus the
+    # Procurement Manager role.
+    VENDOR_RISK_ALERT_ALWAYS: str = "cosmas@sixnineconstruction.com,nyasha@sixnineconstruction.com"
 
     # AI Financial Control Assistant (Phase 10B) - read-only, tool-calling
     # only against the allow-list in app/services/finance/ai_assistant_tools.py.

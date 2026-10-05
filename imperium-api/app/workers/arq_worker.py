@@ -2,6 +2,7 @@ import asyncio
 import time
 import os
 import json
+from datetime import timedelta
 from urllib.parse import urlparse
 from uuid import UUID
 import httpx
@@ -35,6 +36,8 @@ from app.services.finance.ccb_monitor import (
 )
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
 from app.services.finance import draft_budget_reminders
+from app.services.hr import expiry_alerts as hr_expiry_alerts
+from app.services.hr import time_tracking as hr_time_tracking
 from app.services.hr.weekly_report import (
     build_weekly_hr_report,
     is_send_time,
@@ -944,6 +947,47 @@ async def draft_budget_reminder_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def hr_expiry_alerts_job(ctx):
+    """Hourly cron: from 07:00 Harare time, warns HR (nyasha@) and the
+    employee about contracts, credentials and assets that are ending, and books
+    the contract review meeting (app/services/hr/expiry_alerts.py).
+    hr.expiry_alerts makes every warning go out once, so the hourly runs are
+    safe and a failed send is retried next hour."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        if not hr_expiry_alerts.is_send_time(time_now()):
+            return {"skipped": "before 07:00 Harare time"}
+        async with AsyncSessionLocal() as db:
+            result = await hr_expiry_alerts.run(db)
+        return {"sent": len(result["sent"])}
+    except Exception as exc:
+        logger.exception(f"HR expiry alert job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def close_attendance_day_job(ctx):
+    """Daily 16:35 Harare: stops the clock at 16:30 for everyone checked in by
+    signing in to AEGIS (app/services/hr/time_tracking.py). Also closes
+    yesterday, in case the worker was down at 16:35."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        today = hr_time_tracking.local_now().date()
+        closed = 0
+        async with AsyncSessionLocal() as db:
+            for day in (today - timedelta(days=1), today):
+                closed += await hr_time_tracking.close_day(db, day)
+        return {"closed": closed}
+    except Exception as exc:
+        logger.exception(f"Close attendance day job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def on_job_failure(ctx, exp: Exception):
     job_id = ctx.get("job_id", "unknown")
     logger.error(f"Arq Job {job_id} encountered execution failure: {str(exp)}")
@@ -1018,6 +1062,8 @@ class WorkerSettings:
         publish_bank_workbooks_nightly_job,
         sync_bank_workbooks_job,
         draft_budget_reminder_job,
+        hr_expiry_alerts_job,
+        close_attendance_day_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -1082,6 +1128,10 @@ class WorkerSettings:
         cron(sync_bank_workbooks_job, minute=set(range(1, 60, 2)), run_at_startup=False),
         # Hourly; the job itself only sends weekdays from 07:00 Harare time.
         cron(draft_budget_reminder_job, minute=20, run_at_startup=False),
+        # Hourly; acts from 07:00 Harare time, each warning sent once (hr.expiry_alerts).
+        cron(hr_expiry_alerts_job, minute=25, run_at_startup=False),
+        # 14:35 UTC = 16:35 Harare: the attendance clock stops at 16:30.
+        cron(close_attendance_day_job, hour=14, minute=35, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup
