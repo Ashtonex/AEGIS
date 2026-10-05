@@ -2,6 +2,7 @@ import os
 import logging
 import math
 from typing import Dict, Any, List
+from xml.sax.saxutils import escape as xml_escape
 from reportlab.lib import colors
 from reportlab.platypus import Flowable
 from app.services.documents.interfaces import (
@@ -1167,6 +1168,13 @@ class CommercialControlPDFRenderer(DocumentRenderer):
                 name="CCBCell", parent=styles["Normal"], fontSize=7.5, leading=9.5,
                 textColor=colors.HexColor("#0F172A"),
             )
+            # Header cells are Paragraphs, which take their colour/font from
+            # the ParagraphStyle - a table-level TEXTCOLOR/FONTNAME command
+            # is ignored for them, so the header needs its own style.
+            header_cell_style = ParagraphStyle(
+                name="CCBHeaderCell", parent=cell_style,
+                textColor=colors.white, fontName="Helvetica-Bold",
+            )
 
             def page_header_footer(canvas, doc_obj):
                 canvas.saveState()
@@ -1184,9 +1192,17 @@ class CommercialControlPDFRenderer(DocumentRenderer):
                 canvas.restoreState()
 
             def build_table(rows, col_widths, header=True, font_size=7.5):
+                # Cell text is user/BOQ data, not markup - escape it so "&" or
+                # "<" in a description can't break Paragraph parsing.
                 formatted = [
-                    [Paragraph(str(cell), cell_style) for cell in row]
-                    for row in rows
+                    [
+                        Paragraph(
+                            xml_escape(str(cell)),
+                            header_cell_style if (header and row_index == 0) else cell_style,
+                        )
+                        for cell in row
+                    ]
+                    for row_index, row in enumerate(rows)
                 ]
                 t = Table(formatted, colWidths=col_widths)
                 commands = [
