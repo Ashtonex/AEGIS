@@ -331,6 +331,7 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
             <OperationList title="Training matrix by role and project" rows={operations.training || []} columns={["role_name", "training_name", "project_name", "mandatory", "employees_in_role", "current_records"]} empty="No training requirements have been recorded." />
           )}
           {activeTab === "org-chart" && (
+            // "Org chart and reporting lines": drawn organograms plus the line-manager tree.
             <OrgChartTabs />
           )}
           {activeTab === "planning" && (
