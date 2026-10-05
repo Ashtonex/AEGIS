@@ -19,7 +19,7 @@ function PanelLoading() {
   return <Skeleton className="h-64 w-full" />;
 }
 const VendorVerificationPanel = dynamic(() => import("./VendorVerificationPanel").then((m) => m.VendorVerificationPanel), { loading: PanelLoading });
-const ReportingTree = dynamic(() => import("@/components/people/ReportingTree").then((m) => m.ReportingTree), { loading: PanelLoading });
+const OrgChartTabs = dynamic(() => import("./OrgChartTabs").then((m) => m.OrgChartTabs), { loading: PanelLoading });
 const HRFilesPage = dynamic(() => import("./HRFilesPage").then((m) => m.HRFilesPage), { loading: PanelLoading });
 const HRAttendancePage = dynamic(() => import("./HRAttendancePage").then((m) => m.HRAttendancePage), { loading: PanelLoading });
 const AbsencePanel = dynamic(() => import("./HRAttendancePage").then((m) => m.AbsencePanel), { loading: PanelLoading });
@@ -127,7 +127,7 @@ const HR_TAB_SUBTITLES: Partial<Record<HRTab, string>> = {
   performance: "Performance reviews and disciplinary records.",
   assets: "PPE, tools, vehicles and equipment issued to employees.",
   training: "Training required per role and project, and who has it.",
-  "org-chart": "Who reports to whom, drawn from each person's line manager.",
+  "org-chart": "The group and management structure, and who reports to whom.",
   planning: "Headcount needed per project and site against people assigned.",
   attendance: "Daily check-in and check-out per employee.",
   leave: "How many days each person was away, plus leave requests, approvals and the calendar.",
@@ -331,8 +331,7 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
             <OperationList title="Training matrix by role and project" rows={operations.training || []} columns={["role_name", "training_name", "project_name", "mandatory", "employees_in_role", "current_records"]} empty="No training requirements have been recorded." />
           )}
           {activeTab === "org-chart" && (
-            // "Org chart and reporting lines": drawn from line managers until the interactive chart (phase 5).
-            <ReportingTree canEdit />
+            <OrgChartTabs />
           )}
           {activeTab === "planning" && (
             <OperationList title="Workforce planning by project and site" rows={operations.workforce_plans || []} columns={["project_name", "role_name", "required_headcount", "assigned_count", "shortfall", "status", "planned_start"]} empty="No workforce plans have been recorded." />
