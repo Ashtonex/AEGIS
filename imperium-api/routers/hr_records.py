@@ -1,3 +1,4 @@
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -110,8 +111,8 @@ async def create_leave_request(
                     "org_id": user["org_id"],
                     "employee_id": payload.employee_id,
                     "leave_type": payload.leave_type,
-                    "start_date": payload.start_date,
-                    "end_date": payload.end_date,
+                    "start_date": date.fromisoformat(payload.start_date),
+                    "end_date": date.fromisoformat(payload.end_date),
                     "days_requested": payload.days_requested,
                     "reason": payload.reason,
                     "calendar_title": f"{emp.employee_name} - {payload.leave_type}"[:200],
@@ -306,8 +307,8 @@ async def create_my_leave_request(
                     "org_id": user["org_id"],
                     "employee_id": employee_id,
                     "leave_type": payload.leave_type,
-                    "start_date": payload.start_date,
-                    "end_date": payload.end_date,
+                    "start_date": date.fromisoformat(payload.start_date),
+                    "end_date": date.fromisoformat(payload.end_date),
                     "days_requested": payload.days_requested,
                     "reason": payload.reason,
                     "calendar_title": f"{user['email']} - {payload.leave_type}"[:200],

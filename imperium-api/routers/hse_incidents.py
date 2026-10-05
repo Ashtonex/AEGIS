@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -26,7 +27,8 @@ class Payload(BaseModel):
 
 
 class HseIncidentCreate(Payload):
-    incident_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    # A real date: asyncpg rejects a str for the CAST(... AS date) parameter.
+    incident_date: date
     severity: Literal["low", "medium", "high", "critical"]
     title: str = Field(min_length=1, max_length=255)
     description: Optional[str] = None
