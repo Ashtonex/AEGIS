@@ -73,6 +73,8 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Readable by the browser on cross-origin calls (Vercel -> API):
+        expose_headers=["X-Results-Truncated", "X-Correlation-ID"],
     )
 
     from fastapi.responses import RedirectResponse
@@ -83,6 +85,27 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["System"])
     async def health_check():
+        """Liveness: answers without touching the database, so the container
+        healthcheck and status page stay fast and don't take a pool slot
+        (each DB round trip held a connection ~1s in the stress test). Use
+        /health/deep for the database probe."""
+        from core.realtime import get_listener_status
+
+        return {
+            "success": True,
+            "data": {
+                "status": "operational",
+                "environment": settings.ENVIRONMENT,
+                "deploy_marker": "modules-diag-2026-08-05a",
+                "realtime_listener": get_listener_status(),
+                "db_pool": pool_status(),
+            },
+            "message": "Project Imperium is online.",
+            "meta": {},
+        }
+
+    @app.get("/health/deep", tags=["System"])
+    async def health_check_deep():
         try:
             database_health = await check_database_health()
         except Exception:

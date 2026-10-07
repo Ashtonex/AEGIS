@@ -491,6 +491,9 @@ export async function buildApiError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message);
 }
 
+export const RESULTS_TRUNCATED_EVENT = "aegis:results-truncated";
+export type ResultsTruncatedDetail = { endpoint: string; limit: number };
+
 export async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): Promise<T> {
   const requestOptions: RequestInit = { ...options };
   delete (requestOptions as ApiRequestOptions).allowFallback;
@@ -565,6 +568,13 @@ export async function fetchApi<T>(endpoint: string, options: ApiRequestOptions =
 
     if (!response.ok) {
       throw await buildApiError(response);
+    }
+
+    // The API caps some long lists (e.g. 500 rows) and says so in this header
+    // rather than silently dropping rows; the dashboard shows a notice.
+    const truncatedAt = response.headers.get("X-Results-Truncated");
+    if (truncatedAt && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(RESULTS_TRUNCATED_EVENT, { detail: { endpoint, limit: Number(truncatedAt) } }));
     }
 
     const data = await parseJsonResponse<T>(response);

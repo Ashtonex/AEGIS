@@ -22,6 +22,7 @@ def _clear_verified_token_cache(token: str) -> None:
     across worker processes), so clearing it means clearing both for this
     specific token's key."""
     security._local_verified_token_cache.pop(security._token_cache_key(token), None)
+    security._local_rejected_tokens.pop(security._token_cache_key(token), None)
     _cache_delete_sync(f"auth:token:{security._token_cache_key(token)}")
 
 
@@ -58,7 +59,8 @@ class _Client:
 
 
 def test_verify_token_uses_supabase_auth_payload(monkeypatch):
-    _clear_verified_token_cache("real-token")
+    token = _forged_superadmin_token("supabase-signed-legacy-secret")
+    _clear_verified_token_cache(token)
     response = _Response(
         200,
         {
@@ -68,9 +70,9 @@ def test_verify_token_uses_supabase_auth_payload(monkeypatch):
             "user_metadata": {"full_name": "Ashton"},
         },
     )
-    monkeypatch.setattr(security.httpx, "Client", lambda timeout: _Client(response))
+    monkeypatch.setattr(security, "_auth_http_client", lambda: _Client(response))
 
-    payload = security.verify_token(_Creds("real-token"))
+    payload = security.verify_token(_Creds(token))
 
     assert payload == {
         "sub": "user-123",
@@ -93,7 +95,7 @@ def test_verify_token_reuses_recently_verified_token_during_auth_outage(monkeypa
         "user_metadata": {"full_name": "Ashton"},
     }
     response = _Response(200, verified_user)
-    monkeypatch.setattr(security.httpx, "Client", lambda timeout: _Client(response))
+    monkeypatch.setattr(security, "_auth_http_client", lambda: _Client(response))
 
     assert security.verify_token(_Creds(token))["sub"] == "user-123"
 
@@ -130,6 +132,7 @@ def test_verify_token_rejects_forged_signature_instead_of_trusting_claims(monkey
     a secret the real backend never configured) must fail local verification
     and must also be rejected by the Supabase Auth API fallback."""
     forged = _forged_superadmin_token()
+    _clear_verified_token_cache(forged)
 
     # Local verification must not match any configured key/issuer.
     assert security._decode_locally(forged) is None
@@ -137,7 +140,7 @@ def test_verify_token_rejects_forged_signature_instead_of_trusting_claims(monkey
     # The Supabase Auth API fallback authoritatively rejects the forged token.
     unauthorized_response = _Response(401, {"message": "invalid JWT"})
     monkeypatch.setattr(
-        security.httpx, "Client", lambda timeout: _Client(unauthorized_response)
+        security, "_auth_http_client", lambda: _Client(unauthorized_response)
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -170,8 +173,73 @@ def test_verify_token_circuit_breaker_opens_after_repeated_supabase_failures(mon
         assert breaker.is_open
 
         forged = _forged_superadmin_token()
+        _clear_verified_token_cache(forged)
         with pytest.raises(HTTPException) as exc_info:
             security.verify_token(_Creds(forged))
         assert exc_info.value.status_code == 503
     finally:
         breaker.record_success()  # don't leak an open circuit into other tests
+
+
+# ── Stress-test hardening (2026-10-07) ──────────────────────────────────────
+
+def test_garbage_token_is_rejected_without_any_network_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(security, "_call_supabase_auth_api", lambda token: calls.append(token))
+    with pytest.raises(HTTPException) as exc_info:
+        security.verify_token_str("not-a-jwt-at-all")
+    assert exc_info.value.status_code == 401
+    assert calls == []
+
+
+def test_rejected_token_is_not_re_sent_to_supabase(monkeypatch):
+    forged = _forged_superadmin_token("replayed-junk")
+    _clear_verified_token_cache(forged)
+    calls = []
+
+    def fake(token):
+        calls.append(token)
+        return _Response(401, {"message": "invalid JWT"})
+
+    monkeypatch.setattr(security, "_call_supabase_auth_api", fake)
+    for _ in range(3):
+        with pytest.raises(HTTPException):
+            security.verify_token_str(forged)
+    assert len(calls) == 1
+    _clear_verified_token_cache(forged)
+
+
+def test_es256_token_verified_locally_against_jwks(monkeypatch):
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_jwk = jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    public_jwk.update({"kid": "test-kid", "alg": "ES256"})
+    monkeypatch.setattr(security, "_jwks_keys", {"test-kid": jwt.PyJWK(public_jwk)})
+    monkeypatch.setattr(security, "_jwks_fetched_at", __import__("time").time())
+    monkeypatch.setattr(security, "_call_supabase_auth_api", lambda token: (_ for _ in ()).throw(AssertionError("no network")))
+    issuer = f"{security.settings.SUPABASE_URL.rstrip('/')}/auth/v1"
+    claims = {
+        "sub": "user-es256", "aud": "authenticated", "iss": issuer, "email": "a@b.c",
+        "app_metadata": {"org_id": "org-1"}, "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    good = jwt.encode(claims, private_key, algorithm="ES256", headers={"kid": "test-kid"})
+    assert security.verify_token_str(good)["sub"] == "user-es256"
+
+    other_key = ec.generate_private_key(ec.SECP256R1())
+    forged = jwt.encode(claims, other_key, algorithm="ES256", headers={"kid": "test-kid"})
+    with pytest.raises(HTTPException) as exc_info:
+        security.verify_token_str(forged)
+    assert exc_info.value.status_code == 401
+
+    unknown_kid = jwt.encode(claims, other_key, algorithm="ES256", headers={"kid": "made-up"})
+    with pytest.raises(HTTPException) as exc_info:
+        security.verify_token_str(unknown_kid)
+    assert exc_info.value.status_code == 401
+
+
+def test_ip_with_many_failures_is_throttled(monkeypatch):
+    monkeypatch.setattr(security, "_auth_failures", lambda ip: security.AUTH_FAILURES_PER_MINUTE)
+    with pytest.raises(HTTPException) as exc_info:
+        security.verify_token_str("anything", client_ip="203.0.113.9")
+    assert exc_info.value.status_code == 429

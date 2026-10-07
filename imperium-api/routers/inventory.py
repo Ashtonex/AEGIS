@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import require_permission
+from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event
 from app.shared.sql import tenant_reference_sql
@@ -215,7 +216,7 @@ async def stock_levels(
         WHERE i.organization_id=:org_id AND i.is_deleted=false
           AND (:below_reorder = false OR COALESCE(b.available_qty, 0) <= COALESCE(i.reorder_level, 0))
         ORDER BY i.item_name NULLS LAST, st.name NULLS LAST
-        LIMIT 1000
+        LIMIT 1001
     """),
         {
             "org_id": user["org_id"],
@@ -223,7 +224,7 @@ async def stock_levels(
             "below_reorder": below_reorder,
         },
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 1000)]
     return ok(data, "Stock levels listed.", len(data))
 
 
@@ -280,11 +281,11 @@ async def list_stores(
         WHERE st.organization_id=:org_id AND st.is_deleted=false
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
         ORDER BY st.store_type, st.name
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "project_id": project_id},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Stores listed.", len(data))
 
 

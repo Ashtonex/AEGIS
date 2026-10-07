@@ -56,9 +56,11 @@ engine = create_async_engine(
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_recycle=180,
+    pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
     connect_args={
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,
+        "command_timeout": settings.DB_COMMAND_TIMEOUT_SECONDS,
     },
 )
 
@@ -116,7 +118,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except SATimeoutError:
             # This is the failure mode root cause 2 predicted: every slot in
             # this worker's pool was checked out and a new request waited the
-            # full pool_timeout (SQLAlchemy default 30s) without getting one.
+            # full pool_timeout (DB_POOL_TIMEOUT_SECONDS) without getting one.
             # Logged with pool_status() so it's visible whether this is a
             # live problem, not just a theoretical one from the audit.
             logger.error("db_pool_checkout_timeout", **pool_status())

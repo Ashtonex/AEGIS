@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
+from core.truncation import capped
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -157,10 +158,10 @@ async def list_items(
         FROM procurement.inventory_items
         WHERE organization_id = :org_id AND is_deleted = false
         ORDER BY item_name NULLS LAST, created_at DESC
-        LIMIT 500
+        LIMIT 501
     """)
     result = await db.execute(query, {"org_id": user["org_id"]})
-    items = [dict(row._mapping) for row in result]
+    items = [dict(row._mapping) for row in capped(result, 500)]
 
     return {
         "success": True,

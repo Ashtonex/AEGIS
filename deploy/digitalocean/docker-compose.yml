@@ -41,8 +41,14 @@ services:
       # says otherwise; they're defaulted here so the deploy works without
       # requiring that file to be touched.
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-3}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
+      # 5+5 per worker x 4 workers = 40 client connections to Supavisor's
+      # transaction pooler (port 6543), which multiplexes them over its own
+      # backend pool. 3+2 saturated at ~10 concurrent users (stress test
+      # 2026-10-07): every worker pinned at 5/5 with requests queuing 30s+.
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      DB_POOL_TIMEOUT_SECONDS: ${DB_POOL_TIMEOUT_SECONDS:-5}
+      DB_COMMAND_TIMEOUT_SECONDS: ${DB_COMMAND_TIMEOUT_SECONDS:-30}
       MICROSOFT_GRAPH_TENANT_ID: ${MICROSOFT_GRAPH_TENANT_ID:-}
       MICROSOFT_GRAPH_CLIENT_ID: ${MICROSOFT_GRAPH_CLIENT_ID:-}
       MICROSOFT_GRAPH_CLIENT_SECRET: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}

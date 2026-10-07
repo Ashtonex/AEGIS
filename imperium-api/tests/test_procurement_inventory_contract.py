@@ -275,7 +275,9 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn('"unit_of_measure"', INV_ITEMS)
         self.assertIn("SELECT {ITEM_RETURNING_COLUMNS}", INV_ITEMS)
         self.assertIn("ORDER BY item_name NULLS LAST", INV_ITEMS)
-        self.assertIn("LIMIT 500", INV_ITEMS)
+        # Capped at 500 rows, fetched as 501 so a cut-off is reported (core/truncation.py).
+        self.assertIn("LIMIT 501", INV_ITEMS)
+        self.assertIn("capped(result, 500)", INV_ITEMS)
         self.assertIn("delete body.uom", WEB_API)
         self.assertIn("body.unit_of_measure = body.uom", WEB_API)
         self.assertIn("require_ref(\n        db, \"procurement.inventory_items\", payload.item_id", INV)

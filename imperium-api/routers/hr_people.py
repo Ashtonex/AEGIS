@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.shared.pagination import ok
 from core.database import get_db
 from core.security import get_current_user, require_permission, user_has_permission
+from core.truncation import capped
 
 router = APIRouter()
 
@@ -517,12 +518,12 @@ async def people_register(
               AND (CAST(:category AS uuid) IS NULL OR e.category_id = CAST(:category AS uuid))
               AND (CAST(:department AS uuid) IS NULL OR e.department_id = CAST(:department AS uuid))
             ORDER BY e.employment_status = 'terminated', e.employee_number NULLS LAST, e.employee_name
-            LIMIT 500
+            LIMIT 501
             """),
             {"org": user["org_id"], "q": f"%{q}%", "status": status, "category": category_id, "department": department_id},
         )
     ).mappings()
-    return ok([dict(r) for r in rows], "People register.")
+    return ok([dict(r) for r in capped(rows, 500)], "People register.")
 
 
 @router.get("/catalogue")

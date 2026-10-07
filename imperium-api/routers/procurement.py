@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import require_permission
+from core.truncation import capped
 from app.services import inventory_service
 from app.services.finance.ccb_monitor import record_requisition_budget_breach
 from app.services.finance import procurement_verification, gl_bridge, vat_engine
@@ -420,11 +421,11 @@ async def list_requisitions(
           AND (CAST(:project_id AS uuid) IS NULL OR pr.project_id=CAST(:project_id AS uuid))
         GROUP BY pr.id, p.name
         ORDER BY pr.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status": status_filter, "project_id": project_id},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Purchase requisitions listed.", len(data))
 
 
@@ -445,7 +446,7 @@ async def list_material_requests(
           AND (CAST(:is_price_confirmed AS boolean) IS NULL OR mr.is_price_confirmed=CAST(:is_price_confirmed AS boolean))
           AND (CAST(:project_id AS uuid) IS NULL OR mr.project_id=CAST(:project_id AS uuid))
         ORDER BY mr.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {
             "org_id": user["org_id"],
@@ -453,7 +454,7 @@ async def list_material_requests(
             "project_id": project_id,
         },
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Material requests listed.", len(data))
 
 
@@ -927,11 +928,11 @@ async def list_rfqs(
           AND (CAST(:status AS varchar) IS NULL OR rfq.status=CAST(:status AS varchar))
           AND (CAST(:project_id AS uuid) IS NULL OR rfq.project_id=CAST(:project_id AS uuid))
         ORDER BY rfq.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status": status_filter, "project_id": project_id},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "RFQs listed.", len(data))
 
 
@@ -1216,11 +1217,11 @@ async def list_purchase_orders(
           AND (CAST(:status AS varchar) IS NULL OR po.status=CAST(:status AS varchar))
           AND (CAST(:supplier_id AS uuid) IS NULL OR po.supplier_id=CAST(:supplier_id AS uuid))
         ORDER BY po.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status": status_filter, "supplier_id": supplier_id},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Purchase orders listed.", len(data))
 
 
@@ -1765,11 +1766,11 @@ async def suppliers(
 ):
     rows = await db.execute(
         text(
-            "SELECT * FROM procurement.suppliers WHERE organization_id=:org_id AND is_deleted=false ORDER BY supplier_name LIMIT 500"
+            "SELECT * FROM procurement.suppliers WHERE organization_id=:org_id AND is_deleted=false ORDER BY supplier_name LIMIT 501"
         ),
         {"org_id": user["org_id"]},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Suppliers listed.", len(data))
 
 
@@ -1831,11 +1832,11 @@ async def invoices(
         WHERE inv.organization_id=:org_id AND inv.is_deleted=false
           AND (CAST(:match_status AS varchar) IS NULL OR inv.match_status=CAST(:match_status AS varchar))
         ORDER BY inv.invoice_date DESC, inv.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "match_status": match_status},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Supplier invoices listed.", len(data))
 
 

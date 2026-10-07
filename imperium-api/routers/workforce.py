@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
+from core.truncation import capped
 from app.shared.hr_self_service import resolve_own_employee_id
 
 from schemas.workforce_foundation import (
@@ -347,10 +348,10 @@ async def list_allocations(
         JOIN hr.employees e ON e.id=a.employee_id AND e.organization_id=a.organization_id
         JOIN projects.projects p ON p.id=a.project_id AND p.organization_id=a.organization_id
         WHERE a.organization_id=:org_id AND a.is_deleted=false AND (CAST(:project_id AS uuid) IS NULL OR a.project_id=CAST(:project_id AS uuid))
-        ORDER BY a.starts_on DESC LIMIT 500"""),
+        ORDER BY a.starts_on DESC LIMIT 501"""),
         {"org_id": user["org_id"], "project_id": project_id},
     )
-    return result([dict(row._mapping) for row in rows], "Allocations listed.")
+    return result([dict(row._mapping) for row in capped(rows, 500)], "Allocations listed.")
 
 
 @router.post("/allocations", status_code=status.HTTP_201_CREATED)

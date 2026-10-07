@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
+from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.sequences import next_reference
@@ -868,11 +869,11 @@ async def list_inventory_items(
         ) bal ON bal.item_id = i.id
         WHERE i.organization_id=:org_id AND i.is_deleted=false
         ORDER BY i.item_name NULLS LAST, i.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"]},
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 500)]
     return result(data, "Inventory items listed.", len(data))
 
 
@@ -891,11 +892,11 @@ async def list_stores(
         WHERE st.organization_id=:org_id AND st.is_deleted=false
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
         ORDER BY st.store_type, st.name
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "project_id": project_id},
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 500)]
     return result(data, "Stores listed.", len(data))
 
 
@@ -1043,11 +1044,11 @@ async def list_site_material_requests(
         LEFT JOIN core.users requester ON requester.id=mr.requested_by AND requester.organization_id=mr.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY mr.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Site material requests listed.", len(data))
 
 
@@ -1150,11 +1151,11 @@ async def list_weekly_budgets(
         LEFT JOIN core.users approver ON approver.id=wb.approved_by AND approver.organization_id=wb.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY wb.week_start DESC, wb.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Weekly site budgets listed.", len(data))
 
 
@@ -1454,11 +1455,11 @@ async def list_site_variances(
         LEFT JOIN projects.weekly_budget_items wbi ON wbi.id=v.weekly_budget_item_id AND wbi.organization_id=v.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY v.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Site-originated variances listed.", len(data))
 
 
@@ -1608,11 +1609,11 @@ async def list_site_grns(
         LEFT JOIN core.users receiver ON receiver.id=g.received_by AND receiver.organization_id=g.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY g.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Site GRNs listed.", len(data))
 
 

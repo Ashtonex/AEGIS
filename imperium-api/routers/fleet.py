@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import AsyncSessionLocal, gather_reads, get_db
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
+from core.truncation import capped
 from app.shared.sql import (
     safe_payload_columns,
     tenant_child_reference_sql,
@@ -990,10 +991,10 @@ async def list_assets(user: dict = Depends(require_permission("fleet.read")), db
           WHERE wo.fleet_id=f.id AND wo.organization_id=f.organization_id AND wo.is_deleted=false
             AND wo.status IN ('completed','returned_to_service','closed') AND wo.completed_at >= date_trunc('month', CURRENT_DATE)
         ) maint ON true
-        WHERE f.organization_id=:org_id AND f.is_deleted=false ORDER BY f.asset_code NULLS LAST, f.vehicle_registration LIMIT 500"""),
+        WHERE f.organization_id=:org_id AND f.is_deleted=false ORDER BY f.asset_code NULLS LAST, f.vehicle_registration LIMIT 501"""),
         {"org_id": user["org_id"]},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return result(data, "Fleet assets listed.", len(data))
 
 
@@ -1357,11 +1358,11 @@ async def update_asset(
 async def list_assignments(user: dict = Depends(require_permission("fleet.read")), db: AsyncSession = Depends(get_db)):  # fmt: skip
     rows = await db.execute(
         text(
-            "SELECT * FROM fleet.fleet_assignments WHERE organization_id=:org_id AND is_deleted=false ORDER BY starts_at DESC LIMIT 500"
+            "SELECT * FROM fleet.fleet_assignments WHERE organization_id=:org_id AND is_deleted=false ORDER BY starts_at DESC LIMIT 501"
         ),
         {"org_id": user["org_id"]},
     )
-    return result([dict(r._mapping) for r in rows], "Assignments listed.")
+    return result([dict(r._mapping) for r in capped(rows, 500)], "Assignments listed.")
 
 
 @router.get("/operator-profiles")
@@ -1376,11 +1377,11 @@ async def list_operator_profiles(
             LEFT JOIN hr.employees e ON e.id=op.employee_id AND e.organization_id=op.organization_id
             WHERE op.organization_id=:org_id AND op.is_deleted=false
             ORDER BY op.suspended ASC, op.competency_status, COALESCE(e.employee_name, op.contractor_name)
-            LIMIT 500
+            LIMIT 501
         """),
         {"org_id": user["org_id"]},
     )
-    return result([dict(row._mapping) for row in rows], "Operator profiles listed.")
+    return result([dict(row._mapping) for row in capped(rows, 500)], "Operator profiles listed.")
 
 
 @router.post("/operator-profiles", status_code=status.HTTP_201_CREATED)
@@ -1477,11 +1478,11 @@ async def list_external_hire_agreements(
             LEFT JOIN fleet.plant_requests pr ON pr.id=eha.plant_request_id AND pr.organization_id=eha.organization_id
             WHERE eha.organization_id=:org_id AND eha.is_deleted=false
             ORDER BY eha.updated_at DESC
-            LIMIT 500
+            LIMIT 501
         """),
         {"org_id": user["org_id"]},
     )
-    return result([dict(row._mapping) for row in rows], "External hire agreements listed.")
+    return result([dict(row._mapping) for row in capped(rows, 500)], "External hire agreements listed.")
 
 
 @router.post("/external-hire-agreements", status_code=status.HTTP_201_CREATED)
@@ -1812,11 +1813,11 @@ async def list_work_orders(
           AND (CAST(:include_closed AS boolean) OR wo.status NOT IN ('completed','returned_to_service','closed','cancelled'))
           AND (CAST(:status_filter AS VARCHAR) IS NULL OR wo.status=CAST(:status_filter AS VARCHAR))
         ORDER BY (wo.status='awaiting_approval') DESC, wo.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status_filter": status_filter, "include_closed": include_closed},
     )
-    return result([dict(r._mapping) for r in rows], "Maintenance work orders listed.")
+    return result([dict(r._mapping) for r in capped(rows, 500)], "Maintenance work orders listed.")
 
 
 @router.post("/work-orders/{work_order_id}/approval")
@@ -2506,11 +2507,11 @@ async def list_plant_requests(
         WHERE pr.organization_id=:org_id AND pr.is_deleted=false
           AND (CAST(:status_filter AS VARCHAR) IS NULL OR pr.status=CAST(:status_filter AS VARCHAR))
         ORDER BY pr.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status_filter": status_filter},
     )
-    return result([dict(r._mapping) for r in rows], "Plant requests listed.")
+    return result([dict(r._mapping) for r in capped(rows, 500)], "Plant requests listed.")
 
 
 @router.post("/plant/requests", status_code=status.HTTP_201_CREATED)

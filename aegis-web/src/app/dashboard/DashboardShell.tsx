@@ -11,6 +11,7 @@ import { PwaPushButton } from "@/components/pwa/PwaPushButton";
 import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
 import { AttendanceCheckIn } from "@/components/people/AttendanceCheckIn";
+import { TruncatedResultsNotice } from "@/components/dashboard/TruncatedResultsNotice";
 import { matchesRole } from "@/lib/rbacMatch";
 import {
   Search, Bell, CircleHelp, User, ShieldAlert,
@@ -681,6 +682,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             currentDomain ? DOMAIN_META[currentDomain].accentTopBorderClass : "border-t-transparent"
           }`}
         >
+          <TruncatedResultsNotice />
           {children}
           {!isPortalRoute && <AttendanceCheckIn />}
         </main>

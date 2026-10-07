@@ -42,6 +42,7 @@ from app.shared.pagination import ok
 from core.database import get_db
 from core.email import send_email
 from core.security import require_permission
+from core.truncation import capped
 
 router = APIRouter()
 
@@ -978,11 +979,11 @@ async def list_site_pay_runs(
             WHERE r.organization_id = :org_id AND r.is_deleted = false
               AND (CAST(:project_id AS uuid) IS NULL OR r.project_id = CAST(:project_id AS uuid))
             ORDER BY r.period_end DESC, r.created_at DESC
-            LIMIT 200
+            LIMIT 201
         """),
         {"org_id": user["org_id"], "project_id": project_id},
     )
-    return ok([dict(r._mapping) for r in rows], "Site pay runs.")
+    return ok([dict(r._mapping) for r in capped(rows, 200)], "Site pay runs.")
 
 
 @router.get("/site-payroll/runs/{run_id}")

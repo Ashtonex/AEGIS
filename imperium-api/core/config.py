@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     # - deploy/digitalocean/docker-compose.yml does this for the container.
     DB_POOL_SIZE: int = Field(default=10, ge=1)
     DB_MAX_OVERFLOW: int = Field(default=10, ge=0)
+    # How long a request waits for a free pool connection before failing with
+    # a clear error. SQLAlchemy's default (30s) made a saturated worker look
+    # like a hung server in the 2026-10-07 stress test.
+    DB_POOL_TIMEOUT_SECONDS: int = Field(default=5, ge=1)
+    # Client-side cap on any single query (asyncpg cancels it server-side when
+    # exceeded), so one slow query can't hold a pooled connection indefinitely.
+    # The background worker can raise this for long imports via its own env.
+    DB_COMMAND_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    # Request rate limiting (core/rate_limit.py). An operational off-switch;
+    # also lets a load test measure raw capacity instead of the limiter.
+    RATE_LIMIT_ENABLED: bool = True
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_KEY: str

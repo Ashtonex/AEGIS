@@ -81,6 +81,32 @@ def cache_set_json_sync(key: str, value: Any, ttl_seconds: int) -> None:
         logger.warning("Redis cache_set_json_sync failed for key %s: %s", key, exc)
 
 
+def incr_with_ttl_sync(key: str, ttl_seconds: int) -> int | None:
+    """Atomic counter for fixed-window throttles shared across workers.
+    Returns None on any Redis error so callers can fall back to a local count."""
+    try:
+        client = _get_sync_client()
+        pipe = client.pipeline()
+        # SET NX EX then INCR (not EXPIRE NX, which needs Redis 7 - the
+        # native Windows Redis used in local dev is older).
+        pipe.set(key, 0, ex=ttl_seconds, nx=True)
+        pipe.incr(key)
+        _, count = pipe.execute()
+        return int(count)
+    except Exception as exc:
+        logger.warning("Redis incr_with_ttl_sync failed for key %s: %s", key, exc)
+        return None
+
+
+def get_int_sync(key: str) -> int | None:
+    try:
+        raw = _get_sync_client().get(key)
+    except Exception as exc:
+        logger.warning("Redis get_int_sync failed for key %s: %s", key, exc)
+        return None
+    return int(raw) if raw else 0
+
+
 def delete_sync(key: str) -> None:
     """Fails open (silently) - used for the handful of explicit-invalidation
     call sites (and test teardown) where a cache outage should never raise,
