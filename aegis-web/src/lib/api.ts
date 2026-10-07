@@ -22,3 +22,4 @@ export * from "./api/reports";
 export * from "./api/quotations";
 export * from "./api/banking";
 export * from "./api/data-room";
+export * from "./api/site-day";

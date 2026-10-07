@@ -18,6 +18,7 @@ from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.sequences import next_reference
+from routers.site_day import ensure_site_day_started, harare_today
 from app.shared.sql import (
     safe_payload_columns,
     tenant_child_rows_by_parent_sql,
@@ -909,6 +910,7 @@ async def request_site_material(
     await project_or_404(db, payload.project_id, user["org_id"])
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     await store_or_404(db, payload.store_id, payload.project_id, user["org_id"])
+    await ensure_site_day_started(db, org_id=user["org_id"], project_id=payload.project_id, on_date=harare_today())
     weekly_budget_id = await ensure_current_weekly_budget(
         db, org_id=user["org_id"], project_id=payload.project_id, site_id=payload.site_id
     )
@@ -1758,6 +1760,7 @@ async def create_daily_report(
             status_code=409,
             detail="Labour count, toolbox talk and PPE check must be ticked before the site day can start.",
         )
+    await ensure_site_day_started(db, org_id=user["org_id"], project_id=payload.project_id, on_date=payload.report_date)
     values = payload.model_dump(exclude={"weather"})
     try:
         report_id = (

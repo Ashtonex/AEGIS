@@ -323,3 +323,104 @@ def tasks_from_plan(items: Iterable[Any]) -> list[dict[str, Any]]:
     ]
     rows.sort(key=lambda r: (rank.get(r["priority"], 2), str(r["due_date"] or "9999")))
     return rows
+
+
+def _qty(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value or "")
+    return f"{number:,.3f}".rstrip("0").rstrip(".")
+
+
+def build_daily_targets_payload(
+    *,
+    recipient_email: str,
+    recipient_name: Optional[str],
+    project_name: str,
+    project_id: str,
+    target_date: Any,
+    targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """A site engineer's targets for one day, broken down from the approved
+    weekly budget. Same envelope as build_payload."""
+    day_label = target_date.strftime("%A %d %b") if hasattr(target_date, "strftime") else str(target_date)
+    link = f"{app_base_url()}/dashboard/site-operations?tab=targets&project={project_id}&date={target_date}"
+    first = recipient_name.split()[0] if recipient_name else "there"
+    body: list[dict[str, Any]] = [
+        {"type": "TextBlock", "text": f"Site targets: {day_label}", "size": "Large", "weight": "Bolder", "wrap": True},
+        {"type": "TextBlock", "text": f"Hi {first}, here is what {project_name} must complete today.", "wrap": True, "spacing": "Small"},
+        {
+            "type": "FactSet",
+            "facts": [
+                {"title": (t.get("work_package") or t.get("description") or "Work")[:60],
+                 "value": f"{_qty(t.get('target_qty'))} {t.get('unit') or ''}".strip()}
+                for t in targets[:_MAX_TASKS_ON_CARD]
+            ],
+        },
+    ]
+    if len(targets) > _MAX_TASKS_ON_CARD:
+        body.append({"type": "TextBlock", "text": f"…and {len(targets) - _MAX_TASKS_ON_CARD} more in AEGIS.", "isSubtle": True, "wrap": True})
+    body.append({"type": "TextBlock", "text": "Start the site day (labour register, PPE, toolbox talk) before work begins.",
+                 "isSubtle": True, "wrap": True})
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body,
+        "actions": [{"type": "Action.OpenUrl", "title": "Open site operations", "url": link}],
+    }
+    return {
+        "type": "message",
+        "recipient": recipient_email,
+        "recipientName": recipient_name,
+        "summary": f"{project_name}: {len(targets)} site target(s) for {day_label}",
+        "link": link,
+        "card": card,
+        "attachments": [
+            {"contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None, "content": card}
+        ],
+    }
+
+
+async def prepare_daily_target_deliveries(
+    db: AsyncSession,
+    org_id: str,
+    user_ids: list[str],
+    *,
+    project_name: str,
+    project_id: str,
+    target_date: Any,
+    targets: list[dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """One daily-targets card per engineer. Nothing when no webhook is set."""
+    if not user_ids or not targets:
+        return []
+    webhook_url = (
+        await db.execute(
+            text("SELECT teams_webhook_url FROM crm.task_routing_settings WHERE organization_id = :org_id"),
+            {"org_id": org_id},
+        )
+    ).scalar()
+    if not webhook_url:
+        return []
+    rows = await db.execute(
+        text("""
+            SELECT id::text AS id, COALESCE(NULLIF(TRIM(teams_account), ''), email) AS email, full_name
+            FROM core.users
+            WHERE id = ANY(CAST(:ids AS uuid[])) AND organization_id = :org_id
+              AND is_active = true AND is_deleted = false
+        """),
+        {"ids": user_ids, "org_id": org_id},
+    )
+    return [
+        (
+            webhook_url,
+            build_daily_targets_payload(
+                recipient_email=row.email, recipient_name=row.full_name, project_name=project_name,
+                project_id=project_id, target_date=target_date, targets=targets,
+            ),
+        )
+        for row in rows
+        if row.email
+    ]
