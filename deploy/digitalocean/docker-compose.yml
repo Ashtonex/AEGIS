@@ -34,19 +34,17 @@ services:
       BACKGROUND_JOBS_ENABLED: ${BACKGROUND_JOBS_ENABLED}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-}
-      # 4 workers x (pool 3 + overflow 2) = 20 total DB connections for this
-      # service - the same aggregate ceiling core/database.py's pool_size=10,
-      # max_overflow=10 already proved stable at when it was one process.
-      # Override any of these three in the droplet's .env if load testing
-      # says otherwise; they're defaulted here so the deploy works without
-      # requiring that file to be touched.
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
-      # 5+5 per worker x 4 workers = 40 client connections to Supavisor's
-      # transaction pooler (port 6543), which multiplexes them over its own
-      # backend pool. 3+2 saturated at ~10 concurrent users (stress test
-      # 2026-10-07): every worker pinned at 5/5 with requests queuing 30s+.
-      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
-      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      # 2 workers x (pool 10 + overflow 10) = 40 client connections to
+      # Supavisor's transaction pooler (port 6543), the same total the
+      # 2026-10-07 stress test validated with 4 x (5+5). Two workers, not
+      # four: on the 1 GB droplet four API processes plus the arq worker
+      # used ~800 MB and 1 GB of swap, so every deploy restart took minutes
+      # to answer and Caddy served 502s meanwhile (2026-10-08).
+      # Read from AEGIS_WEB_CONCURRENCY rather than WEB_CONCURRENCY so an
+      # old WEB_CONCURRENCY=4 left in the droplet's .env can't override it.
+      WEB_CONCURRENCY: ${AEGIS_WEB_CONCURRENCY:-2}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       DB_POOL_TIMEOUT_SECONDS: ${DB_POOL_TIMEOUT_SECONDS:-5}
       DB_COMMAND_TIMEOUT_SECONDS: ${DB_COMMAND_TIMEOUT_SECONDS:-30}
       MICROSOFT_GRAPH_TENANT_ID: ${MICROSOFT_GRAPH_TENANT_ID:-}

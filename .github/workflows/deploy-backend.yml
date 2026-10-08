@@ -25,6 +25,16 @@ jobs:
       group: deploy-backend
       cancel-in-progress: false
     steps:
+      # A broken Caddyfile would take the whole API offline once the
+      # droplet recreates Caddy, so prove it parses before touching it.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy/digitalocean
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm -e API_HOSTNAME=api.example.com \
+            -v "$PWD/deploy/digitalocean/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: SSH and redeploy
         uses: appleboy/ssh-action@v1
         with:

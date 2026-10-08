@@ -1,5 +1,12 @@
 {$API_HOSTNAME} {
   encode zstd gzip
 
-  reverse_proxy imperium-api:8000
+  # While the API container restarts (each deploy), hold incoming requests
+  # and keep retrying the upstream for up to 45s instead of answering 502
+  # straight away. Only connection failures are retried, so a request the
+  # API actually received is never sent twice.
+  reverse_proxy imperium-api:8000 {
+    lb_try_duration 45s
+    lb_try_interval 1s
+  }
 }
