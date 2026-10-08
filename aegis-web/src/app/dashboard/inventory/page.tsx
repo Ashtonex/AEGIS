@@ -72,8 +72,15 @@ const TAB_ROUTES: Record<ActiveTab, string> = {
   movements: "/dashboard/inventory/movements",
 };
 
+const INVENTORY_TAB_SUBTITLES: Record<ActiveTab, string> = {
+  stock: "What is on hand right now, where it sits, and what needs reordering.",
+  catalogue: "The master list of materials, supplies and tools, with prices and VAT.",
+  stores: "Every warehouse, site store and yard, and what each one holds.",
+  movements: "Every receipt, issue, transfer and adjustment, newest first.",
+};
+
 const INVENTORY_TAB_LABELS: Record<ActiveTab, string> = {
-  stock: "Stock Management",
+  stock: "Stock Levels",
   catalogue: "Item Catalogue",
   stores: "Stores",
   movements: "Movements",
@@ -291,28 +298,6 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
   useEffect(() => { void load(); }, [load]);
   useLiveTable("procurement.inventory_items", () => void load());
 
-  const metrics = useMemo(() => {
-    const outOfStock = stockLevels.filter((r) => num(r.available_qty ?? r.quantity ?? r.stock_quantity) <= 0);
-    const belowReorderItems = stockLevels.filter((r) => {
-      const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
-      const reorder = num(r.reorder_level ?? r.reorder_point);
-      return q > 0 && reorder > 0 && q <= reorder;
-    });
-    const totalValue = stockLevels.reduce((sum, r) => {
-      return sum + stockValue(r);
-    }, 0);
-    const yesterday = Date.now() - 86_400_000;
-    const recentMovements = movements.filter((m) => new Date(m.created_at ?? m.movement_date ?? 0).getTime() > yesterday);
-    return {
-      totalSKUs: catalogue.length,
-      totalValue,
-      belowReorder: belowReorderItems.length,
-      outOfStock: outOfStock.length,
-      storesCount: stores.length,
-      recentMovements: recentMovements.length,
-    };
-  }, [stockLevels, catalogue, stores, movements]);
-
   const projectById = useMemo(() => {
     const byId = new Map<string, Rec>();
     projects.forEach((project) => byId.set(String(project.id), project));
@@ -394,6 +379,12 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
     });
   }, [stores, selectedClientKey, selectedProjectId, storeClientKey]);
 
+  const scopedStock = useMemo(() => stockLevels.filter((r) => {
+    if (selectedClientKey && rowClientKey(r) !== selectedClientKey) return false;
+    if (selectedProjectId && rowProjectId(r) !== selectedProjectId) return false;
+    return true;
+  }), [stockLevels, selectedClientKey, selectedProjectId, rowClientKey, rowProjectId]);
+
   const filteredStock = useMemo(() => {
     return stockLevels.filter((r) => {
       const q = num(r.available_qty ?? r.quantity ?? r.stock_quantity);
@@ -441,159 +432,97 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
     setTimeout(() => setNotice(null), 5000);
   };
 
+  const scopeLabel = selectedProjectId
+    ? projectName(projectById.get(selectedProjectId) ?? { id: selectedProjectId })
+    : selectedClient?.name ?? "All clients";
+  const btn = "inline-flex h-9 items-center gap-2 border px-3 font-mono text-[11px] uppercase tracking-wider";
+  const secondaryBtn = `${btn} border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper`;
+  const tabActions: Record<ActiveTab, ReactNode> = {
+    stock: (
+      <>
+        <button onClick={() => setShowIssue(true)} className={`${btn} border-signal bg-signal font-bold text-ink`}><PackageMinus className="h-4 w-4" /> Issue</button>
+        <button onClick={() => setShowReceive(true)} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
+        <button onClick={() => setShowTransfer(true)} className={secondaryBtn}><ArrowLeftRight className="h-4 w-4" /> Transfer</button>
+        <button onClick={() => setShowAdjust(true)} className={secondaryBtn}><ClipboardEdit className="h-4 w-4" /> Adjust</button>
+      </>
+    ),
+    catalogue: null,
+    stores: (
+      <>
+        <button onClick={() => setShowAddStore(true)} className={`${btn} border-signal bg-signal font-bold text-ink`}><Plus className="h-4 w-4" /> Add Store</button>
+        <button onClick={() => setShowTransfer(true)} className={secondaryBtn}><ArrowLeftRight className="h-4 w-4" /> Transfer</button>
+      </>
+    ),
+    movements: (
+      <>
+        <button onClick={() => setShowInvoice(true)} className={`${btn} border-blue-500/40 bg-blue-950/20 text-blue-300 hover:border-blue-400`}><ReceiptText className="h-4 w-4" /> Bulk Store Invoice</button>
+        <button onClick={() => setShowReceive(true)} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
+        <button onClick={() => setShowIssue(true)} className={secondaryBtn}><PackageMinus className="h-4 w-4" /> Issue</button>
+      </>
+    ),
+  };
+
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
       <DashboardPageHeader
         eyebrow={{ label: "Inventory & Materials Control", icon: Package }}
         title={INVENTORY_TAB_LABELS[tab]}
-        subtitle="Real-time stock balances, catalogue management, store configuration and full movement ledger for all sites and warehouses."
+        subtitle={INVENTORY_TAB_SUBTITLES[tab]}
+        className="mb-4 pb-4"
         actions={
           <>
-            <button
-              onClick={() => setShowInvoice(true)}
-              className="inline-flex h-10 items-center gap-2 border border-blue-500/40 bg-blue-950/20 px-3 font-mono text-xs uppercase tracking-wider text-blue-300 hover:border-blue-400 hover:bg-blue-950/40"
-            >
-              <ReceiptText className="h-4 w-4" /> Bulk Store Invoice
-            </button>
-            <button
-              onClick={() => setShowReceive(true)}
-              className="inline-flex h-10 items-center gap-2 border border-emerald-500/40 bg-emerald-950/20 px-3 font-mono text-xs uppercase tracking-wider text-emerald-300 hover:border-emerald-400 hover:bg-emerald-950/40"
-            >
-              <PackagePlus className="h-4 w-4" /> Receive Stock
-            </button>
-            <button
-              onClick={() => setShowIssue(true)}
-              className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink"
-            >
-              <PackageMinus className="h-4 w-4" /> Issue Stock
-            </button>
-            <button
-              onClick={() => setShowTransfer(true)}
-              className="inline-flex h-10 items-center gap-2 border border-purple-500/40 bg-purple-950/20 px-3 font-mono text-xs uppercase tracking-wider text-purple-300 hover:border-purple-400 hover:bg-purple-950/40"
-            >
-              <ArrowLeftRight className="h-4 w-4" /> Transfer Stock
-            </button>
-            <button
-              onClick={() => setShowAdjust(true)}
-              className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper"
-            >
-              <ClipboardEdit className="h-4 w-4" /> Adjust Stock
-            </button>
-            <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+            {tabActions[tab]}
+            <button onClick={() => void load()} disabled={loading} title="Refresh" className="inline-flex h-9 w-9 items-center justify-center border border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
           </>
         }
       />
 
-      <section className="mb-6 grid gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        <Metric icon={<Box />} label="Total SKUs" value={loading ? "..." : String(metrics.totalSKUs)} />
-        <Metric icon={<Truck />} label="Stock Value" value={loading ? "..." : money(metrics.totalValue)} />
-        <Metric
-          icon={<AlertTriangle />}
-          label="Below Reorder"
-          value={loading ? "..." : String(metrics.belowReorder)}
-          tone={metrics.belowReorder > 0 ? "text-amber-300" : "text-slate-light"}
-          pulse={metrics.belowReorder > 0}
-        />
-        <Metric
-          icon={<ShieldAlert />}
-          label="Out of Stock"
-          value={loading ? "..." : String(metrics.outOfStock)}
-          tone={metrics.outOfStock > 0 ? "text-red-300" : "text-slate-light"}
-          pulse={metrics.outOfStock > 0}
-        />
-        <Metric icon={<Warehouse />} label="Stores" value={loading ? "..." : String(metrics.storesCount)} />
-        <Metric icon={<RefreshCw />} label="Movements 24h" value={loading ? "..." : String(metrics.recentMovements)} tone="text-blue-300" />
-      </section>
-
       {error && <Banner tone="error" message={error} />}
       {sourceWarnings.length > 0 && (
-        <div className="mb-6 space-y-2">
+        <div className="mb-4 space-y-2">
           {sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}
         </div>
       )}
       {notice && <Banner tone="info" message={notice} />}
 
-      <section className="mb-6 border border-ink-mid bg-ink">
-        <div className="border-b border-ink-mid px-4 py-3">
-          <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Workspace Scope</p>
-          <h2 className="mt-1 text-base font-semibold text-paper">Clients, projects and stores</h2>
-        </div>
-        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(15rem,22rem)_1fr]">
-          <div className="space-y-2">
+      {/* The catalogue is organisation-wide, so it gets no client/project scope. */}
+      {tab !== "catalogue" && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 border border-ink-mid bg-ink-light/30 px-3 py-2">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-slate">Scope</span>
+          <select
+            value={selectedClientKey}
+            onChange={(e) => { setSelectedClientKey(e.target.value); setSelectedProjectId(""); }}
+            className="h-8 max-w-[16rem] border border-ink-mid bg-ink px-2 text-sm text-paper"
+          >
+            <option value="">All clients ({stores.length} stores)</option>
+            {clientGroups.map((group) => (
+              <option key={group.key} value={group.key}>{group.name} ({group.stores.length} stores · {money(group.stockValue)})</option>
+            ))}
+          </select>
+          <select
+            value={selectedProjectId}
+            onChange={(e) => setSelectedProjectId(e.target.value)}
+            className="h-8 max-w-[18rem] border border-ink-mid bg-ink px-2 text-sm text-paper"
+          >
+            <option value="">All projects ({contextualProjects.length})</option>
+            {contextualProjects.map((project) => <option key={project.id} value={String(project.id)}>{projectName(project)}</option>)}
+          </select>
+          {(selectedClientKey || selectedProjectId) && (
             <button
               type="button"
               onClick={() => { setSelectedClientKey(""); setSelectedProjectId(""); }}
-              className={`w-full border px-3 py-2 text-left ${!selectedClientKey ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/30 hover:border-signal/40"}`}
+              className="inline-flex h-8 items-center gap-1 border border-ink-mid px-2 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper"
             >
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-xs uppercase text-paper">All Clients</span>
-                <span className="font-mono text-[10px] text-slate-light">{stores.length} stores</span>
-              </div>
+              <X className="h-3.5 w-3.5" /> Clear
             </button>
-            {clientGroups.map((group) => (
-              <button
-                key={group.key}
-                type="button"
-                onClick={() => { setSelectedClientKey(group.key); setSelectedProjectId(""); }}
-                className={`w-full border px-3 py-2 text-left ${selectedClientKey === group.key ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/30 hover:border-signal/40"}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="truncate text-sm font-semibold text-paper">{group.name}</span>
-                  <ChevronRight className={`h-4 w-4 shrink-0 text-slate ${selectedClientKey === group.key ? "text-signal" : ""}`} />
-                </div>
-                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] uppercase text-slate-light">
-                  <span>{group.projects.length} projects</span>
-                  <span>{group.stores.length} stores</span>
-                  <span>{money(group.stockValue)}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-          <div className="min-w-0">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Selected workspace</p>
-                <p className="mt-0.5 text-sm font-semibold text-paper">{selectedClient ? selectedClient.name : "All clients and organisation stores"}</p>
-              </div>
-              {(selectedClientKey || selectedProjectId) && (
-                <button
-                  type="button"
-                  onClick={() => { setSelectedClientKey(""); setSelectedProjectId(""); }}
-                  className="inline-flex h-8 items-center gap-1 border border-ink-mid px-2 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper"
-                >
-                  <X className="h-3.5 w-3.5" /> Clear
-                </button>
-              )}
-            </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setSelectedProjectId("")}
-                className={`h-8 border px-3 font-mono text-[10px] uppercase ${!selectedProjectId ? "border-signal bg-signal/10 text-signal" : "border-ink-mid text-slate-light hover:border-signal hover:text-paper"}`}
-              >
-                All Projects
-              </button>
-              {contextualProjects.map((project) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  onClick={() => setSelectedProjectId(String(project.id))}
-                  className={`h-8 max-w-full truncate border px-3 font-mono text-[10px] uppercase ${selectedProjectId === String(project.id) ? "border-signal bg-signal/10 text-signal" : "border-ink-mid text-slate-light hover:border-signal hover:text-paper"}`}
-                >
-                  {projectName(project)}
-                </button>
-              ))}
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <InfoCard label="Visible Stores" value={String(contextualStores.length)} />
-              <InfoCard label="Visible Stock Rows" value={String(filteredStock.length)} />
-              <InfoCard label="Visible Movements" value={String(filteredMovements.length)} />
-            </div>
-          </div>
+          )}
+          <span className="ml-auto truncate text-xs text-slate-light">
+            <span className="text-paper">{scopeLabel}</span> · {contextualStores.length} stores · {scopedStock.length} stock lines
+          </span>
         </div>
-      </section>
+      )}
 
       {tab === "stock" && (
         <StockLevelsTab
@@ -603,7 +532,7 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
           itemTypeFilter={itemTypeFilter} setItemTypeFilter={setItemTypeFilter}
           belowReorder={belowReorder} setBelowReorder={setBelowReorder}
           contextualStores={contextualStores} categories={categories} loading={loading}
-          stockLevels={stockLevels} filteredStock={filteredStock}
+          stockLevels={stockLevels} scopedStock={scopedStock} filteredStock={filteredStock}
         />
       )}
 
@@ -620,7 +549,7 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
       {tab === "stores" && (
         <StoresTab
           setShowAddStore={setShowAddStore} loading={loading} stores={stores}
-          contextualStores={contextualStores} stockLevels={stockLevels} setStoreDetail={setStoreDetail}
+          contextualStores={contextualStores} stockLevels={stockLevels} movements={movements} setStoreDetail={setStoreDetail}
         />
       )}
 
@@ -870,18 +799,6 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
         />
       )}
     </main>
-  );
-}
-
-function Metric({ icon, label, value, tone = "text-paper", pulse = false }: { icon: ReactNode; label: string; value: string; tone?: string; pulse?: boolean }) {
-  return (
-    <div className={`border bg-ink p-4 ${pulse ? "border-amber-500/30" : "border-ink-mid"}`}>
-      <div className="flex items-center justify-between text-slate">
-        <p className="font-mono text-[10px] uppercase tracking-wider">{label}</p>
-        <span className={`${pulse ? "text-amber-400" : "text-signal"} [&_svg]:h-4 [&_svg]:w-4`}>{icon}</span>
-      </div>
-      <p className={`mt-4 font-mono text-2xl ${tone}`}>{value}</p>
-    </div>
   );
 }
 

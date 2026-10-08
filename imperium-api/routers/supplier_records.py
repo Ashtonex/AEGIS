@@ -66,6 +66,27 @@ def _apply_vat_status(payload: dict) -> None:
         if payload["vat_status"] == "not_registered":
             payload["vat_registration_number"] = None
 
+
+# Mirrors the CHECK constraints in migration 022 so a bad value comes back as
+# a readable 422 instead of a raw IntegrityError.
+SUPPLIER_NUMERIC_RANGES = {
+    "performance_score": (0, 5, "Performance score must be a rating between 0 and 5."),
+    "on_time_delivery_pct": (0, 100, "On-time delivery % must be between 0 and 100."),
+}
+
+
+def _validate_supplier_ranges(payload: dict) -> None:
+    for key, (low, high, message) in SUPPLIER_NUMERIC_RANGES.items():
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=message)
+        if not low <= number <= high:
+            raise HTTPException(status_code=422, detail=message)
+
 DOCUMENTS_BUCKET = "documents"
 SIGNED_URL_TTL_SECONDS = 300
 
@@ -348,6 +369,7 @@ async def create_item(
     # columns, so it must be popped out here or it leaks into the raw INSERT.
     issue_portal_login = bool(payload.pop("issue_portal_login", False))
     _apply_vat_status(payload)
+    _validate_supplier_ranges(payload)
 
     # Extract keys and values from JSON payload dynamically
     # Exclude reserved keys to prevent override
@@ -708,6 +730,7 @@ async def update_item(
 ):
     payload = await request.json()
     _apply_vat_status(payload)
+    _validate_supplier_ranges(payload)
     safe_keys = [
         key for key in safe_payload_columns(payload.keys()) if key in SUPPLIER_EDIT_COLUMNS
     ]

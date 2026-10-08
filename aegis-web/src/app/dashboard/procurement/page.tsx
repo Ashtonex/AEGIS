@@ -195,6 +195,57 @@ function normalizeActionError(reason: unknown, fallback: string) {
   return rawMessage;
 }
 
+const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
+  command: { title: "Procurement Overview", subtitle: "What is in store, what moved, what is on the way, and what needs a decision." },
+  requisitions: { title: "Requisitions", subtitle: "Site and office requests for materials, from draft through approval to RFQ or PO." },
+  pricing: { title: "Pending Pricing", subtitle: "Site material requests issued without a known price. Confirm the real unit cost here." },
+  rfqs: { title: "Requests for Quotation", subtitle: "Quotes out to suppliers. Compare the responses, select one, then raise the PO." },
+  orders: { title: "Purchase Orders", subtitle: "Approved orders: issue them, track delivery, receive goods and register invoices." },
+  invoices: { title: "Supplier Invoices", subtitle: "Three-way match each invoice against its PO and goods receipt before payment." },
+  suppliers: { title: "Suppliers", subtitle: "Supplier register with compliance, delivery performance and open balances." },
+};
+
+function isPoOverdue(po: Rec) {
+  if (!["issued", "partially_received"].includes(tx(po.status).toLowerCase())) return false;
+  const raw = po.expected_delivery_date ?? po.required_by_date ?? po.required_by;
+  if (!raw) return false;
+  const date = new Date(String(raw));
+  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+}
+
+function StatusChips({ value, onChange, rows, statusOf, amountOf, options, extra }: {
+  value: string;
+  onChange: (value: string) => void;
+  rows: Rec[];
+  statusOf: (row: Rec) => string;
+  amountOf?: (row: Rec) => number;
+  options: [string, string][];
+  extra?: { key: string; label: string; count: number };
+}) {
+  const chip = (key: string, label: string, count: number, amount?: number, warn = false) => (
+    <button
+      key={key}
+      type="button"
+      onClick={() => onChange(value === key && key !== "all" ? "all" : key)}
+      className={`inline-flex h-9 shrink-0 items-center gap-2 border px-3 font-mono text-[10px] uppercase ${value === key ? "border-signal bg-signal/15 text-signal" : "border-ink-mid bg-ink text-slate-light hover:border-signal/50 hover:text-paper"}`}
+    >
+      {label}
+      <span className={`font-semibold ${value === key ? "" : warn && count ? "text-amber-300" : "text-paper"}`}>{count}</span>
+      {amount !== undefined && amount > 0 && <span className="normal-case text-slate">{money(amount)}</span>}
+    </button>
+  );
+  return (
+    <div className="flex min-w-0 gap-1.5 overflow-x-auto">
+      {chip("all", "All", rows.length)}
+      {options.map(([key, label]) => {
+        const matching = rows.filter((r) => statusOf(r) === key);
+        return chip(key, label, matching.length, amountOf ? matching.reduce((sum, r) => sum + amountOf(r), 0) : undefined, key === "submitted" || key === "unmatched");
+      })}
+      {extra && chip(extra.key, extra.label, extra.count, undefined, true)}
+    </div>
+  );
+}
+
 // ─── Page export ──────────────────────────────────────────────────────────────
 
 export default function ProcurementPage() {
@@ -231,6 +282,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [rfqStatus, setRfqStatus] = useState("all");
   const [poStatus, setPoStatus] = useState("all");
   const [invMatchStatus, setInvMatchStatus] = useState("all");
+  const [supplierCompliance, setSupplierCompliance] = useState("all");
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -260,11 +312,11 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     refetch: load,
   } = useApiQueries(
     {
-      requisitions: () => getProcurementRequisitions({ status: prStatus }),
-      rfqs: () => getProcurementRfqs({ status: rfqStatus }),
-      orders: () => getProcurementOrders({ status: poStatus }),
+      requisitions: () => getProcurementRequisitions({ status: "all" }),
+      rfqs: () => getProcurementRfqs({ status: "all" }),
+      orders: () => getProcurementOrders({ status: "all" }),
       suppliers: () => getProcurementSuppliers(),
-      invoices: () => getProcurementInvoices({ match_status: invMatchStatus }),
+      invoices: () => getProcurementInvoices({ match_status: "all" }),
       projects: () => getInternalProjects(),
       stores: () => getInventoryStores(),
       stockLevels: () => getInventoryStockLevels(),
@@ -272,7 +324,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       ccbFindings: () => getCcbFindings({ status: "open" }),
       pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
     },
-    [prStatus, rfqStatus, poStatus, invMatchStatus],
+    [],
     {
       criticalKeys: ["requisitions"],
       labels: {
@@ -589,8 +641,8 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
   const filteredPRs = useMemo(() => {
     const q = query.toLowerCase();
-    return requisitions.filter((r) => `${r.pr_number ?? r.reference_number ?? r.id} ${r.project_name ?? ""} ${r.requested_by ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
-  }, [requisitions, query]);
+    return requisitions.filter((r) => prStatus === "all" || tx(r.status, "draft").toLowerCase() === prStatus).filter((r) => `${r.pr_number ?? r.reference_number ?? r.id} ${r.project_name ?? ""} ${r.requested_by ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
+  }, [requisitions, query, prStatus]);
 
   const filteredPricing = useMemo(() => {
     const q = query.toLowerCase();
@@ -599,23 +651,23 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
   const filteredPOs = useMemo(() => {
     const q = query.toLowerCase();
-    return orders.filter((r) => `${r.po_number ?? r.reference_number ?? r.id} ${r.supplier_name ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
-  }, [orders, query]);
+    return orders.filter((r) => poStatus === "all" || (poStatus === "overdue" ? isPoOverdue(r) : tx(r.status, "draft").toLowerCase() === poStatus)).filter((r) => `${r.po_number ?? r.reference_number ?? r.id} ${r.supplier_name ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
+  }, [orders, query, poStatus]);
 
   const filteredRfqs = useMemo(() => {
     const q = query.toLowerCase();
-    return rfqs.filter((r) => `${r.rfq_number ?? r.id} ${r.requisition_number ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
-  }, [rfqs, query]);
+    return rfqs.filter((r) => rfqStatus === "all" || tx(r.status, "draft").toLowerCase() === rfqStatus).filter((r) => `${r.rfq_number ?? r.id} ${r.requisition_number ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
+  }, [rfqs, query, rfqStatus]);
 
   const filteredSuppliers = useMemo(() => {
     const q = query.toLowerCase();
-    return suppliers.filter((r) => `${r.name ?? r.supplier_name ?? ""} ${r.code ?? r.supplier_code ?? ""} ${r.praz_number ?? ""}`.toLowerCase().includes(q));
-  }, [suppliers, query]);
+    return suppliers.filter((r) => supplierCompliance === "all" || tx(r.compliance_status, "pending").toLowerCase() === supplierCompliance).filter((r) => `${r.name ?? r.supplier_name ?? ""} ${r.code ?? r.supplier_code ?? ""} ${r.praz_number ?? ""}`.toLowerCase().includes(q));
+  }, [suppliers, query, supplierCompliance]);
 
   const filteredInvoices = useMemo(() => {
     const q = query.toLowerCase();
-    return invoices.filter((r) => `${r.invoice_number ?? r.id} ${r.supplier_name ?? ""} ${r.po_number ?? ""} ${r.match_status ?? ""}`.toLowerCase().includes(q));
-  }, [invoices, query]);
+    return invoices.filter((r) => invMatchStatus === "all" || tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase() === invMatchStatus).filter((r) => `${r.invoice_number ?? r.id} ${r.supplier_name ?? ""} ${r.po_number ?? ""} ${r.match_status ?? ""}`.toLowerCase().includes(q));
+  }, [invoices, query, invMatchStatus]);
 
   const unmatchedCount = useMemo(
     () => filteredInvoices.filter((r) => ["unmatched", "disputed"].includes(tx(r.match_status ?? r.matching_status).toLowerCase())).length,
@@ -625,87 +677,91 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
       <DashboardPageHeader
-        eyebrow={{ label: "Procurement Control Tower", icon: ClipboardList }}
-        title="Procurement Pipeline"
-        subtitle="Procurement and inventory command view — what is in store, what moved, what is coming, and what needs action."
+        eyebrow={{ label: "Procurement", icon: ClipboardList }}
+        title={PROCUREMENT_TAB_META[tab].title}
+        subtitle={PROCUREMENT_TAB_META[tab].subtitle}
+        className="mb-4 pb-4"
         actions={
           <>
             {tab === "suppliers" ? (
-              <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+              <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
                 <Plus className="h-4 w-4" />New Supplier
               </button>
-            ) : (
-              <button onClick={() => setShowCreatePR(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+            ) : tab === "command" || tab === "requisitions" ? (
+              <button onClick={() => setShowCreatePR(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
                 <Plus className="h-4 w-4" />New Requisition
               </button>
-            )}
-            <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
+            ) : null}
+            <button onClick={() => void load()} disabled={loading} title="Refresh" className="inline-flex h-9 w-9 items-center justify-center border border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
           </>
         }
       />
 
-      {/* KPI Strip */}
-      <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-        <KpiCard icon={<FileText />} label="Open PRs" value={loading ? "…" : String(kpis.openPRs)} />
-        <KpiCard icon={<Send />} label="Awaiting Approval" value={String(kpis.awaitingApproval)} tone={kpis.awaitingApproval ? "text-blue-300" : undefined} />
-        <KpiCard icon={<Search />} label="Active RFQs" value={String(kpis.activeRFQs)} />
-        <KpiCard icon={<Package />} label="Open POs" value={String(kpis.activePOs)} tone="text-purple-300" />
-        <KpiCard icon={<PackageCheck />} label="GRNs Pending" value={String(kpis.grnsPending)} tone={kpis.grnsPending ? "text-amber-300" : undefined} />
-        <KpiCard icon={<AlertTriangle />} label="Invoices Pending" value={String(kpis.invPending)} tone={kpis.invPending ? "text-amber-300" : undefined} />
-        <KpiCard icon={<DollarSign />} label="Total Committed" value={loading ? "…" : money(kpis.committed)} tone="text-signal" large />
-      </section>
+      {/* Where this page sits in the requisition-to-payment flow, with what is
+          waiting at each stage - the same strip on every tab, but the active
+          stage and its counts are what change as work moves through. */}
+      <nav className="mb-4 grid grid-cols-2 gap-px border border-ink-mid bg-ink-mid sm:grid-cols-3 lg:grid-cols-6">
+        {[
+          { key: "requisitions" as Tab, label: "Requisitions", value: kpis.awaitingApproval, sub: `${kpis.openPRs} open`, hot: kpis.awaitingApproval > 0, verb: "to approve" },
+          { key: "pricing" as Tab, label: "Pricing", value: pendingPricing.length, sub: "site requests", hot: pendingPricing.length > 0, verb: "to price" },
+          { key: "rfqs" as Tab, label: "RFQs", value: kpis.activeRFQs, sub: "out to suppliers", hot: false, verb: "open" },
+          { key: "orders" as Tab, label: "Purchase orders", value: kpis.activePOs, sub: `${command.overduePOs.length} overdue`, hot: command.overduePOs.length > 0, verb: "in flight" },
+          { key: "invoices" as Tab, label: "Invoices", value: kpis.invPending, sub: "to match", hot: kpis.invPending > 0, verb: "pending" },
+          { key: "suppliers" as Tab, label: "Suppliers", value: suppliers.length, sub: `${suppliers.filter((r) => tx(r.compliance_status, "pending").toLowerCase() !== "compliant").length} not compliant`, hot: false, verb: "registered" },
+        ].map((stage) => {
+          const active = tab === stage.key;
+          return (
+            <button
+              key={stage.key}
+              type="button"
+              onClick={() => router.push(TAB_ROUTES[stage.key])}
+              className={`relative px-3 py-2.5 text-left transition-colors ${active ? "bg-signal/15" : "bg-ink hover:bg-ink-light"}`}
+            >
+              {active && <span className="absolute inset-x-0 top-0 h-0.5 bg-signal" />}
+              <p className={`font-mono text-[10px] uppercase tracking-wider ${active ? "text-signal" : "text-slate"}`}>{stage.label}</p>
+              <p className="mt-0.5 flex items-baseline gap-1.5">
+                <span className={`font-mono text-lg font-semibold ${stage.hot ? "text-amber-300" : "text-paper"}`}>{loading ? "…" : stage.value}</span>
+                <span className="text-[11px] text-slate-light">{stage.verb}</span>
+              </p>
+              <p className="truncate text-[11px] text-slate">{stage.sub}</p>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Alerts */}
       {error && <Banner tone="error" message={error} />}
-      {sourceWarnings.length > 0 && <div className="mb-6 space-y-2">{sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}</div>}
+      {sourceWarnings.length > 0 && <div className="mb-4 space-y-2">{sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}</div>}
       {notice && <Banner tone="info" message={notice} onClose={() => setNotice(null)} />}
 
-      {/* Filter bar */}
-      {tab !== "command" && <div className="flex flex-col gap-2 border-b border-ink-mid bg-ink-light/30 p-3 sm:flex-row sm:items-center">
-        <label className="flex flex-1 h-9 items-center gap-2 border border-ink-mid bg-ink px-3">
+      {/* Filter bar: search plus status chips that carry live counts */}
+      {tab !== "command" && <div className="flex flex-col gap-2 border border-b-0 border-ink-mid bg-ink-light/30 p-3 lg:flex-row lg:items-center">
+        <label className="flex h-9 items-center gap-2 border border-ink-mid bg-ink px-3 lg:w-72">
           <Search className="h-3.5 w-3.5 text-slate" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${tab}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${PROCUREMENT_TAB_META[tab].title.toLowerCase()}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
         </label>
         {tab === "requisitions" && (
-          <select value={prStatus} onChange={(e) => setPrStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="submitted">Submitted</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-            <option value="ordered">Ordered</option>
-          </select>
+          <StatusChips value={prStatus} onChange={setPrStatus} rows={requisitions} statusOf={(r) => tx(r.status, "draft").toLowerCase()} amountOf={(r) => num(r.total_estimated ?? r.estimated_total)}
+            options={[["draft", "Draft"], ["submitted", "Awaiting approval"], ["approved", "Approved"], ["ordered", "Ordered"], ["rejected", "Rejected"]]} />
         )}
         {tab === "rfqs" && (
-          <select value={rfqStatus} onChange={(e) => setRfqStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All RFQ statuses</option>
-            <option value="draft">Draft</option>
-            <option value="issued">Issued</option>
-            <option value="closed">Closed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <StatusChips value={rfqStatus} onChange={setRfqStatus} rows={rfqs} statusOf={(r) => tx(r.status, "draft").toLowerCase()}
+            options={[["draft", "Draft"], ["issued", "Issued"], ["closed", "Closed"], ["cancelled", "Cancelled"]]} />
         )}
         {tab === "orders" && (
-          <select value={poStatus} onChange={(e) => setPoStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="approved">Approved</option>
-            <option value="issued">Issued</option>
-            <option value="partially_received">Partially Received</option>
-            <option value="received">Received</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <StatusChips value={poStatus} onChange={setPoStatus} rows={orders} statusOf={(r) => tx(r.status, "draft").toLowerCase()} amountOf={(r) => num(r.total_amount ?? r.amount)}
+            extra={{ key: "overdue", label: "Overdue", count: orders.filter(isPoOverdue).length }}
+            options={[["draft", "Draft"], ["approved", "Approved"], ["issued", "Issued"], ["partially_received", "Part received"], ["received", "Received"], ["cancelled", "Cancelled"]]} />
         )}
         {tab === "invoices" && (
-          <select value={invMatchStatus} onChange={(e) => setInvMatchStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All match statuses</option>
-            <option value="matched">Matched</option>
-            <option value="partial">Partial</option>
-            <option value="unmatched">Unmatched</option>
-            <option value="disputed">Disputed</option>
-          </select>
+          <StatusChips value={invMatchStatus} onChange={setInvMatchStatus} rows={invoices} statusOf={(r) => tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase()} amountOf={(r) => num(r.total_amount ?? r.amount)}
+            options={[["unmatched", "Unmatched"], ["partial", "Partial"], ["matched", "Matched"], ["disputed", "Disputed"]]} />
+        )}
+        {tab === "suppliers" && (
+          <StatusChips value={supplierCompliance} onChange={setSupplierCompliance} rows={suppliers} statusOf={(r) => tx(r.compliance_status, "pending").toLowerCase()}
+            options={[["compliant", "Compliant"], ["pending", "Pending"], ["non_compliant", "Non-compliant"], ["exempt", "Exempt"]]} />
         )}
       </div>}
 
@@ -1157,7 +1213,7 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
                 <td className="px-4 py-3 font-mono text-paper">{money(row.total_amount ?? row.amount ?? 0)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${poStatusClass(row.status)}`}>{tx(row.status, "draft")}</span></td>
                 <td className="px-4 py-3 text-slate-light">{dt(row.issued_date ?? row.created_at)}</td>
-                <td className="px-4 py-3 text-slate-light">{dt(row.expected_delivery_date ?? row.expected_delivery)}</td>
+                <td className={`px-4 py-3 ${isPoOverdue(row) ? "text-red-300" : "text-slate-light"}`}>{dt(row.expected_delivery_date ?? row.expected_delivery)}{isPoOverdue(row) && <span className="ml-2 border border-red-500/40 px-1 font-mono text-[9px] uppercase">Late</span>}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 w-16 overflow-hidden rounded-full bg-ink-mid">
@@ -1372,6 +1428,10 @@ function Supplier360Modal({
 
   const save = async () => {
     if (!form.supplier_name.trim()) { setError("Registered company name is required."); return; }
+    const score = form.performance_score === "" ? null : Number(form.performance_score);
+    if (score != null && !(score >= 0 && score <= 5)) { setError("Performance score is a 0-5 rating (shown as stars). Enter a value between 0 and 5."); return; }
+    const otd = form.on_time_delivery_pct === "" ? null : Number(form.on_time_delivery_pct);
+    if (otd != null && !(otd >= 0 && otd <= 100)) { setError("On-time delivery % must be between 0 and 100."); return; }
     setSaving(true);
     setError(null);
     try {
@@ -1493,8 +1553,8 @@ function Supplier360Modal({
                   <SupplierSelect label="Supplier status" value={form.status} options={SUPPLIER_STATUSES} onChange={(v) => updateField("status", v)} />
                   <SupplierSelect label="Compliance status" value={form.compliance_status} options={SUPPLIER_COMPLIANCE_STATUSES} onChange={(v) => updateField("compliance_status", v)} />
                   <SupplierField label="Payment terms days" type="number" value={form.payment_terms_days} onChange={(v) => updateField("payment_terms_days", v)} />
-                  <SupplierField label="Performance score" type="number" value={form.performance_score} onChange={(v) => updateField("performance_score", v)} />
-                  <SupplierField label="On-time delivery %" type="number" value={form.on_time_delivery_pct} onChange={(v) => updateField("on_time_delivery_pct", v)} />
+                  <SupplierField label="Performance score (0-5)" type="number" min={0} max={5} step="0.1" value={form.performance_score} onChange={(v) => updateField("performance_score", v)} />
+                  <SupplierField label="On-time delivery % (0-100)" type="number" min={0} max={100} step="0.1" value={form.on_time_delivery_pct} onChange={(v) => updateField("on_time_delivery_pct", v)} />
                 </div>
               </div>
 
@@ -1857,11 +1917,11 @@ function SupplierDealTable({ title, empty, headers, rows }: { title: string; emp
   );
 }
 
-function SupplierField({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; }) {
+function SupplierField({ label, value, onChange, type = "text", required = false, min, max, step }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; min?: number; max?: number; step?: string; }) {
   return (
     <label className="block">
       <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">{label}{required ? " *" : ""}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
+      <input type={type} value={value} min={min} max={max} step={step} onChange={(e) => onChange(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
     </label>
   );
 }
