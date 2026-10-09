@@ -65,7 +65,7 @@ function HarareClock() {
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { session, role, isLoading, sessionLoading, signOut } = useAuth();
+  const { session, role, roles, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [tourOpen, setTourOpen] = useState(false);
@@ -205,20 +205,32 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     () => {
       if (isPortalRoute) return portalGroups;
       if (!userRole) return [];
-      const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);
+      // A user with several roles sees an item if ANY one of their roles
+      // qualifies for it on its own - e.g. CRM Associate + Project Manager
+      // still sees Delivery, even though CRM Associate alone is restricted.
+      const sidebarRoles = roles.length ? roles : [userRole];
+      const roleSeesGroup = (candidateRole: string, group: ModuleGroup) => {
+        const isSiteFieldRole = isExactRole(candidateRole, SITE_FIELD_ROLES);
+        return (
+          (group.permissionDriven || !isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
+          (!group.allowedRoles || matchesRole(candidateRole, group.allowedRoles)) &&
+          !isRoleRestricted(candidateRole, group.restrictedRoles)
+        );
+      };
       return MODULE_GROUPS.filter(
         (group) =>
-          (group.permissionDriven || !isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
-          (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
-          !isRoleRestricted(userRole, group.restrictedRoles) &&
+          sidebarRoles.some((candidateRole) => roleSeesGroup(candidateRole, group)) &&
           hasPermission(group.requiredPermission)
       )
         .map((group) => ({
           ...group,
           subItems: group.subItems.filter(
             (sub) =>
-              (!sub.allowedRoles || matchesRole(userRole, sub.allowedRoles)) &&
-              !isRoleRestricted(userRole, sub.restrictedRoles) &&
+              sidebarRoles.some(
+                (candidateRole) =>
+                  (!sub.allowedRoles || matchesRole(candidateRole, sub.allowedRoles)) &&
+                  !isRoleRestricted(candidateRole, sub.restrictedRoles)
+              ) &&
               (group.permissionDriven
                 ? isSuperAdminRole(userRole) || !sub.requiredPermission || !!permissions?.has(sub.requiredPermission)
                 : hasPermission(sub.requiredPermission))
@@ -226,7 +238,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         }))
         .filter((group) => group.subItems.length > 0);
     },
-    [userRole, permissions, hasPermission, isPortalRoute, portalGroups]
+    [userRole, roles, permissions, hasPermission, isPortalRoute, portalGroups]
   );
 
   const activeGroup = useMemo(

@@ -37,7 +37,7 @@ import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@
 import { SkeletonTableRows } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { matchesRole } from '@/lib/rbacMatch';
+import { matchesAnyRole } from '@/lib/rbacMatch';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 
 // Roles allowed to change the status of a lead that's already been decided
@@ -109,8 +109,8 @@ interface ExternalLinkedInProfile {
 }
 
 export default function CRMLeadsApp() {
-  const { role } = useAuth();
-  const canOverrideLeadStatus = role ? matchesRole(role, PRIVILEGED_LEAD_STATUS_ROLES) : false;
+  const { roles } = useAuth();
+  const canOverrideLeadStatus = matchesAnyRole(roles, PRIVILEGED_LEAD_STATUS_ROLES);
   const [activeTab, setActiveTab] = useState<'inbox' | 'web_forms' | 'signal_bot' | 'prospector' | 'tender_scraping' | 'linkedin'>('inbox');
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('kanban');
 

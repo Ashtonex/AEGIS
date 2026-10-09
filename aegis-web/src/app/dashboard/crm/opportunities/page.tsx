@@ -36,7 +36,7 @@ import {
 import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { matchesRole } from '@/lib/rbacMatch';
+import { matchesAnyRole } from '@/lib/rbacMatch';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { DealDocumentsPanel } from '@/components/crm/DealDocumentsPanel';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
@@ -165,8 +165,8 @@ interface ActivityLog {
 }
 
 export default function OpportunitiesKanban() {
-  const { role } = useAuth();
-  const canOverrideStage = role ? matchesRole(role, PRIVILEGED_STAGE_OVERRIDE_ROLES) : false;
+  const { roles } = useAuth();
+  const canOverrideStage = matchesAnyRole(roles, PRIVILEGED_STAGE_OVERRIDE_ROLES);
   const isOpportunityLocked = (opp: Opportunity) => LOCKED_BACKEND_STAGES.includes(opp.stage);
   const isOpenOpportunity = (opp: Opportunity) => {
     const frontendStage = BACKEND_TO_FRONTEND_STAGE[opp.stage] || 'Qualification';

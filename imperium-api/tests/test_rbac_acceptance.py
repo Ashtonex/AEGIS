@@ -50,6 +50,18 @@ async def test_current_assignments_override_warm_cache_and_stale_admin_claim(war
 
 
 @pytest.mark.asyncio
+async def test_current_user_exposes_every_assigned_role(warm_authorization_cache):
+    db = FakeDb(FakeResult(row=identity(
+        role_name="CRM Associate",
+        role_names=["CRM Associate", "Project Manager", "Site Agent", "EMPLOYEE"],
+    )))
+    resolved = await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1"}}, db)
+    assert resolved["role"] == "CRM Associate"
+    assert resolved["roles"] == ["CRM Associate", "Project Manager", "Site Agent", "EMPLOYEE"]
+    assert len(db.calls) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("granted", [None, 1])
 @pytest.mark.parametrize("entrypoint", ["permission", "resource", "business"])
 async def test_current_permission_grants_override_warm_cache(warm_authorization_cache, granted, entrypoint):
@@ -110,7 +122,7 @@ class InfoFakeDb(FakeDb):
         self.info = {}
 
 
-def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_name=None, permission_keys=()):
+def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_name=None, role_names=None, permission_keys=()):
     return SimpleNamespace(
         actor_sub="user-1",
         user_exists=True,
@@ -118,6 +130,7 @@ def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_
         is_active=is_active,
         is_deleted=is_deleted,
         role_name=role_name,
+        role_names=list(role_names) if role_names is not None else ([role_name] if role_name else []),
         permission_keys=list(permission_keys),
     )
 

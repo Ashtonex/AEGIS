@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { usePathname, useRouter } from "next/navigation";
 import { ShieldAlert, ArrowLeft, Loader2 } from "lucide-react";
-import { matchesRole } from "@/lib/rbacMatch";
+import { matchesAnyRole } from "@/lib/rbacMatch";
 
 // Helper to write to local storage session logs
 export function addSessionLog(
@@ -35,7 +35,7 @@ interface RBACGuardProps {
 }
 
 export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
-  const { user, session, role, isLoading } = useAuth();
+  const { user, session, role, roles, isLoading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
 
@@ -47,9 +47,10 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
   // sync once an admin assigns a functional role via Settings.
   const userRole = role;
 
+  // Authorized if ANY assigned role qualifies, not just the primary one.
   const isAuthorized = React.useMemo(
-    () => (userRole ? matchesRole(userRole, allowedRoles) : false),
-    [allowedRoles, userRole]
+    () => (userRole ? matchesAnyRole(roles.length ? roles : [userRole], allowedRoles) : false),
+    [allowedRoles, userRole, roles]
   );
 
   // Log access denials

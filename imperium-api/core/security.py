@@ -631,6 +631,13 @@ async def get_current_user(
                 LIMIT 1
             ) AS role_name,
             ARRAY(
+                SELECT r.name FROM core.user_roles ur
+                JOIN core.roles r ON r.id = ur.role_id
+                WHERE ur.user_id = u.id AND ur.organization_id = u.organization_id
+                  AND r.organization_id = u.organization_id AND r.is_deleted = false
+                ORDER BY (r.name = :superadmin) DESC, (r.name = 'EMPLOYEE') ASC, r.name
+            ) AS role_names,
+            ARRAY(
                 SELECT DISTINCT p.key
                 FROM core.permissions p
                 JOIN core.role_permissions rp ON p.id = rp.permission_id
@@ -729,10 +736,12 @@ async def get_current_user(
     # SUPERADMIN role. An unassigned authenticated identity has no role grants.
     if identity_row is not None:
         resolved_role = identity_row.role_name or "authenticated"
+        role_names = list(identity_row.role_names or []) or [resolved_role]
         _remember_request_permissions(db, user_id, org_id, identity_row.permission_keys)
     else:
         # Just auto-provisioned above - rare, so the separate lookup is fine.
         resolved_role, _landing_path = await resolve_primary_role(db, user_id, org_id)
+        role_names = [resolved_role]
 
     return {
         "user_id": user_id,
@@ -740,6 +749,10 @@ async def get_current_user(
         "org_id": org_id,
         "email": payload.get("email"),
         "role": resolved_role,
+        # Every assigned role, primary first. The UI uses these so a user
+        # with several roles sees what any one of them grants, instead of
+        # only what the alphabetically-first role allows.
+        "roles": role_names,
     }
 
 

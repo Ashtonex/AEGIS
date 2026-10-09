@@ -10,7 +10,7 @@ import {
   closeFinalAccount,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
-import { matchesRole } from "@/lib/rbacMatch";
+import { matchesAnyRole } from "@/lib/rbacMatch";
 
 type RecordData = Record<string, any>;
 
@@ -36,8 +36,8 @@ const buttonClass = "inline-flex items-center gap-2 bg-signal text-ink font-semi
 const CLOSE_ROLES = ["Executive (Admin)", "Finance Manager"];
 
 export function FinalAccountPanel() {
-  const { role } = useAuth();
-  const canClose = matchesRole(role || "", CLOSE_ROLES);
+  const { roles } = useAuth();
+  const canClose = matchesAnyRole(roles, CLOSE_ROLES);
 
   const [projects, setProjects] = useState<RecordData[]>([]);
   const [projectId, setProjectId] = useState("");

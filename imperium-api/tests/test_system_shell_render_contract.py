@@ -49,8 +49,8 @@ class SystemShellRenderContractTests(unittest.TestCase):
     def test_superadmin_sidebar_is_not_collapsed_by_field_role_filter(self):
         self.assertIn("function isExactRole(userRole: string, roles: string[]): boolean", DASHBOARD_SHELL)
         self.assertIn("function isSuperAdminRole(userRole: string): boolean", DASHBOARD_SHELL)
-        self.assertIn("const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
-        self.assertNotIn("const isSiteFieldRole = matchesRole(userRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
+        self.assertIn("const isSiteFieldRole = isExactRole(candidateRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
+        self.assertNotIn("const isSiteFieldRole = matchesRole(candidateRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
         self.assertIn("isSuperAdminRole(userRole) || !requiredPermission", DASHBOARD_SHELL)
 
     def test_top_nav_and_mobile_drawer_have_non_overlapping_layout(self):

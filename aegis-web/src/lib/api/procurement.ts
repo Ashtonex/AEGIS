@@ -1076,6 +1076,9 @@ export interface AuthenticatedUser {
   org_id: string;
   email: string | null;
   role: string;
+  /** Every assigned role, primary first. Optional so an older backend that
+   * only returns `role` still works. */
+  roles?: string[];
 }
 
 // The authoritative role assignment lives in core.user_roles, not in the
