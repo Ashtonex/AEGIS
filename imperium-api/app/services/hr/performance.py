@@ -648,16 +648,23 @@ async def _standing(db, org_id, person, week_end, mode, par, final, prev, period
     """), {"org": org_id, "emp": eid, "we": week_end})).scalar()
     if reopened:  # this week was computed before and already opened it
         return "assisted_opened", reopened
+    # Migration 258's unique index makes a racing run reuse the same period.
     period_id = (await db.execute(text("""
         INSERT INTO hr.assisted_working_periods (organization_id, employee_id, supervisor_employee_id,
             opened_week_end, first_week_end, last_week_end, targets)
         VALUES (:org, :emp, :sup, :we, :first, :last, :targets)
+        ON CONFLICT (organization_id, employee_id, opened_week_end) WHERE status <> 'cancelled' DO NOTHING
         RETURNING id
     """), {
         "org": org_id, "emp": eid, "sup": person["manager_employee_id"], "we": week_end,
         "first": week_end + timedelta(days=7), "last": week_end + timedelta(days=14),
         "targets": f"Score at or above {par:g} in both of the next two weeks.",
     })).scalar()
+    if period_id is None:
+        period_id = (await db.execute(text("""
+            SELECT id FROM hr.assisted_working_periods
+            WHERE organization_id = :org AND employee_id = :emp AND opened_week_end = :we AND status <> 'cancelled'
+        """), {"org": org_id, "emp": eid, "we": week_end})).scalar()
     summary["assisted_opened"].append(person["employee_name"])
     return "assisted_opened", period_id
 
