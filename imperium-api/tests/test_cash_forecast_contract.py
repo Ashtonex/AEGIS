@@ -6,6 +6,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SERVICE = (ROOT / "app" / "services" / "finance" / "cash_position.py").read_text(encoding="utf-8")
 SERVICE_CODE_ONLY = SERVICE.split('"""', 2)[-1]
+COLLECTION = (ROOT / "app" / "services" / "finance" / "client_collection.py").read_text(encoding="utf-8")
 ROUTER = (ROOT / "routers" / "cash_forecast.py").read_text(encoding="utf-8")
 FINANCIAL_PERFORMANCE_ROUTER = (ROOT / "routers" / "financial_performance.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -55,15 +56,24 @@ class Phase6AServiceContractTests(unittest.TestCase):
         self.assertIn("payment_terms_days", SERVICE)
 
     def test_client_collection_dates_are_documented_assumptions_not_stored_data(self):
-        self.assertIn("CLIENT_COLLECTION_DAYS_AFTER_CERTIFICATION = 30", SERVICE)
-        self.assertIn("CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION = 45", SERVICE)
+        # Defaults now live in the shared client_collection module and are
+        # only used when a client has too little paid-claim history.
+        self.assertIn("CLIENT_COLLECTION_DAYS_AFTER_CERTIFICATION = 30", COLLECTION)
+        self.assertIn("CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION = 45", COLLECTION)
         self.assertIn('"assumptions":', SERVICE)
+        self.assertIn('"client_collection": client_collection', SERVICE)
 
-    def test_interval_parameters_are_explicitly_cast(self):
+    def test_collection_lag_is_never_bound_as_a_raw_interval(self):
         # Regression guard for a real bug found during verification: binding
         # a raw Python timedelta into "date + :param" raises
-        # AmbiguousFunctionError in asyncpg without an explicit cast.
-        self.assertIn("CAST(:lag AS interval)", SERVICE)
+        # AmbiguousFunctionError in asyncpg. Per-client lags are now added in
+        # Python, so no interval parameter may be bound at all.
+        self.assertNotIn(":lag", SERVICE_CODE_ONLY)
+
+    def test_paid_claims_are_not_forecast_as_future_receipts(self):
+        # A paid claim's cash is already in cash_accounts.
+        self.assertIn("pc.status IN ('certified', 'invoiced')", SERVICE)
+        self.assertNotIn("status IN ('certified', 'paid')", SERVICE)
 
     def test_bucket_events_is_cumulative_and_monotonic_by_date(self):
         import sys

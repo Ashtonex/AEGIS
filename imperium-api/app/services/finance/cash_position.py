@@ -6,8 +6,11 @@ already-existing columns - this phase ships with zero new schema. An audit
 confirmed a defensible forward projection is only buildable from cash-on-
 hand, statutory tax due dates, payroll payment dates, and supplier-invoice
 due dates; client-receipt timing has no stored expected-date field at all,
-so it is estimated via a documented day-offset constant rather than read
-from data, and is clearly distinguishable from the real-dated sources below.
+so it is estimated from each client's measured collection delay on paid
+claims (client_collection.py), falling back to a documented day-offset
+constant when a client has too little history. Issued purchase orders not
+yet invoiced are committed outflows dated at expected delivery plus payment
+terms, net of any supplier invoice already counted below.
 
 Two tiers only - Committed and Probable. A third "Optimistic" tier is
 deliberately not shipped here: with today's data it would only be
@@ -33,8 +36,28 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-CLIENT_COLLECTION_DAYS_AFTER_CERTIFICATION = 30
-CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION = 45
+from app.services.finance.client_collection import (
+    CLIENT_COLLECTION_DAYS_AFTER_CERTIFICATION,
+    CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION,
+    CLIENT_KEY_SQL,
+    MIN_PAID_CLAIMS,
+    client_collection_profiles,
+    default_collection_profile,
+)
+
+DEFAULT_SUPPLIER_PAYMENT_TERMS_DAYS = 30
+
+# A supplier invoice that is already a cash event in this forecast (approved
+# or matched, see the supplier-invoice queries below) or already paid. Only
+# these are netted off a purchase order's open value - an unmatched or
+# rejected invoice is not in the forecast, so its PO value stays committed.
+_INVOICE_COUNTED_SQL = """
+    si.is_deleted = false AND (
+        si.status IN ('approved', 'paid')
+        OR (si.match_status IN ('matched', 'partial_match') AND si.status NOT IN ('rejected', 'cancelled'))
+    )
+"""
+OPEN_PO_STATUSES = ("issued", "partially_received", "received")
 
 STANDARD_HORIZON_LABELS = ["yesterday", "today", "+7d", "+14d", "+30d", "+60d", "+90d", "+6mo", "+12mo"]
 
@@ -83,21 +106,32 @@ async def compute_cash_runway(db: AsyncSession, org_id: str) -> dict:
     }
 
 
-async def _committed_events(db: AsyncSession, org_id: str) -> list[dict]:
+async def _committed_events(db: AsyncSession, org_id: str, profiles: dict[str, dict]) -> list[dict]:
     events: list[dict] = []
 
+    # Certified/invoiced claims still owed by the client. Paid claims are
+    # already in cash_accounts and must not be counted again; receipts
+    # allocated to a part-paid claim reduce what is still to come.
     rows = await db.execute(
-        text("""
-            SELECT id, project_id, certified_amount,
-                   (certified_at::date + CAST(:lag AS interval))::date AS expected_date
-            FROM finance.progress_claims
-            WHERE organization_id = :org_id AND is_deleted = false AND status IN ('certified', 'paid')
-              AND certified_at IS NOT NULL AND certified_amount IS NOT NULL
+        text(f"""
+            SELECT pc.id, pc.certified_at::date AS base_date, {CLIENT_KEY_SQL} AS client_key,
+                   pc.certified_amount - COALESCE(alloc.received, 0) AS amount
+            FROM finance.progress_claims pc
+            JOIN projects.projects p ON p.id = pc.project_id
+            LEFT JOIN (
+                SELECT progress_claim_id, SUM(allocated_amount) AS received
+                FROM finance.receipt_allocations WHERE organization_id = :org_id GROUP BY progress_claim_id
+            ) alloc ON alloc.progress_claim_id = pc.id
+            WHERE pc.organization_id = :org_id AND pc.is_deleted = false AND pc.status IN ('certified', 'invoiced')
+              AND pc.certified_at IS NOT NULL AND pc.certified_amount IS NOT NULL
         """),
-        {"org_id": org_id, "lag": timedelta(days=CLIENT_COLLECTION_DAYS_AFTER_CERTIFICATION)},
+        {"org_id": org_id},
     )
     for r in rows.mappings().all():
-        events.append({"date": r["expected_date"], "amount": float(r["certified_amount"]), "direction": "inflow", "source_type": "progress_claim", "source_id": str(r["id"]), "description": "Certified progress claim - expected collection"})
+        if float(r["amount"]) <= 0:
+            continue
+        lag = profiles.get(r["client_key"], default_collection_profile())["days_after_certification"]
+        events.append({"date": r["base_date"] + timedelta(days=lag), "amount": float(r["amount"]), "direction": "inflow", "source_type": "progress_claim", "source_id": str(r["id"]), "client_key": r["client_key"], "description": "Certified progress claim - expected collection"})
 
     rows = await db.execute(
         text("""
@@ -139,20 +173,22 @@ async def _committed_events(db: AsyncSession, org_id: str) -> list[dict]:
     return events
 
 
-async def _probable_events(db: AsyncSession, org_id: str) -> list[dict]:
+async def _probable_events(db: AsyncSession, org_id: str, profiles: dict[str, dict]) -> list[dict]:
     events: list[dict] = []
 
     rows = await db.execute(
-        text("""
-            SELECT id, this_claim_amount, (submitted_at::date + CAST(:lag AS interval))::date AS expected_date
-            FROM finance.progress_claims
-            WHERE organization_id = :org_id AND is_deleted = false AND status = 'submitted'
-              AND submitted_at IS NOT NULL
+        text(f"""
+            SELECT pc.id, pc.this_claim_amount, pc.submitted_at::date AS base_date, {CLIENT_KEY_SQL} AS client_key
+            FROM finance.progress_claims pc
+            JOIN projects.projects p ON p.id = pc.project_id
+            WHERE pc.organization_id = :org_id AND pc.is_deleted = false AND pc.status = 'submitted'
+              AND pc.submitted_at IS NOT NULL
         """),
-        {"org_id": org_id, "lag": timedelta(days=CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION)},
+        {"org_id": org_id},
     )
     for r in rows.mappings().all():
-        events.append({"date": r["expected_date"], "amount": float(r["this_claim_amount"]), "direction": "inflow", "source_type": "progress_claim", "source_id": str(r["id"]), "description": "Submitted progress claim - awaiting certification"})
+        lag = profiles.get(r["client_key"], default_collection_profile())["days_after_submission"]
+        events.append({"date": r["base_date"] + timedelta(days=lag), "amount": float(r["this_claim_amount"]), "direction": "inflow", "source_type": "progress_claim", "source_id": str(r["id"]), "client_key": r["client_key"], "description": "Submitted progress claim - awaiting certification"})
 
     rows = await db.execute(
         text("""
@@ -185,7 +221,7 @@ async def _probable_events(db: AsyncSession, org_id: str) -> list[dict]:
             FROM procurement.supplier_invoices si
             JOIN procurement.suppliers s ON s.id = si.supplier_id AND s.organization_id = si.organization_id
             WHERE si.organization_id = :org_id AND si.is_deleted = false AND si.match_status IN ('matched', 'partial_match')
-              AND si.status != 'approved'
+              AND si.status NOT IN ('approved', 'paid', 'rejected', 'cancelled')
         """),
         {"org_id": org_id},
     )
@@ -193,6 +229,69 @@ async def _probable_events(db: AsyncSession, org_id: str) -> list[dict]:
         events.append({"date": r["expected_date"], "amount": float(r["total_amount"]), "direction": "outflow", "source_type": "supplier_invoice", "source_id": str(r["id"]), "description": "Matched supplier invoice - not yet approved for payment"})
 
     return events
+
+
+def open_po_events(purchase_orders: list[dict], counted_invoice_totals: dict[str, float]) -> list[dict]:
+    """Committed outflows for purchase-order value not yet invoiced.
+
+    counted_invoice_totals maps po_id -> value of that PO's supplier invoices
+    already in the forecast (or paid); only the remainder is added, so an
+    invoiced PO is never counted twice. Each PO falls due on its expected
+    delivery date plus payment terms (PO terms, else supplier terms, else 30).
+    """
+    events = []
+    for po in purchase_orders:
+        open_value = round(float(po["total_amount"] or 0) - float(counted_invoice_totals.get(str(po["id"]), 0)), 2)
+        if open_value <= 0:
+            continue
+        terms = po.get("payment_terms_days")
+        if terms is None:
+            terms = DEFAULT_SUPPLIER_PAYMENT_TERMS_DAYS
+        events.append({
+            "date": po["expected_delivery_date"] + timedelta(days=int(terms)),
+            "amount": open_value,
+            "direction": "outflow",
+            "source_type": "purchase_order",
+            "source_id": str(po["id"]),
+            "description": f"Open purchase order {po.get('po_number') or ''} - not yet invoiced",
+        })
+    return events
+
+
+async def _purchase_order_events(db: AsyncSession, org_id: str, statuses: tuple[str, ...]) -> list[dict]:
+    # Expected delivery: last confirmed GRN, else the PO's required-by date,
+    # else the date it was issued/approved.
+    rows = await db.execute(
+        text("""
+            SELECT po.id, po.po_number, po.total_amount,
+                   COALESCE(grn.last_delivery, po.required_by_date, po.issued_at::date, po.approved_at::date, CURRENT_DATE) AS expected_delivery_date,
+                   COALESCE(po.payment_terms_days, s.payment_terms_days) AS payment_terms_days
+            FROM procurement.purchase_orders po
+            LEFT JOIN procurement.suppliers s ON s.id = po.supplier_id AND s.organization_id = po.organization_id
+            LEFT JOIN (
+                SELECT po_id, MAX(delivery_date) AS last_delivery
+                FROM procurement.goods_received_notes
+                WHERE organization_id = :org_id AND is_deleted = false AND status = 'confirmed'
+                GROUP BY po_id
+            ) grn ON grn.po_id = po.id
+            WHERE po.organization_id = :org_id AND po.is_deleted = false AND po.status = ANY(:statuses)
+        """),
+        {"org_id": org_id, "statuses": list(statuses)},
+    )
+    purchase_orders = [dict(r) for r in rows.mappings().all()]
+    if not purchase_orders:
+        return []
+    rows = await db.execute(
+        text(f"""
+            SELECT si.po_id, SUM(si.total_amount) AS invoiced
+            FROM procurement.supplier_invoices si
+            WHERE si.organization_id = :org_id AND si.po_id IS NOT NULL AND {_INVOICE_COUNTED_SQL}
+            GROUP BY si.po_id
+        """),
+        {"org_id": org_id},
+    )
+    counted = {str(r["po_id"]): float(r["invoiced"] or 0) for r in rows.mappings().all()}
+    return open_po_events(purchase_orders, counted)
 
 
 async def get_pipeline_summary(db: AsyncSession, org_id: str) -> dict:
@@ -229,27 +328,70 @@ def _bucket_events(opening_cash: float, events: list[dict], horizons: list[date]
     return results
 
 
+def _cumulative(events: list[dict], horizon: date) -> float:
+    return round(sum(e["amount"] for e in events if e["date"] <= horizon), 2)
+
+
+async def _client_names(db: AsyncSession, org_id: str, keys: set[str]) -> dict[str, str]:
+    if not keys:
+        return {}
+    rows = await db.execute(
+        text(f"""
+            SELECT DISTINCT ON (client_key) client_key, client_name FROM (
+                SELECT {CLIENT_KEY_SQL} AS client_key, p.client_name
+                FROM projects.projects p WHERE p.organization_id = :org_id
+            ) k WHERE client_key = ANY(:keys)
+        """),
+        {"org_id": org_id, "keys": list(keys)},
+    )
+    return {r["client_key"]: r["client_name"] for r in rows.mappings().all()}
+
+
 async def compute_cash_forecast(db: AsyncSession, org_id: str, horizons: Optional[list[date]] = None) -> dict:
     horizons = horizons or standard_horizons()
     opening_cash = await get_cash_reserves(db, org_id)
+    profiles = await client_collection_profiles(db, org_id)
 
-    committed = await _committed_events(db, org_id)
-    probable_only = await _probable_events(db, org_id)
+    committed = await _committed_events(db, org_id, profiles)
+    committed_po = await _purchase_order_events(db, org_id, OPEN_PO_STATUSES)
+    committed += committed_po
+    probable_only = await _probable_events(db, org_id, profiles)
+    probable_only += await _purchase_order_events(db, org_id, ("approved",))
 
     committed_series = _bucket_events(opening_cash, committed, horizons)
     probable_series = _bucket_events(opening_cash, committed + probable_only, horizons)
 
     pipeline = await get_pipeline_summary(db, org_id)
 
+    # Collection delay used for every client in this forecast, plus any
+    # client whose delay is measured.
+    forecast_clients = {e["client_key"] for e in committed + probable_only if e.get("client_key")}
+    names = await _client_names(db, org_id, forecast_clients - set(profiles))
+    client_collection = sorted(
+        (profiles.get(key) or {**default_collection_profile(), "client_key": key, "client_name": names.get(key)}
+         for key in forecast_clients | set(profiles)),
+        key=lambda c: (c["source"] != "measured", (c["client_name"] or "").lower()),
+    )
+    for c in client_collection:
+        c["in_forecast"] = c["client_key"] in forecast_clients
+
     return {
         "opening_cash": round(opening_cash, 2),
         "horizon_labels": STANDARD_HORIZON_LABELS if horizons == standard_horizons() else [str(h) for h in horizons],
         "committed": committed_series,
         "probable": probable_series,
+        "committed_purchase_orders": {
+            "count": len(committed_po),
+            "open_value": round(sum(e["amount"] for e in committed_po), 2),
+            "by_horizon": [{"horizon": str(h), "cumulative_outflow": _cumulative(committed_po, h)} for h in horizons],
+        },
         "pipeline": pipeline,
         "assumptions": {
             "client_collection_days_after_certification": CLIENT_COLLECTION_DAYS_AFTER_CERTIFICATION,
             "client_collection_days_after_submission": CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION,
-            "note": "Client receipt dates are estimated (no expected-collection-date field exists on progress_claims) - all other dates are read directly from real due_date/payment_date columns.",
+            "min_paid_claims_for_measured_delay": MIN_PAID_CLAIMS,
+            "client_collection": client_collection,
+            "default_supplier_payment_terms_days": DEFAULT_SUPPLIER_PAYMENT_TERMS_DAYS,
+            "note": "Client receipts are dated by each client's measured median delay (paid claims and their allocated receipts); clients with too little history use the default days. Open purchase orders are dated at expected delivery plus payment terms, net of supplier invoices already in the forecast. All other dates are read directly from real due_date/payment_date columns.",
         },
     }
