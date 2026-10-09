@@ -17,6 +17,7 @@ from routers import general_ledger
 from routers import gl_bridge
 from routers import company_budgets
 from routers import cash_forecast
+from routers import cash_curves
 from routers import finance_ops
 from routers import hr_people
 from routers import hr_files
@@ -230,6 +231,7 @@ def create_app() -> FastAPI:
     app.include_router(gl_bridge.router, prefix="/api/v1/finance/gl/bridge", tags=["Finance GL Bridge"])
     app.include_router(company_budgets.router, prefix="/api/v1/finance/company-budgets", tags=["Finance Company Budgets"])
     app.include_router(cash_forecast.router, prefix="/api/v1/finance/cash-forecast", tags=["Finance Cash Forecast"])
+    app.include_router(cash_curves.router, prefix="/api/v1/finance/cash-curves", tags=["Finance Cash Curves"])
     app.include_router(finance_ops.router, prefix="/api/v1/finance/ops", tags=["Finance Operations"])
     app.include_router(finance_assistant.router, prefix="/api/v1/finance/assistant", tags=["Finance AI Assistant"])
     app.include_router(financial_statements.router, prefix="/api/v1/finance/financial-statements", tags=["Finance Financial Statements"])

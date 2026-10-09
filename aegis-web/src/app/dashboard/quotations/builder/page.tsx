@@ -7,7 +7,7 @@ import {
   FileText, Plus, Trash2, Printer, CheckCircle,
   AlertCircle, Loader2, Sliders, Download,
   Upload, Layers, Coins, HelpCircle, Save, Info, BookOpen,
-  Sparkles, X, CircleHelp
+  Sparkles, X, CircleHelp, TrendingDown
 } from "lucide-react";
 import {
   getInternalProjects, getQuotation, createQuotation, updateQuotation, calculateQuotation,
@@ -19,6 +19,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth/AuthContext";
 import RuthlessCalculator from "./RuthlessCalculator";
 import { BoqWorkflowPanel } from "./BoqWorkflowPanel";
+import CashCurveModal from "../CashCurveModal";
 import { useModuleTour } from "@/hooks/useModuleTour";
 import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleTour";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -153,6 +154,7 @@ export default function QuotationBuilder() {
   // CSV paste importer state
   const [csvText, setCsvText] = useState("");
   const [showImporter, setShowImporter] = useState(false);
+  const [showCashCurve, setShowCashCurve] = useState(false);
 
   // Excel/CSV file importer state (backend BOQImporter service)
   const [importingBoqFile, setImportingBoqFile] = useState(false);
@@ -913,7 +915,18 @@ export default function QuotationBuilder() {
             >
               <CircleHelp className="w-5 h-5" />
             </button>
-            <div className="flex items-center space-x-3" data-tour="builder-import">
+            <div className="flex flex-wrap items-center gap-3" data-tour="builder-import">
+              {editId && (
+                <button
+                  type="button"
+                  onClick={() => setShowCashCurve(true)}
+                  className="flex items-center space-x-1.5 bg-ink border border-ink-mid text-slate hover:text-white px-3 py-1.5 text-xs font-semibold rounded-sm transition-all"
+                  title="Peak funding requirement for this bid (uses the last saved version)"
+                >
+                  <TrendingDown className="w-3.5 h-3.5 text-signal" />
+                  <span>Cash Curve</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowImporter(!showImporter)}
@@ -942,6 +955,14 @@ export default function QuotationBuilder() {
           </>
         }
       />
+
+      {editId && showCashCurve && (
+        <CashCurveModal
+          source={{ kind: "quotation", id: editId }}
+          label={`${projectTitle || clientName || "Quotation"} - last saved version`}
+          onClose={() => setShowCashCurve(false)}
+        />
+      )}
 
       {editId && (
         <BoqWorkflowPanel

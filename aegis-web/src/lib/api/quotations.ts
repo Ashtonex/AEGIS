@@ -519,3 +519,45 @@ export async function recordClientQuotation(
 export async function getTenderActivityLog(tenderId: string): Promise<ApiResponse<Array<{ id: string; type: string; subject: string; description: string | null; created_at: string; created_by_name: string | null }>>> {
   return fetchApi(`/api/v1/tender-bids/${tenderId}/activity-log`, { cache: 'no-store', allowFallback: false });
 }
+
+// --- CASH CURVES (tender / project funding requirement) --- //
+
+export interface CashCurveScenarioInput {
+  name?: string;
+  assumptions?: Record<string, unknown>;
+}
+
+export async function computeQuotationCashCurve(quotationId: string, scenarios: CashCurveScenarioInput[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/cash-curves/quotations/${quotationId}`, {
+    method: 'POST',
+    body: JSON.stringify({ scenarios }),
+    allowFallback: false,
+  });
+}
+
+export async function computeProjectCashCurve(projectId: string, scenarios: CashCurveScenarioInput[]): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/cash-curves/projects/${projectId}`, {
+    method: 'POST',
+    body: JSON.stringify({ scenarios }),
+    allowFallback: false,
+  });
+}
+
+export async function getSavedCashCurveScenarios(quotationId: string): Promise<ApiResponse<any[]>> {
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/finance/cash-curves/quotations/${quotationId}/scenarios`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function saveCashCurveScenario(quotationId: string, name: string, assumptions: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/cash-curves/quotations/${quotationId}/scenarios`, {
+    method: 'POST',
+    body: JSON.stringify({ name, assumptions }),
+    allowFallback: false,
+  });
+}
+
+export async function deleteCashCurveScenario(scenarioId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/finance/cash-curves/scenarios/${scenarioId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}

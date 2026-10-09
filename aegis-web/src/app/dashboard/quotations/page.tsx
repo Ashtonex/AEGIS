@@ -6,7 +6,7 @@ import {
   FileText, Plus, Trash2, CheckCircle,
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
-  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp, Scale
+  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp, Scale, TrendingDown
 } from "lucide-react";
 import { getQuotations, getInternalProjects, getQuotationsNeedsBoq, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -16,6 +16,7 @@ import { ModuleTour, type ModuleTourStep } from "@/components/onboarding/ModuleT
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import SopChecklistModal from "./SopChecklistModal";
 import QuotationHistoryModal from "./QuotationHistoryModal";
+import CashCurveModal from "./CashCurveModal";
 
 const QUOTATIONS_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -68,6 +69,7 @@ export default function QuotationsDashboard() {
   const [archivingId, setArchivingId] = useState<string | null>(null);
   const [sopModalQuote, setSopModalQuote] = useState<{ id: string; label: string } | null>(null);
   const [historyModalQuote, setHistoryModalQuote] = useState<{ id: string; label: string } | null>(null);
+  const [cashCurveQuote, setCashCurveQuote] = useState<{ id: string; label: string } | null>(null);
   const PAGE_SIZE = 15;
   const LOAD_LIMIT = 200;
 
@@ -553,6 +555,14 @@ export default function QuotationsDashboard() {
                           </td>
                           <td className="py-4 text-right">
                             <div className="flex items-center justify-end space-x-2">
+                              <button
+                                type="button"
+                                onClick={() => setCashCurveQuote({ id: q.id, label: `${refNum} - ${q.client_name} - ${q.metadata?.project_title || "Untitled Estimate"}` })}
+                                className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-signal transition-colors"
+                                title="Cash curve - peak funding requirement before you bid"
+                              >
+                                <TrendingDown className="w-3.5 h-3.5" />
+                              </button>
                               {status !== "won" && status !== "lost" && (
                                 <>
                                   <button
@@ -772,6 +782,13 @@ export default function QuotationsDashboard() {
         />
       )}
 
+      {cashCurveQuote && (
+        <CashCurveModal
+          source={{ kind: "quotation", id: cashCurveQuote.id }}
+          label={cashCurveQuote.label}
+          onClose={() => setCashCurveQuote(null)}
+        />
+      )}
       {historyModalQuote && (
         <QuotationHistoryModal
           quotationId={historyModalQuote.id}
