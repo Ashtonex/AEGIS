@@ -41,6 +41,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.finance.cash_position import CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION
+from app.services.finance.client_collection import MIN_PAID_CLAIMS, client_collection_days
 
 COST_PROFILES = ("front", "even", "s_curve", "back")
 GRANULARITIES = ("auto", "week", "month")
@@ -49,9 +50,6 @@ GRANULARITIES = ("auto", "week", "month")
 DEFAULT_COST_MIX = {"materials": 0.45, "labour": 0.25, "plant": 0.10, "subcontract": 0.20}
 DEFAULT_MARKUP_WHEN_UNKNOWN = 0.20
 DEFAULT_SUPPLIER_PAYMENT_DAYS = 30
-# A client needs at least this many paid claims with a recorded receipt
-# before their own history replaces the company constant.
-MIN_CLIENT_HISTORY_CLAIMS = 3
 # Weekly periods up to this programme length, monthly beyond it.
 AUTO_WEEKLY_MAX_DURATION_WEEKS = 26
 
@@ -427,36 +425,6 @@ def derive_quotation_economics(quote_amount: Any, metadata: Optional[dict]) -> d
     }
 
 
-async def client_payment_history(
-    db: AsyncSession, org_id: str, client_org_id: Optional[str], client_name: Optional[str]
-) -> Optional[dict]:
-    """Average days from claim submission to first receipt for this client's
-    paid claims, or None when there isn't enough history."""
-    if not client_org_id and not client_name:
-        return None
-    row = (await db.execute(
-        text("""
-            WITH paid AS (
-                SELECT pc.id, MIN(ct.transaction_date) - pc.submitted_at::date AS days
-                FROM finance.progress_claims pc
-                JOIN projects.projects p ON p.id = pc.project_id AND p.organization_id = pc.organization_id
-                JOIN finance.receipt_allocations ra ON ra.progress_claim_id = pc.id
-                JOIN finance.cashbook_transactions ct ON ct.id = ra.cashbook_transaction_id AND ct.is_deleted = false
-                WHERE pc.organization_id = :org_id AND pc.is_deleted = false AND pc.status = 'paid'
-                  AND pc.submitted_at IS NOT NULL
-                  AND ((CAST(:client_org_id AS text) IS NOT NULL AND CAST(p.client_org_id AS text) = CAST(:client_org_id AS text))
-                       OR (CAST(:client_name AS text) IS NOT NULL AND LOWER(TRIM(p.client_name)) = LOWER(TRIM(CAST(:client_name AS text)))))
-                GROUP BY pc.id, pc.submitted_at
-            )
-            SELECT COUNT(*) AS n, AVG(days) AS avg_days FROM paid WHERE days >= 0
-        """),
-        {"org_id": org_id, "client_org_id": str(client_org_id) if client_org_id else None, "client_name": client_name or None},
-    )).mappings().first()
-    if not row or (row["n"] or 0) < MIN_CLIENT_HISTORY_CLAIMS or row["avg_days"] is None:
-        return None
-    return {"days": int(round(float(row["avg_days"]))), "claims": int(row["n"])}
-
-
 async def org_supplier_payment_days(db: AsyncSession, org_id: str) -> Optional[int]:
     row = (await db.execute(
         text("""
@@ -474,15 +442,17 @@ async def _shared_defaults(
 ) -> tuple[dict, dict]:
     values: dict[str, Any] = {}
     sources: dict[str, str] = {}
-    history = await client_payment_history(db, org_id, client_org_id, client_name)
-    if history:
-        values["client_payment_days"] = history["days"]
-        sources["client_payment_days"] = f"This client's actual average over {history['claims']} paid claims (submission to receipt)."
-    else:
-        values["client_payment_days"] = CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION
+    collection = await client_collection_days(db, org_id, client_org_id, client_name=client_name)
+    values["client_payment_days"] = collection["days_after_submission"]
+    if collection["source"] == "measured":
         sources["client_payment_days"] = (
-            f"Company default ({CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION} days from claim to receipt) - "
-            f"fewer than {MIN_CLIENT_HISTORY_CLAIMS} paid claims with receipts on record for this client."
+            f"This client's actual median over {collection['paid_claims_measured']} paid claims "
+            "(claim submission to final receipt)."
+        )
+    else:
+        sources["client_payment_days"] = (
+            f"Company default ({collection['days_after_submission']} days from claim to receipt) - "
+            f"fewer than {MIN_PAID_CLAIMS} paid claims with receipts on record for this client."
         )
     supplier_days = await org_supplier_payment_days(db, org_id)
     if supplier_days is not None:
