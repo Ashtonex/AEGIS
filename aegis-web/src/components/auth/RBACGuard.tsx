@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { usePathname, useRouter } from "next/navigation";
 import { ShieldAlert, ArrowLeft, Loader2 } from "lucide-react";
-import { matchesAnyRole } from "@/lib/rbacMatch";
+import { hasRequiredPermission, requiredPermissionForPath, type PermissionRequirement } from "@/lib/navigation";
 
 // Helper to write to local storage session logs
 export function addSessionLog(
@@ -31,11 +31,14 @@ export function addSessionLog(
 
 interface RBACGuardProps {
   children: React.ReactNode;
-  allowedRoles: string[];
+  // Override for pages that aren't in the sidebar config. By default the
+  // requirement comes from MODULE_GROUPS for the current path, so the page
+  // guard and the sidebar can never disagree.
+  permission?: PermissionRequirement;
 }
 
-export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
-  const { user, session, role, roles, isLoading } = useAuth();
+export function RBACGuard({ children, permission }: RBACGuardProps) {
+  const { user, session, role, roles, permissions, isSuperAdmin, isLoading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
 
@@ -47,10 +50,14 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
   // sync once an admin assigns a functional role via Settings.
   const userRole = role;
 
-  // Authorized if ANY assigned role qualifies, not just the primary one.
+  const requirement = permission ?? requiredPermissionForPath(pathname);
+  const requiredKeys = requirement === undefined ? [] : Array.isArray(requirement) ? requirement : [requirement];
+  const requiredLabel = requiredKeys.join(" or ") || "signed-in user";
+
+  // Permission-driven: any role the user holds can supply the permission.
   const isAuthorized = React.useMemo(
-    () => (userRole ? matchesAnyRole(roles.length ? roles : [userRole], allowedRoles) : false),
-    [allowedRoles, userRole, roles]
+    () => (userRole ? isSuperAdmin || hasRequiredPermission(permissions, requirement) : false),
+    [userRole, isSuperAdmin, permissions, requirement]
   );
 
   // Log access denials
@@ -60,12 +67,12 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
         "Access Denied",
         userEmail,
         pathname || "Unknown Resource",
-        `Attempted access with unauthorized role: ${userRole}. Required clearance: ${allowedRoles.join(" or ")}`,
+        `Attempted access without permission (roles: ${roles.join(", ") || userRole}). Required permission: ${requiredLabel}`,
         "Blocked"
       );
       setHasLoggedDenial(true);
     }
-  }, [isLoading, session, isAuthorized, userRole, userEmail, pathname, allowedRoles, hasLoggedDenial]);
+  }, [isLoading, session, isAuthorized, userRole, roles, userEmail, pathname, requiredLabel, hasLoggedDenial]);
 
   // Reset denial logging flag if user details change
   useEffect(() => {
@@ -122,21 +129,21 @@ export function RBACGuard({ children, allowedRoles }: RBACGuardProps) {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate">ASSIGNED ROLE:</span>
-                <span className="text-red-400 uppercase font-bold">{userRole}</span>
+                <span className="text-red-400 uppercase font-bold text-right">{roles.join(", ") || userRole}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate">CLEARANCE LEVEL:</span>
                 <span className="text-red-400 font-bold uppercase">UNAUTHORIZED</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate">REQUIRED CLEARANCE:</span>
-                <span className="text-signal font-bold uppercase">{allowedRoles.join(" | ")}</span>
+                <span className="text-slate">REQUIRED PERMISSION:</span>
+                <span className="text-signal font-bold text-right break-all">{requiredKeys.join(" | ")}</span>
               </div>
             </div>
           </div>
 
           <p className="text-xs text-slate-light font-mono leading-relaxed mb-6 border-l-2 border-signal/40 pl-3">
-            SECURITY STATEMENT: The resource you attempted to contact is restricted to authorized {allowedRoles.join(" and ")} roles. All unauthorized connections are logged to the security audit server.
+            SECURITY STATEMENT: The resource you attempted to contact is restricted to roles granted the {requiredLabel} permission. An administrator can grant it in Settings &gt; Access Control. All unauthorized connections are logged to the security audit server.
           </p>
 
           <button

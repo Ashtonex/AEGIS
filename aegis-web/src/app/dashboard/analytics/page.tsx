@@ -91,7 +91,7 @@ export default function AnalyticsDashboard() {
  * ?tab= shim. */
 export function AnalyticsPage({ initialTab }: { initialTab: AnalyticsTab }) {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Commercial Manager", "Executive Read Only"]}>
+    <RBACGuard>
       <AnalyticsWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

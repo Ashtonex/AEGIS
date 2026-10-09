@@ -69,10 +69,16 @@ async def logout_user(user: dict = Depends(get_current_user)):
 
 
 @router.get("/me")
-async def get_me(user: dict = Depends(get_current_user)):
+async def get_me(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Permissions ride along with the role so the UI can gate the sidebar
+    # and every page by permission in the same round trip.
+    keys = await get_user_permission_keys(db, user)
     return {
         "success": True,
-        "data": user,
+        "data": {**user, "permissions": sorted(keys)},
         "message": "Current user retrieved.",
         "meta": {},
     }

@@ -72,7 +72,7 @@ function complianceState(item: RecordData) {
 }
 
 export default function WorkforceDashboard() {
-  return <RBACGuard allowedRoles={["Executive (Admin)", "HR Manager", "Project Manager"]}><WorkforceWorkspace /></RBACGuard>;
+  return <RBACGuard><WorkforceWorkspace /></RBACGuard>;
 }
 
 function WorkforceWorkspace() {

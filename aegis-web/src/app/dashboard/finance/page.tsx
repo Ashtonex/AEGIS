@@ -231,7 +231,7 @@ const FINANCE_TAB_LABELS: Record<FinanceTab, string> = {
  * next/dynamic panel) only loads the one panel it actually renders. */
 export function FinancePage({ initialTab }: { initialTab: FinanceTab }) {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Contracts Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard>
       <FinanceWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

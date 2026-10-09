@@ -18,6 +18,12 @@ interface AuthContextType {
    * more specific). Access checks should pass if ANY of these qualifies, so
    * one extra role never hides what another role grants. */
   roles: string[];
+  /** Every permission key the user holds across all roles - the single
+   * source of truth for what pages and sidebar items they can see. Null
+   * until /auth/me resolves. */
+  permissions: ReadonlySet<string> | null;
+  /** SUPERADMIN bypasses every permission check. */
+  isSuperAdmin: boolean;
   isLoading: boolean;
   /** True until the initial Supabase session check resolves - does NOT wait
    * on the follow-up /auth/me role round trip the way isLoading does. Use
@@ -35,6 +41,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [role, setRole] = useState<string | null>(null);
   const [roles, setRoles] = useState<string[]>([]);
+  const [permissions, setPermissions] = useState<ReadonlySet<string> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [sessionLoading, setSessionLoading] = useState(true);
   const router = useRouter();
@@ -50,6 +57,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (sequence === roleResolveSeqRef.current) {
         setRole(null);
         setRoles([]);
+        setPermissions(null);
       }
       return;
     }
@@ -59,12 +67,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         const primary = response.data?.role ?? null;
         setRole(primary);
         setRoles(effectiveRoles(response.data?.roles, primary));
+        setPermissions(new Set(response.data?.permissions ?? []));
       }
     } catch (error) {
       console.error("Error fetching resolved role:", error);
       if (sequence === roleResolveSeqRef.current && accessToken === lastAppliedTokenRef.current) {
         setRole(null);
         setRoles([]);
+        setPermissions(null);
       }
     }
   }, []);
@@ -201,6 +211,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     await supabase.auth.signOut();
     setRole(null);
     setRoles([]);
+    setPermissions(null);
     router.push('/login');
   }, [router]);
 
@@ -210,6 +221,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       session,
       role,
       roles,
+      permissions,
+      isSuperAdmin: (role ?? "").trim().toUpperCase() === "SUPERADMIN",
       isLoading,
       sessionLoading,
       signOut

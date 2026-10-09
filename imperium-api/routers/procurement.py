@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import require_permission
+from core.project_scope import project_scope_sql, visible_project_ids
 from core.truncation import capped
 from app.services import inventory_service
 from app.services.finance.ccb_monitor import record_requisition_budget_breach
@@ -409,21 +410,25 @@ async def list_requisitions(
     user: dict = Depends(require_permission("procurement.requisition.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    # Site roles see requisitions for their assigned projects (and their own).
+    scope_sql, scope_params = project_scope_sql("pr.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT pr.*, p.name AS project_name,
                COALESCE(jsonb_agg(to_jsonb(rl) ORDER BY rl.created_at) FILTER (WHERE rl.id IS NOT NULL), '[]'::jsonb) AS lines
         FROM procurement.purchase_requisitions pr
         LEFT JOIN projects.projects p ON p.id=pr.project_id AND p.organization_id=pr.organization_id
         LEFT JOIN procurement.requisition_lines rl ON rl.requisition_id=pr.id AND rl.organization_id=pr.organization_id AND rl.is_deleted=false
         WHERE pr.organization_id=:org_id AND pr.is_deleted=false
+          AND ({scope_sql} OR pr.requested_by=CAST(:scope_user_id AS uuid))
           AND (CAST(:status AS varchar) IS NULL OR pr.status=CAST(:status AS varchar))
           AND (CAST(:project_id AS uuid) IS NULL OR pr.project_id=CAST(:project_id AS uuid))
         GROUP BY pr.id, p.name
         ORDER BY pr.created_at DESC
         LIMIT 501
     """),
-        {"org_id": user["org_id"], "status": status_filter, "project_id": project_id},
+        {"org_id": user["org_id"], "status": status_filter, "project_id": project_id,
+         "scope_user_id": user["user_id"], **scope_params},
     )
     data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Purchase requisitions listed.", len(data))
@@ -436,13 +441,15 @@ async def list_material_requests(
     user: dict = Depends(require_permission("procurement.requisition.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("mr.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT mr.*, i.item_name, i.item_code, i.unit_of_measure, p.name AS project_name
         FROM procurement.material_requests mr
         JOIN procurement.inventory_items i ON i.id=mr.item_id
         LEFT JOIN projects.projects p ON p.id=mr.project_id AND p.organization_id=mr.organization_id
         WHERE mr.organization_id=:org_id AND mr.is_deleted=false
+          AND ({scope_sql} OR mr.requested_by=CAST(:scope_user_id AS uuid))
           AND (CAST(:is_price_confirmed AS boolean) IS NULL OR mr.is_price_confirmed=CAST(:is_price_confirmed AS boolean))
           AND (CAST(:project_id AS uuid) IS NULL OR mr.project_id=CAST(:project_id AS uuid))
         ORDER BY mr.created_at DESC
@@ -452,6 +459,8 @@ async def list_material_requests(
             "org_id": user["org_id"],
             "is_price_confirmed": is_price_confirmed,
             "project_id": project_id,
+            "scope_user_id": user["user_id"],
+            **scope_params,
         },
     )
     data = [dict(r._mapping) for r in capped(rows, 500)]

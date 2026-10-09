@@ -34,6 +34,7 @@ from app.services.microsoft import teams_notify
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from core.database import get_db
 from core.security import SUPERADMIN_ROLE, get_current_user, get_user_permission_keys, require_permission
+from core.project_scope import require_project_access
 
 router = APIRouter()
 hr_router = APIRouter()
@@ -176,7 +177,7 @@ class HoursDecision(Payload):
 
 
 # ----------------------------------------------------------------------------- shared lookups
-async def _project_name(db: AsyncSession, org_id: str, project_id: UUID) -> str:
+async def _project_name(db: AsyncSession, org_id: str, project_id: UUID, *, user: Optional[dict] = None) -> str:
     name = (
         await db.execute(
             text("SELECT name FROM projects.projects WHERE id=:id AND organization_id=:org_id AND is_deleted=false"),
@@ -185,10 +186,12 @@ async def _project_name(db: AsyncSession, org_id: str, project_id: UUID) -> str:
     ).scalar()
     if not name:
         raise HTTPException(status_code=404, detail="Project not found.")
+    if user is not None:
+        await require_project_access(db, user, project_id)
     return name
 
 
-async def _briefing(db: AsyncSession, org_id: str, briefing_id: UUID) -> dict[str, Any]:
+async def _briefing(db: AsyncSession, org_id: str, briefing_id: UUID, *, user: Optional[dict] = None) -> dict[str, Any]:
     row = (
         await db.execute(
             text("SELECT * FROM projects.site_day_briefings WHERE id=:id AND organization_id=:org_id AND is_deleted=false"),
@@ -197,6 +200,8 @@ async def _briefing(db: AsyncSession, org_id: str, briefing_id: UUID) -> dict[st
     ).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Site day not found.")
+    if user is not None:
+        await require_project_access(db, user, row["project_id"])
     return dict(row)
 
 
@@ -272,7 +277,7 @@ async def get_site_day(
     whether the day is unlocked, today's targets and who can be registered."""
     org_id = user["org_id"]
     on_date = briefing_date or harare_today()
-    project_name = await _project_name(db, org_id, project_id)
+    project_name = await _project_name(db, org_id, project_id, user=user)
     briefing = (
         await db.execute(
             text("""
@@ -355,7 +360,7 @@ async def open_site_day(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = user["org_id"]
-    await _project_name(db, org_id, payload.project_id)
+    await _project_name(db, org_id, payload.project_id, user=user)
     on_date = payload.briefing_date or harare_today()
     if on_date > harare_today():
         raise HTTPException(status_code=422, detail="A site day can't be opened in advance.")
@@ -373,7 +378,7 @@ async def open_site_day(
         )
     ).scalar()
     await db.commit()
-    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id)), "Site day opened.")
+    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)), "Site day opened.")
 
 
 @router.patch("/day/{briefing_id}")
@@ -384,7 +389,7 @@ async def update_site_day(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = user["org_id"]
-    briefing = await _briefing(db, org_id, briefing_id)
+    briefing = await _briefing(db, org_id, briefing_id, user=user)
     changes = payload.model_dump(exclude_unset=True)
     if briefing["status"] == "closed":
         raise HTTPException(status_code=409, detail="This site day is closed.")
@@ -408,7 +413,7 @@ async def update_site_day(
             priority="high", action_url="/dashboard/site-operations",
         )
     await db.commit()
-    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id)), "Site day updated.")
+    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)), "Site day updated.")
 
 
 async def _insert_attendance(
@@ -476,7 +481,7 @@ async def add_attendance(
     user: dict = Depends(require_permission("site_operations.labour_register.manage")),
     db: AsyncSession = Depends(get_db),
 ):
-    briefing = await _briefing(db, user["org_id"], briefing_id)
+    briefing = await _briefing(db, user["org_id"], briefing_id, user=user)
     await _insert_attendance(db, user=user, briefing=briefing, site_worker_id=payload.site_worker_id,
                              employee_id=payload.employee_id, ppe_ok=payload.ppe_ok)
     await db.commit()
@@ -503,7 +508,7 @@ async def update_attendance(
             {**changes, "id": attendance_id},
         )
         await db.commit()
-    briefing = await _briefing(db, user["org_id"], row["briefing_id"])
+    briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
     return result(await _day_payload(db, user["org_id"], briefing), "Register updated.")
 
 
@@ -518,7 +523,7 @@ async def remove_attendance(
         raise HTTPException(status_code=409, detail="This person has already clocked in. Clock them out instead.")
     await db.execute(text("DELETE FROM projects.site_day_attendance WHERE id=:id"), {"id": attendance_id})
     await db.commit()
-    briefing = await _briefing(db, user["org_id"], row["briefing_id"])
+    briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
     return result(await _day_payload(db, user["org_id"], briefing), "Removed from today's register.")
 
 
@@ -531,7 +536,7 @@ async def register_project_hire(
     """Someone on site who isn't in AEGIS yet: hourly, semi-skilled, hired
     for this project. They can work today; HR verifies them afterwards."""
     org_id = user["org_id"]
-    project_name = await _project_name(db, org_id, payload.project_id)
+    project_name = await _project_name(db, org_id, payload.project_id, user=user)
     if payload.national_id:
         dup = (
             await db.execute(
@@ -557,7 +562,7 @@ async def register_project_hire(
         )
     ).scalar()
     if payload.briefing_id:
-        briefing = await _briefing(db, org_id, payload.briefing_id)
+        briefing = await _briefing(db, org_id, payload.briefing_id, user=user)
         await _insert_attendance(db, user=user, briefing=briefing, site_worker_id=worker_id, employee_id=None, ppe_ok=payload.ppe_ok)
     await emit_role_notification(
         db, org_id=org_id, role_names=HR_ROLES,
@@ -576,7 +581,7 @@ async def start_site_day(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = user["org_id"]
-    briefing = await _briefing(db, org_id, briefing_id)
+    briefing = await _briefing(db, org_id, briefing_id, user=user)
     if briefing["status"] != "open":
         raise HTTPException(status_code=409, detail="This site day has already started.")
     attendance = (await _day_payload(db, org_id, briefing))["attendance"]
@@ -612,7 +617,7 @@ async def start_site_day(
                     "safety_concern_raised": briefing["safety_concern_raised"]},
     )
     await db.commit()
-    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id)),
+    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)),
                   f"Site day started. {len(attendance)} people clocked in.")
 
 
@@ -641,7 +646,7 @@ async def clock_out_attendance(
         raise HTTPException(status_code=409, detail="Already clocked out.")
     await _clock_out(db, row, datetime.now(timezone.utc), row["regular_hours_cap"], row["break_minutes"])
     await db.commit()
-    briefing = await _briefing(db, user["org_id"], row["briefing_id"])
+    briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
     return result(await _day_payload(db, user["org_id"], briefing), f"{row['worker_name']} clocked out.")
 
 
@@ -652,7 +657,7 @@ async def close_site_day(
     db: AsyncSession = Depends(get_db),
 ):
     org_id = user["org_id"]
-    briefing = await _briefing(db, org_id, briefing_id)
+    briefing = await _briefing(db, org_id, briefing_id, user=user)
     if briefing["status"] != "started":
         raise HTTPException(status_code=409, detail="Only a started site day can be closed.")
     now = datetime.now(timezone.utc)
@@ -669,7 +674,7 @@ async def close_site_day(
                 WHERE id=:id"""),
         {"now": now, "user_id": user["user_id"], "id": briefing_id},
     )
-    project_name = await _project_name(db, org_id, briefing["project_id"])
+    project_name = await _project_name(db, org_id, briefing["project_id"], user=user)
     hires = sum(1 for r in rows if r["worker_kind"] == "project_hire")
     await emit_role_notification(
         db, org_id=org_id, role_names=HR_ROLES,
@@ -682,7 +687,7 @@ async def close_site_day(
         project_id=briefing["project_id"], event_data={"headcount": len(rows), "project_hires": hires},
     )
     await db.commit()
-    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id)),
+    return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)),
                   "Site day closed. Hours sent to HR for acceptance.")
 
 
@@ -734,7 +739,7 @@ async def _send_targets(db: AsyncSession, *, user: dict, project_id: UUID, targe
     )
     if not targets:
         return 0, []
-    project_name = await _project_name(db, org_id, project_id)
+    project_name = await _project_name(db, org_id, project_id, user=user)
     user_ids = await _engineer_user_ids(db, org_id, project_id)
     day_label = target_date.strftime("%A %d %b")
     for uid in user_ids:
@@ -774,6 +779,7 @@ async def generate_daily_targets(
     ).mappings().first()
     if not budget:
         raise HTTPException(status_code=404, detail="Weekly budget not found.")
+    await require_project_access(db, user, budget["project_id"])
     if budget["status"] not in ("submitted", "approved"):
         raise HTTPException(status_code=409, detail="Only a submitted or approved weekly budget can be broken into daily targets.")
     days = sorted({d for d in payload.working_days if 0 <= d <= 6})
@@ -852,6 +858,7 @@ async def list_daily_targets(
 ):
     if (date_to - date_from).days > 62:
         raise HTTPException(status_code=422, detail="Ask for at most two months of targets at a time.")
+    await require_project_access(db, user, project_id)
     data = _rows(
         await db.execute(
             text("""
@@ -883,6 +890,7 @@ async def update_daily_target(
     ).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Daily target not found.")
+    await require_project_access(db, user, row["project_id"])
     achieved = payload.achieved_qty if payload.achieved_qty is not None else row["achieved_qty"]
     new_status = payload.status
     if new_status is None and payload.achieved_qty is not None:

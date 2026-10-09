@@ -1079,6 +1079,8 @@ export interface AuthenticatedUser {
   /** Every assigned role, primary first. Optional so an older backend that
    * only returns `role` still works. */
   roles?: string[];
+  /** Every permission key granted across all of the user's roles. */
+  permissions?: string[];
 }
 
 // The authoritative role assignment lives in core.user_roles, not in the

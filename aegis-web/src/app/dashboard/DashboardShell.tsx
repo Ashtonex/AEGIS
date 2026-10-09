@@ -8,40 +8,19 @@ import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
-import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
+import { getMyProfile, updateMyProfile } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
 import { AttendanceCheckIn } from "@/components/people/AttendanceCheckIn";
 import { TruncatedResultsNotice } from "@/components/dashboard/TruncatedResultsNotice";
-import { matchesRole } from "@/lib/rbacMatch";
 import {
   Search, Bell, CircleHelp, User, ShieldAlert,
   Settings, LogOut, ChevronDown, ChevronRight, Menu, X,
   LockKeyhole, Package, ClipboardCheck, HardHat,
 } from "lucide-react";
 import {
-  MODULE_GROUPS, DOMAIN_META, DOMAIN_ORDER, SITE_FIELD_ROLES,
-  SITE_FIELD_DASHBOARD_GROUPS, getDomainForPathname,
+  DOMAIN_META, DOMAIN_ORDER, getDomainForPathname, visibleModuleGroups,
   type ModuleGroup, type DomainKey,
 } from "@/lib/navigation";
-
-// Plain case-insensitive membership check for restrictedRoles. Deliberately
-// not matchesRole - that helper always returns true for SUPERADMIN, which
-// would make SUPERADMIN itself the one role a restrictedRoles entry could
-// never actually restrict.
-function isRoleRestricted(userRole: string, restrictedRoles?: string[]): boolean {
-  if (!restrictedRoles || restrictedRoles.length === 0) return false;
-  const normUser = userRole.toLowerCase().trim();
-  return restrictedRoles.some((role) => role.toLowerCase().trim() === normUser);
-}
-
-function isExactRole(userRole: string, roles: string[]): boolean {
-  const normUser = userRole.toLowerCase().trim();
-  return roles.some((role) => role.toLowerCase().trim() === normUser);
-}
-
-function isSuperAdminRole(userRole: string): boolean {
-  return userRole.toLowerCase().trim() === "superadmin";
-}
 
 // Renders the CAT clock and owns its own 1s tick, so that tick re-renders
 // only this small leaf instead of the entire DashboardShell (and everything
@@ -65,7 +44,7 @@ function HarareClock() {
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { session, role, roles, isLoading, sessionLoading, signOut } = useAuth();
+  const { session, role, permissions, isSuperAdmin, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [tourOpen, setTourOpen] = useState(false);
@@ -137,40 +116,6 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const displayName = userEmail.split('@')[0].charAt(0).toUpperCase() + userEmail.split('@')[0].slice(1);
   const userRole = role;
 
-  // Resolved permission keys for the signed-in user, used to layer
-  // requiredPermission checks on top of the existing role-based nav gates.
-  // null = not loaded yet - treated as "no additional restriction" so
-  // existing role-gated items don't flash hidden while this is in flight;
-  // once loaded, items with a requiredPermission are gated strictly.
-  const [permissions, setPermissions] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    // portalGroups (the nav rendered on /portal routes) carries no
-    // requiredPermission gates, so this fetch is dead weight there - one
-    // fewer request competing with the portal page's own data calls.
-    if (!session?.access_token || isPortalRoute) {
-      setPermissions(null);
-      return;
-    }
-    let cancelled = false;
-    setPermissions(null);
-    getMyPermissions()
-      .then((res) => {
-        if (!cancelled && res.success && Array.isArray(res.data)) setPermissions(new Set(res.data));
-      })
-      .catch(() => {
-        // Leave permissions null on failure - falls back to role-only gating.
-      });
-    return () => { cancelled = true; };
-  }, [session?.access_token, isPortalRoute]);
-
-  const hasPermission = useCallback(
-    (requiredPermission?: string) => {
-      if (!userRole) return false;
-      return isSuperAdminRole(userRole) || !requiredPermission || !permissions || permissions.has(requiredPermission);
-    },
-    [permissions, userRole]
-  );
-
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
@@ -201,44 +146,15 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     [portalHome]
   );
 
+  // Purely permission-driven: a user sees every page any of their roles
+  // grants, and nothing else. See MODULE_GROUPS in lib/navigation.ts.
   const visibleGroups = useMemo(
     () => {
       if (isPortalRoute) return portalGroups;
       if (!userRole) return [];
-      // A user with several roles sees an item if ANY one of their roles
-      // qualifies for it on its own - e.g. CRM Associate + Project Manager
-      // still sees Delivery, even though CRM Associate alone is restricted.
-      const sidebarRoles = roles.length ? roles : [userRole];
-      const roleSeesGroup = (candidateRole: string, group: ModuleGroup) => {
-        const isSiteFieldRole = isExactRole(candidateRole, SITE_FIELD_ROLES);
-        return (
-          (group.permissionDriven || !isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
-          (!group.allowedRoles || matchesRole(candidateRole, group.allowedRoles)) &&
-          !isRoleRestricted(candidateRole, group.restrictedRoles)
-        );
-      };
-      return MODULE_GROUPS.filter(
-        (group) =>
-          sidebarRoles.some((candidateRole) => roleSeesGroup(candidateRole, group)) &&
-          hasPermission(group.requiredPermission)
-      )
-        .map((group) => ({
-          ...group,
-          subItems: group.subItems.filter(
-            (sub) =>
-              sidebarRoles.some(
-                (candidateRole) =>
-                  (!sub.allowedRoles || matchesRole(candidateRole, sub.allowedRoles)) &&
-                  !isRoleRestricted(candidateRole, sub.restrictedRoles)
-              ) &&
-              (group.permissionDriven
-                ? isSuperAdminRole(userRole) || !sub.requiredPermission || !!permissions?.has(sub.requiredPermission)
-                : hasPermission(sub.requiredPermission))
-          ),
-        }))
-        .filter((group) => group.subItems.length > 0);
+      return visibleModuleGroups(permissions, isSuperAdmin);
     },
-    [userRole, roles, permissions, hasPermission, isPortalRoute, portalGroups]
+    [userRole, permissions, isSuperAdmin, isPortalRoute, portalGroups]
   );
 
   const activeGroup = useMemo(

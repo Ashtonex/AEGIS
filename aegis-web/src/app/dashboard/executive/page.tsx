@@ -216,7 +216,7 @@ function GreetingHeading({ displayName, userRole }: { displayName: string; userR
 
 export default function ExecutiveCommandCentre() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)"]}>
+    <RBACGuard>
       <ExecutiveCommandCentreWorkspace />
     </RBACGuard>
   );

@@ -237,7 +237,7 @@ export default function ProjectsDashboard() {
  * (ProjectDetail below) - the list view itself doesn't vary by tab. */
 export function ProjectsPage({ initialTab }: { initialTab: ProjectTab }) {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Contracts Manager", "Commercial Manager", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard>
       <ProjectsWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

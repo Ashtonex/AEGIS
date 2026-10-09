@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import { AlertTriangle, Loader2, RefreshCw, Settings2, ShieldCheck } from "lucide-react";
+import { PAGE_ACCESS_CATALOGUE } from "@/lib/navigation";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { Skeleton } from "@/components/ui/Skeleton";
 import {
@@ -269,7 +270,9 @@ function normalizeOverview(payload: any): SettingsOverview {
     users: list(source.users).map((item: any) => ({ id: String(item.id), name: text(item.name ?? item.full_name, "Unnamed user"), email: text(item.email), roles: list(item.roles), status: item.is_active === false ? "inactive" : "active", last_active_at: item.last_active_at ?? item.updated_at ?? null })),
     roles: list(source.roles).map((item: any) => ({ id: String(item.id), name: String(item.name), description: item.description ?? null, permissions: list(item.permissions).map(String) })),
     permissions: list(source.permissions).map((item: any) => ({ key: String(item.key), description: item.description ?? null })),
-    page_access: list(source.page_access).map((item: any) => ({ page: String(item.page), route: String(item.route), permission: String(item.permission), module: String(item.module) })),
+    // Built from the sidebar config, not the API, so every sidebar page is
+    // always grantable here and the two can never drift apart.
+    page_access: PAGE_ACCESS_CATALOGUE,
     website_content: list(source.website_content).map((item: any) => ({ id: String(item.id ?? `${item.page_key}-${item.section_key}`), page_key: String(item.page_key), section_key: String(item.section_key), title: item.title ?? "", subtitle: item.subtitle ?? "", body: item.body ?? "", status: item.status ?? "draft", metadata: item.metadata ?? {}, updated_at: item.updated_at ?? null })),
     integrations: list(source.integrations).map((item: any) => ({ id: String(item.id ?? item.provider), name: text(item.display_name ?? item.name, "Unnamed integration"), provider: item.provider ?? null, status: item.status ?? null, updated_at: item.updated_at ?? null, scopes: list(item.scopes).map(String) })),
     audit_events: list(source.audit_events).map((item: any) => ({ id: String(item.id ?? `${item.event_type}-${item.occurred_at}`), occurred_at: String(item.occurred_at ?? ""), event: text(item.event_type ?? item.event ?? item.action, "Unspecified event"), actor: text(item.actor_name ?? item.actor_email ?? item.actor ?? item.user, "System"), resource: text(item.resource_type ?? item.resource, "System"), details: pretty(item.details), status: String(item.status ?? item.outcome ?? "success").toLowerCase() as AuditStatus })),

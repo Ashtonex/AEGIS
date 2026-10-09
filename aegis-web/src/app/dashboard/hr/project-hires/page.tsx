@@ -14,7 +14,7 @@ type View = "hours" | "register";
 
 export default function ProjectHiresPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "HR Manager", "HR Officer", "Payroll Administrator"]}>
+    <RBACGuard>
       <ProjectHiresWorkspace />
     </RBACGuard>
   );

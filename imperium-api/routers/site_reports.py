@@ -14,6 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
+from core.project_scope import (
+    enforce_project_path_scope,
+    project_scope_sql,
+    require_project_access,
+    visible_project_ids,
+)
 from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event, emit_notification, emit_role_notification
@@ -26,7 +32,8 @@ from app.shared.sql import (
     update_tenant_row_sql,
 )
 
-router = APIRouter()
+# Every /{project_id} route is limited to the caller's visible projects.
+router = APIRouter(dependencies=[Depends(enforce_project_path_scope)])
 
 
 class Payload(BaseModel):
@@ -258,7 +265,9 @@ def result(data, message: str, total: Optional[int] = None):
     }
 
 
-async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> None:
+async def project_or_404(
+    db: AsyncSession, project_id: UUID, org_id: str, *, user: Optional[dict] = None
+) -> None:
     found = await db.execute(
         text("""
         SELECT 1 FROM projects.projects
@@ -268,6 +277,8 @@ async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> Non
     )
     if not found.scalar():
         raise HTTPException(status_code=404, detail="Project not found")
+    if user is not None:
+        await require_project_access(db, user, project_id)
 
 
 async def site_or_404(
@@ -286,8 +297,25 @@ async def site_or_404(
         raise HTTPException(status_code=404, detail="Site not found")
 
 
+async def weekly_budget_project_guard(db: AsyncSession, budget_id: UUID, user: dict) -> None:
+    """404 unless the weekly budget exists and sits on a project the caller
+    may see. Runs before any write so out-of-scope budgets are untouched."""
+    project_id = (
+        await db.execute(
+            text("""
+            SELECT project_id FROM projects.weekly_budgets
+            WHERE id=:budget_id AND organization_id=:org_id AND is_deleted=false
+        """),
+            {"budget_id": budget_id, "org_id": user["org_id"]},
+        )
+    ).scalar()
+    if project_id is None:
+        raise HTTPException(status_code=404, detail="Weekly site budget not found.")
+    await require_project_access(db, user, project_id)
+
+
 async def report_or_404(
-    db: AsyncSession, report_id: UUID, org_id: str
+    db: AsyncSession, report_id: UUID, org_id: str, *, user: Optional[dict] = None
 ) -> dict[str, Any]:
     row = (
         (
@@ -304,6 +332,8 @@ async def report_or_404(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Daily site report not found")
+    if user is not None:
+        await require_project_access(db, user, row["project_id"])
     return dict(row)
 
 
@@ -797,16 +827,17 @@ async def list_sites(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("s.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT s.*, p.name AS project_name
         FROM projects.sites s
         JOIN projects.projects p ON p.id=s.project_id AND p.organization_id=s.organization_id
-        WHERE s.organization_id=:org_id AND s.is_deleted=false
+        WHERE s.organization_id=:org_id AND s.is_deleted=false AND {scope_sql}
           AND (CAST(:project_id AS uuid) IS NULL OR s.project_id=CAST(:project_id AS uuid))
         ORDER BY s.name
     """),
-        {"org_id": user["org_id"], "project_id": project_id},
+        {"org_id": user["org_id"], "project_id": project_id, **scope_params},
     )
     data = [dict(row._mapping) for row in rows]
     return result(data, "Sites listed.", len(data))
@@ -818,7 +849,7 @@ async def create_site(
     user: dict = Depends(require_permission("site_operations.daily_report.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     try:
         site_id = (
             await db.execute(
@@ -884,18 +915,20 @@ async def list_stores(
     user: dict = Depends(require_permission("site_operations.material.record")),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("st.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT st.*, p.name AS project_name, s.name AS site_name
         FROM procurement.stores st
         LEFT JOIN projects.projects p ON p.id=st.project_id AND p.organization_id=st.organization_id
         LEFT JOIN projects.sites s ON s.id=st.site_id AND s.organization_id=st.organization_id
         WHERE st.organization_id=:org_id AND st.is_deleted=false
+          AND (st.project_id IS NULL OR {scope_sql})
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
         ORDER BY st.store_type, st.name
         LIMIT 501
     """),
-        {"org_id": user["org_id"], "project_id": project_id},
+        {"org_id": user["org_id"], "project_id": project_id, **scope_params},
     )
     data = [dict(row._mapping) for row in capped(rows, 500)]
     return result(data, "Stores listed.", len(data))
@@ -907,7 +940,7 @@ async def request_site_material(
     user: dict = Depends(require_permission("site_operations.material.request")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     await store_or_404(db, payload.store_id, payload.project_id, user["org_id"])
     await ensure_site_day_started(db, org_id=user["org_id"], project_id=payload.project_id, on_date=harare_today())
@@ -1031,6 +1064,9 @@ async def list_site_material_requests(
 ):
     filters = ["mr.organization_id=:org_id", "mr.is_deleted=false"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "engineer_status": engineer_status}
+    scope_sql, scope_params = project_scope_sql("mr.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("mr.project_id=:project_id")
     if engineer_status and engineer_status != "all":
@@ -1076,6 +1112,7 @@ async def decide_site_material_request_engineer(
     )
     if not request_row:
         raise HTTPException(status_code=404, detail="Material request not found")
+    await require_project_access(db, user, request_row["project_id"])
     request_data = dict(request_row)
     if request_data.get("engineer_review_status") != "pending":
         raise HTTPException(status_code=409, detail="Material request has already received engineer review.")
@@ -1138,6 +1175,9 @@ async def list_weekly_budgets(
 ):
     filters = ["wb.organization_id=:org_id", "wb.is_deleted=false"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "status": status_filter}
+    scope_sql, scope_params = project_scope_sql("wb.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("wb.project_id=:project_id")
     if status_filter and status_filter != "all":
@@ -1167,7 +1207,7 @@ async def get_execution_budget(
     user: dict = Depends(require_permission("projects.execution_budget.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, project_id, user["org_id"])
+    await project_or_404(db, project_id, user["org_id"], user=user)
     budget = (
         (
             await db.execute(
@@ -1213,7 +1253,7 @@ async def create_weekly_budget(
     user: dict = Depends(require_permission("projects.weekly_budget.submit")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     source_budget_id = (
         await db.execute(
@@ -1383,6 +1423,7 @@ async def decide_weekly_budget(
     user: dict = Depends(require_permission("projects.weekly_budget.approve")),
     db: AsyncSession = Depends(get_db),
 ):
+    await weekly_budget_project_guard(db, budget_id, user)
     new_status = "approved" if payload.decision == "approved" else "rejected"
     row = await db.execute(
         text("""
@@ -1419,6 +1460,7 @@ async def list_weekly_budget_items(
     user: dict = Depends(require_permission("projects.weekly_budget.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    await weekly_budget_project_guard(db, budget_id, user)
     rows = await db.execute(
         text("""
         SELECT wbi.*, v.variation_number, v.status AS variation_status,
@@ -1443,6 +1485,9 @@ async def list_site_variances(
 ):
     filters = ["v.organization_id=:org_id", "v.is_deleted=false", "v.source_type='weekly_budget_item'"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "status": status_filter}
+    scope_sql, scope_params = project_scope_sql("v.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("v.project_id=:project_id")
     if status_filter and status_filter != "all":
@@ -1487,6 +1532,7 @@ async def review_site_variance_qs(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Variance not found.")
+    await require_project_access(db, user, row["project_id"])
     status_value = "submitted" if payload.decision == "reviewed" else "rejected"
     await db.execute(
         text("""
@@ -1552,6 +1598,7 @@ async def decide_site_variance_client(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Variance not found.")
+    await require_project_access(db, user, row["project_id"])
     if not row["client_approval_required"]:
         raise HTTPException(status_code=409, detail="Client approval is not required for this variance.")
     status_value = "submitted" if payload.decision == "approved" else "rejected"
@@ -1596,6 +1643,9 @@ async def list_site_grns(
 ):
     filters = ["g.organization_id=:org_id", "g.is_deleted=false"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "engineer_status": engineer_status}
+    scope_sql, scope_params = project_scope_sql("g.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("g.project_id=:project_id")
     if engineer_status and engineer_status != "all":
@@ -1643,15 +1693,18 @@ async def get_site_engineer_workspace(
     )
     assigned = [dict(row._mapping) for row in assigned_result]
     if not assigned:
+        # Fall back to the user's visible projects (team allocations etc.) -
+        # never the whole org unless they hold projects.read_all.
+        scope_sql, scope_params = project_scope_sql("id", await visible_project_ids(db, user))
         fallback_result = await db.execute(
-            text("""
+            text(f"""
             SELECT id, name, project_code, status, NULL::uuid AS site_id, NULL::text AS site_name
             FROM projects.projects
-            WHERE organization_id=:org_id AND is_deleted=false
+            WHERE organization_id=:org_id AND is_deleted=false AND {scope_sql}
             ORDER BY name
             LIMIT 100
         """),
-            {"org_id": user["org_id"]},
+            {"org_id": user["org_id"], **scope_params},
         )
         assigned = [dict(row._mapping) for row in fallback_result]
     return result({"projects": assigned}, "Site Engineer workspace loaded.")
@@ -1679,6 +1732,7 @@ async def decide_grn_engineer(
     )
     if not grn:
         raise HTTPException(status_code=404, detail="GRN not found.")
+    await require_project_access(db, user, grn["project_id"])
     if str(grn["received_by"]) == str(user["user_id"]):
         raise HTTPException(status_code=403, detail="Self-verification is not permitted for GRNs.")
     review_status = "verified" if payload.decision == "approved" else "rejected"
@@ -1714,8 +1768,9 @@ async def list_daily_reports(
     user: dict = Depends(require_permission("site_operations.daily_report.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("r.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT r.*, p.name AS project_name, s.name AS site_name,
                COUNT(l.id) FILTER (WHERE l.is_deleted=false) AS labour_lines,
                COUNT(e.id) FILTER (WHERE e.is_deleted=false) AS equipment_lines,
@@ -1726,7 +1781,7 @@ async def list_daily_reports(
         LEFT JOIN projects.daily_report_labour l ON l.report_id=r.id AND l.organization_id=r.organization_id
         LEFT JOIN projects.daily_report_equipment e ON e.report_id=r.id AND e.organization_id=r.organization_id
         LEFT JOIN projects.daily_report_materials m ON m.report_id=r.id AND m.organization_id=r.organization_id
-        WHERE r.organization_id=:org_id AND r.is_deleted=false
+        WHERE r.organization_id=:org_id AND r.is_deleted=false AND {scope_sql}
           AND (CAST(:project_id AS uuid) IS NULL OR r.project_id=CAST(:project_id AS uuid))
           AND (CAST(:status_filter AS varchar) IS NULL OR r.status=CAST(:status_filter AS varchar))
         GROUP BY r.id, p.name, s.name
@@ -1737,6 +1792,7 @@ async def list_daily_reports(
             "org_id": user["org_id"],
             "project_id": project_id,
             "status_filter": status_filter,
+            **scope_params,
         },
     )
     data = [dict(row._mapping) for row in rows]
@@ -1749,7 +1805,7 @@ async def create_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     if not (
         payload.labour_count_completed
@@ -1817,7 +1873,7 @@ async def get_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     tables = {
         "labour": ("projects.daily_report_labour", "created_at"),
         "equipment": ("projects.daily_report_equipment", "created_at"),
@@ -1868,7 +1924,7 @@ async def update_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     values = payload.model_dump(exclude_unset=True)
     if payload.site_id is not None:
@@ -1913,7 +1969,7 @@ async def add_labour(
     user: dict = Depends(require_permission("site_operations.labour.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     await tenant_reference(
         db, "hr.employees", payload.employee_id, user["org_id"], "Employee"
@@ -1959,7 +2015,7 @@ async def add_equipment(
     user: dict = Depends(require_permission("site_operations.equipment.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     await tenant_reference(
         db, "fleet.fleet", payload.fleet_id, user["org_id"], "Fleet asset"
@@ -2008,7 +2064,7 @@ async def add_material(
     user: dict = Depends(require_permission("site_operations.material.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     await tenant_reference(
         db,
@@ -2061,7 +2117,7 @@ async def link_document(
     user: dict = Depends(require_permission("documents.link")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     await tenant_reference(
         db, "core.documents", payload.document_id, user["org_id"], "Document"
     )
@@ -2113,7 +2169,7 @@ async def submit_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.submit")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     counts = (
         (
@@ -2209,7 +2265,7 @@ async def engineer_decide_daily_report(
     user: dict = Depends(require_permission("site_operations.engineer_verify")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     if report["status"] != "submitted":
         raise HTTPException(status_code=409, detail="Only submitted daily reports can receive engineer verification.")
     if str(report.get("submitted_by")) == str(user["user_id"]):
@@ -2394,7 +2450,7 @@ async def decide_daily_report(
     user: dict = Depends(require_permission("site_operations.site_agent_authorize")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     if report["status"] != "submitted":
         raise HTTPException(
             status_code=409,

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import gather_reads, get_db
 from core.logging import logger
 from core.security import get_current_user, require_permission, user_has_permission
+from core.project_scope import enforce_project_path_scope, project_scope_sql, visible_project_ids
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
 from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks
@@ -28,7 +29,8 @@ from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
 
-router = APIRouter()
+# Every /{project_id} route is limited to the caller's visible projects.
+router = APIRouter(dependencies=[Depends(enforce_project_path_scope)])
 
 # Fields that live on projects.project_profiles (a 1:1 side table) rather than
 # projects.projects itself. update_project() routes ProjectUpdate payload keys
@@ -638,10 +640,12 @@ async def list_projects(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.read")),
 ):
+    # Site roles only see the projects they're assigned to.
+    scope_sql, scope_params = project_scope_sql("p.id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT p.*, pp.viability_status, pp.budget_amount, pp.forecast_cost,
-               pp.region, pp.latitude::float AS latitude, pp.longitude::float AS longitude,
+               pp.region, CAST(pp.latitude AS float) AS latitude, CAST(pp.longitude AS float) AS longitude,
                pp.initiated_by, pp.project_category, pp.investment_required,
                pp.funding_internal, pp.funding_external, pp.intake_completed_at,
                pp.setup_duration_weeks, pp.mobilisation_approved_at,
@@ -657,11 +661,11 @@ async def list_projects(
         LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
         LEFT JOIN projects.project_milestones m ON m.project_id = p.id AND m.organization_id = p.organization_id AND m.is_deleted = false
         LEFT JOIN projects.project_risks r ON r.project_id = p.id AND r.organization_id = p.organization_id AND r.is_deleted = false
-        WHERE p.organization_id = :org_id AND p.is_deleted = false
+        WHERE p.organization_id = :org_id AND p.is_deleted = false AND {scope_sql}
         GROUP BY p.id, pp.project_id
         ORDER BY p.updated_at DESC LIMIT 100
     """),
-        {"org_id": user["org_id"]},
+        {"org_id": user["org_id"], **scope_params},
     )
     data = [dict(row._mapping) for row in rows]
     return _result(data, "Projects listed.", len(data))

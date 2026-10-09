@@ -139,7 +139,7 @@ const HR_TAB_SUBTITLES: Partial<Record<HRTab, string>> = {
  * folders here) instead of the old hr/[tab] -> redirect() -> ?tab= shim. */
 export function HRPage({ initialTab }: { initialTab: HRTab }) {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"]}>
+    <RBACGuard>
       {initialTab === "home" ? <HRHome />
         : initialTab === "employees" ? <HREmployeeRegister />
         : initialTab === "documents" || initialTab === "credentials" || initialTab === "assets" ? <HRFilesPage kind={initialTab === "documents" ? "contracts" : initialTab} />

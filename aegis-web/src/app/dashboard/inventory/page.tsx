@@ -214,7 +214,7 @@ export default function InventoryPage() {
  * ?tab= shim. */
 export function InventoryTabPage({ initialTab }: { initialTab: ActiveTab }) {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", "Procurement Manager", "Stores and Procurement Manager", "Stores & Procurement Manager", "Inventory Controller", "Executive Read Only"]}>
+    <RBACGuard>
       <InventoryWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

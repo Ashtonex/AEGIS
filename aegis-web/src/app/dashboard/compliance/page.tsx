@@ -124,7 +124,7 @@ export default function ComplianceDashboard() {
 export function CompliancePage({ initialTab }: { initialTab: ComplianceTab }) {
   if (initialTab === "obligations") return <ComplianceFoundation />;
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard>
       <ComplianceWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

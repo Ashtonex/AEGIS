@@ -108,7 +108,7 @@ function statusTone(status: unknown): "green" | "blue" | "red" | "slate" | "ambe
 
 export default function SiteOperationsPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Site Engineer", "Site Manager", "FOREMAN", "HSE / Safety Officer", "Storekeeper"]}>
+    <RBACGuard>
       <SiteOperationsWorkspace />
     </RBACGuard>
   );
@@ -462,6 +462,9 @@ function SiteOperationsWorkspace() {
       <div className="mb-4 space-y-2">
         {error ? <Notice tone="error">{error}</Notice> : null}
         {sourceWarnings.map((warning) => <Notice key={warning} tone="info">{warning}</Notice>)}
+        {!loading && !error && projects.length === 0 && !sourceWarnings.includes("Project register could not be loaded.") ? (
+          <Notice tone="info">You are not assigned to any project yet. Ask your project manager to add you to a project team - you will then see that project here.</Notice>
+        ) : null}
         {notice ? <Notice tone={notice.tone} onClose={() => setNotice(null)}>{notice.text}</Notice> : null}
       </div>
 

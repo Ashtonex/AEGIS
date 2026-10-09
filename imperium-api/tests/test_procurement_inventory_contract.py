@@ -14,6 +14,9 @@ WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text() + "
 INVENTORY_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "inventory" / "page.tsx"
 ).read_text()
+SETTINGS_PAGE = (
+    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "settings" / "page.tsx"
+).read_text(encoding="utf-8")
 PROCUREMENT_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx"
 ).read_text()
@@ -375,9 +378,12 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "Stores & Procurement Manager",
         ]:
             self.assertIn(role_name, STORES_PROCUREMENT_ACCESS_REPAIR)
-            self.assertIn(role_name, DASHBOARD_SHELL)
-            self.assertIn(role_name, PROCUREMENT_PAGE)
-            self.assertIn(role_name, INVENTORY_PAGE)
+        # Access follows permissions (granted by the migration above), not
+        # hard-coded role lists in the sidebar or page guards.
+        self.assertIn('requiredPermission: "procurement.requisition.read"', DASHBOARD_SHELL)
+        self.assertIn('requiredPermission: "inventory_items.read"', DASHBOARD_SHELL)
+        self.assertIn("<RBACGuard>", PROCUREMENT_PAGE)
+        self.assertIn("<RBACGuard>", INVENTORY_PAGE)
 
         for permission in [
             "procurement.requisition.read",
@@ -417,9 +423,12 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertEqual(STORES_PROCUREMENT_ACCESS_REPAIR, SUPABASE_STORES_PROCUREMENT_ACCESS_REPAIR)
 
     def test_inventory_page_is_visible_in_access_matrix(self):
-        self.assertIn('"page": "Inventory"', SETTINGS_ROUTER)
-        self.assertIn('"route": "/dashboard/inventory"', SETTINGS_ROUTER)
-        self.assertIn('"permission": "inventory_items.read"', SETTINGS_ROUTER)
+        # The access matrix is derived from the sidebar config, so the
+        # Inventory group's permission is automatically grantable there.
+        self.assertIn("page_access: PAGE_ACCESS_CATALOGUE", SETTINGS_PAGE)
+        self.assertIn("export const PAGE_ACCESS_CATALOGUE", DASHBOARD_SHELL)
+        self.assertIn('href: "/dashboard/inventory",', DASHBOARD_SHELL)
+        self.assertIn('requiredPermission: "inventory_items.read"', DASHBOARD_SHELL)
 
 
 if __name__ == "__main__":

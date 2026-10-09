@@ -9,26 +9,18 @@ import {
   Gauge,
 } from "lucide-react";
 
+/** One permission key, or several where holding ANY of them is enough. */
+export type PermissionRequirement = string | string[];
+
 export type ModuleNavItem = {
   name: string;
   href: string;
   icon: ComponentType<{ className?: string }>;
-  // Roles allowed to see this item, mirroring the allowedRoles already
-  // passed to <RBACGuard> on the page it links to. Omit to leave the item
-  // visible to everyone (matches pages with no RBACGuard today).
-  allowedRoles?: string[];
-  // Roles explicitly denied this item, on top of whatever allowedRoles
-  // permits. For carving a narrow exception (e.g. one restricted role) out
-  // of an item that's otherwise open to everyone, without having to convert
-  // it into a full allow-list and enumerate every other role that currently
-  // relies on the open-by-default behavior.
-  restrictedRoles?: string[];
-  // Permission key that also grants visibility, on top of allowedRoles -
-  // backfilled from PAGE_ACCESS in imperium-api/routers/settings.py so a
-  // brand-new self-service role (with no allowedRoles entry at all) still
-  // gets this item once granted the matching permission. Undefined items
-  // keep today's role-only gating unchanged.
-  requiredPermission?: string;
+  // Permission that grants this item. Falls back to the group's
+  // requiredPermission; with neither, every signed-in user sees it.
+  // Access is permission-driven only: grant or revoke it per role in
+  // Settings > Access Control, no code change needed.
+  requiredPermission?: PermissionRequirement;
 };
 
 // The 8 top-level business domains the sidebar groups into (see
@@ -52,16 +44,9 @@ export type ModuleGroup = {
   icon: ComponentType<{ className?: string }>;
   subItems: ModuleNavItem[];
   directLink?: boolean;
-  // Derive visibility from explicit child grants, including custom roles.
-  permissionDriven?: boolean;
-  // Roles allowed to see the whole group. Harvested from the RBACGuard on
-  // the group's root page - sub-items don't carry their own RBACGuard today
-  // so this is the closest real signal for "who should see this module".
-  allowedRoles?: string[];
-  // See ModuleNavItem.restrictedRoles.
-  restrictedRoles?: string[];
-  // See ModuleNavItem.requiredPermission.
-  requiredPermission?: string;
+  // Default permission for sub-items that don't set their own. A group is
+  // shown whenever at least one of its sub-items is visible.
+  requiredPermission?: PermissionRequirement;
   // Which top-level domain this group nests under in the sidebar (see
   // DOMAIN_META). Omit for the two pinned utility links (Messages,
   // Notifications) that stay outside the domain structure entirely,
@@ -107,27 +92,26 @@ export const DOMAIN_ORDER: DomainKey[] = [
   "executive", "commercial", "delivery", "supply", "assets", "people", "finance", "governance",
 ];
 
-export const SITE_FIELD_ROLES = ["FOREMAN", "Site Clerk", "Site Engineer", "Site Agent"];
-export const SITE_FIELD_DASHBOARD_GROUPS = new Set(["Messages", "Notifications", "Site Operations", "Settings"]);
-export const PROCUREMENT_STORES_MANAGER_ROLES = ["Procurement Manager", "Stores and Procurement Manager", "Stores & Procurement Manager"];
-
+// Every page's access is decided by permission keys alone, so assigning a
+// role (built-in or custom) gives that user exactly the pages its
+// permissions cover - no role names are hard-coded here. Each key below is
+// the permission the page's own primary data endpoint already enforces, so
+// the sidebar never shows a page whose data would then be refused.
 export const MODULE_GROUPS: ModuleGroup[] = [
   {
     name: "Executive",
     href: "/dashboard/executive",
     icon: LayoutDashboard,
     domain: "executive",
-    allowedRoles: ["Executive (Admin)", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "executive.view_dashboard",
     directLink: true,
-    subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard, requiredPermission: "executive.view_dashboard" }],
+    subItems: [{ name: "Overview", href: "/dashboard/executive", icon: LayoutDashboard }],
   },
   {
     name: "Messages",
     href: "/dashboard/messages",
     icon: Inbox,
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "internal_messages.read",
     directLink: true,
     subItems: [{ name: "Communication Ledger", href: "/dashboard/messages", icon: Inbox }],
   },
@@ -135,7 +119,6 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     name: "Notifications",
     href: "/dashboard/notifications",
     icon: Bell,
-    restrictedRoles: ["CRM Associate"],
     directLink: true,
     subItems: [{ name: "Notification Center", href: "/dashboard/notifications", icon: Bell }],
   },
@@ -144,38 +127,27 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/crm",
     icon: Briefcase,
     domain: "commercial",
-    // No group-level requiredPermission - unlike the single-page groups
-    // below, CRM's subItems are gated individually (a self-service role
-    // granted only crm_leads.read should still see Leads even without
-    // crm.view_opportunities), matching how restrictedRoles already works
-    // per-subitem here rather than on the group as a whole.
     subItems: [
       { name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, requiredPermission: "crm.view_opportunities" },
       { name: "Leads", href: "/dashboard/crm/leads", icon: Target, requiredPermission: "crm_leads.read" },
       { name: "Opportunities", href: "/dashboard/crm/opportunities", icon: Briefcase, requiredPermission: "crm.view_opportunities" },
-      { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2 },
+      { name: "Tenders & Bids", href: "/dashboard/crm/tenders", icon: Building2, requiredPermission: ["crm.view_tenders", "tender_bids.read"] },
       { name: "Organizations", href: "/dashboard/crm/organizations", icon: Handshake, requiredPermission: "crm_organizations.read" },
       { name: "Contacts", href: "/dashboard/crm/contacts", icon: Users, requiredPermission: "crm_contacts.read" },
-      { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat },
+      { name: "Subcontractors", href: "/dashboard/crm/subcontractors", icon: HardHat, requiredPermission: "crm.view_subcontractors" },
       { name: "Activities", href: "/dashboard/crm/activities", icon: MapPin, requiredPermission: "crm_activities.read" },
       { name: "Documents", href: "/dashboard/crm/documents", icon: BookOpen, requiredPermission: "documents.read" },
       { name: "Sales Inbox", href: "/dashboard/crm/inbox", icon: Inbox, requiredPermission: "crm_communications.read" },
       { name: "Automations", href: "/dashboard/crm/automations", icon: Zap, requiredPermission: "crm_automations.read" },
       { name: "Integrations", href: "/dashboard/crm/integrations", icon: Settings, requiredPermission: "crm.integrations.read" },
-      { name: "Marketing", href: "/dashboard/crm/marketing", icon: Megaphone },
+      { name: "Marketing", href: "/dashboard/crm/marketing", icon: Megaphone, requiredPermission: "crm.marketing.read" },
       { name: "Campaigns", href: "/dashboard/crm/campaigns", icon: TrendingUp, requiredPermission: "crm.marketing.read" },
-      { name: "Segments", href: "/dashboard/crm/segments", icon: PieChart },
-      { name: "Templates", href: "/dashboard/crm/templates", icon: FileText },
+      { name: "Segments", href: "/dashboard/crm/segments", icon: PieChart, requiredPermission: ["crm.segments.read", "crm.marketing.read"] },
+      { name: "Templates", href: "/dashboard/crm/templates", icon: FileText, requiredPermission: ["crm.templates.read", "crm.marketing.read"] },
       { name: "Import & Export", href: "/dashboard/crm/import", icon: Upload, requiredPermission: "crm.import" },
       { name: "Support", href: "/dashboard/crm/support", icon: LifeBuoy, requiredPermission: "crm.support.read" },
-      { name: "Tickets", href: "/dashboard/crm/tickets", icon: Ticket },
-      {
-        name: "Reports",
-        href: "/dashboard/crm/reports",
-        icon: BarChart,
-        allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Tender / Bid Manager", "Executive Read Only", "CRM Associate"],
-        requiredPermission: "crm.reports.read",
-      },
+      { name: "Tickets", href: "/dashboard/crm/tickets", icon: Ticket, requiredPermission: "crm.support.read" },
+      { name: "Reports", href: "/dashboard/crm/reports", icon: BarChart, requiredPermission: "crm.reports.read" },
       { name: "Tasks", href: "/dashboard/crm/tasks", icon: ClipboardCheck, requiredPermission: "crm_tasks.read" },
       { name: "Teams", href: "/dashboard/crm/teams", icon: Users, requiredPermission: "users.read_assignable" },
     ],
@@ -185,14 +157,15 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/quotations",
     icon: FileText,
     domain: "commercial",
+    requiredPermission: "quotations.read",
     subItems: [
-      { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard, restrictedRoles: ["CRM Associate"] },
-      { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText, restrictedRoles: ["CRM Associate"] },
+      { name: "Overview Dashboard", href: "/dashboard/quotations", icon: LayoutDashboard },
+      { name: "Quotation Builder", href: "/dashboard/quotations/builder", icon: FileText },
       { name: "Rate Build-Up", href: "/dashboard/quotations/rates", icon: Scale, requiredPermission: "quotations.manage_rate_intelligence" },
-      { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit, restrictedRoles: ["CRM Associate"] },
-      { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain, restrictedRoles: ["CRM Associate"] },
-      { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers, restrictedRoles: ["CRM Associate"] },
-      { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen, restrictedRoles: ["CRM Associate"] },
+      { name: "Commercial Control Brain", href: "/dashboard/quotations/ccb", icon: BrainCircuit },
+      { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain },
+      { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers },
+      { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen },
     ],
   },
   {
@@ -200,8 +173,6 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/projects",
     icon: HardHat,
     domain: "delivery",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Contracts Manager", "Commercial Manager", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "projects.read",
     subItems: [
       { name: "Projects Command", href: "/dashboard/projects", icon: LayoutDashboard },
@@ -216,8 +187,6 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/site-operations",
     icon: Activity,
     domain: "delivery",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Site Engineer", "Site Manager", "FOREMAN", "HSE / Safety Officer", "Storekeeper"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "site_operations.read",
     subItems: [{ name: "Site Day", href: "/dashboard/site-operations", icon: Activity }],
   },
@@ -226,7 +195,6 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/workforce",
     icon: Users,
     domain: "people",
-    permissionDriven: true,
     subItems: [
       { name: "Overview", href: "/dashboard/workforce", icon: Users, requiredPermission: "workforce.read" },
       { name: "People Register", href: "/dashboard/workforce/people", icon: Users, requiredPermission: "workforce.people.read" },
@@ -239,12 +207,10 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/fleet",
     icon: Truck,
     domain: "assets",
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "fleet.read",
     subItems: [
       { name: "Overview", href: "/dashboard/fleet", icon: Truck },
-      { name: "Performance", href: "/dashboard/fleet/performance", icon: Gauge, requiredPermission: "fleet.read" },
+      { name: "Performance", href: "/dashboard/fleet/performance", icon: Gauge },
     ],
   },
   {
@@ -252,8 +218,6 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/equipment",
     icon: Wrench,
     domain: "assets",
-    allowedRoles: ["Executive (Admin)", "Fleet Supervisor", "Equipment Manager", "Site Manager", "Maintenance Planner", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "equipment_assets.read",
     subItems: [
       { name: "Overview", href: "/dashboard/equipment", icon: Wrench },
@@ -265,17 +229,15 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/procurement",
     icon: ShoppingCart,
     domain: "supply",
-    allowedRoles: ["Executive (Admin)", ...PROCUREMENT_STORES_MANAGER_ROLES, "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "procurement.requisition.read",
     subItems: [
       { name: "Procurement Pipeline", href: "/dashboard/procurement", icon: LayoutDashboard },
       { name: "Requisitions", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
-      { name: "RFQs", href: "/dashboard/procurement/rfqs", icon: Search },
-      { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart },
-      { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package },
-      { name: "Pricing", href: "/dashboard/procurement/pricing", icon: DollarSign },
-      { name: "Invoices", href: "/dashboard/procurement/invoices", icon: DollarSign },
+      { name: "RFQs", href: "/dashboard/procurement/rfqs", icon: Search, requiredPermission: "procurement.rfq.read" },
+      { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart, requiredPermission: "procurement.po.read" },
+      { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package, requiredPermission: "procurement.supplier.read" },
+      { name: "Pricing", href: "/dashboard/procurement/pricing", icon: DollarSign, requiredPermission: "procurement.vendor_rate.read" },
+      { name: "Invoices", href: "/dashboard/procurement/invoices", icon: DollarSign, requiredPermission: "procurement.invoice.read" },
     ],
   },
   {
@@ -283,8 +245,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/inventory",
     icon: Package,
     domain: "supply",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Site Clerk", "Quantity Surveyor", "Storekeeper", ...PROCUREMENT_STORES_MANAGER_ROLES, "Inventory Controller", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "inventory_items.read",
     subItems: [
       { name: "Stock Management", href: "/dashboard/inventory", icon: LayoutDashboard },
       { name: "Stock Levels", href: "/dashboard/inventory/stock", icon: Package },
@@ -294,12 +255,12 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     ],
   },
   {
+    // Every Finance sub-page renders the same FinancePage shell, whose
+    // primary data load requires finance.cost.read.
     name: "Finance",
     href: "/dashboard/finance",
     icon: DollarSign,
     domain: "finance",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Payroll Administrator", "Accounts Payable / Cash Officer", "Budget & Reporting Analyst", "Contracts Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
     requiredPermission: "finance.cost.read",
     subItems: [
       { name: "Finance & Cost Control", href: "/dashboard/finance", icon: LayoutDashboard },
@@ -336,8 +297,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/hr",
     icon: UserCheck,
     domain: "people",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "HR Officer", "HR Manager"],
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "hr.operations.read",
     subItems: [
       { name: "HR Dashboard", href: "/dashboard/hr", icon: LayoutDashboard },
       { name: "Employee Register", href: "/dashboard/hr/employees", icon: Users },
@@ -349,11 +309,11 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Training Matrix", href: "/dashboard/hr/training", icon: BookOpen },
       { name: "Org Chart", href: "/dashboard/hr/org-chart", icon: Users },
       { name: "Workforce Planning", href: "/dashboard/hr/planning", icon: Calendar },
-      { name: "Attendance Log", href: "/dashboard/hr/attendance", icon: Calendar },
-      { name: "Project Hires", href: "/dashboard/hr/project-hires", icon: HardHat },
-      { name: "Leave Management", href: "/dashboard/hr/leave", icon: UserCheck },
-      { name: "Payroll", href: "/dashboard/hr/payroll", icon: Banknote },
-      { name: "Vendor Verification", href: "/dashboard/hr/vendor-verification", icon: ShieldCheck },
+      { name: "Attendance Log", href: "/dashboard/hr/attendance", icon: Calendar, requiredPermission: "hr.attendance.read" },
+      { name: "Project Hires", href: "/dashboard/hr/project-hires", icon: HardHat, requiredPermission: "workforce.project_hires.manage" },
+      { name: "Leave Management", href: "/dashboard/hr/leave", icon: UserCheck, requiredPermission: "hr.leave.read" },
+      { name: "Payroll", href: "/dashboard/hr/payroll", icon: Banknote, requiredPermission: ["hr.payroll.read", "finance.payroll.read"] },
+      { name: "Vendor Verification", href: "/dashboard/hr/vendor-verification", icon: ShieldCheck, requiredPermission: "hr.vendor_verification.read" },
     ],
   },
   {
@@ -361,21 +321,16 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/compliance",
     icon: ShieldCheck,
     domain: "governance",
-    // HSE / Safety Officer added here alongside the landing-page migration
-    // (083) that sends this role straight to /dashboard/compliance - this
-    // role held zero nav access to any group before this fix, despite being
-    // created specifically for HSE incident tracking (migration 066).
-    allowedRoles: ["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "HSE / Safety Officer", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "compliance_items.read",
     subItems: [
       { name: "Compliance Overview", href: "/dashboard/compliance", icon: LayoutDashboard },
-      { name: "Corporate Credentials", href: "/dashboard/compliance/corporate-credentials", icon: BookMarked },
-      { name: "Obligation Register", href: "/dashboard/compliance/obligations", icon: ShieldCheck },
+      { name: "Corporate Credentials", href: "/dashboard/compliance/corporate-credentials", icon: BookMarked, requiredPermission: "compliance_credentials.read" },
+      { name: "Obligation Register", href: "/dashboard/compliance/obligations", icon: ShieldCheck, requiredPermission: "compliance.requirement.read" },
       { name: "Employee Credentials", href: "/dashboard/compliance/employees", icon: Users },
       { name: "Equipment Licenses", href: "/dashboard/compliance/equipment", icon: Wrench },
-      { name: "Deployment Gates", href: "/dashboard/compliance/deployment-gates", icon: LockKeyhole },
-      { name: "Corrective Actions", href: "/dashboard/compliance/corrective-actions", icon: ClipboardCheck },
-      { name: "HSE Incidents", href: "/dashboard/compliance/incidents", icon: Activity },
+      { name: "Deployment Gates", href: "/dashboard/compliance/deployment-gates", icon: LockKeyhole, requiredPermission: "compliance.gate.read" },
+      { name: "Corrective Actions", href: "/dashboard/compliance/corrective-actions", icon: ClipboardCheck, requiredPermission: "compliance.corrective_action.read" },
+      { name: "HSE Incidents", href: "/dashboard/compliance/incidents", icon: Activity, requiredPermission: "hse_incidents.read" },
     ],
   },
   {
@@ -383,7 +338,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/client-portal",
     icon: LockKeyhole,
     domain: "commercial",
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "client_portal_tickets.read",
     subItems: [{ name: "Overview", href: "/dashboard/client-portal", icon: LockKeyhole }],
   },
   {
@@ -391,8 +346,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/documents",
     icon: FileText,
     domain: "governance",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Site Agent", "Compliance Officer", "Finance Manager", "Document Controller", "Tender / Bid Manager", "Contracts Manager", "Commercial Manager", "Maintenance Planner", "Inventory Controller", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "documents.read",
     subItems: [{ name: "Overview", href: "/dashboard/documents", icon: FileText }],
   },
   {
@@ -400,8 +354,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/reports",
     icon: BarChart,
     domain: "governance",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"],
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: "automated_reports.read",
     subItems: [{ name: "Overview", href: "/dashboard/reports", icon: BarChart }],
   },
   {
@@ -409,8 +362,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/analytics",
     icon: PieChart,
     domain: "governance",
-    allowedRoles: ["Executive (Admin)", "Project Manager", "Finance Manager", "Commercial Manager", "Executive Read Only"],
-    restrictedRoles: ["CRM Associate"],
+    requiredPermission: ["executive.view_dashboard", "kpi_metrics.read"],
     subItems: [
       { name: "Analytics Overview", href: "/dashboard/analytics", icon: LayoutDashboard },
       { name: "Project Margin Trends", href: "/dashboard/analytics/projects", icon: BarChart },
@@ -424,25 +376,103 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     href: "/dashboard/settings",
     icon: Settings,
     domain: "governance",
-    restrictedRoles: ["CRM Associate"],
     subItems: [
       { name: "Settings Overview", href: "/dashboard/settings", icon: LayoutDashboard, requiredPermission: "settings.read" },
-      // Configuration/Access Control/Account Setup/Website Content/Audit Log
-      // previously had no role restriction at all - every logged-in employee
-      // could open them (the underlying endpoints still enforced their own
-      // permission checks, but the pages themselves weren't gated). Settings
-      // Overview and My Profile stay open to everyone - general-purpose
-      // pages, not administrative controls.
-      { name: "Configuration", href: "/dashboard/settings/configuration", icon: Settings, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Access Control", href: "/dashboard/settings/access", icon: LockKeyhole, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Website Content", href: "/dashboard/settings/website", icon: FileText, allowedRoles: ["Executive (Admin)", "System Administrator"] },
-      { name: "Audit Log", href: "/dashboard/settings/audit", icon: ShieldCheck, allowedRoles: ["Executive (Admin)", "System Administrator", "External Auditor"] },
-      { name: "Performance", href: "/dashboard/settings/performance", icon: TrendingUp, allowedRoles: ["Executive (Admin)", "System Administrator"] },
+      { name: "Configuration", href: "/dashboard/settings/configuration", icon: Settings, requiredPermission: "settings.update" },
+      { name: "Access Control", href: "/dashboard/settings/access", icon: LockKeyhole, requiredPermission: "settings.update" },
+      { name: "Account Setup", href: "/dashboard/settings/accounts", icon: Building2, requiredPermission: "settings.update" },
+      { name: "Website Content", href: "/dashboard/settings/website", icon: FileText, requiredPermission: "website_content.update" },
+      { name: "Audit Log", href: "/dashboard/settings/audit", icon: ShieldCheck, requiredPermission: "settings.audit.read" },
+      { name: "Performance", href: "/dashboard/settings/performance", icon: TrendingUp, requiredPermission: "crm_tasks.performance.view" },
       { name: "My Profile", href: "/dashboard/profile", icon: User },
     ],
   },
 ];
+
+/** True when the granted set satisfies a requirement (any-of for arrays).
+ * No requirement means open to every signed-in user. */
+export function hasRequiredPermission(
+  granted: ReadonlySet<string> | null | undefined,
+  requirement: PermissionRequirement | undefined,
+): boolean {
+  if (!requirement || (Array.isArray(requirement) && requirement.length === 0)) return true;
+  if (!granted) return false;
+  const keys = Array.isArray(requirement) ? requirement : [requirement];
+  return keys.some((key) => granted.has(key));
+}
+
+/** The permission an item effectively needs (its own, else its group's). */
+export function itemRequirement(group: ModuleGroup, item: ModuleNavItem): PermissionRequirement | undefined {
+  return item.requiredPermission ?? group.requiredPermission;
+}
+
+/** The sidebar a user gets for a set of granted permissions. SUPERADMIN
+ * sees everything. Groups with no visible sub-items are dropped. */
+export function visibleModuleGroups(
+  granted: ReadonlySet<string> | null | undefined,
+  isSuperAdmin: boolean,
+): ModuleGroup[] {
+  return MODULE_GROUPS.map((group) => ({
+    ...group,
+    subItems: group.subItems.filter(
+      (item) => isSuperAdmin || hasRequiredPermission(granted, itemRequirement(group, item)),
+    ),
+  })).filter((group) => group.subItems.length > 0);
+}
+
+/** One row per (sidebar group, permission) for the Settings > Access
+ * Control grid. Derived from MODULE_GROUPS, so every page in the sidebar
+ * is automatically grantable per role - ticking a box there is all it
+ * takes to give a role (built-in or custom) that page. Where a page
+ * accepts several permissions, the first is the one the grid toggles. */
+export type PageAccessEntry = { page: string; route: string; permission: string; module: string };
+
+// Scope permissions that widen what a page shows rather than gating the
+// page itself - listed in the same grid so they're grantable per role.
+const SCOPE_ACCESS_ENTRIES: PageAccessEntry[] = [
+  {
+    page: "All projects (without this, only projects the user is assigned to)",
+    route: "/dashboard/projects",
+    permission: "projects.read_all",
+    module: DOMAIN_META.delivery.label,
+  },
+];
+
+export const PAGE_ACCESS_CATALOGUE: PageAccessEntry[] = [...MODULE_GROUPS.flatMap((group) => {
+  const byKey = new Map<string, ModuleNavItem[]>();
+  for (const item of group.subItems) {
+    const requirement = itemRequirement(group, item);
+    const key = Array.isArray(requirement) ? requirement[0] : requirement;
+    if (!key) continue;
+    byKey.set(key, [...(byKey.get(key) ?? []), item]);
+  }
+  const moduleLabel = group.domain ? DOMAIN_META[group.domain].label : group.name;
+  return Array.from(byKey.entries()).map(([permission, items]) => ({
+    page: items.length === group.subItems.length ? group.name : `${group.name}: ${items.map((item) => item.name).join(", ")}`,
+    route: items[0].href,
+    permission,
+    module: moduleLabel,
+  }));
+}), ...SCOPE_ACCESS_ENTRIES];
+
+/** Permission needed to open a dashboard path: the exact sub-item if one
+ * matches, else the group whose href is the longest prefix (covers detail
+ * pages like /dashboard/projects/123). Undefined = open to signed-in users. */
+export function requiredPermissionForPath(pathname: string | null | undefined): PermissionRequirement | undefined {
+  if (!pathname) return undefined;
+  for (const group of MODULE_GROUPS) {
+    for (const item of group.subItems) {
+      if (item.href === pathname) return itemRequirement(group, item);
+    }
+  }
+  let best: ModuleGroup | null = null;
+  for (const group of MODULE_GROUPS) {
+    if (pathname === group.href || pathname.startsWith(`${group.href}/`)) {
+      if (!best || group.href.length > best.href.length) best = group;
+    }
+  }
+  return best?.requiredPermission;
+}
 
 /** Which domain a dashboard pathname belongs to, by matching the longest
  * group.href prefix - used to carry the domain accent through
