@@ -77,7 +77,7 @@ class CashCurveAssumptions:
     client_payment_days: int = CLIENT_COLLECTION_DAYS_AFTER_SUBMISSION
     supplier_payment_days: int = DEFAULT_SUPPLIER_PAYMENT_DAYS
     subcontractor_payment_days: int = 30
-    finance_rate_pct: float = 15.0
+    finance_rate_pct: float = 15.5
     granularity: str = "auto"
 
     @classmethod
