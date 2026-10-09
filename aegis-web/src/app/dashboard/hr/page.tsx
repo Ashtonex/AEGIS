@@ -22,6 +22,7 @@ const VendorVerificationPanel = dynamic(() => import("./VendorVerificationPanel"
 const OrgChartTabs = dynamic(() => import("./OrgChartTabs").then((m) => m.OrgChartTabs), { loading: PanelLoading });
 const HRFilesPage = dynamic(() => import("./HRFilesPage").then((m) => m.HRFilesPage), { loading: PanelLoading });
 const HRAttendancePage = dynamic(() => import("./HRAttendancePage").then((m) => m.HRAttendancePage), { loading: PanelLoading });
+const PerformancePanel = dynamic(() => import("./PerformancePanel").then((m) => m.PerformancePanel), { loading: PanelLoading });
 const AbsencePanel = dynamic(() => import("./HRAttendancePage").then((m) => m.AbsencePanel), { loading: PanelLoading });
 const HRHome = dynamic(() => import("./HRHome").then((m) => m.HRHome), { loading: PanelLoading });
 const HREmployeeRegister = dynamic(() => import("./HREmployeeRegister").then((m) => m.HREmployeeRegister), { loading: PanelLoading });
@@ -124,7 +125,7 @@ const HR_TAB_SUBTITLES: Partial<Record<HRTab, string>> = {
   recruitment: "Candidates, their assessment scores and onboarding tasks.",
   documents: "Employment contracts and employee documents with expiry dates.",
   credentials: "Certifications, licences, medicals and inductions per employee.",
-  performance: "Performance reviews and disciplinary records.",
+  performance: "Weekly graded scorecards from AEGIS activity, assisted working periods, reviews and disciplinary records.",
   assets: "PPE, tools, vehicles and equipment issued to employees.",
   training: "Training required per role and project, and who has it.",
   "org-chart": "The group and management structure, and who reports to whom.",
@@ -324,6 +325,7 @@ function HRWorkspace({ initialTab }: { initialTab: HRTab }) {
               <OperationList title="Recruitment and onboarding pipeline" rows={[...(operations.recruitment || []), ...(operations.onboarding || [])]} columns={["candidate_name", "employee_name", "role_applied_for", "task_name", "stage", "status", "due_date"]} empty="No recruitment candidates or onboarding tasks have been recorded." />
             </div>
           )}
+          {activeTab === "performance" && <PerformancePanel />}
           {activeTab === "performance" && (
             <OperationList title="Performance reviews and disciplinary records" rows={[...(operations.performance || []), ...(operations.discipline || [])]} columns={["employee_name", "outcome", "rating", "next_review_date", "category", "severity", "status"]} empty="No performance reviews or disciplinary records have been recorded." />
           )}

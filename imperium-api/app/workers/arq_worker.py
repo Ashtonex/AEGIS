@@ -38,6 +38,8 @@ from app.services.finance.tax_calendar import list_deadline_candidates, notify_d
 from app.services.finance import draft_budget_reminders
 from app.services.hr import expiry_alerts as hr_expiry_alerts
 from app.services.hr import time_tracking as hr_time_tracking
+from app.services.hr import performance as hr_performance
+from app.services.hr import performance_delivery as hr_performance_delivery
 from app.services.hr.weekly_report import (
     build_weekly_hr_report,
     is_send_time,
@@ -49,7 +51,7 @@ from app.services.hr.weekly_report import (
 )
 from app.services.workforce_events import dispatch_workforce_events
 from app.events.bus import EventBus
-from app.shared.events import emit_notification
+from app.shared.events import emit_notification, emit_role_notification
 from app.shared.task_stacks import generate_task_stack
 from app.shared import task_routing
 from app.services.microsoft.tender_calendar import cancel_all_for_tender
@@ -854,6 +856,77 @@ async def weekly_hr_report_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def weekly_performance_job(ctx):
+    """Hourly cron: from Friday 07:00 Harare time, scores every organisation's
+    staff on the Friday-Thursday week that just ended
+    (app/services/hr/performance.py) and sends the scorecards. A week is
+    computed once; employee emails are tracked on the scorecard rows, team
+    summaries and the digest on per-week Redis keys, so a failed send is
+    retried by the next hourly run that Friday."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        now = time_now()
+        if not hr_performance.is_send_time(now):
+            return {"skipped": "not Friday 07:00+ Harare time"}
+        _, week_end = hr_performance.scoring_week(now)
+        redis_pool = ctx["redis"]
+        results = {}
+        async with AsyncSessionLocal() as db:
+            org_ids = [str(r[0]) for r in await db.execute(text("""
+                SELECT DISTINCT e.organization_id FROM hr.employees e
+                JOIN core.organizations o ON o.id = e.organization_id AND o.is_deleted = false
+                WHERE e.is_deleted = false AND e.employment_status = 'active' AND e.linked_user_id IS NOT NULL
+            """))]
+            for org_id in org_ids:
+                computed = (await db.execute(text(
+                    "SELECT 1 FROM hr.weekly_scorecards WHERE organization_id = :org AND week_end = :we LIMIT 1"),
+                    {"org": org_id, "we": week_end})).scalar()
+                if not computed:
+                    summary = await hr_performance.compute_week(db, org_id, week_end)
+                    await notify_performance_flags(db, org_id, week_end, summary)
+                    await db.commit()
+
+                async def sent_before(key: str, org_id=org_id) -> bool:
+                    return bool(await redis_pool.get(f"aegis:performance:{org_id}:{week_end.isoformat()}:{key}"))
+
+                async def mark_sent(key: str, org_id=org_id) -> None:
+                    await redis_pool.setex(f"aegis:performance:{org_id}:{week_end.isoformat()}:{key}", 14 * 86400, "sent")
+
+                results[org_id] = await hr_performance_delivery.deliver_week(
+                    db, org_id, week_end, sent_before=sent_before, mark_sent=mark_sent)
+        return {"week_end": week_end.isoformat(), "results": results}
+    except Exception as exc:
+        logger.exception(f"Weekly performance scorecards failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def notify_performance_flags(db, org_id: str, week_end, summary: dict) -> None:
+    """In-app notices when a live week opens an assisted working period or
+    escalates one: to the supervising line manager and to HR."""
+    if summary.get("mode") != "live":
+        return
+    flagged = [("assisted_opened", "Assisted working period opened"), ("escalated", "Escalated to HR")]
+    rows = await db.execute(text("""
+        SELECT s.standing, e.employee_name, m.linked_user_id AS manager_user_id
+        FROM hr.weekly_scorecards s JOIN hr.employees e ON e.id = s.employee_id
+        LEFT JOIN hr.employees m ON m.id = s.line_manager_employee_id
+        WHERE s.organization_id = :org AND s.week_end = :we AND s.standing IN ('assisted_opened', 'escalated')
+    """), {"org": org_id, "we": week_end})
+    for row in rows.mappings():
+        title = f"{dict(flagged)[row['standing']]}: {row['employee_name']}"
+        message = f"Weekly performance, week ending {week_end:%d %b}."
+        if row["manager_user_id"]:
+            await emit_notification(db, org_id=org_id, user_id=str(row["manager_user_id"]), title=title, message=message,
+                                    notification_type="hr_performance", priority="high",
+                                    action_url="/dashboard/hr/performance")
+        await emit_role_notification(db, org_id=org_id, role_names=["HR Manager", "HR Officer", "Executive (Admin)"],
+                                     title=title, message=message, notification_type="hr_performance", priority="high",
+                                     action_url="/dashboard/hr/performance")
+
+
 def time_now():
     from datetime import datetime, timezone
 
@@ -1054,6 +1127,7 @@ class WorkerSettings:
         run_ccb_weekly_boq_pace_variance_check_job,
         check_tax_deadline_alerts_job,
         weekly_hr_report_job,
+        weekly_performance_job,
         run_ccb_gl_proposal_stale_review_check_job,
         run_ccb_labour_headcount_mismatch_check_job,
         run_ccb_fuel_hours_variance_check_job,
@@ -1100,6 +1174,8 @@ class WorkerSettings:
         cron(check_tax_deadline_alerts_job, hour=4, minute=0, run_at_startup=False),
         # Hourly; the job itself only sends from Friday 16:00 Harare time.
         cron(weekly_hr_report_job, minute=5, run_at_startup=False),
+        # Hourly; the job itself only runs from Friday 07:00 Harare time.
+        cron(weekly_performance_job, minute=10, run_at_startup=False),
         cron(
             run_ccb_gl_proposal_stale_review_check_job,
             hour=3,

@@ -16,6 +16,7 @@ export * from "./api/hr";
 export * from "./api/people";
 export * from "./api/hr-files";
 export * from "./api/hr-time";
+export * from "./api/hr-performance";
 export * from "./api/compliance";
 export * from "./api/documents";
 export * from "./api/reports";

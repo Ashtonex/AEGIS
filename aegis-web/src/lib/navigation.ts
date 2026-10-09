@@ -200,6 +200,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "People Register", href: "/dashboard/workforce/people", icon: Users, requiredPermission: "workforce.people.read" },
       { name: "Reporting Lines", href: "/dashboard/workforce/organisation", icon: Users, requiredPermission: "workforce.organisation.read" },
       { name: "My Profile", href: "/dashboard/workforce/me", icon: Users },
+      { name: "My Performance", href: "/dashboard/workforce/my-performance", icon: Activity },
     ],
   },
   {

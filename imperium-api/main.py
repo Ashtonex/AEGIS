@@ -22,6 +22,7 @@ from routers import finance_ops
 from routers import hr_people
 from routers import hr_files
 from routers import hr_time
+from routers import hr_performance
 from routers import site_day
 from routers import corporate_credentials
 from routers import tender_requirement_templates
@@ -169,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(hr_people.router, prefix="/api/v1/hr/people", tags=["Hr People"])
     app.include_router(hr_files.router, prefix="/api/v1/hr/files", tags=["Hr Files"])
     app.include_router(hr_time.router, prefix="/api/v1/hr/time", tags=["Hr Time"])
+    app.include_router(hr_performance.router, prefix="/api/v1/hr/performance", tags=["Hr Performance"])
     app.include_router(site_day.hr_router, prefix="/api/v1/hr/project-hires", tags=["Hr Project Hires"])
     app.include_router(hr_verification.router, prefix="/api/v1/hr/vendor-verification", tags=["Hr Vendor Verification"])
     from routers import compliance_foundation
