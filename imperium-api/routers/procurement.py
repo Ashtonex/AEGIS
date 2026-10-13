@@ -3,6 +3,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 import json
+import logging
 from typing import Any, Literal, Optional
 from uuid import UUID
 
@@ -23,6 +24,8 @@ from app.services.finance.general_ledger import GeneralLedgerError
 from app.services.quotations.intelligence_engine import RateIntelligenceEngine, CommercialGuard
 from app.shared.events import emit_notification, emit_role_notification
 from app.shared.project_setup import ensure_project_operational_setup
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -423,137 +426,179 @@ async def get_supply_control_tower_kpis(
     """
     org_id = user["org_id"]
 
+    critical_low_stock = {
+        "count": 0,
+        "out_of_stock": 0,
+        "store_id": str(store_id) if store_id else None,
+    }
+    expected_deliveries = {
+        "count": 0,
+        "overdue_count": 0,
+        "value": 0.0,
+        "currency": "USD",
+    }
+    pending_approvals = {
+        "total": 0,
+        "requisitions": 0,
+        "orders": 0,
+    }
+    unmatched_invoices = {
+        "count": 0,
+        "disputed_count": 0,
+        "value": 0.0,
+        "currency": "USD",
+    }
+    financial_commitments = {
+        "committed_amount": 0.0,
+        "approved_budget": 0.0,
+        "currency": "USD",
+    }
+
     # 1. Critical Low Stock items (at or below reorder level in usable state)
-    low_stock_row = (
-        await db.execute(
-            text("""
-            WITH item_balances AS (
-                SELECT sl.item_id, COALESCE(SUM(sl.quantity), 0) AS total_qty
-                FROM procurement.stock_ledger sl
-                WHERE sl.organization_id = CAST(:org_id AS uuid)
-                  AND (CAST(:store_id AS uuid) IS NULL OR sl.store_id = CAST(:store_id AS uuid))
-                GROUP BY sl.item_id
+    try:
+        low_stock_row = (
+            await db.execute(
+                text("""
+                WITH item_balances AS (
+                    SELECT sl.item_id, COALESCE(SUM(sl.quantity), 0) AS total_qty
+                    FROM procurement.stock_ledger sl
+                    WHERE sl.organization_id = CAST(:org_id AS uuid)
+                      AND (CAST(:store_id AS uuid) IS NULL OR sl.store_id = CAST(:store_id AS uuid))
+                    GROUP BY sl.item_id
+                )
+                SELECT COUNT(i.id) AS low_stock_count,
+                       COALESCE(SUM(CASE WHEN COALESCE(b.total_qty, 0) = 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count
+                FROM procurement.inventory_items i
+                LEFT JOIN item_balances b ON b.item_id = i.id
+                WHERE i.organization_id = CAST(:org_id AS uuid)
+                  AND i.is_deleted = false
+                  AND COALESCE(i.reorder_level, 0) > 0
+                  AND COALESCE(b.total_qty, 0) <= COALESCE(i.reorder_level, 0)
+            """),
+                {"org_id": org_id, "store_id": store_id},
             )
-            SELECT COUNT(i.id) AS low_stock_count,
-                   COALESCE(SUM(CASE WHEN COALESCE(b.total_qty, 0) = 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count
-            FROM procurement.inventory_items i
-            LEFT JOIN item_balances b ON b.item_id = i.id
-            WHERE i.organization_id = CAST(:org_id AS uuid)
-              AND i.is_deleted = false
-              AND COALESCE(b.total_qty, 0) <= COALESCE(i.reorder_level, 0)
-        """),
-            {"org_id": org_id, "store_id": store_id},
-        )
-    ).mappings().first()
+        ).mappings().first()
+        if low_stock_row:
+            critical_low_stock["count"] = int(low_stock_row["low_stock_count"] or 0)
+            critical_low_stock["out_of_stock"] = int(low_stock_row["out_of_stock_count"] or 0)
+    except Exception as exc:
+        logger.warning("Failed to calculate low stock KPIs: %s", exc)
 
     # 2. Expected Deliveries & In-Transit (POs issued or partially received)
-    deliveries_row = (
-        await db.execute(
-            text("""
-            SELECT COUNT(po.id) AS pending_deliveries_count,
-                   COALESCE(SUM(po.total_amount), 0) AS pending_deliveries_value,
-                   COALESCE(SUM(CASE WHEN po.expected_delivery_date < CURRENT_DATE THEN 1 ELSE 0 END), 0) AS overdue_deliveries_count
-            FROM procurement.purchase_orders po
-            WHERE po.organization_id = CAST(:org_id AS uuid)
-              AND po.is_deleted = false
-              AND po.status IN ('issued', 'partially_received')
-              AND (CAST(:project_id AS uuid) IS NULL OR po.project_id = CAST(:project_id AS uuid))
-        """),
-            {"org_id": org_id, "project_id": project_id},
-        )
-    ).mappings().first()
+    try:
+        deliveries_row = (
+            await db.execute(
+                text("""
+                SELECT COUNT(po.id) AS pending_deliveries_count,
+                       COALESCE(SUM(po.total_amount), 0) AS pending_deliveries_value,
+                       COALESCE(SUM(CASE WHEN po.required_by_date IS NOT NULL AND po.required_by_date < CURRENT_DATE THEN 1 ELSE 0 END), 0) AS overdue_deliveries_count
+                FROM procurement.purchase_orders po
+                WHERE po.organization_id = CAST(:org_id AS uuid)
+                  AND po.is_deleted = false
+                  AND po.status IN ('issued', 'partially_received')
+                  AND (CAST(:project_id AS uuid) IS NULL OR po.project_id = CAST(:project_id AS uuid))
+            """),
+                {"org_id": org_id, "project_id": project_id},
+            )
+        ).mappings().first()
+        if deliveries_row:
+            expected_deliveries["count"] = int(deliveries_row["pending_deliveries_count"] or 0)
+            expected_deliveries["overdue_count"] = int(deliveries_row["overdue_deliveries_count"] or 0)
+            expected_deliveries["value"] = float(deliveries_row["pending_deliveries_value"] or 0)
+    except Exception as exc:
+        logger.warning("Failed to calculate delivery KPIs: %s", exc)
 
     # 3. Decisions Awaiting Approval (Requisitions submitted + POs awaiting approval)
-    approvals_row = (
-        await db.execute(
-            text("""
-            SELECT
-                (SELECT COUNT(id) FROM procurement.purchase_requisitions
-                 WHERE organization_id = CAST(:org_id AS uuid)
-                   AND is_deleted = false
-                   AND status = 'submitted'
-                   AND (CAST(:project_id AS uuid) IS NULL OR project_id = CAST(:project_id AS uuid))) AS pending_requisitions,
-                (SELECT COUNT(id) FROM procurement.purchase_orders
-                 WHERE organization_id = CAST(:org_id AS uuid)
-                   AND is_deleted = false
-                   AND status = 'draft'
-                   AND (CAST(:project_id AS uuid) IS NULL OR project_id = CAST(:project_id AS uuid))) AS pending_orders
-        """),
-            {"org_id": org_id, "project_id": project_id},
-        )
-    ).mappings().first()
+    try:
+        approvals_row = (
+            await db.execute(
+                text("""
+                SELECT
+                    (SELECT COUNT(id) FROM procurement.purchase_requisitions
+                     WHERE organization_id = CAST(:org_id AS uuid)
+                       AND is_deleted = false
+                       AND status = 'submitted'
+                       AND (CAST(:project_id AS uuid) IS NULL OR project_id = CAST(:project_id AS uuid))) AS pending_requisitions,
+                    (SELECT COUNT(id) FROM procurement.purchase_orders
+                     WHERE organization_id = CAST(:org_id AS uuid)
+                       AND is_deleted = false
+                       AND status = 'draft'
+                       AND (CAST(:project_id AS uuid) IS NULL OR project_id = CAST(:project_id AS uuid))) AS pending_orders
+            """),
+                {"org_id": org_id, "project_id": project_id},
+            )
+        ).mappings().first()
+        if approvals_row:
+            req_cnt = int(approvals_row["pending_requisitions"] or 0)
+            ord_cnt = int(approvals_row["pending_orders"] or 0)
+            pending_approvals["requisitions"] = req_cnt
+            pending_approvals["orders"] = ord_cnt
+            pending_approvals["total"] = req_cnt + ord_cnt
+    except Exception as exc:
+        logger.warning("Failed to calculate approval KPIs: %s", exc)
 
     # 4. Unmatched & Disputed Invoices
-    invoices_row = (
-        await db.execute(
-            text("""
-            SELECT COUNT(inv.id) AS unmatched_invoices_count,
-                   COALESCE(SUM(inv.total_amount), 0) AS unmatched_invoices_value,
-                   COALESCE(SUM(CASE WHEN inv.match_status IN ('over_invoice', 'disputed') THEN 1 ELSE 0 END), 0) AS disputed_invoices_count
-            FROM procurement.supplier_invoices inv
-            WHERE inv.organization_id = CAST(:org_id AS uuid)
-              AND inv.is_deleted = false
-              AND inv.match_status IN ('unmatched', 'partial_match', 'over_invoice', 'disputed')
-              AND (CAST(:project_id AS uuid) IS NULL OR inv.project_id = CAST(:project_id AS uuid))
-        """),
-            {"org_id": org_id, "project_id": project_id},
-        )
-    ).mappings().first()
+    try:
+        invoices_row = (
+            await db.execute(
+                text("""
+                SELECT COUNT(inv.id) AS unmatched_invoices_count,
+                       COALESCE(SUM(inv.total_amount), 0) AS unmatched_invoices_value,
+                       COALESCE(SUM(CASE WHEN inv.match_status IN ('over_invoice', 'disputed') THEN 1 ELSE 0 END), 0) AS disputed_invoices_count
+                FROM procurement.supplier_invoices inv
+                WHERE inv.organization_id = CAST(:org_id AS uuid)
+                  AND inv.is_deleted = false
+                  AND inv.match_status IN ('unmatched', 'partial_match', 'over_invoice', 'disputed')
+                  AND (CAST(:project_id AS uuid) IS NULL OR inv.project_id = CAST(:project_id AS uuid))
+            """),
+                {"org_id": org_id, "project_id": project_id},
+            )
+        ).mappings().first()
+        if invoices_row:
+            unmatched_invoices["count"] = int(invoices_row["unmatched_invoices_count"] or 0)
+            unmatched_invoices["disputed_count"] = int(invoices_row["disputed_invoices_count"] or 0)
+            unmatched_invoices["value"] = float(invoices_row["unmatched_invoices_value"] or 0)
+    except Exception as exc:
+        logger.warning("Failed to calculate invoice KPIs: %s", exc)
 
     # 5. Financial Commitments vs Active Project Budgets
-    financials_row = (
-        await db.execute(
-            text("""
-            SELECT
-                COALESCE((
-                    SELECT SUM(c.committed_amount)
-                    FROM finance.commitments c
-                    WHERE c.organization_id = CAST(:org_id AS uuid)
-                      AND c.is_deleted = false
-                      AND c.status <> 'cancelled'
-                      AND (CAST(:project_id AS uuid) IS NULL OR c.project_id = CAST(:project_id AS uuid))
-                ), 0) AS total_committed,
-                COALESCE((
-                    SELECT SUM(pb.total_amount)
-                    FROM finance.project_budgets pb
-                    WHERE pb.organization_id = CAST(:org_id AS uuid)
-                      AND pb.is_deleted = false
-                      AND pb.status = 'approved'
-                      AND (CAST(:project_id AS uuid) IS NULL OR pb.project_id = CAST(:project_id AS uuid))
-                ), 0) AS total_approved_budget
-        """),
-            {"org_id": org_id, "project_id": project_id},
-        )
-    ).mappings().first()
+    try:
+        financials_row = (
+            await db.execute(
+                text("""
+                SELECT
+                    COALESCE((
+                        SELECT SUM(c.committed_amount)
+                        FROM finance.commitments c
+                        WHERE c.organization_id = CAST(:org_id AS uuid)
+                          AND c.is_deleted = false
+                          AND c.status <> 'cancelled'
+                          AND (CAST(:project_id AS uuid) IS NULL OR c.project_id = CAST(:project_id AS uuid))
+                    ), 0) AS total_committed,
+                    COALESCE((
+                        SELECT SUM(pb.total_amount)
+                        FROM finance.project_budgets pb
+                        WHERE pb.organization_id = CAST(:org_id AS uuid)
+                          AND pb.is_deleted = false
+                          AND pb.status = 'approved'
+                          AND (CAST(:project_id AS uuid) IS NULL OR pb.project_id = CAST(:project_id AS uuid))
+                    ), 0) AS total_approved_budget
+            """),
+                {"org_id": org_id, "project_id": project_id},
+            )
+        ).mappings().first()
+        if financials_row:
+            financial_commitments["committed_amount"] = float(financials_row["total_committed"] or 0)
+            financial_commitments["approved_budget"] = float(financials_row["total_approved_budget"] or 0)
+    except Exception as exc:
+        logger.warning("Failed to calculate financial commitments KPIs: %s", exc)
 
     data = {
-        "critical_low_stock": {
-            "count": int(low_stock_row["low_stock_count"] or 0),
-            "out_of_stock": int(low_stock_row["out_of_stock_count"] or 0),
-            "store_id": str(store_id) if store_id else None,
-        },
-        "expected_deliveries": {
-            "count": int(deliveries_row["pending_deliveries_count"] or 0),
-            "overdue_count": int(deliveries_row["overdue_deliveries_count"] or 0),
-            "value": float(deliveries_row["pending_deliveries_value"] or 0),
-            "currency": "USD",
-        },
-        "pending_approvals": {
-            "total": int(approvals_row["pending_requisitions"] or 0) + int(approvals_row["pending_orders"] or 0),
-            "requisitions": int(approvals_row["pending_requisitions"] or 0),
-            "orders": int(approvals_row["pending_orders"] or 0),
-        },
-        "unmatched_invoices": {
-            "count": int(invoices_row["unmatched_invoices_count"] or 0),
-            "disputed_count": int(invoices_row["disputed_invoices_count"] or 0),
-            "value": float(invoices_row["unmatched_invoices_value"] or 0),
-            "currency": "USD",
-        },
-        "financial_commitments": {
-            "committed_amount": float(financials_row["total_committed"] or 0),
-            "approved_budget": float(financials_row["total_approved_budget"] or 0),
-            "currency": "USD",
-        },
+        "critical_low_stock": critical_low_stock,
+        "expected_deliveries": expected_deliveries,
+        "pending_approvals": pending_approvals,
+        "unmatched_invoices": unmatched_invoices,
+        "financial_commitments": financial_commitments,
     }
 
     return ok(data, "Supply control tower KPIs calculated.")
