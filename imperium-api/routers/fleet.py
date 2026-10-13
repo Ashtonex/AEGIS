@@ -25,6 +25,7 @@ from app.shared.sql import (
     update_tenant_row_sql,
 )
 from app.services.finance.department_transfers import post_department_transfer
+from app.services import inventory_service
 from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
@@ -270,11 +271,17 @@ class WorkOrderPayload(Payload):
     work_order_number: str = Field(min_length=1, max_length=100)
     maintenance_type: Literal["preventive", "corrective", "inspection", "compliance"]
     priority: Literal["low", "medium", "high", "critical"] = "medium"
+    status: Literal["reported", "scheduled", "in_progress", "completed", "closed"] = "scheduled"
     vendor_name: Optional[str] = Field(default=None, max_length=255)
     scheduled_for: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     estimated_cost: Optional[Decimal] = Field(
         default=None, ge=0, max_digits=15, decimal_places=2
     )
+    actual_cost: Optional[Decimal] = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
+    completion_notes: Optional[str] = None
     description: str = Field(min_length=1)
 
 
@@ -1920,8 +1927,15 @@ async def create_work_order(
     )
     try:
         row = await db.execute(
-            text("""INSERT INTO fleet.maintenance_work_orders (organization_id,fleet_id,defect_id,work_order_number,maintenance_type,priority,vendor_name,scheduled_for,estimated_cost,description,created_by)
-            VALUES (:org_id,:fleet_id,:defect_id,:work_order_number,:maintenance_type,:priority,:vendor_name,:scheduled_for,:estimated_cost,:description,:user_id) RETURNING id"""),
+            text("""INSERT INTO fleet.maintenance_work_orders (
+                organization_id, fleet_id, defect_id, work_order_number, maintenance_type,
+                priority, status, vendor_name, scheduled_for, completed_at, estimated_cost,
+                actual_cost, completion_notes, description, created_by
+            ) VALUES (
+                :org_id, :fleet_id, :defect_id, :work_order_number, :maintenance_type,
+                :priority, :status, :vendor_name, :scheduled_for, :completed_at, :estimated_cost,
+                :actual_cost, :completion_notes, :description, :user_id
+            ) RETURNING id"""),
             {**payload.model_dump(), "org_id": user["org_id"], "user_id": user["sub"]},
         )
         await db.commit()
@@ -2269,6 +2283,49 @@ async def record_fuel(
             "org_id": user["org_id"],
         },
     )
+
+    # If storage_tank matches an active store and fuel item exists in inventory, deduct from store stock
+    if payload.storage_tank:
+        tank_store = await db.execute(
+            text("""
+            SELECT id FROM procurement.stores
+            WHERE organization_id=:org_id AND is_deleted=false
+              AND (name ILIKE :tank OR store_code ILIKE :tank OR location_label ILIKE :tank)
+            LIMIT 1
+            """),
+            {"org_id": user["org_id"], "tank": f"%{payload.storage_tank}%"},
+        )
+        tank_store_id = tank_store.scalar()
+        if tank_store_id:
+            fuel_item = await db.execute(
+                text("""
+                SELECT id, standard_cost FROM procurement.inventory_items
+                WHERE organization_id=:org_id AND is_deleted=false
+                  AND (item_name ILIKE :fuel_type OR item_code ILIKE :fuel_type OR category ILIKE '%fuel%')
+                LIMIT 1
+                """),
+                {"org_id": user["org_id"], "fuel_type": f"%{payload.fuel_type}%"},
+            )
+            fuel_item_row = fuel_item.mappings().first()
+            if fuel_item_row:
+                try:
+                    await inventory_service.issue_stock(
+                        db,
+                        user,
+                        item_id=fuel_item_row["id"],
+                        store_id=tank_store_id,
+                        project_id=project_id,
+                        quantity=payload.quantity_litres,
+                        unit_cost=unit_cost or Decimal(str(fuel_item_row["standard_cost"] or "0")),
+                        source_type="fleet_fuel_transaction",
+                        source_id=fuel_id,
+                        reference=f"FUEL-{payload.receipt_reference or str(fuel_id)[:8]}",
+                        cost_category="equipment",
+                        cost_description=f"Equipment fuel from {payload.storage_tank}: {payload.quantity_litres}L {payload.fuel_type}",
+                    )
+                except Exception:
+                    pass
+
     cost_id = await post_equipment_cost(
         db,
         user=user,

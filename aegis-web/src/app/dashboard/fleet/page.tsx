@@ -29,6 +29,7 @@ import {
   ShieldAlert,
   Truck,
   Wrench,
+  X,
   XCircle,
 } from "lucide-react";
 
@@ -206,7 +207,11 @@ function FleetTrackerDashboard() {
     [data.fleet]
   );
   const deploymentGateChecks = useMemo(
-    () => (Array.isArray(data.gates?.data) ? data.gates.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    () => (Array.isArray(data.gates?.data)
+      ? data.gates.data.filter((item): item is FleetRecord =>
+          Boolean(item && typeof item === "object" && item.id && (Boolean(item.fleet_id) || item.gate_type === "equipment_assignment"))
+        )
+      : []),
     [data.gates]
   );
   const plantRequests = useMemo(
@@ -296,19 +301,47 @@ function FleetTrackerDashboard() {
   useLiveTable("fleet.fleet", () => void loadFleet());
   useLiveTable("fleet.plant_requests", () => void loadFleet());
 
+  const [categoryTab, setCategoryTab] = useState<"all" | "plant_equipment" | "office" | "vehicles">("all");
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+
   useEffect(() => {
-    setSelectedId(current => assets.some(asset => asset.id === current) ? current : (assets[0]?.id ?? null));
+    setSelectedId(current => assets.some(asset => asset.id === current) ? current : null);
   }, [assets]);
 
   useEffect(() => {
     if (!loading && !error) setLastUpdated(new Date());
   }, [loading, error]);
 
+  const isOfficeAsset = (asset: FleetRecord) => {
+    const cat = text(asset, "asset_category", "category").toLowerCase();
+    const type = text(asset, "type", "asset_type", "vehicle_type").toLowerCase();
+    return cat.includes("office") || cat.includes("computer") || cat.includes("it") || cat.includes("furniture") ||
+      type.includes("printer") || type.includes("laptop") || type.includes("computer") || type.includes("desk");
+  };
+
+  const isVehicleAsset = (asset: FleetRecord) => {
+    const cat = text(asset, "asset_category", "category").toLowerCase();
+    const vt = text(asset, "vehicle_type", "type", "asset_type").toLowerCase();
+    return cat.includes("truck") || cat.includes("light vehicle") || cat.includes("commercial vehicle") ||
+      ["truck", "trailer", "pickup", "sedan", "hatchback", "car", "bakkie", "horse"].includes(vt);
+  };
+
+  const isPlantEquipmentAsset = (asset: FleetRecord) => {
+    return !isOfficeAsset(asset) && !isVehicleAsset(asset);
+  };
+
+  const officeCount = useMemo(() => assets.filter(isOfficeAsset).length, [assets]);
+  const vehicleCount = useMemo(() => assets.filter(isVehicleAsset).length, [assets]);
+  const plantEquipmentCount = useMemo(() => assets.filter(isPlantEquipmentAsset).length, [assets]);
+
   const statuses = useMemo(() => Array.from(new Set(assets.map(normalizedStatus).filter(Boolean))).sort(), [assets]);
   const filteredAssets = useMemo(() => assets.filter(asset => {
+    if (categoryTab === "office" && !isOfficeAsset(asset)) return false;
+    if (categoryTab === "vehicles" && !isVehicleAsset(asset)) return false;
+    if (categoryTab === "plant_equipment" && !isPlantEquipmentAsset(asset)) return false;
     const searchable = [assetName(asset), assetReference(asset), text(asset, "type", "asset_type", "make", "model", "location", "site")].join(" ").toLowerCase();
     return (statusFilter === "all" || normalizedStatus(asset) === statusFilter) && searchable.includes(query.trim().toLowerCase());
-  }), [assets, query, statusFilter]);
+  }), [assets, query, statusFilter, categoryTab]);
   const selected = assets.find(asset => asset.id === selectedId) ?? null;
   const selectedGateChecks = useMemo(() => selected ? deploymentGateChecks.filter(gate => String(gate.fleet_id ?? "") === selected.id) : [], [deploymentGateChecks, selected]);
 
@@ -580,7 +613,39 @@ function FleetTrackerDashboard() {
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.9fr)]">
             <section className="border border-ink-mid bg-ink">
               <div className="flex flex-col gap-3 border-b border-ink-mid p-4 lg:flex-row lg:items-center lg:justify-between">
-                <div><h2 className="text-sm font-semibold">Asset register</h2><p className="mt-1 text-xs text-slate-light">Select an asset to inspect persisted operational records.</p></div>
+                <div>
+                  <h2 className="text-sm font-semibold">Asset register</h2>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("all")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "all" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      All ({assets.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("plant_equipment")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "plant_equipment" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Plant & Equipment ({plantEquipmentCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("office")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "office" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Office Assets ({officeCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("vehicles")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "vehicles" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Vehicles ({vehicleCount})
+                    </button>
+                  </div>
+                </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2"><Search size={14} className="text-slate" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search assets" className="w-full bg-transparent text-xs text-paper outline-none placeholder:text-slate sm:w-36" /></label>
                   <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2"><Filter size={14} className="text-slate" /><select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="bg-transparent text-xs text-paper outline-none"><option value="all">All states</option>{statuses.map(status => <option key={status} value={status}>{status}</option>)}</select></label>
@@ -600,7 +665,7 @@ function FleetTrackerDashboard() {
                   </TableHeader>
                   <tbody>
                     {filteredAssets.map(asset => (
-                      <TableRow key={asset.id} onClick={() => setSelectedId(asset.id)} className={`cursor-pointer ${asset.id === selectedId ? "bg-ink" : ""}`}>
+                      <TableRow key={asset.id} onClick={() => { setSelectedId(asset.id); setDetailModalOpen(true); }} className={`cursor-pointer ${asset.id === selectedId ? "bg-ink-light border-l-2 border-l-signal" : ""}`}>
                         <TableCell><p className="font-medium text-paper">{assetName(asset)}</p><p className="mt-1 font-mono text-[10px] text-slate">{assetReference(asset)}</p></TableCell>
                         <TableCell>{text(asset, "type", "asset_type", "category") || "Not recorded"}</TableCell>
                         <TableCell><StatusPill record={asset} /></TableCell>
@@ -660,14 +725,34 @@ function FleetTrackerDashboard() {
             )}
           </section>
 
-          {selected && (
-            <AssetDetail
-              selected={selected}
-              gateChecks={selectedGateChecks}
-              onDeploy={() => setModal("deploy")}
-              onWorkOrder={() => setModal("work-order")}
-              onEdit={() => setModal("edit")}
-            />
+          {detailModalOpen && selected && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm p-4">
+              <div className="relative max-h-[92vh] w-full max-w-4xl overflow-y-auto border border-ink-mid bg-ink shadow-2xl">
+                <div className="sticky top-0 z-20 flex items-center justify-between border-b border-ink-mid bg-ink px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-signal uppercase tracking-wider">{assetReference(selected)}</span>
+                    <h2 className="text-sm font-semibold text-paper">{assetName(selected)}</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDetailModalOpen(false)}
+                    className="rounded p-1 text-slate hover:bg-ink-light hover:text-paper"
+                    title="Close"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="p-4">
+                  <AssetDetail
+                    selected={selected}
+                    gateChecks={selectedGateChecks}
+                    onDeploy={() => setModal("deploy")}
+                    onWorkOrder={() => setModal("work-order")}
+                    onEdit={() => setModal("edit")}
+                  />
+                </div>
+              </div>
+            </div>
           )}
         </>}
       </div>

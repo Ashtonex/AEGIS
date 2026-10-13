@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, Building2, ChevronRight, MapPin, Plus, Search, Settings2, Store, Truck, Warehouse, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, Building2, ChevronRight, Loader2, MapPin, Plus, Search, Settings2, Sparkles, Store, Truck, Warehouse, Wrench, X } from "lucide-react";
 import { tx, num, money, qty, itemType, normalizeInventoryCategory, stockValue, dateShort, Loading, Empty, MovBadge, type Rec } from "./page";
+import { generateReplenishmentDrafts } from "@/lib/api/procurement";
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
@@ -92,6 +93,31 @@ export function StockLevelsTab({
 
   const changeHealth = (v: "all" | "low" | "out") => { setHealth(v); setBelowReorder(false); };
   const watchlist = [...out, ...low];
+
+  const [replenishing, setReplenishing] = useState(false);
+  const [replenishSuccess, setReplenishSuccess] = useState<{ message: string; reqNumber: string } | null>(null);
+
+  const handleGenerateReplenishment = async () => {
+    try {
+      setReplenishing(true);
+      setReplenishSuccess(null);
+      const res = await generateReplenishmentDrafts({
+        store_id: storeFilter || undefined,
+      });
+      if (res.data) {
+        setReplenishSuccess({
+          message: `Draft PR ${res.data.requisition_number} generated (${res.data.items_count} items, $${res.data.total_estimated.toLocaleString()})`,
+          reqNumber: res.data.requisition_number,
+        });
+      } else {
+        alert(res.message || "No items were eligible for replenishment.");
+      }
+    } catch (err: any) {
+      alert(err?.message || "Failed to generate replenishment requisition.");
+    } finally {
+      setReplenishing(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -183,6 +209,33 @@ export function StockLevelsTab({
             <h2 className="flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-wider text-paper"><AlertTriangle className="h-4 w-4 text-amber-300" /> Reorder watchlist</h2>
             <span className="font-mono text-[10px] text-slate">{watchlist.length}</span>
           </div>
+          {watchlist.length > 0 && (
+            <div className="border-b border-ink-mid p-3 bg-amber-950/20">
+              <p className="text-[11px] text-amber-200/90 leading-tight mb-2">
+                {watchlist.length} stocked item{watchlist.length === 1 ? "" : "s"} below safety threshold. Generate a draft purchase requisition:
+              </p>
+              <button
+                type="button"
+                onClick={handleGenerateReplenishment}
+                disabled={replenishing}
+                className="w-full inline-flex items-center justify-center gap-2 border border-signal/60 bg-signal/15 px-3 py-2 font-mono text-xs font-bold uppercase text-signal hover:bg-signal/25 disabled:opacity-50 transition-colors"
+              >
+                {replenishing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                <span>Auto-Draft Replenishment PR</span>
+              </button>
+              {replenishSuccess && (
+                <div className="mt-2 p-2 border border-emerald-500/30 bg-emerald-950/40 text-[11px] text-emerald-300">
+                  <p className="font-semibold">{replenishSuccess.message}</p>
+                  <a
+                    href="/dashboard/procurement/requisitions"
+                    className="inline-flex items-center gap-1 font-mono text-[10px] text-signal hover:underline mt-1"
+                  >
+                    View in Requisitions <ArrowRight className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
           {watchlist.length === 0 ? (
             <p className="p-6 text-center text-sm text-slate-light">Every stocked line is above its reorder level.</p>
           ) : (

@@ -31,6 +31,7 @@ import {
 import dynamic from "next/dynamic";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { Skeleton } from "@/components/ui/Skeleton";
 import {
   addInventoryItem,
@@ -478,6 +479,8 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
           </>
         }
       />
+
+      <SupplyControlTower currentModule="inventory" />
 
       {error && <Banner tone="error" message={error} />}
       {sourceWarnings.length > 0 && (

@@ -1,6 +1,6 @@
 """Procurement control tower workflow APIs."""
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import json
 from typing import Any, Literal, Optional
@@ -57,6 +57,12 @@ class RequisitionCreate(Payload):
     priority: Literal["low", "normal", "urgent", "emergency"] = "normal"
     justification: Optional[str] = None
     line_items: list[RequisitionLinePayload] = Field(min_length=1)
+
+
+class ReplenishmentDraftPayload(Payload):
+    store_id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
+    item_ids: Optional[list[UUID]] = None
 
 
 class DecisionPayload(Payload):
@@ -403,6 +409,156 @@ async def ensure_current_weekly_budget(
     return budget_id
 
 
+@router.get("/control-tower")
+async def get_supply_control_tower_kpis(
+    project_id: Optional[UUID] = None,
+    store_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("procurement.requisition.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Supply Control Tower unified KPI summary for Procurement and Inventory.
+    Calculates operational health indicators server-side across inventory, requisitions,
+    open deliveries, invoices, and budget commitment headroom.
+    """
+    org_id = user["org_id"]
+
+    # 1. Critical Low Stock items (at or below reorder level in usable state)
+    low_stock_row = (
+        await db.execute(
+            text("""
+            WITH item_balances AS (
+                SELECT sl.item_id, COALESCE(SUM(sl.quantity), 0) AS total_qty
+                FROM procurement.stock_ledger sl
+                WHERE sl.organization_id = CAST(:org_id AS uuid)
+                  AND (CAST(:store_id AS uuid) IS NULL OR sl.store_id = CAST(:store_id AS uuid))
+                GROUP BY sl.item_id
+            )
+            SELECT COUNT(i.id) AS low_stock_count,
+                   COALESCE(SUM(CASE WHEN COALESCE(b.total_qty, 0) = 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count
+            FROM procurement.inventory_items i
+            LEFT JOIN item_balances b ON b.item_id = i.id
+            WHERE i.organization_id = CAST(:org_id AS uuid)
+              AND i.is_deleted = false
+              AND COALESCE(b.total_qty, 0) <= COALESCE(i.reorder_level, 0)
+        """),
+            {"org_id": org_id, "store_id": store_id},
+        )
+    ).mappings().first()
+
+    # 2. Expected Deliveries & In-Transit (POs issued or partially received)
+    deliveries_row = (
+        await db.execute(
+            text("""
+            SELECT COUNT(po.id) AS pending_deliveries_count,
+                   COALESCE(SUM(po.total_amount), 0) AS pending_deliveries_value,
+                   COALESCE(SUM(CASE WHEN po.expected_delivery_date < CURRENT_DATE THEN 1 ELSE 0 END), 0) AS overdue_deliveries_count
+            FROM procurement.purchase_orders po
+            WHERE po.organization_id = CAST(:org_id AS uuid)
+              AND po.is_deleted = false
+              AND po.status IN ('issued', 'partially_received')
+              AND (CAST(:project_id AS uuid) IS NULL OR po.project_id = CAST(:project_id AS uuid))
+        """),
+            {"org_id": org_id, "project_id": project_id},
+        )
+    ).mappings().first()
+
+    # 3. Decisions Awaiting Approval (Requisitions submitted + POs awaiting approval)
+    approvals_row = (
+        await db.execute(
+            text("""
+            SELECT
+                (SELECT COUNT(id) FROM procurement.purchase_requisitions
+                 WHERE organization_id = CAST(:org_id AS uuid)
+                   AND is_deleted = false
+                   AND status = 'submitted'
+                   AND (CAST(:project_id AS uuid) IS NULL OR project_id = CAST(:project_id AS uuid))) AS pending_requisitions,
+                (SELECT COUNT(id) FROM procurement.purchase_orders
+                 WHERE organization_id = CAST(:org_id AS uuid)
+                   AND is_deleted = false
+                   AND status = 'draft'
+                   AND (CAST(:project_id AS uuid) IS NULL OR project_id = CAST(:project_id AS uuid))) AS pending_orders
+        """),
+            {"org_id": org_id, "project_id": project_id},
+        )
+    ).mappings().first()
+
+    # 4. Unmatched & Disputed Invoices
+    invoices_row = (
+        await db.execute(
+            text("""
+            SELECT COUNT(inv.id) AS unmatched_invoices_count,
+                   COALESCE(SUM(inv.total_amount), 0) AS unmatched_invoices_value,
+                   COALESCE(SUM(CASE WHEN inv.match_status IN ('over_invoice', 'disputed') THEN 1 ELSE 0 END), 0) AS disputed_invoices_count
+            FROM procurement.supplier_invoices inv
+            WHERE inv.organization_id = CAST(:org_id AS uuid)
+              AND inv.is_deleted = false
+              AND inv.match_status IN ('unmatched', 'partial_match', 'over_invoice', 'disputed')
+              AND (CAST(:project_id AS uuid) IS NULL OR inv.project_id = CAST(:project_id AS uuid))
+        """),
+            {"org_id": org_id, "project_id": project_id},
+        )
+    ).mappings().first()
+
+    # 5. Financial Commitments vs Active Project Budgets
+    financials_row = (
+        await db.execute(
+            text("""
+            SELECT
+                COALESCE((
+                    SELECT SUM(c.committed_amount)
+                    FROM finance.commitments c
+                    WHERE c.organization_id = CAST(:org_id AS uuid)
+                      AND c.is_deleted = false
+                      AND c.status <> 'cancelled'
+                      AND (CAST(:project_id AS uuid) IS NULL OR c.project_id = CAST(:project_id AS uuid))
+                ), 0) AS total_committed,
+                COALESCE((
+                    SELECT SUM(pb.total_amount)
+                    FROM finance.project_budgets pb
+                    WHERE pb.organization_id = CAST(:org_id AS uuid)
+                      AND pb.is_deleted = false
+                      AND pb.status = 'approved'
+                      AND (CAST(:project_id AS uuid) IS NULL OR pb.project_id = CAST(:project_id AS uuid))
+                ), 0) AS total_approved_budget
+        """),
+            {"org_id": org_id, "project_id": project_id},
+        )
+    ).mappings().first()
+
+    data = {
+        "critical_low_stock": {
+            "count": int(low_stock_row["low_stock_count"] or 0),
+            "out_of_stock": int(low_stock_row["out_of_stock_count"] or 0),
+            "store_id": str(store_id) if store_id else None,
+        },
+        "expected_deliveries": {
+            "count": int(deliveries_row["pending_deliveries_count"] or 0),
+            "overdue_count": int(deliveries_row["overdue_deliveries_count"] or 0),
+            "value": float(deliveries_row["pending_deliveries_value"] or 0),
+            "currency": "USD",
+        },
+        "pending_approvals": {
+            "total": int(approvals_row["pending_requisitions"] or 0) + int(approvals_row["pending_orders"] or 0),
+            "requisitions": int(approvals_row["pending_requisitions"] or 0),
+            "orders": int(approvals_row["pending_orders"] or 0),
+        },
+        "unmatched_invoices": {
+            "count": int(invoices_row["unmatched_invoices_count"] or 0),
+            "disputed_count": int(invoices_row["disputed_invoices_count"] or 0),
+            "value": float(invoices_row["unmatched_invoices_value"] or 0),
+            "currency": "USD",
+        },
+        "financial_commitments": {
+            "committed_amount": float(financials_row["total_committed"] or 0),
+            "approved_budget": float(financials_row["total_approved_budget"] or 0),
+            "currency": "USD",
+        },
+    }
+
+    return ok(data, "Supply control tower KPIs calculated.")
+
+
 @router.get("/requisitions")
 async def list_requisitions(
     status_filter: Optional[str] = Query(default=None, alias="status"),
@@ -682,6 +838,193 @@ async def create_requisition(
     return ok(
         {"id": str(req_id), "requisition_number": req_no},
         "Purchase requisition created.",
+    )
+
+
+@router.post("/replenish/generate-drafts")
+async def generate_replenishment_drafts(
+    payload: ReplenishmentDraftPayload = ReplenishmentDraftPayload(),
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    target_project_id = payload.project_id
+    target_site_id = None
+    store_name = None
+
+    if payload.store_id:
+        store_res = await db.execute(
+            text("""
+            SELECT name, project_id, site_id
+            FROM procurement.stores
+            WHERE id=:store_id AND organization_id=:org_id AND is_deleted=false
+            """),
+            {"store_id": payload.store_id, "org_id": user["org_id"]},
+        )
+        store_row = store_res.mappings().first()
+        if store_row:
+            store_name = store_row["name"]
+            if not target_project_id and store_row["project_id"]:
+                target_project_id = store_row["project_id"]
+                target_site_id = store_row["site_id"]
+
+    if target_project_id:
+        await project_exists(db, target_project_id, user["org_id"])
+
+    weekly_budget_id = None
+    if target_project_id:
+        try:
+            weekly_budget_id = await ensure_current_weekly_budget(
+                db, org_id=user["org_id"], project_id=target_project_id, site_id=target_site_id
+            )
+        except HTTPException:
+            weekly_budget_id = None
+
+    items_query = text("""
+        WITH balances AS (
+            SELECT item_id, COALESCE(SUM(quantity_delta), 0) AS available_qty
+            FROM procurement.stock_ledger
+            WHERE organization_id = :org_id
+              AND (CAST(:store_id AS uuid) IS NULL OR store_id = CAST(:store_id AS uuid))
+            GROUP BY item_id
+        )
+        SELECT i.id, i.item_name, i.item_code, i.unit_of_measure,
+               COALESCE(i.reorder_level, 0) AS reorder_level,
+               COALESCE(i.reorder_quantity, 0) AS reorder_quantity,
+               COALESCE(i.standard_cost, i.unit_price_ex_vat, 0) AS unit_cost,
+               COALESCE(b.available_qty, 0) AS available_qty
+        FROM procurement.inventory_items i
+        LEFT JOIN balances b ON b.item_id = i.id
+        WHERE i.organization_id = :org_id
+          AND i.is_deleted = false
+          AND COALESCE(i.reorder_level, 0) > 0
+          AND COALESCE(b.available_qty, 0) <= COALESCE(i.reorder_level, 0)
+        ORDER BY (COALESCE(b.available_qty, 0) - COALESCE(i.reorder_level, 0)) ASC, i.item_name ASC
+        LIMIT 100
+    """)
+    res = await db.execute(
+        items_query,
+        {"org_id": user["org_id"], "store_id": payload.store_id},
+    )
+    items = [dict(r) for r in res.mappings().all()]
+
+    if payload.item_ids:
+        target_ids = {str(uid) for uid in payload.item_ids}
+        items = [i for i in items if str(i["id"]) in target_ids]
+
+    if not items:
+        return ok(None, "No items are currently below reorder thresholds.")
+
+    req_no = await next_number(db, user["org_id"], "purchase_requisition", "PR")
+    req_date = date.today() + timedelta(days=7)
+    is_urgent = any(item["available_qty"] <= 0 for item in items)
+    priority = "urgent" if is_urgent else "normal"
+    justification = f"Automated stock replenishment for {store_name or 'Stores'}: {len(items)} SKU(s) below safety reorder threshold."
+
+    computed_lines = []
+    total = Decimal("0")
+    for item in items:
+        reorder_qty = Decimal(str(item["reorder_quantity"])) if item["reorder_quantity"] else Decimal("0")
+        reorder_level = Decimal(str(item["reorder_level"]))
+        avail_qty = Decimal(str(item["available_qty"]))
+        qty = reorder_qty if reorder_qty > Decimal("0") else max(reorder_level - avail_qty, Decimal("1"))
+        unit_cost = Decimal(str(item["unit_cost"] or "0"))
+        if unit_cost <= Decimal("0"):
+            unit_cost = Decimal("1.00")
+        line_total = (qty * unit_cost).quantize(Decimal("0.01"))
+        total += line_total
+        computed_lines.append({
+            "item_id": item["id"],
+            "description": item["item_name"],
+            "qty": qty,
+            "uom": item["unit_of_measure"] or "each",
+            "unit_cost": unit_cost,
+            "work_package": "Stock Replenishment",
+            "notes": f"On-hand: {avail_qty}, Safety point: {reorder_level}",
+        })
+
+    available = await inventory_service.budget_available(
+        db, org_id=user["org_id"], project_id=target_project_id
+    ) if target_project_id else None
+
+    req_id = (
+        await db.execute(
+            text("""
+            INSERT INTO procurement.purchase_requisitions (
+                organization_id, requisition_number, project_id, site_id,
+                requested_by, required_by_date, priority, justification, total_estimated,
+                budget_checked, budget_available, weekly_budget_id, created_by
+            ) VALUES (
+                :org_id, :number, :project_id, :site_id,
+                :user_id, :required_by_date, :priority, :justification, :total,
+                :budget_checked, :available, :weekly_budget_id, :user_id
+            ) RETURNING id
+        """),
+            {
+                "org_id": user["org_id"],
+                "number": req_no,
+                "project_id": target_project_id,
+                "site_id": target_site_id,
+                "user_id": user["user_id"],
+                "required_by_date": req_date,
+                "priority": priority,
+                "justification": justification,
+                "total": total,
+                "budget_checked": available is not None,
+                "available": available,
+                "weekly_budget_id": weekly_budget_id,
+            },
+        )
+    ).scalar()
+
+    values_sql = []
+    line_params: dict[str, Any] = {"org_id": user["org_id"], "req_id": req_id}
+    for idx, line in enumerate(computed_lines):
+        values_sql.append(
+            f"(:org_id, :req_id, :item_id_{idx}, :description_{idx}, :quantity_{idx}, "
+            f":uom_{idx}, :unit_cost_{idx}, :work_package_{idx}, :notes_{idx})"
+        )
+        line_params[f"item_id_{idx}"] = line["item_id"]
+        line_params[f"description_{idx}"] = line["description"]
+        line_params[f"quantity_{idx}"] = line["qty"]
+        line_params[f"uom_{idx}"] = line["uom"]
+        line_params[f"unit_cost_{idx}"] = line["unit_cost"]
+        line_params[f"work_package_{idx}"] = line["work_package"]
+        line_params[f"notes_{idx}"] = line["notes"]
+
+    await db.execute(
+        text(f"""
+        INSERT INTO procurement.requisition_lines (
+            organization_id, requisition_id, item_id, description, quantity,
+            unit_of_measure, estimated_unit_cost, work_package, notes
+        ) VALUES {", ".join(values_sql)}
+        """),
+        line_params,
+    )
+
+    await emit_event(
+        db,
+        user=user,
+        event_type="material.requested.v1",
+        aggregate_type="purchase_requisition",
+        aggregate_id=req_id,
+        project_id=target_project_id,
+        payload={
+            "requisition_number": req_no,
+            "total_estimated": float(total),
+            "budget_available": float(available) if available is not None else None,
+            "source": "reorder_replenishment_automation",
+        },
+    )
+    await db.commit()
+
+    return ok(
+        {
+            "id": str(req_id),
+            "requisition_number": req_no,
+            "items_count": len(computed_lines),
+            "total_estimated": float(total),
+        },
+        f"Draft requisition {req_no} created with {len(computed_lines)} replenishment items.",
     )
 
 
@@ -1834,10 +2177,19 @@ async def invoices(
 ):
     rows = await db.execute(
         text("""
-        SELECT inv.*, s.supplier_name, po.po_number
+        SELECT inv.*, s.supplier_name, po.po_number, po.total_amount AS po_total_amount,
+               grn.grn_number, grn.status AS grn_status,
+               COALESCE((
+                   SELECT SUM(gl.quantity_received * gl.unit_price)
+                   FROM procurement.grn_lines gl
+                   JOIN procurement.goods_received_notes g ON g.id = gl.grn_id
+                   WHERE g.po_id = inv.po_id AND g.organization_id = inv.organization_id AND g.status = 'confirmed' AND gl.is_deleted = false
+               ), 0) AS grn_total_amount,
+               (inv.total_amount - COALESCE(inv.matched_amount, 0)) AS current_variance
         FROM procurement.supplier_invoices inv
         JOIN procurement.suppliers s ON s.id=inv.supplier_id AND s.organization_id=inv.organization_id
         LEFT JOIN procurement.purchase_orders po ON po.id=inv.po_id AND po.organization_id=inv.organization_id
+        LEFT JOIN procurement.goods_received_notes grn ON grn.id=inv.grn_id AND grn.organization_id=inv.organization_id
         WHERE inv.organization_id=:org_id AND inv.is_deleted=false
           AND (CAST(:match_status AS varchar) IS NULL OR inv.match_status=CAST(:match_status AS varchar))
         ORDER BY inv.invoice_date DESC, inv.created_at DESC
@@ -1847,6 +2199,108 @@ async def invoices(
     )
     data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Supplier invoices listed.", len(data))
+
+
+@router.get("/invoices/{invoice_id}/match-inspection")
+async def get_invoice_match_inspection(
+    invoice_id: UUID,
+    user: dict = Depends(require_permission("procurement.invoice.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Detailed Three-Way Match Inspector Matrix.
+    Reconciles PO lines, GRN received/rejected quantities, and invoice lines with variance tolerances.
+    """
+    inv = (
+        await db.execute(
+            text("""
+            SELECT inv.*, s.supplier_name, s.tax_number, po.po_number, po.total_amount AS po_total,
+                   grn.grn_number, grn.status AS grn_status, grn.delivery_note_ref
+            FROM procurement.supplier_invoices inv
+            JOIN procurement.suppliers s ON s.id = inv.supplier_id AND s.organization_id = inv.organization_id
+            LEFT JOIN procurement.purchase_orders po ON po.id = inv.po_id AND po.organization_id = inv.organization_id
+            LEFT JOIN procurement.goods_received_notes grn ON grn.id = inv.grn_id AND grn.organization_id = inv.organization_id
+            WHERE inv.id = CAST(:id AS uuid) AND inv.organization_id = CAST(:org_id AS uuid) AND inv.is_deleted = false
+        """),
+            {"id": invoice_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+
+    if not inv:
+        raise HTTPException(status_code=404, detail="Supplier invoice not found")
+
+    po_lines = []
+    if inv["po_id"]:
+        po_rows = await db.execute(
+            text("""
+            SELECT pol.id, pol.description, pol.quantity AS po_qty, pol.unit_price AS po_unit_price,
+                   pol.line_total AS po_line_total, pol.quantity_received AS po_qty_received, pol.uom
+            FROM procurement.purchase_order_lines pol
+            WHERE pol.po_id = CAST(:po_id AS uuid) AND pol.organization_id = CAST(:org_id AS uuid) AND pol.is_deleted = false
+            ORDER BY pol.created_at ASC
+        """),
+            {"po_id": inv["po_id"], "org_id": user["org_id"]},
+        )
+        po_lines = [dict(r._mapping) for r in po_rows]
+
+    grn_lines = []
+    if inv["po_id"]:
+        grn_rows = await db.execute(
+            text("""
+            SELECT gl.id, gl.po_line_id, gl.description, gl.quantity_ordered, gl.quantity_received,
+                   gl.quantity_rejected, gl.unit_price AS grn_unit_price, gl.rejection_reason,
+                   grn.grn_number, grn.created_at AS received_at
+            FROM procurement.grn_lines gl
+            JOIN procurement.goods_received_notes grn ON grn.id = gl.grn_id
+            WHERE grn.po_id = CAST(:po_id AS uuid) AND grn.organization_id = CAST(:org_id AS uuid)
+              AND grn.status = 'confirmed' AND gl.is_deleted = false
+            ORDER BY grn.created_at ASC
+        """),
+            {"po_id": inv["po_id"], "org_id": user["org_id"]},
+        )
+        grn_lines = [dict(r._mapping) for r in grn_rows]
+
+    inv_lines = []
+    inv_line_rows = await db.execute(
+        text("""
+        SELECT sil.id, sil.description, sil.quantity AS inv_qty, sil.unit_cost_ex_vat AS inv_unit_cost,
+               sil.line_total AS inv_line_total, sil.vat_rate, sil.vat_amount
+        FROM procurement.supplier_invoice_lines sil
+        WHERE sil.supplier_invoice_id = CAST(:id AS uuid) AND sil.organization_id = CAST(:org_id AS uuid) AND sil.is_deleted = false
+        ORDER BY sil.created_at ASC
+    """),
+        {"id": invoice_id, "org_id": user["org_id"]},
+    )
+    inv_lines = [dict(r._mapping) for r in inv_line_rows]
+
+    po_total = Decimal(str(inv["po_total"] or 0))
+    inv_total = Decimal(str(inv["total_amount"] or 0))
+    matched_amount = Decimal(str(inv["matched_amount"] or 0))
+    variance_amount = inv_total - matched_amount
+
+    # Tolerance rule: 0% quantity tolerance, 1% currency rounding tolerance (max $5.00)
+    is_within_tolerance = abs(variance_amount) <= Decimal("5.00") and (
+        po_total == 0 or (abs(variance_amount) / po_total) <= Decimal("0.01")
+    )
+
+    reconciliation = {
+        "invoice": dict(inv),
+        "po_lines": po_lines,
+        "grn_lines": grn_lines,
+        "invoice_lines": inv_lines,
+        "summary": {
+            "po_total": float(po_total),
+            "invoice_total": float(inv_total),
+            "matched_amount": float(matched_amount),
+            "variance_amount": float(variance_amount),
+            "is_within_tolerance": bool(is_within_tolerance),
+            "tolerance_note": "Within 1% / $5 max variance" if is_within_tolerance else "Exceeds variance tolerance",
+            "match_status": inv["match_status"],
+            "can_approve_payment": inv["match_status"] == "matched" or (is_within_tolerance and inv["status"] != "disputed"),
+        },
+    }
+
+    return ok(reconciliation, "Three-way match inspection details retrieved.")
 
 
 @router.post("/goods-received", status_code=status.HTTP_201_CREATED)

@@ -431,7 +431,7 @@ function Modal({
   children: ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-ink/80 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-lg border border-ink-mid bg-ink shadow-2xl">
         <div className="flex items-center justify-between border-b border-ink-mid px-5 py-4">
           <h2 className="text-sm font-semibold text-paper">{title}</h2>
@@ -528,7 +528,7 @@ function InspectionModal({
           }
         />
         <Field
-          label="Inspection Date"
+          label="Inspection Date (supports past dates for backlogs)"
           input={
             <input
               type="date"
@@ -819,8 +819,8 @@ function MeterModal({
   const [err, setErr] = useState<string | null>(null);
 
   async function submit() {
-    if (!form.engine_hours && !form.odometer_km) {
-      setErr("Enter at least one meter reading.");
+    if (!form.engine_hours && !form.odometer_km && !form.fuel_litres) {
+      setErr("Enter at least one meter reading or fuel quantity.");
       return;
     }
     setSaving(true);
@@ -852,7 +852,7 @@ function MeterModal({
   }
 
   return (
-    <Modal title={`Record Meter Reading — ${label}`} onClose={onClose}>
+    <Modal title={`Record Meter & Fuel — ${label}`} onClose={onClose}>
       <div className="space-y-4 px-5 py-4">
         {err && (
           <p className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
@@ -860,7 +860,7 @@ function MeterModal({
           </p>
         )}
         <Field
-          label="Reading Date"
+          label="Reading / Fuel Issue Date (supports past dates for backlogs)"
           input={
             <input
               type="date"
@@ -1576,11 +1576,11 @@ function EquipmentDashboard() {
   const [ownershipFilter, setOwnershipFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("");
+  const [categoryTab, setCategoryTab] = useState<"all" | "plant_equipment" | "office" | "vehicles">("all");
 
-  // Selection
+  // Selection & Modal
   const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  // Modal
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -1596,7 +1596,7 @@ function EquipmentDashboard() {
         : [];
       setAssets(list);
       setSelectedId((cur) =>
-        list.some((a) => a.id === cur) ? cur : list[0]?.id ?? null
+        list.some((a) => a.id === cur) ? cur : null
       );
       setLastUpdated(new Date());
     } catch (e) {
@@ -1617,6 +1617,40 @@ function EquipmentDashboard() {
   }, [loadAssets]);
 
   useLiveTable("fleet.equipment_assets", () => void loadAssets());
+
+  const isOfficeAsset = (asset: AssetRecord) => {
+    const cat = str(asset, "asset_category", "category").toLowerCase();
+    const type = str(asset, "type", "asset_type", "vehicle_type").toLowerCase();
+    return (
+      cat.includes("office") ||
+      cat.includes("computer") ||
+      cat.includes("it") ||
+      cat.includes("furniture") ||
+      type.includes("printer") ||
+      type.includes("laptop") ||
+      type.includes("computer") ||
+      type.includes("desk")
+    );
+  };
+
+  const isVehicleAsset = (asset: AssetRecord) => {
+    const cat = str(asset, "asset_category", "category").toLowerCase();
+    const vt = str(asset, "vehicle_type", "type", "asset_type").toLowerCase();
+    return (
+      cat.includes("truck") ||
+      cat.includes("light vehicle") ||
+      cat.includes("commercial vehicle") ||
+      ["truck", "trailer", "pickup", "sedan", "hatchback", "car", "bakkie", "horse"].includes(vt)
+    );
+  };
+
+  const isPlantEquipmentAsset = (asset: AssetRecord) => {
+    return !isOfficeAsset(asset) && !isVehicleAsset(asset);
+  };
+
+  const officeCount = useMemo(() => assets.filter(isOfficeAsset).length, [assets]);
+  const vehicleCount = useMemo(() => assets.filter(isVehicleAsset).length, [assets]);
+  const plantEquipmentCount = useMemo(() => assets.filter(isPlantEquipmentAsset).length, [assets]);
 
   // Derived filter options
   const statuses = useMemo(
@@ -1646,6 +1680,9 @@ function EquipmentDashboard() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return assets.filter((a) => {
+      if (categoryTab === "office" && !isOfficeAsset(a)) return false;
+      if (categoryTab === "vehicles" && !isVehicleAsset(a)) return false;
+      if (categoryTab === "plant_equipment" && !isPlantEquipmentAsset(a)) return false;
       const searchable = [
         assetLabel(a),
         assetCode(a),
@@ -1679,7 +1716,7 @@ function EquipmentDashboard() {
         return false;
       return true;
     });
-  }, [assets, query, statusFilter, ownershipFilter, projectFilter, typeFilter]);
+  }, [assets, query, statusFilter, ownershipFilter, projectFilter, typeFilter, categoryTab]);
 
   const selected = assets.find((a) => a.id === selectedId) ?? null;
 
@@ -1834,14 +1871,8 @@ function EquipmentDashboard() {
         ) : !error && assets.length === 0 ? (
           <EmptyState />
         ) : !error ? (
-          // Main layout: table + detail panel
-          <div
-            className={`grid gap-6 transition-all duration-300 ${
-              selected
-                ? "xl:grid-cols-[minmax(0,1fr)_420px]"
-                : "xl:grid-cols-1"
-            }`}
-          >
+          // Main layout: full-width table + modal detail popup
+          <div className="w-full">
             {/* Asset register table */}
             <section className="border border-ink-mid bg-ink">
               {/* Filter bar */}
@@ -1850,7 +1881,37 @@ function EquipmentDashboard() {
                   <h2 className="text-sm font-semibold text-paper">
                     Asset Register
                   </h2>
-                  <p className="mt-0.5 text-xs text-slate-light">
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("all")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "all" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      All ({assets.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("plant_equipment")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "plant_equipment" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Plant & Equipment ({plantEquipmentCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("office")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "office" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Office Assets ({officeCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("vehicles")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "vehicles" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Vehicles ({vehicleCount})
+                    </button>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-light">
                     {filtered.length} of {assets.length} assets shown
                   </p>
                 </div>
@@ -1985,7 +2046,10 @@ function EquipmentDashboard() {
                         return (
                           <tr
                             key={asset.id}
-                            onClick={() => setSelectedId(asset.id)}
+                            onClick={() => {
+                              setSelectedId(asset.id);
+                              setDetailModalOpen(true);
+                            }}
                             className={`cursor-pointer border-b border-ink-mid/60 text-sm transition-colors hover:bg-ink-light ${
                               isSelected
                                 ? "bg-ink-light border-l-2 border-l-signal"
@@ -2113,14 +2177,16 @@ function EquipmentDashboard() {
               )}
             </section>
 
-            {/* Detail panel */}
-            {selected && (
-              <div ref={panelRef} className="sticky top-0 h-fit max-h-[calc(100vh-140px)] overflow-hidden rounded-none border border-ink-mid">
-                <DetailPanel
-                  asset={selected}
-                  onClose={() => setSelectedId(null)}
-                  onAction={handleAction}
-                />
+            {/* Detail popup modal */}
+            {detailModalOpen && selected && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm p-4">
+                <div className="relative max-h-[92vh] w-full max-w-4xl overflow-hidden border border-ink-mid bg-ink shadow-2xl flex flex-col">
+                  <DetailPanel
+                    asset={selected}
+                    onClose={() => setDetailModalOpen(false)}
+                    onAction={handleAction}
+                  />
+                </div>
               </div>
             )}
           </div>

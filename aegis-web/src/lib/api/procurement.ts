@@ -9,6 +9,44 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- PROCUREMENT CONTROL TOWER --- //
 
+export interface SupplyControlTowerKPIs {
+  critical_low_stock: {
+    count: number;
+    out_of_stock: number;
+    store_id: string | null;
+  };
+  expected_deliveries: {
+    count: number;
+    overdue_count: number;
+    value: number;
+    currency: string;
+  };
+  pending_approvals: {
+    total: number;
+    requisitions: number;
+    orders: number;
+  };
+  unmatched_invoices: {
+    count: number;
+    disputed_count: number;
+    value: number;
+    currency: string;
+  };
+  financial_commitments: {
+    committed_amount: number;
+    approved_budget: number;
+    currency: string;
+  };
+}
+
+export async function getSupplyControlTowerKPIs(params?: { project_id?: string; store_id?: string }): Promise<ApiResponse<SupplyControlTowerKPIs>> {
+  const search = new URLSearchParams();
+  if (params?.project_id) search.set("project_id", params.project_id);
+  if (params?.store_id) search.set("store_id", params.store_id);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<SupplyControlTowerKPIs>>(`/api/v1/procurement/control-tower${query}`, { cache: "no-store", allowFallback: false });
+}
+
 export async function getProcurementRequisitions(params?: { status?: string; project_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.status && params.status !== "all") search.set("status", params.status);
@@ -37,6 +75,23 @@ export async function createProcurementRequisition(payload: Record<string, unkno
   return fetchApi<ApiResponse<any>>("/api/v1/procurement/requisitions", {
     method: "POST",
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function generateReplenishmentDrafts(payload?: {
+  store_id?: string;
+  project_id?: string;
+  item_ids?: string[];
+}): Promise<ApiResponse<{
+  id: string;
+  requisition_number: string;
+  items_count: number;
+  total_estimated: number;
+} | null>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/procurement/replenish/generate-drafts", {
+    method: "POST",
+    body: JSON.stringify(payload || {}),
     allowFallback: false,
   });
 }
@@ -228,6 +283,13 @@ export async function registerSupplierInvoice(payload: Record<string, unknown>):
 export async function matchSupplierInvoice(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/invoices/${id}/match`, {
     method: "POST",
+    allowFallback: false,
+  });
+}
+
+export async function getInvoiceMatchInspection(invoiceId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/invoices/${invoiceId}/match-inspection`, {
+    cache: "no-store",
     allowFallback: false,
   });
 }

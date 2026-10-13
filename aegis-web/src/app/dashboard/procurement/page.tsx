@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
+import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -299,6 +301,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [receivingPO, setReceivingPO] = useState<Rec | null>(null);
   const [invoicingPO, setInvoicingPO] = useState<Rec | null>(null);
   const [paymentEvidenceInvoice, setPaymentEvidenceInvoice] = useState<Rec | null>(null);
+  const [inspectingMatchInvoice, setInspectingMatchInvoice] = useState<Rec | null>(null);
 
   useEffect(() => {
     setTab(initialTab);
@@ -699,6 +702,8 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
         }
       />
 
+      <SupplyControlTower currentModule="procurement" />
+
       {/* Where this page sits in the requisition-to-payment flow, with what is
           waiting at each stage - the same strip on every tab, but the active
           stage and its counts are what change as work moves through. */}
@@ -774,12 +779,43 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
           tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} onView={setViewingSupplier} /> :
           tab === "pricing" ? <PendingPricingTable rows={filteredPricing} saving={saving} onConfirm={confirmPricing} /> :
-          <InvoicesTab rows={filteredInvoices} unmatchedCount={unmatchedCount} saving={saving} onMatch={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} />
+          <InvoicesTab
+            rows={filteredInvoices}
+            unmatchedCount={unmatchedCount}
+            saving={saving}
+            onMatch={matchInvoice}
+            onInspect={(inv) => setInspectingMatchInvoice(inv)}
+            onApprovePayment={setPaymentEvidenceInvoice}
+          />
         }
       </section>
 
       {/* Modals */}
-      {showCreatePR && <CreatePRModal projects={projects} onClose={() => setShowCreatePR(false)} onCreated={() => { setShowCreatePR(false); setNotice("Purchase requisition created."); void load(); }} />}
+      {inspectingMatchInvoice && (
+        <ThreeWayMatchInspectorModal
+          invoice={inspectingMatchInvoice}
+          onClose={() => setInspectingMatchInvoice(null)}
+          onMatch={matchInvoice}
+          onApprovePayment={(inv) => {
+            setInspectingMatchInvoice(null);
+            setPaymentEvidenceInvoice(inv);
+          }}
+          saving={saving}
+        />
+      )}
+      {showCreatePR && (
+        <CreatePRModal
+          projects={projects}
+          stores={stores}
+          stockLevels={stockLevels}
+          onClose={() => setShowCreatePR(false)}
+          onCreated={() => {
+            setShowCreatePR(false);
+            setNotice("Purchase requisition created.");
+            void load();
+          }}
+        />
+      )}
       {showAddSupplier && (
         <AddSupplierModal
           onClose={() => setShowAddSupplier(false)}
@@ -2119,7 +2155,21 @@ function CredentialsIssuedModal({ credentials, onClose }: { credentials: { email
 
 // ─── Invoices Tab ─────────────────────────────────────────────────────────────
 
-function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }: { rows: Rec[]; unmatchedCount: number; saving: string | null; onMatch: (row: Rec) => void; onApprovePayment: (row: Rec) => void; }) {
+function InvoicesTab({
+  rows,
+  unmatchedCount,
+  saving,
+  onMatch,
+  onInspect,
+  onApprovePayment,
+}: {
+  rows: Rec[];
+  unmatchedCount: number;
+  saving: string | null;
+  onMatch: (row: Rec) => void;
+  onInspect: (row: Rec) => void;
+  onApprovePayment: (row: Rec) => void;
+}) {
   return (
     <>
       {unmatchedCount > 0 && (
@@ -2162,6 +2212,13 @@ function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }
                     <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${prStatusClass(row.status)}`}>{tx(row.status, "pending")}</span></td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onInspect(row)}
+                          className="inline-flex items-center gap-1 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-paper hover:border-signal transition"
+                          title="View 3-way match matrix"
+                        >
+                          <Search className="h-3 w-3" />Inspect
+                        </button>
                         {!isMatched && canMatch && (
                           <button onClick={() => onMatch(row)} disabled={saving === `match-invoice-${row.id}`}
                             className="inline-flex items-center gap-1 border border-blue-500/40 px-2 py-1 font-mono text-[10px] uppercase text-blue-300 hover:bg-blue-950/30 disabled:opacity-40">
@@ -2323,7 +2380,19 @@ function DocumentPicker({ label, value, onChange, entityId, projectId, searchHin
 
 // ─── Create PR Modal ──────────────────────────────────────────────────────────
 
-function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onClose: () => void; onCreated: () => void; }) {
+function CreatePRModal({
+  projects,
+  stores = [],
+  stockLevels = [],
+  onClose,
+  onCreated,
+}: {
+  projects: Rec[];
+  stores?: Rec[];
+  stockLevels?: Rec[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const [form, setForm] = useState({ project_id: "", priority: "normal", required_by_date: "", justification: "" });
   const [lines, setLines] = useState<LineItem[]>([{ description: "", qty: "1", uom: "ea", unit_cost: "" }]);
   const [saving, setSaving] = useState(false);
@@ -2333,6 +2402,20 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
   const removeLine = (i: number) => setLines((prev) => prev.filter((_, idx) => idx !== i));
   const setLine = (i: number, field: keyof LineItem, val: string) => setLines((prev) => prev.map((l, idx) => idx === i ? { ...l, [field]: val } : l));
   const estimatedTotal = lines.reduce((s, l) => s + num(l.qty) * num(l.unit_cost), 0);
+
+  // Store-First Availability matching: looks across stockLevels for any store with on-hand quantity
+  const lineStoreMatches = useMemo(() => {
+    return lines.map((l) => {
+      const desc = l.description.trim().toLowerCase();
+      if (!desc || desc.length < 2) return [];
+      return stockLevels.filter((stock) => {
+        const name = tx(stock.item_name ?? stock.description, "").toLowerCase();
+        const code = tx(stock.item_code, "").toLowerCase();
+        const avail = num(stock.available_qty ?? stock.quantity);
+        return avail > 0 && (name.includes(desc) || desc.includes(name) || code === desc);
+      });
+    });
+  }, [lines, stockLevels]);
 
   const submit = async () => {
     if (!form.required_by_date) { setError("Required-by date is mandatory."); return; }
@@ -2398,18 +2481,43 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
                 <Plus className="h-3 w-3" />Add Row
               </button>
             </div>
-            <div className="space-y-2">
-              {lines.map((line, i) => (
-                <div key={i} className="grid gap-2 border border-ink-mid p-3 sm:grid-cols-[1fr_60px_60px_90px_auto]">
-                  <input value={line.description} onChange={(e) => setLine(i, "description", e.target.value)} placeholder="Item description" className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper" />
-                  <input value={line.qty} onChange={(e) => setLine(i, "qty", e.target.value)} placeholder="Qty" type="number" min="1" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
-                  <input value={line.uom} onChange={(e) => setLine(i, "uom", e.target.value)} placeholder="UOM" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
-                  <input value={line.unit_cost} onChange={(e) => setLine(i, "unit_cost", e.target.value)} placeholder="Unit cost" type="number" min="0" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
-                  <button onClick={() => removeLine(i)} disabled={lines.length === 1} className="flex items-center justify-center border border-ink-mid p-2 text-slate hover:border-red-500/40 hover:text-red-400 disabled:opacity-30">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
+            <div className="space-y-3">
+              {lines.map((line, i) => {
+                const availableMatches = lineStoreMatches[i] || [];
+                return (
+                  <div key={i} className="border border-ink-mid bg-ink-light/20 p-3 rounded">
+                    <div className="grid gap-2 sm:grid-cols-[1fr_70px_70px_100px_auto]">
+                      <input value={line.description} onChange={(e) => setLine(i, "description", e.target.value)} placeholder="Item description (e.g. 50kg Cement, 12mm Rebar)" className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper" />
+                      <input value={line.qty} onChange={(e) => setLine(i, "qty", e.target.value)} placeholder="Qty" type="number" min="1" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
+                      <input value={line.uom} onChange={(e) => setLine(i, "uom", e.target.value)} placeholder="UOM" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
+                      <input value={line.unit_cost} onChange={(e) => setLine(i, "unit_cost", e.target.value)} placeholder="Est. Unit cost" type="number" min="0" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
+                      <button onClick={() => removeLine(i)} disabled={lines.length === 1} className="flex items-center justify-center border border-ink-mid p-2 text-slate hover:border-red-500/40 hover:text-red-400 disabled:opacity-30">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Store-First Recommendation Box */}
+                    {availableMatches.length > 0 && (
+                      <div className="mt-2.5 p-2 rounded bg-signal/10 border border-signal/30 text-xs">
+                        <div className="flex items-center gap-1.5 font-mono text-[11px] text-signal font-semibold">
+                          <Warehouse className="h-3.5 w-3.5" />
+                          <span>Store-First Stock Available:</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-2 text-[11px]">
+                          {availableMatches.slice(0, 3).map((match, idx) => (
+                            <div key={idx} className="bg-ink px-2 py-0.5 border border-ink-mid rounded font-mono text-paper">
+                              <span className="font-semibold text-emerald-300">{num(match.available_qty)} {tx(match.unit_of_measure, "ea")}</span> in <span className="text-slate-light">{tx(match.store_name, "Store")}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="mt-1 text-[10px] text-slate-light">
+                          Tip: Internal store transfers avoid external purchasing costs and supplier lead time.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <div className="mt-2 flex justify-end">
               <p className="font-mono text-sm text-paper">Est. Total: <span className="text-signal">{money(estimatedTotal)}</span></p>
@@ -2746,6 +2854,61 @@ function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onInvoice, 
             <InfoCard label="Issued Date" value={dt(po.issued_date ?? po.created_at)} />
             <InfoCard label="Expected Delivery" value={dt(po.expected_delivery_date ?? po.expected_delivery)} />
           </div>
+
+          {/* Delivery & Logistics Milestone Stepper */}
+          <section className="border border-ink-mid bg-ink/70 p-4">
+            <div className="flex items-center justify-between pb-3 border-b border-ink-mid">
+              <div className="flex items-center gap-2">
+                <Truck className="h-4 w-4 text-signal" />
+                <h4 className="font-mono text-xs font-semibold uppercase tracking-wider text-paper">
+                  Delivery Milestones & ETA Tracking
+                </h4>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase text-slate">ETA:</span>
+                <span className={`font-mono text-xs font-semibold ${isPoOverdue(po) ? "text-red-300" : "text-signal"}`}>
+                  {dt(po.expected_delivery_date ?? po.expected_delivery)}
+                </span>
+                {isPoOverdue(po) && (
+                  <span className="border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 font-mono text-[9px] uppercase text-red-300">
+                    Overdue
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {[
+                { key: "sent", label: "1. Sent", detail: "PO issued to vendor", done: hasIssued },
+                { key: "confirmed", label: "2. Confirmed", detail: "Vendor acknowledged", done: hasIssued && (po.delivery_milestone === "confirmed" || po.delivery_milestone === "dispatched" || po.delivery_milestone === "gate_arrival" || hasGrn) },
+                { key: "dispatched", label: "3. Dispatched", detail: "In transit / dispatch ref", done: hasIssued && (po.delivery_milestone === "dispatched" || po.delivery_milestone === "gate_arrival" || hasGrn) },
+                { key: "gate_arrival", label: "4. At Gate", detail: "Site delivery arrived", done: hasIssued && (po.delivery_milestone === "gate_arrival" || hasGrn) },
+                { key: "stocked", label: "5. Stocked", detail: "GRN inspected & booked", done: hasGrn },
+              ].map((step) => (
+                <div
+                  key={step.key}
+                  className={`border p-2.5 flex flex-col justify-between ${
+                    step.done
+                      ? "border-emerald-500/40 bg-emerald-950/15"
+                      : "border-ink-mid bg-ink-light/20"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`font-mono text-[11px] font-bold uppercase ${step.done ? "text-emerald-300" : "text-slate"}`}>
+                      {step.label}
+                    </span>
+                    {step.done ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <div className="h-2 w-2 rounded-full bg-slate/40" />
+                    )}
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-light leading-tight">{step.detail}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {/* PO Lines */}
           <section className="border border-ink-mid">
             <div className="border-b border-ink-mid bg-ink-light/40 px-4 py-3">

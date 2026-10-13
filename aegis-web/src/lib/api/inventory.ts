@@ -9,10 +9,12 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- INVENTORY & MATERIALS CONTROL ---
 
-/** Stock levels across all stores. Optionally filtered by store or reorder threshold. */
-export async function getInventoryStockLevels(params?: { store_id?: string; below_reorder?: boolean }): Promise<ApiResponse<any[]>> {
+/** Stock levels across all stores. Optionally filtered by store, item, search or reorder threshold. */
+export async function getInventoryStockLevels(params?: { store_id?: string; item_id?: string; search?: string; below_reorder?: boolean }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.store_id) search.set('store_id', params.store_id);
+  if (params?.item_id) search.set('item_id', params.item_id);
+  if (params?.search) search.set('search', params.search);
   if (params?.below_reorder) search.set('below_reorder', 'true');
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/inventory/stock-levels${qs}`, { cache: 'no-store', allowFallback: false });
