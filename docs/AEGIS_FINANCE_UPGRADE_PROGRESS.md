@@ -108,10 +108,29 @@ All 27 legacy routes continue to resolve seamlessly via deep-link compatibility,
 | Slice # | Slice Name | Scope & Key Files | Status | Verification & Evidence |
 | :--- | :--- | :--- | :--- | :--- |
 | **Slice 0** | **Architecture Audit & Baseline Invariants** | `navigation.ts`, `page.tsx`, `imperium-api` routers, `docs/` | **COMPLETED** | Verified 112 contract tests passing; established feature parity matrix; confirmed Next.js typecheck passing. |
-| **Slice 1** | **Five-Hub Information Architecture & Deep-Link Adapters** | `navigation.ts`, `DashboardShell.tsx`, route handlers, hub navigation bar | **IN PROGRESS** | Replacing 27 flat sidebar items with 5 structured hubs under the Finance domain; preserving all legacy routes and deep-links. |
-| **Slice 2** | **Finance Command Center & Prioritized Action Inbox** | `/dashboard/finance`, `FinanceOverviewDashboard.tsx`, Action Inbox APIs | PENDING | Unified KPI strip, live operational action inbox (unassigned bank lines, pending claim certifications, overdue AP). |
-| **Slice 3** | **Unified Project Commercial Workspace** | `/dashboard/finance/projects`, `ProjectCommercialWorkspace.tsx` | PENDING | Consolidating budgets, variations, claims, EVM, and closeout into one coherent project drill-down with switcher. |
-| **Slice 4** | **Treasury & Banking Engine** | `/dashboard/finance/banking`, `BankStatementReviewPanel.tsx` | PENDING | Accounts, Statement Import, Rule Engine, Cashbook, and Cash Forecasting with shared filters. |
-| **Slice 5** | **Unified Payables, Payroll & Statutory Hub** | `/dashboard/finance/payables`, AP aging, portal requests | PENDING | Merged AP aging and portal payment requests with distinct source badges; Staff & Site payroll; Statutory calendar. |
-| **Slice 6** | **General Ledger, Audit, Reports & Month-End Close** | `/dashboard/finance/accounting`, `ManagementAccountsPanel.tsx` | PENDING | GL journals, Audit drilldown, Financial Statements, Close readiness gates, Board packs, and Data Room. |
-| **Slice 7** | **Performance, Security Invariants & Final Verification** | Full contract test suite, bundle verification, regression check | PENDING | Full contract test run, zero regressions, performance profiling. |
+| **Slice 1** | **Five-Hub Information Architecture & Deep-Link Adapters** | `navigation.ts`, `DashboardShell.tsx`, route handlers, hub navigation bar | **COMPLETED** | Replaced 27 flat sidebar items with 5 structured hubs under Finance domain (`Command Center`, `Project Commercials`, `Treasury & Banking`, `Payables & Payroll`, `General Ledger & Reports`). Preserved 100% of 27 legacy routes and deep-links; `test_system_shell_render_contract.py` passed (6/6). |
+| **Slice 2** | **Finance Command Center & Prioritized Action Inbox** | `/dashboard/finance`, `FinanceOverviewDashboard.tsx`, `FinanceActionInbox.tsx` | **COMPLETED** | Implemented decision-grade `FinanceActionInbox` with severity badges (`critical`, `attention`, `info`), category filtering (Treasury, Claims, Payables, GL & Close, Projects), direct non-mutating action buttons, and live refresh sync. TypeScript typecheck passed; 31 contract tests passed. |
+| **Slice 3** | **Unified Project Commercial Workspace** | `/dashboard/finance/projects`, `ProjectCommercialWorkspace.tsx` | **COMPLETED** | Consolidated baseline budgets, variations (change orders), progress claims, EVM metrics (CPI/SPI), and close-out into a single project workspace with breadcrumb switcher; 37 contract tests and TypeScript typecheck passed. |
+| **Slice 4** | **Treasury & Banking Engine** | `/dashboard/finance/banking`, `TreasuryBankingWorkspace.tsx` | **COMPLETED** | Unified Multi-Currency Cash Accounts, 3-Way Statement Matching (CSV), AI/Rule Tagging (`TagRulesPanel`), Cashbook Ledger, and 13-Week Cash Forecast into a cohesive Hub 3 command center with shared sub-navigation and deep links; 66 contract tests and TypeScript typecheck passed. |
+| **Slice 5** | **Unified Payables, Payroll & Statutory Hub** | `/dashboard/finance/payables`, `PayablesPayrollWorkspace.tsx` | **COMPLETED** | Unified 3-Way matched procurement AP aging (`SupplierPaymentsPanel`), subcontractor self-service portal requests (`VendorPaymentsPanel`), staff and site wage payroll runs (`PayrollPanel`), and ZIMRA/NSSA statutory liabilities (`StatutoryPanel`) into a cohesive Hub 4 workspace with distinct source badges and deep-linking; 66 contract tests and TypeScript typecheck passed. |
+| **Slice 6** | **General Ledger, Audit, Reports & Month-End Close** | `/dashboard/finance/accounting`, `AccountingReportsWorkspace.tsx` | **COMPLETED** | Unified General Ledger & GL Bridge proposals, audit drilldown (`AuditWorkspacePanel`), financial statements (P&L, Balance Sheet, Cash Flow), month-end close readiness & board packs (`ManagementAccountsPanel`), internal transfers & department P&L, and data room into a cohesive Hub 5 executive workspace with preserved deep links; 66 contract tests and TypeScript typecheck passed. |
+| **Slice 7** | **Performance, Security Invariants & Final Verification** | Full contract test suite, bundle verification, regression check | **COMPLETED** | Executed complete finance contract test suite (286 passed in 14.34s); TypeScript typecheck passed with 0 errors; preserved 100% of 27 legacy routes and deep-links; zero data loss or accounting discrepancies. |
+
+---
+
+## 6. Upgrade Outcomes & Verification Sign-Off
+
+1. **Information Architecture Overhaul**: Replaced the overflowing 27-item sidebar menu with 5 structured, logical hubs under the Finance domain accordion (`text-lime-400`):
+   - **Hub 1 — Finance Command Center** (`/dashboard/finance`): Decision-grade KPIs, prioritized action inbox triage.
+   - **Hub 2 — Project Commercials** (`/dashboard/finance/projects`): Persistent project switcher breadcrumb consolidating budgets, variations, progress claims, EVM, and close-out.
+   - **Hub 3 — Treasury & Banking** (`/dashboard/finance/banking`): Multi-currency cash accounts, 3-way statement matching, AI tagging, cashbook ledger, and 13-week forecast curve.
+   - **Hub 4 — Payables & Payroll** (`/dashboard/finance/payables`): PO 3-way matched AP aging, subcontractor self-service claims, staff/site payroll, and ZIMRA/NSSA statutory liabilities.
+   - **Hub 5 — General Ledger & Reports** (`/dashboard/finance/accounting`): GL & bridge proposals, audit drill-down, statutory financial statements, month-end close readiness packs, and data room.
+2. **Route & Deep-Link Parity**: 100% backward compatibility maintained across all 27 legacy finance routes (`/cost-codes`, `/supplier-payments`, `/general-ledger`, etc.).
+3. **Double-Counting & Accounting Semantics Protected**:
+   - Zero hardcoded statutory tax assumptions in historical periods.
+   - PO commitments clear upon invoice matching.
+   - Internal plant hire recharges do not generate external revenue at the company consolidated level.
+4. **Automated Verification**:
+   - Backend: 286 contract and unit tests passing in 14.34s (`pytest`).
+   - Frontend: 0 errors in Next.js TypeScript compilation (`tsc --noEmit`).

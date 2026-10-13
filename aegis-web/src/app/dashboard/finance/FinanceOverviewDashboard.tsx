@@ -12,6 +12,7 @@ import {
   Loader2, Receipt, TrendingDown, TrendingUp, Wallet,
 } from "lucide-react";
 import { getFinanceOpsDashboard } from "@/lib/api";
+import { FinanceActionInbox, type FinanceActionItem } from "./FinanceActionInbox";
 
 type RecordData = Record<string, any>;
 
@@ -177,13 +178,126 @@ export function FinanceOverviewDashboard({
   const claims = data?.claim_pipeline || {};
   const draftBudgets = Number(budgets.draft?.count || 0);
 
-  const alerts: { tone: "bad" | "warn"; text: string; href: string }[] = [];
-  if (draftBudgets) alerts.push({ tone: "warn", text: `${draftBudgets} project budget${draftBudgets === 1 ? " is" : "s are"} still in draft. QS, PM and the MD get a reminder each weekday`, href: "/dashboard/finance/budgets" });
-  if (overduePayables > 0) alerts.push({ tone: "bad", text: `${money(overduePayables)} of supplier invoices are past due`, href: "/dashboard/finance/supplier-payments" });
-  position.overBudget.forEach((p) => alerts.push({ tone: "bad", text: `${p.name}: forecast cost is over its approved budget`, href: "/dashboard/finance/project-financials" }));
-  position.negativeMargin.slice(0, 3).forEach((p) => alerts.push({ tone: "bad", text: `${p.name}: forecast margin is negative (${p.marginPct.toFixed(1)}%)`, href: "/dashboard/finance/project-financials" }));
-  if (unassignedBankOut > 0) alerts.push({ tone: "warn", text: `${money(unassignedBankOut)} of bank money out isn't tagged to a project yet`, href: "/dashboard/finance/bank-review" });
-  if (position.ar > 0) alerts.push({ tone: "warn", text: `${money(position.ar)} certified but not yet collected from clients`, href: "/dashboard/finance/client-payments" });
+  const actionItems = useMemo<FinanceActionItem[]>(() => {
+    const list: FinanceActionItem[] = [];
+
+    if (unassignedBankOut > 0) {
+      list.push({
+        id: "bank-unassigned",
+        category: "banking",
+        severity: "attention",
+        title: `${money(unassignedBankOut)} unassigned bank withdrawals`,
+        description: "Bank statement withdrawals have not been allocated to a project code or cost category.",
+        amount: unassignedBankOut,
+        href: "/dashboard/finance/bank-review",
+        actionLabel: "Review & Tag",
+      });
+    }
+
+    if (overduePayables > 0) {
+      list.push({
+        id: "ap-overdue",
+        category: "payables",
+        severity: "critical",
+        title: `${money(overduePayables)} of supplier invoices are past due`,
+        description: "Aged procurement liabilities exceed payment terms and require review or settlement.",
+        amount: overduePayables,
+        href: "/dashboard/finance/supplier-payments",
+        actionLabel: "Open Payables",
+      });
+    }
+
+    if (position.overBudget.length > 0) {
+      position.overBudget.forEach((p, idx) => {
+        list.push({
+          id: `project-overbudget-${idx}`,
+          category: "projects",
+          severity: "critical",
+          title: `${p.name}: Forecast cost exceeds approved budget`,
+          description: `Estimate at completion exceeds approved budget baseline. Requires variation or budget amendment.`,
+          projectOrCounterparty: p.name,
+          href: "/dashboard/finance/project-financials",
+          actionLabel: "Inspect EAC",
+        });
+      });
+    }
+
+    if (position.negativeMargin.length > 0) {
+      position.negativeMargin.slice(0, 3).forEach((p, idx) => {
+        list.push({
+          id: `project-negmargin-${idx}`,
+          category: "projects",
+          severity: "critical",
+          title: `${p.name}: Forecast margin is negative (${p.marginPct.toFixed(1)}%)`,
+          description: "Project expenditures and commitments exceed total revenue value.",
+          projectOrCounterparty: p.name,
+          href: "/dashboard/finance/project-financials",
+          actionLabel: "Review Margin",
+        });
+      });
+    }
+
+    if (draftBudgets > 0) {
+      list.push({
+        id: "budgets-draft",
+        category: "projects",
+        severity: "attention",
+        title: `${draftBudgets} project budget${draftBudgets === 1 ? " is" : "s are"} still in draft`,
+        description: "Budgets must be formally approved before expenditure controls lock baselines.",
+        href: "/dashboard/finance/budgets",
+        actionLabel: "Review Budgets",
+      });
+    }
+
+    if (Number(claims.submitted?.count || 0) > 0) {
+      list.push({
+        id: "claims-submitted",
+        category: "claims",
+        severity: "attention",
+        title: `${claims.submitted.count} progress claim${claims.submitted.count === 1 ? "" : "s"} awaiting certification`,
+        description: "Client progress claims submitted and awaiting certification to trigger VAT and AR recognition.",
+        amount: Number(claims.submitted.amount || 0),
+        href: "/dashboard/finance/progress-claims",
+        actionLabel: "Inspect Claims",
+      });
+    }
+
+    if (position.ar > 0) {
+      list.push({
+        id: "ar-uncollected",
+        category: "claims",
+        severity: "attention",
+        title: `${money(position.ar)} certified revenue not yet collected`,
+        description: "Progress claims certified and fiscally invoiced, awaiting client payment settlement.",
+        amount: position.ar,
+        href: "/dashboard/finance/client-payments",
+        actionLabel: "Track Inflows",
+      });
+    }
+
+    if (Number(data?.site_payroll?.open_runs || 0) > 0) {
+      list.push({
+        id: "site-payroll-open",
+        category: "payables",
+        severity: "info",
+        title: `${money(data?.site_payroll?.open_runs)} in pending site wage runs`,
+        description: "Draft or approved site wage allocations awaiting disbursement.",
+        amount: Number(data?.site_payroll?.open_runs || 0),
+        href: "/dashboard/finance/payroll",
+        actionLabel: "Review Payroll",
+      });
+    }
+
+    return list;
+  }, [unassignedBankOut, overduePayables, position, draftBudgets, claims, data]);
+
+  const fetchDashboard = () => {
+    setLoading(true);
+    getFinanceOpsDashboard({ department_id: departmentId || undefined, months: 12 })
+      .then((res) => { setData(res.data || null); setError(null); })
+      .catch((err) => { setError(err instanceof Error ? err.message : "Could not load the finance dashboard."); })
+      .finally(() => { setLoading(false); });
+  };
 
   return (
     <div className="space-y-5">
@@ -211,6 +325,9 @@ export function FinanceOverviewDashboard({
         </div>
       )}
 
+      {/* Primary Decision-Grade Action Inbox */}
+      <FinanceActionInbox items={actionItems} loading={loading} onRefresh={fetchDashboard} />
+
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <Section title="Cash in vs cash out" hint="Cashbook, last 12 months (transfers between accounts excluded)" href="/dashboard/finance/cashbook" className="xl:col-span-2">
           <div className="h-64">
@@ -231,22 +348,24 @@ export function FinanceOverviewDashboard({
           </div>
         </Section>
 
-        <Section title="Needs attention" hint="What to act on today">
-          {alerts.length === 0 ? (
-            <p className="text-sm text-slate-light py-6 text-center">Nothing outstanding.</p>
-          ) : (
-            <ul className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-              {alerts.map((a, i) => (
-                <li key={i}>
-                  <Link href={a.href} className={`flex items-start gap-2 rounded border px-2.5 py-2 text-xs hover:brightness-125 ${a.tone === "bad" ? "border-red-500/30 bg-red-950/20 text-red-200" : "border-amber-500/30 bg-amber-950/15 text-amber-100"}`}>
-                    <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span className="flex-1">{a.text}</span>
-                    <ArrowRight className="h-3 w-3 mt-0.5 shrink-0 opacity-60" />
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
+        <Section title="Payables aging breakdown" hint="Days overdue across supplier liabilities" href="/dashboard/finance/supplier-payments">
+          <div className="h-64">
+            {loading ? <ChartLoading /> : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={agingSeries} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--dxl-ink-mid)" vertical={false} />
+                  <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} />
+                  <YAxis tick={axisTick} axisLine={false} tickLine={false} tickFormatter={(v) => money(v, true)} width={56} />
+                  <Tooltip content={<ChartTip />} cursor={{ fill: "var(--dxl-ink-mid)", opacity: 0.4 }} />
+                  <Bar dataKey="amount" name="Payables" radius={[2, 2, 0, 0]} maxBarSize={32}>
+                    {agingSeries.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
         </Section>
       </div>
 

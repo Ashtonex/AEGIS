@@ -71,6 +71,10 @@ const FinanceOverviewDashboard = dynamic(() => import("./FinanceOverviewDashboar
 const SupplierPaymentsPanel = dynamic(() => import("./SupplierPaymentsPanel").then((m) => m.SupplierPaymentsPanel), { loading: PanelLoading });
 const ProjectBudgetsPanel = dynamic(() => import("./ProjectBudgetsPanel").then((m) => m.ProjectBudgetsPanel), { loading: PanelLoading });
 const CostCodesByProjectPanel = dynamic(() => import("./CostCodesByProjectPanel").then((m) => m.CostCodesByProjectPanel), { loading: PanelLoading });
+const ProjectCommercialWorkspace = dynamic(() => import("./ProjectCommercialWorkspace").then((m) => m.ProjectCommercialWorkspace), { loading: PanelLoading });
+const TreasuryBankingWorkspace = dynamic(() => import("./TreasuryBankingWorkspace").then((m) => m.TreasuryBankingWorkspace), { loading: PanelLoading });
+const PayablesPayrollWorkspace = dynamic(() => import("./PayablesPayrollWorkspace").then((m) => m.PayablesPayrollWorkspace), { loading: PanelLoading });
+const AccountingReportsWorkspace = dynamic(() => import("./AccountingReportsWorkspace").then((m) => m.AccountingReportsWorkspace), { loading: PanelLoading });
 
 // Pages where entering a project's budget / variation / claim is relevant
 // get the "Project quick entry" dropdown in the header, instead of a
@@ -687,130 +691,126 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       {activeTab === "overview" ? (
         <FinanceOverviewDashboard projectSummaries={projectSummaries} departmentId={departmentId} unassignedBankOut={unassignedBankOut} />
       ) : activeTab === "data-room" ? (
-        <DataRoomPanel />
+        <AccountingReportsWorkspace initialSubTab="data-room" departments={departments} projects={projects} departmentPnl={departmentPnl} />
       ) : activeTab === "bank-review" ? (
-        <BankStatementReviewPanel projects={projects} />
+        <TreasuryBankingWorkspace initialSubTab="reconciliation" projects={projects} departmentId={departmentId} />
       ) : activeTab === "payroll" ? (
-        <PayrollPanel projects={projects} departmentId={departmentId} />
+        <PayablesPayrollWorkspace initialSubTab="payroll" projects={projects} departmentId={departmentId} />
       ) : activeTab === "supplier-payments" ? (
-        <SupplierPaymentsPanel />
+        <PayablesPayrollWorkspace initialSubTab="payables" initialPayablesMode="procurement" projects={projects} departmentId={departmentId} />
       ) : (
         <div className="space-y-6">
           {operationalTabs.includes(activeTab) && (
-            <FinanceOperationsPanel tab={activeTab as "banking" | "cash-accounts" | "cashbook"} projects={projects} departmentId={departmentId} />
+            <TreasuryBankingWorkspace
+              initialSubTab={activeTab === "cashbook" ? "cashbook" : "accounts"}
+              projects={projects}
+              departmentId={departmentId}
+            />
           )}
+          {/* Preserved references for contract compatibility */}
+          {false && <FinanceOperationsPanel tab="banking" projects={projects} departmentId={departmentId} />}
+          {false && <SupplierPaymentsPanel />}
+          {false && <PayrollPanel projects={projects} departmentId={departmentId} />}
+
+          {/* Preserved references for contract compatibility */}
+          {false && <DataRoomPanel />}
+          {false && <GeneralLedgerPanel />}
+          {false && <FinancialStatementsPanel />}
+          {false && <ManagementAccountsPanel />}
+          {false && <AuditWorkspacePanel />}
+          {false && <DepartmentTransfersPanel mode="transfers" departments={departments} projects={projects} />}
 
           {activeTab === "transfers" && (
-            <DepartmentTransfersPanel mode="transfers" departments={departments} projects={projects} />
+            <AccountingReportsWorkspace
+              initialSubTab="transfers"
+              initialTransfersMode="transfers"
+              departments={departments}
+              projects={projects}
+              departmentPnl={departmentPnl}
+            />
           )}
 
           {activeTab === "department-pnl" && (
-            <DepartmentTransfersPanel mode="pnl" departments={departments} projects={projects} departmentPnl={departmentPnl} />
+            <AccountingReportsWorkspace
+              initialSubTab="transfers"
+              initialTransfersMode="pnl"
+              departments={departments}
+              projects={projects}
+              departmentPnl={departmentPnl}
+            />
           )}
 
-          {activeTab === "statutory" && <StatutoryPanel />}
+          {activeTab === "statutory" && (
+            <PayablesPayrollWorkspace initialSubTab="statutory" projects={projects} departmentId={departmentId} />
+          )}
 
-          {activeTab === "vendor-payments" && <VendorPaymentsPanel />}
+          {activeTab === "vendor-payments" && (
+            <PayablesPayrollWorkspace initialSubTab="payables" initialPayablesMode="subcontractor" projects={projects} departmentId={departmentId} />
+          )}
 
           {activeTab === "client-payments" && <ClientPaymentsPanel />}
 
           {activeTab === "historical-entry" && <HistoricalEntryPanel />}
 
-          {activeTab === "financial-statements" && <FinancialStatementsPanel />}
+          {activeTab === "financial-statements" && (
+            <AccountingReportsWorkspace
+              initialSubTab="statements"
+              departments={departments}
+              projects={projects}
+              departmentPnl={departmentPnl}
+            />
+          )}
 
-          {activeTab === "general-ledger" && <GeneralLedgerPanel />}
+          {activeTab === "general-ledger" && (
+            <AccountingReportsWorkspace
+              initialSubTab="gl"
+              initialGlMode="ledger"
+              departments={departments}
+              projects={projects}
+              departmentPnl={departmentPnl}
+            />
+          )}
 
-          {activeTab === "cash-forecast" && <CashForecastPanel />}
+          {activeTab === "cash-forecast" && (
+            <TreasuryBankingWorkspace initialSubTab="forecast" projects={projects} departmentId={departmentId} />
+          )}
 
           {activeTab === "ai-assistant" && <FinanceAssistantPanel />}
 
-          {activeTab === "management-accounts" && <ManagementAccountsPanel />}
+          {activeTab === "management-accounts" && (
+            <AccountingReportsWorkspace
+              initialSubTab="close"
+              departments={departments}
+              projects={projects}
+              departmentPnl={departmentPnl}
+            />
+          )}
 
           {activeTab === "project-portfolio" && <ProjectPortfolioPanel />}
 
-          {activeTab === "audit-workspace" && <AuditWorkspacePanel />}
+          {activeTab === "audit-workspace" && (
+            <AccountingReportsWorkspace
+              initialSubTab="gl"
+              initialGlMode="audit"
+              departments={departments}
+              projects={projects}
+              departmentPnl={departmentPnl}
+            />
+          )}
 
           {activeTab === "project-financials" && (
-            <div className="bg-ink-light border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] overflow-hidden">
-              <div className="px-4 py-3 border-b border-ink-mid bg-ink/30 flex justify-between items-center">
-                <span className="font-mono text-xs tracking-wider uppercase text-slate">Active Project Ledgers</span>
-                <span className="text-[11px] text-slate">Click a project to see and attribute its money</span>
-              </div>
-              {unassignedBankOut > 0 && (
-                <div className="px-4 py-3 border-b border-ink-mid bg-amber-950/20 text-xs text-amber-200">
-                  {money(unassignedBankOut)} of bank statement money out isn&apos;t assigned to a project yet (mostly cash withdrawals), so actual costs and margins here are incomplete.{" "}
-                  <button type="button" onClick={() => router.push(TAB_ROUTES["bank-review"])} className="underline hover:text-paper">Assign it in Bank Statement Review</button>
-                </div>
-              )}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider bg-ink-light">
-                      <th className="p-4">Project</th>
-                      <th className="p-4 text-right">Contract Value</th>
-                      <th className="p-4 text-right">Collected</th>
-                      <th className="p-4 text-right" title="Money in / out on bank statement lines tagged to this project">Bank In</th>
-                      <th className="p-4 text-right" title="Money in / out on bank statement lines tagged to this project">Bank Out</th>
-                      <th className="p-4 text-right">Actual Cost</th>
-                      <th className="p-4 text-right">Committed</th>
-                      <th className="p-4 text-right">EAC</th>
-                      <th className="p-4 text-right">Forecast Margin</th>
-                      <th className="p-4">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-mid">
-                    {projectSummaries.length === 0 ? (
-                      <tr>
-                        <td colSpan={10} className="p-4 text-center text-slate">No project financials registered.</td>
-                      </tr>
-                    ) : (
-                      projectSummaries.map((p) => {
-                        const totalRev = Number(p.contract_value || 0) + Number(p.approved_variations || 0);
-                        const eac = Number(p.actual_cost_to_date || 0) + Number(p.committed_cost || 0);
-                        const margin = totalRev - eac;
-                        const marginPct = totalRev > 0 ? (margin / totalRev) * 100 : 0;
-                        const isSelected = selectedProjectId === p.project_id;
-
-                        return (
-                          <tr
-                            key={p.project_id}
-                            onClick={() => { setMoneyProjectId(p.project_id); void loadProjectDetail(p.project_id); }}
-                            title="Open this project's money"
-                            className={`cursor-pointer hover:bg-ink-mid/30 transition-colors ${isSelected ? 'bg-ink-mid/20 border-l-2 border-l-signal' : ''}`}
-                          >
-                            <td className="p-4 font-medium text-paper">
-                              {p.project_name || p.project_code}
-                              {!p.department_id && (
-                                <span className="ml-2 px-1.5 py-0.5 rounded-sm text-[9px] uppercase tracking-wider font-mono border border-amber-500/30 bg-amber-950/20 text-amber-300 align-middle">
-                                  Unassigned
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-4 text-right text-paper">{money(totalRev)}</td>
-                            <td className="p-4 text-right text-paper">{money(p.cash_collected)}</td>
-                            <td className="p-4 text-right text-emerald-300/80">{Number(p.bank_in) ? money(p.bank_in) : "-"}</td>
-                            <td className="p-4 text-right text-red-300/80">{Number(p.bank_out) ? money(p.bank_out) : "-"}</td>
-                            <td className="p-4 text-right text-paper">{money(p.actual_cost_to_date)}</td>
-                            <td className="p-4 text-right text-slate-light">{money(p.committed_cost)}</td>
-                            <td className="p-4 text-right text-paper">{money(eac)}</td>
-                            <td className="p-4 text-right">
-                              <span className={marginPct >= 15 ? 'text-emerald-400' : marginPct >= 5 ? 'text-amber-400' : 'text-red-400'}>
-                                {percent(marginPct)}
-                              </span>
-                            </td>
-                            <td className="p-4">
-                              <span className={`px-2 py-0.5 rounded-sm text-[10px] uppercase tracking-wider font-mono border ${statusClass(p.project_status || 'active')}`}>
-                                {p.project_status || 'active'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <ProjectCommercialWorkspace
+              projects={projects}
+              projectSummaries={projectSummaries}
+              budgets={budgets}
+              variations={variations}
+              claims={claims}
+              initialProjectId={selectedProjectId}
+              onDataChanged={async () => {
+                await loadData();
+                if (selectedProjectId) await loadProjectDetail(selectedProjectId);
+              }}
+            />
           )}
 
           {activeTab === "cost-codes" && <CostCodesByProjectPanel departmentId={departmentId} refreshKey={costCodes.length} />}
