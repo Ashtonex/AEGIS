@@ -6,8 +6,9 @@ import {
   Inbox, Zap, MapPin, LockKeyhole, ClipboardCheck, Calendar, Banknote,
   BookMarked, Receipt, BrainCircuit, Megaphone, Upload, LifeBuoy, Ticket,
   TrendingUp, Brain, Layers, Scale, Bot, FileSearch, Bell, User, Search,
-  Gauge,
+  Gauge, Fuel, Send,
 } from "lucide-react";
+
 
 /** One permission key, or several where holding ANY of them is enough. */
 export type PermissionRequirement = string | string[];
@@ -204,27 +205,24 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     ],
   },
   {
-    name: "Fleet",
+    name: "Plant & Equipment",
     href: "/dashboard/fleet",
     icon: Truck,
     domain: "assets",
-    requiredPermission: "fleet.read",
+    requiredPermission: ["fleet.read", "equipment_assets.read"],
     subItems: [
-      { name: "Overview", href: "/dashboard/fleet", icon: Truck },
-      { name: "Performance", href: "/dashboard/fleet/performance", icon: Gauge },
+      { name: "Command Center", href: "/dashboard/fleet", icon: LayoutDashboard, requiredPermission: "fleet.read" },
+      { name: "Asset Register", href: "/dashboard/equipment", icon: Layers, requiredPermission: "equipment_assets.read" },
+      { name: "Plant Requests & Dispatch", href: "/dashboard/fleet/requests", icon: Send, requiredPermission: "fleet.read" },
+      { name: "Commercial Hire & Revenue", href: "/dashboard/fleet/hire", icon: DollarSign, requiredPermission: "fleet.external_hire.read" },
+      { name: "Daily Shift Logs", href: "/dashboard/fleet/shift-logs", icon: ClipboardCheck, requiredPermission: "fleet.utilization.record" },
+      { name: "Fuel & Consumables", href: "/dashboard/fleet/fuel", icon: Fuel, requiredPermission: "fleet.fuel.record" },
+      { name: "Maintenance & Workshop", href: "/dashboard/fleet/maintenance", icon: Wrench, requiredPermission: "fleet.read" },
+      { name: "Operators & Safety", href: "/dashboard/fleet/operators", icon: Users, requiredPermission: "fleet.operator_profiles.read" },
+      { name: "Asset Financials & P&L", href: "/dashboard/fleet/performance", icon: Gauge, requiredPermission: "fleet.profitability.view" },
     ],
   },
-  {
-    name: "Equipment",
-    href: "/dashboard/equipment",
-    icon: Wrench,
-    domain: "assets",
-    requiredPermission: "equipment_assets.read",
-    subItems: [
-      { name: "Overview", href: "/dashboard/equipment", icon: Wrench },
-      { name: "Performance", href: "/dashboard/fleet/performance", icon: Gauge, requiredPermission: "fleet.read" },
-    ],
-  },
+
   {
     name: "Procurement",
     href: "/dashboard/procurement",
@@ -480,6 +478,12 @@ export function requiredPermissionForPath(pathname: string | null | undefined): 
  * DashboardPageHeader and the page background outside the sidebar itself. */
 export function getDomainForPathname(pathname: string | null | undefined): DomainKey | null {
   if (!pathname) return null;
+  for (const group of MODULE_GROUPS) {
+    if (!group.domain) continue;
+    if (group.subItems.some((item) => pathname === item.href || pathname.startsWith(`${item.href}/`))) {
+      return group.domain;
+    }
+  }
   let best: ModuleGroup | null = null;
   for (const group of MODULE_GROUPS) {
     if (!group.domain) continue;
@@ -489,6 +493,7 @@ export function getDomainForPathname(pathname: string | null | undefined): Domai
   }
   return best?.domain ?? null;
 }
+
 
 /** Default breadcrumb trail for a dashboard pathname, derived from the same
  * MODULE_GROUPS data the sidebar uses: Domain > Group > current sub-item

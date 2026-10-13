@@ -415,18 +415,18 @@ function FleetTrackerDashboard() {
                     return (
                       <TableRow key={request.id}>
                         <TableCell><p className="font-medium text-paper">{text(request, "request_number") || request.id.slice(0, 8)}</p><p className="mt-1 text-[11px] text-slate-light">{text(request, "project_name", "client_display_name") || "No project/client linked"}</p></TableCell>
-                        <TableCell>{text(request, "request_type").replaceAll("_", " ") || "Not recorded"}</TableCell>
+                        <TableCell>{text(request, "request_type").replace(/_/g, " ") || "Not recorded"}</TableCell>
                         <TableCell>{text(request, "required_asset_type")} x {String(request.quantity ?? 1)}</TableCell>
                         <TableCell>{text(request, "work_location") || "Not recorded"}</TableCell>
-                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{text(request, "status").replaceAll("_", " ")}</span></TableCell>
+                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{text(request, "status").replace(/_/g, " ")}</span></TableCell>
                         <TableCell>
                           <span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${readinessStatus === "ready" ? "border-green-500/30 bg-green-500/10 text-green-200" : blockers.length ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-amber-500/40 bg-amber-500/10 text-amber-200"}`}>
-                            {readinessStatus.replaceAll("_", " ")} {readinessCount}/{PLANT_READINESS_CONTROLS.length}
+                            {readinessStatus.replace(/_/g, " ")} {readinessCount}/{PLANT_READINESS_CONTROLS.length}
                           </span>
                           {blockers.length > 0 && <p className="mt-1 max-w-56 truncate text-[11px] text-slate-light">{blockers[0]}</p>}
                         </TableCell>
                         <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${risk === "critical" || risk === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-green-500/30 bg-green-500/10 text-green-200"}`}>{risk}</span></TableCell>
-                        <TableCell>{text(request, "closure_status").replaceAll("_", " ") || "not started"}</TableCell>
+                        <TableCell>{text(request, "closure_status").replace(/_/g, " ") || "not started"}</TableCell>
                         <TableCell>
                           {text(request, "status") === "awaiting_approval" ? (
                             <div className="flex gap-1.5">
@@ -479,7 +479,7 @@ function FleetTrackerDashboard() {
                         <TableCell>{text(wo, "maintenance_type")}</TableCell>
                         <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${priority === "critical" || priority === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-slate/40 bg-ink-light text-slate-light"}`}>{priority}</span></TableCell>
                         <TableCell className="font-mono">{wo.estimated_cost === null || wo.estimated_cost === undefined || !Number.isFinite(cost) ? "Not recorded" : `$${cost.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</TableCell>
-                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{status.replaceAll("_", " ")}</span></TableCell>
+                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{status.replace(/_/g, " ")}</span></TableCell>
                         <TableCell>
                           {status === "awaiting_approval" ? (
                             raisedByMe ? (
@@ -565,8 +565,8 @@ function FleetTrackerDashboard() {
                       <TableRow key={hire.id}>
                         <TableCell className="text-paper">{text(hire, "customer_name") || "Customer not recorded"}</TableCell>
                         <TableCell>{text(hire, "request_number", "required_asset_type") || "No linked request"}</TableCell>
-                        <TableCell>{text(hire, "hire_type").replaceAll("_", " ") || "wet hire"}</TableCell>
-                        <TableCell>{text(hire, "status").replaceAll("_", " ") || "enquiry"}</TableCell>
+                        <TableCell>{text(hire, "hire_type").replace(/_/g, " ") || "wet hire"}</TableCell>
+                        <TableCell>{text(hire, "status").replace(/_/g, " ") || "enquiry"}</TableCell>
                         <TableCell>{formatMoney(number(hire, "deposit_required"))}</TableCell>
                         <TableCell>{formatMoney((number(hire, "mobilisation_charge") ?? 0) + (number(hire, "demobilisation_charge") ?? 0) + (number(hire, "damage_recovery_amount") ?? 0))}</TableCell>
                       </TableRow>

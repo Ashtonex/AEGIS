@@ -174,6 +174,24 @@ export async function createExternalPlantHireAgreement(payload: Record<string, u
   });
 }
 
+export async function updateExternalPlantHireAgreement(agreementId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/fleet/external-hire-agreements/${agreementId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function generateExternalPlantHireInvoice(agreementId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/external-hire-agreements/${agreementId}/invoice`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+
 export async function getPlantLifecycleSummary(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/fleet/plant/summary', { cache: 'no-store', allowFallback: false });
 }
@@ -294,6 +312,54 @@ export async function decideFleetWorkOrderApproval(workOrderId: string, decision
 
 export const createEquipmentWorkOrder = createFleetWorkOrder;
 export const decideEquipmentWorkOrder = decideFleetWorkOrder;
+
+export async function getFleetFuelTransactions(params?: { fleet_id?: string; project_id?: string; limit?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.fleet_id) search.set('fleet_id', params.fleet_id);
+  if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.limit) search.set('limit', String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/fleet/fuel${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function recordFleetFuel(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/fuel', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function getFleetUtilizationLogs(params?: { fleet_id?: string; project_id?: string; date_from?: string; date_to?: string; approval_status?: string; limit?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.fleet_id) search.set('fleet_id', params.fleet_id);
+  if (params?.project_id) search.set('project_id', params.project_id);
+  if (params?.date_from) search.set('date_from', params.date_from);
+  if (params?.date_to) search.set('date_to', params.date_to);
+  if (params?.approval_status) search.set('approval_status', params.approval_status);
+  if (params?.limit) search.set('limit', String(params.limit));
+  const query = search.toString() ? `?${search.toString()}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/fleet/utilization${query}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function recordFleetUtilization(payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>('/api/v1/fleet/utilization', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
+export async function updateFleetUtilizationStatus(logId: string, payload: { status: string; rejection_reason?: string }): Promise<ApiResponse<{ id: string; approval_status: string }>> {
+  return fetchApi<ApiResponse<{ id: string; approval_status: string }>>(`/api/v1/fleet/utilization/${logId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 
 // --- SYSTEM HEALTH PING --- //
 export async function pingEndpoint(route: string): Promise<boolean> {

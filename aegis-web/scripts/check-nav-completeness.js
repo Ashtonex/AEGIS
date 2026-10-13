@@ -15,7 +15,9 @@ const NAV_FILE = path.join(__dirname, "..", "src", "lib", "navigation.ts");
 const ALLOWLIST = new Set([
   "/dashboard", // redirects straight to /dashboard/executive
   "/dashboard/crm/quotations", // legacy redirect stub -> /dashboard/quotations
+  "/dashboard/assets", // legacy and canonical assets stub -> /dashboard/fleet
 ]);
+
 
 function walkPageRoutes(dir, baseDir) {
   const routes = [];
