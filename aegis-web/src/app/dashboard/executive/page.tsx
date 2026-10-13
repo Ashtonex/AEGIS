@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -24,6 +24,8 @@ import {
   getFinancialRunway,
   getSafetyIndex,
   getPendingApprovals,
+  approveHRLeaveRequest,
+  updatePlantRequestStatus,
   getProjectScheduleRisk,
   getMaterialsForecastAlerts,
   getArAging,
@@ -1179,26 +1181,57 @@ function PendingApprovalsPanel() {
   const [message, setMessage] = useState<string>("");
   const [moduleFilter, setModuleFilter] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ text: string; error?: boolean } | null>(null);
+
+  const fetchApprovals = useCallback(async () => {
+    try {
+      const res = await getPendingApprovals();
+      setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
+      const meta = (res.meta || {}) as ApiData;
+      setByModule((meta.by_module as Record<string, number>) || {});
+      setMessage(String(res.message || ""));
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await getPendingApprovals();
-        if (!cancelled) {
-          setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
-          const meta = (res.meta || {}) as ApiData;
-          setByModule((meta.by_module as Record<string, number>) || {});
-          setMessage(String(res.message || ""));
-        }
-      } catch {
-        if (!cancelled) setFailed(true);
-      } finally {
-        if (!cancelled) setLoading(false);
+    fetchApprovals();
+  }, [fetchApprovals]);
+
+  const handleDecision = async (e: React.MouseEvent, item: ApiData, decision: "approved" | "rejected") => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = String(item.id || "");
+    const itemType = String(item.type || "");
+    if (!id || actingId) return;
+
+    setActingId(id);
+    setActionNotice(null);
+    try {
+      if (itemType === "leave_request") {
+        await approveHRLeaveRequest(id, decision, "Processed from Executive Dashboard.");
+      } else if (itemType === "plant_request") {
+        await updatePlantRequestStatus(id, { status: decision });
+      } else {
+        setActionNotice({ text: `Direct action not configured for ${itemType}. Please review in the respective module.`, error: true });
+        return;
       }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+      setActionNotice({ text: `${titleCase(itemType)} "${String(item.reference || id)}" ${decision} successfully.` });
+      await fetchApprovals();
+    } catch (err: any) {
+      setActionNotice({
+        text: err?.response?.data?.detail || err?.message || `Failed to record decision for ${itemType}.`,
+        error: true,
+      });
+    } finally {
+      setActingId(null);
+    }
+  };
 
   const filtered = moduleFilter ? items.filter((item) => item.module === moduleFilter) : items;
   const visible = showAll ? filtered : filtered.slice(0, APPROVALS_VISIBLE);
@@ -1208,10 +1241,20 @@ function PendingApprovalsPanel() {
       <div className="flex justify-between items-center border-b border-ink-mid pb-3">
         <div>
           <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Decisions Awaiting Approval</h2>
-          <p className="text-xs text-slate-light mt-1">Items genuinely pending in Procurement, Finance, Fleet, HR and Projects, longest-waiting first. Decide them in their own module.</p>
+          <p className="text-xs text-slate-light mt-1">Items genuinely pending in Procurement, Finance, Fleet, HR and Projects. Approve or reject eligible items directly or view full details in their module.</p>
         </div>
         <span className="font-mono text-[10px] text-slate shrink-0">{items.length} PENDING</span>
       </div>
+
+      {actionNotice && (
+        <div className={`mt-3 p-2.5 rounded border text-xs font-mono flex items-center justify-between ${actionNotice.error ? "bg-rose-950/30 border-rose-800/40 text-rose-300" : "bg-emerald-950/30 border-emerald-800/40 text-emerald-300"}`}>
+          <span>{actionNotice.text}</span>
+          <button onClick={() => setActionNotice(null)} className="ml-2 hover:opacity-75">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       {Object.keys(byModule).length > 1 && (
         <div className="mt-3 flex flex-wrap gap-1.5">
           <button onClick={() => setModuleFilter(null)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === null ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>All {items.length}</button>
@@ -1232,25 +1275,64 @@ function PendingApprovalsPanel() {
             {visible.map((item) => {
               const waiting = waitingLabel(item.waiting_days);
               const stale = Number(item.waiting_days) >= 7;
+              const itemId = String(item.id || "");
+              const itemType = String(item.type || "");
+              const isDirectActionable = itemType === "leave_request" || itemType === "plant_request";
+              const isProcessing = actingId === itemId;
+
               return (
-                <Link
-                  key={`${String(item.type)}-${String(item.id)}`}
-                  href={String(item.action_url || "/dashboard")}
-                  className="block border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal transition-colors"
+                <div
+                  key={`${itemType}-${itemId}`}
+                  className="border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal/70 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
-                  <div className="flex flex-wrap justify-between items-start gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-mono text-[10px] uppercase text-signal">{displayValue(item.module)} · {titleCase(String(item.type || "item"))}</span>
-                        {waiting && <span className={`font-mono text-[9px] uppercase px-1.5 border rounded ${stale ? "border-amber-500/40 text-amber-300" : "border-ink-mid text-slate-light"}`}>{waiting}</span>}
-                      </div>
-                      <p className="font-semibold text-paper text-sm mt-1.5 truncate">{displayValue(item.reference)}</p>
-                      {item.detail !== null && item.detail !== undefined && item.detail !== "" && <p className="text-slate-light text-xs mt-0.5 truncate">{String(item.detail)}</p>}
-                      <p className="text-slate text-xs mt-1">{displayValue(item.reason)}</p>
+                  <Link
+                    href={String(item.action_url || "/dashboard")}
+                    className="min-w-0 flex-1 block group"
+                  >
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-[10px] uppercase text-signal group-hover:underline">{displayValue(item.module)} · {titleCase(itemType || "item")}</span>
+                      {waiting && <span className={`font-mono text-[9px] uppercase px-1.5 border rounded ${stale ? "border-amber-500/40 text-amber-300" : "border-ink-mid text-slate-light"}`}>{waiting}</span>}
                     </div>
-                    {item.amount !== null && item.amount !== undefined && <p className="font-mono text-sm text-paper shrink-0">{currencyValue(item.amount)}</p>}
+                    <p className="font-semibold text-paper text-sm mt-1.5 truncate group-hover:text-amber-200 transition-colors">{displayValue(item.reference)}</p>
+                    {item.detail !== null && item.detail !== undefined && item.detail !== "" && <p className="text-slate-light text-xs mt-0.5 truncate">{String(item.detail)}</p>}
+                    <p className="text-slate text-xs mt-1">{displayValue(item.reason)}</p>
+                  </Link>
+
+                  <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
+                    {item.amount !== null && item.amount !== undefined && <p className="font-mono text-sm text-paper">{currencyValue(item.amount)}</p>}
+                    {isDirectActionable ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={Boolean(actingId)}
+                          onClick={(e) => handleDecision(e, item, "approved")}
+                          className="px-2.5 py-1 text-xs font-mono font-medium rounded border border-emerald-600/50 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/60 transition disabled:opacity-50 flex items-center gap-1"
+                          title="Approve immediately"
+                        >
+                          {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(actingId)}
+                          onClick={(e) => handleDecision(e, item, "rejected")}
+                          className="px-2.5 py-1 text-xs font-mono font-medium rounded border border-rose-600/50 bg-rose-950/40 text-rose-300 hover:bg-rose-900/60 transition disabled:opacity-50 flex items-center gap-1"
+                          title="Reject"
+                        >
+                          <X className="h-3 w-3" />
+                          Reject
+                        </button>
+                      </div>
+                    ) : (
+                      <Link
+                        href={String(item.action_url || "/dashboard")}
+                        className="px-2.5 py-1 text-xs font-mono rounded border border-ink-mid bg-ink text-slate-light hover:text-paper hover:border-signal transition"
+                      >
+                        Review →
+                      </Link>
+                    )}
                   </div>
-                </Link>
+                </div>
               );
             })}
             {filtered.length > APPROVALS_VISIBLE && (

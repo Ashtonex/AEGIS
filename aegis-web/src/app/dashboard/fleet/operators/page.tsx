@@ -360,11 +360,18 @@ function RegisterOperatorModal({
               className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
             >
               <option value="">— Or external machine contractor below —</option>
-              {employees.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {text(e, "first_name", "full_name")} {text(e, "last_name")} ({text(e, "job_title", "position") || "Worker"})
-                </option>
-              ))}
+              {employees.map((e) => {
+                const name =
+                  text(e, "employee_name", "name", "full_name") ||
+                  `${text(e, "first_name")} ${text(e, "last_name")}`.trim() ||
+                  "Unnamed Employee";
+                const role = text(e, "job_title", "position", "role") || "Worker";
+                return (
+                  <option key={e.id} value={e.id}>
+                    {name} ({role})
+                  </option>
+                );
+              })}
             </select>
           </div>
           <div>

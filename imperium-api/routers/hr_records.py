@@ -150,25 +150,29 @@ async def decide_leave_request(
     """
     Approve or reject a leave request.
     """
+    decision_val = str(payload.decision).lower().strip()
+    if decision_val not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="Decision must be 'approved' or 'rejected'.")
+
     result = (
         await db.execute(
             text("""
         UPDATE hr.leave_requests lr
-        SET status = :decision,
-            calendar_status = CASE WHEN :decision = 'approved' THEN 'approved' WHEN :decision = 'rejected' THEN 'declined' ELSE calendar_status END,
+        SET status = CAST(:decision AS varchar),
+            calendar_status = CASE WHEN CAST(:decision AS varchar) = 'approved' THEN 'approved' WHEN CAST(:decision AS varchar) = 'rejected' THEN 'declined' ELSE calendar_status END,
             calendar_title = COALESCE(calendar_title, e.employee_name || ' - ' || lr.leave_type),
-            approved_by = CASE WHEN :decision = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
-            approved_at = CASE WHEN :decision = 'approved' THEN NOW() ELSE approved_at END,
-            rejection_reason = CASE WHEN :decision = 'rejected' THEN :reason ELSE NULL END,
+            approved_by = CASE WHEN CAST(:decision AS varchar) = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
+            approved_at = CASE WHEN CAST(:decision AS varchar) = 'approved' THEN NOW() ELSE approved_at END,
+            rejection_reason = CASE WHEN CAST(:decision AS varchar) = 'rejected' THEN CAST(:reason AS text) ELSE NULL END,
             updated_at = NOW()
         FROM hr.employees e
-        WHERE lr.id = :id AND lr.organization_id = :org_id AND lr.is_deleted = false
+        WHERE lr.id = CAST(:id AS uuid) AND lr.organization_id = CAST(:org_id AS uuid) AND lr.is_deleted = false
           AND e.id = lr.employee_id
         RETURNING lr.id, e.employee_name, e.linked_user_id
     """),
             {
                 "id": leave_id,
-                "decision": payload.decision,
+                "decision": decision_val,
                 "reason": payload.reason,
                 "user_id": user["user_id"],
                 "org_id": user["org_id"],
@@ -179,19 +183,22 @@ async def decide_leave_request(
         await db.rollback()
         raise HTTPException(status_code=404, detail="Leave request not found.")
     if result.linked_user_id:
-        await emit_notification(
-            db,
-            org_id=user["org_id"],
-            user_id=str(result.linked_user_id),
-            title=f"Leave request {payload.decision}",
-            message=f"Your leave request has been {payload.decision}."
-            + (f" Reason: {payload.reason}" if payload.decision == "rejected" and payload.reason else ""),
-            notification_type="hr_leave_decision",
-            action_url="/dashboard/hr",
-            metadata={"leave_id": str(leave_id)},
-        )
+        try:
+            await emit_notification(
+                db,
+                org_id=user["org_id"],
+                user_id=str(result.linked_user_id),
+                title=f"Leave request {decision_val}",
+                message=f"Your leave request has been {decision_val}."
+                + (f" Reason: {payload.reason}" if decision_val == "rejected" and payload.reason else ""),
+                notification_type="hr_leave_decision",
+                action_url="/dashboard/hr",
+                metadata={"leave_id": str(leave_id)},
+            )
+        except Exception:
+            pass
     await db.commit()
-    return ok({"id": str(leave_id)}, f"Leave request {payload.decision}.")
+    return ok({"id": str(leave_id)}, f"Leave request {decision_val}.")
 
 
 # --- Self-service ("me") endpoints ---
