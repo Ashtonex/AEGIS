@@ -77,7 +77,7 @@ class UuidCastInCaseWhenContractTests(unittest.TestCase):
 
     def test_hr_leave_decision_casts_approved_by(self):
         self.assertIn(
-            "approved_by = CASE WHEN :decision = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END",
+            "approved_by = CASE WHEN CAST(:decision AS varchar) = 'approved' THEN CAST(:user_id AS uuid) ELSE approved_by END",
             HR_RECORDS,
         )
 
