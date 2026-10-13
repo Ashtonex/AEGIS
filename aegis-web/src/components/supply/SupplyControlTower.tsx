@@ -28,7 +28,12 @@ export function SupplyControlTower({ currentModule, onFilterClick, className = "
         setError(null);
       }
     } catch (err: any) {
-      setError(err?.message || "Failed to load supply control tower metrics");
+      const msg = err?.message || "";
+      if (msg.toLowerCase().includes("not found")) {
+        setError("Control tower endpoint is initializing on the server. Retry shortly.");
+      } else {
+        setError(msg || "Failed to load supply control tower metrics");
+      }
     } finally {
       setLoading(false);
     }

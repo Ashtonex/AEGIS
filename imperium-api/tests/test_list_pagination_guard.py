@@ -54,6 +54,7 @@ ALLOWED_UNBOUNDED = {
     ("financial_performance", "get_historical_reconciliation"): "one row per historical project",
     ("financial_performance", "get_project_petty_cash"): "a single project's petty cash",
     ("notifications", "notification_summary"): "counts only",
+    ("procurement", "get_supply_control_tower_kpis"): "aggregates only: counts and sums for supply control tower",
     ("procurement", "supplier_catalogue"): "a single supplier's catalogue",
     ("projects", "list_production_expenses"): "a single project",
     ("projects", "list_production_revenue"): "a single project",
