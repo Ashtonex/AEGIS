@@ -22,7 +22,8 @@ import {
   Sliders,
   X,
   ChevronRight,
-  ShieldAlert,
+  Clock,
+  BadgeCheck,
 } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
 import {
@@ -30,9 +31,10 @@ import {
   assignProjectRole,
   updateProjectRole,
   deactivateProjectRole,
-  getSiteWorkers,
-  createSiteWorker,
-  updateSiteWorker,
+  getProjectTeamHires,
+  createProjectTeamHire,
+  deactivateProjectTeamHire,
+  removeProjectAllocation,
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
@@ -84,14 +86,14 @@ export default function ProjectTeamPage() {
   const [hirePhone, setHirePhone] = useState("");
   const [hireNationalId, setHireNationalId] = useState("");
 
-  // Load project roles & project hires
+  // Load project roles & project hires (from project endpoint, no payroll permission block!)
   const loadWorkforceData = useCallback(async () => {
     setLoading(true);
     setFeedback(null);
     try {
       const [rolesRes, hiresRes] = await Promise.all([
         getProjectRoles(projectId),
-        getSiteWorkers({ project_id: projectId, include_inactive: true } as any),
+        getProjectTeamHires(projectId),
       ]);
 
       if (rolesRes.success && rolesRes.data) {
@@ -103,7 +105,7 @@ export default function ProjectTeamPage() {
       }
 
       if (hiresRes.success && hiresRes.data) {
-        setProjectHires(hiresRes.data || []);
+        setProjectHires(hiresRes.data.hires || []);
       }
     } catch (err: any) {
       console.warn("Error loading workforce data", err);
@@ -183,14 +185,12 @@ export default function ProjectTeamPage() {
     setActionLoading(true);
     setFeedback(null);
     try {
-      const res = await createSiteWorker({
-        project_id: projectId,
+      const res = await createProjectTeamHire(projectId, {
         full_name: hireFullName.trim(),
         trade: hireTrade,
         hourly_rate: parseFloat(hireHourlyRate) || 0,
-        phone_number: hirePhone.trim() || undefined,
+        phone: hirePhone.trim() || undefined,
         national_id: hireNationalId.trim() || undefined,
-        registered_via: "site_register",
       });
 
       if (res.success) {
@@ -216,26 +216,22 @@ export default function ProjectTeamPage() {
     }
   };
 
-  // Handle Deactivating / Ending a Project Hire
+  // Handle Deactivating / Removing a Project Hire from Project
   const handleDeactivateHire = async (workerId: string, workerName: string, currentStatus: string) => {
     const isDeactivating = currentStatus === "active";
     const msg = isDeactivating
-      ? `Deactivate ${workerName} from this project? They will no longer be available for daily attendance.`
-      : `Reactivate ${workerName} for site operations?`;
+      ? `Remove / deactivate ${workerName} from this project? Earlier attendance records and hours will remain safely preserved.`
+      : `Reactivate ${workerName} for this project?`;
 
     if (!confirm(msg)) return;
 
     setActionLoading(true);
     try {
-      const res = await updateSiteWorker(workerId, {
-        status: isDeactivating ? "inactive" : "active",
-        status_reason: isDeactivating ? "Ended assignment on project" : "Reactivated on project",
-      });
-
+      const res = await deactivateProjectTeamHire(projectId, workerId);
       if (res.success) {
         setFeedback({
           type: "success",
-          message: isDeactivating ? `Deactivated ${workerName}.` : `Reactivated ${workerName}.`,
+          message: `Deactivated ${workerName} from project.`,
         });
         await loadWorkforceData();
       } else {
@@ -248,10 +244,37 @@ export default function ProjectTeamPage() {
     }
   };
 
-  // Counts
+  // Handle Removing / Soft-Ending a Permanent Company Staff Allocation
+  const handleRemoveAllocation = async (allocationId: string, employeeName: string) => {
+    if (!confirm(`Are you sure you want to remove ${employeeName} from this project? Their allocation will be ended without losing earlier site logs or company employment records.`)) {
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const res = await removeProjectAllocation(projectId, allocationId);
+      if (res.success) {
+        setFeedback({
+          type: "success",
+          message: `Removed ${employeeName} from this project.`,
+        });
+        void refetchProject();
+        await loadWorkforceData();
+      } else {
+        setFeedback({ type: "error", message: res.error?.message || "Failed to remove employee allocation." });
+      }
+    } catch (err: any) {
+      setFeedback({ type: "error", message: err?.message || "Error removing employee allocation." });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Active counts
   const activeRoles = useMemo(() => roles.filter((r) => r.is_active), [roles]);
   const activeHires = useMemo(() => projectHires.filter((h) => h.status === "active"), [projectHires]);
-  const totalHeadcount = activeRoles.length + activeHires.length + hrAllocations.length;
+  const activePermanent = useMemo(() => hrAllocations.filter((m) => m.status !== "ended" && !m.is_deleted), [hrAllocations]);
+  const totalHeadcount = activeRoles.length + activeHires.length + activePermanent.length;
 
   return (
     <div className="w-full space-y-6">
@@ -337,7 +360,7 @@ export default function ProjectTeamPage() {
 
         <div className="border border-cyan-500/30 bg-ink/70 p-4">
           <p className="font-mono text-[10px] uppercase tracking-wider text-cyan-400">Permanent HR Staff</p>
-          <p className="mt-1 font-mono text-2xl font-bold text-cyan-300 sm:text-3xl">{hrAllocations.length}</p>
+          <p className="mt-1 font-mono text-2xl font-bold text-cyan-300 sm:text-3xl">{activePermanent.length}</p>
           <span className="text-[11px] text-slate-light">Allocated company employees</span>
         </div>
       </section>
@@ -382,7 +405,7 @@ export default function ProjectTeamPage() {
               : "border-transparent text-slate-light hover:text-paper"
           }`}
         >
-          Permanent HR Staff ({hrAllocations.length})
+          Permanent HR Staff ({activePermanent.length})
         </button>
       </div>
 
@@ -403,7 +426,7 @@ export default function ProjectTeamPage() {
 
           {roles.length === 0 ? (
             <div className="py-10 text-center text-xs text-slate-light font-mono">
-              No leadership roles assigned yet. Click "Delegate / Assign Role" to assign the Project Manager, Site Engineer, or Foreman.
+              No leadership roles assigned yet. Click &quot;Delegate / Assign Role&quot; to assign the Project Manager, Site Engineer, or Foreman.
             </div>
           ) : (
             <div className="overflow-x-auto w-full">
@@ -475,7 +498,7 @@ export default function ProjectTeamPage() {
         </section>
       )}
 
-      {/* SECTION 2: CASUAL PROJECT HIRES (finance.site_workers) */}
+      {/* SECTION 2: CASUAL PROJECT HIRES (finance.site_workers / site_day_attendance) */}
       {(filterTab === "all" || filterTab === "hires") && (
         <section className="border border-ink-mid bg-ink">
           <div className="border-b border-ink-mid p-3.5 sm:px-6 flex items-center justify-between">
@@ -486,13 +509,13 @@ export default function ProjectTeamPage() {
               </span>
             </div>
             <span className="font-mono text-xs text-slate-light">
-              {activeHires.length} Active Hires
+              {projectHires.length} Hires ({activeHires.length} Active)
             </span>
           </div>
 
           {projectHires.length === 0 ? (
             <div className="py-10 text-center text-xs text-slate-light font-mono">
-              No casual project hires registered yet. Add day labourers and artisans who come and go without permanent HR enrollment.
+              No casual project hires registered yet. Click &quot;Add Project Hire&quot; to register day labourers and artisans who come and go.
             </div>
           ) : (
             <div className="overflow-x-auto w-full">
@@ -501,8 +524,9 @@ export default function ProjectTeamPage() {
                   <tr className="border-b border-ink-mid bg-ink-light/50 text-[11px] text-slate uppercase tracking-wider">
                     <th className="py-2.5 px-4 sm:px-6">Worker Name</th>
                     <th className="py-2.5 px-4">Trade / Skill</th>
-                    <th className="py-2.5 px-4">Hourly / Daily Rate</th>
-                    <th className="py-2.5 px-4">Phone / Contact</th>
+                    <th className="py-2.5 px-4">Hourly Rate</th>
+                    <th className="py-2.5 px-4">HR Verification</th>
+                    <th className="py-2.5 px-4">Hours Logged</th>
                     <th className="py-2.5 px-4">Status</th>
                     <th className="py-2.5 px-4 text-center">Actions</th>
                   </tr>
@@ -510,22 +534,39 @@ export default function ProjectTeamPage() {
                 <tbody className="divide-y divide-ink-mid/40">
                   {projectHires.map((h) => {
                     const isActive = h.status === "active";
+                    const isApproved = h.hr_status === "accepted" || h.hr_verified;
+
                     return (
-                      <tr key={h.id} className="hover:bg-ink-light/20 transition-colors">
+                      <tr key={h.id || h.full_name} className="hover:bg-ink-light/20 transition-colors">
                         <td className="py-3 px-4 sm:px-6">
                           <span className="font-semibold text-paper text-sm block font-sans">
                             {h.full_name}
                           </span>
                           <span className="text-[10px] text-slate-light">
-                            {h.national_id ? `ID: ${h.national_id}` : "Project Hire"}
+                            {h.national_id ? `ID: ${h.national_id}` : (h.phone ? `Phone: ${h.phone}` : "Casual Hire")}
                           </span>
                         </td>
                         <td className="py-3 px-4 text-paper">{h.trade || "General Labour"}</td>
                         <td className="py-3 px-4 text-emerald-300 font-semibold">
                           ${parseFloat(h.hourly_rate || "0").toFixed(2)}/hr
                         </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`border px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider inline-flex items-center gap-1 ${
+                              isApproved
+                                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                                : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                            }`}
+                          >
+                            <BadgeCheck className="h-3 w-3" />
+                            <span>{isApproved ? "HR Approved" : "Pending Review"}</span>
+                          </span>
+                        </td>
                         <td className="py-3 px-4 text-slate-light">
-                          {h.phone_number || "No contact"}
+                          <span className="font-semibold text-paper">{h.hours_logged || 0} hrs</span>
+                          {h.last_attended && (
+                            <span className="block text-[10px] text-slate">Last: {formatDate(String(h.last_attended))}</span>
+                          )}
                         </td>
                         <td className="py-3 px-4">
                           <span
@@ -542,13 +583,15 @@ export default function ProjectTeamPage() {
                           <button
                             onClick={() => handleDeactivateHire(h.id, h.full_name, h.status)}
                             disabled={actionLoading}
+                            title="Remove or deactivate worker from this project"
                             className={`inline-flex items-center gap-1 border px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50 ${
                               isActive
-                                ? "border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500 hover:text-ink"
+                                ? "border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500 hover:text-ink"
                                 : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500 hover:text-ink"
                             }`}
                           >
-                            <span>{isActive ? "Deactivate" : "Reactivate"}</span>
+                            <UserX className="h-3 w-3" />
+                            <span>{isActive ? "Remove from Project" : "Reactivate"}</span>
                           </button>
                         </td>
                       </tr>
@@ -561,7 +604,7 @@ export default function ProjectTeamPage() {
         </section>
       )}
 
-      {/* SECTION 3: ALLOCATED PERMANENT STAFF (HR Allocations) */}
+      {/* SECTION 3: ALLOCATED PERMANENT STAFF (HR Allocations with Remove Action) */}
       {(filterTab === "all" || filterTab === "permanent") && (
         <section className="border border-ink-mid bg-ink">
           <div className="border-b border-ink-mid p-3.5 sm:px-6 flex items-center justify-between">
@@ -572,13 +615,13 @@ export default function ProjectTeamPage() {
               </span>
             </div>
             <span className="font-mono text-xs text-slate-light">
-              {hrAllocations.length} Allocated Staff
+              {activePermanent.length} Allocated Staff
             </span>
           </div>
 
-          {hrAllocations.length === 0 ? (
+          {activePermanent.length === 0 ? (
             <div className="py-10 text-center text-xs text-slate-light font-mono">
-              No permanent company staff allocated to this project in the HR master module.
+              No permanent company staff currently allocated to this project.
             </div>
           ) : (
             <div className="overflow-x-auto w-full">
@@ -591,11 +634,12 @@ export default function ProjectTeamPage() {
                     <th className="py-2.5 px-4 text-center">Allocation %</th>
                     <th className="py-2.5 px-4">Starts On</th>
                     <th className="py-2.5 px-4">Status</th>
+                    <th className="py-2.5 px-4 text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-ink-mid/40">
-                  {hrAllocations.map((m, idx) => (
-                    <tr key={idx} className="hover:bg-ink-light/20 transition-colors">
+                  {activePermanent.map((m) => (
+                    <tr key={m.allocation_id || m.id || m.employee_name} className="hover:bg-ink-light/20 transition-colors">
                       <td className="py-3 px-4 sm:px-6">
                         <span className="font-semibold text-paper text-sm block font-sans">
                           {m.employee_name || "Company Staff"}
@@ -620,6 +664,17 @@ export default function ProjectTeamPage() {
                         <span className="border border-emerald-500/30 bg-emerald-950/20 px-2 py-0.5 text-[10px] uppercase text-emerald-400 font-bold">
                           {m.status || "active"}
                         </span>
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        <button
+                          onClick={() => handleRemoveAllocation(m.allocation_id || m.id || "", m.employee_name || "Company Staff")}
+                          disabled={actionLoading}
+                          title="Remove employee allocation from this project"
+                          className="inline-flex items-center gap-1 border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-[11px] text-rose-300 hover:bg-rose-500 hover:text-ink transition-colors disabled:opacity-50"
+                        >
+                          <UserX className="h-3 w-3" />
+                          <span>Remove from Project</span>
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -686,7 +741,7 @@ export default function ProjectTeamPage() {
                   ))}
                 </select>
                 <p className="mt-1 text-[11px] text-slate-light">
-                  Assigning "Project Manager" will also update the project's primary lead manager record.
+                  Assigning &quot;Project Manager&quot; will also update the project&apos;s primary lead manager record.
                 </p>
               </div>
 

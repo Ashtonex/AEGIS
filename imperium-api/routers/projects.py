@@ -2478,6 +2478,193 @@ async def deactivate_project_role(
 
 
 # ==============================================================================
+# PROJECT HIRES & CASUAL WORKFORCE (finance.site_workers / site_day_attendance)
+# ==============================================================================
+
+class ProjectHireCreate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=160)
+    trade: Optional[str] = Field(default="General Labourer", max_length=80)
+    hourly_rate: Optional[Decimal] = Field(default=Decimal("0.0"), ge=0)
+    phone: Optional[str] = Field(default=None, max_length=50)
+    national_id: Optional[str] = Field(default=None, max_length=50)
+    payment_method: Optional[str] = Field(default="cash", max_length=30)
+    status_reason: Optional[str] = None
+
+
+@router.get("/{project_id}/hires")
+async def list_project_hires(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all project hires (casual and temporary workers) for this project,
+    including those registered directly or logged in site day attendance."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Query finance.site_workers directly linked OR attended on this project
+    query = text("""
+        WITH attended AS (
+            SELECT DISTINCT site_worker_id, worker_name, trade, hr_status,
+                   MAX(created_at) AS last_attended,
+                   SUM(COALESCE(regular_hours, 0) + COALESCE(overtime_hours, 0)) AS total_hours
+            FROM projects.site_day_attendance
+            WHERE project_id = :project_id AND organization_id = :org_id AND worker_kind = 'project_hire'
+            GROUP BY site_worker_id, worker_name, trade, hr_status
+        )
+        SELECT 
+            COALESCE(w.id, a.site_worker_id) AS id,
+            COALESCE(w.full_name, a.worker_name) AS full_name,
+            COALESCE(w.trade, a.trade, 'General Labourer') AS trade,
+            COALESCE(w.hourly_rate, 0) AS hourly_rate,
+            COALESCE(w.phone, '') AS phone,
+            COALESCE(w.national_id, '') AS national_id,
+            COALESCE(w.status, 'active') AS status,
+            COALESCE(w.registered_via, 'site_register') AS registered_via,
+            COALESCE(w.hr_verified, a.hr_status = 'accepted', false) AS hr_verified,
+            COALESCE(a.hr_status, CASE WHEN w.hr_verified THEN 'accepted' ELSE 'pending' END) AS hr_status,
+            COALESCE(a.total_hours, 0) AS hours_logged,
+            a.last_attended,
+            w.created_at
+        FROM finance.site_workers w
+        FULL OUTER JOIN attended a ON a.site_worker_id = w.id
+        WHERE (w.project_id = :project_id OR a.site_worker_id IS NOT NULL)
+          AND (w.organization_id = :org_id OR w.organization_id IS NULL)
+          AND (w.is_deleted IS NULL OR w.is_deleted = false)
+        ORDER BY status ASC, full_name ASC
+    """)
+    res = await db.execute(query, {"project_id": project_id, "org_id": user["org_id"]})
+    hires = [dict(row._mapping) for row in res]
+
+    return _result({
+        "hires": hires,
+        "total": len(hires),
+        "active_count": len([h for h in hires if h.get("status") == "active"]),
+    }, "Project hires retrieved.")
+
+
+@router.post("/{project_id}/hires", status_code=201)
+async def create_project_hire(
+    project_id: UUID,
+    payload: ProjectHireCreate,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a new project hire (casual/daily worker) directly to the project workforce."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Prevent duplicate national ID if given
+    if payload.national_id:
+        dup = (await db.execute(
+            text("SELECT full_name FROM finance.site_workers WHERE organization_id = :org_id AND UPPER(national_id) = UPPER(:nid) AND is_deleted = false"),
+            {"org_id": user["org_id"], "nid": payload.national_id.strip()},
+        )).scalar()
+        if dup:
+            raise HTTPException(status_code=409, detail=f"National ID is already registered to {dup}.")
+
+    worker_id = (await db.execute(
+        text("""
+            INSERT INTO finance.site_workers (
+                organization_id, project_id, full_name, trade, hourly_rate,
+                phone, national_id, payment_method, status, start_date,
+                registered_via, hr_verified, created_by, created_at, updated_at, is_deleted
+            ) VALUES (
+                :org_id, :project_id, :full_name, :trade, :hourly_rate,
+                :phone, :national_id, :payment_method, 'active', CURRENT_DATE,
+                'project_module', false, :user_id, NOW(), NOW(), false
+            ) RETURNING id
+        """),
+        {
+            "org_id": user["org_id"],
+            "project_id": project_id,
+            "full_name": payload.full_name.strip(),
+            "trade": payload.trade.strip() if payload.trade else "General Labourer",
+            "hourly_rate": payload.hourly_rate or Decimal("0.0"),
+            "phone": payload.phone.strip() if payload.phone else None,
+            "national_id": payload.national_id.strip() if payload.national_id else None,
+            "payment_method": payload.payment_method or "cash",
+            "user_id": user["user_id"],
+        },
+    )).scalar()
+
+    await db.commit()
+
+    emit_event(
+        org_id=user["org_id"],
+        event_type="project.hire_created.v1",
+        payload={
+            "project_id": str(project_id),
+            "worker_id": str(worker_id),
+            "full_name": payload.full_name,
+            "trade": payload.trade,
+            "created_by": str(user["user_id"]),
+        },
+    )
+
+    return _result({
+        "id": str(worker_id),
+        "full_name": payload.full_name,
+        "trade": payload.trade,
+        "status": "active",
+    }, f"Registered {payload.full_name} for this project.")
+
+
+@router.delete("/{project_id}/hires/{worker_id}")
+async def deactivate_project_hire(
+    project_id: UUID,
+    worker_id: UUID,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-deactivate a project hire, removing them from upcoming registers while preserving past attendance."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    await db.execute(
+        text("""
+            UPDATE finance.site_workers
+            SET status = 'inactive', status_reason = 'Deactivated from project',
+                end_date = CURRENT_DATE, updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {"id": worker_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+
+    return _result({"id": str(worker_id), "deactivated": True}, "Project hire deactivated from project.")
+
+
+# ==============================================================================
+# PERMANENT ALLOCATIONS REMOVAL (hr.project_allocations)
+# ==============================================================================
+
+@router.delete("/{project_id}/allocations/{allocation_id}")
+async def remove_project_allocation(
+    project_id: UUID,
+    allocation_id: UUID,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove / soft-end a permanent employee allocation from this project."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    res = await db.execute(
+        text("""
+            UPDATE hr.project_allocations
+            SET status = 'ended', is_deleted = true, ends_on = CURRENT_DATE, updated_at = NOW()
+            WHERE id = :id AND project_id = :project_id AND organization_id = :org_id
+            RETURNING employee_id
+        """),
+        {"id": allocation_id, "project_id": project_id, "org_id": user["org_id"]},
+    )
+    row = res.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Allocation record not found.")
+
+    await db.commit()
+
+    return _result({"id": str(allocation_id), "removed": True}, "Employee allocation removed from project.")
+
+
+# ==============================================================================
 # BULK-CATEGORY BUDGET & QUOTATIONS BRIDGE
 # ==============================================================================
 

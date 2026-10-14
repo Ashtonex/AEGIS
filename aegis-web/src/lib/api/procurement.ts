@@ -702,6 +702,73 @@ export async function deactivateProjectRole(
   });
 }
 
+/** Get all project hires (casual/temporary workers) directly linked or logged on site for this project. */
+export async function getProjectTeamHires(projectId: string): Promise<ApiResponse<{
+  hires: Array<{
+    id: string;
+    full_name: string;
+    trade: string;
+    hourly_rate: number;
+    phone: string;
+    national_id: string;
+    status: string;
+    registered_via: string;
+    hr_verified: boolean;
+    hr_status: string;
+    hours_logged: number;
+    last_attended: string | null;
+    created_at: string;
+  }>;
+  total: number;
+  active_count: number;
+}>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/hires`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Add a new project hire directly from the projects module. */
+export async function createProjectTeamHire(
+  projectId: string,
+  payload: {
+    full_name: string;
+    trade?: string;
+    hourly_rate?: number;
+    phone?: string;
+    national_id?: string;
+    payment_method?: string;
+  },
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/hires`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Deactivate a project hire from the project. */
+export async function deactivateProjectTeamHire(
+  projectId: string,
+  workerId: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/hires/${workerId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+/** Remove / soft-end a permanent employee allocation from this project. */
+export async function removeProjectAllocation(
+  projectId: string,
+  allocationId: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/allocations/${allocationId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
 export async function getExecutiveDataHealth(accessToken?: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }
