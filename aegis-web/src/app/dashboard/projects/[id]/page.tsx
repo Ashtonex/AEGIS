@@ -98,8 +98,8 @@ export default function ProjectMissionControlPage() {
       tone: "text-violet-400 border-violet-500/30 bg-violet-500/10",
     },
     {
-      title: "Governance & Fast-Track Gates",
-      desc: "Pre-mobilisation checks, commercial clearance, and authorized fast-track.",
+      title: "Readiness & Start Gates",
+      desc: "Pre-mobilisation checks (13), commercial clearance, deposit confirmation, and authorized fast-track.",
       href: `/dashboard/projects/${projectId}/controls`,
       icon: ShieldCheck,
       badge: text(source?.status, "planning").toUpperCase(),

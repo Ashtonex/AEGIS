@@ -20,11 +20,10 @@ export default function ProjectBudgetPage() {
     <div className="space-y-6">
       <div>
         <h2 className="font-display text-xl font-bold text-paper sm:text-2xl">
-          Direct Planning Budget Workspace
+          Interactive Budget Planner &amp; BOQ Cost Controls
         </h2>
-        <p className="mt-1 text-xs text-slate-light max-w-3xl">
-          Build and edit your line-item WBS, assign cost codes, import BOQs, and adjust quantities directly.
-          Planning is immediately enabled in any project lifecycle stage.
+        <p className="mt-1 text-xs text-slate-light">
+          Manage bulk BOQ cost-category totals (Materials, Labour, Plant, Subcontracts, Overheads, Contingency) linked directly to Quotations &amp; Estimations with real-time committed exposure and actual site spend side-by-side.
         </p>
       </div>
 

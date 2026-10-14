@@ -65,7 +65,7 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
       { id: "team", label: "Team & Workforce", href: `/dashboard/projects/${projectId}/team`, icon: Users },
       { id: "risks", label: "Risks & Changes", href: `/dashboard/projects/${projectId}/risks`, icon: AlertTriangle },
       { id: "documents", label: "Documents", href: `/dashboard/projects/${projectId}/documents`, icon: FolderOpen },
-      { id: "controls", label: "Governance & Gates", href: `/dashboard/projects/${projectId}/controls`, icon: ShieldCheck },
+      { id: "controls", label: "Readiness & Start Gates", href: `/dashboard/projects/${projectId}/controls`, icon: ShieldCheck },
     ],
     [projectId]
   );
@@ -98,7 +98,7 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-[#07090E] text-paper">
       {/* Top Breadcrumb & Quick Controls */}
       <div className="border-b border-ink-mid/60 bg-ink/80 backdrop-blur-md px-4 py-2.5 sm:px-6">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4">
+        <div className="w-full flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-xs font-mono text-slate">
             <Link
               href="/dashboard/projects"
@@ -128,15 +128,15 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
               className="inline-flex items-center gap-1.5 border border-signal/60 bg-signal/10 px-2.5 py-1 text-xs font-mono uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-colors"
             >
               <Sparkles className="h-3 w-3" />
-              <span>{isActive ? "Governance" : "Mobilise / Fast-Track"}</span>
+              <span>{isActive ? "Readiness & Start Gates" : "Readiness / Fast-Track Gates"}</span>
             </Link>
           </div>
         </div>
       </div>
 
-      {/* Hero Workspace Header */}
-      <header className="border-b border-ink-mid bg-gradient-to-b from-[#0F141C] to-[#0A0D14] px-4 py-6 sm:px-6">
-        <div className="mx-auto max-w-7xl">
+      {/* Hero Workspace Header: Full Width */}
+      <header className="border-b border-ink-mid bg-gradient-to-b from-[#0F141C] to-[#0A0D14] px-4 py-5 sm:px-8">
+        <div className="w-full">
           {loading && !currentProject ? (
             <div className="animate-pulse space-y-3 py-4">
               <div className="h-4 w-32 bg-ink-light rounded" />
@@ -216,9 +216,9 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      {/* High-Resolution Sticky Tab Bar */}
-      <nav className="sticky top-0 z-30 border-b border-ink-mid bg-ink/95 backdrop-blur-md px-4 sm:px-6">
-        <div className="mx-auto flex max-w-7xl items-center gap-1 overflow-x-auto py-1.5 no-scrollbar">
+      {/* High-Resolution Sticky Tab Bar: Full Width */}
+      <nav className="sticky top-0 z-30 border-b border-ink-mid bg-ink/95 backdrop-blur-md px-4 sm:px-8">
+        <div className="w-full flex items-center gap-1 overflow-x-auto py-1.5 no-scrollbar">
           {tabs.map((tab) => {
             const Icon = tab.icon;
             const isSelected = activeTabId === tab.id;
@@ -240,8 +240,8 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
         </div>
       </nav>
 
-      {/* Main Content Area: Spacious, Full-Width */}
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
+      {/* Main Content Area: Spacious, 100% Full-Width */}
+      <main className="w-full px-4 py-6 sm:px-8">
         {children}
       </main>
     </div>

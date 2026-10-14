@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ClipboardCheck, CloudSun, Users, Truck, Plus, Calendar, Loader2 } from "lucide-react";
+import { ClipboardCheck, CloudSun, Users, Truck, Plus, Calendar, Loader2, HardHat, ExternalLink } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
 import { createDailySiteReport } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
@@ -45,21 +46,31 @@ export default function ProjectSiteLogsPage() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="font-display text-xl font-bold text-paper sm:text-2xl">
-            Site Day & Field Diary Logs
+            Site Day &amp; Field Diary Logs
           </h2>
           <p className="mt-1 text-xs text-slate-light">
             Daily logs, engineer validations, weather delay records, and site operational entries.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsLogModalOpen(true)}
-          className="inline-flex items-center gap-1.5 border border-signal bg-signal px-3.5 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          <span>Log Daily Report</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/dashboard/site-operations?projectId=${projectId}`}
+            className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-3.5 py-1.5 font-mono text-xs text-slate-light hover:text-paper hover:border-signal/50 transition-colors"
+          >
+            <HardHat className="h-3.5 w-3.5 text-signal" />
+            <span>Open in Site Operations Command</span>
+            <ExternalLink className="h-3 w-3 text-slate" />
+          </Link>
+          <button
+            type="button"
+            onClick={() => setIsLogModalOpen(true)}
+            className="inline-flex items-center gap-1.5 border border-signal bg-signal px-3.5 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Log Daily Report</span>
+          </button>
+        </div>
       </div>
 
       {/* Reports Feed */}

@@ -207,18 +207,17 @@ export function ProjectGovernanceWorkspace({
             <div className="flex items-center gap-2">
               <span className="font-mono text-xs uppercase tracking-wider text-signal flex items-center gap-1.5">
                 <ShieldCheck className="h-4 w-4" />
-                Delivery Governance & Mobilisation Control
+                Readiness &amp; Start Gates Workspace
               </span>
               <span className="border border-ink-mid bg-ink px-2 py-0.5 font-mono text-[10px] text-paper">
                 STAGE: {status.toUpperCase()}
               </span>
             </div>
-            <h2 className="mt-1 text-xl font-bold font-display text-paper">
-              {isCurrentlyActive ? "Project in Active Delivery" : "Mobilisation Readiness Gateway"}
+            <h2 className="mt-1 text-xl font-bold font-display text-paper sm:text-2xl">
+              {isCurrentlyActive ? "Project in Active Delivery — Gates Verified" : "Mobilisation Readiness &amp; Start Gates"}
             </h2>
-            <p className="mt-1 text-xs text-slate-light max-w-2xl">
-              Track statutory, commercial, and operational readiness items. Authorized project managers can utilize
-              Fast-Track Mobilisation to begin site execution without bureaucratic stalls.
+            <p className="mt-1 text-xs text-slate-light">
+              Explicit statutory, commercial, and operational readiness gates. Complete gates or utilize authorized Fast-Track Mobilisation with recorded executive waiver.
             </p>
           </div>
 

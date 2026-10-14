@@ -1,6 +1,7 @@
 "use client";
 
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   BadgeCheck,
@@ -146,9 +147,18 @@ export default function SiteOperationsPage() {
 }
 
 function SiteOperationsWorkspace() {
+  const searchParams = useSearchParams();
+  const queryProjectId = searchParams?.get("projectId") || "";
+
   const [tab, setTab] = useState<TabKey>("register");
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(queryProjectId);
   const [workDate, setWorkDate] = useState(harareToday());
+
+  useEffect(() => {
+    if (queryProjectId && queryProjectId !== projectId) {
+      setProjectId(queryProjectId);
+    }
+  }, [queryProjectId]);
   const [day, setDay] = useState<SiteDay | null>(null);
   const [dayLoading, setDayLoading] = useState(false);
 

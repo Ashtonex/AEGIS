@@ -2,8 +2,6 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
-  Plus,
-  Trash2,
   Save,
   Download,
   Upload,
@@ -11,18 +9,43 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
-  Copy,
   Layers,
   DollarSign,
   TrendingUp,
   Percent,
   Search,
-  Filter,
+  RefreshCw,
+  Sparkles,
+  Link2,
+  Plus,
+  Trash2,
+  Table,
+  Check,
+  ChevronRight,
+  ShieldAlert,
 } from "lucide-react";
-import { setProjectBudget, getFinanceBudgets, type ProjectBudgetUploadLine } from "@/lib/api";
+import {
+  getProjectBudgetCategorySummary,
+  importProjectBudgetFromQuotation,
+  setProjectBudget,
+  getFinanceBudgets,
+  type ProjectBudgetUploadLine,
+} from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
-export type BudgetRowItem = {
+export type BulkCategoryItem = {
+  category: string;
+  label: string;
+  default_code: string;
+  estimated_cost: number;
+  budget: number;
+  committed: number;
+  actual: number;
+  headroom: number;
+  burn_pct: number;
+};
+
+export type LineItemRow = {
   id: string;
   cost_code: string;
   description: string;
@@ -31,16 +54,51 @@ export type BudgetRowItem = {
   unit: string;
   unit_rate: number;
   amount: number;
-  notes?: string;
 };
 
-const CATEGORY_COLORS: Record<string, string> = {
-  labour: "text-cyan-400 border-cyan-500/30 bg-cyan-950/20",
-  equipment: "text-amber-400 border-amber-500/30 bg-amber-950/20",
-  materials: "text-emerald-400 border-emerald-500/30 bg-emerald-950/20",
-  subcontract: "text-purple-400 border-purple-500/30 bg-purple-950/20",
-  overhead: "text-rose-400 border-rose-500/30 bg-rose-950/20",
-  other: "text-slate-400 border-slate-500/30 bg-slate-950/20",
+const CATEGORY_THEMES: Record<string, { border: string; bg: string; text: string; badge: string }> = {
+  materials: {
+    border: "border-emerald-500/30",
+    bg: "bg-emerald-950/20",
+    text: "text-emerald-400",
+    badge: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  },
+  labour: {
+    border: "border-cyan-500/30",
+    bg: "bg-cyan-950/20",
+    text: "text-cyan-400",
+    badge: "border-cyan-500/40 bg-cyan-500/10 text-cyan-300",
+  },
+  equipment: {
+    border: "border-amber-500/30",
+    bg: "bg-amber-950/20",
+    text: "text-amber-400",
+    badge: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+  },
+  subcontract: {
+    border: "border-purple-500/30",
+    bg: "bg-purple-950/20",
+    text: "text-purple-400",
+    badge: "border-purple-500/40 bg-purple-500/10 text-purple-300",
+  },
+  overhead: {
+    border: "border-rose-500/30",
+    bg: "bg-rose-950/20",
+    text: "text-rose-400",
+    badge: "border-rose-500/40 bg-rose-500/10 text-rose-300",
+  },
+  contingency: {
+    border: "border-orange-500/30",
+    bg: "bg-orange-950/20",
+    text: "text-orange-400",
+    badge: "border-orange-500/40 bg-orange-500/10 text-orange-300",
+  },
+  other: {
+    border: "border-slate-500/30",
+    bg: "bg-slate-950/20",
+    text: "text-slate-400",
+    badge: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+  },
 };
 
 export function ProjectBudgetSpreadsheet({
@@ -52,615 +110,688 @@ export function ProjectBudgetSpreadsheet({
   contractValue?: number;
   onBudgetSaved?: (newTotal: number) => void;
 }) {
-  const [rows, setRows] = useState<BudgetRowItem[]>([]);
+  const [categories, setCategories] = useState<BulkCategoryItem[]>([]);
+  const [totals, setTotals] = useState({
+    budget: 0,
+    committed: 0,
+    actual: 0,
+    headroom: 0,
+    burn_pct: 0,
+  });
+  const [linkedQuotation, setLinkedQuotation] = useState<any | null>(null);
+
+  // Editable budget amounts keyed by category
+  const [draftBudgets, setDraftBudgets] = useState<Record<string, number>>({});
+
+  // View Mode: bulk categories (default) vs granular line items
+  const [viewMode, setViewMode] = useState<"bulk" | "line_items">("bulk");
+
+  // Line items state for granular mode
+  const [lineItems, setLineItems] = useState<LineItemRow[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [budgetStage, setBudgetStage] = useState<"master" | "execution">("master");
+  const [importingQuote, setImportingQuote] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
-  const [filterText, setFilterText] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pasteBuffer, setPasteBuffer] = useState("");
 
-  // Load existing budget lines
-  const loadExistingBudget = useCallback(async () => {
+  // Load category summary and linked quote
+  const loadCategoryData = useCallback(async () => {
     setLoading(true);
     setFeedback(null);
     try {
-      const res = await getFinanceBudgets({ project_id: projectId });
-      const budgets = res.data || [];
-      const current = budgets.find((b: any) => b.status === "approved" || b.status === "active") || budgets[0];
-      if (current && Array.isArray(current.lines) && current.lines.length > 0) {
-        setRows(
-          current.lines.map((l: any, idx: number) => ({
-            id: l.id || `line-${idx}`,
-            cost_code: l.cost_code || l.cost_code_name || `CC-${100 + idx}`,
-            description: l.description || "Uncategorized Item",
-            cost_category: (l.cost_category || "materials") as any,
-            quantity: Number(l.quantity) || 1,
-            unit: l.unit || "sum",
-            unit_rate: Number(l.unit_rate) || Number(l.amount) || 0,
-            amount: Number(l.amount) || 0,
-            notes: l.notes || "",
-          }))
-        );
-      } else {
-        // Initial clean template rows if empty
-        setRows([
-          { id: "row-1", cost_code: "100-LABOUR", description: "Direct Site Labour & Supervision", cost_category: "labour", quantity: 1, unit: "sum", unit_rate: 0, amount: 0 },
-          { id: "row-2", cost_code: "200-MATERIALS", description: "Concrete, Cement & Aggregates", cost_category: "materials", quantity: 1, unit: "sum", unit_rate: 0, amount: 0 },
-          { id: "row-3", cost_code: "300-EQUIP", description: "Plant & Heavy Machinery Hire", cost_category: "equipment", quantity: 1, unit: "sum", unit_rate: 0, amount: 0 },
-          { id: "row-4", cost_code: "400-SUBCONT", description: "Specialist Subcontractor Packages", cost_category: "subcontract", quantity: 1, unit: "sum", unit_rate: 0, amount: 0 },
-        ]);
+      const res = await getProjectBudgetCategorySummary(projectId);
+      if (res.success && res.data) {
+        const cats = res.data.categories || [];
+        setCategories(cats);
+        setTotals(res.data.totals || { budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 });
+        setLinkedQuotation(res.data.linked_quotation || null);
+
+        // Initialize draft budgets from server budget or estimates
+        const drafts: Record<string, number> = {};
+        cats.forEach((c) => {
+          drafts[c.category] = c.budget > 0 ? c.budget : (c.estimated_cost > 0 ? c.estimated_cost : 0);
+        });
+        setDraftBudgets(drafts);
       }
-    } catch {
-      // Fallback clean template
-      setRows([
-        { id: "row-1", cost_code: "100-LABOUR", description: "Direct Site Labour & Supervision", cost_category: "labour", quantity: 1, unit: "sum", unit_rate: 0, amount: 0 },
-        { id: "row-2", cost_code: "200-MATERIALS", description: "Materials & Consumables Allowance", cost_category: "materials", quantity: 1, unit: "sum", unit_rate: 0, amount: 0 },
-      ]);
+    } catch (err: any) {
+      console.warn("Could not load category summary, using fallback baseline", err);
+      // Fallback sensible categories
+      const fallbackCats: BulkCategoryItem[] = [
+        { category: "materials", label: "Materials & Aggregates", default_code: "200-MATERIALS", estimated_cost: 0, budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 },
+        { category: "labour", label: "Direct Labour & Supervision", default_code: "100-LABOUR", estimated_cost: 0, budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 },
+        { category: "equipment", label: "Plant & Heavy Machinery", default_code: "300-EQUIP", estimated_cost: 0, budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 },
+        { category: "subcontract", label: "Specialist Subcontracts", default_code: "400-SUBCONT", estimated_cost: 0, budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 },
+        { category: "overhead", label: "Preliminaries & Site Overheads", default_code: "500-OVERHEAD", estimated_cost: 0, budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 },
+        { category: "contingency", label: "Contingency & Risk Reserve", default_code: "600-CONTINGENCY", estimated_cost: 0, budget: 0, committed: 0, actual: 0, headroom: 0, burn_pct: 0 },
+      ];
+      setCategories(fallbackCats);
+      const drafts: Record<string, number> = {};
+      fallbackCats.forEach((c) => { drafts[c.category] = 0; });
+      setDraftBudgets(drafts);
     } finally {
       setLoading(false);
     }
   }, [projectId]);
 
   useEffect(() => {
-    void loadExistingBudget();
-  }, [loadExistingBudget]);
+    void loadCategoryData();
+  }, [loadCategoryData]);
 
-  const updateRow = useCallback((id: string, patch: Partial<BudgetRowItem>) => {
-    setRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== id) return row;
-        const updated = { ...row, ...patch };
-        if ("quantity" in patch || "unit_rate" in patch) {
-          updated.amount = Math.round((updated.quantity * updated.unit_rate) * 100) / 100;
-        }
-        return updated;
-      })
-    );
-  }, []);
+  // Compute live totals from draft input
+  const liveBudgetTotal = useMemo(() => {
+    return Object.values(draftBudgets).reduce((acc, v) => acc + (Number(v) || 0), 0);
+  }, [draftBudgets]);
 
-  const addRow = useCallback(() => {
-    const newId = `row-${Date.now()}`;
-    setRows((prev) => [
-      ...prev,
-      {
-        id: newId,
-        cost_code: `CC-${prev.length + 101}`,
-        description: "",
-        cost_category: "materials",
-        quantity: 1,
-        unit: "unit",
-        unit_rate: 0,
-        amount: 0,
-      },
-    ]);
-  }, []);
+  const liveGrossMargin = useMemo(() => {
+    return Math.max(0, contractValue - liveBudgetTotal);
+  }, [contractValue, liveBudgetTotal]);
 
-  const duplicateRow = useCallback((id: string) => {
-    setRows((prev) => {
-      const idx = prev.findIndex((r) => r.id === id);
-      if (idx === -1) return prev;
-      const target = prev[idx];
-      const dup = { ...target, id: `row-${Date.now()}`, description: `${target.description} (Copy)` };
-      const next = [...prev];
-      next.splice(idx + 1, 0, dup);
-      return next;
-    });
-  }, []);
+  const liveMarginPct = useMemo(() => {
+    if (contractValue <= 0) return 0;
+    return Math.round((liveGrossMargin / contractValue) * 100);
+  }, [contractValue, liveGrossMargin]);
 
-  const deleteRow = useCallback((id: string) => {
-    setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.id !== id) : prev));
-  }, []);
+  // Update a single bulk category amount
+  const handleCategoryBudgetChange = (catKey: string, value: string) => {
+    const num = Math.max(0, parseFloat(value) || 0);
+    setDraftBudgets((prev) => ({ ...prev, [catKey]: num }));
+  };
 
-  // Financial aggregates
-  const totalBudget = useMemo(() => {
-    return rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-  }, [rows]);
-
-  const categoryTotals = useMemo(() => {
-    const totals: Record<string, number> = {
-      labour: 0,
-      equipment: 0,
-      materials: 0,
-      subcontract: 0,
-      overhead: 0,
-      other: 0,
-    };
-    rows.forEach((r) => {
-      if (totals[r.cost_category] !== undefined) {
-        totals[r.cost_category] += Number(r.amount) || 0;
-      } else {
-        totals.other += Number(r.amount) || 0;
-      }
-    });
-    return totals;
-  }, [rows]);
-
-  const grossProfit = contractValue > 0 ? contractValue - totalBudget : 0;
-  const grossMarginPct = contractValue > 0 ? Math.round((grossProfit / contractValue) * 100) : 0;
-  const markupPct = totalBudget > 0 && contractValue > 0 ? Math.round(((contractValue - totalBudget) / totalBudget) * 100) : 0;
-
-  // Save budget handler
-  const handleSaveBudget = async () => {
-    setSaving(true);
+  // 1-Click Import from Quotations & Estimations
+  const handleImportQuotation = async (quotationId?: string) => {
+    setImportingQuote(true);
     setFeedback(null);
     try {
-      const linesPayload: ProjectBudgetUploadLine[] = rows
-        .filter((r) => r.cost_code.trim() && r.amount > 0)
-        .map((r, idx) => ({
-          cost_code: r.cost_code.trim(),
-          description: r.description.trim() || r.cost_code.trim(),
-          cost_category: r.cost_category,
-          quantity: r.quantity,
-          unit: r.unit,
-          unit_rate: r.unit_rate,
-          amount: r.amount,
-          source_line: idx + 1,
-        }));
+      const res = await importProjectBudgetFromQuotation(projectId, quotationId);
+      if (res.success) {
+        setFeedback({
+          type: "success",
+          message: res.message || "Execution budget successfully imported from Quotations & Estimations.",
+        });
+        await loadCategoryData();
+        if (onBudgetSaved && res.data?.total_amount) {
+          onBudgetSaved(res.data.total_amount);
+        }
+      } else {
+        setFeedback({
+          type: "error",
+          message: res.error?.message || "Failed to import quotation budget.",
+        });
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: "error",
+        message: err?.message || "Error importing quotation budget.",
+      });
+    } finally {
+      setImportingQuote(false);
+    }
+  };
 
-      const res = await setProjectBudget(projectId, totalBudget, `Updated from Project Budget Studio (${budgetStage})`, {
-        budgetStage,
-        lines: linesPayload,
+  // Save current bulk category baseline
+  const handleSaveBulkBudget = async () => {
+    if (liveBudgetTotal <= 0) {
+      setFeedback({ type: "error", message: "Please specify target amounts for at least one category before saving." });
+      return;
+    }
+
+    setSaving(true);
+    setFeedback(null);
+
+    // Build upload lines for each category
+    const lines: ProjectBudgetUploadLine[] = categories.map((cat, idx) => {
+      const amount = draftBudgets[cat.category] ?? 0;
+      return {
+        cost_code: cat.default_code,
+        cost_category: (cat.category === "contingency" ? "other" : cat.category) as any,
+        description: `${cat.label} (Approved Execution Baseline)`,
+        quantity: 1,
+        unit: "sum",
+        unit_rate: amount,
+        amount: amount,
+        source_line: idx + 1,
+      };
+    });
+
+    try {
+      const res = await setProjectBudget(projectId, liveBudgetTotal, "Approved bulk category budget baseline", {
+        budgetStage: "master",
+        lines,
       });
 
       if (res.success) {
         setFeedback({
           type: "success",
-          message: budgetStage === "master"
-            ? `Protected master budget baseline saved ($${totalBudget.toLocaleString()}).`
-            : `Execution budget review saved with ${linesPayload.length} lines.`,
+          message: `Saved master budget baseline of ${formatCurrency(liveBudgetTotal)}.`,
         });
-        if (onBudgetSaved) onBudgetSaved(totalBudget);
+        await loadCategoryData();
+        if (onBudgetSaved) {
+          onBudgetSaved(liveBudgetTotal);
+        }
       } else {
-        throw new Error(res.message || "Failed to save budget.");
+        setFeedback({
+          type: "error",
+          message: res.error?.message || "Failed to save project budget.",
+        });
       }
-    } catch (err) {
+    } catch (err: any) {
       setFeedback({
         type: "error",
-        message: err instanceof Error ? err.message : "Error saving budget.",
+        message: err?.message || "Network error while saving budget.",
       });
     } finally {
       setSaving(false);
     }
   };
 
-  // Export to CSV
-  const handleExportCsv = () => {
-    const headers = ["Cost Code", "Category", "Description", "Quantity", "Unit", "Unit Rate (USD)", "Amount (USD)", "Notes"];
-    const csvContent = [
-      headers.join(","),
-      ...rows.map((r) =>
-        [
-          `"${r.cost_code}"`,
-          `"${r.cost_category}"`,
-          `"${r.description.replace(/"/g, '""')}"`,
-          r.quantity,
-          `"${r.unit}"`,
-          r.unit_rate,
-          r.amount,
-          `"${(r.notes || "").replace(/"/g, '""')}"`,
-        ].join(",")
-      ),
-    ].join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `Project_Budget_${projectId}_${Date.now()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // Import pasted TSV/CSV data
-  const handleCommitPastedData = () => {
-    if (!pasteBuffer.trim()) return;
-    const lines = pasteBuffer.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    const parsedRows: BudgetRowItem[] = [];
-
-    lines.forEach((line, idx) => {
-      // Split on tab or comma
-      const delimiter = line.includes("\t") ? "\t" : ",";
-      const parts = line.split(delimiter).map((p) => p.trim().replace(/^["']|["']$/g, ""));
-      if (parts.length >= 2) {
-        const code = parts[0] || `CC-${idx + 1}`;
-        const desc = parts[1] || code;
-        const qty = parts[2] ? Number(parts[2].replace(/[^0-9.-]/g, "")) || 1 : 1;
-        const unit = parts[3] || "sum";
-        const rate = parts[4] ? Number(parts[4].replace(/[^0-9.-]/g, "")) || 0 : 0;
-        const amount = parts[5] ? Number(parts[5].replace(/[^0-9.-]/g, "")) || qty * rate : qty * rate;
-
-        parsedRows.push({
-          id: `pasted-${idx}`,
-          cost_code: code,
-          description: desc,
-          cost_category: "materials",
-          quantity: qty,
-          unit,
-          unit_rate: rate,
-          amount: Math.round(amount * 100) / 100,
-        });
+  // Load granular line items if user toggles to detail mode
+  const handleToggleViewMode = async () => {
+    if (viewMode === "bulk") {
+      setViewMode("line_items");
+      if (lineItems.length === 0) {
+        try {
+          const res = await getFinanceBudgets({ project_id: projectId });
+          const budgets = res.data || [];
+          const current = budgets.find((b: any) => b.status === "approved" || b.status === "active") || budgets[0];
+          if (current && Array.isArray(current.lines) && current.lines.length > 0) {
+            setLineItems(
+              current.lines.map((l: any, idx: number) => ({
+                id: l.id || `line-${idx}`,
+                cost_code: l.cost_code || `CC-${100 + idx}`,
+                description: l.description || "Budget item",
+                cost_category: (l.cost_category || "materials") as any,
+                quantity: Number(l.quantity) || 1,
+                unit: l.unit || "sum",
+                unit_rate: Number(l.unit_rate) || Number(l.amount) || 0,
+                amount: Number(l.amount) || 0,
+              }))
+            );
+          } else {
+            // Seed lines from current category drafts
+            setLineItems(
+              categories.map((c, idx) => ({
+                id: `line-${idx}`,
+                cost_code: c.default_code,
+                description: `${c.label} Allowance`,
+                cost_category: (c.category === "contingency" ? "other" : c.category) as any,
+                quantity: 1,
+                unit: "sum",
+                unit_rate: draftBudgets[c.category] || 0,
+                amount: draftBudgets[c.category] || 0,
+              }))
+            );
+          }
+        } catch {
+          // fallback
+        }
       }
-    });
-
-    if (parsedRows.length > 0) {
-      setRows(parsedRows);
-      setIsImportModalOpen(false);
-      setPasteBuffer("");
-      setFeedback({
-        type: "success",
-        message: `Imported ${parsedRows.length} lines from pasted clipboard data.`,
-      });
+    } else {
+      setViewMode("bulk");
     }
   };
 
-  const filteredRows = useMemo(() => {
-    return rows.filter((r) => {
-      const matchesSearch =
-        r.cost_code.toLowerCase().includes(filterText.toLowerCase()) ||
-        r.description.toLowerCase().includes(filterText.toLowerCase());
-      const matchesCategory = selectedCategory === "all" || r.cost_category === selectedCategory;
-      return matchesSearch && matchesCategory;
-    });
-  }, [rows, filterText, selectedCategory]);
-
-  if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center gap-3 text-slate-light font-mono text-sm">
-        <Loader2 className="h-5 w-5 animate-spin text-signal" />
-        Loading project budget lines...
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-6">
-      {/* Top Controls & Financial KPI Strip */}
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="w-full space-y-6">
+      {/* Feedback Alert */}
+      {feedback && (
+        <div
+          className={`flex items-center justify-between border p-3.5 text-xs font-mono transition-all ${
+            feedback.type === "success"
+              ? "border-emerald-500/40 bg-emerald-950/30 text-emerald-300"
+              : "border-red-500/40 bg-red-950/30 text-red-300"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {feedback.type === "success" ? (
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+            ) : (
+              <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+            )}
+            <span>{feedback.message}</span>
+          </div>
+          <button
+            onClick={() => setFeedback(null)}
+            className="text-slate-light hover:text-paper uppercase tracking-wider"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Top Commercial Header Metrics: Full-Width Strip */}
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <div className="border border-ink-mid bg-ink/70 p-4">
-          <span className="font-mono text-[10px] uppercase text-slate">Contract Revenue</span>
-          <p className="mt-1 font-mono text-2xl font-bold text-paper">
-            {contractValue > 0 ? formatCurrency(contractValue) : "Unrecorded"}
+          <p className="font-mono text-[10px] uppercase tracking-wider text-slate">Agreed Contract Revenue</p>
+          <p className="mt-1 font-mono text-xl font-bold text-paper sm:text-2xl">
+            {formatCurrency(contractValue)}
           </p>
-          <span className="text-[11px] text-slate-light">Agreed project contract ceiling</span>
+          <span className="text-[11px] text-slate-light">Agreed project commercial ceiling</span>
         </div>
 
         <div className="border border-signal/40 bg-signal/5 p-4">
-          <span className="font-mono text-[10px] uppercase text-signal">Total Target Budget</span>
-          <p className="mt-1 font-mono text-2xl font-bold text-signal">
-            {formatCurrency(totalBudget)}
+          <p className="font-mono text-[10px] uppercase tracking-wider text-signal">Target Cost Budget</p>
+          <p className="mt-1 font-mono text-xl font-bold text-signal sm:text-2xl">
+            {formatCurrency(liveBudgetTotal)}
           </p>
-          <span className="text-[11px] text-slate-light">Sum of all planned cost codes</span>
+          <span className="text-[11px] text-slate-light">Sum of execution cost categories</span>
         </div>
 
-        <div className="border border-ink-mid bg-ink/70 p-4">
-          <span className="font-mono text-[10px] uppercase text-slate">Gross Margin</span>
-          <div className="mt-1 flex items-baseline gap-2">
-            <span className={`font-mono text-2xl font-bold ${grossMarginPct >= 20 ? "text-emerald-400" : "text-amber-400"}`}>
-              {contractValue > 0 ? `${grossMarginPct}%` : "—"}
-            </span>
-            <span className="text-xs text-slate-light">
-              ({formatCurrency(grossProfit)})
-            </span>
-          </div>
-          <span className="text-[11px] text-slate-light">Contract minus planned budget</span>
-        </div>
-
-        <div className="border border-ink-mid bg-ink/70 p-4">
-          <span className="font-mono text-[10px] uppercase text-slate">Budget Markup</span>
-          <p className="mt-1 font-mono text-2xl font-bold text-cyan-400">
-            {markupPct > 0 ? `+${markupPct}%` : "—"}
+        <div className="border border-amber-500/30 bg-ink/70 p-4">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-amber-400">Committed Exposure</p>
+          <p className="mt-1 font-mono text-xl font-bold text-amber-300 sm:text-2xl">
+            {formatCurrency(totals.committed)}
           </p>
-          <span className="text-[11px] text-slate-light">Margin markup over cost baseline</span>
+          <span className="text-[11px] text-slate-light">Active POs &amp; subcontracts</span>
         </div>
-      </section>
 
-      {/* Category Distribution Pills */}
-      <section className="border border-ink-mid bg-ink/70 p-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-slate">
-            Cost Category Distribution
-          </h3>
-          <span className="font-mono text-[10px] text-slate-light">
-            Total {rows.length} Cost Items
+        <div className="border border-cyan-500/30 bg-ink/70 p-4">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-cyan-400">Actual Execution Cost</p>
+          <p className="mt-1 font-mono text-xl font-bold text-cyan-300 sm:text-2xl">
+            {formatCurrency(totals.actual)}
+          </p>
+          <span className="text-[11px] text-slate-light">Incurred spend &amp; site hours</span>
+        </div>
+
+        <div className={`border p-4 ${
+          totals.headroom >= 0 ? "border-emerald-500/40 bg-emerald-950/20" : "border-rose-500/40 bg-rose-950/20"
+        }`}>
+          <p className={`font-mono text-[10px] uppercase tracking-wider ${
+            totals.headroom >= 0 ? "text-emerald-400" : "text-rose-400"
+          }`}>
+            Available Headroom
+          </p>
+          <p className={`mt-1 font-mono text-xl font-bold sm:text-2xl ${
+            totals.headroom >= 0 ? "text-emerald-300" : "text-rose-300"
+          }`}>
+            {formatCurrency(liveBudgetTotal - totals.actual - totals.committed)}
+          </p>
+          <span className="text-[11px] text-slate-light">
+            Budget − Actual − Committed
           </span>
         </div>
-
-        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          {Object.entries(categoryTotals).map(([cat, amount]) => {
-            const pct = totalBudget > 0 ? Math.round((amount / totalBudget) * 100) : 0;
-            return (
-              <div
-                key={cat}
-                onClick={() => setSelectedCategory(selectedCategory === cat ? "all" : cat)}
-                className={`cursor-pointer border p-2.5 transition-all ${
-                  selectedCategory === cat ? "border-signal bg-signal/10" : "border-ink-mid bg-ink-light/20 hover:border-slate"
-                }`}
-              >
-                <div className="flex items-center justify-between text-[11px] uppercase font-mono">
-                  <span className="text-slate-light font-medium">{cat}</span>
-                  <span className="font-bold text-paper">{pct}%</span>
-                </div>
-                <p className="mt-1 font-mono text-xs font-semibold text-paper">
-                  {formatCurrency(amount)}
-                </p>
-              </div>
-            );
-          })}
-        </div>
       </section>
 
-      {/* Action Toolbar */}
-      <section className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-mid/60 pb-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Stage switch */}
-          <div className="flex border border-ink-mid bg-ink-light">
-            <button
-              type="button"
-              onClick={() => setBudgetStage("master")}
-              className={`px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
-                budgetStage === "master" ? "bg-signal text-ink font-bold" : "text-slate-light hover:text-paper"
-              }`}
-            >
-              Master Baseline
-            </button>
-            <button
-              type="button"
-              onClick={() => setBudgetStage("execution")}
-              className={`px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors ${
-                budgetStage === "execution" ? "bg-signal text-ink font-bold" : "text-slate-light hover:text-paper"
-              }`}
-            >
-              Execution Review
-            </button>
+      {/* Linked Quotations & Estimations Bridge Bar */}
+      <section className="border border-ink-mid bg-gradient-to-r from-ink-light/40 to-ink p-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 border border-signal/50 bg-signal/10 flex items-center justify-center text-signal">
+            <Link2 className="w-4 h-4" />
           </div>
-
-          {/* Search and Category filter */}
-          <div className="flex items-center gap-2">
-            <label className="flex h-9 items-center gap-2 border border-ink-mid bg-ink-light px-2.5">
-              <Search className="h-3.5 w-3.5 text-slate" />
-              <input
-                value={filterText}
-                onChange={(e) => setFilterText(e.target.value)}
-                placeholder="Filter code or item..."
-                className="w-36 sm:w-48 bg-transparent text-xs outline-none placeholder:text-slate text-paper font-mono"
-              />
-            </label>
-            {selectedCategory !== "all" && (
-              <button
-                type="button"
-                onClick={() => setSelectedCategory("all")}
-                className="border border-ink-mid px-2 py-1 text-[11px] font-mono text-slate-light hover:text-paper"
-              >
-                Reset Filter
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={addRow}
-            className="inline-flex h-9 items-center gap-1.5 border border-ink-mid bg-ink-light px-3 font-mono text-xs text-paper hover:border-signal transition-colors"
-          >
-            <Plus className="h-3.5 w-3.5 text-signal" />
-            <span>Add Line</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsImportModalOpen(true)}
-            className="inline-flex h-9 items-center gap-1.5 border border-ink-mid bg-ink-light px-3 font-mono text-xs text-paper hover:border-signal transition-colors"
-          >
-            <Upload className="h-3.5 w-3.5 text-slate" />
-            <span>Import / Paste</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            className="inline-flex h-9 items-center gap-1.5 border border-ink-mid bg-ink-light px-3 font-mono text-xs text-paper hover:border-signal transition-colors"
-          >
-            <Download className="h-3.5 w-3.5 text-slate" />
-            <span>Export CSV</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleSaveBudget}
-            disabled={saving}
-            className="inline-flex h-9 items-center gap-2 border border-signal bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors disabled:opacity-50"
-          >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            <span>Save Budget</span>
-          </button>
-        </div>
-      </section>
-
-      {/* Feedback banner */}
-      {feedback && (
-        <div
-          className={`flex items-center gap-2.5 border p-3 text-xs ${
-            feedback.type === "success"
-              ? "border-emerald-500/40 bg-emerald-950/20 text-emerald-300"
-              : "border-red-500/40 bg-red-950/20 text-red-300"
-          }`}
-        >
-          {feedback.type === "success" ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-          <span>{feedback.message}</span>
-        </div>
-      )}
-
-      {/* High-Performance Spreadsheet Table */}
-      <section className="overflow-x-auto border border-ink-mid bg-ink">
-        <table className="w-full text-left text-xs border-collapse">
-          <thead>
-            <tr className="border-b border-ink-mid bg-ink-light/50 font-mono text-[11px] text-slate uppercase tracking-wider">
-              <th className="py-2.5 px-3 w-12 text-center">#</th>
-              <th className="py-2.5 px-3 w-36">Cost Code</th>
-              <th className="py-2.5 px-3 w-32">Category</th>
-              <th className="py-2.5 px-3 min-w-[240px]">Item Description</th>
-              <th className="py-2.5 px-3 w-24 text-right">Quantity</th>
-              <th className="py-2.5 px-3 w-20">Unit</th>
-              <th className="py-2.5 px-3 w-28 text-right">Unit Rate ($)</th>
-              <th className="py-2.5 px-3 w-32 text-right">Total ($)</th>
-              <th className="py-2.5 px-3 w-20 text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-ink-mid/40 font-mono">
-            {filteredRows.map((row, index) => (
-              <tr key={row.id} className="hover:bg-ink-light/30 transition-colors">
-                <td className="py-2 px-3 text-center text-slate font-mono text-[11px]">
-                  {index + 1}
-                </td>
-
-                <td className="py-2 px-3">
-                  <input
-                    value={row.cost_code}
-                    onChange={(e) => updateRow(row.id, { cost_code: e.target.value })}
-                    className="w-full border border-ink-mid bg-ink-light/30 px-2 py-1 text-xs text-paper focus:border-signal outline-none font-mono"
-                    placeholder="e.g. 101-CONC"
-                  />
-                </td>
-
-                <td className="py-2 px-3">
-                  <select
-                    value={row.cost_category}
-                    onChange={(e) => updateRow(row.id, { cost_category: e.target.value as any })}
-                    className="w-full border border-ink-mid bg-ink-light/40 px-2 py-1 text-[11px] text-paper focus:border-signal outline-none uppercase font-mono"
-                  >
-                    <option value="labour">Labour</option>
-                    <option value="equipment">Equipment</option>
-                    <option value="materials">Materials</option>
-                    <option value="subcontract">Subcontract</option>
-                    <option value="overhead">Overhead</option>
-                    <option value="other">Other</option>
-                  </select>
-                </td>
-
-                <td className="py-2 px-3">
-                  <input
-                    value={row.description}
-                    onChange={(e) => updateRow(row.id, { description: e.target.value })}
-                    className="w-full border border-ink-mid bg-ink-light/30 px-2 py-1 text-xs text-paper focus:border-signal outline-none"
-                    placeholder="Description of work, material, or labour..."
-                  />
-                </td>
-
-                <td className="py-2 px-3 text-right">
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={row.quantity}
-                    onChange={(e) => updateRow(row.id, { quantity: Number(e.target.value) || 0 })}
-                    className="w-full text-right border border-ink-mid bg-ink-light/30 px-2 py-1 text-xs text-paper focus:border-signal outline-none font-mono"
-                  />
-                </td>
-
-                <td className="py-2 px-3">
-                  <input
-                    value={row.unit}
-                    onChange={(e) => updateRow(row.id, { unit: e.target.value })}
-                    className="w-full border border-ink-mid bg-ink-light/30 px-2 py-1 text-xs text-paper focus:border-signal outline-none uppercase font-mono"
-                    placeholder="m3, kg"
-                  />
-                </td>
-
-                <td className="py-2 px-3 text-right">
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={row.unit_rate}
-                    onChange={(e) => updateRow(row.id, { unit_rate: Number(e.target.value) || 0 })}
-                    className="w-full text-right border border-ink-mid bg-ink-light/30 px-2 py-1 text-xs text-paper focus:border-signal outline-none font-mono"
-                  />
-                </td>
-
-                <td className="py-2 px-3 text-right font-bold text-signal font-mono">
-                  {formatCurrency(row.amount)}
-                </td>
-
-                <td className="py-2 px-3 text-center">
-                  <div className="flex items-center justify-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => duplicateRow(row.id)}
-                      title="Duplicate Line"
-                      className="text-slate hover:text-paper p-1"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteRow(row.id)}
-                      title="Delete Line"
-                      className="text-slate hover:text-red-400 p-1"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t-2 border-signal/60 bg-ink-light/60 font-mono font-bold text-sm">
-              <td colSpan={7} className="py-3 px-4 text-right uppercase tracking-wider text-paper">
-                Total Budgeted Amount:
-              </td>
-              <td className="py-3 px-3 text-right text-signal text-base">
-                {formatCurrency(totalBudget)}
-              </td>
-              <td></td>
-            </tr>
-          </tfoot>
-        </table>
-      </section>
-
-      {/* Paste / Import Modal */}
-      {isImportModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-2xl border border-ink-mid bg-ink p-6 shadow-2xl">
-            <h3 className="font-display text-lg font-bold text-paper">
-              Paste BOQ or Spreadsheet Data
-            </h3>
-            <p className="mt-1 text-xs text-slate-light leading-relaxed">
-              Paste rows copied directly from Excel, Google Sheets, or CSV. Expected columns:
-              <br />
-              <code className="text-signal font-mono text-[11px]">Cost Code [tab] Description [tab] Quantity [tab] Unit [tab] Unit Rate [tab] Total Amount</code>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs font-bold uppercase tracking-wider text-paper">
+                Quotations &amp; Estimations Source
+              </span>
+              {linkedQuotation ? (
+                <span className="border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] uppercase text-emerald-300">
+                  {linkedQuotation.status || "Linked"}
+                </span>
+              ) : (
+                <span className="border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] uppercase text-amber-300">
+                  Auto-Detecting
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-slate-light">
+              {linkedQuotation ? (
+                <span>
+                  Quote for <strong className="text-paper font-normal">{linkedQuotation.client_name}</strong> • Quoted Amount:{" "}
+                  <strong className="text-paper font-mono font-normal">{formatCurrency(linkedQuotation.quote_amount)}</strong>
+                </span>
+              ) : (
+                "Link this project to an approved quotation to populate bulk BOQ cost-category totals automatically."
+              )}
             </p>
+          </div>
+        </div>
 
-            <textarea
-              rows={8}
-              value={pasteBuffer}
-              onChange={(e) => setPasteBuffer(e.target.value)}
-              placeholder="Paste spreadsheet lines here..."
-              className="mt-4 w-full border border-ink-mid bg-ink-light p-3 font-mono text-xs text-paper outline-none focus:border-signal"
-            />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => void loadCategoryData()}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-slate-light hover:text-paper transition-colors"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin text-signal" : ""}`} />
+            <span>Refresh</span>
+          </button>
+          <button
+            onClick={() => void handleImportQuotation(linkedQuotation?.id)}
+            disabled={importingQuote}
+            className="inline-flex items-center gap-2 border border-signal/60 bg-signal/15 px-3.5 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-colors disabled:opacity-50"
+          >
+            <Sparkles className={`h-3.5 w-3.5 ${importingQuote ? "animate-spin" : ""}`} />
+            <span>{importingQuote ? "Importing..." : "Sync from Quotation"}</span>
+          </button>
+        </div>
+      </section>
 
-            <div className="mt-4 flex items-center justify-end gap-3">
+      {/* Main Budget Workspace Surface: 100% Full Width */}
+      <section className="border border-ink-mid bg-ink">
+        {/* Table Controls & Mode Switcher */}
+        <div className="border-b border-ink-mid p-3.5 sm:px-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setViewMode("bulk")}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-all ${
+                viewMode === "bulk"
+                  ? "border border-signal bg-signal/15 text-signal font-semibold"
+                  : "border border-ink-mid bg-ink-light/30 text-slate-light hover:text-paper"
+              }`}
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span>Bulk BOQ Cost Categories</span>
+            </button>
+            <button
+              onClick={handleToggleViewMode}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-all ${
+                viewMode === "line_items"
+                  ? "border border-signal bg-signal/15 text-signal font-semibold"
+                  : "border border-ink-mid bg-ink-light/30 text-slate-light hover:text-paper"
+              }`}
+            >
+              <Table className="h-3.5 w-3.5" />
+              <span>Granular Line-Item WBS</span>
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSaveBulkBudget}
+              disabled={saving}
+              className="inline-flex items-center gap-2 border border-signal bg-signal px-4 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal-light transition-colors disabled:opacity-50 shadow-md"
+            >
+              <Save className={`h-3.5 w-3.5 ${saving ? "animate-spin" : ""}`} />
+              <span>{saving ? "Saving..." : "Save Budget Baseline"}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* PRIMARY VIEW: BULK BOQ COST CATEGORY MATRIX */}
+        {viewMode === "bulk" ? (
+          <div className="w-full overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-ink-mid bg-ink-light/50 font-mono text-[11px] text-slate uppercase tracking-wider">
+                  <th className="py-3 px-4 sm:px-6">BOQ Cost Category</th>
+                  <th className="py-3 px-4 text-right">Quotation Estimate</th>
+                  <th className="py-3 px-4 text-right">Approved Budget Target</th>
+                  <th className="py-3 px-4 text-right">Committed Cost</th>
+                  <th className="py-3 px-4 text-right">Actual Incurred</th>
+                  <th className="py-3 px-4 text-right">Remaining Headroom</th>
+                  <th className="py-3 px-4 text-center">Execution Burn</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-mid/40 font-mono">
+                {categories.map((cat) => {
+                  const theme = CATEGORY_THEMES[cat.category] || CATEGORY_THEMES.other;
+                  const currentBudget = draftBudgets[cat.category] ?? cat.budget;
+                  const headroom = currentBudget - cat.actual - cat.committed;
+                  const burnPct = currentBudget > 0 ? Math.round(((cat.actual + cat.committed) / currentBudget) * 100) : 0;
+                  const isOverspent = headroom < 0;
+
+                  return (
+                    <tr key={cat.category} className="hover:bg-ink-light/20 transition-colors">
+                      {/* Category Title & Cost Code */}
+                      <td className="py-3 px-4 sm:px-6">
+                        <div className="flex items-center gap-2.5">
+                          <span className={`inline-block w-2.5 h-2.5 rounded-full ${theme.bg} border ${theme.border}`} />
+                          <div>
+                            <span className="font-semibold text-paper block text-sm font-sans">
+                              {cat.label}
+                            </span>
+                            <span className="text-[10px] text-slate-light font-mono">
+                              Code: {cat.default_code}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Quotation Estimate */}
+                      <td className="py-3 px-4 text-right text-slate-light">
+                        {cat.estimated_cost > 0 ? (
+                          <span>{formatCurrency(cat.estimated_cost)}</span>
+                        ) : (
+                          <span className="text-slate">Unspecified</span>
+                        )}
+                      </td>
+
+                      {/* Approved Budget Target (Directly Editable in Bulk) */}
+                      <td className="py-3 px-4 text-right">
+                        <div className="inline-flex items-center justify-end">
+                          <span className="text-slate mr-1">$</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="100"
+                            value={draftBudgets[cat.category] ?? ""}
+                            onChange={(e) => handleCategoryBudgetChange(cat.category, e.target.value)}
+                            className="w-32 bg-ink-light/80 border border-ink-mid px-2.5 py-1 text-right font-mono text-xs text-paper focus:border-signal focus:outline-none"
+                            placeholder="0"
+                          />
+                        </div>
+                      </td>
+
+                      {/* Committed Cost (Side-by-Side!) */}
+                      <td className="py-3 px-4 text-right">
+                        <span className="text-amber-300 font-medium">
+                          {formatCurrency(cat.committed)}
+                        </span>
+                      </td>
+
+                      {/* Actual Execution Cost (Side-by-Side!) */}
+                      <td className="py-3 px-4 text-right">
+                        <span className="text-cyan-300 font-medium">
+                          {formatCurrency(cat.actual)}
+                        </span>
+                      </td>
+
+                      {/* Remaining Headroom */}
+                      <td className="py-3 px-4 text-right">
+                        <span
+                          className={`font-semibold ${
+                            isOverspent ? "text-rose-400 font-bold" : "text-emerald-400"
+                          }`}
+                        >
+                          {formatCurrency(headroom)}
+                        </span>
+                      </td>
+
+                      {/* Execution Burn & Status */}
+                      <td className="py-3 px-4 text-center">
+                        <div className="inline-flex items-center gap-2 min-w-[120px]">
+                          <div className="flex-1 h-1.5 bg-ink-light rounded-full overflow-hidden">
+                            <div
+                              className={`h-full ${
+                                burnPct > 100
+                                  ? "bg-rose-500"
+                                  : burnPct > 80
+                                  ? "bg-amber-500"
+                                  : "bg-emerald-500"
+                              }`}
+                              style={{ width: `${Math.min(100, burnPct)}%` }}
+                            />
+                          </div>
+                          <span className="text-[11px] text-slate-light w-10 text-right">
+                            {burnPct}%
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {/* Bulk Summary Footer Row */}
+                <tr className="border-t-2 border-ink-mid bg-ink-light/40 font-bold">
+                  <td className="py-4 px-4 sm:px-6 text-paper uppercase tracking-wider text-xs">
+                    Total Project Execution Budget
+                  </td>
+                  <td className="py-4 px-4 text-right text-slate-light font-mono">
+                    {formatCurrency(categories.reduce((acc, c) => acc + c.estimated_cost, 0))}
+                  </td>
+                  <td className="py-4 px-4 text-right text-signal font-mono text-sm">
+                    {formatCurrency(liveBudgetTotal)}
+                  </td>
+                  <td className="py-4 px-4 text-right text-amber-300 font-mono">
+                    {formatCurrency(totals.committed)}
+                  </td>
+                  <td className="py-4 px-4 text-right text-cyan-300 font-mono">
+                    {formatCurrency(totals.actual)}
+                  </td>
+                  <td className="py-4 px-4 text-right font-mono">
+                    <span className={liveBudgetTotal - totals.actual - totals.committed >= 0 ? "text-emerald-400 text-sm" : "text-rose-400 text-sm"}>
+                      {formatCurrency(liveBudgetTotal - totals.actual - totals.committed)}
+                    </span>
+                  </td>
+                  <td className="py-4 px-4 text-center font-mono text-paper">
+                    {liveBudgetTotal > 0 ? Math.round(((totals.actual + totals.committed) / liveBudgetTotal) * 100) : 0}% Burn
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          /* OPTIONAL SECONDARY VIEW: GRANULAR LINE-ITEM WBS */
+          <div className="p-4 sm:p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-slate-light">
+                Granular work breakdown structure (WBS). Useful for detailed BOQ imports, rate analysis, and supplier procurement breakdowns.
+              </p>
               <button
-                type="button"
-                onClick={() => setIsImportModalOpen(false)}
-                className="border border-ink-mid px-4 py-2 font-mono text-xs uppercase text-slate-light hover:text-paper"
+                onClick={() => {
+                  setLineItems((prev) => [
+                    ...prev,
+                    {
+                      id: `line-${Date.now()}`,
+                      cost_code: `CC-${100 + prev.length}`,
+                      description: "New Cost Item",
+                      cost_category: "materials",
+                      quantity: 1,
+                      unit: "sum",
+                      unit_rate: 0,
+                      amount: 0,
+                    },
+                  ]);
+                }}
+                className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink-light px-2.5 py-1 text-xs font-mono text-slate-light hover:text-paper"
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleCommitPastedData}
-                disabled={!pasteBuffer.trim()}
-                className="border border-signal bg-signal px-4 py-2 font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90 disabled:opacity-50"
-              >
-                Apply to Spreadsheet
+                <Plus className="h-3 w-3" />
+                <span>Add Line</span>
               </button>
             </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-ink-mid bg-ink-light/50 font-mono text-[11px] text-slate uppercase">
+                    <th className="py-2.5 px-3">#</th>
+                    <th className="py-2.5 px-3">Cost Code</th>
+                    <th className="py-2.5 px-3">Category</th>
+                    <th className="py-2.5 px-3">Item Description</th>
+                    <th className="py-2.5 px-3 text-right">Quantity</th>
+                    <th className="py-2.5 px-3 text-center">Unit</th>
+                    <th className="py-2.5 px-3 text-right">Unit Rate ($)</th>
+                    <th className="py-2.5 px-3 text-right">Total ($)</th>
+                    <th className="py-2.5 px-3 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink-mid/40 font-mono">
+                  {lineItems.map((item, idx) => (
+                    <tr key={item.id} className="hover:bg-ink-light/20">
+                      <td className="py-2 px-3 text-slate">{idx + 1}</td>
+                      <td className="py-2 px-3">
+                        <input
+                          value={item.cost_code}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setLineItems((prev) => prev.map((l) => (l.id === item.id ? { ...l, cost_code: val } : l)));
+                          }}
+                          className="w-24 bg-ink border border-ink-mid px-2 py-0.5 text-xs text-paper"
+                        />
+                      </td>
+                      <td className="py-2 px-3">
+                        <select
+                          value={item.cost_category}
+                          onChange={(e) => {
+                            const val = e.target.value as any;
+                            setLineItems((prev) => prev.map((l) => (l.id === item.id ? { ...l, cost_category: val } : l)));
+                          }}
+                          className="bg-ink border border-ink-mid px-2 py-0.5 text-xs text-paper"
+                        >
+                          <option value="materials">Materials</option>
+                          <option value="labour">Labour</option>
+                          <option value="equipment">Equipment</option>
+                          <option value="subcontract">Subcontract</option>
+                          <option value="overhead">Overhead</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <input
+                          value={item.description}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setLineItems((prev) => prev.map((l) => (l.id === item.id ? { ...l, description: val } : l)));
+                          }}
+                          className="w-full bg-ink border border-ink-mid px-2 py-0.5 text-xs text-paper"
+                        />
+                      </td>
+                      <td className="py-2 px-3 text-right">
+                        <input
+                          type="number"
+                          value={item.quantity}
+                          onChange={(e) => {
+                            const q = parseFloat(e.target.value) || 0;
+                            setLineItems((prev) =>
+                              prev.map((l) => (l.id === item.id ? { ...l, quantity: q, amount: Math.round(q * l.unit_rate * 100) / 100 } : l))
+                            );
+                          }}
+                          className="w-16 bg-ink border border-ink-mid px-2 py-0.5 text-right text-xs text-paper"
+                        />
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <input
+                          value={item.unit}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setLineItems((prev) => prev.map((l) => (l.id === item.id ? { ...l, unit: val } : l)));
+                          }}
+                          className="w-14 bg-ink border border-ink-mid px-1 py-0.5 text-center text-xs text-paper uppercase"
+                        />
+                      </td>
+                      <td className="py-2 px-3 text-right">
+                        <input
+                          type="number"
+                          value={item.unit_rate}
+                          onChange={(e) => {
+                            const r = parseFloat(e.target.value) || 0;
+                            setLineItems((prev) =>
+                              prev.map((l) => (l.id === item.id ? { ...l, unit_rate: r, amount: Math.round(l.quantity * r * 100) / 100 } : l))
+                            );
+                          }}
+                          className="w-24 bg-ink border border-ink-mid px-2 py-0.5 text-right text-xs text-paper"
+                        />
+                      </td>
+                      <td className="py-2 px-3 text-right text-signal font-semibold">
+                        {formatCurrency(item.amount)}
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <button
+                          onClick={() => setLineItems((prev) => prev.filter((l) => l.id !== item.id))}
+                          className="text-slate hover:text-rose-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </section>
     </div>
   );
 }

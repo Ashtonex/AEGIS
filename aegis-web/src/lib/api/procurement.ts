@@ -571,6 +571,137 @@ export async function setProjectBudget(
   });
 }
 
+/** Get bulk cost-category summary with side-by-side budget, commitments, actuals, headroom, and linked quotation. */
+export async function getProjectBudgetCategorySummary(projectId: string): Promise<ApiResponse<{
+  categories: Array<{
+    category: string;
+    label: string;
+    default_code: string;
+    estimated_cost: number;
+    budget: number;
+    committed: number;
+    actual: number;
+    headroom: number;
+    burn_pct: number;
+  }>;
+  totals: {
+    budget: number;
+    committed: number;
+    actual: number;
+    headroom: number;
+    burn_pct: number;
+  };
+  linked_quotation: {
+    id: string;
+    client_name: string;
+    quote_amount: number;
+    status: string;
+    created_at: string;
+    category_estimates: Record<string, number>;
+  } | null;
+}>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/budget/category-summary`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Import bulk-category execution budget directly from linked quotation. */
+export async function importProjectBudgetFromQuotation(
+  projectId: string,
+  quotationId?: string,
+  notes?: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/budget/import-quotation`, {
+    method: 'POST',
+    body: JSON.stringify({
+      quotation_id: quotationId || null,
+      notes,
+    }),
+    allowFallback: false,
+  });
+}
+
+/** Get project role assignments and available personnel to delegate. */
+export async function getProjectRoles(projectId: string): Promise<ApiResponse<{
+  assignments: Array<{
+    id: string;
+    project_id: string;
+    site_id: string | null;
+    user_id: string;
+    role_name: string;
+    starts_on: string | null;
+    ends_on: string | null;
+    is_active: boolean;
+    created_at: string;
+    user_name: string;
+    user_email: string;
+    assigned_by_name: string | null;
+    site_name: string | null;
+  }>;
+  available_users: Array<{
+    id: string;
+    full_name: string;
+    email: string;
+    role: string;
+  }>;
+  total_active: number;
+}>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Assign or delegate a project responsibility (Project Manager, Site Engineer, Foreman, etc.). */
+export async function assignProjectRole(
+  projectId: string,
+  payload: {
+    user_id: string;
+    role_name: string;
+    site_id?: string;
+    starts_on?: string;
+    ends_on?: string;
+  },
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Update or deactivate a project role assignment. */
+export async function updateProjectRole(
+  projectId: string,
+  assignmentId: string,
+  payload: {
+    role_name?: string;
+    site_id?: string;
+    starts_on?: string;
+    ends_on?: string;
+    is_active?: boolean;
+    reason?: string;
+  },
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles/${assignmentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Soft-deactivate a role assignment, ending future authority while preserving all historical records. */
+export async function deactivateProjectRole(
+  projectId: string,
+  assignmentId: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles/${assignmentId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
 export async function getExecutiveDataHealth(accessToken?: string): Promise<ApiResponse<any[]>> {
   return fetchApi<ApiResponse<any[]>>(`/api/v1/executive/data-health`, { cache: 'no-store', headers: bearerHeaders(accessToken), timeoutMs: EXECUTIVE_READ_TIMEOUT_MS, allowFallback: false });
 }

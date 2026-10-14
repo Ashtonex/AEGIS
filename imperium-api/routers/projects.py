@@ -2223,3 +2223,571 @@ async def delete_project(
 
     await hard_delete_project(db, org_id=user["org_id"], project_id=project_id)
     return _result({"wiped": True, "archived": False, "blocked_by": []}, "Project permanently deleted.")
+
+
+# ==============================================================================
+# PROJECT ROLE ASSIGNMENTS & DELEGATION (projects.site_role_assignments)
+# ==============================================================================
+
+class ProjectRoleAssignmentCreate(BaseModel):
+    user_id: UUID
+    role_name: str = Field(min_length=2, max_length=80)
+    site_id: Optional[UUID] = None
+    starts_on: Optional[date] = None
+    ends_on: Optional[date] = None
+
+
+class ProjectRoleAssignmentUpdate(BaseModel):
+    role_name: Optional[str] = None
+    site_id: Optional[UUID] = None
+    starts_on: Optional[date] = None
+    ends_on: Optional[date] = None
+    is_active: Optional[bool] = None
+    reason: Optional[str] = None
+
+
+@router.get("/{project_id}/roles")
+async def list_project_roles(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all role assignments and available personnel for a project."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Query active and inactive assignments
+    assignments_res = await db.execute(
+        text("""
+            SELECT sra.id, sra.project_id, sra.site_id, sra.user_id, sra.role_name,
+                   sra.starts_on, sra.ends_on, sra.is_active, sra.created_at,
+                   u.full_name AS user_name, u.email AS user_email,
+                   ab.full_name AS assigned_by_name,
+                   s.name AS site_name
+            FROM projects.site_role_assignments sra
+            JOIN core.users u ON u.id = sra.user_id
+            LEFT JOIN core.users ab ON ab.id = sra.assigned_by
+            LEFT JOIN projects.sites s ON s.id = sra.site_id
+            WHERE sra.project_id = :project_id AND sra.organization_id = :org_id AND sra.is_deleted = false
+            ORDER BY sra.is_active DESC, sra.created_at DESC
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    assignments = [dict(row._mapping) for row in assignments_res]
+
+    # Available system users to assign
+    users_res = await db.execute(
+        text("""
+            SELECT id, full_name, email, role
+            FROM core.users
+            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
+            ORDER BY full_name ASC
+            LIMIT 200
+        """),
+        {"org_id": user["org_id"]},
+    )
+    available_users = [dict(row._mapping) for row in users_res]
+
+    return _result({
+        "assignments": assignments,
+        "available_users": available_users,
+        "total_active": len([a for a in assignments if a.get("is_active")]),
+    }, "Project role assignments retrieved.")
+
+
+@router.post("/{project_id}/roles", status_code=201)
+async def assign_project_role(
+    project_id: UUID,
+    payload: ProjectRoleAssignmentCreate,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Assign or delegate a key responsibility (Project Manager, Site Engineer, Foreman, etc.)."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Validate target user belongs to tenant
+    user_check = (await db.execute(
+        text("SELECT id, full_name FROM core.users WHERE id = :user_id AND organization_id = :org_id AND is_deleted = false"),
+        {"user_id": payload.user_id, "org_id": user["org_id"]},
+    )).first()
+    if not user_check:
+        raise HTTPException(status_code=404, detail="Target user not found or inactive in organization.")
+
+    # Check for existing assignment to reactivate or update
+    existing = (await db.execute(
+        text("""
+            SELECT id FROM projects.site_role_assignments
+            WHERE organization_id = :org_id AND project_id = :project_id AND user_id = :user_id AND role_name = :role_name
+        """),
+        {
+            "org_id": user["org_id"],
+            "project_id": project_id,
+            "user_id": payload.user_id,
+            "role_name": payload.role_name.strip(),
+        },
+    )).first()
+
+    if existing:
+        await db.execute(
+            text("""
+                UPDATE projects.site_role_assignments
+                SET is_active = true, is_deleted = false,
+                    site_id = :site_id, starts_on = :starts_on, ends_on = :ends_on,
+                    assigned_by = :assigned_by, updated_at = NOW()
+                WHERE id = :id
+            """),
+            {
+                "id": existing.id,
+                "site_id": payload.site_id,
+                "starts_on": payload.starts_on,
+                "ends_on": payload.ends_on,
+                "assigned_by": user["user_id"],
+            },
+        )
+        assignment_id = existing.id
+    else:
+        assignment_id = (await db.execute(
+            text("""
+                INSERT INTO projects.site_role_assignments (
+                    organization_id, project_id, site_id, user_id, role_name,
+                    starts_on, ends_on, is_active, assigned_by, created_at, updated_at, is_deleted
+                ) VALUES (
+                    :org_id, :project_id, :site_id, :user_id, :role_name,
+                    :starts_on, :ends_on, true, :assigned_by, NOW(), NOW(), false
+                ) RETURNING id
+            """),
+            {
+                "org_id": user["org_id"],
+                "project_id": project_id,
+                "site_id": payload.site_id,
+                "user_id": payload.user_id,
+                "role_name": payload.role_name.strip(),
+                "starts_on": payload.starts_on,
+                "ends_on": payload.ends_on,
+                "assigned_by": user["user_id"],
+            },
+        )).scalar()
+
+    # If assigning Project Manager, update projects.projects.project_manager
+    if payload.role_name.strip().lower() in {"project manager", "lead project manager", "pm"}:
+        await db.execute(
+            text("""
+                UPDATE projects.projects
+                SET project_manager = :manager_name, updated_at = NOW()
+                WHERE id = :project_id AND organization_id = :org_id
+            """),
+            {
+                "manager_name": user_check.full_name,
+                "project_id": project_id,
+                "org_id": user["org_id"],
+            },
+        )
+
+    await db.commit()
+
+    emit_event(
+        org_id=user["org_id"],
+        event_type="project.role_assigned.v1",
+        payload={
+            "project_id": str(project_id),
+            "assignment_id": str(assignment_id),
+            "user_id": str(payload.user_id),
+            "role_name": payload.role_name,
+            "assigned_by": str(user["user_id"]),
+        },
+    )
+
+    return _result({
+        "id": str(assignment_id),
+        "user_id": str(payload.user_id),
+        "role_name": payload.role_name,
+        "user_name": user_check.full_name,
+    }, f"Assigned {user_check.full_name} as {payload.role_name}.")
+
+
+@router.patch("/{project_id}/roles/{assignment_id}")
+async def update_project_role(
+    project_id: UUID,
+    assignment_id: UUID,
+    payload: ProjectRoleAssignmentUpdate,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update or deactivate a project role assignment."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    existing = (await db.execute(
+        text("SELECT * FROM projects.site_role_assignments WHERE id = :id AND project_id = :project_id AND organization_id = :org_id"),
+        {"id": assignment_id, "project_id": project_id, "org_id": user["org_id"]},
+    )).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Role assignment not found.")
+
+    updates = []
+    params: dict = {"id": assignment_id, "project_id": project_id, "org_id": user["org_id"]}
+
+    if payload.role_name is not None:
+        updates.append("role_name = :role_name")
+        params["role_name"] = payload.role_name.strip()
+    if payload.site_id is not None:
+        updates.append("site_id = :site_id")
+        params["site_id"] = payload.site_id
+    if payload.starts_on is not None:
+        updates.append("starts_on = :starts_on")
+        params["starts_on"] = payload.starts_on
+    if payload.ends_on is not None:
+        updates.append("ends_on = :ends_on")
+        params["ends_on"] = payload.ends_on
+    if payload.is_active is not None:
+        updates.append("is_active = :is_active")
+        params["is_active"] = payload.is_active
+        if not payload.is_active and not payload.ends_on:
+            updates.append("ends_on = CURRENT_DATE")
+
+    if updates:
+        updates.append("updated_at = NOW()")
+        await db.execute(
+            text(f"UPDATE projects.site_role_assignments SET {', '.join(updates)} WHERE id = :id AND project_id = :project_id AND organization_id = :org_id"),
+            params,
+        )
+        await db.commit()
+
+    return _result({"id": str(assignment_id), "updated": True}, "Role assignment updated successfully.")
+
+
+@router.delete("/{project_id}/roles/{assignment_id}")
+async def deactivate_project_role(
+    project_id: UUID,
+    assignment_id: UUID,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-deactivate a role assignment, ending future authority while preserving all historical records."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    await db.execute(
+        text("""
+            UPDATE projects.site_role_assignments
+            SET is_active = false, is_deleted = true, ends_on = CURRENT_DATE, updated_at = NOW()
+            WHERE id = :id AND project_id = :project_id AND organization_id = :org_id
+        """),
+        {"id": assignment_id, "project_id": project_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+
+    return _result({"id": str(assignment_id), "deactivated": True}, "Role assignment deactivated and ended.")
+
+
+# ==============================================================================
+# BULK-CATEGORY BUDGET & QUOTATIONS BRIDGE
+# ==============================================================================
+
+CANONICAL_BUDGET_CATEGORIES = [
+    {"key": "materials", "label": "Materials & Aggregates", "default_code": "200-MATERIALS"},
+    {"key": "labour", "label": "Direct Labour & Supervision", "default_code": "100-LABOUR"},
+    {"key": "equipment", "label": "Plant & Heavy Machinery", "default_code": "300-EQUIP"},
+    {"key": "subcontract", "label": "Specialist Subcontracts", "default_code": "400-SUBCONT"},
+    {"key": "overhead", "label": "Preliminaries & Site Overheads", "default_code": "500-OVERHEAD"},
+    {"key": "contingency", "label": "Contingency & Risk Reserve", "default_code": "600-CONTINGENCY"},
+    {"key": "other", "label": "Other Project Allowances", "default_code": "700-OTHER"},
+]
+
+class QuotationImportPayload(BaseModel):
+    quotation_id: Optional[UUID] = None
+    notes: Optional[str] = None
+
+
+@router.get("/{project_id}/budget/category-summary")
+async def get_budget_category_summary(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns real-time bulk BOQ cost-category totals with side-by-side approved budget,
+    committed exposure, actual incurred execution costs, and remaining headroom."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # 1. Approved budget lines by category
+    budget_lines_res = await db.execute(
+        text("""
+            SELECT bl.cost_category, SUM(bl.amount) AS category_budget
+            FROM finance.project_budgets pb
+            JOIN finance.budget_lines bl ON bl.budget_id = pb.id AND bl.is_deleted = false
+            WHERE pb.project_id = :project_id AND pb.organization_id = :org_id
+              AND pb.status = 'approved' AND pb.is_deleted = false
+            GROUP BY bl.cost_category
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    budget_map = {row.cost_category.lower(): float(row.category_budget or 0) for row in budget_lines_res}
+
+    # 2. Committed amounts from active commitments
+    commitments_res = await db.execute(
+        text("""
+            SELECT COALESCE(NULLIF(cost_category, ''), 'materials') AS category,
+                   SUM(outstanding_amount) AS committed_amount
+            FROM finance.commitments
+            WHERE project_id = :project_id AND organization_id = :org_id
+              AND status = 'active' AND is_deleted = false
+            GROUP BY COALESCE(NULLIF(cost_category, ''), 'materials')
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    commit_map = {row.category.lower(): float(row.committed_amount or 0) for row in commitments_res}
+
+    # 3. Actual incurred costs
+    actuals_res = await db.execute(
+        text("""
+            SELECT COALESCE(NULLIF(cost_category, ''), 'materials') AS category,
+                   SUM(amount) AS actual_amount
+            FROM finance.cost_transactions
+            WHERE project_id = :project_id AND organization_id = :org_id
+            GROUP BY COALESCE(NULLIF(cost_category, ''), 'materials')
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    actual_map = {row.category.lower(): float(row.actual_amount or 0) for row in actuals_res}
+
+    # 4. Check for linked quotation
+    quote_res = await db.execute(
+        text("""
+            SELECT q.id, q.client_name, q.quote_amount, q.status, q.metadata, q.created_at
+            FROM finance.quotations q
+            WHERE q.organization_id = :org_id AND q.is_deleted = false
+              AND (q.project_id = :project_id OR q.client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id))
+            ORDER BY (q.project_id = :project_id) DESC, (q.status = 'won') DESC, q.created_at DESC
+            LIMIT 1
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    quote_row = quote_res.first()
+    linked_quotation = None
+    quote_category_map: dict[str, float] = {}
+
+    if quote_row:
+        meta = quote_row.metadata if isinstance(quote_row.metadata, dict) else {}
+        calc = meta.get("calculation", {}) if isinstance(meta, dict) else {}
+        breakdown = calc.get("direct_costs_breakdown", {}) if isinstance(calc, dict) else {}
+
+        quote_category_map["materials"] = float(breakdown.get("materials", 0))
+        quote_category_map["labour"] = float(breakdown.get("labour", 0))
+        quote_category_map["equipment"] = float(breakdown.get("equipment", 0))
+        quote_category_map["subcontract"] = float(breakdown.get("subcontractors", 0))
+        quote_category_map["overhead"] = float(calc.get("overhead_amount", 0)) + float(calc.get("preliminaries", 0))
+        quote_category_map["contingency"] = float(calc.get("contingency_amount", 0))
+
+        linked_quotation = {
+            "id": str(quote_row.id),
+            "client_name": quote_row.client_name,
+            "quote_amount": float(quote_row.quote_amount or 0),
+            "status": quote_row.status,
+            "created_at": str(quote_row.created_at),
+            "category_estimates": quote_category_map,
+        }
+
+    # Build category rows
+    category_rows = []
+    total_budget = 0.0
+    total_committed = 0.0
+    total_actual = 0.0
+
+    for cat in CANONICAL_BUDGET_CATEGORIES:
+        key = cat["key"]
+        b_amount = budget_map.get(key, 0.0)
+        c_amount = commit_map.get(key, 0.0)
+        a_amount = actual_map.get(key, 0.0)
+        q_amount = quote_category_map.get(key, 0.0)
+        headroom = round(b_amount - a_amount - c_amount, 2)
+        burn_pct = round(((a_amount + c_amount) / b_amount * 100), 1) if b_amount > 0 else 0.0
+
+        total_budget += b_amount
+        total_committed += c_amount
+        total_actual += a_amount
+
+        category_rows.append({
+            "category": key,
+            "label": cat["label"],
+            "default_code": cat["default_code"],
+            "estimated_cost": q_amount,
+            "budget": b_amount,
+            "committed": c_amount,
+            "actual": a_amount,
+            "headroom": headroom,
+            "burn_pct": burn_pct,
+        })
+
+    return _result({
+        "categories": category_rows,
+        "totals": {
+            "budget": round(total_budget, 2),
+            "committed": round(total_committed, 2),
+            "actual": round(total_actual, 2),
+            "headroom": round(total_budget - total_actual - total_committed, 2),
+            "burn_pct": round(((total_actual + total_committed) / total_budget * 100), 1) if total_budget > 0 else 0.0,
+        },
+        "linked_quotation": linked_quotation,
+    }, "Project budget category summary retrieved.")
+
+
+@router.post("/{project_id}/budget/import-quotation")
+async def import_budget_from_quotation(
+    project_id: UUID,
+    payload: QuotationImportPayload,
+    user: dict = Depends(require_permission("projects.write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import and seed bulk category execution budget directly from Quotations & Estimations."""
+    project = await _project_or_404(db, project_id, user["org_id"])
+
+    # Locate target quotation
+    if payload.quotation_id:
+        quote = (await db.execute(
+            text("SELECT * FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": payload.quotation_id, "org_id": user["org_id"]},
+        )).first()
+    else:
+        quote = (await db.execute(
+            text("""
+                SELECT * FROM finance.quotations
+                WHERE organization_id = :org_id AND is_deleted = false
+                  AND (project_id = :project_id OR client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id))
+                ORDER BY (project_id = :project_id) DESC, (status = 'won') DESC, created_at DESC
+                LIMIT 1
+            """),
+            {"project_id": project_id, "org_id": user["org_id"]},
+        )).first()
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="No matching quotation found for this project or client to import.")
+
+    meta = quote.metadata if isinstance(quote.metadata, dict) else {}
+    calc = meta.get("calculation", {}) if isinstance(meta, dict) else {}
+    breakdown = calc.get("direct_costs_breakdown", {}) if isinstance(calc, dict) else {}
+
+    # Calculate category values
+    materials = float(breakdown.get("materials", 0))
+    labour = float(breakdown.get("labour", 0))
+    equipment = float(breakdown.get("equipment", 0))
+    subcontract = float(breakdown.get("subcontractors", 0))
+    overhead = float(calc.get("overhead_amount", 0)) + float(calc.get("preliminaries", 0))
+    contingency = float(calc.get("contingency_amount", 0))
+
+    execution_total = round(materials + labour + equipment + subcontract + overhead + contingency, 2)
+
+    # If quotation didn't have detailed calculation breakdown, distribute quote_amount sensibly
+    if execution_total <= 0:
+        quote_total = float(quote.quote_amount or 0)
+        materials = round(quote_total * 0.45, 2)
+        labour = round(quote_total * 0.25, 2)
+        equipment = round(quote_total * 0.15, 2)
+        subcontract = round(quote_total * 0.10, 2)
+        overhead = round(quote_total * 0.05, 2)
+        execution_total = round(materials + labour + equipment + subcontract + overhead, 2)
+
+    # Supersede existing budgets
+    await db.execute(
+        text("""
+            UPDATE finance.project_budgets
+            SET status = 'superseded', updated_at = NOW()
+            WHERE project_id = :project_id AND organization_id = :org_id
+              AND status = 'approved' AND is_deleted = false
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+
+    version_res = await db.execute(
+        text("SELECT COALESCE(MAX(budget_version), 0) + 1 FROM finance.project_budgets WHERE project_id = :project_id AND organization_id = :org_id"),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    next_ver = version_res.scalar() or 1
+
+    # Insert new master budget
+    budget_id = (await db.execute(
+        text("""
+            INSERT INTO finance.project_budgets (
+                organization_id, project_id, budget_version, status, label,
+                effective_date, total_amount, notes, approved_by, approved_at, created_by
+            ) VALUES (
+                :org_id, :project_id, :version, 'approved', :label,
+                CURRENT_DATE, :total_amount, :notes, :user_id, NOW(), :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": user["org_id"],
+            "project_id": project_id,
+            "version": next_ver,
+            "label": f"Imported from Quotation {quote.id}",
+            "total_amount": execution_total,
+            "notes": payload.notes or f"Imported bulk category budget from quotation {quote.id} (Client: {quote.client_name})",
+            "user_id": user["user_id"],
+        },
+    )).scalar()
+
+    # Insert bulk category lines
+    cat_amounts = [
+        ("materials", "200-MATERIALS", "Materials, Concrete & Aggregates Allowance", materials),
+        ("labour", "100-LABOUR", "Direct Site Labour & Supervision Allowance", labour),
+        ("equipment", "300-EQUIP", "Plant & Heavy Equipment Allowance", equipment),
+        ("subcontract", "400-SUBCONT", "Specialist Subcontractor Packages", subcontract),
+        ("overhead", "500-OVERHEAD", "Preliminaries & Site Facilities Allowance", overhead),
+        ("contingency", "600-CONTINGENCY", "Contingency & Unforeseen Reserve", contingency),
+    ]
+
+    for cat_key, code, desc, amount in cat_amounts:
+        if amount > 0:
+            await db.execute(
+                text("""
+                    INSERT INTO finance.budget_lines (
+                        organization_id, budget_id, cost_category, description, amount, created_by
+                    ) VALUES (:org_id, :budget_id, :cat, :desc, :amount, :user_id)
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "budget_id": budget_id,
+                    "cat": cat_key,
+                    "desc": desc,
+                    "amount": amount,
+                    "user_id": user["user_id"],
+                },
+            )
+
+    # Update project profile budget and contract value
+    await db.execute(
+        text("""
+            UPDATE projects.projects
+            SET contract_value = COALESCE(contract_value, :quote_amount), updated_at = NOW()
+            WHERE id = :project_id AND organization_id = :org_id
+        """),
+        {
+            "project_id": project_id,
+            "org_id": user["org_id"],
+            "quote_amount": float(quote.quote_amount or execution_total),
+        },
+    )
+
+    await db.commit()
+
+    emit_event(
+        org_id=user["org_id"],
+        event_type="project.budget_imported_from_quotation.v1",
+        payload={
+            "project_id": str(project_id),
+            "budget_id": str(budget_id),
+            "quotation_id": str(quote.id),
+            "total_amount": execution_total,
+            "imported_by": str(user["user_id"]),
+        },
+    )
+
+    return _result({
+        "budget_id": str(budget_id),
+        "quotation_id": str(quote.id),
+        "total_amount": execution_total,
+        "categories": {
+            "materials": materials,
+            "labour": labour,
+            "equipment": equipment,
+            "subcontract": subcontract,
+            "overhead": overhead,
+            "contingency": contingency,
+        },
+    }, f"Successfully imported execution budget of ${execution_total:,.2f} from Quotations & Estimations.")
