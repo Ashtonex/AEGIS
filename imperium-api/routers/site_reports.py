@@ -897,7 +897,7 @@ async def create_site(
 
 @router.get("/inventory-items")
 async def list_inventory_items(
-    user: dict = Depends(require_permission("site_operations.material.record")),
+    user: dict = Depends(require_any_permission("site_operations.material.record", "site_operations.material.request", "inventory_items.read", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await db.execute(
@@ -924,7 +924,7 @@ async def list_inventory_items(
 @router.get("/stores")
 async def list_stores(
     project_id: Optional[UUID] = None,
-    user: dict = Depends(require_permission("site_operations.material.record")),
+    user: dict = Depends(require_any_permission("site_operations.material.record", "site_operations.material.request", "inventory_items.read", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
     scope_sql, scope_params = project_scope_sql("st.project_id", await visible_project_ids(db, user))
@@ -1160,7 +1160,7 @@ async def request_site_material(
 async def list_site_material_requests(
     project_id: Optional[UUID] = None,
     engineer_status: Optional[str] = Query(default=None),
-    user: dict = Depends(require_permission("site_operations.engineer_portal.read")),
+    user: dict = Depends(require_any_permission("site_operations.engineer_portal.read", "site_operations.material.request", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
     filters = ["mr.organization_id=:org_id", "mr.is_deleted=false"]
@@ -2060,7 +2060,7 @@ async def decide_grn_engineer(
 async def list_daily_reports(
     project_id: Optional[UUID] = None,
     status_filter: Optional[str] = Query(default=None, alias="status"),
-    user: dict = Depends(require_permission("site_operations.daily_report.read")),
+    user: dict = Depends(require_any_permission("site_operations.daily_report.read", "site_operations.read", "site_operations.daily_report.create")),
     db: AsyncSession = Depends(get_db),
 ):
     scope_sql, scope_params = project_scope_sql("r.project_id", await visible_project_ids(db, user))

@@ -320,9 +320,9 @@ function SiteOperationsWorkspace() {
           getWeeklySiteBudgets({ projectId, status: "all" }),
           getSiteMaterialRequests({ projectId }),
         ]);
-        setMaterialRequests(requestResult.status === "fulfilled" && Array.isArray(requestResult.value.data) ? requestResult.value.data.slice(0, 15) : []);
+        setMaterialRequests(requestResult.status === "fulfilled" && Array.isArray(requestResult.value?.data) ? requestResult.value.data.slice(0, 15) : []);
         const activeBudget = budgetResult.status === "fulfilled"
-          ? (Array.isArray(budgetResult.value.data) ? budgetResult.value.data : []).find((budget) => ["approved", "submitted"].includes(text(budget.status).toLowerCase()))
+          ? (Array.isArray(budgetResult.value?.data) ? budgetResult.value.data : []).find((budget) => ["approved", "submitted"].includes(text(budget.status).toLowerCase()))
           : null;
         if (activeBudget?.id) {
           try {
