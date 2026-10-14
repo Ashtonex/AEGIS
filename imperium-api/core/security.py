@@ -655,75 +655,20 @@ async def get_current_user(
     if identity_row is not None and not identity_row.user_exists:
         identity_row = None
 
-    # A row that exists but is deactivated/soft-deleted was deliberately
-    # revoked - reject it outright. Falling through to the auto-provisioning
-    # block below would silently reactivate it, since that block can't tell
-    # "revoked" apart from "never existed".
-    if identity_row and (not identity_row.is_active or identity_row.is_deleted):
+    # Enforces is_active = true and is_deleted = false for all authenticated access.
+    # Revoked or deactivated accounts are rejected immediately.
+    if identity_row and (identity_row.is_active is not True or identity_row.is_deleted):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive, unassigned, or revoked.",
         )
 
     if not identity_row or not identity_row.organization_id:
-        default_org_id = "00000000-0000-0000-0000-000000000001"
-        org_check = await db.execute(
-            text("SELECT id FROM core.organizations WHERE id = :org_id AND is_deleted = false"),
-            {"org_id": default_org_id},
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is not provisioned or assigned to an organization. Access requires an administrator invitation.",
         )
-        if org_check.fetchone():
-            # New/unrecognized identities are provisioned at the lowest
-            # privilege level (EMPLOYEE). Elevated roles must be granted
-            # explicitly by an admin afterwards, never auto-assigned here.
-            default_role = await db.execute(
-                text("""
-                    SELECT id FROM core.roles
-                    WHERE organization_id = :org_id AND name = 'EMPLOYEE' AND is_deleted = false
-                """),
-                {"org_id": default_org_id},
-            )
-            default_role_row = default_role.fetchone()
-            if not default_role_row:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="No default role configured for this organization.",
-                )
-            default_role_id = str(default_role_row.id)
-
-            email = payload.get("email") or f"{user_id}@aegis.local"
-            user_meta = _get_metadata(payload, "user_metadata")
-            full_name = user_meta.get("full_name") or email.split("@")[0]
-            await db.execute(
-                text("""
-                    INSERT INTO core.users (id, organization_id, email, full_name, is_active)
-                    VALUES (:user_id, :org_id, :email, :full_name, true)
-                    ON CONFLICT (id) DO UPDATE SET organization_id = EXCLUDED.organization_id, is_active = true
-                """),
-                {"user_id": user_id, "org_id": default_org_id, "email": email, "full_name": full_name},
-            )
-            await db.execute(
-                text("""
-                    INSERT INTO core.user_roles (user_id, role_id, organization_id)
-                    VALUES (:user_id, :role_id, :org_id)
-                    ON CONFLICT (user_id, role_id) DO NOTHING
-                """),
-                {"user_id": user_id, "role_id": default_role_id, "org_id": default_org_id},
-            )
-            await db.commit()
-            # commit() ended the transaction the set_config above was local
-            # to - re-set it so this request's writes are still attributed.
-            await db.execute(
-                text("SELECT set_config('request.jwt.claim.sub', :actor_sub, true)"),
-                {"actor_sub": str(user_id)},
-            )
-            database_org_id = default_org_id
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account is inactive, unassigned, or revoked.",
-            )
-    else:
-        database_org_id = str(identity_row.organization_id)
+    database_org_id = str(identity_row.organization_id)
 
     if org_id and str(org_id) != database_org_id:
         raise HTTPException(

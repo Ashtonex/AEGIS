@@ -58,8 +58,8 @@ jobs:
             apt-get clean || true
             apt-get autoremove -y || true
             journalctl --vacuum-size=100M || true
-            echo "--- pruning ALL docker state (safe: docker compose up --build recreates everything) ---"
-            docker system prune -af --volumes || true
+            echo "--- pruning old container and image state (volumes preserved) ---"
+            docker system prune -af || true
             echo "--- disk usage after cleanup, before build ---"
             df -h /
             cd /opt/aegis

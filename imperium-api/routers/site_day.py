@@ -802,8 +802,8 @@ async def update_attendance(
     if changes:
         sets = ", ".join(f"{key}=:{key}" for key in changes)
         await db.execute(
-            text(f"UPDATE projects.site_day_attendance SET {sets}, updated_at=NOW() WHERE id=:id"),
-            {**changes, "id": attendance_id},
+            text(f"UPDATE projects.site_day_attendance SET {sets}, updated_at=NOW() WHERE id=:id AND organization_id=:org_id"),
+            {**changes, "id": attendance_id, "org_id": user["org_id"]},
         )
         await db.commit()
     briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
@@ -819,7 +819,10 @@ async def remove_attendance(
     row = await _attendance_row(db, user["org_id"], attendance_id)
     if row["clock_in_at"]:
         raise HTTPException(status_code=409, detail="This person has already clocked in. Clock them out instead.")
-    await db.execute(text("DELETE FROM projects.site_day_attendance WHERE id=:id"), {"id": attendance_id})
+    await db.execute(
+        text("DELETE FROM projects.site_day_attendance WHERE id=:id AND organization_id=:org_id"),
+        {"id": attendance_id, "org_id": user["org_id"]},
+    )
     await db.commit()
     briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
     return result(await _day_payload(db, user["org_id"], briefing), "Removed from today's register.")
@@ -901,12 +904,12 @@ async def start_site_day(
     await db.execute(
         text("""UPDATE projects.site_day_briefings
                 SET status='started', labour_count_completed=true, started_at=:now, started_by=:user_id, updated_at=NOW()
-                WHERE id=:id"""),
-        {"now": now, "user_id": user["user_id"], "id": briefing_id},
+                WHERE id=:id AND organization_id=:org_id"""),
+        {"now": now, "user_id": user["user_id"], "id": briefing_id, "org_id": org_id},
     )
     await db.execute(
-        text("UPDATE projects.site_day_attendance SET clock_in_at=:now, updated_at=NOW() WHERE briefing_id=:id AND clock_in_at IS NULL"),
-        {"now": now, "id": briefing_id},
+        text("UPDATE projects.site_day_attendance SET clock_in_at=:now, updated_at=NOW() WHERE briefing_id=:id AND organization_id=:org_id AND clock_in_at IS NULL"),
+        {"now": now, "id": briefing_id, "org_id": org_id},
     )
     draft_report = await ensure_daily_report_draft(
         db,
@@ -922,8 +925,8 @@ async def start_site_day(
         await db.execute(
             text("""UPDATE projects.daily_site_reports
                     SET labour_count_completed=true, toolbox_talk_completed=true, ppe_check_completed=true, updated_at=NOW()
-                    WHERE id=:id"""),
-            {"id": draft_report["id"]},
+                    WHERE id=:id AND organization_id=:org_id"""),
+            {"id": draft_report["id"], "org_id": org_id},
         )
         await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=draft_report["id"])
     await emit_event(
@@ -944,8 +947,8 @@ async def _clock_out(db: AsyncSession, row: dict[str, Any], at: datetime, cap: D
     await db.execute(
         text("""UPDATE projects.site_day_attendance
                 SET clock_out_at=:at, regular_hours=:regular, overtime_hours=:overtime, updated_at=NOW()
-                WHERE id=:id"""),
-        {"at": at, "regular": regular, "overtime": overtime, "id": row["id"]},
+                WHERE id=:id AND organization_id=:org_id"""),
+        {"at": at, "regular": regular, "overtime": overtime, "id": row["id"], "org_id": row["organization_id"]},
     )
 
 
@@ -983,14 +986,14 @@ async def close_site_day(
     for row in rows:
         await _clock_out(db, row, now, briefing["regular_hours_cap"], briefing["break_minutes"])
     await db.execute(
-        text("UPDATE projects.site_day_attendance SET hr_status='pending', updated_at=NOW() WHERE briefing_id=:id AND hr_status='open'"),
-        {"id": briefing_id},
+        text("UPDATE projects.site_day_attendance SET hr_status='pending', updated_at=NOW() WHERE briefing_id=:id AND organization_id=:org_id AND hr_status='open'"),
+        {"id": briefing_id, "org_id": org_id},
     )
     await db.execute(
         text("""UPDATE projects.site_day_briefings
                 SET status='closed', closed_at=:now, closed_by=:user_id, hr_status='pending', updated_at=NOW()
-                WHERE id=:id"""),
-        {"now": now, "user_id": user["user_id"], "id": briefing_id},
+                WHERE id=:id AND organization_id=:org_id"""),
+        {"now": now, "user_id": user["user_id"], "id": briefing_id, "org_id": org_id},
     )
     if briefing.get("daily_report_id"):
         await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=briefing["daily_report_id"])
@@ -1244,9 +1247,9 @@ async def update_daily_target(
     await db.execute(
         text("""UPDATE projects.site_daily_targets
                 SET achieved_qty=:achieved, status=:status, notes=COALESCE(:notes, notes), updated_by=:user_id, updated_at=NOW()
-                WHERE id=:id"""),
+                WHERE id=:id AND organization_id=:org_id"""),
         {"achieved": achieved, "status": new_status or row["status"], "notes": payload.notes,
-         "user_id": user["user_id"], "id": target_id},
+         "user_id": user["user_id"], "id": target_id, "org_id": user["org_id"]},
     )
     await db.commit()
     return result({"id": str(target_id), "achieved_qty": str(achieved), "status": new_status or row["status"]}, "Target updated.")
@@ -1459,8 +1462,8 @@ async def decide_hours(
         await db.execute(
             text("""UPDATE projects.site_day_attendance
                     SET hr_status=:decision, hr_reason=:reason, time_entry_id=:entry_id, updated_at=NOW()
-                    WHERE id=:id"""),
-            {"decision": payload.decision, "reason": payload.reason, "entry_id": entry_id, "id": row["id"]},
+                    WHERE id=:id AND organization_id=:org_id"""),
+            {"decision": payload.decision, "reason": payload.reason, "entry_id": entry_id, "id": row["id"], "org_id": org_id},
         )
     # Roll each touched day up: accepted / rejected / partially accepted.
     briefing_ids = list({str(r["briefing_id"]) for r in rows})

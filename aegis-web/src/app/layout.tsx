@@ -8,6 +8,7 @@ import "@/styles/globals.css";
 import { cn } from "@/lib/utils";
 import { AuthProvider } from "@/lib/auth/AuthContext";
 import { AppThemeProvider } from "@/components/theme/AppThemeProvider";
+import { ToastProvider } from "@/components/ui/ToastProvider";
 
 export const metadata: Metadata = constructMetadata();
 
@@ -36,11 +37,13 @@ export default function RootLayout({
       )}>
         <AuthProvider>
           <AppThemeProvider>
-            <PwaRegistration />
-            <PwaRuntime />
-            <NavigationWrapper>
-              {children}
-            </NavigationWrapper>
+            <ToastProvider>
+              <PwaRegistration />
+              <PwaRuntime />
+              <NavigationWrapper>
+                {children}
+              </NavigationWrapper>
+            </ToastProvider>
           </AppThemeProvider>
         </AuthProvider>
       </body>

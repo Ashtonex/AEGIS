@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Bell, CheckCheck, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { SystemNotification } from "@/lib/api";
 import { useNotifications } from "@/hooks/useNotifications";
@@ -27,6 +27,9 @@ function priorityClass(notification: SystemNotification) {
 
 export function NotificationBell() {
   const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState<"all" | "unread" | "urgent">("all");
+  const bellRef = useRef<HTMLDivElement>(null);
+
   const {
     notifications,
     unreadCount,
@@ -34,7 +37,31 @@ export function NotificationBell() {
     error,
     markRead,
     markAllRead,
-  } = useNotifications(12);
+  } = useNotifications(20);
+
+  // Click outside and Escape key listener
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (e: MouseEvent) => {
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   async function openNotification(notification: SystemNotification) {
     if (!notification.is_read) {
@@ -43,37 +70,62 @@ export function NotificationBell() {
     setOpen(false);
   }
 
+  const filteredNotifications = notifications.filter((item) => {
+    if (filter === "unread") return !item.is_read;
+    if (filter === "urgent") return item.priority === "urgent" || item.priority === "high";
+    return true;
+  });
+
   return (
-    <div className="relative">
+    <div className="relative" ref={bellRef}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="text-slate hover:text-paper transition-colors relative"
+        className="text-slate hover:text-paper transition-colors relative p-1.5 rounded hover:bg-white/5"
         aria-label="Open notifications"
+        aria-expanded={open}
       >
         <Bell className="w-5 h-5" />
         {unreadCount > 0 && (
-          <span className="absolute -top-2 -right-2 min-w-4 h-4 px-1 bg-signal text-ink text-[10px] font-bold rounded-full border border-ink flex items-center justify-center">
+          <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-signal text-ink text-[10px] font-bold rounded-full border border-ink flex items-center justify-center animate-pulse">
             {unreadCount > 9 ? "9+" : unreadCount}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-9 z-50 w-[min(360px,calc(100vw-1rem))] border border-ink-mid bg-ink-light shadow-2xl">
-          <div className="p-4 border-b border-ink-mid flex items-center justify-between">
+        <div className="absolute right-0 top-10 z-50 w-[min(380px,calc(100vw-1.5rem))] border border-ink-mid bg-ink-light shadow-2xl rounded-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+          <div className="p-3.5 border-b border-ink-mid flex items-center justify-between bg-ink">
             <div>
-              <p className="font-mono text-[10px] uppercase tracking-widest text-signal">Live notifications</p>
-              <h2 className="text-base font-semibold text-paper">Notification Center</h2>
+              <p className="font-mono text-[9px] uppercase tracking-widest text-signal font-semibold">Real-Time Alerts</p>
+              <h2 className="text-sm font-semibold text-paper">Notification Center</h2>
             </div>
             <button
               type="button"
               onClick={() => void markAllRead()}
               disabled={unreadCount === 0}
-              className="text-xs text-slate-light hover:text-signal disabled:opacity-40 flex items-center gap-1"
+              className="text-xs font-mono uppercase tracking-wider text-slate-light hover:text-signal disabled:opacity-30 flex items-center gap-1 transition-colors"
             >
-              <CheckCheck className="w-3 h-3" /> Clear
+              <CheckCheck className="w-3.5 h-3.5" /> Mark read
             </button>
+          </div>
+
+          {/* Filter Tabs */}
+          <div className="flex border-b border-ink-mid bg-ink/60 text-[11px] font-mono uppercase tracking-wider">
+            {(["all", "unread", "urgent"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setFilter(tab)}
+                className={`flex-1 py-1.5 text-center transition-colors border-b-2 ${
+                  filter === tab
+                    ? "border-signal text-signal bg-signal/5 font-semibold"
+                    : "border-transparent text-slate hover:text-paper"
+                }`}
+              >
+                {tab === "all" ? "All" : tab === "unread" ? `Unread (${unreadCount})` : "Urgent"}
+              </button>
+            ))}
           </div>
 
           {isLoading ? (
@@ -81,31 +133,33 @@ export function NotificationBell() {
               <Loader2 className="w-5 h-5 text-signal animate-spin" />
             </div>
           ) : error ? (
-            <p className="p-4 text-sm text-red-200">{error}</p>
-          ) : notifications.length === 0 ? (
-            <p className="p-5 text-sm text-slate-light">No notifications yet.</p>
+            <p className="p-4 text-xs text-red-300 font-mono">{error}</p>
+          ) : filteredNotifications.length === 0 ? (
+            <p className="p-6 text-xs text-slate-light text-center">
+              {filter === "unread" ? "No unread alerts." : filter === "urgent" ? "No urgent alerts." : "No notifications yet."}
+            </p>
           ) : (
-            <div className="max-h-[420px] overflow-y-auto divide-y divide-ink-mid">
-              {notifications.map((notification) => {
+            <div className="max-h-[380px] overflow-y-auto divide-y divide-ink-mid/40">
+              {filteredNotifications.map((notification) => {
                 const content = (
-                  <article className={`p-4 border-l-2 ${priorityClass(notification)} hover:bg-ink/60`}>
+                  <article className={`p-3.5 border-l-2 ${priorityClass(notification)} hover:bg-white/5 transition-colors`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-paper">{notification.title}</p>
+                        <p className="text-xs font-semibold text-paper tracking-tight">{notification.title}</p>
                         {notification.message && (
-                          <p className="text-xs text-slate-light mt-1 line-clamp-2">{notification.message}</p>
+                          <p className="text-[11px] text-slate-light mt-0.5 line-clamp-2 leading-relaxed">{notification.message}</p>
                         )}
                       </div>
-                      <span className="font-mono text-[10px] uppercase text-slate-light whitespace-nowrap">
+                      <span className="font-mono text-[9px] uppercase text-slate whitespace-nowrap">
                         {formatAge(notification.created_at)}
                       </span>
                     </div>
-                    <div className="mt-3 flex items-center justify-between gap-3">
-                      <span className="font-mono text-[10px] uppercase text-slate">
+                    <div className="mt-2.5 flex items-center justify-between gap-3">
+                      <span className="font-mono text-[9px] uppercase tracking-wider text-slate">
                         {notification.notification_type || "system"}
                       </span>
                       {!notification.is_read && (
-                        <span className="w-2 h-2 rounded-full bg-signal" />
+                        <span className="w-2 h-2 rounded-full bg-signal shrink-0" />
                       )}
                     </div>
                   </article>
@@ -136,9 +190,9 @@ export function NotificationBell() {
           <Link
             href="/dashboard/notifications"
             onClick={() => setOpen(false)}
-            className="block border-t border-ink-mid p-3 text-center font-mono text-[10px] uppercase tracking-widest text-signal hover:bg-ink"
+            className="block border-t border-ink-mid p-2.5 text-center font-mono text-[10px] uppercase tracking-widest text-signal hover:bg-ink transition-colors"
           >
-            View all notifications
+            View all notifications &rarr;
           </Link>
         </div>
       )}

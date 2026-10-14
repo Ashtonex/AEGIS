@@ -5,4 +5,8 @@ README.md
 .git
 .vscode
 .env*.local
+.env
+*.pem
+*.key
 .DS_Store
+

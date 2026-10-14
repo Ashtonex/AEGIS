@@ -2740,8 +2740,16 @@ async def get_budget_category_summary(
             SELECT q.id, q.client_name, q.quote_amount, q.status, q.metadata, q.created_at
             FROM finance.quotations q
             WHERE q.organization_id = :org_id AND q.is_deleted = false
-              AND (q.project_id = :project_id OR q.client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id))
-            ORDER BY (q.project_id = :project_id) DESC, (q.status = 'won') DESC, q.created_at DESC
+              AND (
+                q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)
+                OR q.project_id = :project_id
+                OR q.client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id)
+              )
+            ORDER BY
+              (q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC NULLS LAST,
+              (q.project_id = :project_id) DESC NULLS LAST,
+              (q.status = 'won') DESC NULLS LAST,
+              q.created_at DESC
             LIMIT 1
         """),
         {"project_id": project_id, "org_id": user["org_id"]},
@@ -2761,6 +2769,7 @@ async def get_budget_category_summary(
         quote_category_map["subcontract"] = float(breakdown.get("subcontractors", 0))
         quote_category_map["overhead"] = float(calc.get("overhead_amount", 0)) + float(calc.get("preliminaries", 0))
         quote_category_map["contingency"] = float(calc.get("contingency_amount", 0))
+        quote_category_map["other"] = float(breakdown.get("other", 0))
 
         linked_quotation = {
             "id": str(quote_row.id),
@@ -2836,8 +2845,16 @@ async def import_budget_from_quotation(
             text("""
                 SELECT * FROM finance.quotations
                 WHERE organization_id = :org_id AND is_deleted = false
-                  AND (project_id = :project_id OR client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id))
-                ORDER BY (project_id = :project_id) DESC, (status = 'won') DESC, created_at DESC
+                  AND (
+                    id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)
+                    OR project_id = :project_id
+                    OR client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id)
+                  )
+                ORDER BY
+                  (id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC NULLS LAST,
+                  (project_id = :project_id) DESC NULLS LAST,
+                  (status = 'won') DESC NULLS LAST,
+                  created_at DESC
                 LIMIT 1
             """),
             {"project_id": project_id, "org_id": user["org_id"]},
@@ -2857,8 +2874,9 @@ async def import_budget_from_quotation(
     subcontract = float(breakdown.get("subcontractors", 0))
     overhead = float(calc.get("overhead_amount", 0)) + float(calc.get("preliminaries", 0))
     contingency = float(calc.get("contingency_amount", 0))
+    other = float(breakdown.get("other", 0))
 
-    execution_total = round(materials + labour + equipment + subcontract + overhead + contingency, 2)
+    execution_total = round(materials + labour + equipment + subcontract + overhead + contingency + other, 2)
 
     # If quotation didn't have detailed calculation breakdown, distribute quote_amount sensibly
     if execution_total <= 0:
@@ -2917,6 +2935,7 @@ async def import_budget_from_quotation(
         ("subcontract", "400-SUBCONT", "Specialist Subcontractor Packages", subcontract),
         ("overhead", "500-OVERHEAD", "Preliminaries & Site Facilities Allowance", overhead),
         ("contingency", "600-CONTINGENCY", "Contingency & Unforeseen Reserve", contingency),
+        ("other", "700-OTHER", "Other Project Allowances", other),
     ]
 
     for cat_key, code, desc, amount in cat_amounts:

@@ -243,3 +243,49 @@ def test_ip_with_many_failures_is_throttled(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         security.verify_token_str("anything", client_ip="203.0.113.9")
     assert exc_info.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_unprovisioned_identity_is_rejected_with_403(monkeypatch):
+    """An unknown authenticated identity must NEVER be auto-enrolled into root tenant or given EMPLOYEE role."""
+    class FakeResult:
+        def fetchone(self):
+            return None
+
+    class FakeSession:
+        async def execute(self, *args, **kwargs):
+            return FakeResult()
+
+    uninvited_payload = {
+        "sub": "99999999-9999-9999-9999-999999999999",
+        "email": "stranger@unknown.org",
+        "app_metadata": {},
+        "user_metadata": {},
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        await security.get_current_user(payload=uninvited_payload, db=FakeSession())
+    assert exc_info.value.status_code == 403
+    assert "not provisioned" in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_public_registration_endpoint_is_disabled():
+    """Direct public self-registration must return 403 Forbidden."""
+    from routers.auth import register_user
+    from schemas.auth import UserRegister
+    from starlette.requests import Request
+
+    scope = {"type": "http", "method": "POST", "path": "/api/v1/auth/register", "headers": []}
+    req = Request(scope)
+    payload = UserRegister(
+        email="attacker@example.com",
+        password="ValidPassword123!",
+        full_name="Attacker",
+        organization_id="00000000-0000-0000-0000-000000000001",
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await register_user(request=req, payload=payload)
+    assert exc_info.value.status_code == 403
+    assert "disabled" in exc_info.value.detail.lower()
+

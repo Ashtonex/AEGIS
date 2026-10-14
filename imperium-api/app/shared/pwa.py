@@ -88,22 +88,31 @@ def _normalize_subscription(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def send_web_push(subscription: dict[str, Any], payload: dict[str, Any]) -> bool:
+async def send_web_push(subscription: dict[str, Any], payload: dict[str, Any]) -> bool | str:
     if not pwa_push_enabled():
         return False
 
-    def _send() -> bool:
+    priority = payload.get("priority", "normal")
+    urgency_map = {"urgent": "high", "high": "high", "normal": "normal", "low": "low"}
+    urgency = urgency_map.get(priority, "normal")
+    ttl = 86400 if priority in ("urgent", "high") else 43200
+
+    def _send() -> bool | str:
         try:
             webpush(
                 subscription_info=subscription,
                 data=json.dumps(payload, default=str),
                 vapid_private_key=_load_vapid(),
                 vapid_claims={"sub": settings.PWA_VAPID_SUBJECT},
-                ttl=3600,
+                ttl=ttl,
+                headers={"Urgency": urgency},
             )
             return True
         except WebPushException as exc:
             logger.warning("Web push delivery failed: %s", exc)
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in (404, 410):
+                return "expired"
             return False
 
     return await asyncio.to_thread(_send)
@@ -131,8 +140,24 @@ async def dispatch_user_pushes(
     ).mappings().all()
 
     sent = 0
+    expired_endpoints: list[str] = []
     for row in rows:
-        if await send_web_push(_normalize_subscription(dict(row)), payload):
+        outcome = await send_web_push(_normalize_subscription(dict(row)), payload)
+        if outcome is True:
             sent += 1
+        elif outcome == "expired":
+            expired_endpoints.append(row["endpoint"])
+
+    if expired_endpoints:
+        await db.execute(
+            text("""
+            UPDATE core.pwa_push_subscriptions
+            SET is_active = false, updated_at = NOW()
+            WHERE endpoint = ANY(:endpoints)
+        """),
+            {"endpoints": expired_endpoints},
+        )
+        await db.commit()
+
     return sent
 

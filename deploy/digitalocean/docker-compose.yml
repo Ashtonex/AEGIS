@@ -50,6 +50,10 @@ services:
       MICROSOFT_GRAPH_TENANT_ID: ${MICROSOFT_GRAPH_TENANT_ID:-}
       MICROSOFT_GRAPH_CLIENT_ID: ${MICROSOFT_GRAPH_CLIENT_ID:-}
       MICROSOFT_GRAPH_CLIENT_SECRET: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
+      PWA_VAPID_PRIVATE_KEY_PEM: ${PWA_VAPID_PRIVATE_KEY_PEM:-}
+      PWA_VAPID_SUBJECT: ${PWA_VAPID_SUBJECT:-}
+    volumes:
+      - aegis_runtime:/app/.aegis-runtime
     expose:
       - "8000"
     healthcheck:
@@ -85,7 +89,12 @@ services:
       MICROSOFT_GRAPH_TENANT_ID: ${MICROSOFT_GRAPH_TENANT_ID:-}
       MICROSOFT_GRAPH_CLIENT_ID: ${MICROSOFT_GRAPH_CLIENT_ID:-}
       MICROSOFT_GRAPH_CLIENT_SECRET: ${MICROSOFT_GRAPH_CLIENT_SECRET:-}
+      PWA_VAPID_PRIVATE_KEY_PEM: ${PWA_VAPID_PRIVATE_KEY_PEM:-}
+      PWA_VAPID_SUBJECT: ${PWA_VAPID_SUBJECT:-}
+    volumes:
+      - aegis_runtime:/app/.aegis-runtime
 
 volumes:
   caddy_data:
   caddy_config:
+  aegis_runtime:

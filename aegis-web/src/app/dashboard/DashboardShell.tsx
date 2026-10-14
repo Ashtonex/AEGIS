@@ -8,6 +8,8 @@ import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
+import { PwaNotificationPrompt } from "@/components/pwa/PwaNotificationPrompt";
+import { CommandPalette } from "@/components/command/CommandPalette";
 import { getMyProfile, updateMyProfile } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
 import { AttendanceCheckIn } from "@/components/people/AttendanceCheckIn";
@@ -53,61 +55,11 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  // Top bar auto-hide: visible on load, on scroll (either direction), or
-  // while hovering the bar itself or a thin trigger strip at the very top
-  // of the viewport; hides again after a short idle period. The bar is
-  // fixed/overlaid rather than in normal flow specifically so showing or
-  // hiding it never shifts or resizes the page content underneath.
-  //
-  // Desktop-only: the reveal mechanism is entirely hover-based (the bar
-  // itself, plus a thin trigger strip at the top of the viewport), and
-  // touch devices have no hover at all. On mobile the hamburger button
-  // that opens the side nav drawer lives inside this same bar, so once it
-  // auto-hid there - with no scrollable content to trigger the scroll
-  // fallback, which is exactly the case on short pages - there was no way
-  // to bring it back and both the top nav and side nav became unreachable.
-  const [topBarVisible, setTopBarVisible] = useState(true);
-  const [isDesktop, setIsDesktop] = useState(true);
-  const topBarHoveredRef = useRef(false);
-  const topBarHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [commandOpen, setCommandOpen] = useState(false);
   const mainScrollRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    const mql = window.matchMedia("(min-width: 768px)");
-    const update = () => setIsDesktop(mql.matches);
-    update();
-    mql.addEventListener("change", update);
-    return () => mql.removeEventListener("change", update);
-  }, []);
-
-  const scheduleTopBarHide = useCallback(() => {
-    if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
-    if (!isDesktop) return;
-    topBarHideTimerRef.current = setTimeout(() => {
-      if (!topBarHoveredRef.current) setTopBarVisible(false);
-    }, 2000);
-  }, [isDesktop]);
-
-  const revealTopBar = useCallback(() => {
-    setTopBarVisible(true);
-    scheduleTopBarHide();
-  }, [scheduleTopBarHide]);
-
-  useEffect(() => {
-    scheduleTopBarHide();
-    const mainEl = mainScrollRef.current;
-    if (!mainEl) return;
-    const onScroll = () => revealTopBar();
-    mainEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      mainEl.removeEventListener("scroll", onScroll);
-      if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
-    };
-  }, [revealTopBar, scheduleTopBarHide]);
-
-  useEffect(() => {
     mainScrollRef.current?.scrollTo({ top: 0, left: 0 });
-    setTopBarVisible(true);
   }, [pathname]);
 
   // Extract user info from session
@@ -431,32 +383,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   return (
     <div className="h-dvh bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink overflow-hidden">
 
-      {/* Thin always-present strip at the very top of the viewport so hovering
-          there can bring the top bar back even while it's hidden - the bar
-          itself isn't there to hover over once translated out of view. */}
-      <div
-        className="fixed top-0 inset-x-0 h-2 z-40"
-        onMouseEnter={revealTopBar}
-      />
-
-      {/* GLOBAL TOP NAVIGATION BAR - fixed/overlaid, not in normal flow, so
-          hiding or showing it never shifts the page content beneath it. */}
+      {/* GLOBAL TOP NAVIGATION BAR - permanently fixed at top */}
       {/* Layout contract markers: className="fixed top-0 inset-x-0 h-14; hidden sm:block */}
       <header
-        onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
-        onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}
-        className={`fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0 transition-transform duration-300 ease-out ${
-          // Mobile has no persistent sidebar - this bar (and the hamburger
-          // inside it) is the only way to reach navigation there, so it must
-          // never actually hide on mobile regardless of the desktop-only
-          // auto-hide timer's state. scheduleTopBarHide() already skips
-          // scheduling a hide on mobile, but that alone doesn't cover the
-          // case where the bar was auto-hidden at desktop width and the
-          // viewport is then narrowed below the breakpoint - this render-time
-          // guard is the single source of truth so there's no state-timing
-          // window where mobile navigation is unreachable.
-          (topBarVisible || !isDesktop) ? "translate-y-0" : "-translate-y-full"
-        }`}
+        className="fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink/95 backdrop-blur-md flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0"
       >
         <div className="flex min-w-0 items-center space-x-3 md:space-x-8">
           <button
@@ -479,14 +409,19 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <span className="hidden font-display text-lg tracking-tight text-paper sm:inline">IMPERIUM</span>
           </Link>
           
-          <div className="relative group hidden md:block" data-tour="dashboard-search">
-            <Search className="w-4 h-4 text-slate absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-signal transition-colors" />
-            <input
-              type="text"
-              placeholder="Search Imperium..."
-              className="bg-ink-light border border-ink-mid rounded-sm pl-10 pr-4 py-1.5 text-sm text-paper placeholder-slate focus:outline-none focus:border-signal/50 focus:ring-1 focus:ring-signal/50 transition-all w-64"
-            />
-          </div>
+          <button
+            type="button"
+            onClick={() => setCommandOpen(true)}
+            data-tour="dashboard-search"
+            className="flex items-center gap-2.5 px-3 py-1.5 rounded-sm bg-ink-light border border-ink-mid hover:border-signal/40 text-slate hover:text-paper transition-all text-sm w-44 sm:w-64 text-left group"
+            title="Search Imperium (⌘K)"
+          >
+            <Search className="w-4 h-4 text-slate group-hover:text-signal transition-colors shrink-0" />
+            <span className="truncate flex-1 text-xs">Search or jump to...</span>
+            <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-light bg-ink border border-ink-mid rounded-xs">
+              <span className="text-xs">⌘</span>K
+            </kbd>
+          </button>
         </div>
 
         <div className="flex min-w-0 items-center space-x-2 sm:space-x-3 md:space-x-6">
@@ -497,7 +432,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
           <CalendarDropdown />
           <NotificationBell />
-          <div className="hidden md:block">
+          <div>
             <PwaPushButton />
           </div>
 
@@ -645,6 +580,9 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         onClose={closeTour}
         onComplete={completeTour}
       />
+
+      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <PwaNotificationPrompt />
     </div>
   );
 }

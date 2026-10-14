@@ -22,3 +22,8 @@ test_output.log
 # runtime (see requirements-dev.txt).
 tests
 alembic
+*.pem
+*.key
+id_*
+.aegis*
+

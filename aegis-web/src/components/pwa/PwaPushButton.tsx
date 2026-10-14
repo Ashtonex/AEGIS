@@ -114,25 +114,53 @@ export function PwaPushButton() {
     return null;
   }
 
+  const isDenied = permission === "denied";
+
   return (
     <div className="flex items-center gap-2">
       <button
         type="button"
-        onClick={subscribed ? () => void disablePush() : () => void enablePush()}
+        onClick={
+          isDenied
+            ? () => setNotice("Notifications are blocked in your browser site settings. Allow notifications to receive alerts.")
+            : subscribed
+            ? () => void disablePush()
+            : () => void enablePush()
+        }
         disabled={loading}
-        className="inline-flex items-center gap-2 border border-ink-mid px-3 py-2 text-[10px] font-mono uppercase tracking-widest text-slate-light hover:border-signal hover:text-paper disabled:opacity-50"
-        title={subscribed ? "Disable device alerts" : "Enable device alerts"}
+        className={`inline-flex items-center gap-1.5 border px-2.5 py-1.5 text-[10px] font-mono uppercase tracking-widest transition-colors ${
+          isDenied
+            ? "border-amber-500/40 text-amber-300 hover:border-amber-400"
+            : subscribed
+            ? "border-signal/50 bg-signal/10 text-signal hover:bg-signal/20"
+            : "border-ink-mid text-slate-light hover:border-signal hover:text-paper"
+        } disabled:opacity-50`}
+        title={
+          isDenied
+            ? "Notifications blocked in browser settings"
+            : subscribed
+            ? "Disable device alerts"
+            : "Enable device alerts"
+        }
       >
         {loading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : isDenied ? (
+          <BellOff className="h-3.5 w-3.5 text-amber-400" />
         ) : subscribed ? (
-          <BellOff className="h-3.5 w-3.5" />
+          <BellRing className="h-3.5 w-3.5 text-signal" />
         ) : (
           <BellPlus className="h-3.5 w-3.5" />
         )}
-        {subscribed ? "Alerts on" : "Enable alerts"}
+        <span className="hidden sm:inline">
+          {isDenied ? "Alerts blocked" : subscribed ? "Alerts on" : "Alerts"}
+        </span>
       </button>
-      {notice ? <span className="max-w-56 text-[10px] text-slate-light">{notice}</span> : <BellRing className="h-4 w-4 text-slate-light" />}
+      {notice && (
+        <span className="max-w-56 text-[10px] text-slate-light font-mono truncate" title={notice}>
+          {notice}
+        </span>
+      )}
     </div>
   );
 }
