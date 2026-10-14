@@ -178,14 +178,7 @@ async def list_employees(
     status_filter: Optional[str] = Query(default=None, alias="status", max_length=20),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(
-        require_any_permission(
-            "workforce.read",
-            "workforce.people.read",
-            "site_operations.read",
-            "site_operations.labour_register.manage",
-        )
-    ),
+    _: dict = Depends(require_permission("workforce.read")),
 ):
     """Pickers across AEGIS call this. With no status, people who have left are
     excluded; ?status=all includes them; any other value filters exactly."""
