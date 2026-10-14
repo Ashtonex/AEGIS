@@ -27,7 +27,7 @@ class WorkforceSecurityContractTests(unittest.TestCase):
                     continue
                 self.assertTrue(
                     any(
-                        "require_permission(" in ast.unparse(default)
+                        ("require_permission(" in ast.unparse(default) or "require_any_permission(" in ast.unparse(default))
                         for default in node.args.defaults
                     ),
                     node.name,
