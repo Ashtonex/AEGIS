@@ -296,6 +296,13 @@ function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
   }, [load]);
 
   const openProject = useCallback((project: Project) => {
+    const refs = projectDetailRefs(project);
+    for (const ref of refs) {
+      if (ref) {
+        router.push(`/dashboard/projects/${encodeURIComponent(project.id || ref)}`);
+        return;
+      }
+    }
     router.push(`/dashboard/projects/${project.id}`);
   }, [router]);
 

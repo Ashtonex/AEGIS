@@ -137,7 +137,7 @@ export default function ProjectSchedulePage() {
 
         {filtered.length === 0 ? (
           <div className="py-12 text-center text-xs text-slate-light font-mono">
-            No milestones found for the selected filter. Click "Add Milestone" to initialize programme schedule.
+            No milestones found for the selected filter. Click &quot;Add Milestone&quot; to initialize programme schedule.
           </div>
         ) : (
           <div className="divide-y divide-ink-mid/40">

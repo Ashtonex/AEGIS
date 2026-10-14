@@ -75,7 +75,7 @@ export default function ProjectSiteLogsPage() {
 
         {siteReports.length === 0 ? (
           <div className="py-12 text-center text-xs text-slate-light font-mono">
-            No daily site reports logged for this project yet. Click "Log Daily Report" to record site progress.
+            No daily site reports logged for this project yet. Click &quot;Log Daily Report&quot; to record site progress.
           </div>
         ) : (
           <div className="divide-y divide-ink-mid/40">

@@ -221,7 +221,7 @@ export default function ProjectFinancialsPage() {
 
           {claims.length === 0 ? (
             <div className="py-8 text-center text-xs text-slate-light font-mono">
-              No progress claims recorded. Click "Progress Claim" to bill certified works.
+              No progress claims recorded. Click &quot;Progress Claim&quot; to bill certified works.
             </div>
           ) : (
             <div className="divide-y divide-ink-mid/40">
