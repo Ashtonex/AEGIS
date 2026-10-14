@@ -68,6 +68,8 @@ jobs:
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env build
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env down --remove-orphans || true
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --no-build
+            echo "--- applying database migrations ---"
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env exec -T imperium-api python migrations/run_aegis_migrations.py
             docker image prune -f
             echo "--- disk usage after build ---"
             df -h /

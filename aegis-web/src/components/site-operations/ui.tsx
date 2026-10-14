@@ -11,10 +11,15 @@ export const fieldClass =
 export const areaClass =
   "min-h-24 w-full border border-ink-mid bg-ink-light p-3 text-sm text-paper placeholder:text-slate outline-none transition focus:border-signal disabled:cursor-not-allowed disabled:opacity-50";
 
-/** The backend's own message for 4xx answers (they explain what to do);
- * a generic fallback for network trouble and server errors. */
+/** Return the backend's message when available, or a contextual fallback. */
 export function errorText(reason: unknown, fallback: string) {
-  if (reason instanceof ApiError && reason.status >= 400 && reason.status < 500 && reason.message) return reason.message;
+  if (reason instanceof ApiError) {
+    if (reason.status === 403) {
+      return reason.message || "You do not have permission to perform this site operations action.";
+    }
+    if (reason.message) return reason.message;
+  }
+  if (reason instanceof Error && reason.message) return reason.message;
   return fallback;
 }
 

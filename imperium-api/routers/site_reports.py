@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, require_any_permission, require_permission
 from core.project_scope import (
     enforce_project_path_scope,
     project_scope_sql,

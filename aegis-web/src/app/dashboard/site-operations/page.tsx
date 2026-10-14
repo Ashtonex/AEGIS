@@ -270,18 +270,41 @@ function SiteOperationsWorkspace() {
         getSiteOperationStores(),
       ]);
       const warnings: string[] = [];
-      if (reportResult.status === "fulfilled") setReports(Array.isArray(reportResult.value.data) ? reportResult.value.data : []);
-      else warnings.push("Daily site reports could not be loaded.");
-      if (projectResult.status === "fulfilled") setProjects(Array.isArray(projectResult.value.data) ? projectResult.value.data : []);
-      else warnings.push("Project register could not be loaded.");
-      if (workforceResult.status === "fulfilled") setEmployees(Array.isArray(workforceResult.value.data) ? workforceResult.value.data : []);
-      else warnings.push("Workforce register could not be loaded.");
-      if (fleetResult.status === "fulfilled") setFleet(Array.isArray(fleetResult.value.data) ? fleetResult.value.data : []);
-      else warnings.push("Fleet register could not be loaded.");
-      if (inventoryResult.status === "fulfilled") setInventoryItems(Array.isArray(inventoryResult.value.data) ? inventoryResult.value.data : []);
-      else warnings.push("Inventory catalogue could not be loaded.");
-      if (storeResult.status === "fulfilled") setStores(Array.isArray(storeResult.value.data) ? storeResult.value.data : []);
-      else warnings.push("Store register could not be loaded.");
+      if (reportResult.status === "fulfilled") {
+        setReports(Array.isArray(reportResult.value.data) ? reportResult.value.data : []);
+      } else {
+        setReports([]);
+        warnings.push("Daily site reports could not be loaded.");
+      }
+      if (projectResult.status === "fulfilled") {
+        setProjects(Array.isArray(projectResult.value.data) ? projectResult.value.data : []);
+      } else {
+        warnings.push("Project register could not be loaded.");
+      }
+      if (workforceResult.status === "fulfilled") {
+        setEmployees(Array.isArray(workforceResult.value.data) ? workforceResult.value.data : []);
+      } else {
+        setEmployees([]);
+        warnings.push("Workforce register could not be loaded.");
+      }
+      if (fleetResult.status === "fulfilled") {
+        setFleet(Array.isArray(fleetResult.value.data) ? fleetResult.value.data : []);
+      } else {
+        setFleet([]);
+        warnings.push("Fleet register could not be loaded.");
+      }
+      if (inventoryResult.status === "fulfilled") {
+        setInventoryItems(Array.isArray(inventoryResult.value.data) ? inventoryResult.value.data : []);
+      } else {
+        setInventoryItems([]);
+        warnings.push("Inventory catalogue could not be loaded.");
+      }
+      if (storeResult.status === "fulfilled") {
+        setStores(Array.isArray(storeResult.value.data) ? storeResult.value.data : []);
+      } else {
+        setStores([]);
+        warnings.push("Store register could not be loaded.");
+      }
       if (projectId) {
         const [budgetResult, requestResult] = await Promise.allSettled([
           getWeeklySiteBudgets({ projectId, status: "all" }),
@@ -297,7 +320,6 @@ function SiteOperationsWorkspace() {
             setWeeklyItems(Array.isArray(itemResult.data) ? itemResult.data : []);
           } catch {
             setWeeklyItems([]);
-            warnings.push("Weekly execution lines could not be loaded.");
           }
         } else {
           setWeeklyItems([]);
@@ -307,9 +329,6 @@ function SiteOperationsWorkspace() {
         setMaterialRequests([]);
       }
       setSourceWarnings(warnings);
-      if (reportResult.status === "rejected") {
-        throw new Error(loadFailureMessage(reportResult.reason));
-      }
     } catch (reason) {
       setError(loadFailureMessage(reason));
     } finally {

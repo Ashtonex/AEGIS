@@ -889,6 +889,30 @@ def require_permission(permission_key: str):
     return permission_checker
 
 
+def require_any_permission(*keys: str):
+    """Dependency factory ensuring current user holds AT LEAST ONE of the specified permissions."""
+
+    async def checker(
+        user: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    ):
+        if user.get("role") == SUPERADMIN_ROLE:
+            return user
+        if not user.get("org_id"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User does not belong to an organization.",
+            )
+        user_keys = await get_user_permission_keys(db, user)
+        if not set(keys) & user_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing required permission: {keys[0]}",
+            )
+        return user
+
+    return checker
+
+
 def require_resource_permission(resource: str):
     """Apply a method-specific permission to generated CRUD routers."""
     method_actions = {

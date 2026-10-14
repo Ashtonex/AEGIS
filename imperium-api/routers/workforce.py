@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.compliance import validate_employee_deployment
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, require_any_permission, require_permission
 from core.truncation import capped
 from app.shared.hr_self_service import resolve_own_employee_id
 
@@ -178,7 +178,14 @@ async def list_employees(
     status_filter: Optional[str] = Query(default=None, alias="status", max_length=20),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_permission("workforce.read")),
+    _: dict = Depends(
+        require_any_permission(
+            "workforce.read",
+            "workforce.people.read",
+            "site_operations.read",
+            "site_operations.labour_register.manage",
+        )
+    ),
 ):
     """Pickers across AEGIS call this. With no status, people who have left are
     excluded; ?status=all includes them; any other value filters exactly."""
