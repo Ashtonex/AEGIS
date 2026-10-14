@@ -2298,7 +2298,7 @@ async def list_project_roles(
 async def assign_project_role(
     project_id: UUID,
     payload: ProjectRoleAssignmentCreate,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Assign or delegate a key responsibility (Project Manager, Site Engineer, Foreman, etc.)."""
@@ -2409,7 +2409,7 @@ async def update_project_role(
     project_id: UUID,
     assignment_id: UUID,
     payload: ProjectRoleAssignmentUpdate,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Update or deactivate a project role assignment."""
@@ -2458,7 +2458,7 @@ async def update_project_role(
 async def deactivate_project_role(
     project_id: UUID,
     assignment_id: UUID,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-deactivate a role assignment, ending future authority while preserving all historical records."""
@@ -2546,7 +2546,7 @@ async def list_project_hires(
 async def create_project_hire(
     project_id: UUID,
     payload: ProjectHireCreate,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a new project hire (casual/daily worker) directly to the project workforce."""
@@ -2612,7 +2612,7 @@ async def create_project_hire(
 async def deactivate_project_hire(
     project_id: UUID,
     worker_id: UUID,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-deactivate a project hire, removing them from upcoming registers while preserving past attendance."""
@@ -2640,7 +2640,7 @@ async def deactivate_project_hire(
 async def remove_project_allocation(
     project_id: UUID,
     allocation_id: UUID,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove / soft-end a permanent employee allocation from this project."""
@@ -2828,7 +2828,7 @@ async def get_budget_category_summary(
 async def import_budget_from_quotation(
     project_id: UUID,
     payload: QuotationImportPayload,
-    user: dict = Depends(require_permission("projects.write")),
+    user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Import and seed bulk category execution budget directly from Quotations & Estimations."""

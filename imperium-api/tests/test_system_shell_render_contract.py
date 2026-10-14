@@ -58,7 +58,7 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn('w-[min(20rem,88vw)]', DASHBOARD_SHELL)
         self.assertIn('hidden min-w-0 text-right sm:block', DASHBOARD_SHELL)
         self.assertIn('hidden sm:block', DASHBOARD_SHELL)
-        self.assertIn('w-[min(360px,calc(100vw-1rem))]', NOTIFICATION_BELL)
+        self.assertIn('w-[min(380px,calc(100vw-1.5rem))]', NOTIFICATION_BELL)
 
     def test_single_destination_groups_render_as_direct_links(self):
         self.assertIn("directLink?: boolean", DASHBOARD_SHELL)

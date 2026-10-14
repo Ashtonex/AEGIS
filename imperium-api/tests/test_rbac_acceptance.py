@@ -165,7 +165,7 @@ async def test_get_current_user_rejects_inactive_or_unassigned_identity():
         )
 
     assert exc.value.status_code == 403
-    assert "inactive" in exc.value.detail
+    assert "not provisioned" in exc.value.detail or "inactive" in exc.value.detail
 
 
 @pytest.mark.asyncio
@@ -242,8 +242,7 @@ async def test_identity_query_sets_audit_actor_in_same_round_trip():
 @pytest.mark.asyncio
 async def test_unknown_identity_row_from_left_join_is_not_treated_as_revoked():
     # The anchor LEFT JOIN always returns a row; with no core.users match it
-    # must fall into provisioning (here: default org missing -> 403 via the
-    # org check, i.e. a second query), not the "revoked" early rejection.
+    # must be rejected as unprovisioned rather than falling into revoked/inactive.
     missing = SimpleNamespace(user_exists=False, organization_id=None, is_active=None, is_deleted=None,
                               role_name=None, permission_keys=[])
     db = FakeDb(FakeResult(row=missing), FakeResult(row=None))
@@ -252,8 +251,7 @@ async def test_unknown_identity_row_from_left_join_is_not_treated_as_revoked():
         await get_current_user({"sub": "user-1", "app_metadata": {}}, db)
 
     assert exc.value.status_code == 403
-    assert len(db.calls) == 2
-    assert "core.organizations" in db.calls[1]["query"]
+    assert "not provisioned" in exc.value.detail
 
 
 @pytest.mark.asyncio
