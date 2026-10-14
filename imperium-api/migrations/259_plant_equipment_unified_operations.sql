@@ -46,6 +46,7 @@ ALTER TABLE fleet.external_hire_agreements
 
 -- --- 3. Asset register telematics & maintenance fields ---
 ALTER TABLE fleet.fleet
+    ADD COLUMN IF NOT EXISTS assigned_to_user_id UUID REFERENCES core.users(id),
     ADD COLUMN IF NOT EXISTS telematics_provider VARCHAR(60),
     ADD COLUMN IF NOT EXISTS telematics_device_id VARCHAR(120),
     ADD COLUMN IF NOT EXISTS telematics_last_sync TIMESTAMPTZ,
@@ -57,6 +58,9 @@ ALTER TABLE fleet.fleet
     ADD COLUMN IF NOT EXISTS benchmark_litres_per_km NUMERIC(10,2) CHECK (benchmark_litres_per_km IS NULL OR benchmark_litres_per_km >= 0),
     ADD COLUMN IF NOT EXISTS depreciation_method VARCHAR(30) NOT NULL DEFAULT 'straight_line',
     ADD COLUMN IF NOT EXISTS salvage_value NUMERIC(15,2) NOT NULL DEFAULT 0 CHECK (salvage_value >= 0);
+
+CREATE INDEX IF NOT EXISTS ix_fleet_assigned_to_user_id
+    ON fleet.fleet (assigned_to_user_id);
 
 -- --- 4. Permissions ---
 INSERT INTO core.permissions (key, description) VALUES
