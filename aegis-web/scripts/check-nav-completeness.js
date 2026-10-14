@@ -16,6 +16,12 @@ const ALLOWLIST = new Set([
   "/dashboard", // redirects straight to /dashboard/executive
   "/dashboard/crm/quotations", // legacy redirect stub -> /dashboard/quotations
   "/dashboard/assets", // legacy and canonical assets stub -> /dashboard/fleet
+  "/dashboard/finance/cash-accounts", // legacy stub
+  "/dashboard/projects/assign", // replaced by dedicated /dashboard/projects/[id]/team
+  "/dashboard/projects/controls", // replaced by dedicated /dashboard/projects/[id]/controls
+  "/dashboard/projects/dashboard", // replaced by dedicated /dashboard/projects/[id]
+  "/dashboard/projects/documents", // replaced by dedicated /dashboard/projects/[id]/documents
+  "/dashboard/projects/team", // replaced by dedicated /dashboard/projects/[id]/team
 ]);
 
 

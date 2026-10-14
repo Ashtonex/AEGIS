@@ -24,7 +24,7 @@ from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.sequences import next_reference
-from routers.site_day import ensure_site_day_started, harare_today
+from routers.site_day import ensure_site_day_started, harare_today, sync_attendance_to_daily_report
 from app.shared.sql import (
     safe_payload_columns,
     tenant_child_rows_by_parent_sql,
@@ -82,7 +82,11 @@ class DailyReportUpdate(Payload):
 
 
 class LabourLine(Payload):
-    employee_id: UUID
+    employee_id: Optional[UUID] = None
+    site_worker_id: Optional[UUID] = None
+    worker_name: Optional[str] = None
+    worker_kind: Literal["employee", "project_hire"] = "employee"
+    attendance_id: Optional[UUID] = None
     role_on_site: Optional[str] = Field(default=None, max_length=120)
     regular_hours: Decimal = Field(
         default=Decimal("0"), ge=0, le=24, max_digits=5, decimal_places=2
@@ -99,6 +103,8 @@ class LabourLine(Payload):
     def requires_hours(self):
         if self.regular_hours + self.overtime_hours <= 0:
             raise ValueError("labour line requires worked hours")
+        if not self.employee_id and not self.site_worker_id and not (self.worker_name or "").strip():
+            raise ValueError("labour line requires an employee, project hire, or worker name")
         return self
 
 
@@ -146,7 +152,10 @@ class SiteMaterialRequest(Payload):
     project_id: UUID
     site_id: Optional[UUID] = None
     store_id: Optional[UUID] = None
-    item_id: UUID
+    item_id: Optional[UUID] = None
+    material_description: Optional[str] = Field(default=None, max_length=255)
+    specifications: Optional[str] = None
+    unit_of_measure: str = Field(default="each", max_length=40)
     weekly_budget_item_id: Optional[UUID] = None
     variance_id: Optional[UUID] = None
     quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
@@ -422,16 +431,19 @@ async def process_verified_material_request(
             "purchase_requisition_id": str(request_row["purchase_requisition_id"]) if request_row.get("purchase_requisition_id") else None,
         }
 
-    item = await inventory_item(db, request_row["item_id"], user["org_id"])
-    available_stock = await inventory_service.stock_balance(
-        db,
-        org_id=user["org_id"],
-        item_id=request_row["item_id"],
-        store_id=request_row.get("store_id"),
-    )
+    item = None
+    available_stock = Decimal("0")
+    if request_row.get("item_id"):
+        item = await inventory_item(db, request_row["item_id"], user["org_id"])
+        available_stock = await inventory_service.stock_balance(
+            db,
+            org_id=user["org_id"],
+            item_id=request_row["item_id"],
+            store_id=request_row.get("store_id"),
+        )
     requested_quantity = Decimal(str(request_row["requested_quantity"]))
     unit_cost = Decimal(str(request_row.get("unit_cost") or 0))
-    issue_qty = min(requested_quantity, max(available_stock, Decimal("0")))
+    issue_qty = min(requested_quantity, max(available_stock, Decimal("0"))) if request_row.get("item_id") else Decimal("0")
     shortfall_qty = requested_quantity - issue_qty
     status_value = (
         "fulfilled_from_stock"
@@ -527,10 +539,10 @@ async def process_verified_material_request(
             {
                 "org_id": user["org_id"],
                 "requisition_id": requisition_id,
-                "item_id": request_row["item_id"],
-                "description": item.get("item_name") or item.get("item_code") or "Site material shortfall",
+                "item_id": request_row.get("item_id"),
+                "description": (item.get("item_name") if item else None) or request_row.get("material_description") or (item.get("item_code") if item else None) or "Site material shortfall",
                 "quantity": shortfall_qty,
-                "uom": item.get("unit_of_measure") or "each",
+                "uom": (item.get("unit_of_measure") if item else None) or request_row.get("unit_of_measure") or "each",
                 "unit_cost": unit_cost,
                 "work_package": request_row.get("work_package"),
                 "notes": f"Generated from engineer-verified material request {request_row['request_number']}",
@@ -947,7 +959,75 @@ async def request_site_material(
     weekly_budget_id = await ensure_current_weekly_budget(
         db, org_id=user["org_id"], project_id=payload.project_id, site_id=payload.site_id
     )
-    await inventory_item(db, payload.item_id, user["org_id"])
+    if not payload.item_id and not (payload.material_description and payload.material_description.strip()):
+        raise HTTPException(status_code=422, detail="Either item_id or material_description is required.")
+
+    resolved_item_id = payload.item_id
+    candidate_id: Optional[UUID] = None
+    match_type = "catalogue_match"
+    material_desc = (payload.material_description or "").strip()
+    uom = payload.unit_of_measure or "each"
+
+    if resolved_item_id:
+        item = await inventory_item(db, resolved_item_id, user["org_id"])
+        if not material_desc:
+            material_desc = item.get("item_name") or item.get("item_code") or "Material"
+        uom = payload.unit_of_measure or item.get("unit_of_measure") or "each"
+        match_type = "catalogue_match"
+    else:
+        matched_cat = (
+            await db.execute(
+                text("""
+                SELECT id, item_name, unit_of_measure, standard_cost
+                FROM procurement.inventory_items
+                WHERE organization_id=:org_id AND LOWER(TRIM(item_name))=LOWER(TRIM(:name)) AND is_deleted=false
+                LIMIT 1
+            """),
+                {"org_id": user["org_id"], "name": material_desc},
+            )
+        ).mappings().first()
+        if matched_cat:
+            resolved_item_id = matched_cat["id"]
+            uom = payload.unit_of_measure or matched_cat.get("unit_of_measure") or "each"
+            match_type = "catalogue_match"
+        else:
+            norm_key = material_desc.lower().strip()
+            existing_candidate = (
+                await db.execute(
+                    text("""
+                    SELECT id FROM procurement.material_candidates
+                    WHERE organization_id=:org_id AND normalized_key=:norm_key AND is_deleted=false
+                    LIMIT 1
+                """),
+                    {"org_id": user["org_id"], "norm_key": norm_key},
+                )
+            ).mappings().first()
+            if existing_candidate:
+                candidate_id = existing_candidate["id"]
+            else:
+                candidate_id = (
+                    await db.execute(
+                        text("""
+                        INSERT INTO procurement.material_candidates (
+                            organization_id, raw_description, specifications, unit_of_measure,
+                            normalized_key, status, created_by
+                        ) VALUES (
+                            :org_id, :raw_desc, :specs, :uom,
+                            :norm_key, 'provisional', :user_id
+                        ) RETURNING id
+                    """),
+                        {
+                            "org_id": user["org_id"],
+                            "raw_desc": material_desc,
+                            "specs": payload.specifications,
+                            "uom": uom,
+                            "norm_key": norm_key,
+                            "user_id": user["user_id"],
+                        },
+                    )
+                ).scalar()
+            match_type = "new_description"
+
     linked_weekly_item: Optional[dict[str, Any]] = None
     if payload.weekly_budget_item_id:
         linked = (
@@ -983,12 +1063,14 @@ async def request_site_material(
             text("""
         INSERT INTO procurement.material_requests (
             organization_id, request_number, project_id, site_id, store_id, item_id,
+            material_description, specifications, unit_of_measure, candidate_id, match_type,
             requested_by, requested_quantity, issued_quantity, shortfall_quantity,
             unit_cost, total_estimated, required_by_date, priority, status,
             work_package, justification, created_by, is_price_confirmed, weekly_budget_id,
             weekly_budget_item_id, boq_line_item_id, variance_id, engineer_review_status
         ) VALUES (
             :org_id, :request_number, :project_id, :site_id, :store_id, :item_id,
+            :material_description, :specifications, :unit_of_measure, CAST(:candidate_id AS uuid), :match_type,
             :user_id, :requested_quantity, :issued_quantity, :shortfall_quantity,
             :unit_cost, :total_estimated, :required_by_date, :priority, :status,
             :work_package, :justification, :user_id, :is_price_confirmed, :weekly_budget_id,
@@ -1001,7 +1083,12 @@ async def request_site_material(
                 "project_id": payload.project_id,
                 "site_id": payload.site_id,
                 "store_id": payload.store_id,
-                "item_id": payload.item_id,
+                "item_id": resolved_item_id,
+                "material_description": material_desc,
+                "specifications": payload.specifications,
+                "unit_of_measure": uom,
+                "candidate_id": str(candidate_id) if candidate_id else None,
+                "match_type": match_type,
                 "user_id": user["user_id"],
                 "requested_quantity": payload.quantity,
                 "issued_quantity": Decimal("0"),
@@ -1022,6 +1109,16 @@ async def request_site_material(
         )
     ).scalar()
 
+    if candidate_id:
+        await db.execute(
+            text("""
+            UPDATE procurement.material_candidates
+            SET request_id=:request_id, updated_at=NOW()
+            WHERE id=:candidate_id AND organization_id=:org_id
+        """),
+            {"request_id": material_request_id, "candidate_id": candidate_id, "org_id": user["org_id"]},
+        )
+
     await emit_event(
         db,
         user=user,
@@ -1033,6 +1130,7 @@ async def request_site_material(
             "request_number": request_number,
             "requested_quantity": str(payload.quantity),
             "engineer_review_status": "pending",
+            "match_type": match_type,
         },
     )
     await emit_role_notification(
@@ -1050,6 +1148,9 @@ async def request_site_material(
             "request_number": request_number,
             "status": "awaiting_engineer_review",
             "engineer_review_status": "pending",
+            "match_type": match_type,
+            "candidate_id": str(candidate_id) if candidate_id else None,
+            "material_description": material_desc,
         },
         "Site material request recorded for Site Engineer sign-off.",
     )
@@ -1166,6 +1267,157 @@ async def decide_site_material_request_engineer(
     return result(processed, f"Material request {payload.decision} by Site Engineer.")
 
 
+@router.get("/materials/suggest")
+async def suggest_materials(
+    q: str = Query(..., min_length=1),
+    store_id: Optional[UUID] = Query(default=None),
+    user: dict = Depends(require_permission("site_operations.material.request")),
+    db: AsyncSession = Depends(get_db),
+):
+    query_pattern = f"%{q.strip()}%"
+    cat_rows = await db.execute(
+        text("""
+        SELECT i.id, i.item_name, i.item_code, i.unit_of_measure, i.standard_cost,
+               COALESCE((
+                   SELECT SUM(sl.quantity)
+                   FROM procurement.stock_ledger sl
+                   WHERE sl.organization_id=i.organization_id AND sl.item_id=i.id
+                     AND (CAST(:store_id AS uuid) IS NULL OR sl.store_id=CAST(:store_id AS uuid))
+               ), 0) AS stock_balance
+        FROM procurement.inventory_items i
+        WHERE i.organization_id=:org_id AND i.is_deleted=false
+          AND (i.item_name ILIKE :q OR i.item_code ILIKE :q)
+        ORDER BY i.item_name
+        LIMIT 10
+    """),
+        {"org_id": user["org_id"], "q": query_pattern, "store_id": store_id},
+    )
+    catalogue_matches = [
+        {
+            "id": str(r["id"]),
+            "name": r["item_name"],
+            "code": r["item_code"],
+            "unit_of_measure": r["unit_of_measure"] or "each",
+            "standard_cost": float(r["standard_cost"] or 0),
+            "stock_balance": float(r["stock_balance"] or 0),
+            "type": "catalogue",
+        }
+        for r in cat_rows.mappings().all()
+    ]
+
+    cand_rows = await db.execute(
+        text("""
+        SELECT id, raw_description, specifications, unit_of_measure, status, canonical_item_id
+        FROM procurement.material_candidates
+        WHERE organization_id=:org_id AND is_deleted=false
+          AND raw_description ILIKE :q
+        ORDER BY created_at DESC
+        LIMIT 5
+    """),
+        {"org_id": user["org_id"], "q": query_pattern},
+    )
+    candidate_matches = [
+        {
+            "id": str(r["id"]),
+            "name": r["raw_description"],
+            "specifications": r["specifications"],
+            "unit_of_measure": r["unit_of_measure"] or "each",
+            "status": r["status"],
+            "type": "candidate",
+        }
+        for r in cand_rows.mappings().all()
+    ]
+
+    return result(
+        {"catalogue": catalogue_matches, "candidates": candidate_matches},
+        "Material suggestions retrieved.",
+        len(catalogue_matches) + len(candidate_matches),
+    )
+
+
+class PromoteCandidatePayload(Payload):
+    category: Optional[str] = Field(default="General Building Materials", max_length=80)
+    standard_cost: Optional[Decimal] = Field(default=Decimal("0"), ge=0)
+    notes: Optional[str] = None
+
+
+@router.post("/materials/candidates/{candidate_id}/promote")
+async def promote_material_candidate(
+    candidate_id: UUID,
+    payload: PromoteCandidatePayload,
+    user: dict = Depends(require_permission("site_operations.engineer_verify")),
+    db: AsyncSession = Depends(get_db),
+):
+    candidate = (
+        await db.execute(
+            text("""
+            SELECT * FROM procurement.material_candidates
+            WHERE id=:candidate_id AND organization_id=:org_id AND is_deleted=false
+        """),
+            {"candidate_id": candidate_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Material candidate not found.")
+    if candidate["status"] == "promoted" and candidate.get("canonical_item_id"):
+        return result({"canonical_item_id": str(candidate["canonical_item_id"])}, "Candidate already promoted.")
+
+    item_code = await next_reference(db, user["org_id"], "inventory_item")
+    item_id = (
+        await db.execute(
+            text("""
+            INSERT INTO procurement.inventory_items (
+                organization_id, item_name, item_code, category, unit_of_measure,
+                standard_cost, status, created_by
+            ) VALUES (
+                :org_id, :name, :code, :category, :uom,
+                :cost, 'active', :user_id
+            ) RETURNING id
+        """),
+            {
+                "org_id": user["org_id"],
+                "name": candidate["raw_description"],
+                "code": item_code,
+                "category": payload.category or "General Building Materials",
+                "uom": candidate["unit_of_measure"] or "each",
+                "cost": payload.standard_cost or Decimal("0"),
+                "user_id": user["user_id"],
+            },
+        )
+    ).scalar()
+
+    await db.execute(
+        text("""
+        UPDATE procurement.material_candidates
+        SET status='promoted', canonical_item_id=:item_id, resolved_by=:user_id,
+            resolved_at=NOW(), notes=:notes, updated_at=NOW()
+        WHERE id=:candidate_id AND organization_id=:org_id
+    """),
+        {
+            "candidate_id": candidate_id,
+            "item_id": item_id,
+            "user_id": user["user_id"],
+            "notes": payload.notes,
+            "org_id": user["org_id"],
+        },
+    )
+
+    await db.execute(
+        text("""
+        UPDATE procurement.material_requests
+        SET item_id=:item_id, match_type='catalogue_match', updated_at=NOW()
+        WHERE candidate_id=:candidate_id AND organization_id=:org_id AND item_id IS NULL
+    """),
+        {"candidate_id": candidate_id, "item_id": item_id, "org_id": user["org_id"]},
+    )
+
+    await db.commit()
+    return result(
+        {"canonical_item_id": str(item_id), "item_code": item_code},
+        "Material candidate successfully promoted to catalogue item.",
+    )
+
+
 @router.get("/weekly-budgets")
 async def list_weekly_budgets(
     project_id: Optional[UUID] = None,
@@ -1240,8 +1492,51 @@ async def get_execution_budget(
         {"org_id": user["org_id"], "project_id": project_id},
     )
     data = [dict(row._mapping) for row in rows]
+    summary_row = (
+        await db.execute(
+            text("""
+            SELECT
+                COALESCE((
+                    SELECT SUM(committed_amount)
+                    FROM finance.commitments
+                    WHERE organization_id=:org_id AND project_id=:project_id
+                      AND status <> 'cancelled' AND is_deleted=false
+                ), 0) AS total_committed,
+                COALESCE((
+                    SELECT SUM(amount)
+                    FROM finance.cost_transactions
+                    WHERE organization_id=:org_id AND project_id=:project_id
+                ), 0) AS total_actual_cost,
+                COALESCE((
+                    SELECT SUM(amount)
+                    FROM finance.cost_transactions
+                    WHERE organization_id=:org_id AND project_id=:project_id
+                      AND cost_category='materials'
+                ), 0) AS material_actual_cost
+        """),
+            {"org_id": user["org_id"], "project_id": project_id},
+        )
+    ).mappings().first()
+
+    total_budget = Decimal(str(budget["total_amount"])) if budget else Decimal("0")
+    total_committed = Decimal(str(summary_row["total_committed"] if summary_row else 0))
+    total_actual = Decimal(str(summary_row["total_actual_cost"] if summary_row else 0))
+    material_actual = Decimal(str(summary_row["material_actual_cost"] if summary_row else 0))
+    headroom = max(Decimal("0"), total_budget - total_committed - total_actual)
+
     return result(
-        {"budget": dict(budget) if budget else None, "line_items": data},
+        {
+            "budget": dict(budget) if budget else None,
+            "line_items": data,
+            "summary": {
+                "total_budget": float(total_budget),
+                "committed_spend": float(total_committed),
+                "recognized_actual_spend": float(total_actual),
+                "material_consumed_spend": float(material_actual),
+                "forecast_headroom": float(headroom),
+                "budget_explanation": "Headroom reflects approved budget minus purchase commitments and recognized actual costs. Material consumption updates actuals without charging purchase commitments twice.",
+            },
+        },
         "Execution budget allowances loaded.",
         len(data),
     )
@@ -1874,6 +2169,19 @@ async def get_daily_report(
     db: AsyncSession = Depends(get_db),
 ):
     report = await report_or_404(db, report_id, user["org_id"], user=user)
+
+    if report.get("status") == "draft" and report.get("briefing_id"):
+        try:
+            await sync_attendance_to_daily_report(
+                db,
+                briefing_id=report["briefing_id"],
+                report_id=report_id,
+                org_id=user["org_id"],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
     tables = {
         "labour": ("projects.daily_report_labour", "created_at"),
         "equipment": ("projects.daily_report_equipment", "created_at"),
@@ -1914,6 +2222,98 @@ async def get_daily_report(
         {"report_id": report_id, "org_id": user["org_id"]},
     )
     detail["approvals"] = [dict(row._mapping) for row in approvals]
+
+    # Material Receipts (GRNs received at site on this report date)
+    receipts_rows = await db.execute(
+        text("""
+        SELECT grn.id, grn.grn_number, grn.delivery_note_ref, grn.delivery_date, grn.status,
+               s.name AS supplier_name,
+               gl.id AS line_id, gl.item_id, gl.description, gl.quantity_received, gl.unit_price,
+               i.item_code, i.unit_of_measure
+        FROM procurement.goods_received_notes grn
+        LEFT JOIN procurement.suppliers s ON s.id=grn.supplier_id AND s.organization_id=grn.organization_id
+        JOIN procurement.grn_lines gl ON gl.grn_id=grn.id AND gl.organization_id=grn.organization_id AND gl.is_deleted=false
+        LEFT JOIN procurement.inventory_items i ON i.id=gl.item_id AND i.organization_id=gl.organization_id
+        WHERE grn.organization_id=:org_id AND grn.project_id=:project_id
+          AND grn.delivery_date=:report_date AND grn.is_deleted=false
+        ORDER BY grn.created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": report["project_id"], "report_date": report["report_date"]},
+    )
+    detail["material_receipts"] = [dict(r._mapping) for r in receipts_rows]
+
+    # Material Issues & Consumption (stock movements from store to site on this date)
+    issues_rows = await db.execute(
+        text("""
+        SELECT sl.id, sl.item_id, sl.movement_type, sl.quantity, sl.unit_cost, sl.total_cost,
+               sl.reference, sl.created_at,
+               i.item_name, i.item_code, i.unit_of_measure,
+               st.name AS store_name
+        FROM procurement.stock_ledger sl
+        JOIN procurement.inventory_items i ON i.id=sl.item_id AND i.organization_id=sl.organization_id
+        LEFT JOIN procurement.stores st ON st.id=sl.store_id AND st.organization_id=sl.organization_id
+        WHERE sl.organization_id=:org_id AND sl.project_id=:project_id
+          AND sl.movement_type IN ('issue', 'consumption')
+          AND DATE(sl.created_at)=:report_date
+        ORDER BY sl.created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": report["project_id"], "report_date": report["report_date"]},
+    )
+    detail["material_issues"] = [dict(r._mapping) for r in issues_rows]
+
+    # Open / Relevant Material Requests for this project on this date
+    requests_rows = await db.execute(
+        text("""
+        SELECT mr.id, mr.request_number, mr.material_description, mr.requested_quantity,
+               mr.unit_of_measure, mr.status, mr.engineer_review_status, mr.priority,
+               i.item_name, i.item_code
+        FROM procurement.material_requests mr
+        LEFT JOIN procurement.inventory_items i ON i.id=mr.item_id AND i.organization_id=mr.organization_id
+        WHERE mr.organization_id=:org_id AND mr.project_id=:project_id
+          AND mr.is_deleted=false
+          AND (DATE(mr.created_at)=:report_date OR mr.status IN ('pending', 'requisitioned'))
+        ORDER BY mr.created_at DESC
+        LIMIT 20
+    """),
+        {"org_id": user["org_id"], "project_id": report["project_id"], "report_date": report["report_date"]},
+    )
+    detail["open_requests"] = [dict(r._mapping) for r in requests_rows]
+
+    # Safety Briefing information from Site Day Briefing
+    safety_info = None
+    if report.get("briefing_id"):
+        safety_row = (
+            await db.execute(
+                text("""
+                SELECT id, briefing_date, shift, status, weather_condition, temperature_c,
+                       toolbox_topic, toolbox_conductor, attendees_count, ppe_compliant,
+                       hazards_identified, high_risk_work, permit_to_work_required, opened_at, closed_at
+                FROM projects.site_day_briefings
+                WHERE id=:briefing_id AND organization_id=:org_id
+            """),
+                {"briefing_id": report["briefing_id"], "org_id": user["org_id"]},
+            )
+        ).mappings().first()
+        if safety_row:
+            safety_info = dict(safety_row)
+    detail["safety_briefing"] = safety_info
+
+    # Completeness calculations
+    has_labour = len(detail["labour"]) > 0 or bool(report.get("labour_count_completed"))
+    has_work = bool(report.get("actual_work") and report["actual_work"].strip())
+    has_safety = bool(safety_info or report.get("safety_notes") or report.get("toolbox_talk_completed"))
+    has_weather = bool(report.get("weather") or (safety_info and safety_info.get("weather_condition")))
+    checks = [has_labour, has_work, has_safety, has_weather]
+    completeness_pct = int((sum(1 for c in checks if c) / len(checks)) * 100)
+    detail["completeness"] = {
+        "score_percent": completeness_pct,
+        "labour_captured": has_labour,
+        "work_progress_logged": has_work,
+        "safety_checks_recorded": has_safety,
+        "weather_recorded": has_weather,
+        "is_ready_for_submission": all(checks),
+    }
+
     return result(detail, "Daily site report retrieved.")
 
 

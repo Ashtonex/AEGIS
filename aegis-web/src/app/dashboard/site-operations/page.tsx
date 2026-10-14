@@ -44,6 +44,7 @@ import {
   getWeeklySiteBudgets,
   getWorkforce,
   requestSiteMaterial,
+  suggestMaterials,
   submitDailySiteReport,
 } from "@/lib/api";
 import { LabourRegisterTab, type SiteDay } from "@/components/site-operations/LabourRegisterTab";
@@ -51,10 +52,40 @@ import { TargetsTab } from "@/components/site-operations/TargetsTab";
 import { Btn, Locked, Notice, Panel, Pill, areaClass, errorText, fieldClass, qty } from "@/components/site-operations/ui";
 
 type ApiRecord = Record<string, any> & { id: string };
-type Detail = { report: ApiRecord; labour: ApiRecord[]; equipment: ApiRecord[]; materials: ApiRecord[]; documents: ApiRecord[]; approvals: ApiRecord[] };
+type Detail = {
+  report: ApiRecord;
+  labour: ApiRecord[];
+  equipment: ApiRecord[];
+  materials: ApiRecord[];
+  documents: ApiRecord[];
+  approvals: ApiRecord[];
+  material_receipts?: ApiRecord[];
+  material_issues?: ApiRecord[];
+  open_requests?: ApiRecord[];
+  safety_briefing?: ApiRecord | null;
+  completeness?: {
+    score_percent: number;
+    labour_captured: boolean;
+    work_progress_logged: boolean;
+    safety_checks_recorded: boolean;
+    weather_recorded: boolean;
+    is_ready_for_submission: boolean;
+  };
+};
 type TabKey = "register" | "report" | "materials" | "targets";
 
-const EMPTY_DETAIL: Detail = { report: {} as ApiRecord, labour: [], equipment: [], materials: [], documents: [], approvals: [] };
+const EMPTY_DETAIL: Detail = {
+  report: {} as ApiRecord,
+  labour: [],
+  equipment: [],
+  materials: [],
+  documents: [],
+  approvals: [],
+  material_receipts: [],
+  material_issues: [],
+  open_requests: [],
+  safety_briefing: null,
+};
 
 function harareToday() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Harare" }).format(new Date());
@@ -152,7 +183,70 @@ function SiteOperationsWorkspace() {
   const [labour, setLabour] = useState({ employee_id: "", role_on_site: "", regular_hours: "8", overtime_hours: "0", cost_rate: "0", notes: "" });
   const [equipment, setEquipment] = useState({ fleet_id: "", operator_employee_id: "", operating_hours: "0", idle_hours: "0", fuel_litres: "0", cost_rate: "0", notes: "" });
   const [material, setMaterial] = useState({ item_id: "", store_id: "", quantity_used: "0", unit_cost: "0", wastage_quantity: "0", work_package: "", notes: "" });
-  const [materialRequest, setMaterialRequest] = useState({ item_id: "", store_id: "", quantity: "1", unit_cost: "0", required_by_date: harareToday(), priority: "normal", work_package: "", justification: "", weekly_budget_item_id: "" });
+  const [materialRequest, setMaterialRequest] = useState({
+    item_id: "",
+    material_description: "",
+    specifications: "",
+    unit_of_measure: "each",
+    store_id: "",
+    quantity: "1",
+    unit_cost: "0",
+    required_by_date: harareToday(),
+    priority: "normal",
+    work_package: "",
+    justification: "",
+    weekly_budget_item_id: "",
+  });
+  const [materialSearch, setMaterialSearch] = useState("");
+  const [suggestions, setSuggestions] = useState<{ catalogue: any[]; candidates: any[] }>({ catalogue: [], candidates: [] });
+  const [searchingMaterials, setSearchingMaterials] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  const handleMaterialSearch = async (val: string) => {
+    setMaterialSearch(val);
+    setMaterialRequest((m) => ({ ...m, material_description: val, item_id: "" }));
+    if (val.trim().length >= 2) {
+      setSearchingMaterials(true);
+      try {
+        const res = await suggestMaterials(val.trim(), materialRequest.store_id || undefined);
+        if (res.data) {
+          setSuggestions(res.data);
+          setShowSuggestions(true);
+        }
+      } catch {
+        // ignore
+      } finally {
+        setSearchingMaterials(false);
+      }
+    } else {
+      setSuggestions({ catalogue: [], candidates: [] });
+      setShowSuggestions(false);
+    }
+  };
+
+  const selectCatalogueItem = (item: any) => {
+    setMaterialRequest((m) => ({
+      ...m,
+      item_id: item.id,
+      material_description: item.name,
+      unit_of_measure: item.unit_of_measure || "each",
+      unit_cost: item.standard_cost ? String(item.standard_cost) : m.unit_cost,
+    }));
+    setMaterialSearch(item.name);
+    setShowSuggestions(false);
+  };
+
+  const selectCandidateItem = (cand: any) => {
+    setMaterialRequest((m) => ({
+      ...m,
+      item_id: cand.canonical_item_id || "",
+      material_description: cand.name,
+      specifications: cand.specifications || "",
+      unit_of_measure: cand.unit_of_measure || "each",
+    }));
+    setMaterialSearch(cand.name);
+    setShowSuggestions(false);
+  };
 
   // Deep links from Teams cards: ?tab=targets&project=…&date=…
   useEffect(() => {
@@ -329,7 +423,8 @@ function SiteOperationsWorkspace() {
 
   const submitMaterialRequest = async () => {
     if (!projectId) { setNotice({ tone: "error", text: "Select a project before requesting site materials." }); return; }
-    if (!materialRequest.item_id) { setNotice({ tone: "error", text: "Select an inventory item before requesting site materials." }); return; }
+    const desc = (materialRequest.material_description || materialSearch || "").trim();
+    if (!materialRequest.item_id && !desc) { setNotice({ tone: "error", text: "Enter or select a material description before requesting site materials." }); return; }
     setSaving("material-request");
     try {
       // CCB Commercial Guard audit; continue if the audit service is unreachable.
@@ -337,7 +432,7 @@ function SiteOperationsWorkspace() {
         await auditSiteRequest({
           requester_name: "Site Supervisor",
           document_type: "SITE_MATERIAL_REQUEST",
-          item: materialRequest.work_package || "Site Material Request",
+          item: materialRequest.work_package || desc || "Site Material Request",
           requested_quantity: Number(materialRequest.quantity),
           earned_quantity: Number(materialRequest.quantity) * 0.65,
           unit_rate: Number(materialRequest.unit_cost),
@@ -348,7 +443,10 @@ function SiteOperationsWorkspace() {
       }
       const response = await requestSiteMaterial({
         project_id: projectId,
-        item_id: materialRequest.item_id,
+        item_id: materialRequest.item_id || null,
+        material_description: desc || null,
+        specifications: materialRequest.specifications || null,
+        unit_of_measure: materialRequest.unit_of_measure || "each",
         store_id: materialRequest.store_id || null,
         quantity: Number(materialRequest.quantity),
         unit_cost: Number(materialRequest.unit_cost),
@@ -363,7 +461,8 @@ function SiteOperationsWorkspace() {
       const issued = data.issued_quantity ?? "0";
       const shortfall = data.shortfall_quantity ?? "0";
       setNotice({ tone: "success", text: `Material request ${text(data.request_number, "")} processed. Issued ${issued}; shortfall ${shortfall}${data.purchase_requisition_number ? `; PR ${data.purchase_requisition_number} raised for approval.` : "."}` });
-      setMaterialRequest((m) => ({ ...m, item_id: "", quantity: "1", justification: "", work_package: "" }));
+      setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", justification: "", work_package: "" }));
+      setMaterialSearch("");
       await load();
     } catch (reason) {
       setNotice({ tone: "error", text: errorText(reason, "Material request failed.") });
@@ -557,14 +656,96 @@ function SiteOperationsWorkspace() {
           <Panel title="Site material request" subtitle="Checks stock first. Available stock is issued and costed to the project; any shortfall becomes a procurement requisition for approval."
             actions={<span className="border border-signal/30 bg-signal/10 px-2 py-1 font-mono text-[10px] uppercase text-signal">Scenario A bridge</span>}>
             <div className="grid gap-3 md:grid-cols-2">
-              <label className="text-xs text-slate-light md:col-span-2">Item
-                <select value={materialRequest.item_id} onChange={(event) => { const item = inventoryItems.find((i) => i.id === event.target.value); setMaterialRequest({ ...materialRequest, item_id: event.target.value, unit_cost: item?.unit_cost != null ? String(item.unit_cost) : materialRequest.unit_cost }); }} className={`${fieldClass} mt-1`}>
-                  <option value="">Choose an inventory item</option>
-                  {inventoryItems.map((item) => <option key={item.id} value={item.id}>{text(item.item_name ?? item.name, item.id)}{item.stock_quantity !== undefined ? ` · ${qty(item.stock_quantity)} in stock` : ""}</option>)}
-                </select>
+              <div className="relative md:col-span-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-slate-light">Material Description / Catalogue Item</label>
+                  {materialRequest.item_id ? (
+                    <span className="flex items-center gap-1.5 text-[11px] text-emerald-300">
+                      <CheckCircle2 className="h-3 w-3" /> Catalogue match
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMaterialRequest((m) => ({ ...m, item_id: "" }));
+                        }}
+                        className="ml-1 text-slate hover:text-paper underline"
+                      >
+                        (use custom text)
+                      </button>
+                    </span>
+                  ) : materialSearch.trim() ? (
+                    <span className="text-[11px] text-amber-300">Provisional unlisted candidate</span>
+                  ) : null}
+                </div>
+                <div className="relative mt-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate" />
+                  <input
+                    value={materialSearch}
+                    onChange={(e) => void handleMaterialSearch(e.target.value)}
+                    onFocus={() => {
+                      if (suggestions.catalogue.length || suggestions.candidates.length) setShowSuggestions(true);
+                    }}
+                    placeholder="Type what you need (e.g. 50kg PPC Cement, 20mm aggregate)..."
+                    className={`${fieldClass} pl-9`}
+                  />
+                  {searchingMaterials ? (
+                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-signal" />
+                  ) : null}
+                </div>
+
+                {showSuggestions && (suggestions.catalogue.length > 0 || suggestions.candidates.length > 0) ? (
+                  <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-60 overflow-y-auto border border-ink-mid bg-ink-light p-2 shadow-2xl">
+                    {suggestions.catalogue.length > 0 ? (
+                      <div className="mb-2">
+                        <p className="px-2 py-1 font-mono text-[10px] uppercase text-signal">Catalogue Items</p>
+                        {suggestions.catalogue.map((cat: any) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => selectCatalogueItem(cat)}
+                            className="flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-ink"
+                          >
+                            <div>
+                              <p className="font-medium text-paper">{cat.name}</p>
+                              <p className="text-[10px] text-slate-light">{cat.code} · ${cat.standard_cost} · {cat.unit_of_measure}</p>
+                            </div>
+                            <span className="font-mono text-[11px] text-emerald-400">
+                              {cat.stock_balance > 0 ? `${cat.stock_balance} in store` : "0 stock"}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {suggestions.candidates.length > 0 ? (
+                      <div>
+                        <p className="px-2 py-1 font-mono text-[10px] uppercase text-amber-400">Recent Candidate Descriptions</p>
+                        {suggestions.candidates.map((cand: any) => (
+                          <button
+                            key={cand.id}
+                            type="button"
+                            onClick={() => selectCandidateItem(cand)}
+                            className="flex w-full items-center justify-between px-2 py-1.5 text-left text-xs hover:bg-ink"
+                          >
+                            <div>
+                              <p className="font-medium text-paper">{cand.name}</p>
+                              <p className="text-[10px] text-slate-light">{cand.specifications || "Uncatalogued candidate"}</p>
+                            </div>
+                            <Pill tone="amber">candidate</Pill>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+
+              <label className="text-xs text-slate-light md:col-span-2">Specifications / Brand / Standard (Optional)
+                <input value={materialRequest.specifications} onChange={(event) => setMaterialRequest({ ...materialRequest, specifications: event.target.value })} placeholder="e.g. Grade 42.5R, Class A, Galvanized" className={`${fieldClass} mt-1`} />
               </label>
               <label className="text-xs text-slate-light">Quantity
                 <input type="number" min="0" step="any" value={materialRequest.quantity} onChange={(event) => setMaterialRequest({ ...materialRequest, quantity: event.target.value })} className={`${fieldClass} mt-1`} />
+              </label>
+              <label className="text-xs text-slate-light">Unit of Measure
+                <input value={materialRequest.unit_of_measure} onChange={(event) => setMaterialRequest({ ...materialRequest, unit_of_measure: event.target.value })} placeholder="each, bags, m, tonnes" className={`${fieldClass} mt-1`} />
               </label>
               <label className="text-xs text-slate-light">Unit cost ($)
                 <input type="number" min="0" step="any" value={materialRequest.unit_cost} onChange={(event) => setMaterialRequest({ ...materialRequest, unit_cost: event.target.value })} className={`${fieldClass} mt-1`} />
@@ -670,11 +851,131 @@ function ReportDrawer({ report, detail, loading, employees, fleet, inventoryItem
         </header>
         {loading ? <LoadingBlock label="Loading report detail" /> : (
           <div className="space-y-5 p-5">
+            {detail?.completeness ? (
+              <div className="border border-ink-mid bg-ink-light/20 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs uppercase tracking-wider text-slate-light">Report Readiness</span>
+                  <span className="font-mono text-sm font-semibold text-paper">{detail.completeness.score_percent}%</span>
+                </div>
+                <div className="mt-2 h-1.5 w-full bg-ink-mid overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-300 ${detail.completeness.score_percent >= 100 ? "bg-emerald-500" : detail.completeness.score_percent >= 50 ? "bg-signal" : "bg-amber-500"}`}
+                    style={{ width: `${detail.completeness.score_percent}%` }}
+                  />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                  <span className={`flex items-center gap-1.5 ${detail.completeness.labour_captured ? "text-emerald-300" : "text-slate"}`}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Labour register synced
+                  </span>
+                  <span className={`flex items-center gap-1.5 ${detail.completeness.work_progress_logged ? "text-emerald-300" : "text-slate"}`}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Work progress logged
+                  </span>
+                  <span className={`flex items-center gap-1.5 ${detail.completeness.safety_checks_recorded ? "text-emerald-300" : "text-slate"}`}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Safety & toolbox
+                  </span>
+                  <span className={`flex items-center gap-1.5 ${detail.completeness.weather_recorded ? "text-emerald-300" : "text-slate"}`}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Weather recorded
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
             <section className="grid gap-4 lg:grid-cols-3">
               <EvidenceCard icon={<Users />} label="Labour lines" count={detail?.labour.length ?? 0} />
               <EvidenceCard icon={<Truck />} label="Equipment lines" count={detail?.equipment.length ?? 0} />
               <EvidenceCard icon={<PackageCheck />} label="Material lines" count={detail?.materials.length ?? 0} />
             </section>
+
+            {detail?.labour.length ? (
+              <section className="border border-ink-mid p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-mono text-xs uppercase tracking-widest text-paper">Labour Register ({detail.labour.length} attendees)</h3>
+                  <span className="text-[10px] font-mono text-emerald-300 uppercase">Live synced from morning register</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-ink-mid text-slate">
+                      <tr>
+                        <th className="pb-2 font-mono uppercase">Worker</th>
+                        <th className="pb-2 font-mono uppercase">Role</th>
+                        <th className="pb-2 font-mono uppercase">Type</th>
+                        <th className="pb-2 font-mono uppercase text-right">Regular</th>
+                        <th className="pb-2 font-mono uppercase text-right">Overtime</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-ink-mid/50 text-paper">
+                      {detail.labour.map((l: any) => (
+                        <tr key={l.id} className="hover:bg-ink-light/20">
+                          <td className="py-2 font-medium">{l.worker_name || l.employee_name || "Worker"}</td>
+                          <td className="py-2 text-slate-light">{l.role_on_site || "-"}</td>
+                          <td className="py-2"><Pill tone={l.worker_kind === "project_hire" ? "gold" : "slate"}>{l.worker_kind || "employee"}</Pill></td>
+                          <td className="py-2 text-right font-mono">{l.regular_hours}h</td>
+                          <td className="py-2 text-right font-mono text-signal">{Number(l.overtime_hours) > 0 ? `+${l.overtime_hours}h` : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
+
+            <section className="grid gap-4 lg:grid-cols-2">
+              <div className="border border-ink-mid p-4">
+                <h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">Site Goods Receipts ({detail?.material_receipts?.length ?? 0})</h3>
+                {!detail?.material_receipts?.length ? (
+                  <p className="text-sm text-slate-light">No deliveries confirmed on site today.</p>
+                ) : (
+                  <ul className="divide-y divide-ink-mid/50 text-xs">
+                    {detail.material_receipts.map((grn: any) => (
+                      <li key={grn.line_id || grn.id} className="py-2 flex items-start justify-between">
+                        <div>
+                          <p className="font-medium text-paper">{grn.description}</p>
+                          <p className="text-[11px] text-slate-light">{grn.grn_number} · {grn.supplier_name || "Supplier"}</p>
+                        </div>
+                        <span className="font-mono text-emerald-300">+{grn.quantity_received} {grn.unit_of_measure || "each"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="border border-ink-mid p-4">
+                <h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">Store Issues / Consumed ({detail?.material_issues?.length ?? 0})</h3>
+                {!detail?.material_issues?.length ? (
+                  <p className="text-sm text-slate-light">No store issues recorded for this site today.</p>
+                ) : (
+                  <ul className="divide-y divide-ink-mid/50 text-xs">
+                    {detail.material_issues.map((iss: any) => (
+                      <li key={iss.id} className="py-2 flex items-start justify-between">
+                        <div>
+                          <p className="font-medium text-paper">{iss.item_name || iss.item_code}</p>
+                          <p className="text-[11px] text-slate-light">{iss.store_name || "Store"} · ref {iss.reference || "-"}</p>
+                        </div>
+                        <span className="font-mono text-signal">-{Math.abs(iss.quantity)} {iss.unit_of_measure || "each"}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+
+            {detail?.safety_briefing ? (
+              <section className="border border-ink-mid p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-mono text-xs uppercase tracking-widest text-paper">Morning Safety & Toolbox Briefing</h3>
+                  <Pill tone={detail.safety_briefing.ppe_compliant ? "green" : "amber"}>
+                    {detail.safety_briefing.ppe_compliant ? "PPE 100% Compliant" : "PPE Check Pending"}
+                  </Pill>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 text-xs text-slate-light">
+                  <p><b className="text-paper">Toolbox Topic:</b> {detail.safety_briefing.toolbox_topic || "Standard Safety Protocol"}</p>
+                  <p><b className="text-paper">Conductor:</b> {detail.safety_briefing.toolbox_conductor || "Foreman / Engineer"}</p>
+                  {detail.safety_briefing.hazards_identified ? (
+                    <p className="sm:col-span-2 text-amber-300"><b className="text-paper">Hazards Noted:</b> {detail.safety_briefing.hazards_identified}</p>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
             <section className="border border-ink-mid p-4"><h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">Site narrative</h3><p className="whitespace-pre-line text-sm text-slate-light">{text(active.actual_work, "No actual work summary recorded.")}</p></section>
             {isDraft ? (
               <section className="grid gap-4 xl:grid-cols-3">

@@ -539,6 +539,8 @@ export async function decideProjectRegistration(projectId: string, decision: 'ap
   });
 }
 
+export type { PreMobilisationCheck, CommercialReadiness } from "../projects/types";
+
 export type ProjectBudgetUploadLine = {
   cost_code: string;
   description: string;
@@ -1248,6 +1250,23 @@ export async function requestSiteMaterial(payload: Record<string, unknown>): Pro
   });
 }
 
+export async function suggestMaterials(q: string, storeId?: string): Promise<ApiResponse<{ catalogue: any[]; candidates: any[] }>> {
+  const search = new URLSearchParams({ q });
+  if (storeId) search.set('store_id', storeId);
+  return fetchApi<ApiResponse<{ catalogue: any[]; candidates: any[] }>>(`/api/v1/site-operations/materials/suggest?${search.toString()}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function promoteMaterialCandidate(candidateId: string, payload: { category?: string; standard_cost?: number; notes?: string }): Promise<ApiResponse<{ canonical_item_id: string; item_code: string }>> {
+  return fetchApi<ApiResponse<{ canonical_item_id: string; item_code: string }>>(`/api/v1/site-operations/materials/candidates/${candidateId}/promote`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getSiteMaterialRequests(params?: { projectId?: string; engineerStatus?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.projectId) search.set('project_id', params.projectId);
@@ -1272,8 +1291,8 @@ export async function getWeeklySiteBudgets(params?: { projectId?: string; status
   return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/weekly-budgets${query}`, { cache: 'no-store', allowFallback: false });
 }
 
-export async function getExecutionBudget(projectId: string): Promise<ApiResponse<{ budget: any; line_items: any[] }>> {
-  return fetchApi<ApiResponse<{ budget: any; line_items: any[] }>>(`/api/v1/site-operations/projects/${projectId}/execution-budget`, { cache: 'no-store', allowFallback: false });
+export async function getExecutionBudget(projectId: string): Promise<ApiResponse<{ budget: any; line_items: any[]; summary?: any }>> {
+  return fetchApi<ApiResponse<{ budget: any; line_items: any[]; summary?: any }>>(`/api/v1/site-operations/projects/${projectId}/execution-budget`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function createWeeklySiteBudget(payload: Record<string, unknown>): Promise<ApiResponse<any>> {

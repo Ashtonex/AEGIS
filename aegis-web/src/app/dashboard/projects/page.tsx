@@ -3,7 +3,7 @@
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   BriefcaseBusiness,
   CalendarDays,
@@ -21,6 +21,8 @@ import {
   AlertCircle,
   Plus,
   ClipboardCheck,
+  DollarSign,
+  ArrowRight,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -204,14 +206,10 @@ function projectDetailRefs(project: Project): string[] {
 }
 
 const PROJECT_MODULE_CAPABILITIES = [
-  { title: "WBS planning", description: "Break contracts into phases, work packages, tasks and accountable owners.", icon: Layers },
-  { title: "Gantt scheduling", description: "Maintain baseline, forecast and actual milestone dates with owner tracking.", icon: CalendarDays },
-  { title: "Critical path", description: "Surface blocked, delayed and dependency-sensitive work before it hits site output.", icon: Activity },
-  { title: "Resource control", description: "Connect labour, plant, materials and subcontract packages to project cost codes.", icon: Package },
-  { title: "Dashboards", description: "Compare progress, cost, workload, missing evidence and risk from live AEGIS records.", icon: TrendingUp },
-  { title: "Approvals", description: "Gate commercial readiness, deposit confirmation and mobilisation authorisation.", icon: ShieldCheck },
-  { title: "Documents", description: "Keep drawings, BOQs, contracts, instructions, certificates and revisions attached.", icon: ClipboardCheck },
-  { title: "Audit trail", description: "Preserve system-of-record evidence for decisions, changes and exceptions.", icon: AlertCircle },
+  { title: "Portfolio Schedule", description: "Multi-project programme timelines, planned mobilisations, and cross-site milestones.", icon: CalendarDays, href: "/dashboard/projects/schedule" },
+  { title: "Commercial Financials", description: "Enterprise capital exposure, contract values, budget baselines, and delivery margins.", icon: DollarSign, href: "/dashboard/projects/financials" },
+  { title: "Materials Logistics", description: "Aggregated site supply demand, store inventory, and procurement requisitions.", icon: Package, href: "/dashboard/projects/materials" },
+  { title: "WBS & Budget Control", description: "Interactive cost code breakdown, line-item BOQs, and margin slippage simulations.", icon: Layers, href: "/dashboard/projects/financials" },
 ];
 
 const CONSTRUCTION_WORKFLOW_STEPS = [
@@ -245,17 +243,13 @@ export function ProjectsPage({ initialTab }: { initialTab: ProjectTab }) {
 
 function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
   const activeTab = initialTab;
-  // Still needed for the ?id= deep-link below (unrelated to tab routing).
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
-  const [selected, setSelected] = useState<Project | null>(null);
-  const [detail, setDetail] = useState<Detail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
   const { departments } = useFinanceDepartments();
   const [clientOrganizations, setClientOrganizations] = useState<ClientOrganization[]>([]);
   const [clientContacts, setClientContacts] = useState<ClientContact[]>([]);
@@ -301,73 +295,16 @@ function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
     void load();
   }, [load]);
 
-  const openProject = useCallback(async (project: Project) => {
-    setSelected(project); 
-    setDetail(null); 
-    setDetailError(null); 
-    setDetailLoading(true);
-    const refs = projectDetailRefs(project);
-    let lastError: unknown = null;
-    const mergeLifecycle = async (base: Detail, ref: string): Promise<Detail> => {
-      try {
-        const lifecycle = await getProjectLifecycle(ref);
-        const lifecycleData = (lifecycle.data ?? {}) as Detail;
-        return {
-          ...base,
-          ...lifecycleData,
-          project: (lifecycleData.project as Project | undefined) ?? base.project,
-        };
-      } catch {
-        return base;
-      }
-    };
-    try { 
-      for (const ref of refs) {
-        try {
-          const response = await getExecutiveProjectDetail(ref);
-          setDetail(await mergeLifecycle(response.data as Detail, ref));
-          return;
-        } catch (err) {
-          lastError = err;
-        }
-      }
-      for (const ref of refs) {
-        try {
-          const response = await getProject(ref);
-          if (response.success && response.data) {
-            const fallbackProject = response.data as unknown as Project;
-            setDetail(await mergeLifecycle({
-              project: fallbackProject,
-              viability: [],
-              tests_and_checks: [],
-              site_reports: [],
-              material_records: [],
-              quotations: [],
-              procurement_orders: [],
-              tenders: [],
-              subcontractors: []
-            }, ref));
-            return;
-          }
-        } catch (err) {
-          lastError = err;
-        }
-      }
-      throw lastError ?? new Error("Project has no usable ERP identifier.");
-    } catch (err) { 
-      setDetailError(normalizeError(err, "Detailed project evidence is unavailable for this account."));
-    } finally { 
-      setDetailLoading(false); 
-    }
-  }, [normalizeError]);
+  const openProject = useCallback((project: Project) => {
+    router.push(`/dashboard/projects/${project.id}`);
+  }, [router]);
 
   // Deep link from Tenders/Opportunities "Project Live" badges (?id=<project id>).
   useEffect(() => {
     const targetId = searchParams?.get("id");
-    if (!targetId || projects.length === 0) return;
-    const match = projects.find((p) => p.id === targetId);
-    if (match) void openProject(match);
-  }, [searchParams, projects, openProject]);
+    if (!targetId) return;
+    router.replace(`/dashboard/projects/${targetId}`);
+  }, [searchParams, router]);
 
   const metrics = useMemo(() => {
     const active = projects.filter((project) => activeStatuses.has(text(project.status, "").toLowerCase())).length;
@@ -549,31 +486,6 @@ function ProjectsWorkspace({ initialTab }: { initialTab: ProjectTab }) {
           }}
         />
       )}
-
-      {selected ? (
-        <ProjectDetail
-          project={selected}
-          initialTab={activeTab}
-          departments={departments}
-          clientOrganizations={clientOrganizations}
-          clientContacts={clientContacts}
-          onDepartmentChange={(deptId) => {
-            setSelected((prev) => (prev ? { ...prev, department_id: deptId } : prev));
-            setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, department_id: deptId } : p)));
-          }}
-          onProjectUpdated={(patch) => {
-            setSelected((prev) => (prev ? { ...prev, ...patch } : prev));
-            setProjects((prev) => prev.map((p) => (p.id === selected.id ? { ...p, ...patch } : p)));
-            setDetail((prev) => prev ? { ...prev, project: prev.project ? { ...prev.project, ...patch } : prev.project } : prev);
-          }}
-          detail={detail}
-          loading={detailLoading}
-          error={detailError}
-          onClose={() => setSelected(null)}
-          onRefresh={() => openProject(selected)}
-          onDeleted={() => { setSelected(null); void load(); }}
-        />
-      ) : null}
     </div>
   );
 }
@@ -760,11 +672,18 @@ function PortfolioCommandDashboard({
         <div className="p-4">
           <div className="grid gap-3 sm:grid-cols-2">
             {PROJECT_MODULE_CAPABILITIES.map((item) => (
-              <div key={item.title} className="border border-ink-mid bg-ink p-3">
-                <item.icon className="h-5 w-5 text-signal" />
-                <h3 className="mt-2 text-sm font-semibold text-paper">{item.title}</h3>
+              <Link
+                key={item.title}
+                href={item.href || "/dashboard/projects"}
+                className="border border-ink-mid bg-ink p-3.5 hover:border-signal hover:bg-ink-light/40 transition-colors group block"
+              >
+                <div className="flex items-center justify-between">
+                  <item.icon className="h-5 w-5 text-signal" />
+                  <ArrowRight className="h-3.5 w-3.5 text-slate group-hover:text-signal group-hover:translate-x-1 transition-transform" />
+                </div>
+                <h3 className="mt-2 text-sm font-semibold text-paper group-hover:text-signal transition-colors">{item.title}</h3>
                 <p className="mt-1 text-xs leading-5 text-slate-light">{item.description}</p>
-              </div>
+              </Link>
             ))}
           </div>
           <div className="mt-4 border border-ink-mid bg-ink p-3">

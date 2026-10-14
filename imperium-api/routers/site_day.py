@@ -246,9 +246,215 @@ async def ensure_site_day_started(db: AsyncSession, *, org_id: str, project_id: 
         )
 
 
+async def ensure_daily_report_draft(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    project_id: UUID,
+    site_id: Optional[UUID],
+    on_date: date,
+    shift: str = "day",
+    user_id: Optional[UUID] = None,
+    briefing_id: Optional[UUID] = None,
+) -> dict[str, Any]:
+    """Server-side get-or-create for daily site report draft on labour register start.
+    Ensures that opening/starting a labour register immediately starts that day's
+    daily report draft without manual user recreation."""
+    existing = (
+        await db.execute(
+            text("""
+            SELECT id, status, report_date, shift, briefing_id, auto_created
+            FROM projects.daily_site_reports
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND report_date = :on_date
+              AND shift = :shift
+              AND is_deleted = false
+            LIMIT 1
+        """),
+            {"org_id": org_id, "project_id": project_id, "on_date": on_date, "shift": shift},
+        )
+    ).mappings().first()
+
+    if existing:
+        report_id = existing["id"]
+        if briefing_id and not existing.get("briefing_id"):
+            await db.execute(
+                text("""
+                UPDATE projects.daily_site_reports
+                SET briefing_id = :briefing_id, updated_at = NOW()
+                WHERE id = :report_id AND briefing_id IS NULL
+            """),
+                {"report_id": report_id, "briefing_id": briefing_id},
+            )
+        if briefing_id:
+            await db.execute(
+                text("""
+                UPDATE projects.site_day_briefings
+                SET daily_report_id = :report_id, updated_at = NOW()
+                WHERE id = :briefing_id AND (daily_report_id IS NULL OR daily_report_id != :report_id)
+            """),
+                {"briefing_id": briefing_id, "report_id": report_id},
+            )
+        return dict(existing)
+
+    report_id = (
+        await db.execute(
+            text("""
+            INSERT INTO projects.daily_site_reports (
+                organization_id, project_id, site_id, report_date, shift, status,
+                weather, planned_work, actual_work, delays, safety_notes,
+                cost_exposure, created_by, briefing_id, auto_created,
+                labour_count_completed, toolbox_talk_completed, ppe_check_completed
+            ) VALUES (
+                CAST(:org_id AS uuid), CAST(:project_id AS uuid), CAST(:site_id AS uuid),
+                :on_date, :shift, 'draft', '{}'::jsonb, '', '', '', '', 0,
+                CAST(:user_id AS uuid), CAST(:briefing_id AS uuid), true,
+                false, false, false
+            )
+            ON CONFLICT (organization_id, project_id, report_date, shift)
+            DO UPDATE SET
+                briefing_id = COALESCE(projects.daily_site_reports.briefing_id, EXCLUDED.briefing_id),
+                updated_at = NOW()
+            RETURNING id, status, report_date, shift, briefing_id, auto_created
+        """),
+            {
+                "org_id": org_id,
+                "project_id": project_id,
+                "site_id": site_id,
+                "on_date": on_date,
+                "shift": shift,
+                "user_id": user_id,
+                "briefing_id": briefing_id,
+            },
+        )
+    ).mappings().first()
+
+    if briefing_id and report_id:
+        await db.execute(
+            text("""
+            UPDATE projects.site_day_briefings
+            SET daily_report_id = :report_id, updated_at = NOW()
+            WHERE id = :briefing_id AND organization_id = CAST(:org_id AS uuid)
+        """),
+            {"briefing_id": briefing_id, "report_id": report_id["id"], "org_id": org_id},
+        )
+
+    return dict(report_id) if report_id else {}
+
+
+async def sync_attendance_to_daily_report(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    briefing_id: UUID,
+    report_id: UUID,
+) -> None:
+    """Synchronize site_day_attendance rows into daily_report_labour for the draft report.
+    Eliminates redundant data entry by ensuring all registered workers, hours, and rates
+    appear automatically in the daily report."""
+    attendance_rows = (
+        await db.execute(
+            text("""
+            SELECT a.id, a.worker_kind, a.site_worker_id, a.employee_id, a.worker_name,
+                   a.trade, a.hourly_rate, a.regular_hours, a.overtime_hours, a.notes,
+                   COALESCE(a.regular_hours, 8) AS calc_regular_hours,
+                   COALESCE(a.overtime_hours, 0) AS calc_overtime_hours
+            FROM projects.site_day_attendance a
+            WHERE a.briefing_id = :briefing_id AND a.organization_id = CAST(:org_id AS uuid)
+        """),
+            {"briefing_id": briefing_id, "org_id": org_id},
+        )
+    ).mappings().all()
+
+    for att in attendance_rows:
+        cost_rate = Decimal(str(att["hourly_rate"] or 0))
+        reg_hours = Decimal(str(att["calc_regular_hours"] or 8))
+        ot_hours = Decimal(str(att["calc_overtime_hours"] or 0))
+        worker_name = att["worker_name"]
+        trade = att["trade"] or "Site Worker"
+        kind = att["worker_kind"] or "employee"
+
+        existing_labour = (
+            await db.execute(
+                text("""
+                SELECT id FROM projects.daily_report_labour
+                WHERE report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+                  AND (attendance_id = :attendance_id OR (employee_id IS NOT NULL AND employee_id = :emp_id) OR (site_worker_id IS NOT NULL AND site_worker_id = :sw_id))
+                  AND is_deleted = false
+                LIMIT 1
+            """),
+                {
+                    "report_id": report_id,
+                    "org_id": org_id,
+                    "attendance_id": att["id"],
+                    "emp_id": att["employee_id"],
+                    "sw_id": att["site_worker_id"],
+                },
+            )
+        ).scalar()
+
+        if existing_labour:
+            await db.execute(
+                text("""
+                UPDATE projects.daily_report_labour
+                SET regular_hours = :reg_hours,
+                    overtime_hours = :ot_hours,
+                    cost_rate = :cost_rate,
+                    role_on_site = :trade,
+                    worker_name = :worker_name,
+                    attendance_id = :attendance_id,
+                    site_worker_id = :site_worker_id,
+                    employee_id = :employee_id,
+                    worker_kind = :worker_kind
+                WHERE id = :labour_id
+            """),
+                {
+                    "reg_hours": reg_hours,
+                    "ot_hours": ot_hours,
+                    "cost_rate": cost_rate,
+                    "trade": trade,
+                    "worker_name": worker_name,
+                    "attendance_id": att["id"],
+                    "site_worker_id": att["site_worker_id"],
+                    "employee_id": att["employee_id"],
+                    "worker_kind": kind,
+                    "labour_id": existing_labour,
+                },
+            )
+        else:
+            await db.execute(
+                text("""
+                INSERT INTO projects.daily_report_labour (
+                    organization_id, report_id, employee_id, site_worker_id,
+                    attendance_id, worker_kind, worker_name, role_on_site,
+                    regular_hours, overtime_hours, cost_rate, notes
+                ) VALUES (
+                    CAST(:org_id AS uuid), :report_id, :employee_id, :site_worker_id,
+                    :attendance_id, :worker_kind, :worker_name, :trade,
+                    :reg_hours, :ot_hours, :cost_rate, :notes
+                )
+            """),
+                {
+                    "org_id": org_id,
+                    "report_id": report_id,
+                    "employee_id": att["employee_id"],
+                    "site_worker_id": att["site_worker_id"],
+                    "attendance_id": att["id"],
+                    "worker_kind": kind,
+                    "worker_name": worker_name,
+                    "trade": trade,
+                    "reg_hours": reg_hours,
+                    "ot_hours": ot_hours,
+                    "cost_rate": cost_rate,
+                    "notes": att["notes"] or "",
+                },
+            )
+
+
 async def _day_payload(db: AsyncSession, org_id: str, briefing: Optional[dict[str, Any]]) -> dict[str, Any]:
     if not briefing:
-        return {"briefing": None, "attendance": []}
+        return {"briefing": None, "attendance": [], "daily_report": None, "labour_summary": None}
     attendance = _rows(
         await db.execute(
             text("""
@@ -261,7 +467,57 @@ async def _day_payload(db: AsyncSession, org_id: str, briefing: Optional[dict[st
             {"id": briefing["id"], "org_id": org_id},
         )
     )
-    return {"briefing": briefing, "attendance": attendance}
+
+    unique_headcount = len({(r.get("employee_id") or r.get("site_worker_id") or r.get("worker_name")) for r in attendance})
+    total_reg = sum(Decimal(str(r.get("regular_hours") or (8 if r.get("clock_in_at") else 0))) for r in attendance)
+    total_ot = sum(Decimal(str(r.get("overtime_hours") or 0)) for r in attendance)
+    missing_rates = sum(1 for r in attendance if r.get("hourly_rate") is None)
+    est_cost = sum(
+        (Decimal(str(r.get("regular_hours") or (8 if r.get("clock_in_at") else 0))) * Decimal(str(r.get("hourly_rate") or 0))) +
+        (Decimal(str(r.get("overtime_hours") or 0)) * Decimal(str(r.get("hourly_rate") or 0)))
+        for r in attendance if r.get("hourly_rate") is not None
+    )
+
+    linked_report = (
+        await db.execute(
+            text("""
+            SELECT id, status, auto_created, cost_exposure, submitted_at, approved_at,
+                   planned_work, actual_work, delays, safety_notes
+            FROM projects.daily_site_reports
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND report_date = :on_date
+              AND shift = :shift
+              AND is_deleted = false
+            LIMIT 1
+        """),
+            {
+                "org_id": org_id,
+                "project_id": briefing["project_id"],
+                "on_date": briefing["briefing_date"],
+                "shift": briefing["shift"],
+            },
+        )
+    ).mappings().first()
+
+    labour_summary = {
+        "unique_headcount": unique_headcount,
+        "regular_hours": float(total_reg),
+        "overtime_hours": float(total_ot),
+        "total_hours": float(total_reg + total_ot),
+        "estimated_cost": float(est_cost),
+        "missing_rates_count": missing_rates,
+    }
+
+    report_dict = dict(linked_report) if linked_report else None
+    return {
+        "briefing": briefing,
+        "attendance": attendance,
+        "daily_report": report_dict,
+        "daily_report_id": str(report_dict["id"]) if report_dict else None,
+        "daily_report_status": report_dict["status"] if report_dict else None,
+        "labour_summary": labour_summary,
+    }
 
 
 # ============================================================================= site day
@@ -377,6 +633,18 @@ async def open_site_day(
              "shift": payload.shift, "user_id": user["user_id"]},
         )
     ).scalar()
+    draft_report = await ensure_daily_report_draft(
+        db,
+        org_id=org_id,
+        project_id=payload.project_id,
+        site_id=payload.site_id,
+        on_date=on_date,
+        shift=payload.shift,
+        user_id=user["user_id"],
+        briefing_id=briefing_id,
+    )
+    if draft_report and draft_report.get("id"):
+        await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=draft_report["id"])
     await db.commit()
     return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)), "Site day opened.")
 
@@ -405,6 +673,16 @@ async def update_site_day(
         text(f"UPDATE projects.site_day_briefings SET {sets}, updated_at=NOW() WHERE id=:id AND organization_id=:org_id"),
         {**changes, "id": briefing_id, "org_id": org_id},
     )
+    if changes.get("safety_concern_raised") or changes.get("safety_concerns") or changes.get("safety_actions"):
+        safety_text = f"Safety concerns: {changes.get('safety_concerns') or briefing.get('safety_concerns') or 'None'}. Actions: {changes.get('safety_actions') or briefing.get('safety_actions') or 'None'}"
+        await db.execute(
+            text("""
+            UPDATE projects.daily_site_reports
+            SET safety_notes = :safety_text, updated_at = NOW()
+            WHERE briefing_id = :briefing_id AND status = 'draft'
+        """),
+            {"safety_text": safety_text, "briefing_id": briefing_id},
+        )
     if changes.get("safety_concern_raised"):
         await emit_role_notification(
             db, org_id=org_id, role_names=["HSE / Safety Officer", "Project Manager"],
@@ -467,6 +745,8 @@ async def _insert_attendance(
              "site_worker_id": site_worker_id, "employee_id": employee_id, "name": name, "trade": trade,
              "rate": rate, "ppe_ok": ppe_ok, "clock_in": clock_in, "user_id": user["user_id"]},
         )
+        if briefing.get("daily_report_id"):
+            await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing["id"], report_id=briefing["daily_report_id"])
     except Exception as exc:  # unique index: already on today's register
         if "site_day_attendance_" in str(exc):
             await db.rollback()
@@ -610,6 +890,24 @@ async def start_site_day(
         text("UPDATE projects.site_day_attendance SET clock_in_at=:now, updated_at=NOW() WHERE briefing_id=:id AND clock_in_at IS NULL"),
         {"now": now, "id": briefing_id},
     )
+    draft_report = await ensure_daily_report_draft(
+        db,
+        org_id=org_id,
+        project_id=briefing["project_id"],
+        site_id=briefing.get("site_id"),
+        on_date=briefing["briefing_date"],
+        shift=briefing["shift"],
+        user_id=user["user_id"],
+        briefing_id=briefing_id,
+    )
+    if draft_report and draft_report.get("id"):
+        await db.execute(
+            text("""UPDATE projects.daily_site_reports
+                    SET labour_count_completed=true, toolbox_talk_completed=true, ppe_check_completed=true, updated_at=NOW()
+                    WHERE id=:id"""),
+            {"id": draft_report["id"]},
+        )
+        await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=draft_report["id"])
     await emit_event(
         db, user=user, event_type="site.day.started.v1", aggregate_type="site_day_briefing", aggregate_id=briefing_id,
         project_id=briefing["project_id"],
@@ -645,8 +943,10 @@ async def clock_out_attendance(
     if row["clock_out_at"]:
         raise HTTPException(status_code=409, detail="Already clocked out.")
     await _clock_out(db, row, datetime.now(timezone.utc), row["regular_hours_cap"], row["break_minutes"])
-    await db.commit()
     briefing = await _briefing(db, user["org_id"], row["briefing_id"], user=user)
+    if briefing.get("daily_report_id"):
+        await sync_attendance_to_daily_report(db, org_id=user["org_id"], briefing_id=briefing["id"], report_id=briefing["daily_report_id"])
+    await db.commit()
     return result(await _day_payload(db, user["org_id"], briefing), f"{row['worker_name']} clocked out.")
 
 
@@ -674,6 +974,8 @@ async def close_site_day(
                 WHERE id=:id"""),
         {"now": now, "user_id": user["user_id"], "id": briefing_id},
     )
+    if briefing.get("daily_report_id"):
+        await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=briefing["daily_report_id"])
     project_name = await _project_name(db, org_id, briefing["project_id"], user=user)
     hires = sum(1 for r in rows if r["worker_kind"] == "project_hire")
     await emit_role_notification(
@@ -689,6 +991,31 @@ async def close_site_day(
     await db.commit()
     return result(await _day_payload(db, org_id, await _briefing(db, org_id, briefing_id, user=user)),
                   "Site day closed. Hours sent to HR for acceptance.")
+
+
+@router.post("/day/{briefing_id}/daily-report")
+async def get_or_create_daily_report_from_day(
+    briefing_id: UUID,
+    user: dict = Depends(require_permission("site_operations.labour_register.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicit hook to fetch or create the linked daily site report draft for this site day."""
+    org_id = user["org_id"]
+    briefing = await _briefing(db, org_id, briefing_id, user=user)
+    report = await ensure_daily_report_draft(
+        db,
+        org_id=org_id,
+        project_id=briefing["project_id"],
+        site_id=briefing.get("site_id"),
+        on_date=briefing["briefing_date"],
+        shift=briefing["shift"],
+        user_id=user["user_id"],
+        briefing_id=briefing_id,
+    )
+    if report and report.get("id"):
+        await sync_attendance_to_daily_report(db, org_id=org_id, briefing_id=briefing_id, report_id=report["id"])
+        await db.commit()
+    return result(report, "Linked daily report draft ready.")
 
 
 # ============================================================================= daily targets

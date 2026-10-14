@@ -173,6 +173,20 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
         </div>
       </div>
 
+      {briefing?.daily_report_id ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border border-emerald-500/30 bg-emerald-950/20 px-4 py-2.5 text-xs text-emerald-200">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+            <span>
+              <b>Daily Site Report Draft</b> is active for today and automatically receiving this labour register.
+            </span>
+          </div>
+          <span className="font-mono text-[11px] text-emerald-300">
+            Auto-linked to Daily Report Draft
+          </span>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
         {/* register */}
         <Panel step={1} done={attendance.length > 0 && ppeMissing === 0} title="Labour register & PPE"

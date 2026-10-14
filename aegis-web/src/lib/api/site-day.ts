@@ -62,3 +62,6 @@ export async function getProjectHireHours(status = "pending"): Promise<ApiRespon
 }
 export const decideProjectHireHours = (payload: { attendance_ids: string[]; decision: "accepted" | "rejected"; reason?: string }) =>
   post(`${HIRES}/hours/decision`, payload);
+export const getOrCreateDailyReport = (briefingId: string) =>
+  post<{ daily_report_id: string; report_id: string }>(`${SITE}/day/${briefingId}/daily-report`);
+
