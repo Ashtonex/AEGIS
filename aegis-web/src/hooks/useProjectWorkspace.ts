@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   getExecutiveProjectDetail,
-  getProject,
+  getInternalProject,
   getProjectLifecycle,
   getProjectTeam,
   getFinanceProjectDetail,
@@ -49,24 +49,24 @@ export function useProjectWorkspace(projectId: string): ProjectWorkspaceData {
       setError(null);
 
       try {
-        // 1. Fetch primary project record first for instant shell hydration
+        // 1. Fetch primary project record first via canonical internal route for instant shell hydration
         let primaryProject: Project | null = null;
         try {
-          const res = await getProject(projectId);
+          const res = await getInternalProject(projectId);
           if (res.success && res.data) {
             primaryProject = res.data as unknown as Project;
             setProject(primaryProject);
           }
         } catch {
-          // Will try executive detail below
+          // Will try lifecycle / executive detail below
         }
 
-        // 2. Fetch executive detail, lifecycle, and team concurrently
-        const [execResult, lifecycleResult, teamResult, financeResult] = await Promise.allSettled([
-          getExecutiveProjectDetail(projectId),
+        // 2. Fetch lifecycle, team, finance summary, and optionally executive detail concurrently
+        const [lifecycleResult, teamResult, financeResult, execResult] = await Promise.allSettled([
           getProjectLifecycle(projectId),
           getProjectTeam(projectId),
           getFinanceProjectDetail(projectId),
+          getExecutiveProjectDetail(projectId),
         ]);
 
         let mergedDetail: Detail | null = null;
@@ -91,15 +91,37 @@ export function useProjectWorkspace(projectId: string): ProjectWorkspaceData {
               pre_mobilisation: (lc.pre_mobilisation as any) ?? mergedDetail.pre_mobilisation,
               commercial_readiness: (lc.commercial_readiness as any) ?? mergedDetail.commercial_readiness,
             };
+          } else {
+            // Even if executive detail was rejected or unavailable, construct full functional detail
+            mergedDetail = {
+              project: primaryProject || undefined,
+              milestones: (lc.milestones as any) || [],
+              changes: (lc.changes as any) || [],
+              risks: (lc.risks as any) || [],
+              pre_mobilisation: (lc.pre_mobilisation as any),
+              commercial_readiness: (lc.commercial_readiness as any),
+            };
           }
         }
 
         if (teamResult.status === "fulfilled" && teamResult.value.data) {
-          setTeam(teamResult.value.data || []);
+          const teamData = teamResult.value.data || [];
+          setTeam(teamData);
+          if (mergedDetail) {
+            mergedDetail.team = teamData;
+          }
         }
 
         if (financeResult.status === "fulfilled" && financeResult.value.data) {
           setFinanceSummary(financeResult.value.data as Record<string, unknown>);
+        }
+
+        // If primaryProject was not set yet, pull from mergedDetail if present
+        if (!primaryProject && mergedDetail?.project) {
+          primaryProject = mergedDetail.project;
+          setProject(primaryProject);
+        } else if (primaryProject && mergedDetail && !mergedDetail.project) {
+          mergedDetail.project = primaryProject;
         }
 
         setDetail(mergedDetail);

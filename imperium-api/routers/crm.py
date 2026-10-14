@@ -1770,6 +1770,34 @@ async def list_opportunities(
     }
 
 
+@router.get("/opportunities/{opportunity_id}")
+async def get_opportunity_by_id(
+    opportunity_id: UUID,
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch a single opportunity record by ID with full joins for quotation, project, and client."""
+    org_id = _require_org_id(user)
+    query = text(
+        _OPPORTUNITY_CARD_SELECT
+        + """
+        WHERE o.id = :opportunity_id AND o.organization_id = :org_id AND o.is_deleted = false
+        LIMIT 1
+    """
+    )
+    result = await db.execute(query, {"opportunity_id": opportunity_id, "org_id": org_id})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Opportunity not found.")
+    return {
+        "success": True,
+        "data": dict(row),
+        "message": "Opportunity retrieved successfully.",
+        "meta": {},
+    }
+
+
+
 # The Kanban's columns and how database stages map onto them - the same
 # mapping the board page uses (BACKEND_TO_FRONTEND_STAGE): Quotation shows as
 # Proposal, Contract as Won, and anything unrecognised as Qualification.
@@ -1989,6 +2017,45 @@ async def list_tenders(
         "message": "Tenders fetched.",
         "meta": meta,
     }
+
+
+@router.get("/tenders/{tender_id}")
+async def get_tender_by_id(
+    tender_id: str,
+    user: dict = Depends(require_permission("crm.view_tenders")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    query = text("""
+        SELECT t.id, t.tender_name, t.bid_number, t.category, t.bid_amount, t.stage,
+               (to_jsonb(t)->>'site_visit_at')::timestamptz AS site_visit_at,
+               COALESCE((to_jsonb(t)->>'site_visit_mandatory')::boolean, false) AS site_visit_mandatory,
+               t.submission_deadline,
+               t.bid_bond_secured, t.jv_partners, t.bond_amount,
+               t.technical_proposal, t.financial_proposal, t.nssa_clearance,
+               t.praz_registration, t.tax_clearance, t.project_id,
+               to_jsonb(t)->>'closeout_status' AS closeout_status,
+               to_jsonb(t)->>'closeout_reason' AS closeout_reason,
+               COALESCE(to_jsonb(t)->'closeout_next_steps', '[]'::jsonb) AS closeout_next_steps,
+               (to_jsonb(t)->>'closeout_recorded_at')::timestamptz AS closeout_recorded_at,
+               to_jsonb(t)->>'winning_contractor' AS winning_contractor,
+               COALESCE(to_jsonb(t)->>'recycling_status', 'not_started') AS recycling_status,
+               t.region,
+               t.latitude::float AS latitude, t.longitude::float AS longitude
+        FROM crm.tenders t
+        WHERE t.id = :tender_id AND t.organization_id = :org_id AND t.is_deleted = false
+    """)
+    result = await db.execute(query, {"tender_id": tender_id, "org_id": org_id})
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tender not found.")
+
+    return {
+        "success": True,
+        "data": dict(row._mapping),
+        "message": "Tender fetched.",
+    }
+
 
 
 @router.get("/tender-signals")

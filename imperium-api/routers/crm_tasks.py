@@ -851,7 +851,18 @@ async def update_task(
         return {"success": True, "data": {"id": str(task_id)}, "message": "No fields to update.", "meta": {}}
 
     has_org_wide_task_access = await user_has_permission(db, user, "crm_tasks.read_all")
-    if not has_org_wide_task_access:
+    is_team_lead = False
+    if current["assigned_to_team_id"]:
+        lead_row = (
+            await db.execute(
+                text("SELECT 1 FROM core.team_members WHERE team_id = :team_id AND user_id = :user_id AND is_lead = true"),
+                {"team_id": current["assigned_to_team_id"], "user_id": user["user_id"]},
+            )
+        ).first()
+        if lead_row:
+            is_team_lead = True
+
+    if not has_org_wide_task_access and not is_team_lead:
         # Both checks are independent reads (neither depends on the other's
         # result), so they run concurrently instead of one after another.
         if current["assigned_to_team_id"]:
@@ -887,22 +898,26 @@ async def update_task(
 
     # Distributing a task inside a team is a lead's call, not any holder of
     # crm_tasks.update - unless the caller already has org-wide reach via
-    # crm_tasks.read_all (the same admin/lead tier that can assign a whole
-    # stack to a team in the first place via assign-stack). The team link is
-    # deliberately retained when a person is assigned so the team lead can
-    # still see and verify that member's work.
+    # crm_tasks.read_all. The team link is deliberately retained when a person
+    # is assigned so the team lead can still see and verify that member's work.
     if "assigned_to_user_id" in safe_keys and values["assigned_to_user_id"] and current["assigned_to_team_id"]:
-        is_lead = (
-            await db.execute(
-                text("SELECT 1 FROM core.team_members WHERE team_id = :team_id AND user_id = :user_id AND is_lead = true"),
-                {"team_id": current["assigned_to_team_id"], "user_id": user["user_id"]},
-            )
-        ).first()
-        if not is_lead and not has_org_wide_task_access:
+        if not is_team_lead and not has_org_wide_task_access:
             raise HTTPException(
                 status_code=403,
                 detail="Only that team's lead can redistribute its tasks to individual members.",
             )
+        if is_team_lead and not has_org_wide_task_access:
+            member_check = (
+                await db.execute(
+                    text("SELECT 1 FROM core.team_members WHERE team_id = :team_id AND user_id = :user_id"),
+                    {"team_id": current["assigned_to_team_id"], "user_id": values["assigned_to_user_id"]},
+                )
+            ).first()
+            if not member_check:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Team leads can only assign tasks to members of their team.",
+                )
 
     if "status" in safe_keys and values["status"] in ("in_progress", "completed") and current["depends_on_task_id"]:
         predecessor = (

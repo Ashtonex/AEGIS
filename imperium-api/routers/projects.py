@@ -28,6 +28,7 @@ from app.shared.project_delete import find_project_blockers, hard_delete_project
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
+from app.services.finance.project_forecast import seed_boq_line_items_from_quotation
 
 # Every /{project_id} route is limited to the caller's visible projects.
 router = APIRouter(dependencies=[Depends(enforce_project_path_scope)])
@@ -2683,6 +2684,108 @@ class QuotationImportPayload(BaseModel):
     notes: Optional[str] = None
 
 
+class QuotationLinkPayload(BaseModel):
+    quotation_id: UUID
+
+
+def extract_quotation_cost_breakdown(
+    quote_id: str,
+    quote_meta: Any,
+    quote_amount: float = 0.0,
+) -> dict[str, float]:
+    """Reconstructs real execution cost categories (materials, labour, plant/equipment,
+    subcontract, overheads, contingency, other) from quotation metadata.
+
+    First inspects stored `calculation.direct_costs_breakdown`. If missing or all-zero
+    (common when quotes are green-lit via BOQ approval without a full CCB re-evaluation),
+    it dynamically rolls up each approved BOQ item from `items` by buildup component or
+    BOQ section.
+    """
+    meta = quote_meta if isinstance(quote_meta, dict) else {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+
+    calc = meta.get("calculation") if isinstance(meta.get("calculation"), dict) else {}
+    breakdown = calc.get("direct_costs_breakdown") if isinstance(calc.get("direct_costs_breakdown"), dict) else {}
+
+    materials = float(breakdown.get("materials") or 0.0)
+    labour = float(breakdown.get("labour") or 0.0)
+    equipment = float(breakdown.get("equipment") or 0.0)
+    subcontract = float(breakdown.get("subcontractors") or 0.0)
+    other = float(breakdown.get("other") or 0.0)
+
+    # If breakdown was missing or all zero, reconstruct from items
+    if (materials + labour + equipment + subcontract + other) <= 0.0:
+        items = meta.get("items") or []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            qty = float(it.get("qty") or it.get("quantity") or 0.0)
+            rate = float(it.get("rate") or it.get("unit_rate") or 0.0)
+            line_tot = float(it.get("cost") or it.get("total_amount") or it.get("amount") or (qty * rate) or 0.0)
+            cat = str(it.get("category") or it.get("cost_category") or "").lower()
+            sec = str(it.get("section") or "").lower()
+            desc = str(it.get("description") or "").lower()
+
+            buildup = it.get("buildup") or []
+            if buildup and isinstance(buildup, list):
+                for b in buildup:
+                    if not isinstance(b, dict):
+                        continue
+                    b_type = str(b.get("type") or "").lower()
+                    b_rate = float(b.get("rate") or b.get("amount") or 0.0)
+                    b_tot = qty * b_rate
+                    if "mat" in b_type:
+                        materials += b_tot
+                    elif "lab" in b_type:
+                        labour += b_tot
+                    elif "equip" in b_type or "plant" in b_type:
+                        equipment += b_tot
+                    elif "sub" in b_type:
+                        subcontract += b_tot
+                    else:
+                        other += b_tot
+            else:
+                if "mat" in cat or "mat" in sec or "mat" in desc:
+                    materials += line_tot
+                elif "lab" in cat or "lab" in sec or "lab" in desc:
+                    labour += line_tot
+                elif "plant" in cat or "equip" in cat or "plant" in sec or "equip" in sec or "hire" in desc:
+                    equipment += line_tot
+                elif "sub" in cat or "sub" in sec or "specialist" in desc:
+                    subcontract += line_tot
+                else:
+                    other += line_tot
+
+    overhead = float(meta.get("overhead_amount") or calc.get("overhead_amount") or 0.0) + float(
+        meta.get("preliminaries") or calc.get("preliminaries") or 0.0
+    )
+    contingency = float(meta.get("contingency_amount") or calc.get("contingency_amount") or 0.0)
+
+    # Final fallback if quotation has no item breakdown at all
+    total_direct = materials + labour + equipment + subcontract + other
+    if total_direct <= 0.0 and quote_amount > 0.0:
+        materials = round(quote_amount * 0.45, 2)
+        labour = round(quote_amount * 0.25, 2)
+        equipment = round(quote_amount * 0.15, 2)
+        subcontract = round(quote_amount * 0.10, 2)
+        overhead = round(quote_amount * 0.05, 2)
+
+    return {
+        "materials": round(materials, 2),
+        "labour": round(labour, 2),
+        "equipment": round(equipment, 2),
+        "subcontract": round(subcontract, 2),
+        "overhead": round(overhead, 2),
+        "contingency": round(contingency, 2),
+        "other": round(other, 2),
+        "total": round(materials + labour + equipment + subcontract + overhead + contingency + other, 2),
+    }
+
+
 @router.get("/{project_id}/budget/category-summary")
 async def get_budget_category_summary(
     project_id: UUID,
@@ -2734,7 +2837,7 @@ async def get_budget_category_summary(
     )
     actual_map = {row.category.lower(): float(row.actual_amount or 0) for row in actuals_res}
 
-    # 4. Check for linked quotation
+    # 4. Check for linked quotation via explicit link, lineage, or client org
     quote_res = await db.execute(
         text("""
             SELECT q.id, q.client_name, q.quote_amount, q.status, q.metadata, q.created_at
@@ -2743,12 +2846,24 @@ async def get_budget_category_summary(
               AND (
                 q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)
                 OR q.project_id = :project_id
-                OR q.client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id)
+                OR (
+                  (SELECT opportunity_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
+                  AND q.opportunity_id = (SELECT opportunity_id FROM projects.projects WHERE id = :project_id)
+                )
+                OR (
+                  (SELECT client_org_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
+                  AND q.client_org_id = (SELECT client_org_id FROM projects.projects WHERE id = :project_id)
+                )
+                OR (
+                  (SELECT client_name FROM projects.projects WHERE id = :project_id) IS NOT NULL
+                  AND lower(trim(q.client_name)) = lower(trim((SELECT client_name FROM projects.projects WHERE id = :project_id)))
+                )
               )
             ORDER BY
               (q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC NULLS LAST,
               (q.project_id = :project_id) DESC NULLS LAST,
               (q.status = 'won') DESC NULLS LAST,
+              (q.metadata->'boq_approval'->>'status' = 'approved') DESC NULLS LAST,
               q.created_at DESC
             LIMIT 1
         """),
@@ -2759,17 +2874,10 @@ async def get_budget_category_summary(
     quote_category_map: dict[str, float] = {}
 
     if quote_row:
-        meta = quote_row.metadata if isinstance(quote_row.metadata, dict) else {}
-        calc = meta.get("calculation", {}) if isinstance(meta, dict) else {}
-        breakdown = calc.get("direct_costs_breakdown", {}) if isinstance(calc, dict) else {}
-
-        quote_category_map["materials"] = float(breakdown.get("materials", 0))
-        quote_category_map["labour"] = float(breakdown.get("labour", 0))
-        quote_category_map["equipment"] = float(breakdown.get("equipment", 0))
-        quote_category_map["subcontract"] = float(breakdown.get("subcontractors", 0))
-        quote_category_map["overhead"] = float(calc.get("overhead_amount", 0)) + float(calc.get("preliminaries", 0))
-        quote_category_map["contingency"] = float(calc.get("contingency_amount", 0))
-        quote_category_map["other"] = float(breakdown.get("other", 0))
+        quote_breakdown = extract_quotation_cost_breakdown(
+            str(quote_row.id), quote_row.metadata, float(quote_row.quote_amount or 0.0)
+        )
+        quote_category_map = quote_breakdown
 
         linked_quotation = {
             "id": str(quote_row.id),
@@ -2824,6 +2932,139 @@ async def get_budget_category_summary(
     }, "Project budget category summary retrieved.")
 
 
+@router.get("/{project_id}/budget/eligible-quotations")
+async def get_eligible_quotations_for_project(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
+):
+    """Lists eligible candidate quotations for linking or importing into the given project.
+    Distinguishes direct links, opportunity/lineage matches, and all approved/won organization quotes.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Load candidate and organization quotations
+    quotes_res = await db.execute(
+        text("""
+            SELECT q.id, q.client_name, q.quote_amount, q.status, q.metadata, q.created_at,
+                   q.opportunity_id, q.tender_id, q.client_org_id,
+                   (q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) AS is_direct_quotation_id,
+                   (q.project_id = :project_id) AS is_direct_project_id,
+                   (q.opportunity_id IS NOT NULL AND q.opportunity_id = (SELECT opportunity_id FROM projects.projects WHERE id = :project_id)) AS is_opp_match,
+                   (q.client_org_id IS NOT NULL AND q.client_org_id = (SELECT client_org_id FROM projects.projects WHERE id = :project_id)) AS is_client_org_match,
+                   (lower(trim(COALESCE(q.client_name, ''))) = lower(trim(COALESCE((SELECT client_name FROM projects.projects WHERE id = :project_id), '')))) AS is_name_match
+            FROM finance.quotations q
+            WHERE q.organization_id = :org_id AND q.is_deleted = false
+            ORDER BY
+              (q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC,
+              (q.project_id = :project_id) DESC,
+              (q.status = 'won') DESC,
+              (q.metadata->'boq_approval'->>'status' = 'approved') DESC,
+              q.created_at DESC
+            LIMIT 50
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    rows = quotes_res.mappings().all()
+
+    matched_quotations = []
+    all_eligible_quotations = []
+
+    for row in rows:
+        meta = row["metadata"] if isinstance(row["metadata"], dict) else {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+
+        boq_app = meta.get("boq_approval") or {}
+        has_approved_boq = boq_app.get("status") == "approved"
+        is_direct = bool(row["is_direct_quotation_id"] or row["is_direct_project_id"])
+
+        match_reasons = []
+        if is_direct:
+            match_reasons.append("Directly linked to this project")
+        if row["is_opp_match"]:
+            match_reasons.append("Linked via CRM Opportunity")
+        if row["is_client_org_match"]:
+            match_reasons.append("Linked via Client Account")
+        elif row["is_name_match"]:
+            match_reasons.append("Matches Client Name")
+
+        breakdown = extract_quotation_cost_breakdown(
+            str(row["id"]), meta, float(row["quote_amount"] or 0.0)
+        )
+
+        item_summary = {
+            "id": str(row["id"]),
+            "reference_number": meta.get("reference_number") or str(row["id"])[:8],
+            "client_name": row["client_name"] or "Unknown Client",
+            "quote_amount": float(row["quote_amount"] or 0.0),
+            "status": row["status"],
+            "created_at": str(row["created_at"]),
+            "project_title": meta.get("project_title"),
+            "has_approved_boq": has_approved_boq,
+            "is_directly_linked": is_direct,
+            "match_reasons": match_reasons,
+            "category_estimates": breakdown,
+            "items_count": len(meta.get("items") or []),
+        }
+
+        if match_reasons:
+            matched_quotations.append(item_summary)
+        all_eligible_quotations.append(item_summary)
+
+    return _result({
+        "matched_quotations": matched_quotations,
+        "all_eligible_quotations": all_eligible_quotations,
+    }, "Eligible quotations retrieved.")
+
+
+@router.post("/{project_id}/budget/link-quotation")
+async def link_project_quotation(
+    project_id: UUID,
+    payload: QuotationLinkPayload,
+    user: dict = Depends(require_permission("projects.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicitly associates an approved quotation with this project without overwriting existing budgets."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    quote = (await db.execute(
+        text("SELECT id, client_name, quote_amount FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": payload.quotation_id, "org_id": user["org_id"]},
+    )).first()
+
+    if not quote:
+        raise HTTPException(status_code=404, detail="Quotation not found in this organization.")
+
+    await db.execute(
+        text("""
+            UPDATE projects.projects
+            SET quotation_id = :quote_id, updated_at = NOW()
+            WHERE id = :project_id AND organization_id = :org_id
+        """),
+        {"quote_id": payload.quotation_id, "project_id": project_id, "org_id": user["org_id"]},
+    )
+    await db.execute(
+        text("""
+            UPDATE finance.quotations
+            SET project_id = :project_id, updated_at = NOW()
+            WHERE id = :quote_id AND organization_id = :org_id
+        """),
+        {"quote_id": payload.quotation_id, "project_id": project_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+
+    return _result({
+        "project_id": str(project_id),
+        "quotation_id": str(payload.quotation_id),
+        "client_name": quote.client_name,
+    }, "Quotation successfully linked to project.")
+
+
 @router.post("/{project_id}/budget/import-quotation")
 async def import_budget_from_quotation(
     project_id: UUID,
@@ -2848,12 +3089,24 @@ async def import_budget_from_quotation(
                   AND (
                     id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)
                     OR project_id = :project_id
-                    OR client_name = (SELECT client_name FROM projects.projects WHERE id = :project_id)
+                    OR (
+                      (SELECT opportunity_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
+                      AND opportunity_id = (SELECT opportunity_id FROM projects.projects WHERE id = :project_id)
+                    )
+                    OR (
+                      (SELECT client_org_id FROM projects.projects WHERE id = :project_id) IS NOT NULL
+                      AND client_org_id = (SELECT client_org_id FROM projects.projects WHERE id = :project_id)
+                    )
+                    OR (
+                      (SELECT client_name FROM projects.projects WHERE id = :project_id) IS NOT NULL
+                      AND lower(trim(client_name)) = lower(trim((SELECT client_name FROM projects.projects WHERE id = :project_id)))
+                    )
                   )
                 ORDER BY
                   (id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC NULLS LAST,
                   (project_id = :project_id) DESC NULLS LAST,
                   (status = 'won') DESC NULLS LAST,
+                  (metadata->'boq_approval'->>'status' = 'approved') DESC NULLS LAST,
                   created_at DESC
                 LIMIT 1
             """),
@@ -2861,32 +3114,30 @@ async def import_budget_from_quotation(
         )).first()
 
     if not quote:
-        raise HTTPException(status_code=404, detail="No matching quotation found for this project or client to import.")
+        raise HTTPException(
+            status_code=404,
+            detail="No matching quotation found for this project. Please select a quotation from the Quotation Selector.",
+        )
 
     meta = quote.metadata if isinstance(quote.metadata, dict) else {}
-    calc = meta.get("calculation", {}) if isinstance(meta, dict) else {}
-    breakdown = calc.get("direct_costs_breakdown", {}) if isinstance(calc, dict) else {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
 
-    # Calculate category values
-    materials = float(breakdown.get("materials", 0))
-    labour = float(breakdown.get("labour", 0))
-    equipment = float(breakdown.get("equipment", 0))
-    subcontract = float(breakdown.get("subcontractors", 0))
-    overhead = float(calc.get("overhead_amount", 0)) + float(calc.get("preliminaries", 0))
-    contingency = float(calc.get("contingency_amount", 0))
-    other = float(breakdown.get("other", 0))
+    breakdown = extract_quotation_cost_breakdown(
+        str(quote.id), meta, float(quote.quote_amount or 0.0)
+    )
 
-    execution_total = round(materials + labour + equipment + subcontract + overhead + contingency + other, 2)
-
-    # If quotation didn't have detailed calculation breakdown, distribute quote_amount sensibly
-    if execution_total <= 0:
-        quote_total = float(quote.quote_amount or 0)
-        materials = round(quote_total * 0.45, 2)
-        labour = round(quote_total * 0.25, 2)
-        equipment = round(quote_total * 0.15, 2)
-        subcontract = round(quote_total * 0.10, 2)
-        overhead = round(quote_total * 0.05, 2)
-        execution_total = round(materials + labour + equipment + subcontract + overhead, 2)
+    materials = breakdown["materials"]
+    labour = breakdown["labour"]
+    equipment = breakdown["equipment"]
+    subcontract = breakdown["subcontract"]
+    overhead = breakdown["overhead"]
+    contingency = breakdown["contingency"]
+    other = breakdown["other"]
+    execution_total = breakdown["total"]
 
     # Supersede existing budgets
     await db.execute(
@@ -2922,7 +3173,7 @@ async def import_budget_from_quotation(
             "version": next_ver,
             "label": f"Imported from Quotation {quote.id}",
             "total_amount": execution_total,
-            "notes": payload.notes or f"Imported bulk category budget from quotation {quote.id} (Client: {quote.client_name})",
+            "notes": payload.notes or f"Imported execution budget from quotation {quote.id} (Client: {quote.client_name})",
             "user_id": user["user_id"],
         },
     )).scalar()
@@ -2956,17 +3207,42 @@ async def import_budget_from_quotation(
                 },
             )
 
-    # Update project profile budget and contract value
+    # Seed BOQ line items into finance.boq_line_items if quotation has items
+    try:
+        await seed_boq_line_items_from_quotation(
+            db, user["org_id"], str(project_id), str(quote.id), meta, created_by=user["sub"]
+        )
+    except Exception as boq_err:
+        logger.warning(f"Could not seed BOQ lines during quotation import: {boq_err}")
+
+    # Explicitly stamp quotation_id on project and project_id on quotation
     await db.execute(
         text("""
             UPDATE projects.projects
-            SET contract_value = COALESCE(contract_value, :quote_amount), updated_at = NOW()
+            SET quotation_id = :quote_id,
+                contract_value = COALESCE(contract_value, :quote_amount),
+                updated_at = NOW()
             WHERE id = :project_id AND organization_id = :org_id
         """),
         {
+            "quote_id": quote.id,
             "project_id": project_id,
             "org_id": user["org_id"],
             "quote_amount": float(quote.quote_amount or execution_total),
+        },
+    )
+
+    await db.execute(
+        text("""
+            UPDATE finance.quotations
+            SET project_id = :project_id, updated_at = NOW()
+            WHERE id = :quote_id AND organization_id = :org_id
+              AND (project_id IS NULL OR project_id = :project_id)
+        """),
+        {
+            "project_id": project_id,
+            "quote_id": quote.id,
+            "org_id": user["org_id"],
         },
     )
 
@@ -2995,5 +3271,7 @@ async def import_budget_from_quotation(
             "subcontract": subcontract,
             "overhead": overhead,
             "contingency": contingency,
+            "other": other,
         },
     }, f"Successfully imported execution budget of ${execution_total:,.2f} from Quotations & Estimations.")
+

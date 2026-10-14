@@ -72,6 +72,15 @@ export async function getCrmOpportunities(params?: { department_id?: string }) {
   return await fetchApi<ApiResponse<any[]>>(`/api/v1/crm/opportunities${qs}`, { cache: 'no-store' });
 }
 
+export async function getCrmOpportunityById(id: string) {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getCrmTenderById(id: string) {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/crm/tenders/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+
 export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string, latitude?: number, longitude?: number, originating_department_id?: string }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/opportunities', {
     method: 'POST',

@@ -23,13 +23,18 @@ import {
   Check,
   ChevronRight,
   ShieldAlert,
+  X,
+  ExternalLink,
 } from "lucide-react";
 import {
   getProjectBudgetCategorySummary,
   importProjectBudgetFromQuotation,
   setProjectBudget,
   getFinanceBudgets,
+  getEligibleQuotationsForProject,
+  linkProjectToQuotation,
   type ProjectBudgetUploadLine,
+  type EligibleQuotationSummary,
 } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
 
@@ -136,6 +141,16 @@ export function ProjectBudgetSpreadsheet({
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [pasteBuffer, setPasteBuffer] = useState("");
 
+  // Quotation selector modal state
+  const [isQuoteSelectorOpen, setIsQuoteSelectorOpen] = useState(false);
+  const [loadingEligibleQuotes, setLoadingEligibleQuotes] = useState(false);
+  const [matchedQuotes, setMatchedQuotes] = useState<EligibleQuotationSummary[]>([]);
+  const [allEligibleQuotes, setAllEligibleQuotes] = useState<EligibleQuotationSummary[]>([]);
+  const [selectedQuoteId, setSelectedQuoteId] = useState<string | null>(null);
+  const [quoteSearchTerm, setQuoteSearchTerm] = useState("");
+  const [quoteTab, setQuoteTab] = useState<"matched" | "all">("matched");
+  const [linkingOnly, setLinkingOnly] = useState(false);
+
   // Load category summary and linked quote
   const loadCategoryData = useCallback(async () => {
     setLoading(true);
@@ -199,7 +214,68 @@ export function ProjectBudgetSpreadsheet({
     setDraftBudgets((prev) => ({ ...prev, [catKey]: num }));
   };
 
-  // 1-Click Import from Quotations & Estimations
+  // Open quotation selector and fetch candidate quotations
+  const handleOpenQuoteSelector = async () => {
+    setIsQuoteSelectorOpen(true);
+    setLoadingEligibleQuotes(true);
+    try {
+      const res = await getEligibleQuotationsForProject(projectId);
+      if (res.success && res.data) {
+        const matched = res.data.matched_quotations || [];
+        const allEligible = res.data.all_eligible_quotations || [];
+        setMatchedQuotes(matched);
+        setAllEligibleQuotes(allEligible);
+
+        // Preselect linked quote or first matched quote
+        if (linkedQuotation?.id) {
+          setSelectedQuoteId(linkedQuotation.id);
+        } else if (matched.length > 0) {
+          setSelectedQuoteId(matched[0].id);
+        } else if (allEligible.length > 0) {
+          setSelectedQuoteId(allEligible[0].id);
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to load eligible quotations:", err);
+      setFeedback({
+        type: "error",
+        message: err?.message || "Failed to load eligible quotations.",
+      });
+    } finally {
+      setLoadingEligibleQuotes(false);
+    }
+  };
+
+  // Explicitly link quotation without importing/overwriting budgets
+  const handleLinkOnly = async () => {
+    if (!selectedQuoteId) return;
+    setLinkingOnly(true);
+    try {
+      const res = await linkProjectToQuotation(projectId, selectedQuoteId);
+      if (res.success) {
+        setFeedback({
+          type: "success",
+          message: res.message || "Project linked to quotation successfully.",
+        });
+        setIsQuoteSelectorOpen(false);
+        await loadCategoryData();
+      } else {
+        setFeedback({
+          type: "error",
+          message: res.error?.message || "Failed to link quotation.",
+        });
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: "error",
+        message: err?.message || "Network error linking quotation.",
+      });
+    } finally {
+      setLinkingOnly(false);
+    }
+  };
+
+  // 1-Click Import from Quotations & Estimations (or with explicit quotation ID)
   const handleImportQuotation = async (quotationId?: string) => {
     setImportingQuote(true);
     setFeedback(null);
@@ -229,6 +305,38 @@ export function ProjectBudgetSpreadsheet({
       setImportingQuote(false);
     }
   };
+
+  // Link quotation and import budget baseline
+  const handleLinkAndImport = async (quoteId?: string) => {
+    const targetQuoteId = quoteId || selectedQuoteId;
+    if (!targetQuoteId) return;
+    setIsQuoteSelectorOpen(false);
+    await handleImportQuotation(targetQuoteId);
+  };
+
+  // Filtered quotes based on tab and search
+  const activeQuoteList = quoteTab === "matched" ? matchedQuotes : allEligibleQuotes;
+  const filteredQuotes = useMemo(() => {
+    if (!quoteSearchTerm.trim()) return activeQuoteList;
+    const term = quoteSearchTerm.toLowerCase();
+    return activeQuoteList.filter(
+      (q) =>
+        q.client_name?.toLowerCase().includes(term) ||
+        q.reference_number?.toLowerCase().includes(term) ||
+        q.project_title?.toLowerCase().includes(term) ||
+        q.id?.toLowerCase().includes(term)
+    );
+  }, [activeQuoteList, quoteSearchTerm]);
+
+  // Selected quotation preview object
+  const selectedQuoteObject = useMemo(() => {
+    if (!selectedQuoteId) return null;
+    return (
+      matchedQuotes.find((q) => q.id === selectedQuoteId) ||
+      allEligibleQuotes.find((q) => q.id === selectedQuoteId) ||
+      null
+    );
+  }, [selectedQuoteId, matchedQuotes, allEligibleQuotes]);
 
   // Save current bulk category baseline
   const handleSaveBulkBudget = async () => {
@@ -430,18 +538,18 @@ export function ProjectBudgetSpreadsheet({
                 </span>
               ) : (
                 <span className="border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] uppercase text-amber-300">
-                  Auto-Detecting
+                  No Quotation Linked
                 </span>
               )}
             </div>
             <p className="mt-0.5 text-xs text-slate-light">
               {linkedQuotation ? (
                 <span>
-                  Quote for <strong className="text-paper font-normal">{linkedQuotation.client_name}</strong> • Quoted Amount:{" "}
+                  Linked Quote: <strong className="text-paper font-normal">{linkedQuotation.reference_number || linkedQuotation.id?.slice(0, 8)}</strong> ({linkedQuotation.client_name}) • Quoted Value:{" "}
                   <strong className="text-paper font-mono font-normal">{formatCurrency(linkedQuotation.quote_amount)}</strong>
                 </span>
               ) : (
-                "Link this project to an approved quotation to populate bulk BOQ cost-category totals automatically."
+                "Link this project to an approved quotation to seed BOQ cost-category totals and line items automatically."
               )}
             </p>
           </div>
@@ -456,14 +564,35 @@ export function ProjectBudgetSpreadsheet({
             <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin text-signal" : ""}`} />
             <span>Refresh</span>
           </button>
-          <button
-            onClick={() => void handleImportQuotation(linkedQuotation?.id)}
-            disabled={importingQuote}
-            className="inline-flex items-center gap-2 border border-signal/60 bg-signal/15 px-3.5 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-colors disabled:opacity-50"
-          >
-            <Sparkles className={`h-3.5 w-3.5 ${importingQuote ? "animate-spin" : ""}`} />
-            <span>{importingQuote ? "Importing..." : "Sync from Quotation"}</span>
-          </button>
+          {linkedQuotation ? (
+            <>
+              <button
+                onClick={() => void handleOpenQuoteSelector()}
+                disabled={importingQuote}
+                className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-slate-light hover:text-paper transition-colors"
+              >
+                <Link2 className="h-3 w-3 text-signal" />
+                <span>Change Quote</span>
+              </button>
+              <button
+                onClick={() => void handleImportQuotation(linkedQuotation?.id)}
+                disabled={importingQuote}
+                className="inline-flex items-center gap-2 border border-signal/60 bg-signal/15 px-3.5 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-colors disabled:opacity-50"
+              >
+                <Sparkles className={`h-3.5 w-3.5 ${importingQuote ? "animate-spin" : ""}`} />
+                <span>{importingQuote ? "Syncing..." : "Sync from Quotation"}</span>
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => void handleOpenQuoteSelector()}
+              disabled={importingQuote}
+              className="inline-flex items-center gap-2 border border-signal bg-signal/20 px-3.5 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-colors disabled:opacity-50 shadow-sm"
+            >
+              <Link2 className="h-3.5 w-3.5" />
+              <span>Choose &amp; Link Quotation</span>
+            </button>
+          )}
         </div>
       </section>
 
@@ -792,6 +921,282 @@ export function ProjectBudgetSpreadsheet({
           </div>
         )}
       </section>
+
+      {/* QUOTATION SELECTOR & SEEDING MODAL */}
+      {isQuoteSelectorOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="w-full max-w-4xl max-h-[88vh] flex flex-col border border-ink-mid bg-ink shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="border-b border-ink-mid p-4 sm:px-6 flex items-center justify-between bg-ink-light/30">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 border border-signal/50 bg-signal/10 flex items-center justify-center text-signal">
+                  <Link2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-paper">
+                    Select Approved Quotation for Execution Budget
+                  </h3>
+                  <p className="text-xs text-slate-light">
+                    Link an approved BOQ or tender estimation to populate real category cost baselines and WBS line items.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsQuoteSelectorOpen(false)}
+                className="text-slate hover:text-paper p-1"
+                aria-label="Close modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div className="border-b border-ink-mid p-3 sm:px-6 flex flex-wrap items-center justify-between gap-3 bg-ink">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setQuoteTab("matched")}
+                  className={`px-3 py-1 font-mono text-xs uppercase tracking-wider transition-colors ${
+                    quoteTab === "matched"
+                      ? "border border-signal bg-signal/15 text-signal font-semibold"
+                      : "border border-ink-mid bg-ink-light/20 text-slate-light hover:text-paper"
+                  }`}
+                >
+                  Suggested Matches ({matchedQuotes.length})
+                </button>
+                <button
+                  onClick={() => setQuoteTab("all")}
+                  className={`px-3 py-1 font-mono text-xs uppercase tracking-wider transition-colors ${
+                    quoteTab === "all"
+                      ? "border border-signal bg-signal/15 text-signal font-semibold"
+                      : "border border-ink-mid bg-ink-light/20 text-slate-light hover:text-paper"
+                  }`}
+                >
+                  All Approved Quotations ({allEligibleQuotes.length})
+                </button>
+              </div>
+
+              <div className="relative w-full sm:w-64">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate" />
+                <input
+                  type="text"
+                  placeholder="Filter client, reference..."
+                  value={quoteSearchTerm}
+                  onChange={(e) => setQuoteSearchTerm(e.target.value)}
+                  className="w-full bg-ink-light/40 border border-ink-mid pl-8 pr-3 py-1 text-xs text-paper placeholder-slate font-mono focus:border-signal focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Modal Body: Split List & Preview */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 flex-1 overflow-hidden min-h-[380px] max-h-[500px]">
+              {/* Left Column: Quotation Selection List */}
+              <div className="lg:col-span-7 border-b lg:border-b-0 lg:border-r border-ink-mid overflow-y-auto p-3 space-y-2">
+                {loadingEligibleQuotes ? (
+                  <div className="p-8 text-center text-slate-light font-mono text-xs space-y-2">
+                    <Loader2 className="h-6 w-6 animate-spin text-signal mx-auto" />
+                    <p>Loading eligible approved quotations...</p>
+                  </div>
+                ) : filteredQuotes.length === 0 ? (
+                  <div className="p-8 text-center text-slate font-mono text-xs space-y-2">
+                    <p>No quotations found matching the current criteria.</p>
+                    {quoteTab === "matched" && (
+                      <button
+                        onClick={() => setQuoteTab("all")}
+                        className="text-signal underline hover:text-signal-light"
+                      >
+                        Browse all approved quotations in the tenant
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  filteredQuotes.map((q) => {
+                    const isSelected = selectedQuoteId === q.id;
+                    return (
+                      <div
+                        key={q.id}
+                        onClick={() => setSelectedQuoteId(q.id)}
+                        className={`p-3 border cursor-pointer transition-all ${
+                          isSelected
+                            ? "border-signal bg-signal/10"
+                            : "border-ink-mid bg-ink hover:border-ink-light"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name="selectedQuotation"
+                              checked={isSelected}
+                              onChange={() => setSelectedQuoteId(q.id)}
+                              className="accent-signal cursor-pointer"
+                            />
+                            <span className="font-mono text-xs font-bold text-paper">
+                              {q.reference_number || q.id.slice(0, 8)}
+                            </span>
+                            <span className="border border-ink-mid bg-ink-light/40 px-1.5 py-0.5 font-mono text-[9px] uppercase text-slate-light">
+                              {q.status}
+                            </span>
+                            {q.has_approved_boq && (
+                              <span className="border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] uppercase text-emerald-300">
+                                BOQ Approved
+                              </span>
+                            )}
+                          </div>
+                          <span className="font-mono text-xs font-bold text-paper">
+                            {formatCurrency(q.quote_amount)}
+                          </span>
+                        </div>
+
+                        <div className="mt-1 pl-5">
+                          <p className="text-xs font-medium text-slate-light">
+                            Client: <span className="text-paper">{q.client_name}</span>
+                            {q.project_title && (
+                              <span className="text-slate"> • {q.project_title}</span>
+                            )}
+                          </p>
+
+                          {/* Match reasons & items */}
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {q.is_directly_linked && (
+                              <span className="border border-signal/40 bg-signal/10 px-1.5 py-0.5 font-mono text-[9px] uppercase text-signal">
+                                Current Linked Quote
+                              </span>
+                            )}
+                            {q.match_reasons?.map((reason, idx) => (
+                              <span
+                                key={idx}
+                                className="border border-ink-mid bg-ink-light/30 px-1.5 py-0.5 font-mono text-[9px] text-slate-light"
+                              >
+                                {reason}
+                              </span>
+                            ))}
+                            <span className="border border-ink-mid/60 bg-ink-light/20 px-1.5 py-0.5 font-mono text-[9px] text-slate">
+                              {q.items_count} items
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Right Column: Cost Breakdown Preview */}
+              <div className="lg:col-span-5 bg-ink-light/10 p-4 flex flex-col justify-between overflow-y-auto">
+                {selectedQuoteObject ? (
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[10px] uppercase tracking-wider text-slate">
+                          Quote Lineage &amp; Client
+                        </span>
+                        <span className="font-mono text-[10px] text-slate">
+                          {selectedQuoteObject.created_at?.slice(0, 10)}
+                        </span>
+                      </div>
+                      <p className="font-mono text-sm font-bold text-paper mt-0.5">
+                        {selectedQuoteObject.reference_number || selectedQuoteObject.id.slice(0, 8)}
+                      </p>
+                      <p className="text-xs text-slate-light">{selectedQuoteObject.client_name}</p>
+                    </div>
+
+                    {/* Pricing vs Direct Costs */}
+                    <div className="border border-ink-mid bg-ink p-3 space-y-2">
+                      <div className="flex justify-between items-center text-xs font-mono">
+                        <span className="text-slate">Contract Revenue (Selling):</span>
+                        <span className="font-bold text-paper">
+                          {formatCurrency(selectedQuoteObject.quote_amount)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs font-mono">
+                        <span className="text-signal">Direct Execution Cost:</span>
+                        <span className="font-bold text-signal">
+                          {formatCurrency(
+                            Object.values(selectedQuoteObject.category_estimates || {}).reduce(
+                              (a, b) => a + Number(b || 0),
+                              0
+                            )
+                          )}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Category Cost Breakdown */}
+                    <div>
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-slate mb-2">
+                        Reconstructed Execution Cost Breakdown
+                      </p>
+                      <div className="border border-ink-mid bg-ink divide-y divide-ink-mid/40 font-mono text-xs">
+                        {Object.entries(selectedQuoteObject.category_estimates || {}).map(
+                          ([catKey, val]) => {
+                            const theme = CATEGORY_THEMES[catKey] || CATEGORY_THEMES.other;
+                            return (
+                              <div
+                                key={catKey}
+                                className="flex items-center justify-between p-2 px-3 hover:bg-ink-light/10"
+                              >
+                                <span className="capitalize text-slate-light">{catKey}</span>
+                                <span className={`font-semibold ${val > 0 ? "text-paper" : "text-slate"}`}>
+                                  {formatCurrency(val)}
+                                </span>
+                              </div>
+                            );
+                          }
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="border border-amber-500/30 bg-amber-950/20 p-2.5 text-[11px] text-amber-300">
+                      Execution budgets import direct costs from the quotation buildup. Selling markup and sales tax are excluded from site delivery targets.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-full flex items-center justify-center p-6 text-center font-mono text-xs text-slate">
+                    Select a quotation on the left to preview its cost categories and commercial metrics.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer Controls */}
+            <div className="border-t border-ink-mid p-3 sm:px-6 flex flex-wrap items-center justify-between gap-3 bg-ink-light/20">
+              <span className="font-mono text-xs text-slate-light">
+                {selectedQuoteObject ? (
+                  <span>
+                    Selected: <strong className="text-paper">{selectedQuoteObject.reference_number || selectedQuoteObject.id.slice(0, 8)}</strong>
+                  </span>
+                ) : (
+                  "No quotation selected"
+                )}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsQuoteSelectorOpen(false)}
+                  className="border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-slate-light hover:text-paper"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleLinkOnly}
+                  disabled={!selectedQuoteId || linkingOnly || importingQuote}
+                  className="border border-ink-mid bg-ink px-3.5 py-1.5 font-mono text-xs text-slate-light hover:text-paper hover:border-slate transition-colors disabled:opacity-50"
+                >
+                  {linkingOnly ? "Linking..." : "Link Only"}
+                </button>
+                <button
+                  onClick={() => handleLinkAndImport(selectedQuoteId || undefined)}
+                  disabled={!selectedQuoteId || importingQuote || linkingOnly}
+                  className="inline-flex items-center gap-1.5 border border-signal bg-signal px-4 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal-light transition-colors disabled:opacity-50 shadow-md"
+                >
+                  <Sparkles className={`h-3.5 w-3.5 ${importingQuote ? "animate-spin" : ""}`} />
+                  <span>{importingQuote ? "Importing..." : "Link & Import Budget"}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

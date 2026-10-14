@@ -52,6 +52,7 @@ async def visible_project_ids(db: AsyncSession, user: dict) -> Optional[list[str
               AND p.is_deleted = false
               AND (
                 p.assigned_to_user_id = :user_id
+                OR p.created_by = :user_id
                 OR EXISTS (
                   SELECT 1 FROM projects.site_role_assignments sra
                   WHERE sra.project_id = p.id
