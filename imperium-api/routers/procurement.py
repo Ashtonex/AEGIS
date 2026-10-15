@@ -2041,8 +2041,8 @@ async def issue_purchase_order(
     )
     await db.execute(
         text("""
-        INSERT INTO finance.commitments (organization_id, project_id, cost_code_id, cost_category, source_type, source_id, description, committed_amount, commitment_date, created_by)
-        VALUES (:org_id, :project_id, :cost_code_id, 'materials', 'purchase_order', :po_id, :description, :amount, CURRENT_DATE, :user_id)
+        INSERT INTO finance.commitments (organization_id, project_id, cost_code_id, cost_category, source_type, source_id, description, committed_amount, outstanding_amount, commitment_date, created_by)
+        VALUES (:org_id, :project_id, :cost_code_id, 'materials', 'purchase_order', :po_id, :description, :amount, :amount, CURRENT_DATE, :user_id)
         ON CONFLICT (organization_id, source_type, source_id) DO NOTHING
     """),
         {
@@ -2479,16 +2479,51 @@ async def receive_goods(
             ),
             {"received": remaining, "id": line["id"]},
         )
-        if line["item_id"]:
-            # Goods received into stock is an asset arriving, not a project
-            # cost - inventory_service.receive_stock() never posts to
-            # finance.cost_transactions. The cost is recognised later,
-            # whenever this stock is actually issued to a project (via
-            # inventory_service.issue_stock(), see routers/inventory.py).
+        effective_item_id = line["item_id"]
+        if not effective_item_id:
+            # Auto-provision a once-off inventory item for this project so the
+            # material arrives in the site store and stock ledger without being dropped.
+            item_code = f"ONCE-{str(line['id'])[:8].upper()}"
+            effective_item_id = (
+                await db.execute(
+                    text("""
+                    INSERT INTO procurement.inventory_items (
+                        organization_id, item_code, item_name, description, category,
+                        unit_of_measure, standard_cost, item_type, is_once_off_purchase,
+                        repurchase_policy, created_by
+                    ) VALUES (
+                        :org_id, :code, :name, :description, 'Direct Project Material',
+                        COALESCE(:uom, 'each'), :cost, 'material', true, 'once_off', :user_id
+                    ) ON CONFLICT (organization_id, item_code) DO UPDATE
+                    SET updated_at = NOW()
+                    RETURNING id
+                    """),
+                    {
+                        "org_id": user["org_id"],
+                        "code": item_code,
+                        "name": (line["description"] or "Direct Project Item")[:250],
+                        "description": line["description"],
+                        "uom": line.get("unit_of_measure") or "each",
+                        "cost": line["unit_price"],
+                        "user_id": user["user_id"],
+                    },
+                )
+            ).scalar()
+            await db.execute(
+                text("UPDATE procurement.purchase_order_lines SET item_id=:item_id WHERE id=:id"),
+                {"item_id": effective_item_id, "id": line["id"]},
+            )
+            await db.execute(
+                text("UPDATE procurement.grn_lines SET item_id=:item_id WHERE id=:id"),
+                {"item_id": effective_item_id, "id": grn_line_id},
+            )
+
+        if effective_item_id:
+            # Goods received into stock is an asset arriving in the store, linked to project
             await inventory_service.receive_stock(
                 db,
                 user,
-                item_id=line["item_id"],
+                item_id=effective_item_id,
                 store_id=receipt_store_id,
                 project_id=po["project_id"],
                 quantity=remaining,
@@ -2792,7 +2827,11 @@ async def payment_decision(
             text("""
             UPDATE finance.commitments
             SET invoiced_amount = LEAST(committed_amount, invoiced_amount + :amount),
-                status = CASE WHEN LEAST(committed_amount, invoiced_amount + :amount) >= committed_amount THEN 'fully_invoiced' ELSE 'partially_invoiced' END,
+                outstanding_amount = GREATEST(0, committed_amount - (invoiced_amount + :amount)),
+                status = CASE
+                    WHEN GREATEST(0, committed_amount - (invoiced_amount + :amount)) <= 0 THEN 'fulfilled'
+                    ELSE 'partially_invoiced'
+                END,
                 updated_at=NOW()
             WHERE organization_id=:org_id AND source_type='purchase_order' AND source_id=:po_id
         """),

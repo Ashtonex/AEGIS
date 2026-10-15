@@ -3329,3 +3329,224 @@ async def import_budget_from_quotation(
         },
     }, f"Successfully imported execution budget of ${execution_total:,.2f} from Quotations & Estimations.")
 
+
+@router.get("/{project_id}/supply-chain")
+async def get_project_supply_chain(
+    project_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(require_permission("projects.read")),
+):
+    """Consolidated project supply chain endpoint.
+    Aggregates:
+    - Linked site store(s)
+    - Live on-hand inventory balances & valuation
+    - Site material requisitions
+    - Purchase orders linked to this project
+    - Goods received notes (deliveries)
+    - Consumed material logs (daily site reports)
+    """
+    org_id = user["org_id"]
+
+    # 1. Site stores linked to project
+    stores_res = await db.execute(
+        text("""
+            SELECT id, name, code, store_type, site_id, location, is_active, created_at
+            FROM procurement.stores
+            WHERE organization_id = :org_id
+              AND project_id = :project_id
+              AND is_deleted = false
+            ORDER BY created_at ASC
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    site_stores = [dict(r._mapping) for r in stores_res.fetchall()]
+    store_ids = [s["id"] for s in site_stores]
+
+    # 2. Live stock balances in site store(s) or directly tagged to project
+    stock_rows = []
+    if store_ids:
+        stock_res = await db.execute(
+            text("""
+                SELECT
+                    sl.item_id,
+                    COALESCE(i.item_code, 'UNLISTED') AS item_code,
+                    COALESCE(i.name, 'Uncatalogued Item') AS item_name,
+                    COALESCE(i.unit_of_measure, 'units') AS unit_of_measure,
+                    COALESCE(i.category, 'General') AS category,
+                    sl.store_id,
+                    s.name AS store_name,
+                    SUM(sl.quantity) AS on_hand_quantity,
+                    AVG(NULLIF(sl.unit_cost, 0)) AS avg_unit_cost,
+                    SUM(sl.quantity * COALESCE(sl.unit_cost, 0)) AS total_value
+                FROM procurement.stock_ledger sl
+                LEFT JOIN procurement.inventory_items i ON i.id = sl.item_id
+                LEFT JOIN procurement.stores s ON s.id = sl.store_id
+                WHERE sl.organization_id = :org_id
+                  AND (sl.project_id = :project_id OR sl.store_id = ANY(:store_ids))
+                GROUP BY sl.item_id, i.item_code, i.name, i.unit_of_measure, i.category, sl.store_id, s.name
+                HAVING SUM(sl.quantity) > 0
+                ORDER BY total_value DESC
+            """),
+            {"org_id": org_id, "project_id": project_id, "store_ids": store_ids},
+        )
+        stock_rows = [dict(r._mapping) for r in stock_res.fetchall()]
+    else:
+        stock_res = await db.execute(
+            text("""
+                SELECT
+                    sl.item_id,
+                    COALESCE(i.item_code, 'UNLISTED') AS item_code,
+                    COALESCE(i.name, 'Uncatalogued Item') AS item_name,
+                    COALESCE(i.unit_of_measure, 'units') AS unit_of_measure,
+                    COALESCE(i.category, 'General') AS category,
+                    sl.store_id,
+                    s.name AS store_name,
+                    SUM(sl.quantity) AS on_hand_quantity,
+                    AVG(NULLIF(sl.unit_cost, 0)) AS avg_unit_cost,
+                    SUM(sl.quantity * COALESCE(sl.unit_cost, 0)) AS total_value
+                FROM procurement.stock_ledger sl
+                LEFT JOIN procurement.inventory_items i ON i.id = sl.item_id
+                LEFT JOIN procurement.stores s ON s.id = sl.store_id
+                WHERE sl.organization_id = :org_id
+                  AND sl.project_id = :project_id
+                GROUP BY sl.item_id, i.item_code, i.name, i.unit_of_measure, i.category, sl.store_id, s.name
+                HAVING SUM(sl.quantity) > 0
+                ORDER BY total_value DESC
+            """),
+            {"org_id": org_id, "project_id": project_id},
+        )
+        stock_rows = [dict(r._mapping) for r in stock_res.fetchall()]
+
+    # 3. Requisitions originating for or linked to this project
+    reqs_res = await db.execute(
+        text("""
+            SELECT
+                r.id,
+                r.requisition_number,
+                r.title,
+                r.status,
+                r.priority,
+                r.created_at,
+                r.required_by_date,
+                r.site_id,
+                si.name AS site_name,
+                (SELECT COUNT(*) FROM procurement.requisition_items ri WHERE ri.requisition_id = r.id) AS item_count,
+                (SELECT COALESCE(SUM(ri.quantity * COALESCE(ri.estimated_unit_cost, 0)), 0)
+                 FROM procurement.requisition_items ri WHERE ri.requisition_id = r.id) AS estimated_total
+            FROM procurement.purchase_requisitions r
+            LEFT JOIN projects.sites si ON si.id = r.site_id
+            WHERE r.organization_id = :org_id
+              AND r.project_id = :project_id
+            ORDER BY r.created_at DESC
+            LIMIT 50
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    requisitions = [dict(r._mapping) for r in reqs_res.fetchall()]
+
+    # 4. Purchase orders linked to project
+    po_res = await db.execute(
+        text("""
+            SELECT
+                po.id,
+                po.po_number,
+                po.status,
+                po.supplier_id,
+                s.name AS supplier_name,
+                po.currency,
+                po.total_amount,
+                po.created_at,
+                po.expected_delivery_date,
+                po.payment_terms
+            FROM procurement.purchase_orders po
+            LEFT JOIN procurement.suppliers s ON s.id = po.supplier_id
+            WHERE po.organization_id = :org_id
+              AND po.project_id = :project_id
+            ORDER BY po.created_at DESC
+            LIMIT 50
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    purchase_orders = [dict(r._mapping) for r in po_res.fetchall()]
+
+    # 5. Goods Received Notes (Deliveries to site)
+    dummy_uuid = uuid4()
+    grn_res = await db.execute(
+        text("""
+            SELECT
+                g.id,
+                g.grn_number,
+                g.po_id,
+                po.po_number,
+                g.store_id,
+                st.name AS store_name,
+                g.delivery_note_number,
+                g.received_at,
+                g.received_by_user_id,
+                g.inspection_status,
+                (SELECT COUNT(*) FROM procurement.goods_received_items gri WHERE gri.grn_id = g.id) AS item_count
+            FROM procurement.goods_received_notes g
+            LEFT JOIN procurement.purchase_orders po ON po.id = g.po_id
+            LEFT JOIN procurement.stores st ON st.id = g.store_id
+            WHERE g.organization_id = :org_id
+              AND (g.project_id = :project_id OR g.store_id = ANY(:store_ids))
+            ORDER BY g.received_at DESC
+            LIMIT 50
+        """),
+        {"org_id": org_id, "project_id": project_id, "store_ids": store_ids or [dummy_uuid]},
+    )
+    deliveries = [dict(r._mapping) for r in grn_res.fetchall()]
+
+    # 6. Consumption logs from daily site reports
+    cons_res = await db.execute(
+        text("""
+            SELECT
+                drm.id,
+                drm.report_id,
+                dr.report_date,
+                drm.item_id,
+                i.name AS item_name,
+                i.item_code,
+                drm.description,
+                drm.quantity_used,
+                drm.unit_of_measure,
+                drm.notes,
+                drm.created_at
+            FROM projects.daily_report_materials drm
+            JOIN projects.daily_site_reports dr ON dr.id = drm.report_id
+            LEFT JOIN procurement.inventory_items i ON i.id = drm.item_id
+            WHERE dr.organization_id = :org_id
+              AND dr.project_id = :project_id
+            ORDER BY dr.report_date DESC, drm.created_at DESC
+            LIMIT 50
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    consumption_logs = [dict(r._mapping) for r in cons_res.fetchall()]
+
+    total_on_hand_val = sum(float(r.get("total_value") or 0) for r in stock_rows)
+    total_committed_po_val = sum(
+        float(p.get("total_amount") or 0)
+        for p in purchase_orders
+        if p.get("status") in ("issued", "approved", "partially_received")
+    )
+
+    data = {
+        "project_id": str(project_id),
+        "site_stores": site_stores,
+        "inventory_on_hand": stock_rows,
+        "requisitions": requisitions,
+        "purchase_orders": purchase_orders,
+        "deliveries": deliveries,
+        "consumption_logs": consumption_logs,
+        "summary": {
+            "total_site_stores": len(site_stores),
+            "total_inventory_items": len(stock_rows),
+            "on_hand_inventory_value": round(total_on_hand_val, 2),
+            "open_committed_po_value": round(total_committed_po_val, 2),
+            "total_open_pos": len([p for p in purchase_orders if p.get("status") in ("issued", "approved", "partially_received")]),
+            "total_requisitions": len(requisitions),
+            "total_deliveries": len(deliveries),
+        },
+    }
+    return _result(data, "Project supply chain loaded successfully.")

@@ -63,3 +63,106 @@ export async function linkProjectToQuotation(
     }
   );
 }
+
+
+export type ProjectSupplyChainResponse = {
+  project_id: string;
+  site_stores: Array<{
+    id: string;
+    name: string;
+    code: string;
+    store_type: string;
+    site_id?: string;
+    location?: string;
+    is_active: boolean;
+    created_at: string;
+  }>;
+  inventory_on_hand: Array<{
+    item_id: string;
+    item_code: string;
+    item_name: string;
+    unit_of_measure: string;
+    category: string;
+    store_id: string;
+    store_name: string;
+    on_hand_quantity: number;
+    avg_unit_cost: number;
+    total_value: number;
+  }>;
+  requisitions: Array<{
+    id: string;
+    requisition_number: string;
+    title: string;
+    status: string;
+    priority: string;
+    created_at: string;
+    required_by_date?: string;
+    site_id?: string;
+    site_name?: string;
+    item_count: number;
+    estimated_total: number;
+  }>;
+  purchase_orders: Array<{
+    id: string;
+    po_number: string;
+    status: string;
+    supplier_id: string;
+    supplier_name?: string;
+    currency: string;
+    total_amount: number;
+    created_at: string;
+    expected_delivery_date?: string;
+    payment_terms?: string;
+  }>;
+  deliveries: Array<{
+    id: string;
+    grn_number: string;
+    po_id?: string;
+    po_number?: string;
+    store_id: string;
+    store_name?: string;
+    delivery_note_number?: string;
+    received_at: string;
+    received_by_user_id?: string;
+    inspection_status: string;
+    item_count: number;
+  }>;
+  consumption_logs: Array<{
+    id: string;
+    report_id: string;
+    report_date: string;
+    item_id?: string;
+    item_name?: string;
+    item_code?: string;
+    description: string;
+    quantity_used: number;
+    unit_of_measure?: string;
+    notes?: string;
+    created_at: string;
+  }>;
+  summary: {
+    total_site_stores: number;
+    total_inventory_items: number;
+    on_hand_inventory_value: number;
+    open_committed_po_value: number;
+    total_open_pos: number;
+    total_requisitions: number;
+    total_deliveries: number;
+  };
+};
+
+/**
+ * Retrieves the complete consolidated supply chain for a project:
+ * site stores, on-hand inventory, site requisitions, purchase orders, deliveries (GRNs), and consumption.
+ */
+export async function getProjectSupplyChain(
+  projectId: string
+): Promise<ApiResponse<ProjectSupplyChainResponse>> {
+  return fetchApi<ApiResponse<ProjectSupplyChainResponse>>(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/supply-chain`,
+    {
+      cache: "no-store",
+      allowFallback: false,
+    }
+  );
+}

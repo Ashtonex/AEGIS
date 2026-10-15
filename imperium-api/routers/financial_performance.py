@@ -360,11 +360,22 @@ async def get_project_financial_detail(
             ), 0) AS internal_transfer_credits,
 
             COALESCE((
-                SELECT SUM(c.outstanding_amount)
+                SELECT SUM(COALESCE(c.outstanding_amount, c.committed_amount - c.invoiced_amount, c.committed_amount))
                 FROM finance.commitments c
                 WHERE c.project_id = p.id AND c.organization_id = :org_id
-                  AND c.status = 'active' AND c.is_deleted = false
+                  AND c.status IN ('active', 'partially_invoiced') AND c.is_deleted = false
+                  AND COALESCE(c.outstanding_amount, c.committed_amount - c.invoiced_amount, c.committed_amount) > 0
             ), 0) AS committed_cost,
+
+            COALESCE((
+                SELECT SUM(sl.quantity * COALESCE(sl.unit_cost, 0))
+                FROM procurement.stock_ledger sl
+                WHERE (sl.project_id = p.id OR sl.store_id IN (
+                    SELECT st.id FROM procurement.stores st
+                    WHERE st.project_id = p.id AND st.organization_id = :org_id AND st.is_deleted = false
+                ))
+                  AND sl.organization_id = :org_id
+            ), 0) AS site_store_inventory_value,
             
             COALESCE((
                 SELECT SUM(pc.certified_amount) 

@@ -74,6 +74,7 @@ export default function ProjectFinancialsPage() {
   const budgetedCost = number(source?.budget_amount ?? (detail as any)?.viability?.[0]?.budget_amount) ?? 0;
   const actualCost = number(source?.actual_cost ?? (financeDetail as any)?.total_cost_incurred) ?? 0;
   const committedCost = number(source?.committed_cost ?? (financeDetail as any)?.total_commitments) ?? 0;
+  const siteStoreInventoryValue = number((financeDetail as any)?.site_store_inventory_value) ?? 0;
   const collectedCash = number((financeDetail as any)?.total_cash_collected) ?? 0;
 
   const totalExposure = actualCost + committedCost;
@@ -166,7 +167,7 @@ export default function ProjectFinancialsPage() {
       </div>
 
       {/* Financial Radar KPI Cards */}
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <div className="border border-ink-mid bg-ink/70 p-4">
           <span className="font-mono text-[10px] uppercase text-slate">Contract Value</span>
           <p className="mt-1 font-mono text-2xl font-bold text-paper">
@@ -185,6 +186,14 @@ export default function ProjectFinancialsPage() {
           <span className="text-[11px] text-slate-light truncate">
             Actual: {formatCurrency(actualCost)} + POs: {formatCurrency(committedCost)}
           </span>
+        </div>
+
+        <div className="border border-ink-mid bg-ink/70 p-4">
+          <span className="font-mono text-[10px] uppercase text-slate">Site Store Inventory</span>
+          <p className="mt-1 font-mono text-2xl font-bold text-emerald-400">
+            {formatCurrency(siteStoreInventoryValue)}
+          </p>
+          <span className="text-[11px] text-slate-light">Asset held in site stores</span>
         </div>
 
         <div className="border border-ink-mid bg-ink/70 p-4">

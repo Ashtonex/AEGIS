@@ -596,12 +596,19 @@ async def adjust_stock(
             # justification here, unlike issue/transfer which have no
             # required reason field for the non-override path.
             is_override = True
+    # If this store is a site store linked to a project, carry the project context
+    store_proj_res = await db.execute(
+        text("SELECT project_id FROM procurement.stores WHERE id = :store_id AND organization_id = :org_id"),
+        {"store_id": store_id, "org_id": user["org_id"]},
+    )
+    store_project_id = store_proj_res.scalar_one_or_none()
+
     movement_id = await record_stock_movement(
         db,
         user,
         item_id=item_id,
         store_id=store_id,
-        project_id=None,
+        project_id=store_project_id,
         movement_type="adjustment",
         quantity=quantity_delta,
         unit_cost=unit_cost,
@@ -616,10 +623,11 @@ async def adjust_stock(
         event_type="inventory.adjustment.recorded.v1",
         aggregate_type="stock_ledger",
         aggregate_id=movement_id,
-        project_id=None,
+        project_id=store_project_id,
         event_data={
             "item_id": str(item_id),
             "store_id": str(store_id),
+            "project_id": str(store_project_id) if store_project_id else None,
             "quantity_delta": str(quantity_delta),
             "reason": reason,
         },
@@ -631,10 +639,11 @@ async def adjust_stock(
             event_type="inventory.adjustment_overridden.v1",
             aggregate_type="stock_ledger",
             aggregate_id=movement_id,
-            project_id=None,
+            project_id=store_project_id,
             event_data={
                 "item_id": str(item_id),
                 "store_id": str(store_id),
+                "project_id": str(store_project_id) if store_project_id else None,
                 "quantity_delta": str(quantity_delta),
                 "override_reason": reason,
                 "overridden_by_role": user.get("role"),
