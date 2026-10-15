@@ -1620,6 +1620,81 @@ export async function decideDailySiteReportEngineer(reportId: string, decision: 
   });
 }
 
+export async function updateDailyReportLabour(reportId: string, lineId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/labour/${lineId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDailyReportLabour(reportId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/labour/${lineId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function updateDailyReportEquipment(reportId: string, lineId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/equipment/${lineId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDailyReportEquipment(reportId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/equipment/${lineId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function updateDailyReportMaterial(reportId: string, lineId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/materials/${lineId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDailyReportMaterial(reportId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/materials/${lineId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function syncDailyReport(reportId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/sync-all`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getSitePlantRequests(projectId?: string): Promise<ApiResponse<any[]>> {
+  const query = projectId ? `?project_id=${projectId}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/plant-requests${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createSitePlantRequest(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/site-operations/plant-requests', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function approveSitePlantRequest(requestId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/plant-requests/${requestId}/approve`, {
+    method: 'PATCH',
+    allowFallback: false,
+  });
+}
+
 /** System settings are server-authorized and deliberately have no browser fallback. */
 export async function getSettingsOverview(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/settings/overview', { cache: 'no-store', allowFallback: false });

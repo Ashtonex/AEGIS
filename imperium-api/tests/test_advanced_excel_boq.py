@@ -189,6 +189,72 @@ class AdvancedExcelBOQTests(unittest.TestCase):
                 if os.path.exists(p):
                     os.remove(p)
 
+    def test_multi_tab_workbook_differentiation_prevents_inflation(self):
+        """Verifies that a multi-tab workbook with a Summary roll-up sheet, rate analysis, and detail sheets
+        excludes the summary and rate analysis so direct costs are not double-counted or inflated."""
+        wb = Workbook()
+
+        # Sheet 1: General Summary (Rolls up totals from other sheets)
+        ws_sum = wb.active
+        ws_sum.title = "General Summary"
+        ws_sum.append(["Item No", "Description", "Amount"])
+        ws_sum.append(["1", "Bill No. 1: Earthworks", 15000.00])
+        ws_sum.append(["2", "Bill No. 2: Concrete Works", 35000.00])
+        ws_sum.append([None, "Total Carried to Final Summary", 50000.00])
+
+        # Sheet 2: Earthworks (Actual bill items totaling 15000)
+        ws_earth = wb.create_sheet(title="Earthworks")
+        ws_earth.append(["Item No", "Description", "Unit", "Quantity", "Rate", "Amount"])
+        ws_earth.append(["1.1", "Clear site of shrubs and trees", "m2", 1000, 5.00, 5000.00])
+        ws_earth.append(["1.2", "Excavate topsoil and stockpile", "m3", 500, 20.00, 10000.00])
+        ws_earth.append([None, "Total Carried Forward", None, None, None, 15000.00])
+
+        # Sheet 3: Concrete Works (Actual bill items totaling 35000)
+        ws_conc = wb.create_sheet(title="Concrete Works")
+        ws_conc.append(["Item No", "Description", "Unit", "Quantity", "Rate", "Amount"])
+        ws_conc.append(["2.1", "Mass concrete in column bases C25", "m3", 100, 250.00, 25000.00])
+        ws_conc.append(["2.2", "Formwork to sides of bases", "m2", 200, 50.00, 10000.00])
+
+        # Sheet 4: Rate Analysis (Internal working sheet that should NOT be in the bill)
+        ws_rate = wb.create_sheet(title="Rate Analysis")
+        ws_rate.append(["Code", "Resource Description", "Unit", "Rate", "Quantity", "Cost"])
+        ws_rate.append(["MAT-01", "Cement 42.5N", "bags", 12.50, 400, 5000.00])
+        ws_rate.append(["LAB-01", "Artisan mason", "hrs", 8.00, 120, 960.00])
+
+        # Sheet 5: Notes & Conditions (Informational)
+        ws_notes = wb.create_sheet(title="Preamble & Notes")
+        ws_notes.append(["Standard preambles to trades apply."])
+
+        buffer = BytesIO()
+        wb.save(buffer)
+
+        result = BOQImporter.import_boq(buffer.getvalue(), ".xlsx")
+
+        # Must only contain the 4 detailed bill items (2 earthworks + 2 concrete), NOT summary or rate analysis
+        self.assertEqual(len(result.items), 4)
+        sections = {it.section for it in result.items}
+        self.assertEqual(sections, {"Earthworks", "Concrete Works"})
+
+        # Total must be exactly 50,000 (15,000 + 35,000), NOT 100,000 (if summary was included)
+        # and NOT 105,960 (if rate analysis was included)
+        total = Decimal(result.summary["total_direct_costs"])
+        self.assertEqual(total, Decimal("50000.00"))
+
+        # Verify differentiation telemetry
+        self.assertTrue(result.summary.get("differentiated_summary_prevented"))
+        self.assertEqual(result.summary.get("imported_sheets_count"), 2)
+
+        # Verify sheet manifest
+        manifest = result.summary.get("sheet_manifest", [])
+        self.assertEqual(len(manifest), 5)
+        manifest_map = {m["sheet_name"]: m for m in manifest}
+        self.assertEqual(manifest_map["General Summary"]["status"], "excluded_summary")
+        self.assertEqual(manifest_map["Earthworks"]["status"], "imported")
+        self.assertEqual(manifest_map["Concrete Works"]["status"], "imported")
+        self.assertEqual(manifest_map["Rate Analysis"]["status"], "excluded_working")
+        self.assertEqual(manifest_map["Preamble & Notes"]["status"], "excluded_informational")
+
 
 if __name__ == "__main__":
     unittest.main()
+

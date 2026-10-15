@@ -496,6 +496,23 @@ class PlantRequestPayload(Payload):
     )
     risk_level: Literal["low", "normal", "high", "critical"] = "normal"
 
+    @model_validator(mode="before")
+    @classmethod
+    def clean_empty_values(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cleaned = {}
+            for k, v in data.items():
+                if isinstance(v, str) and not v.strip() and k in (
+                    "end_date", "project_id", "client_id", "requesting_department_id",
+                    "requested_by_user_id", "approver_user_id", "cost_centre",
+                    "specification", "attachments_required", "client_name"
+                ):
+                    cleaned[k] = None
+                else:
+                    cleaned[k] = v
+            return cleaned
+        return data
+
     @model_validator(mode="after")
     def valid_request_dates(self):
         if self.end_date and self.end_date < self.start_date:

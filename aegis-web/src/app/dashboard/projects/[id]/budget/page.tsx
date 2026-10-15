@@ -28,7 +28,7 @@ export default function ProjectBudgetPage() {
       </div>
 
       <ProjectBudgetSpreadsheet
-        projectId={projectId}
+        projectId={project?.id || projectId}
         contractValue={contractValue}
         onBudgetSaved={() => {
           void refetch();

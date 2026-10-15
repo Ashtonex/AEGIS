@@ -384,10 +384,14 @@ function NewPlantRequestModal({ onClose, onSuccess }: { onClose: () => void; onS
     setSubmitting(true);
     setErr(null);
     try {
-      await createPlantRequest({
+      const payload: Record<string, unknown> = {
         ...formData,
-        quantity: Number(formData.quantity),
-      });
+        quantity: Math.max(1, Number(formData.quantity) || 1),
+      };
+      if (!formData.end_date) {
+        delete payload.end_date;
+      }
+      await createPlantRequest(payload);
       onSuccess();
     } catch (e: any) {
       setErr(e instanceof ApiError ? e.message : "Failed to create plant request.");
@@ -432,7 +436,7 @@ function NewPlantRequestModal({ onClose, onSuccess }: { onClose: () => void; onS
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-[11px] font-mono uppercase text-slate mb-1">Work Location</label>
               <input
@@ -452,6 +456,15 @@ function NewPlantRequestModal({ onClose, onSuccess }: { onClose: () => void; onS
                 onChange={(e) => setFormData({ ...formData, start_date: e.target.value })}
                 className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
                 required
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">End Date (Optional)</label>
+              <input
+                type="date"
+                value={formData.end_date}
+                onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
               />
             </div>
           </div>

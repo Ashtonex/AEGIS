@@ -177,6 +177,10 @@ function normalizeApiError(error: unknown): ApiError {
     return new ApiError(0, "The service took too long to respond. Please retry once the connection is ready.");
   }
 
+  if (normalizedMessage.includes("failed to fetch") || normalizedMessage.includes("econnrefused") || normalizedMessage.includes("networkerror")) {
+    return new ApiError(0, "The backend service could not be reached. Please verify the API server is online and retry.");
+  }
+
   return new ApiError(0, "The service could not be reached. Please retry once the connection is ready.");
 }
 
@@ -417,6 +421,33 @@ function extractApiErrorMessage(parsed: unknown): string | undefined {
     return payload.detail;
   }
 
+  // FastAPI validation error detail array
+  if (Array.isArray(payload.detail)) {
+    const messages = payload.detail
+      .map((item) => {
+        if (!item) return null;
+        if (typeof item === "string") return item;
+        if (typeof item === "object") {
+          const entry = item as { loc?: unknown[]; msg?: unknown; message?: unknown };
+          const locParts = Array.isArray(entry.loc)
+            ? entry.loc.filter((l) => l !== "body" && typeof l === "string" && l.length > 0)
+            : [];
+          const locStr = locParts.join(".");
+          const msgStr = typeof entry.msg === "string" ? entry.msg : (typeof entry.message === "string" ? entry.message : "");
+          if (locStr && msgStr) {
+            const field = locStr.replace(/_/g, " ");
+            return `${field}: ${msgStr}`;
+          }
+          if (msgStr) return msgStr;
+        }
+        return null;
+      })
+      .filter((m): m is string => Boolean(m));
+    if (messages.length > 0) {
+      return messages.join("; ");
+    }
+  }
+
   // Compliance deployment-gate blocks (core.compliance.validate_employee_deployment)
   // return a structured 409 detail object rather than a plain string, so the
   // missing licence/training/paperwork requirements would otherwise be
@@ -482,7 +513,9 @@ export async function buildApiError(response: Response): Promise<ApiError> {
     if (body) {
       const parsed = JSON.parse(body) as unknown;
       const extracted = extractApiErrorMessage(parsed);
-      message = isTransientServiceError ? message : extracted ?? message;
+      if (extracted) {
+        message = extracted;
+      }
     }
   } catch {
     // Keep the status-based message when the backend did not return JSON.

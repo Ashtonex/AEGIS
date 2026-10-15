@@ -20,6 +20,17 @@ export type SiteDay = {
   project_name: string;
   date: string;
   is_today: boolean;
+  daily_report?: ApiRecord | null;
+  daily_report_id?: string | null;
+  daily_report_status?: string | null;
+  labour_summary?: {
+    unique_headcount: number;
+    regular_hours: number;
+    overtime_hours: number;
+    total_hours: number;
+    estimated_cost: number;
+    missing_rates_count: number;
+  } | null;
 };
 
 type Props = {

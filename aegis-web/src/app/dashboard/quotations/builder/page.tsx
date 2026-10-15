@@ -164,6 +164,8 @@ export default function QuotationBuilder() {
     warnings: string[];
     rows: Array<{ selected: boolean; section: string; item_no: string; description: string; qty: number; unit: string; rate: number }>;
     linkedQuotationId?: string | null;
+    sheetManifest?: Array<{ sheet_name: string; classification: string; status: string; reason: string; items_count: number; subtotal: string }>;
+    differentiatedSummaryPrevented?: boolean;
   } | null>(null);
   const [boqImportMode, setBoqImportMode] = useState<"replace" | "append">("replace");
 
@@ -516,6 +518,8 @@ export default function QuotationBuilder() {
             rate: Number(it.rate) || 0,
           })),
           linkedQuotationId: typeof res.data?.linked?.quotation_id === "string" ? res.data.linked.quotation_id : null,
+          sheetManifest: ((res.data?.summary as any)?.sheet_manifest as any[]) || [],
+          differentiatedSummaryPrevented: Boolean((res.data?.summary as any)?.differentiated_summary_prevented),
         });
         setBoqImportMode("replace");
       } else {
@@ -2125,6 +2129,57 @@ export default function QuotationBuilder() {
             {boqPreview.warnings.length > 0 && (
               <div className="shrink-0 p-3 border border-amber-500/30 bg-amber-950/20 rounded-sm text-[11px] text-amber-400 max-h-24 overflow-y-auto">
                 {boqPreview.warnings.map((w, i) => <div key={i}>{w}</div>)}
+              </div>
+            )}
+
+            {boqPreview.differentiatedSummaryPrevented && (
+              <div className="shrink-0 p-3 bg-emerald-950/30 border border-emerald-500/40 rounded-sm text-xs text-emerald-300 flex items-start gap-2.5">
+                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-emerald-200">Smart Multi-Tab Differentiation Active</p>
+                  <p className="text-[11px] text-emerald-300/80 mt-0.5">
+                    AEGIS analyzed your multi-tab workbook and automatically isolated detailed trade bills while excluding roll-up summaries (e.g. General Summary) and working sheets to prevent double-counting and inflated figures.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {boqPreview.sheetManifest && boqPreview.sheetManifest.length > 1 && (
+              <div className="shrink-0 space-y-1.5 bg-ink-light/50 border border-ink-mid/60 rounded-sm p-3">
+                <div className="flex items-center justify-between text-[10px] font-mono uppercase text-slate tracking-wider">
+                  <span>Workbook Tabs Analysis ({boqPreview.sheetManifest.length} Sheets Detected)</span>
+                  <span className="text-emerald-400 font-semibold">Anti-Inflation Active</span>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1 max-h-32 overflow-y-auto">
+                  {boqPreview.sheetManifest.map((s, idx) => {
+                    const isImported = s.status === "imported";
+                    const isExcluded = s.status.startsWith("excluded");
+                    return (
+                      <div
+                        key={idx}
+                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded text-xs border ${
+                          isImported
+                            ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
+                            : isExcluded
+                            ? "bg-amber-950/20 border-amber-500/30 text-amber-300"
+                            : "bg-ink-dark border-ink-mid text-slate"
+                        }`}
+                        title={s.reason}
+                      >
+                        <span className="font-medium text-paper">{s.sheet_name}</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-ink border border-ink-mid font-mono uppercase text-slate-light">
+                          {s.classification.replace("_", " ")}
+                        </span>
+                        <span className={`text-[10px] font-mono ${isImported ? "text-emerald-400 font-bold" : "text-amber-400"}`}>
+                          {isImported ? `+${s.items_count} items` : "Excluded"}
+                        </span>
+                        {s.subtotal && s.subtotal !== "0.00" && (
+                          <span className="text-[10px] text-slate-light font-mono">(${Number(s.subtotal).toLocaleString()})</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 

@@ -21,6 +21,7 @@ import {
   Target,
   Truck,
   Users,
+  Wrench,
   X,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
@@ -30,9 +31,14 @@ import {
   addDailyReportEquipment,
   addDailyReportLabour,
   addDailyReportMaterial,
+  approveSitePlantRequest,
   auditSiteRequest,
   createDailySiteReport,
+  createSitePlantRequest,
   decideDailySiteReport,
+  deleteDailyReportEquipment,
+  deleteDailyReportLabour,
+  deleteDailyReportMaterial,
   getDailySiteReport,
   getDailySiteReports,
   getFleet,
@@ -41,16 +47,24 @@ import {
   getSiteMaterialRequests,
   getSiteOperationInventoryItems,
   getSiteOperationStores,
+  getSitePlantRequests,
   getWeeklySiteBudgetItems,
   getWeeklySiteBudgets,
   getWorkforce,
   requestSiteMaterial,
   suggestMaterials,
   submitDailySiteReport,
+  syncDailyReport,
+  updateDailyReportEquipment,
+  updateDailyReportLabour,
+  updateDailySiteReport,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth/AuthContext";
 import { LabourRegisterTab, type SiteDay } from "@/components/site-operations/LabourRegisterTab";
+import { PlantTab } from "@/components/site-operations/PlantTab";
+import { ActiveDailyReport } from "@/components/site-operations/ActiveDailyReport";
 import { TargetsTab } from "@/components/site-operations/TargetsTab";
-import { Btn, Locked, Notice, Panel, Pill, areaClass, errorText, fieldClass, qty } from "@/components/site-operations/ui";
+import { Btn, Locked, Notice, Panel, Pill, areaClass, errorText, fieldClass, qty, usd } from "@/components/site-operations/ui";
 
 type ApiRecord = Record<string, any> & { id: string };
 type Detail = {
@@ -73,7 +87,7 @@ type Detail = {
     is_ready_for_submission: boolean;
   };
 };
-type TabKey = "register" | "report" | "materials" | "targets";
+type TabKey = "register" | "report" | "plant" | "materials" | "targets";
 
 const EMPTY_DETAIL: Detail = {
   report: {} as ApiRecord,
@@ -147,6 +161,9 @@ export default function SiteOperationsPage() {
 }
 
 function SiteOperationsWorkspace() {
+  const { role, isSuperAdmin } = useAuth();
+  const canApprove = isSuperAdmin || role === "admin" || role === "manager" || role === "executive";
+
   const searchParams = useSearchParams();
   const queryProjectId = searchParams?.get("projectId") || "";
 
@@ -174,6 +191,39 @@ function SiteOperationsWorkspace() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+
+  const todayReport = useMemo(() => {
+    if (!projectId) return null;
+    if (day?.daily_report_id) {
+      const found = reports.find((r) => String(r.id) === String(day.daily_report_id));
+      if (found) return found;
+    }
+    return reports.find((r) => String(r.project_id) === String(projectId) && String(r.report_date) === String(workDate)) || null;
+  }, [reports, projectId, workDate, day?.daily_report_id]);
+
+  const [todayDetail, setTodayDetail] = useState<Detail | null>(null);
+  const [todayDetailLoading, setTodayDetailLoading] = useState(false);
+
+  const loadTodayDetail = useCallback(async (reportId: string) => {
+    setTodayDetailLoading(true);
+    try {
+      const res = await getDailySiteReport(reportId);
+      setTodayDetail(res.data ?? EMPTY_DETAIL);
+    } catch {
+      setTodayDetail(null);
+    } finally {
+      setTodayDetailLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (todayReport?.id) {
+      void loadTodayDetail(todayReport.id);
+    } else {
+      setTodayDetail(null);
+    }
+  }, [todayReport?.id, loadTodayDetail]);
+
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; text: string } | null>(null);
@@ -262,7 +312,7 @@ function SiteOperationsWorkspace() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const t = params.get("tab");
-    if (t === "register" || t === "report" || t === "materials" || t === "targets") setTab(t);
+    if (t === "register" || t === "report" || t === "plant" || t === "materials" || t === "targets") setTab(t);
     if (params.get("project")) setProjectId(params.get("project") ?? "");
     if (params.get("date")) setWorkDate(params.get("date") ?? harareToday());
   }, []);
@@ -400,21 +450,36 @@ function SiteOperationsWorkspace() {
     try {
       const b = day?.briefing;
       const safetyNotes = b?.safety_concern_raised ? `${text(b.safety_concerns, "Concern raised")}. Action: ${text(b.safety_actions, "not recorded")}` : null;
-      await createDailySiteReport({ project_id: projectId, report_date: workDate, ...draft, safety_notes: safetyNotes, cost_exposure: Number(draft.cost_exposure || 0), weather: {} });
-      setNotice({ tone: "success", text: "Daily site report created. Open it below to add labour, plant and materials." });
+      const res = await createDailySiteReport({ project_id: projectId, report_date: workDate, ...draft, safety_notes: safetyNotes, cost_exposure: Number(draft.cost_exposure || 0), weather: {} });
+      setNotice({ tone: "success", text: "Daily site report ready. Site activity synchronized." });
       setDraft((d) => ({ ...d, planned_work: "", actual_work: "", delays: "", cost_exposure: "0" }));
       await load();
-    } catch (reason) {
-      setNotice({ tone: "error", text: errorText(reason, "Unable to create daily report.") });
+      if (res?.data?.id) {
+        await loadTodayDetail(res.data.id);
+      }
+    } catch (reason: any) {
+      const existing = reports.find(
+        (r) => String(r.project_id) === String(projectId) && String(r.report_date) === String(workDate)
+      );
+      if (existing) {
+        setNotice({ tone: "info", text: "Daily report draft already exists for today. Loaded below." });
+        await loadTodayDetail(existing.id);
+      } else {
+        setNotice({ tone: "error", text: errorText(reason, "Unable to create daily report.") });
+      }
     } finally {
       setSaving(null);
     }
   };
 
   const refreshDetail = async () => {
-    if (!selected) return;
-    const response = await getDailySiteReport(selected.id);
-    setDetail(response.data ?? EMPTY_DETAIL);
+    if (selected) {
+      const response = await getDailySiteReport(selected.id);
+      setDetail(response.data ?? EMPTY_DETAIL);
+    }
+    if (todayReport?.id) {
+      await loadTodayDetail(todayReport.id);
+    }
     const reportResult = await getDailySiteReports({ status, projectId: projectId || undefined });
     setReports(Array.isArray(reportResult.data) ? reportResult.data : []);
   };
@@ -521,6 +586,7 @@ function SiteOperationsWorkspace() {
     { key: "register", label: "Labour Register", icon: <HardHat className="h-4 w-4" />, locked: false,
       badge: dayStatus === "started" ? "live" : dayStatus === "closed" ? "closed" : dayStatus === "open" ? "pre-start" : "to do" },
     { key: "report", label: "Daily Report", icon: <ClipboardList className="h-4 w-4" />, locked: !unlocked },
+    { key: "plant", label: "Plant & Equipment", icon: <Truck className="h-4 w-4" />, locked: !unlocked },
     { key: "materials", label: "Material Requests", icon: <PackageCheck className="h-4 w-4" />, locked: !unlocked },
     { key: "targets", label: "Budgets & Targets", icon: <Target className="h-4 w-4" />, locked: false, badge: metrics.targets ? `${metrics.targetsDone}/${metrics.targets}` : undefined },
   ];
@@ -603,61 +669,94 @@ function SiteOperationsWorkspace() {
 
       {tab === "targets" ? <TargetsTab projectId={projectId} date={workDate} onChanged={() => void loadDay()} /> : null}
 
+      {tab === "plant" ? (!projectId ? <Locked title="Choose a project" body="Plant requests and fleet tracking are managed per project." /> : !unlocked ? lockedPanel("Plant & Equipment") : (
+        <PlantTab
+          projectId={projectId}
+          projectName={projectName}
+          workDate={workDate}
+          fleet={fleet}
+          onPlantChanged={() => {
+            void load();
+            if (todayReport?.id) void loadTodayDetail(todayReport.id);
+            if (selected) void refreshDetail();
+          }}
+        />
+      )) : null}
+
       {tab === "report" ? (!projectId ? <Locked title="Choose a project" body="Daily reports are written per project." /> : !unlocked ? lockedPanel("The daily report") : (
-        <div className="space-y-4">
-          <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <Panel title={`Daily report · ${dateValue(workDate)}`} subtitle="The site-day ticks come from this morning's briefing.">
-              <div className="grid gap-3 md:grid-cols-2">
-                <select value={draft.shift} onChange={(event) => setDraft({ ...draft, shift: event.target.value })} className={fieldClass}><option value="day">Day shift</option><option value="night">Night shift</option><option value="double">Double shift</option></select>
-                <label className="relative">
-                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate">Cost exposure $</span>
-                  <input value={draft.cost_exposure} onChange={(event) => setDraft({ ...draft, cost_exposure: event.target.value })} className={`${fieldClass} pl-28`} />
-                </label>
-                <div className="md:col-span-2">
-                  <div className="mb-1 flex items-center justify-between">
-                    <span className="text-xs text-slate-light">Planned work</span>
-                    {day?.targets.length ? (
-                      <button onClick={() => setDraft({ ...draft, planned_work: day.targets.map((t) => `• ${t.work_package ? `${t.work_package}: ` : ""}${t.description} (${qty(t.target_qty)} ${t.unit ?? ""})`).join("\n") })}
-                        className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-signal hover:underline"><Target className="h-3 w-3" /> Fill from today&apos;s targets</button>
-                    ) : null}
+        <div className="space-y-6">
+          {todayReport ? (
+            <ActiveDailyReport
+              reportId={todayReport.id}
+              initialReport={todayReport}
+              detail={todayDetail}
+              loading={todayDetailLoading}
+              employees={employees}
+              fleet={fleet}
+              inventoryItems={inventoryItems}
+              stores={stores}
+              dayTargets={day?.targets}
+              canApprove={canApprove}
+              onRefresh={async () => {
+                await load();
+                if (todayReport?.id) await loadTodayDetail(todayReport.id);
+              }}
+            />
+          ) : (
+            <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+              <Panel title={`Daily report · ${dateValue(workDate)}`} subtitle="The site-day ticks come from this morning's briefing.">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <select value={draft.shift} onChange={(event) => setDraft({ ...draft, shift: event.target.value })} className={fieldClass}><option value="day">Day shift</option><option value="night">Night shift</option><option value="double">Double shift</option></select>
+                  <label className="relative">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-slate">Cost exposure $</span>
+                    <input value={draft.cost_exposure} onChange={(event) => setDraft({ ...draft, cost_exposure: event.target.value })} className={`${fieldClass} pl-28`} />
+                  </label>
+                  <div className="md:col-span-2">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-xs text-slate-light">Planned work</span>
+                      {day?.targets.length ? (
+                        <button onClick={() => setDraft({ ...draft, planned_work: day.targets.map((t) => `• ${t.work_package ? `${t.work_package}: ` : ""}${t.description} (${qty(t.target_qty)} ${t.unit ?? ""})`).join("\n") })}
+                          className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-signal hover:underline"><Target className="h-3 w-3" /> Fill from today&apos;s targets</button>
+                      ) : null}
+                    </div>
+                    <textarea value={draft.planned_work} onChange={(event) => setDraft({ ...draft, planned_work: event.target.value })} placeholder="What was planned for today" className={areaClass} />
                   </div>
-                  <textarea value={draft.planned_work} onChange={(event) => setDraft({ ...draft, planned_work: event.target.value })} placeholder="What was planned for today" className={areaClass} />
+                  <textarea value={draft.actual_work} onChange={(event) => setDraft({ ...draft, actual_work: event.target.value })} placeholder="Actual work completed" className={`${areaClass} md:col-span-2`} />
+                  <textarea value={draft.delays} onChange={(event) => setDraft({ ...draft, delays: event.target.value })} placeholder="Delays, weather, idle time, instructions received" className={`${areaClass} min-h-16 md:col-span-2`} />
                 </div>
-                <textarea value={draft.actual_work} onChange={(event) => setDraft({ ...draft, actual_work: event.target.value })} placeholder="Actual work completed" className={`${areaClass} md:col-span-2`} />
-                <textarea value={draft.delays} onChange={(event) => setDraft({ ...draft, delays: event.target.value })} placeholder="Delays, weather, idle time, instructions received" className={`${areaClass} min-h-16 md:col-span-2`} />
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <SiteTick label="Labour count done" checked={draft.labour_count_completed} />
-                <SiteTick label="Toolbox talk done" checked={draft.toolbox_talk_completed} />
-                <SiteTick label="PPE check done" checked={draft.ppe_check_completed} />
-              </div>
-              <div className="mt-4 flex justify-end">
-                <Btn onClick={() => void createReport()} busy={saving === "create"} icon={<Plus className="h-4 w-4" />}>Create report</Btn>
-              </div>
-            </Panel>
-            <Panel title="Today on site" subtitle="From the labour register and targets.">
-              <ul className="space-y-2 text-sm">
-                <li className="flex justify-between"><span className="text-slate-light">People on register</span><span className="font-mono text-paper">{metrics.onSite}</span></li>
-                <li className="flex justify-between"><span className="text-slate-light">Toolbox talk</span><span className="text-right text-paper">{text(day?.briefing?.toolbox_topic, "—")}</span></li>
-                <li className="flex justify-between"><span className="text-slate-light">Safety</span>{day?.briefing?.safety_concern_raised ? <Pill tone="red">concern raised</Pill> : <Pill tone="green">no concerns</Pill>}</li>
-                <li className="flex justify-between"><span className="text-slate-light">Targets done</span><span className="font-mono text-paper">{metrics.targetsDone}/{metrics.targets}</span></li>
-              </ul>
-              {day?.targets.length ? (
-                <ul className="mt-4 space-y-1.5 border-t border-ink-mid pt-3 text-xs">
-                  {day.targets.map((t) => (
-                    <li key={t.id} className="flex items-center justify-between gap-2">
-                      <span className="truncate text-slate-light">{t.description}</span>
-                      <span className="shrink-0 font-mono text-paper">{qty(t.achieved_qty)}/{qty(t.target_qty)} {t.unit}</span>
-                    </li>
-                  ))}
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  <SiteTick label="Labour count done" checked={draft.labour_count_completed} />
+                  <SiteTick label="Toolbox talk done" checked={draft.toolbox_talk_completed} />
+                  <SiteTick label="PPE check done" checked={draft.ppe_check_completed} />
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <Btn onClick={() => void createReport()} busy={saving === "create"} icon={<Plus className="h-4 w-4" />}>Create report</Btn>
+                </div>
+              </Panel>
+              <Panel title="Today on site" subtitle="From the labour register and targets.">
+                <ul className="space-y-2 text-sm">
+                  <li className="flex justify-between"><span className="text-slate-light">People on register</span><span className="font-mono text-paper">{metrics.onSite}</span></li>
+                  <li className="flex justify-between"><span className="text-slate-light">Toolbox talk</span><span className="text-right text-paper">{text(day?.briefing?.toolbox_topic, "—")}</span></li>
+                  <li className="flex justify-between"><span className="text-slate-light">Safety</span>{day?.briefing?.safety_concern_raised ? <Pill tone="red">concern raised</Pill> : <Pill tone="green">no concerns</Pill>}</li>
+                  <li className="flex justify-between"><span className="text-slate-light">Targets done</span><span className="font-mono text-paper">{metrics.targetsDone}/{metrics.targets}</span></li>
                 </ul>
-              ) : null}
-            </Panel>
-          </div>
+                {day?.targets.length ? (
+                  <ul className="mt-4 space-y-1.5 border-t border-ink-mid pt-3 text-xs">
+                    {day.targets.map((t) => (
+                      <li key={t.id} className="flex items-center justify-between gap-2">
+                        <span className="truncate text-slate-light">{t.description}</span>
+                        <span className="shrink-0 font-mono text-paper">{qty(t.achieved_qty)}/{qty(t.target_qty)} {t.unit}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </Panel>
+            </div>
+          )}
 
           <section className="border border-ink-mid bg-ink">
             <div className="flex flex-col gap-3 border-b border-ink-mid p-4 lg:flex-row lg:items-center lg:justify-between">
-              <div><h2 className="font-mono text-xs font-bold uppercase tracking-widest">Daily report register · {projectName || "all projects"}</h2><p className="mt-1 text-xs text-slate-light">Open a report to add labour, equipment and material consumption, then submit it for approval.</p></div>
+              <div><h2 className="font-mono text-xs font-bold uppercase tracking-widest">Daily report register · {projectName || "all projects"}</h2><p className="mt-1 text-xs text-slate-light">Historical daily site reports and technical audit trail.</p></div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <label className="flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3"><Search className="h-4 w-4 text-slate" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search reports" className="bg-transparent text-sm outline-none placeholder:text-slate" /></label>
                 <select value={status} onChange={(event) => setStatus(event.target.value)} className="h-10 border border-ink-mid bg-ink-light px-3 text-sm text-paper"><option value="all">All statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
@@ -836,7 +935,21 @@ function SiteOperationsWorkspace() {
         </div>
       )) : null}
 
-      {selected ? <ReportDrawer report={selected} detail={detail} loading={detailLoading} employees={employees} fleet={fleet} inventoryItems={inventoryItems} stores={stores} labour={labour} setLabour={setLabour} equipment={equipment} setEquipment={setEquipment} material={material} setMaterial={setMaterial} saving={saving} addLine={addLine} transition={transition} onClose={() => { setSelected(null); setDetail(null); }} /> : null}
+      {selected ? (
+        <ReportDrawer
+          report={selected}
+          detail={detail}
+          loading={detailLoading}
+          employees={employees}
+          fleet={fleet}
+          inventoryItems={inventoryItems}
+          stores={stores}
+          dayTargets={day?.targets}
+          canApprove={canApprove}
+          onRefresh={refreshDetail}
+          onClose={() => { setSelected(null); setDetail(null); }}
+        />
+      ) : null}
     </main>
   );
 }
@@ -863,189 +976,70 @@ function LoadingBlock({ label }: { label: string }) {
   return <div className="flex h-48 items-center justify-center gap-3 text-sm text-slate-light"><Loader2 className="h-5 w-5 animate-spin text-signal" />{label}</div>;
 }
 
-function ReportDrawer({ report, detail, loading, employees, fleet, inventoryItems, stores, labour, setLabour, equipment, setEquipment, material, setMaterial, saving, addLine, transition, onClose }: {
-  report: ApiRecord; detail: Detail | null; loading: boolean; employees: ApiRecord[]; fleet: ApiRecord[]; inventoryItems: ApiRecord[]; stores: ApiRecord[];
-  labour: any; setLabour: (value: any) => void; equipment: any; setEquipment: (value: any) => void; material: any; setMaterial: (value: any) => void;
-  saving: string | null; addLine: (kind: "labour" | "equipment" | "material") => void; transition: (action: "submit" | "approved" | "rejected") => void; onClose: () => void;
+function ReportDrawer({
+  report,
+  detail,
+  loading,
+  employees,
+  fleet,
+  inventoryItems,
+  stores,
+  dayTargets,
+  canApprove,
+  onRefresh,
+  onClose,
+}: {
+  report: ApiRecord;
+  detail: Detail | null;
+  loading: boolean;
+  employees: ApiRecord[];
+  fleet: ApiRecord[];
+  inventoryItems: ApiRecord[];
+  stores: ApiRecord[];
+  dayTargets?: ApiRecord[];
+  canApprove?: boolean;
+  onRefresh: () => Promise<void>;
+  onClose: () => void;
 }) {
-  const active = detail?.report ?? report;
-  const isDraft = ["draft", "rejected"].includes(String(active.status ?? report.status).toLowerCase());
-  const isSubmitted = String(active.status ?? report.status).toLowerCase() === "submitted";
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <aside className="ml-auto flex h-full w-full max-w-5xl flex-col overflow-y-auto border-l border-ink-mid bg-ink text-paper shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <header className="sticky top-0 z-10 flex items-start justify-between border-b border-ink-mid bg-ink p-5">
-          <div><p className="font-mono text-xs uppercase tracking-widest text-signal">Daily Site Report</p><h2 className="mt-1 text-2xl font-semibold">{reportTitle(active)}</h2><div className="mt-2"><Pill tone={statusTone(active.status)}>{text(active.status)}</Pill></div></div>
-          <button onClick={onClose} aria-label="Close" className="border border-ink-mid p-2 text-slate-light hover:border-signal hover:text-paper"><X className="h-5 w-5" /></button>
-        </header>
-        {loading ? <LoadingBlock label="Loading report detail" /> : (
-          <div className="space-y-5 p-5">
-            {detail?.completeness ? (
-              <div className="border border-ink-mid bg-ink-light/20 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs uppercase tracking-wider text-slate-light">Report Readiness</span>
-                  <span className="font-mono text-sm font-semibold text-paper">{detail.completeness.score_percent}%</span>
-                </div>
-                <div className="mt-2 h-1.5 w-full bg-ink-mid overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-300 ${detail.completeness.score_percent >= 100 ? "bg-emerald-500" : detail.completeness.score_percent >= 50 ? "bg-signal" : "bg-amber-500"}`}
-                    style={{ width: `${detail.completeness.score_percent}%` }}
-                  />
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                  <span className={`flex items-center gap-1.5 ${detail.completeness.labour_captured ? "text-emerald-300" : "text-slate"}`}>
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Labour register synced
-                  </span>
-                  <span className={`flex items-center gap-1.5 ${detail.completeness.work_progress_logged ? "text-emerald-300" : "text-slate"}`}>
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Work progress logged
-                  </span>
-                  <span className={`flex items-center gap-1.5 ${detail.completeness.safety_checks_recorded ? "text-emerald-300" : "text-slate"}`}>
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Safety & toolbox
-                  </span>
-                  <span className={`flex items-center gap-1.5 ${detail.completeness.weather_recorded ? "text-emerald-300" : "text-slate"}`}>
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Weather recorded
-                  </span>
-                </div>
-              </div>
-            ) : null}
-
-            <section className="grid gap-4 lg:grid-cols-3">
-              <EvidenceCard icon={<Users />} label="Labour lines" count={detail?.labour.length ?? 0} />
-              <EvidenceCard icon={<Truck />} label="Equipment lines" count={detail?.equipment.length ?? 0} />
-              <EvidenceCard icon={<PackageCheck />} label="Material lines" count={detail?.materials.length ?? 0} />
-            </section>
-
-            {detail?.labour.length ? (
-              <section className="border border-ink-mid p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-mono text-xs uppercase tracking-widest text-paper">Labour Register ({detail.labour.length} attendees)</h3>
-                  <span className="text-[10px] font-mono text-emerald-300 uppercase">Live synced from morning register</span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="border-b border-ink-mid text-slate">
-                      <tr>
-                        <th className="pb-2 font-mono uppercase">Worker</th>
-                        <th className="pb-2 font-mono uppercase">Role</th>
-                        <th className="pb-2 font-mono uppercase">Type</th>
-                        <th className="pb-2 font-mono uppercase text-right">Regular</th>
-                        <th className="pb-2 font-mono uppercase text-right">Overtime</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-ink-mid/50 text-paper">
-                      {detail.labour.map((l: any) => (
-                        <tr key={l.id} className="hover:bg-ink-light/20">
-                          <td className="py-2 font-medium">{l.worker_name || l.employee_name || "Worker"}</td>
-                          <td className="py-2 text-slate-light">{l.role_on_site || "-"}</td>
-                          <td className="py-2"><Pill tone={l.worker_kind === "project_hire" ? "gold" : "slate"}>{l.worker_kind || "employee"}</Pill></td>
-                          <td className="py-2 text-right font-mono">{l.regular_hours}h</td>
-                          <td className="py-2 text-right font-mono text-signal">{Number(l.overtime_hours) > 0 ? `+${l.overtime_hours}h` : "-"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            ) : null}
-
-            <section className="grid gap-4 lg:grid-cols-2">
-              <div className="border border-ink-mid p-4">
-                <h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">Site Goods Receipts ({detail?.material_receipts?.length ?? 0})</h3>
-                {!detail?.material_receipts?.length ? (
-                  <p className="text-sm text-slate-light">No deliveries confirmed on site today.</p>
-                ) : (
-                  <ul className="divide-y divide-ink-mid/50 text-xs">
-                    {detail.material_receipts.map((grn: any) => (
-                      <li key={grn.line_id || grn.id} className="py-2 flex items-start justify-between">
-                        <div>
-                          <p className="font-medium text-paper">{grn.description}</p>
-                          <p className="text-[11px] text-slate-light">{grn.grn_number} · {grn.supplier_name || "Supplier"}</p>
-                        </div>
-                        <span className="font-mono text-emerald-300">+{grn.quantity_received} {grn.unit_of_measure || "each"}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="border border-ink-mid p-4">
-                <h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">Store Issues / Consumed ({detail?.material_issues?.length ?? 0})</h3>
-                {!detail?.material_issues?.length ? (
-                  <p className="text-sm text-slate-light">No store issues recorded for this site today.</p>
-                ) : (
-                  <ul className="divide-y divide-ink-mid/50 text-xs">
-                    {detail.material_issues.map((iss: any) => (
-                      <li key={iss.id} className="py-2 flex items-start justify-between">
-                        <div>
-                          <p className="font-medium text-paper">{iss.item_name || iss.item_code}</p>
-                          <p className="text-[11px] text-slate-light">{iss.store_name || "Store"} · ref {iss.reference || "-"}</p>
-                        </div>
-                        <span className="font-mono text-signal">-{Math.abs(iss.quantity)} {iss.unit_of_measure || "each"}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </section>
-
-            {detail?.safety_briefing ? (
-              <section className="border border-ink-mid p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-mono text-xs uppercase tracking-widest text-paper">Morning Safety & Toolbox Briefing</h3>
-                  <Pill tone={detail.safety_briefing.ppe_compliant ? "green" : "amber"}>
-                    {detail.safety_briefing.ppe_compliant ? "PPE 100% Compliant" : "PPE Check Pending"}
-                  </Pill>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-2 text-xs text-slate-light">
-                  <p><b className="text-paper">Toolbox Topic:</b> {detail.safety_briefing.toolbox_topic || "Standard Safety Protocol"}</p>
-                  <p><b className="text-paper">Conductor:</b> {detail.safety_briefing.toolbox_conductor || "Foreman / Engineer"}</p>
-                  {detail.safety_briefing.hazards_identified ? (
-                    <p className="sm:col-span-2 text-amber-300"><b className="text-paper">Hazards Noted:</b> {detail.safety_briefing.hazards_identified}</p>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-
-            <section className="border border-ink-mid p-4"><h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">Site narrative</h3><p className="whitespace-pre-line text-sm text-slate-light">{text(active.actual_work, "No actual work summary recorded.")}</p></section>
-            {isDraft ? (
-              <section className="grid gap-4 xl:grid-cols-3">
-                <LineForm title="Labour" action={() => addLine("labour")} saving={saving === "labour"}>
-                  <select value={labour.employee_id} onChange={(e) => setLabour({ ...labour, employee_id: e.target.value })} className={fieldClass}><option value="">Employee</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{text(employee.employee_name ?? employee.name ?? employee.full_name, employee.id)}</option>)}</select>
-                  <input value={labour.role_on_site} onChange={(e) => setLabour({ ...labour, role_on_site: e.target.value })} placeholder="Role on site" className={fieldClass} />
-                  <input value={labour.regular_hours} onChange={(e) => setLabour({ ...labour, regular_hours: e.target.value })} placeholder="Regular hours" className={fieldClass} />
-                  <input value={labour.cost_rate} onChange={(e) => setLabour({ ...labour, cost_rate: e.target.value })} placeholder="Cost rate" className={fieldClass} />
-                </LineForm>
-                <LineForm title="Equipment" action={() => addLine("equipment")} saving={saving === "equipment"}>
-                  <select value={equipment.fleet_id} onChange={(e) => setEquipment({ ...equipment, fleet_id: e.target.value })} className={fieldClass}><option value="">Fleet asset</option>{fleet.map((asset) => <option key={asset.id} value={asset.id}>{text(asset.asset_code ?? asset.vehicle_registration ?? asset.name, asset.id)}</option>)}</select>
-                  <select value={equipment.operator_employee_id} onChange={(e) => setEquipment({ ...equipment, operator_employee_id: e.target.value })} className={fieldClass}><option value="">Operator (optional)</option>{employees.map((employee) => <option key={employee.id} value={employee.id}>{text(employee.employee_name ?? employee.name ?? employee.full_name, employee.id)}</option>)}</select>
-                  <input value={equipment.operating_hours} onChange={(e) => setEquipment({ ...equipment, operating_hours: e.target.value })} placeholder="Operating hours" className={fieldClass} />
-                  <input value={equipment.cost_rate} onChange={(e) => setEquipment({ ...equipment, cost_rate: e.target.value })} placeholder="Cost rate" className={fieldClass} />
-                </LineForm>
-                <LineForm title="Materials" action={() => addLine("material")} saving={saving === "material"}>
-                  <select value={material.item_id} onChange={(e) => setMaterial({ ...material, item_id: e.target.value })} className={fieldClass}><option value="">Inventory item</option>{inventoryItems.map((item) => <option key={item.id} value={item.id}>{text(item.item_name ?? item.name, item.id)}{item.stock_quantity !== undefined ? ` · stock ${item.stock_quantity}` : ""}</option>)}</select>
-                  <select value={material.store_id} onChange={(e) => setMaterial({ ...material, store_id: e.target.value })} className={fieldClass}><option value="">Store (optional)</option>{stores.map((store) => <option key={store.id} value={store.id}>{text(store.name ?? store.store_code, store.id)} · {text(store.store_type, "store")}</option>)}</select>
-                  <input value={material.quantity_used} onChange={(e) => setMaterial({ ...material, quantity_used: e.target.value })} placeholder="Quantity used" className={fieldClass} />
-                  <input value={material.unit_cost} onChange={(e) => setMaterial({ ...material, unit_cost: e.target.value })} placeholder="Unit cost" className={fieldClass} />
-                  <input value={material.work_package} onChange={(e) => setMaterial({ ...material, work_package: e.target.value })} placeholder="Work package" className={fieldClass} />
-                </LineForm>
-              </section>
-            ) : null}
-            <section className="border border-ink-mid p-4"><h3 className="mb-3 font-mono text-xs uppercase tracking-widest text-paper">Approval timeline</h3>{detail?.approvals.length ? detail.approvals.map((approval) => <p key={approval.id} className="text-sm text-slate-light">{text(approval.workflow_key)} · {text(approval.status)} · submitted {dateValue(approval.submitted_at)}</p>) : <p className="text-sm text-slate-light">No approval instance yet.</p>}</section>
-            <section className="flex flex-wrap gap-3 border-t border-ink-mid pt-5">
-              {isDraft ? <Btn onClick={() => transition("submit")} busy={saving === "submit"} icon={<Send className="h-4 w-4" />}>Submit for approval</Btn> : null}
-              {isSubmitted ? <Btn tone="success" onClick={() => transition("approved")} busy={saving === "approved"} icon={<CheckCircle2 className="h-4 w-4" />}>Approve and post costs</Btn> : null}
-              {isSubmitted ? <Btn tone="danger" onClick={() => transition("rejected")} busy={saving === "rejected"} icon={<X className="h-4 w-4" />}>Reject</Btn> : null}
-            </section>
+      <aside
+        className="ml-auto flex h-full w-full max-w-5xl flex-col overflow-y-auto border-l border-ink-mid bg-ink p-6 text-paper shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="mb-4 flex items-center justify-between border-b border-ink-mid pb-4">
+          <div>
+            <p className="font-mono text-xs uppercase tracking-widest text-signal">Daily Site Report Register</p>
+            <h2 className="text-xl font-semibold text-paper">{reportTitle(report)}</h2>
           </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="border border-ink-mid p-2 text-slate-light hover:border-signal hover:text-paper"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </header>
+
+        {loading ? (
+          <LoadingBlock label="Loading daily report details" />
+        ) : (
+          <ActiveDailyReport
+            reportId={report.id}
+            initialReport={report}
+            detail={detail}
+            loading={loading}
+            employees={employees}
+            fleet={fleet}
+            inventoryItems={inventoryItems}
+            stores={stores}
+            dayTargets={dayTargets}
+            canApprove={canApprove}
+            onRefresh={onRefresh}
+            onClose={onClose}
+          />
         )}
       </aside>
     </div>
   );
-}
-
-function EvidenceCard({ icon, label, count }: { icon: ReactNode; label: string; count: number }) {
-  return <div className="border border-ink-mid bg-ink-light/40 p-4"><div className="flex items-center justify-between text-slate"><span className="[&_svg]:h-4 [&_svg]:w-4">{icon}</span><span className="font-mono text-xl text-paper">{count}</span></div><p className="mt-3 font-mono text-xs uppercase tracking-wider text-slate-light">{label}</p></div>;
-}
-
-function LineForm({ title, children, action, saving }: { title: string; children: ReactNode; action: () => void; saving: boolean }) {
-  return <div className="space-y-3 border border-ink-mid p-4"><h3 className="font-mono text-xs uppercase tracking-widest text-paper">{title}</h3>{children}<Btn tone="ghost" onClick={action} busy={saving} icon={<Plus className="h-4 w-4" />}>Add {title}</Btn></div>;
 }

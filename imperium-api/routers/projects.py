@@ -1921,7 +1921,7 @@ async def approve_pre_mobilisation(
 
 @router.post("/{project_id}/budget", status_code=201)
 async def set_project_budget(
-    project_id: UUID,
+    project_id: str,
     payload: ProjectBudgetSet,
     user: dict = Depends(require_permission("projects.registration.approve")),
     db: AsyncSession = Depends(get_db),
@@ -2249,12 +2249,13 @@ class ProjectRoleAssignmentUpdate(BaseModel):
 
 @router.get("/{project_id}/roles")
 async def list_project_roles(
-    project_id: UUID,
+    project_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all role assignments and available personnel for a project."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     # Query active and inactive assignments
     assignments_res = await db.execute(
@@ -2271,17 +2272,21 @@ async def list_project_roles(
             WHERE sra.project_id = :project_id AND sra.organization_id = :org_id AND sra.is_deleted = false
             ORDER BY sra.is_active DESC, sra.created_at DESC
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     assignments = [dict(row._mapping) for row in assignments_res]
 
     # Available system users to assign
     users_res = await db.execute(
         text("""
-            SELECT id, full_name, email, role
-            FROM core.users
-            WHERE organization_id = :org_id AND is_active = true AND is_deleted = false
-            ORDER BY full_name ASC
+            SELECT u.id, u.full_name, u.email,
+                   COALESCE(
+                       (SELECT r.name FROM core.user_roles ur JOIN core.roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.is_deleted = false LIMIT 1),
+                       'Member'
+                   ) AS role
+            FROM core.users u
+            WHERE u.organization_id = :org_id AND u.is_active = true AND u.is_deleted = false
+            ORDER BY u.full_name ASC
             LIMIT 200
         """),
         {"org_id": user["org_id"]},
@@ -2297,13 +2302,14 @@ async def list_project_roles(
 
 @router.post("/{project_id}/roles", status_code=201)
 async def assign_project_role(
-    project_id: UUID,
+    project_id: str,
     payload: ProjectRoleAssignmentCreate,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Assign or delegate a key responsibility (Project Manager, Site Engineer, Foreman, etc.)."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     # Validate target user belongs to tenant
     user_check = (await db.execute(
@@ -2321,7 +2327,7 @@ async def assign_project_role(
         """),
         {
             "org_id": user["org_id"],
-            "project_id": project_id,
+            "project_id": resolved_project_id,
             "user_id": payload.user_id,
             "role_name": payload.role_name.strip(),
         },
@@ -2358,7 +2364,7 @@ async def assign_project_role(
             """),
             {
                 "org_id": user["org_id"],
-                "project_id": project_id,
+                "project_id": resolved_project_id,
                 "site_id": payload.site_id,
                 "user_id": payload.user_id,
                 "role_name": payload.role_name.strip(),
@@ -2378,7 +2384,7 @@ async def assign_project_role(
             """),
             {
                 "manager_name": user_check.full_name,
-                "project_id": project_id,
+                "project_id": resolved_project_id,
                 "org_id": user["org_id"],
             },
         )
@@ -2389,7 +2395,7 @@ async def assign_project_role(
         org_id=user["org_id"],
         event_type="project.role_assigned.v1",
         payload={
-            "project_id": str(project_id),
+            "project_id": str(resolved_project_id),
             "assignment_id": str(assignment_id),
             "user_id": str(payload.user_id),
             "role_name": payload.role_name,
@@ -2407,24 +2413,25 @@ async def assign_project_role(
 
 @router.patch("/{project_id}/roles/{assignment_id}")
 async def update_project_role(
-    project_id: UUID,
+    project_id: str,
     assignment_id: UUID,
     payload: ProjectRoleAssignmentUpdate,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Update or deactivate a project role assignment."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     existing = (await db.execute(
         text("SELECT * FROM projects.site_role_assignments WHERE id = :id AND project_id = :project_id AND organization_id = :org_id"),
-        {"id": assignment_id, "project_id": project_id, "org_id": user["org_id"]},
+        {"id": assignment_id, "project_id": resolved_project_id, "org_id": user["org_id"]},
     )).first()
     if not existing:
         raise HTTPException(status_code=404, detail="Role assignment not found.")
 
     updates = []
-    params: dict = {"id": assignment_id, "project_id": project_id, "org_id": user["org_id"]}
+    params: dict = {"id": assignment_id, "project_id": resolved_project_id, "org_id": user["org_id"]}
 
     if payload.role_name is not None:
         updates.append("role_name = :role_name")
@@ -2457,13 +2464,14 @@ async def update_project_role(
 
 @router.delete("/{project_id}/roles/{assignment_id}")
 async def deactivate_project_role(
-    project_id: UUID,
+    project_id: str,
     assignment_id: UUID,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-deactivate a role assignment, ending future authority while preserving all historical records."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     await db.execute(
         text("""
@@ -2471,7 +2479,7 @@ async def deactivate_project_role(
             SET is_active = false, is_deleted = true, ends_on = CURRENT_DATE, updated_at = NOW()
             WHERE id = :id AND project_id = :project_id AND organization_id = :org_id
         """),
-        {"id": assignment_id, "project_id": project_id, "org_id": user["org_id"]},
+        {"id": assignment_id, "project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     await db.commit()
 
@@ -2494,23 +2502,55 @@ class ProjectHireCreate(BaseModel):
 
 @router.get("/{project_id}/hires")
 async def list_project_hires(
-    project_id: UUID,
+    project_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all project hires (casual and temporary workers) for this project,
-    including those registered directly or logged in site day attendance."""
-    await _project_or_404(db, project_id, user["org_id"])
+    including those registered directly, logged in site day attendance, or recorded
+    on daily site reports."""
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
-    # Query finance.site_workers directly linked OR attended on this project
     query = text("""
-        WITH attended AS (
-            SELECT DISTINCT site_worker_id, worker_name, trade, hr_status,
+        WITH site_day_att AS (
+            SELECT site_worker_id, worker_name, trade, hr_status,
                    MAX(created_at) AS last_attended,
                    SUM(COALESCE(regular_hours, 0) + COALESCE(overtime_hours, 0)) AS total_hours
             FROM projects.site_day_attendance
             WHERE project_id = :project_id AND organization_id = :org_id AND worker_kind = 'project_hire'
             GROUP BY site_worker_id, worker_name, trade, hr_status
+        ),
+        daily_rep_lab AS (
+            SELECT l.site_worker_id,
+                   COALESCE(l.worker_name, w.full_name) AS worker_name,
+                   COALESCE(l.role_on_site, w.trade, 'General Labourer') AS trade,
+                   MAX(l.created_at) AS last_attended,
+                   SUM(COALESCE(l.regular_hours, 0) + COALESCE(l.overtime_hours, 0)) AS total_hours
+            FROM projects.daily_report_labour l
+            JOIN projects.daily_site_reports r ON r.id = l.report_id
+            LEFT JOIN finance.site_workers w ON w.id = l.site_worker_id
+            WHERE r.project_id = :project_id AND l.organization_id = :org_id AND l.is_deleted = false
+              AND (l.worker_kind = 'project_hire' OR l.site_worker_id IS NOT NULL)
+            GROUP BY l.site_worker_id, COALESCE(l.worker_name, w.full_name), COALESCE(l.role_on_site, w.trade, 'General Labourer')
+        ),
+        combined_site_activity AS (
+            SELECT site_worker_id, worker_name, trade, hr_status, last_attended, total_hours
+            FROM site_day_att
+            UNION ALL
+            SELECT site_worker_id, worker_name, trade, 'accepted' AS hr_status, last_attended, total_hours
+            FROM daily_rep_lab
+            WHERE site_worker_id IS NULL OR site_worker_id NOT IN (SELECT site_worker_id FROM site_day_att WHERE site_worker_id IS NOT NULL)
+        ),
+        activity_summary AS (
+            SELECT site_worker_id,
+                   MAX(worker_name) AS worker_name,
+                   MAX(trade) AS trade,
+                   MAX(hr_status) AS hr_status,
+                   MAX(last_attended) AS last_attended,
+                   SUM(total_hours) AS total_hours
+            FROM combined_site_activity
+            GROUP BY site_worker_id
         )
         SELECT 
             COALESCE(w.id, a.site_worker_id) AS id,
@@ -2527,13 +2567,13 @@ async def list_project_hires(
             a.last_attended,
             w.created_at
         FROM finance.site_workers w
-        FULL OUTER JOIN attended a ON a.site_worker_id = w.id
-        WHERE (w.project_id = :project_id OR a.site_worker_id IS NOT NULL)
+        FULL OUTER JOIN activity_summary a ON a.site_worker_id = w.id
+        WHERE (w.project_id = :project_id OR a.site_worker_id IS NOT NULL OR a.worker_name IS NOT NULL)
           AND (w.organization_id = :org_id OR w.organization_id IS NULL)
           AND (w.is_deleted IS NULL OR w.is_deleted = false)
         ORDER BY status ASC, full_name ASC
     """)
-    res = await db.execute(query, {"project_id": project_id, "org_id": user["org_id"]})
+    res = await db.execute(query, {"project_id": resolved_project_id, "org_id": user["org_id"]})
     hires = [dict(row._mapping) for row in res]
 
     return _result({
@@ -2545,13 +2585,14 @@ async def list_project_hires(
 
 @router.post("/{project_id}/hires", status_code=201)
 async def create_project_hire(
-    project_id: UUID,
+    project_id: str,
     payload: ProjectHireCreate,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a new project hire (casual/daily worker) directly to the project workforce."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     # Prevent duplicate national ID if given
     if payload.national_id:
@@ -2576,7 +2617,7 @@ async def create_project_hire(
         """),
         {
             "org_id": user["org_id"],
-            "project_id": project_id,
+            "project_id": resolved_project_id,
             "full_name": payload.full_name.strip(),
             "trade": payload.trade.strip() if payload.trade else "General Labourer",
             "hourly_rate": payload.hourly_rate or Decimal("0.0"),
@@ -2593,7 +2634,7 @@ async def create_project_hire(
         org_id=user["org_id"],
         event_type="project.hire_created.v1",
         payload={
-            "project_id": str(project_id),
+            "project_id": str(resolved_project_id),
             "worker_id": str(worker_id),
             "full_name": payload.full_name,
             "trade": payload.trade,
@@ -2611,13 +2652,14 @@ async def create_project_hire(
 
 @router.delete("/{project_id}/hires/{worker_id}")
 async def deactivate_project_hire(
-    project_id: UUID,
+    project_id: str,
     worker_id: UUID,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-deactivate a project hire, removing them from upcoming registers while preserving past attendance."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     await db.execute(
         text("""
@@ -2639,22 +2681,25 @@ async def deactivate_project_hire(
 
 @router.delete("/{project_id}/allocations/{allocation_id}")
 async def remove_project_allocation(
-    project_id: UUID,
+    project_id: str,
     allocation_id: UUID,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove / soft-end a permanent employee allocation from this project."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     res = await db.execute(
         text("""
             UPDATE hr.project_allocations
-            SET status = 'ended', is_deleted = true, ends_on = CURRENT_DATE, updated_at = NOW()
+            SET status = 'cancelled', is_deleted = true,
+                ends_on = LEAST(ends_on, CURRENT_DATE),
+                updated_at = NOW()
             WHERE id = :id AND project_id = :project_id AND organization_id = :org_id
             RETURNING employee_id
         """),
-        {"id": allocation_id, "project_id": project_id, "org_id": user["org_id"]},
+        {"id": allocation_id, "project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     row = res.first()
     if not row:
@@ -2788,13 +2833,14 @@ def extract_quotation_cost_breakdown(
 
 @router.get("/{project_id}/budget/category-summary")
 async def get_budget_category_summary(
-    project_id: UUID,
+    project_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Returns real-time bulk BOQ cost-category totals with side-by-side approved budget,
     committed exposure, actual incurred execution costs, and remaining headroom."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     # 1. Approved budget lines by category
     budget_lines_res = await db.execute(
@@ -2806,7 +2852,7 @@ async def get_budget_category_summary(
               AND pb.status = 'approved' AND pb.is_deleted = false
             GROUP BY bl.cost_category
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     budget_map = {row.cost_category.lower(): float(row.category_budget or 0) for row in budget_lines_res}
 
@@ -2820,7 +2866,7 @@ async def get_budget_category_summary(
               AND status = 'active' AND is_deleted = false
             GROUP BY COALESCE(NULLIF(cost_category, ''), 'materials')
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     commit_map = {row.category.lower(): float(row.committed_amount or 0) for row in commitments_res}
 
@@ -2833,7 +2879,7 @@ async def get_budget_category_summary(
             WHERE project_id = :project_id AND organization_id = :org_id
             GROUP BY COALESCE(NULLIF(cost_category, ''), 'materials')
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     actual_map = {row.category.lower(): float(row.actual_amount or 0) for row in actuals_res}
 
@@ -2867,7 +2913,7 @@ async def get_budget_category_summary(
               q.created_at DESC
             LIMIT 1
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     quote_row = quote_res.first()
     linked_quotation = None
@@ -2934,7 +2980,7 @@ async def get_budget_category_summary(
 
 @router.get("/{project_id}/budget/eligible-quotations")
 async def get_eligible_quotations_for_project(
-    project_id: UUID,
+    project_id: str,
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.read")),
@@ -2942,7 +2988,8 @@ async def get_eligible_quotations_for_project(
     """Lists eligible candidate quotations for linking or importing into the given project.
     Distinguishes direct links, opportunity/lineage matches, and all approved/won organization quotes.
     """
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     # Load candidate and organization quotations
     quotes_res = await db.execute(
@@ -2959,12 +3006,12 @@ async def get_eligible_quotations_for_project(
             ORDER BY
               (q.id = (SELECT quotation_id FROM projects.projects WHERE id = :project_id)) DESC,
               (q.project_id = :project_id) DESC,
-              (q.status = 'won') DESC,
+              (q.status IN ('won', 'approved', 'accepted')) DESC,
               (q.metadata->'boq_approval'->>'status' = 'approved') DESC,
               q.created_at DESC
-            LIMIT 50
+            LIMIT 200
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     rows = quotes_res.mappings().all()
 
@@ -3024,13 +3071,14 @@ async def get_eligible_quotations_for_project(
 
 @router.post("/{project_id}/budget/link-quotation")
 async def link_project_quotation(
-    project_id: UUID,
+    project_id: str,
     payload: QuotationLinkPayload,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Explicitly associates an approved quotation with this project without overwriting existing budgets."""
-    await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     quote = (await db.execute(
         text("SELECT id, client_name, quote_amount FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
@@ -3046,7 +3094,7 @@ async def link_project_quotation(
             SET quotation_id = :quote_id, updated_at = NOW()
             WHERE id = :project_id AND organization_id = :org_id
         """),
-        {"quote_id": payload.quotation_id, "project_id": project_id, "org_id": user["org_id"]},
+        {"quote_id": payload.quotation_id, "project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     await db.execute(
         text("""
@@ -3054,12 +3102,12 @@ async def link_project_quotation(
             SET project_id = :project_id, updated_at = NOW()
             WHERE id = :quote_id AND organization_id = :org_id
         """),
-        {"quote_id": payload.quotation_id, "project_id": project_id, "org_id": user["org_id"]},
+        {"quote_id": payload.quotation_id, "project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     await db.commit()
 
     return _result({
-        "project_id": str(project_id),
+        "project_id": str(resolved_project_id),
         "quotation_id": str(payload.quotation_id),
         "client_name": quote.client_name,
     }, "Quotation successfully linked to project.")
@@ -3067,13 +3115,14 @@ async def link_project_quotation(
 
 @router.post("/{project_id}/budget/import-quotation")
 async def import_budget_from_quotation(
-    project_id: UUID,
+    project_id: str,
     payload: QuotationImportPayload,
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """Import and seed bulk category execution budget directly from Quotations & Estimations."""
-    project = await _project_or_404(db, project_id, user["org_id"])
+    project = await _project_ref_or_404(db, project_id, user["org_id"])
+    resolved_project_id = project["id"]
 
     # Locate target quotation
     if payload.quotation_id:
@@ -3110,7 +3159,7 @@ async def import_budget_from_quotation(
                   created_at DESC
                 LIMIT 1
             """),
-            {"project_id": project_id, "org_id": user["org_id"]},
+            {"project_id": resolved_project_id, "org_id": user["org_id"]},
         )).first()
 
     if not quote:
@@ -3147,12 +3196,12 @@ async def import_budget_from_quotation(
             WHERE project_id = :project_id AND organization_id = :org_id
               AND status = 'approved' AND is_deleted = false
         """),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
 
     version_res = await db.execute(
         text("SELECT COALESCE(MAX(budget_version), 0) + 1 FROM finance.project_budgets WHERE project_id = :project_id AND organization_id = :org_id"),
-        {"project_id": project_id, "org_id": user["org_id"]},
+        {"project_id": resolved_project_id, "org_id": user["org_id"]},
     )
     next_ver = version_res.scalar() or 1
 
@@ -3169,7 +3218,7 @@ async def import_budget_from_quotation(
         """),
         {
             "org_id": user["org_id"],
-            "project_id": project_id,
+            "project_id": resolved_project_id,
             "version": next_ver,
             "label": f"Imported from Quotation {quote.id}",
             "total_amount": execution_total,

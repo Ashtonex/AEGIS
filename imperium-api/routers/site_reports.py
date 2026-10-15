@@ -148,6 +148,46 @@ class MaterialLine(Payload):
     notes: Optional[str] = None
 
 
+class LabourLineUpdate(Payload):
+    regular_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=5, decimal_places=2)
+    overtime_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=5, decimal_places=2)
+    cost_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    role_on_site: Optional[str] = Field(default=None, max_length=120)
+    notes: Optional[str] = None
+
+
+class EquipmentLineUpdate(Payload):
+    operating_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=10, decimal_places=2)
+    idle_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=10, decimal_places=2)
+    fuel_litres: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    cost_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    notes: Optional[str] = None
+
+
+class MaterialLineUpdate(Payload):
+    quantity_used: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=3)
+    wastage_quantity: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    unit_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    work_package: Optional[str] = Field(default=None, max_length=160)
+    notes: Optional[str] = None
+
+
+class SitePlantRequestPayload(Payload):
+    project_id: UUID
+    required_asset_type: str = Field(min_length=1, max_length=120)
+    fleet_id: Optional[UUID] = None
+    specification: Optional[str] = None
+    quantity: int = Field(default=1, gt=0)
+    work_location: Optional[str] = None
+    start_date: date
+    end_date: Optional[date] = None
+    operating_hours_mode: Literal["normal", "extended", "continuous"] = "normal"
+    operator_required: bool = False
+    priority: Literal["routine", "urgent", "emergency"] = "routine"
+    work_description: str = Field(default="Site plant requirement")
+    fuel_responsibility: Literal["snc", "project", "client"] = "project"
+
+
 class SiteMaterialRequest(Payload):
     project_id: UUID
     site_id: Optional[UUID] = None
@@ -2114,27 +2154,99 @@ async def create_daily_report(
     await ensure_site_day_started(db, org_id=user["org_id"], project_id=payload.project_id, on_date=payload.report_date)
     values = payload.model_dump(exclude={"weather"})
     try:
-        report_id = (
+        existing = (
             await db.execute(
                 text("""
-            INSERT INTO projects.daily_site_reports (
-                organization_id, project_id, site_id, report_date, shift, weather, planned_work,
-                actual_work, delays, safety_notes, labour_count_completed,
-                toolbox_talk_completed, ppe_check_completed, cost_exposure, created_by
-            ) VALUES (
-                :org_id, :project_id, :site_id, :report_date, :shift, CAST(:weather AS jsonb),
-                :planned_work, :actual_work, :delays, :safety_notes, :labour_count_completed,
-                :toolbox_talk_completed, :ppe_check_completed, :cost_exposure, :user_id
-            ) RETURNING id
-        """),
+                SELECT id FROM projects.daily_site_reports
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND report_date = :report_date
+                  AND shift = :shift
+                  AND is_deleted = false
+                LIMIT 1
+            """),
                 {
-                    **values,
-                    "weather": json.dumps(payload.weather),
                     "org_id": user["org_id"],
-                    "user_id": user["user_id"],
+                    "project_id": payload.project_id,
+                    "report_date": payload.report_date,
+                    "shift": payload.shift,
                 },
             )
         ).scalar()
+
+        if existing:
+            await db.execute(
+                text("""
+                UPDATE projects.daily_site_reports
+                SET planned_work = COALESCE(NULLIF(:planned_work, ''), planned_work),
+                    actual_work = COALESCE(NULLIF(:actual_work, ''), actual_work),
+                    delays = COALESCE(NULLIF(:delays, ''), delays),
+                    safety_notes = COALESCE(NULLIF(:safety_notes, ''), safety_notes),
+                    cost_exposure = CASE WHEN :cost_exposure > 0 THEN :cost_exposure ELSE cost_exposure END,
+                    updated_at = NOW()
+                WHERE id = :report_id
+            """),
+                {
+                    **values,
+                    "report_id": existing,
+                },
+            )
+            report_id = existing
+        else:
+            report_id = (
+                await db.execute(
+                    text("""
+                INSERT INTO projects.daily_site_reports (
+                    organization_id, project_id, site_id, report_date, shift, weather, planned_work,
+                    actual_work, delays, safety_notes, labour_count_completed,
+                    toolbox_talk_completed, ppe_check_completed, cost_exposure, created_by
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:project_id AS uuid), :site_id, :report_date, :shift, CAST(:weather AS jsonb),
+                    :planned_work, :actual_work, :delays, :safety_notes, :labour_count_completed,
+                    :toolbox_talk_completed, :ppe_check_completed, :cost_exposure, CAST(:user_id AS uuid)
+                ) RETURNING id
+            """),
+                    {
+                        **values,
+                        "weather": json.dumps(payload.weather),
+                        "org_id": user["org_id"],
+                        "user_id": user["user_id"],
+                    },
+                )
+            ).scalar()
+
+        briefing_id = (
+            await db.execute(
+                text("""
+                SELECT id FROM projects.site_day_briefings
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND briefing_date = :report_date
+                  AND shift = :shift
+                  AND is_deleted = false
+                LIMIT 1
+            """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": payload.project_id,
+                    "report_date": payload.report_date,
+                    "shift": payload.shift,
+                },
+            )
+        ).scalar()
+        if briefing_id:
+            await db.execute(
+                text("""
+                UPDATE projects.daily_site_reports
+                SET briefing_id = :bid
+                WHERE id = :rid AND briefing_id IS NULL
+            """),
+                {"bid": briefing_id, "rid": report_id},
+            )
+            await sync_attendance_to_daily_report(
+                db, briefing_id=briefing_id, report_id=report_id, org_id=user["org_id"]
+            )
+
         await emit_event(
             db,
             user=user,
@@ -2144,14 +2256,17 @@ async def create_daily_report(
             project_id=payload.project_id,
             event_data=payload.model_dump(mode="json"),
         )
-        await emit_role_notification(
-            db,
-            org_id=user["org_id"],
-            role_names=["Site Engineer"],
-            title="Toolbox and start-of-day checks captured",
-            message=f"Daily report for {payload.report_date} has labour count, toolbox talk and PPE checks ready for technical sign-off.",
-            action_url="/portal/site-engineer",
-        )
+        try:
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["Site Engineer"],
+                title="Toolbox and start-of-day checks captured",
+                message=f"Daily report for {payload.report_date} has labour count, toolbox talk and PPE checks ready for technical sign-off.",
+                action_url="/portal/site-engineer",
+            )
+        except Exception:
+            pass
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -2170,14 +2285,152 @@ async def get_daily_report(
 ):
     report = await report_or_404(db, report_id, user["org_id"], user=user)
 
-    if report.get("status") == "draft" and report.get("briefing_id"):
+    if report.get("status") == "draft":
+        briefing_id = report.get("briefing_id")
+        if not briefing_id:
+            b_row = (
+                await db.execute(
+                    text("""
+                    SELECT id FROM projects.site_day_briefings
+                    WHERE organization_id = CAST(:org_id AS uuid)
+                      AND project_id = CAST(:project_id AS uuid)
+                      AND briefing_date = :report_date
+                      AND shift = :shift
+                      AND is_deleted = false
+                    LIMIT 1
+                """),
+                    {
+                        "org_id": user["org_id"],
+                        "project_id": report["project_id"],
+                        "report_date": report["report_date"],
+                        "shift": report.get("shift", "day"),
+                    },
+                )
+            ).scalar()
+            if b_row:
+                briefing_id = b_row
+                await db.execute(
+                    text("""
+                    UPDATE projects.daily_site_reports
+                    SET briefing_id = :bid
+                    WHERE id = :rid
+                """),
+                    {"bid": b_row, "rid": report_id},
+                )
+                report["briefing_id"] = briefing_id
+
+        if briefing_id:
+            try:
+                await sync_attendance_to_daily_report(
+                    db,
+                    briefing_id=briefing_id,
+                    report_id=report_id,
+                    org_id=user["org_id"],
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+
+        # Auto-sync active plant deployed to this project into equipment lines
         try:
-            await sync_attendance_to_daily_report(
-                db,
-                briefing_id=report["briefing_id"],
-                report_id=report_id,
-                org_id=user["org_id"],
-            )
+            active_fleet = (
+                await db.execute(
+                    text("""
+                    SELECT f.id AS fleet_id, f.asset_name, f.registration_number,
+                           COALESCE(f.internal_rate_hourly, 0) AS cost_rate
+                    FROM fleet.fleet f
+                    WHERE f.organization_id = CAST(:org_id AS uuid)
+                      AND f.project_id = CAST(:project_id AS uuid)
+                      AND f.is_deleted = false
+                      AND f.status IN ('active', 'in_use', 'operational')
+                """),
+                    {"org_id": user["org_id"], "project_id": report["project_id"]},
+                )
+            ).mappings().all()
+
+            for fl in active_fleet:
+                already_eq = (
+                    await db.execute(
+                        text("""
+                        SELECT id FROM projects.daily_report_equipment
+                        WHERE report_id = :report_id AND fleet_id = :fleet_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+                        LIMIT 1
+                    """),
+                        {"report_id": report_id, "fleet_id": fl["fleet_id"], "org_id": user["org_id"]},
+                    )
+                ).scalar()
+                if not already_eq:
+                    await db.execute(
+                        text("""
+                        INSERT INTO projects.daily_report_equipment (
+                            organization_id, report_id, fleet_id, operating_hours, idle_hours, fuel_litres, cost_rate, notes, created_by
+                        ) VALUES (
+                            CAST(:org_id AS uuid), :report_id, :fleet_id, 8, 0, 0, :cost_rate, 'Auto-synced from active project plant', CAST(:user_id AS uuid)
+                        )
+                    """),
+                        {
+                            "org_id": user["org_id"],
+                            "report_id": report_id,
+                            "fleet_id": fl["fleet_id"],
+                            "cost_rate": fl["cost_rate"],
+                            "user_id": user["user_id"],
+                        },
+                    )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+        # Auto-sync store issues / consumption on this date into daily_report_materials
+        try:
+            issues = (
+                await db.execute(
+                    text("""
+                    SELECT sl.id, sl.item_id, sl.store_id, sl.quantity, sl.unit_cost, sl.reference
+                    FROM procurement.stock_ledger sl
+                    WHERE sl.organization_id = CAST(:org_id AS uuid)
+                      AND sl.project_id = CAST(:project_id AS uuid)
+                      AND sl.movement_type IN ('issue', 'consumption')
+                      AND DATE(sl.created_at) = CAST(:report_date AS date)
+                """),
+                    {
+                        "org_id": user["org_id"],
+                        "project_id": report["project_id"],
+                        "report_date": report["report_date"],
+                    },
+                )
+            ).mappings().all()
+
+            for iss in issues:
+                already_mat = (
+                    await db.execute(
+                        text("""
+                        SELECT id FROM projects.daily_report_materials
+                        WHERE report_id = :report_id AND item_id = :item_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+                        LIMIT 1
+                    """),
+                        {"report_id": report_id, "item_id": iss["item_id"], "org_id": user["org_id"]},
+                    )
+                ).scalar()
+                if not already_mat:
+                    await db.execute(
+                        text("""
+                        INSERT INTO projects.daily_report_materials (
+                            organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by
+                        ) VALUES (
+                            CAST(:org_id AS uuid), :report_id, :item_id, :store_id, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:user_id AS uuid)
+                        )
+                    """),
+                        {
+                            "org_id": user["org_id"],
+                            "report_id": report_id,
+                            "item_id": iss["item_id"],
+                            "store_id": iss["store_id"],
+                            "qty": iss["quantity"],
+                            "cost": iss["unit_cost"] or 0,
+                            "ref": iss["reference"] or "",
+                            "user_id": user["user_id"],
+                        },
+                    )
             await db.commit()
         except Exception:
             await db.rollback()
@@ -2506,6 +2759,331 @@ async def add_material(
     )
     await db.commit()
     return result({"id": str(line_id)}, "Material consumption staged.")
+
+
+@router.patch("/daily-reports/{report_id}/labour/{line_id}")
+async def update_daily_report_labour(
+    report_id: UUID,
+    line_id: UUID,
+    payload: LabourLineUpdate,
+    user: dict = Depends(require_permission("site_operations.labour.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return result({"id": str(line_id)}, "No fields to update.")
+    set_clauses = [f"{k} = :{k}" for k in values.keys()]
+    await db.execute(
+        text(f"""
+        UPDATE projects.daily_report_labour
+        SET {", ".join(set_clauses)}
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {**values, "line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Labour line updated.")
+
+
+@router.delete("/daily-reports/{report_id}/labour/{line_id}")
+async def delete_daily_report_labour(
+    report_id: UUID,
+    line_id: UUID,
+    user: dict = Depends(require_permission("site_operations.labour.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    await db.execute(
+        text("""
+        UPDATE projects.daily_report_labour
+        SET is_deleted = true
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Labour line removed.")
+
+
+@router.patch("/daily-reports/{report_id}/equipment/{line_id}")
+async def update_daily_report_equipment(
+    report_id: UUID,
+    line_id: UUID,
+    payload: EquipmentLineUpdate,
+    user: dict = Depends(require_permission("site_operations.equipment.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return result({"id": str(line_id)}, "No fields to update.")
+    set_clauses = [f"{k} = :{k}" for k in values.keys()]
+    await db.execute(
+        text(f"""
+        UPDATE projects.daily_report_equipment
+        SET {", ".join(set_clauses)}
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {**values, "line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Equipment line updated.")
+
+
+@router.delete("/daily-reports/{report_id}/equipment/{line_id}")
+async def delete_daily_report_equipment(
+    report_id: UUID,
+    line_id: UUID,
+    user: dict = Depends(require_permission("site_operations.equipment.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    await db.execute(
+        text("""
+        UPDATE projects.daily_report_equipment
+        SET is_deleted = true
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Equipment line removed.")
+
+
+@router.patch("/daily-reports/{report_id}/materials/{line_id}")
+async def update_daily_report_material(
+    report_id: UUID,
+    line_id: UUID,
+    payload: MaterialLineUpdate,
+    user: dict = Depends(require_permission("site_operations.material.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return result({"id": str(line_id)}, "No fields to update.")
+    set_clauses = [f"{k} = :{k}" for k in values.keys()]
+    await db.execute(
+        text(f"""
+        UPDATE projects.daily_report_materials
+        SET {", ".join(set_clauses)}
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {**values, "line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Material line updated.")
+
+
+@router.delete("/daily-reports/{report_id}/materials/{line_id}")
+async def delete_daily_report_material(
+    report_id: UUID,
+    line_id: UUID,
+    user: dict = Depends(require_permission("site_operations.material.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    await db.execute(
+        text("""
+        UPDATE projects.daily_report_materials
+        SET is_deleted = true
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Material line removed.")
+
+
+@router.post("/daily-reports/{report_id}/sync-all")
+async def sync_all_daily_report(
+    report_id: UUID,
+    user: dict = Depends(require_permission("site_operations.daily_report.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    briefing_id = report.get("briefing_id")
+    if not briefing_id:
+        b_row = (
+            await db.execute(
+                text("""
+                SELECT id FROM projects.site_day_briefings
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND briefing_date = :report_date
+                  AND shift = :shift
+                  AND is_deleted = false
+                LIMIT 1
+            """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": report["project_id"],
+                    "report_date": report["report_date"],
+                    "shift": report.get("shift", "day"),
+                },
+            )
+        ).scalar()
+        if b_row:
+            briefing_id = b_row
+            await db.execute(
+                text("UPDATE projects.daily_site_reports SET briefing_id = :bid WHERE id = :rid"),
+                {"bid": b_row, "rid": report_id},
+            )
+    if briefing_id:
+        await sync_attendance_to_daily_report(db, briefing_id=briefing_id, report_id=report_id, org_id=user["org_id"])
+
+    # Auto-sync active plant
+    active_fleet = (
+        await db.execute(
+            text("""
+            SELECT f.id AS fleet_id, COALESCE(f.internal_rate_hourly, 0) AS cost_rate
+            FROM fleet.fleet f
+            WHERE f.organization_id = CAST(:org_id AS uuid)
+              AND f.project_id = CAST(:project_id AS uuid)
+              AND f.is_deleted = false
+              AND f.status IN ('active', 'in_use', 'operational')
+        """),
+            {"org_id": user["org_id"], "project_id": report["project_id"]},
+        )
+    ).mappings().all()
+    for fl in active_fleet:
+        already = (
+            await db.execute(
+                text("SELECT id FROM projects.daily_report_equipment WHERE report_id=:rid AND fleet_id=:fid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
+                {"rid": report_id, "fid": fl["fleet_id"], "org_id": user["org_id"]},
+            )
+        ).scalar()
+        if not already:
+            await db.execute(
+                text("INSERT INTO projects.daily_report_equipment (organization_id, report_id, fleet_id, operating_hours, idle_hours, fuel_litres, cost_rate, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :fid, 8, 0, 0, :rate, 'Auto-synced from active project plant', CAST(:uid AS uuid))"),
+                {"org_id": user["org_id"], "rid": report_id, "fid": fl["fleet_id"], "rate": fl["cost_rate"], "uid": user["user_id"]},
+            )
+
+    # Auto-sync store issues
+    issues = (
+        await db.execute(
+            text("SELECT sl.item_id, sl.store_id, sl.quantity, sl.unit_cost, sl.reference FROM procurement.stock_ledger sl WHERE sl.organization_id = CAST(:org_id AS uuid) AND sl.project_id = CAST(:project_id AS uuid) AND sl.movement_type IN ('issue', 'consumption') AND DATE(sl.created_at) = CAST(:dt AS date)"),
+            {"org_id": user["org_id"], "project_id": report["project_id"], "dt": report["report_date"]},
+        )
+    ).mappings().all()
+    for iss in issues:
+        already = (
+            await db.execute(
+                text("SELECT id FROM projects.daily_report_materials WHERE report_id=:rid AND item_id=:iid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
+                {"rid": report_id, "iid": iss["item_id"], "org_id": user["org_id"]},
+            )
+        ).scalar()
+        if not already:
+            await db.execute(
+                text("INSERT INTO projects.daily_report_materials (organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :iid, :sid, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:uid AS uuid))"),
+                {"org_id": user["org_id"], "rid": report_id, "iid": iss["item_id"], "sid": iss["store_id"], "qty": iss["quantity"], "cost": iss["unit_cost"] or 0, "ref": iss["reference"] or "", "uid": user["user_id"]},
+            )
+
+    await db.commit()
+    return result({"id": str(report_id)}, "Daily site report fully synchronized.")
+
+
+@router.get("/plant-requests")
+async def list_site_plant_requests(
+    project_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("site_operations.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await db.execute(
+        text("""
+        SELECT pr.*, p.name AS project_name
+        FROM fleet.plant_requests pr
+        LEFT JOIN projects.projects p ON p.id = pr.project_id AND p.organization_id = pr.organization_id
+        WHERE pr.organization_id = CAST(:org_id AS uuid)
+          AND (CAST(:project_id AS uuid) IS NULL OR pr.project_id = CAST(:project_id AS uuid))
+          AND pr.is_deleted = false
+        ORDER BY pr.created_at DESC
+        LIMIT 100
+    """),
+        {"org_id": user["org_id"], "project_id": project_id},
+    )
+    return result([dict(r._mapping) for r in rows], "Site plant requests listed.")
+
+
+@router.post("/plant-requests", status_code=status.HTTP_201_CREATED)
+async def create_site_plant_request(
+    payload: SitePlantRequestPayload,
+    user: dict = Depends(require_permission("site_operations.equipment.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
+    row = (
+        await db.execute(
+            text("""
+        INSERT INTO fleet.plant_requests (
+            organization_id, request_number, request_type, status,
+            project_id, required_asset_type, specification, quantity,
+            work_location, start_date, end_date, operating_hours_mode,
+            operator_required, fuel_responsibility, work_description,
+            priority, requested_by_user_id, created_by
+        ) VALUES (
+            CAST(:org_id AS uuid),
+            'PR-' || LPAD(nextval('fleet.plant_request_seq')::text, 6, '0'),
+            'internal_project', 'submitted',
+            CAST(:project_id AS uuid), :required_asset_type, :specification, :quantity,
+            COALESCE(:work_location, 'Project site'), :start_date, :end_date, :operating_hours_mode,
+            :operator_required, :fuel_responsibility, :work_description,
+            :priority, CAST(:user_id AS uuid), CAST(:user_id AS uuid)
+        ) RETURNING id, request_number
+    """),
+            {
+                "org_id": user["org_id"],
+                "project_id": payload.project_id,
+                "required_asset_type": payload.required_asset_type,
+                "specification": payload.specification,
+                "quantity": payload.quantity,
+                "work_location": payload.work_location,
+                "start_date": payload.start_date,
+                "end_date": payload.end_date,
+                "operating_hours_mode": payload.operating_hours_mode,
+                "operator_required": payload.operator_required,
+                "fuel_responsibility": payload.fuel_responsibility,
+                "work_description": payload.work_description,
+                "priority": payload.priority,
+                "user_id": user["user_id"],
+            },
+        )
+    ).mappings().first()
+    await db.commit()
+    return result(dict(row), "Plant request submitted for approval.")
+
+
+@router.patch("/plant-requests/{request_id}/approve")
+async def approve_site_plant_request(
+    request_id: UUID,
+    user: dict = Depends(require_any_permission(["fleet.plant_requests.approve", "executive.override", "site_operations.site_agent_authorize", "site_operations.daily_report.update"])),
+    db: AsyncSession = Depends(get_db),
+):
+    row = (
+        await db.execute(
+            text("""
+        UPDATE fleet.plant_requests
+        SET status = 'approved',
+            approved_at = NOW(),
+            approved_by = CAST(:user_id AS uuid),
+            updated_at = NOW()
+        WHERE id = :request_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+        RETURNING id, request_number, status
+    """),
+            {"request_id": request_id, "org_id": user["org_id"], "user_id": user["user_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plant request not found.")
+    await db.commit()
+    return result(dict(row), "Plant request approved.")
 
 
 @router.post(

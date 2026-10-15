@@ -90,29 +90,30 @@ export default function ProjectTeamPage() {
   const loadWorkforceData = useCallback(async () => {
     setLoading(true);
     setFeedback(null);
+    const targetId = project?.id || projectId;
     try {
-      const [rolesRes, hiresRes] = await Promise.all([
-        getProjectRoles(projectId),
-        getProjectTeamHires(projectId),
+      const [rolesRes, hiresRes] = await Promise.allSettled([
+        getProjectRoles(targetId),
+        getProjectTeamHires(targetId),
       ]);
 
-      if (rolesRes.success && rolesRes.data) {
-        setRoles(rolesRes.data.assignments || []);
-        setAvailableUsers(rolesRes.data.available_users || []);
-        if (rolesRes.data.available_users?.length > 0 && !selectedUserId) {
-          setSelectedUserId(rolesRes.data.available_users[0].id);
+      if (rolesRes.status === "fulfilled" && rolesRes.value.success && rolesRes.value.data) {
+        setRoles(rolesRes.value.data.assignments || []);
+        setAvailableUsers(rolesRes.value.data.available_users || []);
+        if (rolesRes.value.data.available_users?.length > 0 && !selectedUserId) {
+          setSelectedUserId(rolesRes.value.data.available_users[0].id);
         }
       }
 
-      if (hiresRes.success && hiresRes.data) {
-        setProjectHires(hiresRes.data.hires || []);
+      if (hiresRes.status === "fulfilled" && hiresRes.value.success && hiresRes.value.data) {
+        setProjectHires(hiresRes.value.data.hires || []);
       }
     } catch (err: any) {
       console.warn("Error loading workforce data", err);
     } finally {
       setLoading(false);
     }
-  }, [projectId, selectedUserId]);
+  }, [projectId, project?.id, selectedUserId]);
 
   useEffect(() => {
     void loadWorkforceData();
@@ -125,8 +126,9 @@ export default function ProjectTeamPage() {
 
     setActionLoading(true);
     setFeedback(null);
+    const targetId = project?.id || projectId;
     try {
-      const res = await assignProjectRole(projectId, {
+      const res = await assignProjectRole(targetId, {
         user_id: selectedUserId,
         role_name: selectedRoleName,
         starts_on: roleStartsOn || undefined,
@@ -161,8 +163,9 @@ export default function ProjectTeamPage() {
     }
 
     setActionLoading(true);
+    const targetId = project?.id || projectId;
     try {
-      const res = await deactivateProjectRole(projectId, assignmentId);
+      const res = await deactivateProjectRole(targetId, assignmentId);
       if (res.success) {
         setFeedback({ type: "success", message: `Deactivated role assignment for ${roleName}.` });
         await loadWorkforceData();
@@ -184,8 +187,9 @@ export default function ProjectTeamPage() {
 
     setActionLoading(true);
     setFeedback(null);
+    const targetId = project?.id || projectId;
     try {
-      const res = await createProjectTeamHire(projectId, {
+      const res = await createProjectTeamHire(targetId, {
         full_name: hireFullName.trim(),
         trade: hireTrade,
         hourly_rate: parseFloat(hireHourlyRate) || 0,
@@ -226,8 +230,9 @@ export default function ProjectTeamPage() {
     if (!confirm(msg)) return;
 
     setActionLoading(true);
+    const targetId = project?.id || projectId;
     try {
-      const res = await deactivateProjectTeamHire(projectId, workerId);
+      const res = await deactivateProjectTeamHire(targetId, workerId);
       if (res.success) {
         setFeedback({
           type: "success",
@@ -251,8 +256,9 @@ export default function ProjectTeamPage() {
     }
 
     setActionLoading(true);
+    const targetId = project?.id || projectId;
     try {
-      const res = await removeProjectAllocation(projectId, allocationId);
+      const res = await removeProjectAllocation(targetId, allocationId);
       if (res.success) {
         setFeedback({
           type: "success",

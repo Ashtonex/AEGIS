@@ -56,17 +56,40 @@ class BOQImporter:
         "section", "trade", "bill", "heading", "category", "element", "package"
     }
 
-    IGNORE_SHEET_KEYWORDS = {
-        "cover", "title", "index", "toc", "contents", "instruction",
-        "notes", "terms", "condition", "preamble", "sign", "disclaimer",
-        "recap", "recapitulation"
+    INFORMATIONAL_KEYWORDS = {
+        "cover", "cover page", "title", "index", "toc", "contents", "table of contents",
+        "instruction", "instructions", "notes", "notes & conditions", "terms", "condition",
+        "conditions", "preamble", "preambles", "sign", "signatures", "disclaimer",
+        "document control", "revision", "version", "control sheet"
     }
+
+    SUMMARY_KEYWORDS = {
+        "summary", "bill summary", "grand summary", "general summary", "recap",
+        "recapitulation", "abstract", "collection", "final summary", "overview",
+        "tender summary", "schedule of prices summary", "cost summary", "project summary",
+        "executive summary", "totals", "summary of bills", "recap sheet"
+    }
+
+    WORKING_KEYWORDS = {
+        "rate analysis", "rate buildup", "rate build-up", "rates analysis", "rates buildup",
+        "takeoff", "take off", "take-off", "dim paper", "dayworks", "daywork",
+        "schedule of dayworks", "plant schedule", "equipment schedule", "material schedule",
+        "materials", "material list", "labour schedule", "labour rates", "calculations",
+        "calc", "calcs", "backup", "scratch", "supplier quote", "breakdown", "buildup",
+        "formulas", "pricing sheet"
+    }
+
+    IGNORE_SHEET_KEYWORDS = INFORMATIONAL_KEYWORDS | {"recap", "recapitulation"}
 
     SUBTOTAL_KEYWORDS = [
         "total carried", "carried forward", "carried to", "brought forward",
-        "final summary", "grand total", "sub-total", "sub total",
-        "total for bill", "collection", "carried to collection",
-        "summary of bill", "page total", "add vat", "vat ("
+        "final summary", "grand total", "sub-total", "sub total", "subtotal",
+        "total for bill", "total of bill", "collection", "carried to collection",
+        "summary of bill", "summary of section", "page total", "total of page",
+        "add vat", "vat (", "vat @", "total carried to", "carried to summary",
+        "carried to general summary", "balance carried", "balance brought",
+        "total for section", "total this page", "section total", "trade total",
+        "carried to final summary"
     ]
 
     SUBTOTAL_PATTERNS = [
@@ -74,6 +97,7 @@ class BOQImporter:
         re.compile(r"^sub[-\s]?total(\s+.*)?$", re.IGNORECASE),
         re.compile(r"^total\s+bill(\s+.*)?$", re.IGNORECASE),
         re.compile(r"^total\s+for(\s+.*)?$", re.IGNORECASE),
+        re.compile(r"^total\s+of(\s+.*)?$", re.IGNORECASE),
         re.compile(r"^carried\s+(forward|to)(\s+.*)?$", re.IGNORECASE),
         re.compile(r"^brought\s+forward(\s+.*)?$", re.IGNORECASE),
         re.compile(r"^collection(\s+.*)?$", re.IGNORECASE),
@@ -81,6 +105,7 @@ class BOQImporter:
         re.compile(r"^vat(\s*\(.*\))?$", re.IGNORECASE),
         re.compile(r"^p\s*&\s*g(\s+.*)?$", re.IGNORECASE),
         re.compile(r"^provisional\s+sum(\s+.*)?$", re.IGNORECASE),
+        re.compile(r"^balance\s+(carried|brought)(\s+.*)?$", re.IGNORECASE),
     ]
 
     CURRENCY_REGEX = re.compile(r"[$£€¥R]|USD|ZWL|ZAR|NAD|BWP", re.IGNORECASE)
@@ -280,11 +305,68 @@ class BOQImporter:
         return best_row_idx, best_map
 
     @classmethod
+    def _classify_sheet(
+        cls,
+        sheet_name: str,
+        rows: List[List[Any]],
+        all_sheet_names: List[str],
+    ) -> str:
+        """
+        Classifies a worksheet into one of:
+        - 'informational': Cover, notes, preambles, indices, terms
+        - 'summary_rollup': High-level roll-up aggregating other tabs
+        - 'working_takeoff': Internal calculations, rate build-ups, material take-offs
+        - 'detail_bill': Granular bill of quantities line items
+        """
+        clean_name = sheet_name.strip().lower()
+
+        # 1. Informational check
+        if any(kw == clean_name or kw in clean_name for kw in cls.INFORMATIONAL_KEYWORDS):
+            return "informational"
+
+        # 2. Working / Takeoff check
+        if any(kw == clean_name or kw in clean_name for kw in cls.WORKING_KEYWORDS):
+            return "working_takeoff"
+
+        # 3. Summary check by name
+        if any(kw == clean_name or kw in clean_name for kw in cls.SUMMARY_KEYWORDS):
+            return "summary_rollup"
+
+        # 4. Content-based Summary Detection:
+        # Check if rows in this sheet reference other sheet names as descriptions
+        other_sheets = [s.strip().lower() for s in all_sheet_names if s.strip().lower() != clean_name]
+        if other_sheets and len(rows) > 0:
+            matching_other_sheets = 0
+            total_described_rows = 0
+            for r in rows[:40]:
+                text_cells = [str(c).strip().lower() for c in r if c is not None and str(c).strip()]
+                for cell in text_cells:
+                    if len(cell) > 3 and any(other_sheet in cell for other_sheet in other_sheets if len(other_sheet) > 3):
+                        matching_other_sheets += 1
+                        break
+                if any(text_cells):
+                    total_described_rows += 1
+
+            if matching_other_sheets >= 2 and (matching_other_sheets / max(1, total_described_rows)) >= 0.25:
+                return "summary_rollup"
+
+        # 5. Check formula cross-sheet references:
+        cross_sheet_formula_count = 0
+        for r in rows:
+            for c in r:
+                if isinstance(c, str) and c.startswith("="):
+                    if any(f"{other}!" in c.lower() for other in other_sheets):
+                        cross_sheet_formula_count += 1
+                        if cross_sheet_formula_count >= 2:
+                            return "summary_rollup"
+
+        return "detail_bill"
+
+    @classmethod
     def _is_subtotal_row(cls, desc: str, section: str = "") -> bool:
-        lower_sec = (section or "").strip().lower()
-        if lower_sec in ["summary", "bill summary", "final summary", "recapitulation", "collection"]:
-            return True
         clean = re.sub(r"\s+", " ", desc.strip()).lower()
+        if not clean:
+            return False
         if any(keyword in clean for keyword in cls.SUBTOTAL_KEYWORDS):
             return True
         return any(pat.match(clean) for pat in cls.SUBTOTAL_PATTERNS)
@@ -471,33 +553,63 @@ class BOQImporter:
 
     @classmethod
     def _import_excel_workbook(cls, file_content: bytes, file_extension: str = ".xlsx") -> BOQImportResult:
-        """Parses multi-sheet Excel workbook with formula caching and legacy support."""
+        """Parses multi-sheet Excel workbook with formula caching, sheet differentiation, and double-count prevention."""
         sheets = cls._read_excel_sheets(file_content, file_extension)
         warnings: List[str] = []
         all_items: List[BOQItem] = []
         rows_processed = 0
         sections_seen: set[str] = set()
+        sheet_manifest: List[Dict[str, Any]] = []
 
-        candidate_sheets = []
+        all_sheet_names = [name for name, _ in sheets]
+        classified_sheets: List[Tuple[str, List[List[Any]], str]] = []
+
         for name, rows in sheets:
             rows_processed += len(rows)
-            lower_name = name.lower().strip()
-            if len(sheets) > 1 and any(kw in lower_name for kw in cls.IGNORE_SHEET_KEYWORDS):
-                continue
-            candidate_sheets.append((name, rows))
+            classification = cls._classify_sheet(name, rows, all_sheet_names)
+            classified_sheets.append((name, rows, classification))
 
-        if not candidate_sheets:
-            candidate_sheets = sheets
+        # Check if we have detail bill sheets
+        detail_sheets = [(name, rows) for name, rows, c in classified_sheets if c == "detail_bill"]
+        summary_sheets = [(name, rows) for name, rows, c in classified_sheets if c == "summary_rollup"]
+        working_sheets = [(name, rows) for name, rows, c in classified_sheets if c == "working_takeoff"]
+        info_sheets = [(name, rows) for name, rows, c in classified_sheets if c == "informational"]
 
-        # If some sheets have explicit recognizable bill/cost headers, prioritize them
-        # to avoid polluting the ledger with unstructured summary or governance tabs
-        mapped_sheets = [
-            (name, rows) for name, rows in candidate_sheets
+        # Selection of active sheets to prevent inflation:
+        # If detail sheets exist, only parse detail sheets. Exclude summary and working sheets.
+        differentiated_prevention = False
+        if detail_sheets:
+            active_sheets = detail_sheets
+            if summary_sheets:
+                differentiated_prevention = True
+                for s_name, _ in summary_sheets:
+                    warnings.append(
+                        f"Worksheet '{s_name}' was identified as a roll-up summary and excluded to prevent double-counting with detail tabs."
+                    )
+            for w_name, _ in working_sheets:
+                warnings.append(
+                    f"Worksheet '{w_name}' was identified as internal rate analysis / calculation backup and excluded to avoid inflating quotation figures."
+                )
+        elif summary_sheets:
+            # No detail sheets provided, only high-level summary
+            active_sheets = summary_sheets
+            warnings.append(
+                f"Imported high-level summary lines from worksheet '{summary_sheets[0][0]}' as no detailed trade sheets were detected."
+            )
+        elif working_sheets:
+            active_sheets = working_sheets
+        else:
+            active_sheets = [(name, rows) for name, rows, _ in classified_sheets]
+
+        # Prioritize sheets with recognizable headers among active sheets
+        mapped_active = [
+            (name, rows) for name, rows in active_sheets
             if cls._find_header_mapping(rows)[0] >= 0
         ]
-        active_sheets = mapped_sheets if mapped_sheets else candidate_sheets
+        chosen_sheets = mapped_active if mapped_active else active_sheets
 
-        for sheet_name, rows in active_sheets:
+        # Process each chosen sheet
+        for sheet_name, rows in chosen_sheets:
             sheet_items = cls._process_tabular_rows(
                 rows=rows,
                 sheet_title=sheet_name,
@@ -506,20 +618,46 @@ class BOQImporter:
                 sections_seen=sections_seen,
             )
             all_items.extend(sheet_items)
+            sheet_subtotal = sum(
+                (it.quantity * it.rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                for it in sheet_items
+            )
+            sheet_manifest.append({
+                "sheet_name": sheet_name,
+                "classification": "detail_bill" if any(sheet_name == s[0] for s in detail_sheets) else ("summary_rollup" if any(sheet_name == s[0] for s in summary_sheets) else "working_takeoff"),
+                "status": "imported",
+                "reason": "Imported as authoritative line items",
+                "row_count": len(rows),
+                "items_count": len(sheet_items),
+                "subtotal": str(sheet_subtotal),
+            })
 
-        # Fallback: if prioritizing mapped_sheets produced 0 items, scan all candidate sheets
-        if not all_items and mapped_sheets and len(mapped_sheets) < len(candidate_sheets):
-            for sheet_name, rows in candidate_sheets:
-                if (sheet_name, rows) in mapped_sheets:
-                    continue
-                sheet_items = cls._process_tabular_rows(
-                    rows=rows,
-                    sheet_title=sheet_name,
-                    warnings=warnings,
-                    default_section=sheet_name or "Measured Works",
-                    sections_seen=sections_seen,
-                )
-                all_items.extend(sheet_items)
+        # Record manifest for excluded sheets
+        chosen_names = {s[0] for s in chosen_sheets}
+        for sheet_name, rows, c in classified_sheets:
+            if sheet_name not in chosen_names:
+                if c == "summary_rollup":
+                    reason = "Roll-up summary sheet excluded to prevent double-counting detailed bill tabs"
+                    status = "excluded_summary"
+                elif c == "working_takeoff":
+                    reason = "Internal rate analysis / calculation backup excluded from bill items"
+                    status = "excluded_working"
+                elif c == "informational":
+                    reason = "Non-bill documentation (cover/notes/conditions) excluded"
+                    status = "excluded_informational"
+                else:
+                    reason = "Worksheet skipped (no bill headers identified)"
+                    status = "skipped"
+
+                sheet_manifest.append({
+                    "sheet_name": sheet_name,
+                    "classification": c,
+                    "status": status,
+                    "reason": reason,
+                    "row_count": len(rows),
+                    "items_count": 0,
+                    "subtotal": "0.00",
+                })
 
         total_direct_costs = sum(
             (it.quantity * it.rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -534,6 +672,10 @@ class BOQImporter:
                 "valid_items_imported": len(all_items),
                 "section_count": len(sections_seen) if sections_seen else 1,
                 "total_direct_costs": str(total_direct_costs),
+                "total_sheets_in_workbook": len(sheets),
+                "imported_sheets_count": len(chosen_sheets),
+                "differentiated_summary_prevented": differentiated_prevention,
+                "sheet_manifest": sheet_manifest,
             },
         )
 

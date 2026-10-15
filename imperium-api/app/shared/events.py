@@ -196,7 +196,7 @@ async def emit_role_notification(
             JOIN core.roles r ON r.id = ur.role_id
              AND r.organization_id = u.organization_id
              AND r.is_deleted = false
-            WHERE u.organization_id = :org_id
+            WHERE u.organization_id = CAST(:org_id AS uuid)
               AND u.is_active = true
               AND u.is_deleted = false
               AND upper(r.name) = ANY(:role_names)
