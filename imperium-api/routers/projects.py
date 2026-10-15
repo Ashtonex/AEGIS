@@ -3,7 +3,7 @@
 import json
 from datetime import date
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -2507,69 +2507,65 @@ async def list_project_hires(
     db: AsyncSession = Depends(get_db),
 ):
     """List all project hires (casual and temporary workers) for this project,
-    including those registered directly, logged in site day attendance, or recorded
-    on daily site reports."""
+    cleanly deduplicated per unique individual with aggregated site hours and last attendance."""
     project = await _project_ref_or_404(db, project_id, user["org_id"])
     resolved_project_id = project["id"]
 
     query = text("""
-        WITH site_day_att AS (
-            SELECT site_worker_id, worker_name, trade, hr_status,
-                   MAX(created_at) AS last_attended,
-                   SUM(COALESCE(regular_hours, 0) + COALESCE(overtime_hours, 0)) AS total_hours
-            FROM projects.site_day_attendance
-            WHERE project_id = :project_id AND organization_id = :org_id AND worker_kind = 'project_hire'
-            GROUP BY site_worker_id, worker_name, trade, hr_status
+        WITH attendance_agg AS (
+            SELECT 
+                a.site_worker_id,
+                LOWER(TRIM(a.worker_name)) AS norm_name,
+                MAX(a.worker_name) AS att_worker_name,
+                MAX(a.trade) AS att_trade,
+                SUM(COALESCE(a.regular_hours, 0) + COALESCE(a.overtime_hours, 0)) AS total_hours,
+                MAX(a.created_at) AS last_attended,
+                CASE 
+                    WHEN bool_or(a.hr_status = 'accepted') THEN 'accepted'
+                    WHEN bool_or(a.hr_status = 'pending') THEN 'pending'
+                    ELSE 'open'
+                END AS hr_status
+            FROM projects.site_day_attendance a
+            WHERE a.project_id = CAST(:project_id AS uuid) 
+              AND a.organization_id = CAST(:org_id AS uuid)
+              AND a.worker_kind = 'project_hire'
+            GROUP BY a.site_worker_id, LOWER(TRIM(a.worker_name))
         ),
-        daily_rep_lab AS (
-            SELECT l.site_worker_id,
-                   COALESCE(l.worker_name, w.full_name) AS worker_name,
-                   COALESCE(l.role_on_site, w.trade, 'General Labourer') AS trade,
-                   MAX(l.created_at) AS last_attended,
-                   SUM(COALESCE(l.regular_hours, 0) + COALESCE(l.overtime_hours, 0)) AS total_hours
-            FROM projects.daily_report_labour l
-            JOIN projects.daily_site_reports r ON r.id = l.report_id
-            LEFT JOIN finance.site_workers w ON w.id = l.site_worker_id
-            WHERE r.project_id = :project_id AND l.organization_id = :org_id AND l.is_deleted = false
-              AND (l.worker_kind = 'project_hire' OR l.site_worker_id IS NOT NULL)
-            GROUP BY l.site_worker_id, COALESCE(l.worker_name, w.full_name), COALESCE(l.role_on_site, w.trade, 'General Labourer')
-        ),
-        combined_site_activity AS (
-            SELECT site_worker_id, worker_name, trade, hr_status, last_attended, total_hours
-            FROM site_day_att
-            UNION ALL
-            SELECT site_worker_id, worker_name, trade, 'accepted' AS hr_status, last_attended, total_hours
-            FROM daily_rep_lab
-            WHERE site_worker_id IS NULL OR site_worker_id NOT IN (SELECT site_worker_id FROM site_day_att WHERE site_worker_id IS NOT NULL)
-        ),
-        activity_summary AS (
-            SELECT site_worker_id,
-                   MAX(worker_name) AS worker_name,
-                   MAX(trade) AS trade,
-                   MAX(hr_status) AS hr_status,
-                   MAX(last_attended) AS last_attended,
-                   SUM(total_hours) AS total_hours
-            FROM combined_site_activity
-            GROUP BY site_worker_id
+        worker_attendance AS (
+            SELECT 
+                COALESCE(site_worker_id, (
+                    SELECT w2.id FROM finance.site_workers w2 
+                    WHERE w2.project_id = CAST(:project_id AS uuid) 
+                      AND LOWER(TRIM(w2.full_name)) = attendance_agg.norm_name 
+                    LIMIT 1
+                )) AS resolved_worker_id,
+                norm_name,
+                MAX(att_worker_name) AS worker_name,
+                MAX(att_trade) AS trade,
+                SUM(total_hours) AS total_hours,
+                MAX(last_attended) AS last_attended,
+                MAX(hr_status) AS hr_status
+            FROM attendance_agg
+            GROUP BY 1, norm_name
         )
         SELECT 
-            COALESCE(w.id, a.site_worker_id) AS id,
-            COALESCE(w.full_name, a.worker_name) AS full_name,
-            COALESCE(w.trade, a.trade, 'General Labourer') AS trade,
+            COALESCE(w.id, wa.resolved_worker_id) AS id,
+            COALESCE(w.full_name, wa.worker_name) AS full_name,
+            COALESCE(w.trade, wa.trade, 'General Labourer') AS trade,
             COALESCE(w.hourly_rate, 0) AS hourly_rate,
             COALESCE(w.phone, '') AS phone,
             COALESCE(w.national_id, '') AS national_id,
             COALESCE(w.status, 'active') AS status,
             COALESCE(w.registered_via, 'site_register') AS registered_via,
-            COALESCE(w.hr_verified, a.hr_status = 'accepted', false) AS hr_verified,
-            COALESCE(a.hr_status, CASE WHEN w.hr_verified THEN 'accepted' ELSE 'pending' END) AS hr_status,
-            COALESCE(a.total_hours, 0) AS hours_logged,
-            a.last_attended,
+            COALESCE(w.hr_verified, wa.hr_status = 'accepted', false) AS hr_verified,
+            COALESCE(wa.hr_status, CASE WHEN w.hr_verified THEN 'accepted' ELSE 'pending' END) AS hr_status,
+            COALESCE(wa.total_hours, 0) AS hours_logged,
+            wa.last_attended,
             w.created_at
         FROM finance.site_workers w
-        FULL OUTER JOIN activity_summary a ON a.site_worker_id = w.id
-        WHERE (w.project_id = :project_id OR a.site_worker_id IS NOT NULL OR a.worker_name IS NOT NULL)
-          AND (w.organization_id = :org_id OR w.organization_id IS NULL)
+        FULL OUTER JOIN worker_attendance wa ON wa.resolved_worker_id = w.id
+        WHERE (w.project_id = CAST(:project_id AS uuid) OR wa.resolved_worker_id IS NOT NULL)
+          AND (w.organization_id = CAST(:org_id AS uuid) OR w.organization_id IS NULL)
           AND (w.is_deleted IS NULL OR w.is_deleted = false)
         ORDER BY status ASC, full_name ASC
     """)
@@ -2657,22 +2653,31 @@ async def deactivate_project_hire(
     user: dict = Depends(require_permission("projects.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-deactivate a project hire, removing them from upcoming registers while preserving past attendance."""
+    """Soft-deactivate (or toggle) a project hire, removing them from upcoming registers while preserving past attendance."""
     project = await _project_ref_or_404(db, project_id, user["org_id"])
-    resolved_project_id = project["id"]
+
+    # Check current status
+    curr = (await db.execute(
+        text("SELECT status FROM finance.site_workers WHERE id = :id AND (organization_id = :org_id OR organization_id IS NULL)"),
+        {"id": worker_id, "org_id": user["org_id"]},
+    )).scalar()
+
+    new_status = "active" if curr == "inactive" else "inactive"
+    reason = "Reactivated for project" if new_status == "active" else "Deactivated from project"
+    end_date_val = None if new_status == "active" else date.today()
 
     await db.execute(
         text("""
             UPDATE finance.site_workers
-            SET status = 'inactive', status_reason = 'Deactivated from project',
-                end_date = CURRENT_DATE, updated_at = NOW()
-            WHERE id = :id AND organization_id = :org_id
+            SET status = :status, status_reason = :reason,
+                end_date = :end_date, updated_at = NOW()
+            WHERE id = :id AND (organization_id = :org_id OR organization_id IS NULL)
         """),
-        {"id": worker_id, "org_id": user["org_id"]},
+        {"id": worker_id, "org_id": user["org_id"], "status": new_status, "reason": reason, "end_date": end_date_val},
     )
     await db.commit()
 
-    return _result({"id": str(worker_id), "deactivated": True}, "Project hire deactivated from project.")
+    return _result({"id": str(worker_id), "status": new_status, "deactivated": (new_status == "inactive")}, f"Worker status updated to {new_status}.")
 
 
 # ==============================================================================

@@ -235,7 +235,7 @@ export function CommercialWorkspaceModal({
     } finally {
       setLoadingActivities(false);
     }
-  }, [entity?.id, isTender]);
+  }, [entity, isTender]);
 
   // Load Documents
   const loadEntityDocuments = useCallback(async () => {
@@ -252,7 +252,7 @@ export function CommercialWorkspaceModal({
     } finally {
       setLoadingDocs(false);
     }
-  }, [entity?.id, isTender]);
+  }, [entity, isTender]);
 
   // Load Tender Requirements
   const loadTenderRequirementsList = useCallback(async () => {
@@ -274,7 +274,7 @@ export function CommercialWorkspaceModal({
     } finally {
       setLoadingRequirements(false);
     }
-  }, [isTender, entity?.id]);
+  }, [entity, isTender]);
 
   // Load Win/Loss reasons
   useEffect(() => {
@@ -311,6 +311,17 @@ export function CommercialWorkspaceModal({
       document.body.style.overflow = originalOverflow;
     };
   }, [isOpen, onClose]);
+
+  // Filtered Activity Timeline
+  const filteredActivities = useMemo(() => {
+    if (timelineFilter === "touchpoints") {
+      return activityTimeline.filter((a) => a.activity_type === "communication" || a.activity_type === "meeting");
+    }
+    if (timelineFilter === "system") {
+      return activityTimeline.filter((a) => a.activity_type !== "communication" && a.activity_type !== "meeting");
+    }
+    return activityTimeline;
+  }, [activityTimeline, timelineFilter]);
 
   if (!isOpen || !entity) return null;
 
@@ -668,16 +679,6 @@ export function CommercialWorkspaceModal({
     }
   };
 
-  // Filtered Activity Timeline
-  const filteredActivities = useMemo(() => {
-    if (timelineFilter === "touchpoints") {
-      return activityTimeline.filter((a) => a.activity_type === "communication" || a.activity_type === "meeting");
-    }
-    if (timelineFilter === "system") {
-      return activityTimeline.filter((a) => a.activity_type !== "communication" && a.activity_type !== "meeting");
-    }
-    return activityTimeline;
-  }, [activityTimeline, timelineFilter]);
 
   return (
     <div
