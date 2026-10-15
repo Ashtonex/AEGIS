@@ -199,7 +199,7 @@ function SiteOperationsWorkspace() {
       if (found) return found;
     }
     return reports.find((r) => String(r.project_id) === String(projectId) && String(r.report_date) === String(workDate)) || null;
-  }, [reports, projectId, workDate, day?.daily_report_id]);
+  }, [reports, projectId, workDate, day]);
 
   const [todayDetail, setTodayDetail] = useState<Detail | null>(null);
   const [todayDetailLoading, setTodayDetailLoading] = useState(false);
