@@ -228,7 +228,7 @@ export default function ProjectMaterialsPage() {
 
           {inventoryOnHand.length === 0 ? (
             <div className="py-12 text-center text-xs text-slate-light font-mono">
-              No on-hand stock found in this project's site stores.
+              No on-hand stock found in this project&apos;s site stores.
             </div>
           ) : (
             <div className="overflow-x-auto">

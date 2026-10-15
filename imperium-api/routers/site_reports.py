@@ -2940,51 +2940,57 @@ async def sync_all_daily_report(
         await sync_attendance_to_daily_report(db, briefing_id=briefing_id, report_id=report_id, org_id=user["org_id"])
 
     # Auto-sync active plant
-    active_fleet = (
-        await db.execute(
-            text("""
-            SELECT f.id AS fleet_id, COALESCE(f.internal_rate_hourly, 0) AS cost_rate
-            FROM fleet.fleet f
-            WHERE f.organization_id = CAST(:org_id AS uuid)
-              AND f.project_id = CAST(:project_id AS uuid)
-              AND f.is_deleted = false
-              AND f.status IN ('active', 'in_use', 'operational')
-        """),
-            {"org_id": user["org_id"], "project_id": report["project_id"]},
-        )
-    ).mappings().all()
-    for fl in active_fleet:
-        already = (
+    try:
+        active_fleet = (
             await db.execute(
-                text("SELECT id FROM projects.daily_report_equipment WHERE report_id=:rid AND fleet_id=:fid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
-                {"rid": report_id, "fid": fl["fleet_id"], "org_id": user["org_id"]},
+                text("""
+                SELECT f.id AS fleet_id, COALESCE(f.internal_rate_hourly, 0) AS cost_rate
+                FROM fleet.fleet f
+                WHERE f.organization_id = CAST(:org_id AS uuid)
+                  AND f.project_id = CAST(:project_id AS uuid)
+                  AND f.is_deleted = false
+                  AND f.status IN ('active', 'in_use', 'operational')
+            """),
+                {"org_id": user["org_id"], "project_id": report["project_id"]},
             )
-        ).scalar()
-        if not already:
-            await db.execute(
-                text("INSERT INTO projects.daily_report_equipment (organization_id, report_id, fleet_id, operating_hours, idle_hours, fuel_litres, cost_rate, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :fid, 8, 0, 0, :rate, 'Auto-synced from active project plant', CAST(:uid AS uuid))"),
-                {"org_id": user["org_id"], "rid": report_id, "fid": fl["fleet_id"], "rate": fl["cost_rate"], "uid": user["user_id"]},
-            )
+        ).mappings().all()
+        for fl in active_fleet:
+            already = (
+                await db.execute(
+                    text("SELECT id FROM projects.daily_report_equipment WHERE report_id=:rid AND fleet_id=:fid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
+                    {"rid": report_id, "fid": fl["fleet_id"], "org_id": user["org_id"]},
+                )
+            ).scalar()
+            if not already:
+                await db.execute(
+                    text("INSERT INTO projects.daily_report_equipment (organization_id, report_id, fleet_id, operating_hours, idle_hours, fuel_litres, cost_rate, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :fid, 8, 0, 0, :rate, 'Auto-synced from active project plant', CAST(:uid AS uuid))"),
+                    {"org_id": user["org_id"], "rid": report_id, "fid": fl["fleet_id"], "rate": fl["cost_rate"], "uid": user["user_id"]},
+                )
+    except Exception as exc:
+        logger.warning(f"Failed to auto-sync fleet to daily report {report_id}: {exc}")
 
     # Auto-sync store issues
-    issues = (
-        await db.execute(
-            text("SELECT sl.item_id, sl.store_id, sl.quantity, sl.unit_cost, sl.reference FROM procurement.stock_ledger sl WHERE sl.organization_id = CAST(:org_id AS uuid) AND sl.project_id = CAST(:project_id AS uuid) AND sl.movement_type IN ('issue', 'consumption') AND DATE(sl.created_at) = CAST(:dt AS date)"),
-            {"org_id": user["org_id"], "project_id": report["project_id"], "dt": report["report_date"]},
-        )
-    ).mappings().all()
-    for iss in issues:
-        already = (
+    try:
+        issues = (
             await db.execute(
-                text("SELECT id FROM projects.daily_report_materials WHERE report_id=:rid AND item_id=:iid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
-                {"rid": report_id, "iid": iss["item_id"], "org_id": user["org_id"]},
+                text("SELECT sl.item_id, sl.store_id, sl.quantity, sl.unit_cost, sl.reference FROM procurement.stock_ledger sl WHERE sl.organization_id = CAST(:org_id AS uuid) AND sl.project_id = CAST(:project_id AS uuid) AND sl.movement_type IN ('issue', 'consumption') AND DATE(sl.created_at) = CAST(:dt AS date)"),
+                {"org_id": user["org_id"], "project_id": report["project_id"], "dt": report["report_date"]},
             )
-        ).scalar()
-        if not already:
-            await db.execute(
-                text("INSERT INTO projects.daily_report_materials (organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :iid, :sid, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:uid AS uuid))"),
-                {"org_id": user["org_id"], "rid": report_id, "iid": iss["item_id"], "sid": iss["store_id"], "qty": iss["quantity"], "cost": iss["unit_cost"] or 0, "ref": iss["reference"] or "", "uid": user["user_id"]},
-            )
+        ).mappings().all()
+        for iss in issues:
+            already = (
+                await db.execute(
+                    text("SELECT id FROM projects.daily_report_materials WHERE report_id=:rid AND item_id=:iid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
+                    {"rid": report_id, "iid": iss["item_id"], "org_id": user["org_id"]},
+                )
+            ).scalar()
+            if not already:
+                await db.execute(
+                    text("INSERT INTO projects.daily_report_materials (organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :iid, :sid, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:uid AS uuid))"),
+                    {"org_id": user["org_id"], "rid": report_id, "iid": iss["item_id"], "sid": iss["store_id"], "qty": iss["quantity"], "cost": iss["unit_cost"] or 0, "ref": iss["reference"] or "", "uid": user["user_id"]},
+                )
+    except Exception as exc:
+        logger.warning(f"Failed to auto-sync store issues to daily report {report_id}: {exc}")
 
     await db.commit()
     return result({"id": str(report_id)}, "Daily site report fully synchronized.")

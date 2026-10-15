@@ -525,8 +525,9 @@ export async function buildApiError(response: Response): Promise<ApiError> {
     const body = await response.text();
     if (body) {
       try {
-        parsedBody = JSON.parse(body);
-        const extracted = extractApiErrorMessage(parsedBody);
+        const parsed = JSON.parse(body) as unknown;
+        parsedBody = parsed;
+        const extracted = extractApiErrorMessage(parsed);
         if (extracted) {
           message = extracted;
         }

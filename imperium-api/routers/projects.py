@@ -2389,12 +2389,14 @@ async def assign_project_role(
             },
         )
 
-    await db.commit()
-
-    emit_event(
-        org_id=user["org_id"],
+    await emit_event(
+        db,
+        user=user,
         event_type="project.role_assigned.v1",
-        payload={
+        aggregate_type="project_role_assignment",
+        aggregate_id=assignment_id,
+        project_id=resolved_project_id,
+        event_data={
             "project_id": str(resolved_project_id),
             "assignment_id": str(assignment_id),
             "user_id": str(payload.user_id),
@@ -2402,6 +2404,8 @@ async def assign_project_role(
             "assigned_by": str(user["user_id"]),
         },
     )
+
+    await db.commit()
 
     return _result({
         "id": str(assignment_id),
@@ -2624,12 +2628,14 @@ async def create_project_hire(
         },
     )).scalar()
 
-    await db.commit()
-
-    emit_event(
-        org_id=user["org_id"],
+    await emit_event(
+        db,
+        user=user,
         event_type="project.hire_created.v1",
-        payload={
+        aggregate_type="project_hire",
+        aggregate_id=worker_id,
+        project_id=resolved_project_id,
+        event_data={
             "project_id": str(resolved_project_id),
             "worker_id": str(worker_id),
             "full_name": payload.full_name,
@@ -2637,6 +2643,8 @@ async def create_project_hire(
             "created_by": str(user["user_id"]),
         },
     )
+
+    await db.commit()
 
     return _result({
         "id": str(worker_id),
@@ -3300,12 +3308,14 @@ async def import_budget_from_quotation(
         },
     )
 
-    await db.commit()
-
-    emit_event(
-        org_id=user["org_id"],
+    await emit_event(
+        db,
+        user=user,
         event_type="project.budget_imported_from_quotation.v1",
-        payload={
+        aggregate_type="project_budget",
+        aggregate_id=budget_id,
+        project_id=project_id,
+        event_data={
             "project_id": str(project_id),
             "budget_id": str(budget_id),
             "quotation_id": str(quote.id),
@@ -3313,6 +3323,8 @@ async def import_budget_from_quotation(
             "imported_by": str(user["user_id"]),
         },
     )
+
+    await db.commit()
 
     return _result({
         "budget_id": str(budget_id),
