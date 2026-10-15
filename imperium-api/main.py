@@ -64,8 +64,66 @@ def create_app() -> FastAPI:
     from core.rate_limit import limiter, rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
     from slowapi.middleware import SlowAPIMiddleware
+    from sqlalchemy.exc import TimeoutError as SATimeoutError, SQLAlchemyError
+    from core.logging import correlation_id_ctx
+
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+    @app.exception_handler(SATimeoutError)
+    async def sa_timeout_handler(request, exc: SATimeoutError):
+        correlation_id = correlation_id_ctx.get() or "unknown"
+        logger.error(f"Database connection timeout on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": {
+                    "code": "DATABASE_BUSY",
+                    "message": "Database connection pool is busy. Please retry in a few moments.",
+                    "correlation_id": correlation_id,
+                },
+                "message": "Database connection pool is busy. Please retry in a few moments.",
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
+    @app.exception_handler(SQLAlchemyError)
+    async def sqlalchemy_error_handler(request, exc: SQLAlchemyError):
+        correlation_id = correlation_id_ctx.get() or "unknown"
+        logger.exception(f"Database error on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "DATABASE_ERROR",
+                    "message": "A database operation failed. The team has been notified.",
+                    "correlation_id": correlation_id,
+                },
+                "message": "A database operation failed. Please retry or contact support.",
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request, exc: Exception):
+        correlation_id = correlation_id_ctx.get() or "unknown"
+        logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": "An unexpected error occurred. Please contact support with the reference ID.",
+                    "correlation_id": correlation_id,
+                },
+                "message": f"Server error occurred (Ref: {correlation_id[:8]}). Please retry.",
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
     app.add_middleware(SlowAPIMiddleware)
 
     app.add_middleware(StructuredLoggingMiddleware)

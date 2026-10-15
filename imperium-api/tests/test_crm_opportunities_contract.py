@@ -47,5 +47,22 @@ class CrmOpportunitiesContractTests(unittest.TestCase):
         self.assertIn("return rawMessage || fallback", CRM_PAGE)
 
 
+    def test_opportunity_board_route_not_shadowed_by_parameterized_id(self):
+        board_index = CRM_ROUTER.index('@router.get("/opportunities/board")')
+        duplicates_index = CRM_ROUTER.index('@router.get("/opportunities/duplicates")')
+        item_index = CRM_ROUTER.index('@router.get("/opportunities/{opportunity_id}")')
+        self.assertLess(
+            board_index,
+            item_index,
+            "FastAPI evaluates routes sequentially: /opportunities/board must be declared before /opportunities/{opportunity_id} to avoid 422 UUID validation failures.",
+        )
+        self.assertLess(
+            duplicates_index,
+            item_index,
+            "FastAPI evaluates routes sequentially: /opportunities/duplicates must be declared before /opportunities/{opportunity_id}.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -1770,33 +1770,6 @@ async def list_opportunities(
     }
 
 
-@router.get("/opportunities/{opportunity_id}")
-async def get_opportunity_by_id(
-    opportunity_id: UUID,
-    user: dict = Depends(require_permission("crm.view_opportunities")),
-    db: AsyncSession = Depends(get_db),
-):
-    """Fetch a single opportunity record by ID with full joins for quotation, project, and client."""
-    org_id = _require_org_id(user)
-    query = text(
-        _OPPORTUNITY_CARD_SELECT
-        + """
-        WHERE o.id = :opportunity_id AND o.organization_id = :org_id AND o.is_deleted = false
-        LIMIT 1
-    """
-    )
-    result = await db.execute(query, {"opportunity_id": opportunity_id, "org_id": org_id})
-    row = result.mappings().first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Opportunity not found.")
-    return {
-        "success": True,
-        "data": dict(row),
-        "message": "Opportunity retrieved successfully.",
-        "meta": {},
-    }
-
-
 
 # The Kanban's columns and how database stages map onto them - the same
 # mapping the board page uses (BACKEND_TO_FRONTEND_STAGE): Quotation shows as
@@ -2356,6 +2329,33 @@ async def find_duplicate_opportunities(
         {"org_id": org_id, "name": name, "client_org_id": client_org_id, "client_id": client_id},
     )
     return {"success": True, "data": items, "message": "Duplicate opportunity candidates fetched.", "meta": {"total": len(items)}}
+
+
+@router.get("/opportunities/{opportunity_id}")
+async def get_opportunity_by_id(
+    opportunity_id: UUID,
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch a single opportunity record by ID with full joins for quotation, project, and client."""
+    org_id = _require_org_id(user)
+    query = text(
+        _OPPORTUNITY_CARD_SELECT
+        + """
+        WHERE o.id = :opportunity_id AND o.organization_id = :org_id AND o.is_deleted = false
+        LIMIT 1
+    """
+    )
+    result = await db.execute(query, {"opportunity_id": opportunity_id, "org_id": org_id})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Opportunity not found.")
+    return {
+        "success": True,
+        "data": dict(row),
+        "message": "Opportunity retrieved successfully.",
+        "meta": {},
+    }
 
 
 @router.delete("/opportunities/{opportunity_id}")

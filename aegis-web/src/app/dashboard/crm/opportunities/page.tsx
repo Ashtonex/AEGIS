@@ -291,7 +291,7 @@ export default function OpportunitiesKanban() {
     ) {
       return "The CRM feed is still synchronizing. Please retry once the connection is ready.";
     }
-    return "Error loading CRM opportunities data.";
+    return rawMessage.trim() ? rawMessage : "Error loading CRM opportunities data.";
   };
 
   const normalizeActionError = (reason: unknown, fallback: string) => {

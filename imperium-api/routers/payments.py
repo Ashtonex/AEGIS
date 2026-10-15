@@ -229,6 +229,35 @@ async def create_payment_batch(
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
 
+@router.get("/vendor-requests", summary="List self-service vendor payment requests")
+async def list_vendor_payment_requests(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    user: dict = Depends(require_permission("finance.vendor_payment.clear")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    filters = ["vpr.organization_id = :org_id", "vpr.is_deleted = false"]
+    params: dict = {"org_id": org_id}
+    if status_filter:
+        filters.append("vpr.status = :status")
+        params["status"] = status_filter
+
+    rows = await db.execute(
+        text(f"""
+            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type,
+                   COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS vendor_onboarding_bypass_enabled,
+                   s.submission_data->'onboarding_bypass'->>'message' AS vendor_onboarding_bypass_message,
+                   s.submission_data->'onboarding_bypass'->'missing_items' AS vendor_onboarding_missing_items
+            FROM finance.vendor_payment_requests vpr
+            JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY vpr.submitted_at DESC
+        """),
+        params,
+    )
+    return ok([dict(r._mapping) for r in rows], "Vendor payment requests listed.")
+
+
 @router.get("/{batch_id}", summary="Get a payment batch with its items")
 async def get_payment_batch(
     batch_id: UUID,
@@ -412,35 +441,6 @@ async def _pick_cash_account_for_finance(db: AsyncSession, org_id: str, currency
     if not account_id:
         raise HTTPException(status_code=422, detail="No active cash account is configured.")
     return str(account_id)
-
-
-@router.get("/vendor-requests", summary="List self-service vendor payment requests")
-async def list_vendor_payment_requests(
-    status_filter: Optional[str] = Query(default=None, alias="status"),
-    user: dict = Depends(require_permission("finance.vendor_payment.clear")),
-    db: AsyncSession = Depends(get_db),
-):
-    org_id = _require_org(user)
-    filters = ["vpr.organization_id = :org_id", "vpr.is_deleted = false"]
-    params: dict = {"org_id": org_id}
-    if status_filter:
-        filters.append("vpr.status = :status")
-        params["status"] = status_filter
-
-    rows = await db.execute(
-        text(f"""
-            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type,
-                   COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS vendor_onboarding_bypass_enabled,
-                   s.submission_data->'onboarding_bypass'->>'message' AS vendor_onboarding_bypass_message,
-                   s.submission_data->'onboarding_bypass'->'missing_items' AS vendor_onboarding_missing_items
-            FROM finance.vendor_payment_requests vpr
-            JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
-            WHERE {' AND '.join(filters)}
-            ORDER BY vpr.submitted_at DESC
-        """),
-        params,
-    )
-    return ok([dict(r._mapping) for r in rows], "Vendor payment requests listed.")
 
 
 @router.post("/vendor-requests/{request_id}/clear", summary="Clear a vendor payment request as Finance")
