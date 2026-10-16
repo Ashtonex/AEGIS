@@ -2817,3 +2817,40 @@ async def get_executive_today(
         "message": "Executive today panel fetched.",
         "meta": {"source_errors": source_errors},
     }
+
+
+@router.get("/overview-bundle")
+async def get_executive_overview_bundle(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batches the top 6 executive dashboard reads into a single network payload,
+    eliminating the 6-request waterfall fan-out on initial dashboard mount."""
+    kpis_res = await get_executive_kpis(user, db)
+    stats_res = await get_executive_stats(user, db)
+    regions_res = await get_executive_regions(user, db)
+    projects_res = await get_active_projects(user, db)
+    health_res = await get_executive_data_health(user, db)
+    exceptions_res = await get_executive_exceptions(user, db)
+
+    all_source_errors = []
+    for res in (kpis_res, stats_res, regions_res, projects_res, health_res, exceptions_res):
+        if isinstance(res, dict) and "meta" in res and "source_errors" in res["meta"]:
+            all_source_errors.extend(res["meta"]["source_errors"])
+
+    return {
+        "success": True,
+        "data": {
+            "kpis": kpis_res.get("data") or {},
+            "stats": stats_res.get("data") or {},
+            "regions": regions_res.get("data") or [],
+            "active_projects": projects_res.get("data") or [],
+            "data_health": health_res.get("data") or [],
+            "exceptions": exceptions_res.get("data") or [],
+        },
+        "message": "Executive overview bundle fetched.",
+        "meta": {
+            "source_errors": all_source_errors,
+            "bundle": True,
+        },
+    }

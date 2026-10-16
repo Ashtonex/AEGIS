@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(request, exc: Exception):
-        correlation_id = correlation_id_ctx.get() or "unknown"
+        correlation_id = getattr(request.state, "correlation_id", None) or correlation_id_ctx.get() or request.headers.get("X-Correlation-ID") or "unknown"
         logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
         return JSONResponse(
             status_code=500,

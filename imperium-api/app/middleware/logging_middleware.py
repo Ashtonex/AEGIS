@@ -17,6 +17,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
             correlation_id = str(uuid.uuid4())
 
         correlation_id_token = correlation_id_ctx.set(correlation_id)
+        request.state.correlation_id = correlation_id
 
         # 2. Extract User ID from JWT token (if present) for tracing
         user_id = ""

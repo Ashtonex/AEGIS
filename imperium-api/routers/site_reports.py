@@ -3069,7 +3069,7 @@ async def create_site_plant_request(
 @router.patch("/plant-requests/{request_id}/approve")
 async def approve_site_plant_request(
     request_id: UUID,
-    user: dict = Depends(require_any_permission(["fleet.plant_requests.approve", "executive.override", "site_operations.site_agent_authorize", "site_operations.daily_report.update"])),
+    user: dict = Depends(require_any_permission(["fleet.plant_requests.approve", "compliance.gate.override", "site_operations.site_agent_authorize", "site_operations.daily_report.update"])),
     db: AsyncSession = Depends(get_db),
 ):
     row = (

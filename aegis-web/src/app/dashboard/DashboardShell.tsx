@@ -18,6 +18,7 @@ import {
   Search, Bell, CircleHelp, User, ShieldAlert,
   Settings, LogOut, ChevronDown, ChevronRight, Menu, X,
   LockKeyhole, Package, ClipboardCheck, HardHat,
+  PanelLeft, PanelLeftClose,
 } from "lucide-react";
 import {
   DOMAIN_META, DOMAIN_ORDER, getDomainForPathname, visibleModuleGroups,
@@ -48,7 +49,60 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const router = useRouter();
   const { session, role, permissions, isSuperAdmin, isLoading, sessionLoading, signOut } = useAuth();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const stored = window.localStorage.getItem("aegis:nav:open-groups");
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("aegis:nav:sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("aegis:nav:sidebar-collapsed", String(next));
+        }
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const toggleGroup = useCallback((groupKey: string, nextState: boolean) => {
+    setOpenGroups((current) => {
+      const updated = { ...current, [groupKey]: nextState };
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("aegis:nav:open-groups", JSON.stringify(updated));
+        }
+      } catch {}
+      return updated;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleSidebar]);
+
   const [tourOpen, setTourOpen] = useState(false);
   const [tourReady, setTourReady] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -168,11 +222,19 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
   useEffect(() => {
     if (!activeGroup) return;
-    setOpenGroups((current) => ({
-      ...current,
-      [activeGroup.name]: true,
-      ...(activeGroup.domain ? { [`domain:${activeGroup.domain}`]: true } : {}),
-    }));
+    setOpenGroups((current) => {
+      const updated = {
+        ...current,
+        [activeGroup.name]: true,
+        ...(activeGroup.domain ? { [`domain:${activeGroup.domain}`]: true } : {}),
+      };
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("aegis:nav:open-groups", JSON.stringify(updated));
+        }
+      } catch {}
+      return updated;
+    });
   }, [activeGroup]);
 
   useEffect(() => {
@@ -227,17 +289,41 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // back to the generic --dxl-signal amber for pinned/passthrough groups
   // that have no sibling domain to distinguish themselves from);
   // `indentClass` pushes it one level in when nested under a domain header.
-  const renderGroupLink = (group: ModuleGroup, opts: { indentClass?: string; accentClass?: string } = {}) => {
+  const renderGroupLink = (
+    group: ModuleGroup,
+    opts: { indentClass?: string; accentClass?: string; isMobile?: boolean } = {}
+  ) => {
     const accentClass = opts.accentClass ?? "text-signal";
     const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
+    const isCollapsedMode = sidebarCollapsed && !opts.isMobile;
 
     if (group.directLink || group.subItems.length === 1) {
       const target = group.subItems.length === 1 ? group.subItems[0] : { href: group.href, icon: group.icon };
+      if (isCollapsedMode) {
+        return (
+          <Link
+            key={group.name}
+            href={target.href}
+            prefetch
+            title={group.name}
+            onMouseEnter={() => prefetchRoute(target.href)}
+            onFocus={() => prefetchRoute(target.href)}
+            className={`mb-1 flex items-center justify-center rounded-sm p-2 text-sm font-medium transition-colors ${
+              isCurrent ? `${accentClass} bg-signal/10` : "text-slate-light hover:bg-ink-light hover:text-paper"
+            }`}
+          >
+            <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? accentClass : "text-slate"}`} />
+          </Link>
+        );
+      }
       return (
         <Link
           key={group.name}
           href={target.href}
           prefetch
+          onClick={() => {
+            if (opts.isMobile) setMobileMenuOpen(false);
+          }}
           onMouseEnter={() => prefetchRoute(target.href)}
           onFocus={() => prefetchRoute(target.href)}
           className={`mb-1 flex min-w-0 items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors ${opts.indentClass ?? ""} ${
@@ -250,11 +336,30 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       );
     }
 
+    if (isCollapsedMode) {
+      const target = group.subItems[0] || { href: group.href, icon: group.icon };
+      return (
+        <Link
+          key={group.name}
+          href={target.href}
+          prefetch
+          title={group.name}
+          onMouseEnter={() => prefetchRoute(target.href)}
+          onFocus={() => prefetchRoute(target.href)}
+          className={`mb-1 flex items-center justify-center rounded-sm p-2 text-sm font-medium transition-colors ${
+            isCurrent ? `${accentClass} bg-signal/10` : "text-slate-light hover:bg-ink-light hover:text-paper"
+          }`}
+        >
+          <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? accentClass : "text-slate"}`} />
+        </Link>
+      );
+    }
+
     const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
     return (
       <div key={group.name} className="mb-1">
         <button
-          onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
+          onClick={() => toggleGroup(group.name, !isOpen)}
           className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${opts.indentClass ?? ""} ${
             isCurrent ? `${accentClass} bg-signal/5` : "text-slate-light hover:text-paper hover:bg-ink-light"
           }`}
@@ -279,6 +384,9 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                   key={sub.name}
                   href={sub.href}
                   prefetch
+                  onClick={() => {
+                    if (opts.isMobile) setMobileMenuOpen(false);
+                  }}
                   onMouseEnter={() => prefetchRoute(sub.href)}
                   onFocus={() => prefetchRoute(sub.href)}
                   className={`flex min-w-0 items-center space-x-3 py-1.5 ${opts.indentClass ? "pl-14" : "pl-10"} pr-3 rounded-sm text-xs transition-colors relative ${
@@ -304,10 +412,29 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // Finance) or every sibling is permission-hidden for this role - skips
   // the wrapper and renders that group directly, so there's never a
   // pointless single-child accordion.
-  const renderDomainBlock = (domainKey: DomainKey, groups: ModuleGroup[]) => {
+  const renderDomainBlock = (
+    domainKey: DomainKey,
+    groups: ModuleGroup[],
+    opts: { isMobile?: boolean } = {}
+  ) => {
     const meta = DOMAIN_META[domainKey];
+    const isCollapsedMode = sidebarCollapsed && !opts.isMobile;
+
+    if (isCollapsedMode) {
+      const isDomainCurrent = groups.some((g) => pathname === g.href || pathname?.startsWith(`${g.href}/`));
+      const DomainIcon = meta.icon;
+      return (
+        <div key={domainKey} className="mb-2 border-t border-ink-mid/40 pt-1.5 flex flex-col items-center">
+          <div title={meta.label} className="flex justify-center p-1 text-[10px] font-mono text-slate">
+            <DomainIcon className={`h-3.5 w-3.5 ${isDomainCurrent ? meta.accentClass : "text-slate"}`} />
+          </div>
+          {groups.map((group) => renderGroupLink(group, { isMobile: opts.isMobile }))}
+        </div>
+      );
+    }
+
     if (groups.length === 1) {
-      return renderGroupLink(groups[0], { accentClass: meta.accentClass });
+      return renderGroupLink(groups[0], { accentClass: meta.accentClass, isMobile: opts.isMobile });
     }
     const stateKey = `domain:${domainKey}`;
     const isDomainCurrent = groups.some((g) => pathname === g.href || pathname?.startsWith(`${g.href}/`));
@@ -316,7 +443,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     return (
       <div key={domainKey} className="mb-1">
         <button
-          onClick={() => setOpenGroups((current) => ({ ...current, [stateKey]: !isDomainOpen }))}
+          onClick={() => toggleGroup(stateKey, !isDomainOpen)}
           className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-xs font-semibold uppercase tracking-wide transition-colors ${
             isDomainCurrent ? `${meta.accentClass} ${meta.accentBgClass}` : "text-slate-light hover:text-paper hover:bg-ink-light"
           }`}
@@ -329,17 +456,17 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </button>
         {isDomainOpen && (
           <div className="mt-1 flex flex-col space-y-1">
-            {groups.map((group) => renderGroupLink(group, { indentClass: "pl-4", accentClass: meta.accentClass }))}
+            {groups.map((group) => renderGroupLink(group, { indentClass: "pl-4", accentClass: meta.accentClass, isMobile: opts.isMobile }))}
           </div>
         )}
       </div>
     );
   };
 
-  const renderNavGroups = () => (
+  const renderNavGroups = (isMobile = false) => (
     <>
-      {pinnedGroups.map((group) => renderGroupLink(group))}
-      {visibleDomains.map(({ key, groups }) => renderDomainBlock(key, groups))}
+      {pinnedGroups.map((group) => renderGroupLink(group, { isMobile }))}
+      {visibleDomains.map(({ key, groups }) => renderDomainBlock(key, groups, { isMobile }))}
     </>
   );
 
@@ -532,10 +659,34 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       <div className="box-border flex h-full min-h-0 overflow-hidden pt-14">
         
         {/* FIXED LEFT SIDEBAR (desktop) */}
-        <aside className="hidden md:flex md:flex-col w-56 flex-shrink-0 border-r border-ink-mid bg-ink z-20">
+        <aside
+          className={`hidden md:flex md:flex-col ${
+            sidebarCollapsed ? "w-16" : "w-56"
+          } flex-shrink-0 border-r border-ink-mid bg-ink z-20 transition-all duration-200`}
+        >
           <nav className="flex-1 py-4 overflow-y-auto no-scrollbar flex flex-col px-3" data-tour="dashboard-nav">
-            {renderNavGroups()}
+            {renderNavGroups(false)}
           </nav>
+
+          {/* SIDEBAR COLLAPSE TOGGLE BUTTON */}
+          <div className="border-t border-ink-mid p-2 flex items-center justify-center shrink-0">
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="flex items-center justify-center w-full py-1.5 text-xs text-slate hover:text-paper hover:bg-ink-light rounded-sm transition-colors"
+              title={sidebarCollapsed ? "Expand sidebar (⌘B)" : "Collapse sidebar (⌘B)"}
+              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? (
+                <PanelLeft className="w-4 h-4 text-slate hover:text-signal transition-colors" />
+              ) : (
+                <div className="flex items-center gap-2">
+                  <PanelLeftClose className="w-4 h-4 text-slate hover:text-signal transition-colors" />
+                  <span className="text-[11px] font-mono tracking-wider uppercase text-slate">Collapse</span>
+                </div>
+              )}
+            </button>
+          </div>
         </aside>
 
         {/* MAIN CONTENT AREA */}
@@ -569,7 +720,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
               </button>
             </div>
             <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 py-4">
-              {renderNavGroups()}
+              {renderNavGroups(true)}
             </nav>
           </aside>
         </div>

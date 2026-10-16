@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.microsoft import teams_notify
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from core.database import get_db
+from core.logging import logger
 from core.security import (
     SUPERADMIN_ROLE,
     get_current_user,
@@ -349,7 +350,6 @@ async def sync_attendance_to_daily_report(
                        COALESCE(a.overtime_hours, 0) AS calc_overtime_hours
                 FROM projects.site_day_attendance a
                 WHERE a.briefing_id = :briefing_id AND a.organization_id = CAST(:org_id AS uuid)
-                  AND a.is_deleted = false
             """),
                 {"briefing_id": briefing_id, "org_id": org_id},
             )

@@ -10,6 +10,7 @@ import { TodayPanel } from "./TodayPanel";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
+  getExecutiveOverviewBundle,
   getActiveExecutiveProjects,
   getExecutiveKPIs,
   getExecutiveDataHealth,
@@ -249,6 +250,32 @@ function ExecutiveCommandCentreWorkspace() {
   const loadDashboard = useCallback(async () => {
     setRefreshing(true);
     const accessToken = session?.access_token;
+
+    try {
+      const bundleResult = await getExecutiveOverviewBundle(accessToken);
+      if (bundleResult?.data) {
+        const bundle = bundleResult.data;
+        if (bundle.kpis) setKpis(bundle.kpis as ApiData);
+        if (bundle.stats) setStats(bundle.stats as ApiData);
+        if (Array.isArray(bundle.regions)) setRegions(bundle.regions as ApiData[]);
+        if (Array.isArray(bundle.active_projects)) setActiveProjects(bundle.active_projects as ApiData[]);
+        if (Array.isArray(bundle.data_health)) setDataHealth(bundle.data_health as ApiData[]);
+        if (Array.isArray(bundle.exceptions)) setExceptions(bundle.exceptions as ApiData[]);
+
+        const errors = sourceErrorsFromMeta(bundleResult.meta);
+        const warnings = errors
+          .filter((error) => !["current", "no_data"].includes(String(error.status)))
+          .map((error) => `${displayValue(error.source)} is ${displayValue(error.status)}.`);
+        setLoadWarnings(warnings);
+        setLastUpdated(new Date());
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+    } catch {
+      // Degrade to individual parallel reads if bundle is temporarily unavailable
+    }
+
     const [kpiResult, statsResult] = await Promise.allSettled([
       getExecutiveKPIs(accessToken),
       getExecutiveStats(accessToken),

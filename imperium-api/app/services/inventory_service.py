@@ -37,8 +37,22 @@ BUDGET_OVERRIDE_ROLES = {"SUPERADMIN", "Finance Manager", "Project Manager"}
 
 
 async def stock_balance(
-    db: AsyncSession, *, org_id: str, item_id: UUID, store_id: Optional[UUID]
+    db: AsyncSession,
+    *,
+    org_id: str,
+    item_id: UUID,
+    store_id: Optional[UUID],
+    for_update: bool = False,
 ) -> Decimal:
+    if for_update:
+        await db.execute(
+            text("""
+            SELECT id FROM procurement.inventory_items
+            WHERE organization_id=:org_id AND id=:item_id AND is_deleted=false
+            FOR UPDATE
+        """),
+            {"org_id": org_id, "item_id": item_id},
+        )
     row = (
         (
             await db.execute(
@@ -319,7 +333,7 @@ async def issue_stock(
     via a formal PO/GRN show up as real project spend the same way materials
     issued via a Site Operations material request already do."""
     available = await stock_balance(
-        db, org_id=user["org_id"], item_id=item_id, store_id=store_id
+        db, org_id=user["org_id"], item_id=item_id, store_id=store_id, for_update=True
     )
     is_override = False
     issue_amount = (quantity * unit_cost).quantize(Decimal("0.01"))
@@ -477,7 +491,7 @@ async def transfer_stock(
             status_code=422, detail="Source and destination store must differ."
         )
     available = await stock_balance(
-        db, org_id=user["org_id"], item_id=item_id, store_id=from_store_id
+        db, org_id=user["org_id"], item_id=item_id, store_id=from_store_id, for_update=True
     )
     is_override = False
     if available < quantity:
@@ -584,7 +598,7 @@ async def adjust_stock(
     is_override = False
     if quantity_delta < 0:
         available = await stock_balance(
-            db, org_id=user["org_id"], item_id=item_id, store_id=store_id
+            db, org_id=user["org_id"], item_id=item_id, store_id=store_id, for_update=True
         )
         if available + quantity_delta < 0:
             if user.get("role") not in BUDGET_OVERRIDE_ROLES:

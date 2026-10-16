@@ -2583,6 +2583,18 @@ async def update_item(
     task_id = payload.pop("task_id", None)
     safe_keys = safe_payload_columns(payload.keys())
 
+    current_status_row = (
+        await db.execute(
+            text("SELECT status FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": item_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if current_status_row and current_status_row.status in ("won", "lost") and user.get("role") != SUPERADMIN_ROLE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Quotation cannot be edited because it has already been decided as '{current_status_row.status}'. Reopen or revision required.",
+        )
+
     if not safe_keys:
         if task_id:
             await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=item_id)
@@ -2770,6 +2782,20 @@ async def decide_quotation(
                 """),
                 {"project_id": quotation["project_id"], "org_id": user["org_id"]},
             )
+        await emit_event(
+            db,
+            user=user,
+            event_type="finance.quotation.decided.v1",
+            aggregate_type="quotation",
+            aggregate_id=item_id,
+            project_id=quotation.get("project_id"),
+            event_data={
+                "quotation_id": item_id,
+                "status": decision,
+                "notes": payload.get("notes"),
+                "budget_id": str(budget_id) if budget_id else None,
+            },
+        )
 
         await db.commit()
     except HTTPException:

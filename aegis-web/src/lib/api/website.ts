@@ -95,10 +95,8 @@ export async function getKnowledge(params?: { limit?: number }): Promise<Paginat
   });
 }
 
-// Same live-attempt-then-mock-fallback pattern as the list functions above -
-// today there's no CMS backend so this always resolves via the mock data
-// fallback, but the moment one exists these start returning real content
-// without needing the detail pages touched again.
+// CMS endpoints query the live CMS backend; unresolvable slugs yield null / notFound()
+// in downstream page consumers rather than fabricating mock article data.
 export async function getArticleBySlug(slug: string): Promise<ApiResponse<Article | null>> {
   return fetchApi<ApiResponse<Article | null>>(`/api/cms/articles/${encodeURIComponent(slug)}`, {
     next: { revalidate: 1800 }
@@ -288,4 +286,23 @@ export async function getModulesStatus(accessToken?: string): Promise<ApiRespons
     allowFallback: false
   });
 }
+
+export type ExecutiveOverviewBundle = {
+  kpis: Record<string, unknown>;
+  stats: Record<string, unknown>;
+  regions: Array<Record<string, unknown>>;
+  active_projects: Array<Record<string, unknown>>;
+  data_health: Array<Record<string, unknown>>;
+  exceptions: Array<Record<string, unknown>>;
+};
+
+export async function getExecutiveOverviewBundle(accessToken?: string): Promise<ApiResponse<ExecutiveOverviewBundle>> {
+  return fetchApi<ApiResponse<ExecutiveOverviewBundle>>(`/api/v1/executive/overview-bundle`, {
+    cache: 'no-store',
+    headers: bearerHeaders(accessToken),
+    timeoutMs: EXECUTIVE_READ_TIMEOUT_MS,
+    allowFallback: false
+  });
+}
+
 
