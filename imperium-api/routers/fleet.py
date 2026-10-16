@@ -756,6 +756,34 @@ class ExternalHireAgreementPayload(Payload):
     debtor_follow_up_notes: Optional[str] = None
     min_guaranteed_hours_day: Optional[Decimal] = Field(default=Decimal("0"), ge=0, max_digits=5, decimal_places=2)
     sunday_premium_multiplier: Optional[Decimal] = Field(default=Decimal("1.0"), ge=1, max_digits=4, decimal_places=2)
+    fulfillment_type: Literal["owned_fleet", "cross_hire", "sub_lease"] = "owned_fleet"
+    supplier_id: Optional[UUID] = None
+    supplier_name: Optional[str] = Field(default=None, max_length=255)
+    supplier_contact: Optional[str] = Field(default=None, max_length=255)
+    supplier_agreement_number: Optional[str] = Field(default=None, max_length=120)
+    sourcing_rate: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=4)
+    sourcing_rate_unit: Literal["hourly", "daily", "weekly", "monthly", "output_based", "flat"] = "hourly"
+    supplier_terms: Literal["dry_hire", "wet_hire", "dry_with_maintenance", "other"] = "dry_hire"
+    supplier_fuel_responsibility: Literal["supplier", "snc", "client"] = "snc"
+    supplier_deposit_paid: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_mobilisation_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_demobilisation_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_standing_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    supplier_payable_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_payment_status: Literal["not_invoiced", "invoice_received", "approved", "paid", "disputed"] = "not_invoiced"
+    supplier_invoice_reference: Optional[str] = Field(default=None, max_length=120)
+    sourced_asset_category: Optional[str] = Field(default=None, max_length=80)
+    sourced_asset_make_model: Optional[str] = Field(default=None, max_length=160)
+    sourced_asset_reg_serial: Optional[str] = Field(default=None, max_length=120)
+    sourced_meter_start: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+    sourced_meter_end: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    unit_spread: Decimal = Field(default=Decimal("0"), max_digits=15, decimal_places=4)
+    unit_spread_percentage: Decimal = Field(default=Decimal("0"), max_digits=6, decimal_places=2)
+    projected_hours_or_units: Decimal = Field(default=Decimal("0"), ge=0, max_digits=10, decimal_places=2)
+    projected_revenue: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    projected_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    projected_gross_profit: Decimal = Field(default=Decimal("0"), max_digits=15, decimal_places=2)
+    realized_gross_profit: Decimal = Field(default=Decimal("0"), max_digits=15, decimal_places=2)
 
 
 class ExternalHireAgreementUpdate(Payload):
@@ -778,6 +806,41 @@ class ExternalHireAgreementUpdate(Payload):
     debtor_follow_up_notes: Optional[str] = None
     min_guaranteed_hours_day: Optional[Decimal] = Field(default=None, ge=0, max_digits=5, decimal_places=2)
     sunday_premium_multiplier: Optional[Decimal] = Field(default=None, ge=1, max_digits=4, decimal_places=2)
+    fulfillment_type: Optional[Literal["owned_fleet", "cross_hire", "sub_lease"]] = None
+    supplier_id: Optional[UUID] = None
+    supplier_name: Optional[str] = Field(default=None, max_length=255)
+    supplier_contact: Optional[str] = Field(default=None, max_length=255)
+    supplier_agreement_number: Optional[str] = Field(default=None, max_length=120)
+    sourcing_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    sourcing_rate_unit: Optional[Literal["hourly", "daily", "weekly", "monthly", "output_based", "flat"]] = None
+    supplier_terms: Optional[Literal["dry_hire", "wet_hire", "dry_with_maintenance", "other"]] = None
+    supplier_fuel_responsibility: Optional[Literal["supplier", "snc", "client"]] = None
+    supplier_deposit_paid: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_mobilisation_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_demobilisation_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_standing_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    supplier_payable_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_payment_status: Optional[Literal["not_invoiced", "invoice_received", "approved", "paid", "disputed"]] = None
+    supplier_invoice_reference: Optional[str] = Field(default=None, max_length=120)
+    sourced_asset_category: Optional[str] = Field(default=None, max_length=80)
+    sourced_asset_make_model: Optional[str] = Field(default=None, max_length=160)
+    sourced_asset_reg_serial: Optional[str] = Field(default=None, max_length=120)
+    sourced_meter_start: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    sourced_meter_end: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    unit_spread: Optional[Decimal] = Field(default=None, max_digits=15, decimal_places=4)
+    unit_spread_percentage: Optional[Decimal] = Field(default=None, max_digits=6, decimal_places=2)
+    projected_hours_or_units: Optional[Decimal] = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    projected_revenue: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    projected_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    projected_gross_profit: Optional[Decimal] = Field(default=None, max_digits=15, decimal_places=2)
+    realized_gross_profit: Optional[Decimal] = Field(default=None, max_digits=15, decimal_places=2)
+
+
+class ExternalHireSupplierInvoicePayload(Payload):
+    supplier_invoice_reference: str = Field(..., max_length=120)
+    supplier_payable_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_payment_status: Literal["invoice_received", "approved", "paid", "disputed"] = "invoice_received"
+    notes: Optional[str] = None
 
 
 class ExternalHireInvoicePayload(Payload):
@@ -1568,23 +1631,52 @@ async def create_external_hire_agreement(
 ):
     await tenant_reference(db, "fleet.plant_requests", payload.plant_request_id, user["org_id"], "Plant request")
     await tenant_reference(db, "crm.contacts", payload.customer_id, user["org_id"], "Customer")
+
+    client_rate = Decimal(str(payload.rate_card.get("hourly_rate") or payload.rate_card.get("rate") or 0))
+    sourcing_rate = payload.sourcing_rate or Decimal("0")
+    unit_spread = client_rate - sourcing_rate
+    unit_spread_pct = (unit_spread / client_rate * Decimal("100")) if client_rate > 0 else Decimal("0")
+    proj_units = payload.projected_hours_or_units or Decimal("0")
+    proj_rev = (client_rate * proj_units) + payload.mobilisation_charge + payload.demobilisation_charge
+    proj_cost = (sourcing_rate * proj_units) + payload.supplier_mobilisation_cost + payload.supplier_demobilisation_cost
+    proj_profit = proj_rev - proj_cost
+
     row = await db.execute(
         text("""
             INSERT INTO fleet.external_hire_agreements (
                 organization_id, plant_request_id, customer_id, customer_name, hire_agreement_number, status, hire_type, rate_card,
                 deposit_required, fuel_responsibility, mobilisation_charge, demobilisation_charge,
                 standing_time_rate, overtime_rate, damage_recovery_amount, invoice_instruction,
-                debtor_follow_up_status, debtor_follow_up_notes, created_by
+                debtor_follow_up_status, debtor_follow_up_notes, min_guaranteed_hours_day, sunday_premium_multiplier,
+                fulfillment_type, supplier_id, supplier_name, supplier_contact, supplier_agreement_number,
+                sourcing_rate, sourcing_rate_unit, supplier_terms, supplier_fuel_responsibility,
+                supplier_deposit_paid, supplier_mobilisation_cost, supplier_demobilisation_cost,
+                supplier_standing_rate, supplier_payable_amount, supplier_payment_status, supplier_invoice_reference,
+                sourced_asset_category, sourced_asset_make_model, sourced_asset_reg_serial, sourced_meter_start, sourced_meter_end,
+                unit_spread, unit_spread_percentage, projected_hours_or_units, projected_revenue, projected_cost, projected_gross_profit,
+                created_by
             ) VALUES (
                 :org_id, :plant_request_id, :customer_id, :customer_name, :hire_agreement_number, :status, :hire_type, CAST(:rate_card AS jsonb),
                 :deposit_required, :fuel_responsibility, :mobilisation_charge, :demobilisation_charge,
                 :standing_time_rate, :overtime_rate, :damage_recovery_amount, :invoice_instruction,
-                :debtor_follow_up_status, :debtor_follow_up_notes, :user_id
+                :debtor_follow_up_status, :debtor_follow_up_notes, :min_guaranteed_hours_day, :sunday_premium_multiplier,
+                :fulfillment_type, :supplier_id, :supplier_name, :supplier_contact, :supplier_agreement_number,
+                :sourcing_rate, :sourcing_rate_unit, :supplier_terms, :supplier_fuel_responsibility,
+                :supplier_deposit_paid, :supplier_mobilisation_cost, :supplier_demobilisation_cost,
+                :supplier_standing_rate, :supplier_payable_amount, :supplier_payment_status, :supplier_invoice_reference,
+                :sourced_asset_category, :sourced_asset_make_model, :sourced_asset_reg_serial, :sourced_meter_start, :sourced_meter_end,
+                :unit_spread, :unit_spread_percentage, :projected_hours_or_units, :projected_revenue, :projected_cost, :projected_gross_profit,
+                :user_id
             ) RETURNING id
         """),
         {
             **payload.model_dump(),
             "rate_card": json.dumps(payload.rate_card),
+            "unit_spread": unit_spread,
+            "unit_spread_percentage": unit_spread_pct,
+            "projected_revenue": proj_rev,
+            "projected_cost": proj_cost,
+            "projected_gross_profit": proj_profit,
             "org_id": user["org_id"],
             "user_id": user["sub"],
         },
@@ -1660,19 +1752,36 @@ async def generate_external_hire_invoice(
     net_payable = max(Decimal("0"), gross_amount - deposit)
     invoice_ref = payload.invoice_reference or f"INV-HIRE-{curr_dict.get('hire_agreement_number', str(agreement_id)[:8])}"
 
+    # For cross-hire / sub-lease, calculate supplier payable & realized profit
+    sourcing_rate = Decimal(str(curr_dict.get("sourcing_rate") or 0))
+    supplier_standing_rate = Decimal(str(curr_dict.get("supplier_standing_rate") or (sourcing_rate * Decimal("0.5"))))
+    supplier_mob = Decimal(str(curr_dict.get("supplier_mobilisation_cost") or 0))
+    supplier_demob = Decimal(str(curr_dict.get("supplier_demobilisation_cost") or 0))
+    supplier_payable = (billable_hours * sourcing_rate) + (standing_hours * supplier_standing_rate) + supplier_mob + supplier_demob
+    realized_profit = gross_amount - supplier_payable
+
     await db.execute(
         text("""
             UPDATE fleet.external_hire_agreements
             SET status = 'debtor_follow_up',
                 debtor_follow_up_status = 'pending',
                 invoice_instruction = :invoice_ref,
+                invoiced_amount = :gross_amount,
+                invoice_reference = :inv_number,
+                invoice_generated_at = NOW(),
+                supplier_payable_amount = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN :supplier_payable ELSE supplier_payable_amount END,
+                realized_gross_profit = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN :realized_profit ELSE gross_amount END,
                 updated_at = NOW()
             WHERE id = :id AND organization_id = :org_id
         """),
         {
             "id": agreement_id,
             "org_id": user["org_id"],
-            "invoice_ref": f"{invoice_ref} | Gross: USD {gross_amount:.2f} | Deposit Applied: USD {deposit:.2f} | Net Due: USD {net_payable:.2f}"
+            "invoice_ref": f"{invoice_ref} | Gross: USD {gross_amount:.2f} | Deposit Applied: USD {deposit:.2f} | Net Due: USD {net_payable:.2f}",
+            "gross_amount": gross_amount,
+            "inv_number": invoice_ref,
+            "supplier_payable": supplier_payable,
+            "realized_profit": realized_profit,
         }
     )
     await db.commit()
@@ -1683,10 +1792,56 @@ async def generate_external_hire_invoice(
             "gross_amount": float(gross_amount),
             "deposit_deducted": float(deposit),
             "net_payable": float(net_payable),
+            "supplier_payable_amount": float(supplier_payable),
+            "realized_gross_profit": float(realized_profit),
             "status": "debtor_follow_up"
         },
         "Draft invoice instruction generated and debtor follow-up staged."
     )
+
+
+@router.post("/external-hire-agreements/{agreement_id}/supplier-invoice")
+async def record_external_hire_supplier_invoice(
+    agreement_id: UUID,
+    payload: ExternalHireSupplierInvoicePayload,
+    user: dict = Depends(require_permission("fleet.external_hire.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.execute(
+        text("""
+            SELECT * FROM fleet.external_hire_agreements
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"id": agreement_id, "org_id": user["org_id"]}
+    )
+    agreement = row.first()
+    if not agreement:
+        raise HTTPException(status_code=404, detail="External hire agreement not found.")
+
+    await db.execute(
+        text("""
+            UPDATE fleet.external_hire_agreements
+            SET supplier_invoice_reference = :supplier_ref,
+                supplier_payable_amount = :supplier_payable,
+                supplier_payment_status = :supplier_status,
+                debtor_follow_up_notes = CASE
+                    WHEN :notes IS NOT NULL THEN COALESCE(debtor_follow_up_notes || E'\n', '') || :notes
+                    ELSE debtor_follow_up_notes
+                END,
+                updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {
+            "id": agreement_id,
+            "org_id": user["org_id"],
+            "supplier_ref": payload.supplier_invoice_reference,
+            "supplier_payable": payload.supplier_payable_amount,
+            "supplier_status": payload.supplier_payment_status,
+            "notes": payload.notes,
+        }
+    )
+    await db.commit()
+    return result({"id": str(agreement_id)}, "Supplier invoice record updated.")
 
 
 @router.post("/assignments", status_code=status.HTTP_201_CREATED)
@@ -3055,23 +3210,49 @@ async def update_plant_request_status(
     update = await db.execute(
         text("""
         UPDATE fleet.plant_requests
-        SET status=:status,
-            validation_notes=CASE WHEN :status IN ('under_validation','availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval') THEN COALESCE(:notes, validation_notes) ELSE validation_notes END,
-            correction_notes=CASE WHEN :status='returned_for_correction' THEN :notes ELSE correction_notes END,
-            rejection_reason=CASE WHEN :status='rejected' THEN :notes ELSE rejection_reason END,
-            expected_revenue=COALESCE(:expected_revenue, expected_revenue),
-            estimated_cost=COALESCE(:estimated_cost, estimated_cost),
-            contribution_margin=COALESCE(:expected_revenue, expected_revenue) - COALESCE(:estimated_cost, estimated_cost),
-            risk_level=COALESCE(:risk_level, risk_level),
-            approved_at=CASE WHEN :status='approved' THEN NOW() ELSE approved_at END,
-            approved_by=CASE WHEN :status='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
-            readiness_pack=CAST(:readiness_pack AS jsonb),
-            readiness_blockers=CAST(:readiness_blockers AS jsonb),
-            readiness_status=:readiness_status,
-            plant_manager_ready_at=CASE WHEN :readiness_status='ready' THEN COALESCE(plant_manager_ready_at, NOW()) ELSE NULL END,
-            plant_manager_ready_by=CASE WHEN :readiness_status='ready' THEN COALESCE(plant_manager_ready_by, CAST(:user_id AS uuid)) ELSE NULL END,
-            updated_at=NOW()
-        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+        SET status = CAST(:status AS varchar),
+            validation_notes = CASE
+                WHEN CAST(:status AS varchar) IN ('under_validation','availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval')
+                THEN COALESCE(CAST(:notes AS text), validation_notes)
+                ELSE validation_notes
+            END,
+            correction_notes = CASE
+                WHEN CAST(:status AS varchar) = 'returned_for_correction'
+                THEN CAST(:notes AS text)
+                ELSE correction_notes
+            END,
+            rejection_reason = CASE
+                WHEN CAST(:status AS varchar) = 'rejected'
+                THEN CAST(:notes AS text)
+                ELSE rejection_reason
+            END,
+            expected_revenue = COALESCE(CAST(:expected_revenue AS numeric(15,2)), expected_revenue),
+            estimated_cost = COALESCE(CAST(:estimated_cost AS numeric(15,2)), estimated_cost),
+            contribution_margin = COALESCE(CAST(:expected_revenue AS numeric(15,2)), expected_revenue) - COALESCE(CAST(:estimated_cost AS numeric(15,2)), estimated_cost),
+            risk_level = COALESCE(CAST(:risk_level AS varchar), risk_level),
+            approved_at = CASE
+                WHEN CAST(:status AS varchar) = 'approved' THEN NOW()
+                ELSE approved_at
+            END,
+            approved_by = CASE
+                WHEN CAST(:status AS varchar) = 'approved' THEN CAST(:user_id AS uuid)
+                ELSE approved_by
+            END,
+            readiness_pack = CAST(:readiness_pack AS jsonb),
+            readiness_blockers = CAST(:readiness_blockers AS jsonb),
+            readiness_status = CAST(:readiness_status AS varchar),
+            plant_manager_ready_at = CASE
+                WHEN CAST(:readiness_status AS varchar) = 'ready'
+                THEN COALESCE(plant_manager_ready_at, NOW())
+                ELSE NULL
+            END,
+            plant_manager_ready_by = CASE
+                WHEN CAST(:readiness_status AS varchar) = 'ready'
+                THEN COALESCE(plant_manager_ready_by, CAST(:user_id AS uuid))
+                ELSE NULL
+            END,
+            updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id AND is_deleted = false
           AND status NOT IN ('closed','cancelled','rejected')
         RETURNING id, project_id
     """),

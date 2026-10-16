@@ -32,6 +32,9 @@ import {
   ShieldCheck,
   Truck,
   X,
+  ArrowRightLeft,
+  DollarSign,
+  Clock,
 } from "lucide-react";
 
 type RecordItem = Record<string, unknown> & { id: string };
@@ -49,6 +52,11 @@ function fmtDate(value: string): string {
   return Number.isNaN(d.getTime()) ? value : new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(d);
 }
 
+function fmtMoney(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || isNaN(Number(amount))) return "$0.00";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(amount));
+}
+
 export default function PlantRequestsPage() {
   return (
     <RBACGuard permission="fleet.read">
@@ -61,7 +69,8 @@ function PlantRequestsDashboard() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [notice, setNotice] = useState<string | null>(null);
-  const [actionModal, setActionModal] = useState<{ type: "new" | "dispatch" | "reserve" | "status"; request?: RecordItem } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [actionModal, setActionModal] = useState<{ type: "new" | "dispatch" | "reserve" | "validate"; request?: RecordItem } | null>(null);
 
   const { data, isLoading, refetch } = useApiQueries(
     {
@@ -96,12 +105,14 @@ function PlantRequestsDashboard() {
   }, [requests, query, statusFilter]);
 
   const handleDecision = async (req: RecordItem, newStatus: string) => {
+    setError(null);
+    setNotice(null);
     try {
       await updatePlantRequestStatus(req.id, { status: newStatus });
-      setNotice(`Request ${text(req, "request_number") || req.id.slice(0, 8)} updated to ${newStatus}.`);
+      setNotice(`Request ${text(req, "request_number") || req.id.slice(0, 8)} updated to ${newStatus.replace(/_/g, " ")}.`);
       void refetch();
     } catch (err) {
-      setNotice(err instanceof ApiError ? err.message : "Failed to update request status.");
+      setError(err instanceof ApiError ? err.message : "Failed to update request status.");
     }
   };
 
@@ -135,8 +146,15 @@ function PlantRequestsDashboard() {
 
         {notice && (
           <div className="mb-5 flex items-start gap-3 border border-emerald-500/40 bg-emerald-500/10 p-4 text-sm text-emerald-100">
-            <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
+            <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-400" />
             <p>{notice}</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-5 flex items-start gap-3 border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-100">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-rose-400" />
+            <p>{error}</p>
           </div>
         )}
 
@@ -244,20 +262,29 @@ function PlantRequestsDashboard() {
                           {st === "submitted" && (
                             <button
                               type="button"
-                              onClick={() => void handleDecision(req, "under_validation")}
-                              className="border border-amber-500/40 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-500/10"
+                              onClick={() => setActionModal({ type: "validate", request: req })}
+                              className="border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-200 hover:bg-amber-500/20"
                             >
-                              Validate
+                              Validate & Scope
                             </button>
                           )}
                           {st === "under_validation" && (
-                            <button
-                              type="button"
-                              onClick={() => void handleDecision(req, "awaiting_approval")}
-                              className="border border-blue-500/40 px-2 py-1 text-[11px] text-blue-200 hover:bg-blue-500/10"
-                            >
-                              Send for Approval
-                            </button>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setActionModal({ type: "validate", request: req })}
+                                className="border border-amber-500/40 px-2 py-1 text-[11px] text-amber-200 hover:bg-amber-500/10"
+                              >
+                                Edit Scope
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDecision(req, "awaiting_approval")}
+                                className="border border-blue-500/40 px-2 py-1 text-[11px] text-blue-200 hover:bg-blue-500/10"
+                              >
+                                Send for Approval
+                              </button>
+                            </div>
                           )}
                           {st === "awaiting_approval" && (
                             <>
@@ -312,6 +339,19 @@ function PlantRequestsDashboard() {
               </tbody>
             </OperationalTable>
           </div>
+        )}
+
+        {/* Modal: Validate & Scope Plant Request */}
+        {actionModal?.type === "validate" && actionModal.request && (
+          <ValidatePlantRequestModal
+            request={actionModal.request}
+            onClose={() => setActionModal(null)}
+            onSuccess={(status) => {
+              setActionModal(null);
+              setNotice(`Plant request scoped and updated to ${status.replace(/_/g, " ")}.`);
+              void refetch();
+            }}
+          />
         )}
 
         {/* Modal: New Plant Request */}
@@ -701,6 +741,224 @@ function DispatchPlantModal({
             >
               {submitting ? "Dispatching..." : "Authorize & Dispatch"}
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ValidatePlantRequestModal({
+  request,
+  onClose,
+  onSuccess,
+}: {
+  request: RecordItem;
+  onClose: () => void;
+  onSuccess: (status: string) => void;
+}) {
+  const [estimatedHours, setEstimatedHours] = useState(80);
+  const [hourlyRevenueRate, setHourlyRevenueRate] = useState(100);
+  const [hourlyCostRate, setHourlyCostRate] = useState(65);
+  const [riskLevel, setRiskLevel] = useState<"low" | "normal" | "high" | "critical">("normal");
+  const [notes, setNotes] = useState(text(request, "validation_notes") || "");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const expectedRev = estimatedHours * hourlyRevenueRate;
+  const estimatedCost = estimatedHours * hourlyCostRate;
+  const contributionMargin = expectedRev - estimatedCost;
+
+  const handleSave = async (targetStatus: "under_validation" | "awaiting_approval") => {
+    setSubmitting(true);
+    setErr(null);
+    try {
+      await updatePlantRequestStatus(request.id, {
+        status: targetStatus,
+        expected_revenue: expectedRev,
+        estimated_cost: estimatedCost,
+        risk_level: riskLevel,
+        notes: notes || undefined,
+      });
+      onSuccess(targetStatus);
+    } catch (e: any) {
+      setErr(e instanceof ApiError ? e.message : "Failed to update request validation.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-4 backdrop-blur-sm overflow-y-auto">
+      <div className="relative w-full max-w-xl border border-ink-mid bg-ink shadow-2xl my-8">
+        <div className="flex items-center justify-between border-b border-ink-mid px-5 py-4">
+          <div>
+            <h2 className="text-sm font-semibold text-paper">
+              Validate & Scope Plant Request
+            </h2>
+            <p className="text-[11px] text-slate-light">
+              Ref: <span className="text-paper font-mono font-bold">{text(request, "request_number")}</span> | Need: <span className="text-paper font-semibold">{text(request, "required_asset_type")}</span>
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate hover:text-paper">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
+          {err && <div className="border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{err}</div>}
+
+          {/* Site Request Context */}
+          <div className="border border-ink-mid bg-ink-light p-3 space-y-1.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-slate">Work Site / Location:</span>
+              <span className="text-paper font-medium">{text(request, "work_location") || "Site Project"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate">Required Date & Mode:</span>
+              <span className="text-paper font-medium">{request.start_date ? fmtDate(String(request.start_date)) : "Immediate"} ({text(request, "operating_hours_mode")} shift)</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate">Transport & Fuel:</span>
+              <span className="text-paper font-medium">Logistics: {text(request, "transport_requirement")} | Fuel: {text(request, "fuel_responsibility")}</span>
+            </div>
+            {text(request, "work_description") && (
+              <div className="pt-1.5 border-t border-ink-mid text-slate-light">
+                <span className="text-slate font-mono uppercase text-[10px] block">Site Scope:</span>
+                <p className="italic mt-0.5">{text(request, "work_description")}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Scope & Costing Inputs */}
+          <div className="space-y-3">
+            <span className="font-mono text-[10px] uppercase text-slate font-semibold">
+              Operational Hours & Cost Scoping
+            </span>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[10px] font-mono uppercase text-slate mb-1">
+                  Est. Operating Hours *
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  value={estimatedHours}
+                  onChange={(e) => setEstimatedHours(Math.max(1, Number(e.target.value)))}
+                  className="w-full border border-ink-mid bg-ink-light px-3 py-1.5 text-xs font-mono font-bold text-paper"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono uppercase text-slate mb-1">
+                  Recovery Rate ($/hr)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={hourlyRevenueRate}
+                  onChange={(e) => setHourlyRevenueRate(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-ink-mid bg-ink-light px-3 py-1.5 text-xs font-mono font-bold text-emerald-400"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono uppercase text-slate mb-1">
+                  Operating Cost ($/hr)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={hourlyCostRate}
+                  onChange={(e) => setHourlyCostRate(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-ink-mid bg-ink-light px-3 py-1.5 text-xs font-mono font-bold text-amber-300"
+                />
+              </div>
+            </div>
+
+            {/* Calculated Margin Box */}
+            <div className="grid grid-cols-3 gap-2 border border-ink-mid bg-ink p-3 text-center">
+              <div>
+                <span className="text-[10px] text-slate-light block">Project Recovery</span>
+                <span className="font-mono text-xs font-bold text-emerald-300">{fmtMoney(expectedRev)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-light block">Estimated Cost</span>
+                <span className="font-mono text-xs font-bold text-amber-300">{fmtMoney(estimatedCost)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-light block">Contribution Margin</span>
+                <span className="font-mono text-xs font-bold text-signal">+{fmtMoney(contributionMargin)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Missing Plant? Cross-Hire Brokerage Callout */}
+          <div className="border border-purple-500/30 bg-purple-500/10 p-3 rounded-sm flex items-start gap-2.5">
+            <ArrowRightLeft className="text-purple-400 shrink-0 mt-0.5" size={16} />
+            <div className="text-xs">
+              <p className="font-semibold text-purple-200">Don't have this unit in company fleet?</p>
+              <p className="text-slate-light text-[11px] mt-0.5">
+                If the machine is missing from company stock, you can source it from an external owner (Party A) at buy rate and lease it to this job or commercial client (Party B) at sell rate via Commercial Hire.
+              </p>
+              <a
+                href="/dashboard/fleet/hire"
+                className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-300 hover:text-purple-100 underline mt-1.5"
+              >
+                Open Cross-Hire / Sub-Lease Hub &rarr;
+              </a>
+            </div>
+          </div>
+
+          {/* Risk Level & Manager Instructions */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-1">
+              <label className="block text-[10px] font-mono uppercase text-slate mb-1">Risk Classification</label>
+              <select
+                value={riskLevel}
+                onChange={(e) => setRiskLevel(e.target.value as any)}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper"
+              >
+                <option value="low">Low Risk</option>
+                <option value="normal">Normal</option>
+                <option value="high">High Risk</option>
+                <option value="critical">Critical / Severe</option>
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[10px] font-mono uppercase text-slate mb-1">Validation Notes / Allocation Instructions</label>
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="e.g., Fleet unit 10m3 Tipper #04 allocated, mobilize 16 Oct"
+                className="w-full border border-ink-mid bg-ink-light px-3 py-1.5 text-xs text-paper"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center pt-3 border-t border-ink-mid">
+            <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-slate hover:text-paper">
+              Cancel
+            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => handleSave("under_validation")}
+                className="border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 disabled:opacity-50"
+              >
+                {submitting ? "Saving..." : "Keep Under Validation"}
+              </button>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => handleSave("awaiting_approval")}
+                className="bg-signal px-4 py-2 text-xs font-semibold text-ink hover:bg-signal/90 disabled:opacity-50"
+              >
+                {submitting ? "Submitting..." : "Send for Approval"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

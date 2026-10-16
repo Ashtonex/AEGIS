@@ -191,6 +191,15 @@ export async function generateExternalPlantHireInvoice(agreementId: string, payl
   });
 }
 
+export async function recordExternalPlantHireSupplierInvoice(agreementId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/external-hire-agreements/${agreementId}/supplier-invoice`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
 
 export async function getPlantLifecycleSummary(): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>('/api/v1/fleet/plant/summary', { cache: 'no-store', allowFallback: false });

@@ -98,3 +98,32 @@
   - Universal regex replacement `replace(/_/g, " ")` adopted across all fleet pages for universal JavaScript target compatibility.
   - Backward compatibility intact: Existing `/dashboard/fleet`, `/dashboard/equipment`, and `/dashboard/fleet/performance` routes continue functioning identically with zero data structure mutations.
 
+---
+
+## 4. Phase 6 — Cross-Hire & Sub-Lease Brokerage Engine (Party A -> Company -> Party B)
+- **Business Model**: Sourcing missing or specialized plant & equipment units from external equipment owners/suppliers (Party A) at buy rates, and sub-leasing them to commercial clients (Party B) at sell rates, with the company securing the profit spread (e.g. $1.00 from A -> $1.50 to B = $0.50 unit margin).
+- **Migration 263**:
+  - Files: `imperium-api/migrations/263_plant_equipment_cross_hire_sublease_brokerage.sql` and `supabase/migrations/20261016000000_263_plant_equipment_cross_hire_sublease_brokerage.sql`.
+  - Additive non-destructive fields on `fleet.external_hire_agreements`:
+    - `fulfillment_type` (`'owned_fleet'`, `'cross_hire'`, `'sub_lease'`).
+    - Party A: `supplier_name`, `supplier_contact`, `sourcing_rate`, `sourcing_rate_unit`, `supplier_terms`, `supplier_fuel_responsibility`, `supplier_deposit_paid`, `supplier_mobilisation_cost`, `supplier_standing_rate`, `supplier_payable_amount`, `supplier_payment_status`, `supplier_invoice_reference`.
+    - Sourced Asset: `sourced_asset_category`, `sourced_asset_make_model`, `sourced_asset_reg_serial`, `sourced_meter_start`, `sourced_meter_end`.
+    - Financial Spread: `unit_spread`, `unit_spread_percentage`, `projected_hours_or_units`, `projected_revenue`, `projected_cost`, `projected_gross_profit`, `realized_gross_profit`.
+- **Backend Router**:
+  - `imperium-api/routers/fleet.py`:
+    - Updated `ExternalHireAgreementPayload` and `ExternalHireAgreementUpdate` with cross-hire parameters.
+    - Updated `create_external_hire_agreement` with automated spread calculation (`unit_spread = client_rate - sourcing_rate`, `unit_spread_pct`, `projected_gross_profit`).
+    - Enhanced `generate_external_hire_invoice` to compute both client billing and supplier payable costs, locking in `realized_gross_profit`.
+    - Added `POST /external-hire-agreements/{agreement_id}/supplier-invoice` to record and reconcile Party A's cost invoices.
+- **Frontend Layer**:
+  - `aegis-web/src/lib/api/fleet.ts`: Added `recordExternalPlantHireSupplierInvoice`.
+  - `aegis-web/src/app/dashboard/fleet/hire/page.tsx`:
+    - Filter tabs for All Agreements, Cross-Hire Sub-Leases, and Owned Fleet.
+    - Interactive Model Switcher in New Deal modal with Live Sub-Lease Spread & Profit Calculator showing unit spread ($/hr), margin %, and total projected deal profit.
+    - Sourced machine details and Owner A cost terms capture.
+    - Dual invoicing modals: Client (B) draft invoice staging + Supplier (A) cost invoice & payment reconciliation.
+- **Verification**:
+  - `imperium-api/tests/test_plant_equipment_cross_hire_sublease_contract.py`: Passed (14/14 across all plant contract suites).
+  - Nav check: 142/142 routes passed.
+
+
