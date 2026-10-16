@@ -5,7 +5,7 @@ import { fetchApi } from "./core";
 const PERF = "/api/v1/hr/performance";
 type Resp<T> = { success: boolean; data: T; message?: string };
 
-export type PerformanceAreaKey = "delivery" | "reliability" | "records" | "responsiveness" | "output";
+export type PerformanceAreaKey = "delivery" | "reliability" | "records" | "responsiveness" | "output" | "teams_collaboration";
 
 export type PerformanceComponent = {
   score: number | null;

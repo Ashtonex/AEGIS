@@ -41,8 +41,10 @@ export default function ProjectMissionControlPage() {
   }, [source]);
 
   const budgetedCost = useMemo(() => {
-    return number(source?.budget_amount ?? source?.budgeted_cost ?? (detail as any)?.viability?.[0]?.budget_amount) ?? 0;
-  }, [source, detail]);
+    const directBudget = number(source?.budget_amount ?? source?.budgeted_cost ?? (detail as any)?.viability?.[0]?.budget_amount ?? (detail as any)?.finance?.approved_budget);
+    if (directBudget && directBudget > 0) return directBudget;
+    return contractValue > 0 ? contractValue : 0;
+  }, [source, detail, contractValue]);
 
   const actualCost = useMemo(() => {
     return number(source?.actual_cost ?? source?.actual_cost_to_date ?? source?.cost_to_date) ?? 0;
@@ -54,7 +56,36 @@ export default function ProjectMissionControlPage() {
 
   const exposure = actualCost + committedCost;
   const costExposurePct = budgetedCost > 0 ? Math.min(100, Math.round((exposure / budgetedCost) * 100)) : 0;
-  const progressPct = Math.min(100, Math.max(0, number(source?.progress ?? source?.progress_pct) ?? 0));
+
+  // Physical progress computed from milestones & daily reports
+  const progressPct = useMemo(() => {
+    const rawProgress = number(source?.progress ?? source?.progress_pct);
+    if (milestones && milestones.length > 0) {
+      let totalW = 0;
+      let completedW = 0;
+      for (const m of milestones) {
+        const w = Number(m.weight) || 1;
+        totalW += w;
+        const st = String(m.status || "").toLowerCase();
+        if (st === "complete") completedW += w;
+        else if (st === "in_progress") completedW += w * 0.5;
+      }
+      const milestonePct = totalW > 0 ? Math.round((completedW / totalW) * 100) : 0;
+      return Math.min(100, Math.max(milestonePct, rawProgress ?? 0));
+    }
+    return Math.min(100, Math.max(0, rawProgress ?? 0));
+  }, [source, milestones]);
+
+  // Workforce headcount deduplicated across permanent staff and site hires
+  const workforceCount = useMemo(() => {
+    if (!team || team.length === 0) return 0;
+    const uniqueIds = new Set<string>();
+    for (const member of team) {
+      const key = String((member as any).employee_id || (member as any).employee_number || (member as any).allocation_id || (member as any).employee_name || "").toLowerCase();
+      if (key) uniqueIds.add(key);
+    }
+    return uniqueIds.size || team.length;
+  }, [team]);
 
   const quickLaunch = [
     {
@@ -147,11 +178,11 @@ export default function ProjectMissionControlPage() {
             <Users className="h-4 w-4 text-cyan-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="font-display text-2xl font-bold text-paper sm:text-3xl">{team.length}</span>
+            <span className="font-display text-2xl font-bold text-paper sm:text-3xl">{workforceCount}</span>
             <span className="text-xs text-slate-light">allocated artisans & staff</span>
           </div>
           <p className="mt-2 text-xs text-slate-light">
-            Linked to live HR project allocations
+            De-duplicated SNC staff &amp; project hires
           </p>
         </div>
 

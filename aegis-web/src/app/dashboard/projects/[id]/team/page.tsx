@@ -276,11 +276,42 @@ export default function ProjectTeamPage() {
     }
   };
 
-  // Active counts
+  // Active counts & deduplicated headcount
   const activeRoles = useMemo(() => roles.filter((r) => r.is_active), [roles]);
   const activeHires = useMemo(() => projectHires.filter((h) => h.status === "active"), [projectHires]);
   const activePermanent = useMemo(() => hrAllocations.filter((m) => m.status !== "ended" && !m.is_deleted), [hrAllocations]);
-  const totalHeadcount = activeRoles.length + activeHires.length + activePermanent.length;
+
+  const totalHeadcount = useMemo(() => {
+    const uniquePersons = new Set<string>();
+
+    for (const perm of activePermanent) {
+      const key = (perm.employee_id || perm.employee_number || perm.employee_name || "").toLowerCase().trim();
+      if (key) uniquePersons.add(key);
+      if ((perm as any).user_id) uniquePersons.add(`user:${(perm as any).user_id}`);
+    }
+
+    for (const role of activeRoles) {
+      const userKey = role.user_id ? `user:${role.user_id}` : "";
+      const nameKey = (role.full_name || role.user_name || "").toLowerCase().trim();
+      const emailKey = (role.email || "").toLowerCase().trim();
+
+      const alreadyCounted =
+        (userKey && uniquePersons.has(userKey)) ||
+        (nameKey && uniquePersons.has(nameKey)) ||
+        (emailKey && uniquePersons.has(emailKey));
+
+      if (!alreadyCounted) {
+        uniquePersons.add(userKey || nameKey || `role:${role.id}`);
+      }
+    }
+
+    for (const hire of activeHires) {
+      const hireKey = (hire.national_id || hire.id || hire.full_name || "").toLowerCase().trim();
+      if (hireKey) uniquePersons.add(`hire:${hireKey}`);
+    }
+
+    return uniquePersons.size;
+  }, [activePermanent, activeRoles, activeHires]);
 
   return (
     <div className="w-full space-y-6">

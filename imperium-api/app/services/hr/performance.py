@@ -53,13 +53,14 @@ PICKUP_HOURS = 48
 MIN_MEASURED_WEIGHT = 45  # reliability + records + work recorded: enough to grade someone with no tasks
 DISPUTE_HOURS = 48
 
-WEIGHTS = {"delivery": 40, "reliability": 20, "records": 15, "responsiveness": 15, "output": 10}
+WEIGHTS = {"delivery": 35, "reliability": 20, "records": 15, "responsiveness": 15, "output": 10, "teams_collaboration": 5}
 LABELS = {
     "delivery": "Delivery",
     "reliability": "Reliability",
     "records": "Records",
     "responsiveness": "Responsiveness",
     "output": "Work recorded",
+    "teams_collaboration": "Teams Collaboration",
 }
 TARGETS = {
     "delivery": "Every task closed by its due date, nothing overdue",
@@ -67,6 +68,7 @@ TARGETS = {
     "records": "Hours confirmed; an outcome on every completed task",
     "responsiveness": "Every new task picked up within 48 hours",
     "output": "Work recorded in AEGIS every working day",
+    "teams_collaboration": "Active engagement & response on MS Teams workspaces",
 }
 GRADE_BANDS = ((85, "A"), (70, "B"), (60, "C"), (50, "D"), (0, "F"))
 INACTIVE_TASK_STATUSES = ("not_applicable", "superseded", "cancelled")
@@ -165,6 +167,9 @@ class WeekMetrics:
     hours_confirmed: bool = False
     productive_days: int = 0
     work_by_kind: dict[str, int] = field(default_factory=dict)
+    teams_activity_score: Optional[float] = None
+    teams_messages_count: int = 0
+    teams_active_days: int = 0
 
 
 def _clamp(value: float) -> float:
@@ -229,6 +234,21 @@ def score_components(m: WeekMetrics) -> dict[str, dict[str, Any]]:
         "metrics": {"working_days": len(m.workdays), "days_with_work": m.productive_days, "work": m.work_by_kind},
     }
 
+    # Teams Collaboration
+    teams_score = None
+    if m.teams_activity_score is not None:
+        teams_score = _clamp(m.teams_activity_score)
+    elif m.teams_active_days > 0 and m.workdays:
+        teams_score = _clamp(min(100.0, (m.teams_active_days / len(m.workdays)) * 80 + min(20.0, m.teams_messages_count * 2)))
+    out["teams_collaboration"] = {
+        "score": teams_score,
+        "metrics": {
+            "teams_active_days": m.teams_active_days,
+            "teams_messages_count": m.teams_messages_count,
+            "working_days": len(m.workdays),
+        },
+    }
+
     for key, comp in out.items():
         comp["weight"] = WEIGHTS[key]
         comp["label"] = LABELS[key]
@@ -288,6 +308,9 @@ def narrative(components: dict[str, dict[str, Any]], score: Optional[float]) -> 
         if key == "responsiveness":
             line = f"Responsiveness: picked up {mt['picked_up_in_48h']} of {mt['new_tasks']} new tasks within 48 hours"
             return line + ".", line + ". Move a task to In progress as soon as you start it."
+        if key == "teams_collaboration":
+            line = f"Teams collaboration: active on {mt['teams_active_days']} of {mt['working_days']} working days ({mt['teams_messages_count']} messages/updates)"
+            return line + ".", line + ". Check and participate in MS Teams channels daily."
         line = f"Work recorded: AEGIS shows your work on {mt['days_with_work']} of {mt['working_days']} working days"
         return line + ".", line + ". If you worked, it must be recorded in AEGIS."
 
@@ -489,6 +512,22 @@ async def load_metrics(db: AsyncSession, org_id: str, people: list[dict[str, Any
         metrics[eid].work_by_kind[r["kind"]] = metrics[eid].work_by_kind.get(r["kind"], 0) + r["n"]
     for eid, m in metrics.items():
         m.productive_days = min(len(days_with_work[eid]), len(m.workdays))
+
+    # Teams / collaboration communication metrics during the week
+    for r in (await db.execute(text("""
+        SELECT created_by AS uid, COUNT(DISTINCT CAST(created_at AT TIME ZONE 'Africa/Harare' AS date)) AS active_days, COUNT(*) AS count
+        FROM crm.activities
+        WHERE organization_id = :org AND created_by = ANY(CAST(:uids AS uuid[]))
+          AND created_at >= :start AND created_at < :cutoff
+        GROUP BY 1
+    """), params)).mappings():
+        eid = by_user.get(str(r["uid"]))
+        if eid and eid in metrics:
+            metrics[eid].teams_active_days = r["active_days"]
+            metrics[eid].teams_messages_count = r["count"]
+            if metrics[eid].workdays:
+                metrics[eid].teams_activity_score = min(100.0, (r["active_days"] / len(metrics[eid].workdays)) * 80 + min(20.0, r["count"] * 2))
+
     return metrics
 
 

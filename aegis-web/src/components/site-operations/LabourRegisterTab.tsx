@@ -6,7 +6,7 @@ import {
   Square, Timer, Trash2, UserPlus, Users,
 } from "lucide-react";
 import {
-  addSiteDayAttendance, clockOutSiteDayAttendance, closeSiteDay, openSiteDay, registerProjectHire,
+  addSiteDayAttendance, addSiteDayAttendanceBatch, clockOutSiteDayAttendance, closeSiteDay, openSiteDay, registerProjectHire,
   removeSiteDayAttendance, startSiteDay, updateSiteDay, updateSiteDayAttendance,
 } from "@/lib/api";
 import { ApiRecord, Btn, Locked, Notice, Panel, Pill, Toggle, areaClass, errorText, fieldClass, num, qty, timeOf } from "./ui";
@@ -105,6 +105,40 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
   };
 
   const onRegister = useMemo(() => new Set(attendance.map((a) => a.site_worker_id ?? a.employee_id)), [attendance]);
+
+  const groupedProjectHires = useMemo(() => {
+    const unaddedHires = (day?.roster.project_hires ?? []).filter((h) => !onRegister.has(h.id));
+    const term = search.trim().toLowerCase();
+    const filtered = unaddedHires.filter((p) =>
+      !term || `${p.full_name} ${p.trade ?? ""} ${p.national_id ?? ""}`.toLowerCase().includes(term)
+    );
+    const groups: Record<string, ApiRecord[]> = {};
+    for (const h of filtered) {
+      const grp = h.on_this_project ? "This Project Hires" : (h.source_project_name || "General / Other Site Hires");
+      if (!groups[grp]) groups[grp] = [];
+      groups[grp].push(h);
+    }
+    return groups;
+  }, [day?.roster.project_hires, onRegister, search]);
+
+  const unaddedEmployees = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return (day?.roster.employees ?? [])
+      .filter((e) => !onRegister.has(e.id))
+      .filter((p) => !term || `${p.full_name} ${p.trade ?? ""} ${p.employee_number ?? ""}`.toLowerCase().includes(term));
+  }, [day?.roster.employees, onRegister, search]);
+
+  const handleAddGroup = async (groupName: string, workers: ApiRecord[]) => {
+    if (!briefing?.id || !workers.length) return;
+    await run(
+      `add-grp-${groupName}`,
+      () => addSiteDayAttendanceBatch(briefing.id, {
+        items: workers.map((w) => ({ site_worker_id: w.id, ppe_ok: running })),
+      }),
+      `Added all ${workers.length} workers from ${groupName} to today's register.`
+    );
+  };
+
   const candidates = useMemo(() => {
     const term = search.trim().toLowerCase();
     const people: (ApiRecord & { kind: "project_hire" | "employee" })[] = [
@@ -245,30 +279,96 @@ export function LabourRegisterTab({ projectId, date, day, onDay, reload }: Props
           ) : null}
 
           {status !== "closed" ? (
-            <div className="mb-4">
+            <div className="mb-4 space-y-3">
               <label className="flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 focus-within:border-signal">
                 <Search className="h-4 w-4 text-slate" />
                 <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Find a project hire or team member to add…" className="h-full w-full bg-transparent text-sm text-paper outline-none placeholder:text-slate" />
               </label>
-              {candidates.length ? (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {candidates.map((p) => (
-                    <button key={`${p.kind}-${p.id}`} disabled={busy === `add-${p.id}`}
-                      onClick={() => void run(`add-${p.id}`, () => addSiteDayAttendance(briefing.id, {
-                        ...(p.kind === "project_hire" ? { site_worker_id: p.id } : { employee_id: p.id }), ppe_ok: running,
-                      }), `${p.full_name} added${running ? " and clocked in" : ""}.`)}
-                      className="group inline-flex items-center gap-2 border border-ink-mid bg-ink-light/50 px-3 py-1.5 text-left text-xs text-paper transition hover:border-signal disabled:opacity-50">
-                      <Plus className="h-3.5 w-3.5 text-signal" />
-                      <span>{p.full_name}</span>
-                      <span className="text-slate">{p.trade ?? (p.kind === "employee" ? "SNC staff" : "hire")}</span>
-                      {p.kind === "project_hire" && !p.hr_verified ? <span className="text-amber-300">· unverified</span> : null}
-                      {p.kind === "project_hire" && p.on_this_project === false ? <span className="text-slate">· other project</span> : null}
-                    </button>
+
+              {/* Grouped Project Hires with 1-click batch add */}
+              {Object.keys(groupedProjectHires).length > 0 ? (
+                <div className="space-y-3">
+                  {Object.entries(groupedProjectHires).map(([groupName, workers]) => (
+                    <div key={groupName} className="border border-ink-mid/60 bg-ink-light/20 p-2.5">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <HardHat className="h-3.5 w-3.5 text-signal" />
+                          <span className="font-mono text-xs font-semibold uppercase tracking-wider text-paper">{groupName}</span>
+                          <span className="font-mono text-[10px] text-slate-light border border-ink-mid px-1.5 py-0.5">{workers.length} available</span>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy === `add-grp-${groupName}`}
+                          onClick={() => void handleAddGroup(groupName, workers)}
+                          className="inline-flex items-center gap-1.5 border border-signal bg-signal/15 px-2.5 py-1 font-mono text-[11px] font-bold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-colors disabled:opacity-50"
+                        >
+                          <Plus className="h-3 w-3" />
+                          <span>Add All {groupName.split(" ")[0]} ({workers.length})</span>
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {workers.map((p) => (
+                          <button key={`hire-${p.id}`} disabled={busy === `add-${p.id}`}
+                            onClick={() => void run(`add-${p.id}`, () => addSiteDayAttendance(briefing.id, {
+                              site_worker_id: p.id, ppe_ok: running,
+                            }), `${p.full_name} added${running ? " and clocked in" : ""}.`)}
+                            className="group inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-2.5 py-1 text-left text-xs text-paper transition hover:border-signal disabled:opacity-50">
+                            <Plus className="h-3 w-3 text-signal" />
+                            <span>{p.full_name}</span>
+                            <span className="text-slate text-[11px]">· {p.trade || "Site Hire"}</span>
+                            {!p.hr_verified ? <span className="text-amber-300 text-[10px]">· unverified</span> : null}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
                 </div>
-              ) : (
-                <p className="mt-2 text-xs text-slate">{search ? "No match. Register them as a new project hire." : "Everyone on this project's list is on the register."}</p>
-              )}
+              ) : null}
+
+              {/* Permanent SNC Staff */}
+              {unaddedEmployees.length > 0 ? (
+                <div className="border border-ink-mid/60 bg-ink-light/20 p-2.5">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Users className="h-3.5 w-3.5 text-sky-400" />
+                      <span className="font-mono text-xs font-semibold uppercase tracking-wider text-paper">Permanent SNC Staff</span>
+                      <span className="font-mono text-[10px] text-slate-light border border-ink-mid px-1.5 py-0.5">{unaddedEmployees.length} available</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busy === "add-grp-snc"}
+                      onClick={() => void run(
+                        "add-grp-snc",
+                        () => addSiteDayAttendanceBatch(briefing.id, {
+                          items: unaddedEmployees.map((e) => ({ employee_id: e.id, ppe_ok: running })),
+                        }),
+                        `Added all ${unaddedEmployees.length} permanent SNC staff to today's register.`
+                      )}
+                      className="inline-flex items-center gap-1.5 border border-sky-500 bg-sky-500/15 px-2.5 py-1 font-mono text-[11px] font-bold uppercase tracking-wider text-sky-300 hover:bg-sky-500 hover:text-ink transition-colors disabled:opacity-50"
+                    >
+                      <Plus className="h-3 w-3" />
+                      <span>Add All SNC Staff ({unaddedEmployees.length})</span>
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {unaddedEmployees.map((e) => (
+                      <button key={`emp-${e.id}`} disabled={busy === `add-${e.id}`}
+                        onClick={() => void run(`add-${e.id}`, () => addSiteDayAttendance(briefing.id, {
+                          employee_id: e.id, ppe_ok: running,
+                        }), `${e.full_name} added${running ? " and clocked in" : ""}.`)}
+                        className="group inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-2.5 py-1 text-left text-xs text-paper transition hover:border-signal disabled:opacity-50">
+                        <Plus className="h-3 w-3 text-sky-400" />
+                        <span>{e.full_name}</span>
+                        <span className="text-slate text-[11px]">· {e.trade || "SNC staff"}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {!Object.keys(groupedProjectHires).length && !unaddedEmployees.length ? (
+                <p className="mt-2 text-xs text-slate">{search ? "No match. Register them as a new project hire above." : "Everyone on this project's roster is already on the register."}</p>
+              ) : null}
             </div>
           ) : null}
 

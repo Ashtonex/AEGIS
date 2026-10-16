@@ -467,12 +467,168 @@ async def get_project_financial_detail(
             FROM finance.variations v
             WHERE v.project_id = :project_id AND v.organization_id = :org_id AND v.is_deleted = false
 
-            ORDER BY occurred_at DESC
+        ORDER BY occurred_at DESC
+        LIMIT 50
+    """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    detail["recent_transactions"] = [dict(r._mapping) for r in transactions_rows]
+
+    # Materials breakdown (site stores, committed purchase orders, delivered GRNs, daily consumed)
+    materials_rows = await db.execute(
+        text("""
+            SELECT
+                COALESCE((
+                    SELECT SUM(sl.quantity * COALESCE(sl.unit_cost, 0))
+                    FROM procurement.stock_ledger sl
+                    WHERE (sl.project_id = :project_id OR sl.store_id IN (
+                        SELECT st.id FROM procurement.stores st
+                        WHERE st.project_id = :project_id AND st.organization_id = :org_id AND st.is_deleted = false
+                    )) AND sl.organization_id = :org_id
+                ), 0) AS store_inventory_value,
+                COALESCE((
+                    SELECT SUM(pol.total_price)
+                    FROM procurement.purchase_order_lines pol
+                    JOIN procurement.purchase_orders po ON po.id = pol.po_id
+                    WHERE po.project_id = :project_id AND po.organization_id = :org_id
+                      AND po.status NOT IN ('cancelled', 'rejected') AND po.is_deleted = false
+                ), 0) AS po_material_committed,
+                COALESCE((
+                    SELECT SUM(grnl.quantity_received * COALESCE(grnl.unit_price, 0))
+                    FROM procurement.grn_lines grnl
+                    JOIN procurement.goods_received_notes grn ON grn.id = grnl.grn_id
+                    WHERE grn.project_id = :project_id AND grn.organization_id = :org_id
+                      AND grn.status = 'accepted' AND grn.is_deleted = false
+                ), 0) AS grn_delivered_value,
+                COALESCE((
+                    SELECT SUM(drm.quantity * COALESCE(drm.unit_cost, 0))
+                    FROM projects.daily_report_materials drm
+                    JOIN projects.daily_site_reports dsr ON dsr.id = drm.report_id
+                    WHERE dsr.project_id = :project_id AND dsr.organization_id = :org_id
+                      AND dsr.is_deleted = false
+                ), 0) AS daily_report_consumed_value
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    mat_row = materials_rows.first()
+    detail["materials_summary"] = dict(mat_row._mapping) if mat_row else {}
+
+    # Subcontractor claims / payment requests
+    subcon_rows = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(CASE WHEN vpr.status IN ('paid', 'cleared') THEN vpr.amount ELSE 0 END), 0) AS paid_amount,
+                COALESCE(SUM(CASE WHEN vpr.status NOT IN ('paid', 'cleared', 'rejected') THEN vpr.amount ELSE 0 END), 0) AS pending_amount,
+                COUNT(vpr.id) AS total_requests
+            FROM finance.vendor_payment_requests vpr
+            WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
+              AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
+              AND vpr.is_deleted = false
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    subcon_summary = dict(subcon_rows.first()._mapping) if subcon_rows else {}
+
+    subcon_items = await db.execute(
+        text("""
+            SELECT
+                vpr.id,
+                vpr.reference_description,
+                vpr.amount,
+                vpr.currency,
+                vpr.status,
+                vpr.submitted_at,
+                vpr.cleared_at,
+                s.name AS subcontractor_name
+            FROM finance.vendor_payment_requests vpr
+            LEFT JOIN procurement.suppliers s ON s.id = COALESCE(vpr.subcontractor_id, vpr.supplier_id)
+            WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
+              AND (vpr.rate_type = 'subcontractor' OR vpr.subcontractor_id IS NOT NULL)
+              AND vpr.is_deleted = false
+            ORDER BY vpr.created_at DESC
+            LIMIT 20
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    subcon_summary["items"] = [dict(r._mapping) for r in subcon_items]
+    detail["subcontractor_payments"] = subcon_summary
+
+    # Onsite labour (pay runs + daily report labour)
+    labour_pay_rows = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(CASE WHEN status = 'paid' THEN total_net ELSE 0 END), 0) AS paid_amount,
+                COALESCE(SUM(CASE WHEN status != 'paid' THEN total_net ELSE 0 END), 0) AS pending_amount,
+                COALESCE(SUM(total_hours), 0) AS total_hours_payruns,
+                COUNT(id) AS total_runs
+            FROM finance.site_pay_runs
+            WHERE project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    labour_summary = dict(labour_pay_rows.first()._mapping) if labour_pay_rows else {}
+
+    daily_labour_rows = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(drl.hours_worked), 0) AS daily_hours,
+                COALESCE(SUM(drl.hours_worked * COALESCE(drl.hourly_rate, 0)), 0) AS daily_labour_cost
+            FROM projects.daily_report_labour drl
+            JOIN projects.daily_site_reports dsr ON dsr.id = drl.report_id
+            WHERE dsr.project_id = :project_id AND dsr.organization_id = :org_id AND dsr.is_deleted = false
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    dl_map = dict(daily_labour_rows.first()._mapping) if daily_labour_rows else {}
+    labour_summary["daily_report_hours"] = dl_map.get("daily_hours", 0)
+    labour_summary["daily_report_labour_cost"] = dl_map.get("daily_labour_cost", 0)
+
+    recent_runs = await db.execute(
+        text("""
+            SELECT id, run_number, period_start, period_end, payment_date, status,
+                   worker_count, total_hours, total_net
+            FROM finance.site_pay_runs
+            WHERE project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+            ORDER BY created_at DESC
+            LIMIT 10
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )
+    labour_summary["items"] = [dict(r._mapping) for r in recent_runs]
+    detail["onsite_labour_payments"] = labour_summary
+
+    # Project cash In vs Out matchmaking ledger
+    cashbook_rows = await db.execute(
+        text("""
+            SELECT
+                id,
+                transaction_number,
+                transaction_date,
+                direction,
+                amount,
+                currency,
+                transaction_type,
+                description,
+                counterparty_name,
+                payment_method,
+                reference,
+                reconciliation_status
+            FROM finance.cashbook_transactions
+            WHERE project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+            ORDER BY transaction_date DESC, created_at DESC
             LIMIT 50
         """),
         {"project_id": project_id, "org_id": user["org_id"]},
     )
-    detail["recent_transactions"] = [dict(r._mapping) for r in transactions_rows]
+    cb_items = [dict(r._mapping) for r in cashbook_rows]
+    total_money_in = sum(float(r["amount"] or 0) for r in cb_items if r["direction"] == "inflow")
+    total_money_out = sum(float(r["amount"] or 0) for r in cb_items if r["direction"] == "outflow")
+    detail["cashflow_matchmaking"] = {
+        "total_money_in": total_money_in,
+        "total_money_out": total_money_out,
+        "net_cash": total_money_in - total_money_out,
+        "items": cb_items,
+    }
 
     return ok(detail, "Project financial detail retrieved.")
 

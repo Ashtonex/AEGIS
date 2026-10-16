@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   FileSpreadsheet,
+  ExternalLink,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { ProjectWorkspaceProvider, useProject } from "@/context/ProjectWorkspaceContext";
@@ -160,6 +161,16 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
                       <span className="border border-ink-mid bg-ink-light/50 px-2 py-0.5 font-mono text-[11px] text-slate-light">
                         {String(currentProject.project_code)}
                       </span>
+                    )}
+                    {Boolean(currentProject.opportunity_id) && (
+                      <Link
+                        href="/dashboard/crm/opportunities"
+                        className="inline-flex items-center gap-1 border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[11px] text-amber-300 hover:border-amber-400 hover:text-amber-200 transition-colors"
+                        title="Linked to CRM Commercial Opportunity"
+                      >
+                        <ExternalLink className="h-2.5 w-2.5" />
+                        <span>CRM Deal Linked</span>
+                      </Link>
                     )}
                   </div>
 

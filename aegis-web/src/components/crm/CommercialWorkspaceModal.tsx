@@ -47,6 +47,7 @@ import { useFinanceDepartments } from "@/hooks/useFinanceDepartments";
 import { supabase } from "@/lib/supabase";
 import {
   updateCrmOpportunity,
+  deleteCrmOpportunity,
   markCrmOpportunityWon,
   markCrmOpportunityLost,
   updateCrmTender,
@@ -1188,6 +1189,24 @@ export function CommercialWorkspaceModal({
                     >
                       <Ban className="h-3.5 w-3.5" />
                       <span>Mark Lost</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!confirm(`Are you sure you want to delete "${entity.name}"? This cannot be undone.`)) return;
+                        try {
+                          await deleteCrmOpportunity(entity.id);
+                          onClose();
+                          if (onEntityUpdated) onEntityUpdated({ ...entity, stage: "closed_lost" });
+                        } catch (err) {
+                          alert("Failed to delete deal.");
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 border border-red-500/30 bg-red-950/20 px-3 py-2 font-mono text-xs text-red-400 hover:bg-red-500/20 hover:border-red-500 transition-colors"
+                      title="Permanently delete deal"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Delete Deal</span>
                     </button>
                   </div>
                 )}

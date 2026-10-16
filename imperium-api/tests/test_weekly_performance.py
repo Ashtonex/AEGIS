@@ -45,7 +45,8 @@ def full_week(**overrides) -> WeekMetrics:
     m = WeekMetrics(workdays=days, attendance_tracked_days=days, present_days=5, late_days=0,
                     tasks_due=10, tasks_on_time=10, open_tasks=5, overdue_tasks=0, completed=10,
                     new_tasks=4, picked_up=4, hours_confirmation_applies=True, hours_confirmed=True,
-                    hours_week_end=date(2026, 10, 2), productive_days=5)
+                    hours_week_end=date(2026, 10, 2), productive_days=5,
+                    teams_active_days=5, teams_messages_count=10)
     for k, v in overrides.items():
         setattr(m, k, v)
     return m
@@ -54,6 +55,12 @@ def full_week(**overrides) -> WeekMetrics:
 def test_a_clean_week_scores_100():
     score, grade, weight = perf.overall(perf.score_components(full_week()))
     assert (score, grade, weight) == (100.0, "A", 100)
+
+
+def test_teams_collaboration_scores_active_days_and_messages():
+    c = perf.score_components(full_week(teams_active_days=4, teams_messages_count=6))
+    # 4/5 * 80 + min(20, 6*2) = 64 + 12 = 76.0
+    assert c["teams_collaboration"]["score"] == 76.0
 
 
 def test_delivery_mixes_on_time_rate_and_overdue_share_and_penalises_missing_evidence():
@@ -72,7 +79,7 @@ def test_unmeasurable_areas_are_reweighted():
     c = perf.score_components(m)
     assert c["delivery"]["score"] is None and c["responsiveness"]["score"] is None
     score, grade, weight = perf.overall(c)
-    assert weight == 45 and score == 100.0
+    assert weight == 50 and score == 100.0
 
 
 def test_too_little_to_measure_is_not_graded():

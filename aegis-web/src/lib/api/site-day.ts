@@ -30,6 +30,8 @@ export const startSiteDay = (briefingId: string) => post(`${SITE}/day/${briefing
 export const closeSiteDay = (briefingId: string) => post(`${SITE}/day/${briefingId}/close`);
 export const addSiteDayAttendance = (briefingId: string, payload: { site_worker_id?: string; employee_id?: string; ppe_ok: boolean }) =>
   post(`${SITE}/day/${briefingId}/attendance`, payload);
+export const addSiteDayAttendanceBatch = (briefingId: string, payload: { items: Array<{ site_worker_id?: string; employee_id?: string; ppe_ok: boolean }> }) =>
+  post(`${SITE}/day/${briefingId}/attendance/batch`, payload);
 export const updateSiteDayAttendance = (attendanceId: string, payload: { ppe_ok?: boolean; notes?: string }) =>
   post(`${SITE}/day/attendance/${attendanceId}`, payload, "PATCH");
 export const removeSiteDayAttendance = (attendanceId: string) => post(`${SITE}/day/attendance/${attendanceId}`, undefined, "DELETE");

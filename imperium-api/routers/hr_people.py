@@ -295,7 +295,23 @@ async def _dossier(db: AsyncSession, user: dict, employee_id, *, is_self: bool =
                 FROM hr.project_allocations a
                 JOIN projects.projects p ON p.id = a.project_id AND p.organization_id = a.organization_id
                 WHERE a.organization_id = :org AND a.employee_id = :id AND a.is_deleted = false
-                ORDER BY (a.status IN ('planned','active') AND a.ends_on >= CURRENT_DATE) DESC, a.starts_on DESC
+
+                UNION ALL
+
+                SELECT sra.id, sra.project_id, p.name AS project_name, p.project_code, sra.role_name AS role_on_project,
+                       100.0 AS allocation_percent, sra.starts_on, sra.ends_on,
+                       CASE WHEN sra.is_active THEN 'active' ELSE 'inactive' END AS status,
+                       'cleared' AS compliance_status
+                FROM projects.site_role_assignments sra
+                JOIN projects.projects p ON p.id = sra.project_id AND p.organization_id = sra.organization_id
+                JOIN hr.employees e ON (e.linked_user_id = sra.user_id)
+                WHERE sra.organization_id = :org AND e.id = :id AND sra.is_deleted = false
+                  AND NOT EXISTS (
+                      SELECT 1 FROM hr.project_allocations pa
+                      WHERE pa.employee_id = :id AND pa.project_id = sra.project_id AND pa.is_deleted = false
+                  )
+
+                ORDER BY (status IN ('planned','active') AND (ends_on IS NULL OR ends_on >= CURRENT_DATE)) DESC, starts_on DESC
                 LIMIT 100
                 """),
                 {"org": org_id, "id": employee_id},

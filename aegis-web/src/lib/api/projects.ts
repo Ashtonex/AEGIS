@@ -140,6 +140,15 @@ export type ProjectSupplyChainResponse = {
     notes?: string;
     created_at: string;
   }>;
+  rfqs?: Array<{
+    id: string;
+    rfq_number: string;
+    title: string;
+    status: string;
+    closing_date?: string;
+    description?: string;
+    created_at: string;
+  }>;
   summary: {
     total_site_stores: number;
     total_inventory_items: number;
@@ -148,6 +157,7 @@ export type ProjectSupplyChainResponse = {
     total_open_pos: number;
     total_requisitions: number;
     total_deliveries: number;
+    total_rfqs?: number;
   };
 };
 

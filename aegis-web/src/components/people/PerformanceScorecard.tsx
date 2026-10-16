@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import type { PerformanceAreaKey, Scorecard } from "@/lib/api";
 import { formatDate } from "./ui";
 
-export const AREAS: PerformanceAreaKey[] = ["delivery", "reliability", "records", "responsiveness", "output"];
+export const AREAS: PerformanceAreaKey[] = ["delivery", "reliability", "records", "responsiveness", "output", "teams_collaboration"];
 
 const GRADE_TONE: Record<string, string> = {
   A: "border-emerald-500/40 bg-emerald-950/40 text-emerald-300",
@@ -86,12 +86,17 @@ function metricLines(key: PerformanceAreaKey, m: Record<string, unknown>): strin
       const work = Object.entries((m.work as Record<string, number>) ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
       return [`Work recorded on ${n("days_with_work")} of ${n("working_days")} working days`, ...(work.length ? [work.map(([k, v]) => `${v} ${k}`).join(" · ")] : [])];
     }
+    case "teams_collaboration":
+      return [
+        `Active on MS Teams on ${n("teams_active_days")} of ${n("working_days")} working days`,
+        ...(n("teams_messages_count") ? [`${n("teams_messages_count")} collaborative messages & interactions recorded`] : []),
+      ];
   }
 }
 
 export function AreaGrid({ card }: { card: Scorecard }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       {AREAS.map((key) => {
         const c = card.components[key];
         if (!c) return null;

@@ -1318,8 +1318,15 @@ export default function OpportunitiesKanban() {
                           ${(Number(opp.budget) || 0).toLocaleString()}
                         </span>
 
-                        {/* Quick stage move control buttons */}
+                        {/* Quick stage move control buttons and delete button */}
                         <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
+                          <button
+                            title="Delete Deal"
+                            onClick={() => handleDeleteOpportunity(opp)}
+                            className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-400 rounded-sm flex items-center justify-center transition-all text-slate-light"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                           <button
                             disabled={STAGES.indexOf(stage) === 0 || !canMoveStage}
                             onClick={() => handleStageMove(opp.id, stage, 'prev')}

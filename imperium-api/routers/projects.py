@@ -119,6 +119,7 @@ class ProjectUpdate(BaseModel):
     planned_completion_date: Optional[date] = None
     actual_completion_date: Optional[date] = None
     department_id: Optional[UUID] = None
+    opportunity_id: Optional[UUID] = None
     region: Optional[str] = Field(default=None, max_length=120)
     latitude: Optional[float] = Field(default=None, ge=-90, le=90)
     longitude: Optional[float] = Field(default=None, ge=-180, le=180)
@@ -1238,7 +1239,22 @@ async def get_project_team(
         LEFT JOIN hr.positions pos ON pos.id = e.position_id AND pos.organization_id = a.organization_id
         LEFT JOIN core.users cu ON cu.id = a.created_by
         WHERE a.organization_id = :org_id AND a.project_id = :project_id AND a.is_deleted = false
-        ORDER BY is_current DESC, a.starts_on DESC
+
+        UNION ALL
+
+        SELECT
+          w.id AS allocation_id, NULL::uuid AS employee_id, w.trade AS role_on_project, 100.0 AS allocation_percent,
+          w.start_date AS starts_on, w.end_date AS ends_on, w.status, w.notes, w.created_at,
+          w.full_name AS employee_name, COALESCE(w.national_id, 'HIRE') AS employee_number,
+          w.trade AS job_title, 'project_hire' AS employment_type, 'active' AS employment_status,
+          'Project Hire' AS category_name, false AS payroll_eligible,
+          w.trade AS position_name, w.trade, 'Site' AS grade,
+          NULL::character varying AS assigned_by_email,
+          (w.status = 'active' AND (w.end_date IS NULL OR w.end_date >= CURRENT_DATE)) AS is_current
+        FROM finance.site_workers w
+        WHERE w.organization_id = :org_id AND w.project_id = :project_id AND w.is_deleted = false
+
+        ORDER BY is_current DESC, starts_on DESC
         """),
         {"org_id": user["org_id"], "project_id": project["id"]},
     )
@@ -1478,20 +1494,17 @@ async def confirm_project_deposit(
     project moves into pre-mobilisation readiness, not active delivery; the
     readiness gate must be approved before mobilisation can start."""
     project = await _project_ref_or_404(db, str(project_id), user["org_id"])
-    if project.get("status") != "pending_deposit":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Project is '{project.get('status')}', not pending deposit confirmation.",
-        )
+    current_status = str(project.get("status") or "")
+    new_status = "pre_mobilisation" if current_status == "pending_deposit" else current_status
 
     await db.execute(
         text("""
             UPDATE projects.projects
-            SET status = 'pre_mobilisation',
-                deposit_confirmed_at = NOW(),
-                deposit_confirmed_by = :user_id,
-                deposit_reference = :deposit_reference,
-                deposit_received_amount = :deposit_received_amount,
+            SET status = :new_status,
+                deposit_confirmed_at = COALESCE(deposit_confirmed_at, NOW()),
+                deposit_confirmed_by = COALESCE(deposit_confirmed_by, :user_id),
+                deposit_reference = COALESCE(:deposit_reference, deposit_reference),
+                deposit_received_amount = COALESCE(deposit_received_amount, 0) + :deposit_received_amount,
                 updated_at = NOW()
             WHERE id = :project_id AND organization_id = :org_id
         """),
@@ -1499,17 +1512,19 @@ async def confirm_project_deposit(
             "project_id": project_id,
             "org_id": user["org_id"],
             "user_id": user["user_id"],
+            "new_status": new_status,
             "deposit_reference": payload.deposit_reference,
             "deposit_received_amount": payload.deposit_received_amount,
         },
     )
-    await _seed_pre_mobilisation_checks(
-        db,
-        org_id=user["org_id"],
-        project_id=project_id,
-        user_id=user["user_id"],
-    )
-    await _open_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
+    if current_status == "pending_deposit":
+        await _seed_pre_mobilisation_checks(
+            db,
+            org_id=user["org_id"],
+            project_id=project_id,
+            user_id=user["user_id"],
+        )
+        await _open_commercial_readiness_pack(db, org_id=user["org_id"], project_id=project_id)
 
     # Finance sign-off on the deposit is itself claimed revenue and cash in
     # hand - drive it through the same progress_claims lifecycle (create ->
@@ -2140,6 +2155,19 @@ async def update_project(
                     "org_id": user["org_id"],
                 },
             )
+            if "opportunity_id" in project_values and project_values["opportunity_id"]:
+                await db.execute(
+                    text("""
+                        UPDATE crm.opportunities
+                        SET project_id = :project_id, updated_at = NOW()
+                        WHERE id = :opp_id AND organization_id = :org_id
+                    """),
+                    {
+                        "project_id": project_id,
+                        "opp_id": project_values["opportunity_id"],
+                        "org_id": user["org_id"],
+                    },
+                )
         if profile_values:
             await db.execute(
                 tenant_upsert_sql(
@@ -2163,6 +2191,144 @@ async def update_project(
         ) from exc
     updated_project = await _project_ref_or_404(db, str(project_id), user["org_id"])
     return _result(updated_project, "Project updated.")
+
+
+@router.post("/{project_id}/link-opportunity/{opportunity_id}")
+async def link_project_to_opportunity(
+    project_id: UUID,
+    opportunity_id: UUID,
+    user: dict = Depends(require_permission("projects.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link an existing project to a CRM opportunity deal."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+    await db.execute(
+        text("""
+            UPDATE projects.projects
+            SET opportunity_id = :opp_id, updated_at = NOW()
+            WHERE id = :project_id AND organization_id = :org_id
+        """),
+        {"opp_id": opportunity_id, "project_id": project_id, "org_id": user["org_id"]},
+    )
+    await db.execute(
+        text("""
+            UPDATE crm.opportunities
+            SET project_id = :project_id, updated_at = NOW()
+            WHERE id = :opp_id AND organization_id = :org_id
+        """),
+        {"project_id": project_id, "opp_id": opportunity_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return _result({"project_id": str(project_id), "opportunity_id": str(opportunity_id)}, "Project linked to opportunity successfully.")
+
+
+@router.post("/{project_id}/generate-boq-milestones")
+async def generate_boq_milestones(
+    project_id: UUID,
+    user: dict = Depends(require_permission("projects.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Autogenerate weekly project milestones based on BOQ line items or phases."""
+    project = await _project_ref_or_404(db, str(project_id), user["org_id"])
+
+    boq_items = (await db.execute(
+        text("""
+            SELECT item_no, description, contract_amount, cost_category, sort_order
+            FROM finance.boq_line_items
+            WHERE project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+            ORDER BY sort_order ASC, item_no ASC
+        """),
+        {"project_id": project_id, "org_id": user["org_id"]},
+    )).mappings().all()
+
+    start_date = project.get("start_date") or date.today()
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+
+    created_milestones = []
+
+    if boq_items and len(boq_items) > 0:
+        categories = []
+        for item in boq_items:
+            cat = item.get("cost_category") or "General Works"
+            if cat not in categories:
+                categories.append(cat)
+
+        total_contract = float(project.get("contract_value") or sum(float(i.get("contract_amount") or 0) for i in boq_items) or 100)
+
+        for idx, cat in enumerate(categories):
+            cat_items = [i for i in boq_items if (i.get("cost_category") or "General Works") == cat]
+            cat_sum = sum(float(i.get("contract_amount") or 0) for i in cat_items)
+            w = round((cat_sum / total_contract) * 100, 1) if total_contract > 0 else round(100.0 / len(categories), 1)
+            b_date = start_date + timedelta(days=7 * (idx + 1))
+
+            m_name = f"Week {idx + 1}: {cat.replace('_', ' ').title()}"
+            m_notes = f"Auto-generated from BOQ: {', '.join([str(i.get('item_no') or '') for i in cat_items[:3]])}"
+
+            row = (await db.execute(
+                text("""
+                    INSERT INTO projects.project_milestones (
+                        organization_id, project_id, name, status,
+                        baseline_date, forecast_date, weight, notes,
+                        created_by, created_at, updated_at, is_deleted
+                    ) VALUES (
+                        :org_id, :project_id, :name, 'not_started',
+                        :baseline_date, :forecast_date, :weight, :notes,
+                        :user_id, NOW(), NOW(), false
+                    ) RETURNING id, name, baseline_date, weight
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": project_id,
+                    "name": m_name,
+                    "baseline_date": b_date,
+                    "forecast_date": b_date,
+                    "weight": w,
+                    "notes": m_notes,
+                    "user_id": user["user_id"],
+                },
+            )).first()
+            if row:
+                created_milestones.append(dict(row._mapping))
+    else:
+        stages = [
+            ("Week 1: Site Mobilisation & Earthworks", 15.0, "Site establishment, perimeter hoarding, earthworks & excavation."),
+            ("Week 2: Substructure & Foundations", 20.0, "Footings, reinforced concrete foundations, and stub columns."),
+            ("Week 3: Superstructure & Framing", 25.0, "Brickwork, structural columns, beams and slab casting."),
+            ("Week 4: MEP Rough-in & Enclosure", 15.0, "Plumbing, electrical conduit piping, roofing and door/window frames."),
+            ("Week 5: Finishes & Surface Treatments", 15.0, "Plastering, screed, tiling, painting, and sanitaryware fixtures."),
+            ("Week 6: QA Testing, Snagging & Handover", 10.0, "Pressure testing, electrical commissioning, final cleaning, and client signoff."),
+        ]
+        for idx, (s_name, s_weight, s_notes) in enumerate(stages):
+            b_date = start_date + timedelta(days=7 * (idx + 1))
+            row = (await db.execute(
+                text("""
+                    INSERT INTO projects.project_milestones (
+                        organization_id, project_id, name, status,
+                        baseline_date, forecast_date, weight, notes,
+                        created_by, created_at, updated_at, is_deleted
+                    ) VALUES (
+                        :org_id, :project_id, :name, 'not_started',
+                        :baseline_date, :forecast_date, :weight, :notes,
+                        :user_id, NOW(), NOW(), false
+                    ) RETURNING id, name, baseline_date, weight
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": project_id,
+                    "name": s_name,
+                    "baseline_date": b_date,
+                    "forecast_date": b_date,
+                    "weight": s_weight,
+                    "notes": s_notes,
+                    "user_id": user["user_id"],
+                },
+            )).first()
+            if row:
+                created_milestones.append(dict(row._mapping))
+
+    await db.commit()
+    return _result(created_milestones, f"Generated {len(created_milestones)} weekly milestones from programme BOQ.")
 
 
 @router.get("/{project_id}/delete-impact")
@@ -2388,6 +2554,46 @@ async def assign_project_role(
                 "org_id": user["org_id"],
             },
         )
+
+    # Mirror assignment to hr.project_allocations so the project shows up on the employee Person Card / Dossier popup
+    emp_row = (await db.execute(
+        text("""
+            SELECT id FROM hr.employees
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND (linked_user_id = :user_id OR personal_email = (SELECT email FROM core.users WHERE id = :user_id))
+            LIMIT 1
+        """),
+        {"org_id": user["org_id"], "user_id": payload.user_id},
+    )).first()
+    if emp_row:
+        existing_alloc = (await db.execute(
+            text("""
+                SELECT id FROM hr.project_allocations
+                WHERE organization_id = :org_id AND employee_id = :emp_id AND project_id = :project_id AND is_deleted = false
+            """),
+            {"org_id": user["org_id"], "emp_id": emp_row.id, "project_id": resolved_project_id},
+        )).first()
+        if not existing_alloc:
+            await db.execute(
+                text("""
+                    INSERT INTO hr.project_allocations (
+                        organization_id, employee_id, project_id, role_on_project,
+                        allocation_percent, starts_on, ends_on, status, created_by, created_at, updated_at, is_deleted
+                    ) VALUES (
+                        :org_id, :emp_id, :project_id, :role_name,
+                        100.0, COALESCE(:starts_on, CURRENT_DATE), :ends_on, 'active', :user_id, NOW(), NOW(), false
+                    )
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "emp_id": emp_row.id,
+                    "project_id": resolved_project_id,
+                    "role_name": payload.role_name.strip(),
+                    "starts_on": payload.starts_on,
+                    "ends_on": payload.ends_on,
+                    "user_id": user["user_id"],
+                },
+            )
 
     await emit_event(
         db,
@@ -3435,20 +3641,20 @@ async def get_project_supply_chain(
             SELECT
                 r.id,
                 r.requisition_number,
-                r.title,
+                COALESCE(r.justification, r.requisition_number) AS title,
                 r.status,
                 r.priority,
                 r.created_at,
                 r.required_by_date,
                 r.site_id,
                 si.name AS site_name,
-                (SELECT COUNT(*) FROM procurement.requisition_items ri WHERE ri.requisition_id = r.id) AS item_count,
-                (SELECT COALESCE(SUM(ri.quantity * COALESCE(ri.estimated_unit_cost, 0)), 0)
-                 FROM procurement.requisition_items ri WHERE ri.requisition_id = r.id) AS estimated_total
+                COALESCE((SELECT COUNT(*) FROM procurement.requisition_lines rl WHERE rl.requisition_id = r.id AND rl.is_deleted = false), 0) AS item_count,
+                COALESCE(r.total_estimated, 0) AS estimated_total
             FROM procurement.purchase_requisitions r
             LEFT JOIN projects.sites si ON si.id = r.site_id
-            WHERE r.organization_id = :org_id
-              AND r.project_id = :project_id
+            WHERE r.organization_id = CAST(:org_id AS uuid)
+              AND r.project_id = CAST(:project_id AS uuid)
+              AND r.is_deleted = false
             ORDER BY r.created_at DESC
             LIMIT 50
         """),
@@ -3472,8 +3678,9 @@ async def get_project_supply_chain(
                 po.payment_terms
             FROM procurement.purchase_orders po
             LEFT JOIN procurement.suppliers s ON s.id = po.supplier_id
-            WHERE po.organization_id = :org_id
-              AND po.project_id = :project_id
+            WHERE po.organization_id = CAST(:org_id AS uuid)
+              AND po.project_id = CAST(:project_id AS uuid)
+              AND po.is_deleted = false
             ORDER BY po.created_at DESC
             LIMIT 50
         """),
@@ -3492,24 +3699,46 @@ async def get_project_supply_chain(
                 po.po_number,
                 g.store_id,
                 st.name AS store_name,
-                g.delivery_note_number,
-                g.received_at,
-                g.received_by_user_id,
-                g.inspection_status,
-                (SELECT COUNT(*) FROM procurement.goods_received_items gri WHERE gri.grn_id = g.id) AS item_count
+                g.delivery_note_ref AS delivery_note_number,
+                g.delivery_date AS received_at,
+                g.status AS inspection_status,
+                COALESCE((SELECT COUNT(*) FROM procurement.grn_lines gl WHERE gl.grn_id = g.id AND gl.is_deleted = false), 0) AS item_count
             FROM procurement.goods_received_notes g
             LEFT JOIN procurement.purchase_orders po ON po.id = g.po_id
             LEFT JOIN procurement.stores st ON st.id = g.store_id
-            WHERE g.organization_id = :org_id
-              AND (g.project_id = :project_id OR g.store_id = ANY(:store_ids))
-            ORDER BY g.received_at DESC
+            WHERE g.organization_id = CAST(:org_id AS uuid)
+              AND (g.project_id = CAST(:project_id AS uuid) OR g.store_id = ANY(:store_ids))
+              AND g.is_deleted = false
+            ORDER BY g.delivery_date DESC NULLS LAST, g.created_at DESC
             LIMIT 50
         """),
         {"org_id": org_id, "project_id": project_id, "store_ids": store_ids or [dummy_uuid]},
     )
     deliveries = [dict(r._mapping) for r in grn_res.fetchall()]
 
-    # 6. Consumption logs from daily site reports
+    # 6. RFQs & Sourcing for project
+    rfq_res = await db.execute(
+        text("""
+            SELECT
+                rfq.id,
+                rfq.rfq_number,
+                rfq.title,
+                rfq.status,
+                rfq.closing_date,
+                rfq.created_at,
+                rfq.description
+            FROM procurement.rfqs rfq
+            WHERE rfq.organization_id = CAST(:org_id AS uuid)
+              AND rfq.project_id = CAST(:project_id AS uuid)
+              AND rfq.is_deleted = false
+            ORDER BY rfq.created_at DESC
+            LIMIT 50
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    rfqs = [dict(r._mapping) for r in rfq_res.fetchall()]
+
+    # 7. Consumption logs from daily site reports
     cons_res = await db.execute(
         text("""
             SELECT
@@ -3517,18 +3746,19 @@ async def get_project_supply_chain(
                 drm.report_id,
                 dr.report_date,
                 drm.item_id,
-                i.name AS item_name,
-                i.item_code,
-                drm.description,
+                COALESCE(i.name, 'Site Material') AS item_name,
+                COALESCE(i.item_code, 'MAT') AS item_code,
+                COALESCE(drm.work_package, 'General Works') AS description,
                 drm.quantity_used,
-                drm.unit_of_measure,
+                COALESCE(i.unit_of_measure, 'units') AS unit_of_measure,
                 drm.notes,
                 drm.created_at
             FROM projects.daily_report_materials drm
             JOIN projects.daily_site_reports dr ON dr.id = drm.report_id
             LEFT JOIN procurement.inventory_items i ON i.id = drm.item_id
-            WHERE dr.organization_id = :org_id
-              AND dr.project_id = :project_id
+            WHERE dr.organization_id = CAST(:org_id AS uuid)
+              AND dr.project_id = CAST(:project_id AS uuid)
+              AND drm.is_deleted = false
             ORDER BY dr.report_date DESC, drm.created_at DESC
             LIMIT 50
         """),
@@ -3550,6 +3780,7 @@ async def get_project_supply_chain(
         "requisitions": requisitions,
         "purchase_orders": purchase_orders,
         "deliveries": deliveries,
+        "rfqs": rfqs,
         "consumption_logs": consumption_logs,
         "summary": {
             "total_site_stores": len(site_stores),
@@ -3559,6 +3790,7 @@ async def get_project_supply_chain(
             "total_open_pos": len([p for p in purchase_orders if p.get("status") in ("issued", "approved", "partially_received")]),
             "total_requisitions": len(requisitions),
             "total_deliveries": len(deliveries),
+            "total_rfqs": len(rfqs),
         },
     }
     return _result(data, "Project supply chain loaded successfully.")

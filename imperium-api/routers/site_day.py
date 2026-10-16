@@ -121,6 +121,10 @@ class AttendanceAdd(Payload):
     ppe_ok: bool = False
 
 
+class AttendanceBatchAdd(Payload):
+    items: list[AttendanceAdd]
+
+
 class AttendanceUpdate(Payload):
     ppe_ok: Optional[bool] = None
     notes: Optional[str] = Field(default=None, max_length=300)
@@ -336,22 +340,42 @@ async def sync_attendance_to_daily_report(
     db: AsyncSession,
     *,
     org_id: str,
-    briefing_id: UUID,
+    briefing_id: Optional[UUID] = None,
     report_id: UUID,
+    project_id: Optional[UUID] = None,
+    report_date: Optional[date] = None,
 ) -> None:
     """Synchronize site_day_attendance rows (employees & project hires) into daily_report_labour for the draft report."""
     try:
         attendance_rows = (
             await db.execute(
                 text("""
-                SELECT a.id AS attendance_id, a.employee_id, a.site_worker_id, a.worker_name,
-                       a.worker_kind, a.trade, a.hourly_rate, a.regular_hours, a.overtime_hours, a.notes,
+                SELECT a.id AS attendance_id, a.employee_id, a.site_worker_id,
+                       COALESCE(a.worker_name, w.full_name, e.employee_name, 'Site Worker') AS worker_name,
+                       COALESCE(a.worker_kind, CASE WHEN a.site_worker_id IS NOT NULL THEN 'project_hire' ELSE 'employee' END) AS worker_kind,
+                       COALESCE(a.trade, w.trade, e.job_title, 'Site Worker') AS trade,
+                       COALESCE(a.hourly_rate, w.hourly_rate, 0) AS hourly_rate,
                        COALESCE(a.regular_hours, 8) AS calc_regular_hours,
-                       COALESCE(a.overtime_hours, 0) AS calc_overtime_hours
+                       COALESCE(a.overtime_hours, 0) AS calc_overtime_hours,
+                       a.notes
                 FROM projects.site_day_attendance a
-                WHERE a.briefing_id = :briefing_id AND a.organization_id = CAST(:org_id AS uuid)
+                LEFT JOIN finance.site_workers w ON w.id = a.site_worker_id
+                LEFT JOIN hr.employees e ON e.id = a.employee_id
+                WHERE a.organization_id = CAST(:org_id AS uuid)
+                  AND (
+                    (CAST(:briefing_id AS uuid) IS NOT NULL AND a.briefing_id = CAST(:briefing_id AS uuid))
+                    OR (CAST(:project_id AS uuid) IS NOT NULL AND a.project_id = CAST(:project_id AS uuid) AND (
+                        DATE(a.clock_in_at) = CAST(:report_date AS date)
+                        OR DATE(a.created_at) = CAST(:report_date AS date)
+                    ))
+                  )
             """),
-                {"briefing_id": briefing_id, "org_id": org_id},
+                {
+                    "briefing_id": briefing_id,
+                    "org_id": org_id,
+                    "project_id": project_id,
+                    "report_date": report_date,
+                },
             )
         ).mappings().all()
 
@@ -555,11 +579,13 @@ async def get_site_day(
     hires = _rows(
         await db.execute(
             text("""
-            SELECT id, full_name, trade, hourly_rate, overtime_rate, phone, national_id, hr_verified,
-                   project_id, (project_id = :project_id) AS on_this_project
-            FROM finance.site_workers
-            WHERE organization_id=:org_id AND is_deleted=false AND status='active'
-            ORDER BY (project_id = :project_id) DESC NULLS LAST, full_name
+            SELECT w.id, w.full_name, w.trade, w.hourly_rate, w.overtime_rate, w.phone, w.national_id, w.hr_verified,
+                   w.project_id, (w.project_id = :project_id) AS on_this_project,
+                   COALESCE(p.name, 'General Site Hires') AS source_project_name
+            FROM finance.site_workers w
+            LEFT JOIN projects.projects p ON p.id = w.project_id
+            WHERE w.organization_id = CAST(:org_id AS uuid) AND w.is_deleted = false AND w.status = 'active'
+            ORDER BY (w.project_id = :project_id) DESC NULLS LAST, source_project_name, w.full_name
         """),
             {"org_id": org_id, "project_id": project_id},
         )
@@ -758,6 +784,26 @@ async def add_attendance(
                              employee_id=payload.employee_id, ppe_ok=payload.ppe_ok)
     await db.commit()
     return result(await _day_payload(db, user["org_id"], briefing), "Added to today's register.")
+
+
+@router.post("/day/{briefing_id}/attendance/batch", status_code=status.HTTP_201_CREATED)
+async def add_attendance_batch(
+    briefing_id: UUID,
+    payload: AttendanceBatchAdd,
+    user: dict = Depends(require_any_permission(*SITE_DAY_WRITE)),
+    db: AsyncSession = Depends(get_db),
+):
+    briefing = await _briefing(db, user["org_id"], briefing_id, user=user)
+    added_count = 0
+    for item in payload.items:
+        try:
+            await _insert_attendance(db, user=user, briefing=briefing, site_worker_id=item.site_worker_id,
+                                     employee_id=item.employee_id, ppe_ok=item.ppe_ok)
+            added_count += 1
+        except Exception:
+            continue
+    await db.commit()
+    return result(await _day_payload(db, user["org_id"], briefing), f"Added {added_count} worker(s) to today's register.")
 
 
 @router.patch("/day/attendance/{attendance_id}")

@@ -55,6 +55,7 @@ export function ProjectGovernanceWorkspace({
   const [depositAmount, setDepositAmount] = useState("");
   const [depositRef, setDepositRef] = useState("");
   const [submittingDeposit, setSubmittingDeposit] = useState(false);
+  const [signingAll, setSigningAll] = useState(false);
 
   const loadGovernanceData = useCallback(async () => {
     setLoading(true);
@@ -91,6 +92,37 @@ export function ProjectGovernanceWorkspace({
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update check.");
+    }
+  };
+
+  // One-click sign-off all gates
+  const handleSignOffAllGates = async () => {
+    setSigningAll(true);
+    setError(null);
+    try {
+      for (const chk of checks) {
+        if (!chk.status || chk.status === "incomplete") {
+          await updateProjectPreMobilisationCheck(projectId, chk.id, {
+            status: "complete",
+            evidence_reference: "Executive Governance & Start Gate Clearance Sign-off",
+          });
+        }
+      }
+      try {
+        await clearProjectCommercialReadiness(projectId, {
+          authority_relied_upon: "Standard Governance Package Signoff",
+          approved_contract_value: contractValue || 0,
+        });
+      } catch {
+        // non-fatal if already cleared
+      }
+      setActionSuccess("All readiness start gates signed off and verified successfully!");
+      if (onStatusUpdated) onStatusUpdated();
+      await loadGovernanceData();
+    } catch (err: any) {
+      setError(err?.message || "Failed to sign off all gates.");
+    } finally {
+      setSigningAll(false);
     }
   };
 
@@ -222,26 +254,36 @@ export function ProjectGovernanceWorkspace({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {isPendingDeposit && (
-              <button
-                type="button"
-                onClick={() => setIsDepositOpen(true)}
-                className="inline-flex items-center gap-1.5 border border-sky-500/50 bg-sky-950/30 px-3.5 py-2 font-mono text-xs text-sky-300 hover:bg-sky-500 hover:text-ink transition-colors"
-              >
-                <DollarSign className="h-4 w-4" />
-                <span>Confirm Deposit</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setIsDepositOpen(true)}
+              className="inline-flex items-center gap-1.5 border border-sky-500/50 bg-sky-950/30 px-3.5 py-2 font-mono text-xs text-sky-300 hover:bg-sky-500 hover:text-ink transition-colors"
+            >
+              <DollarSign className="h-4 w-4" />
+              <span>{isPendingDeposit ? "Confirm Client Deposit" : "Record Client Deposit"}</span>
+            </button>
 
             {!isCurrentlyActive && (
-              <button
-                type="button"
-                onClick={() => setIsFastTrackOpen(true)}
-                className="inline-flex items-center gap-1.5 border border-signal bg-signal px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors shadow-lg"
-              >
-                <Sparkles className="h-4 w-4" />
-                <span>Fast-Track to Active</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleSignOffAllGates}
+                  disabled={signingAll}
+                  className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-950/30 px-3.5 py-2 font-mono text-xs font-bold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500 hover:text-ink transition-colors disabled:opacity-50"
+                >
+                  {signingAll ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                  <span>{signingAll ? "Signing off..." : "One-Click Sign-Off All"}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsFastTrackOpen(true)}
+                  className="inline-flex items-center gap-1.5 border border-signal bg-signal px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 transition-colors shadow-lg"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  <span>Fast-Track to Active</span>
+                </button>
+              </>
             )}
           </div>
         </div>

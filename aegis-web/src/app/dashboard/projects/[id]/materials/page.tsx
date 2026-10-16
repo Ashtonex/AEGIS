@@ -15,13 +15,14 @@ import {
   CheckCircle2,
   Clock,
   RefreshCw,
+  FileText,
 } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
 import { formatCurrency } from "@/lib/utils";
 import { number } from "@/lib/projects/types";
 import { getProjectSupplyChain, type ProjectSupplyChainResponse } from "@/lib/api";
 
-type TabKey = "inventory" | "requisitions" | "orders" | "deliveries" | "consumption";
+type TabKey = "inventory" | "requisitions" | "rfqs" | "orders" | "deliveries" | "consumption";
 
 export default function ProjectMaterialsPage() {
   const params = useParams();
@@ -64,6 +65,7 @@ export default function ProjectMaterialsPage() {
   const requisitions = supplyChain?.requisitions ?? [];
   const purchaseOrders = supplyChain?.purchase_orders?.length ? supplyChain.purchase_orders : fallbackOrders;
   const deliveries = supplyChain?.deliveries ?? [];
+  const rfqs = supplyChain?.rfqs ?? [];
   const consumptionLogs = supplyChain?.consumption_logs?.length ? supplyChain.consumption_logs : fallbackMaterials;
 
   const totalOnHandValue = supplyChain?.summary?.on_hand_inventory_value ?? 0;
@@ -77,10 +79,10 @@ export default function ProjectMaterialsPage() {
         <div>
           <h2 className="font-display text-xl font-bold text-paper sm:text-2xl flex items-center gap-2">
             <Warehouse className="h-6 w-6 text-emerald-400" />
-            Project Supply Chain & Site Inventory Radar
+            Project Supply Chain &amp; Site Inventory Radar
           </h2>
           <p className="mt-1 text-xs text-slate-light">
-            Live integration tracking site stores, on-hand inventory, material requisitions, purchase orders, and daily consumption.
+            Live integration tracking site stores, on-hand inventory, material requisitions, RFQs, purchase orders, and daily consumption.
           </p>
         </div>
 
@@ -144,16 +146,16 @@ export default function ProjectMaterialsPage() {
             {deliveries.length}
           </div>
           <div className="mt-1 text-[11px] text-slate font-mono">
-            Received & inspected at site stores
+            Received &amp; inspected at site stores
           </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-ink-mid flex space-x-1 font-mono text-xs">
+      <div className="border-b border-ink-mid flex space-x-1 font-mono text-xs overflow-x-auto">
         <button
           onClick={() => setActiveTab("inventory")}
-          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
             activeTab === "inventory"
               ? "border-emerald-400 text-emerald-400 bg-ink-light/40"
               : "border-transparent text-slate-light hover:text-paper"
@@ -164,7 +166,7 @@ export default function ProjectMaterialsPage() {
         </button>
         <button
           onClick={() => setActiveTab("requisitions")}
-          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
             activeTab === "requisitions"
               ? "border-cyan-400 text-cyan-400 bg-ink-light/40"
               : "border-transparent text-slate-light hover:text-paper"
@@ -174,8 +176,19 @@ export default function ProjectMaterialsPage() {
           Material Requisitions ({requisitions.length})
         </button>
         <button
+          onClick={() => setActiveTab("rfqs")}
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "rfqs"
+              ? "border-sky-400 text-sky-400 bg-ink-light/40"
+              : "border-transparent text-slate-light hover:text-paper"
+          }`}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          RFQs &amp; Sourcing ({rfqs.length})
+        </button>
+        <button
           onClick={() => setActiveTab("orders")}
-          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
             activeTab === "orders"
               ? "border-amber-400 text-amber-400 bg-ink-light/40"
               : "border-transparent text-slate-light hover:text-paper"
@@ -323,6 +336,62 @@ export default function ProjectMaterialsPage() {
                       </td>
                       <td className="py-3 px-4 text-slate-light">
                         {req.required_by_date ? new Date(req.required_by_date).toLocaleDateString() : "-"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Tab Content: RFQs & Tenders */}
+      {activeTab === "rfqs" && (
+        <section className="border border-ink-mid bg-ink">
+          <div className="border-b border-ink-mid p-4 flex items-center justify-between">
+            <div>
+              <span className="font-mono text-xs font-bold uppercase tracking-wider text-paper">
+                Request for Quotations (RFQs) &amp; Package Sourcing
+              </span>
+              <p className="mt-0.5 text-[11px] text-slate-light">
+                Live supplier packages and competitive quotation invitations issued for this project.
+              </p>
+            </div>
+            <span className="font-mono text-xs text-slate-light">{rfqs.length} Packages</span>
+          </div>
+
+          {rfqs.length === 0 ? (
+            <div className="py-12 text-center text-xs text-slate-light font-mono">
+              No RFQs or sourcing packages open for this project yet.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-ink-mid bg-ink-light/50 font-mono text-[11px] text-slate uppercase tracking-wider">
+                    <th className="py-2.5 px-4">RFQ #</th>
+                    <th className="py-2.5 px-4">Package Title</th>
+                    <th className="py-2.5 px-4">Status</th>
+                    <th className="py-2.5 px-4">Closing Date</th>
+                    <th className="py-2.5 px-4">Created Date</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-ink-mid/40 font-mono">
+                  {rfqs.map((rfq, idx) => (
+                    <tr key={idx} className="hover:bg-ink-light/30 transition-colors">
+                      <td className="py-3 px-4 font-bold text-paper">{rfq.rfq_number}</td>
+                      <td className="py-3 px-4 text-paper">{rfq.title}</td>
+                      <td className="py-3 px-4">
+                        <span className="inline-block px-2 py-0.5 text-[10px] uppercase font-bold bg-ink-light border border-ink-mid text-sky-400">
+                          {rfq.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-slate-light">
+                        {rfq.closing_date ? new Date(rfq.closing_date).toLocaleDateString() : "-"}
+                      </td>
+                      <td className="py-3 px-4 text-slate-light">
+                        {rfq.created_at ? new Date(rfq.created_at).toLocaleDateString() : "-"}
                       </td>
                     </tr>
                   ))}

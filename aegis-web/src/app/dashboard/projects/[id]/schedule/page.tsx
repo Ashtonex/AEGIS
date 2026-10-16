@@ -14,7 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
-import { addProjectMilestone, updateProjectMilestone } from "@/lib/api";
+import { addProjectMilestone, updateProjectMilestone, generateProjectMilestonesFromBOQ } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 import { text } from "@/lib/projects/types";
 
@@ -30,6 +30,7 @@ export default function ProjectSchedulePage() {
   const [forecastDate, setForecastDate] = useState("");
   const [weight, setWeight] = useState("10");
   const [saving, setSaving] = useState(false);
+  const [generatingBOQ, setGeneratingBOQ] = useState(false);
 
   const filtered = useMemo(() => {
     return milestones.filter((m) => {
@@ -78,6 +79,18 @@ export default function ProjectSchedulePage() {
     }
   };
 
+  const handleGenerateBOQMilestones = async () => {
+    setGeneratingBOQ(true);
+    try {
+      await generateProjectMilestonesFromBOQ(projectId);
+      await refetch();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setGeneratingBOQ(false);
+    }
+  };
+
   const statusPills: Record<string, string> = {
     complete: "text-emerald-400 border-emerald-500/40 bg-emerald-950/20",
     in_progress: "text-sky-400 border-sky-500/40 bg-sky-950/20",
@@ -112,6 +125,16 @@ export default function ProjectSchedulePage() {
               </button>
             ))}
           </div>
+
+          <button
+            type="button"
+            onClick={handleGenerateBOQMilestones}
+            disabled={generatingBOQ}
+            className="inline-flex items-center gap-1.5 border border-sky-500/50 bg-sky-950/30 px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-sky-300 hover:bg-sky-500 hover:text-ink transition-colors disabled:opacity-50"
+          >
+            {generatingBOQ ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Clock className="h-3.5 w-3.5" />}
+            <span>{generatingBOQ ? "Generating..." : "Autogenerate from BOQ"}</span>
+          </button>
 
           <button
             type="button"

@@ -2319,30 +2319,34 @@ async def get_daily_report(
                 )
                 report["briefing_id"] = briefing_id
 
-        if briefing_id:
-            try:
-                await sync_attendance_to_daily_report(
-                    db,
-                    briefing_id=briefing_id,
-                    report_id=report_id,
-                    org_id=user["org_id"],
-                )
-                await db.commit()
-            except Exception:
-                await db.rollback()
+        try:
+            await sync_attendance_to_daily_report(
+                db,
+                briefing_id=briefing_id,
+                report_id=report_id,
+                org_id=user["org_id"],
+                project_id=report["project_id"],
+                report_date=report["report_date"],
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.warning(f"Failed to sync attendance in get_daily_report: {exc}")
+            await db.rollback()
 
         # Auto-sync active plant deployed to this project into equipment lines
         try:
             active_fleet = (
                 await db.execute(
                     text("""
-                    SELECT f.id AS fleet_id, f.asset_name, f.registration_number,
-                           COALESCE(f.internal_rate_hourly, 0) AS cost_rate
+                    SELECT f.id AS fleet_id,
+                           COALESCE(f.vehicle_registration, f.asset_code, 'Equipment') AS asset_name,
+                           f.vehicle_registration AS registration_number,
+                           COALESCE(f.hourly_charge_rate, f.hourly_operating_cost, 0) AS cost_rate
                     FROM fleet.fleet f
                     WHERE f.organization_id = CAST(:org_id AS uuid)
-                      AND f.project_id = CAST(:project_id AS uuid)
+                      AND f.current_project_id = CAST(:project_id AS uuid)
                       AND f.is_deleted = false
-                      AND f.status IN ('active', 'in_use', 'operational')
+                      AND (f.operational_status IS NULL OR f.operational_status IN ('active', 'in_use', 'operational', 'available', 'dispatched'))
                 """),
                     {"org_id": user["org_id"], "project_id": report["project_id"]},
                 )
@@ -2377,7 +2381,8 @@ async def get_daily_report(
                         },
                     )
             await db.commit()
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"Failed to auto-sync fleet in get_daily_report: {exc}")
             await db.rollback()
 
         # Auto-sync store issues / consumption on this date into daily_report_materials
@@ -2385,17 +2390,17 @@ async def get_daily_report(
             issues = (
                 await db.execute(
                     text("""
-                    SELECT sl.id, sl.item_id, sl.store_id, sl.quantity, sl.unit_cost, sl.reference
+                    SELECT sl.id, sl.item_id, sl.store_id, sl.quantity, COALESCE(sl.unit_cost, 0) AS unit_cost, sl.reference
                     FROM procurement.stock_ledger sl
                     WHERE sl.organization_id = CAST(:org_id AS uuid)
                       AND sl.project_id = CAST(:project_id AS uuid)
-                      AND sl.movement_type IN ('issue', 'consumption')
-                      AND DATE(sl.created_at) = CAST(:report_date AS date)
+                      AND sl.movement_type IN ('issue', 'consumption', 'out')
+                      AND (DATE(sl.movement_at) = CAST(:report_date AS date) OR DATE(sl.created_at) = CAST(:report_date AS date))
                 """),
                     {
                         "org_id": user["org_id"],
                         "project_id": report["project_id"],
-                        "report_date": report["report_date"],
+                        "report_date": str(report["report_date"]),
                     },
                 )
             ).mappings().all()
@@ -2432,7 +2437,8 @@ async def get_daily_report(
                         },
                     )
             await db.commit()
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"Failed to auto-sync materials in get_daily_report: {exc}")
             await db.rollback()
 
     tables = {
@@ -2917,16 +2923,15 @@ async def sync_all_daily_report(
                 SELECT id FROM projects.site_day_briefings
                 WHERE organization_id = CAST(:org_id AS uuid)
                   AND project_id = CAST(:project_id AS uuid)
-                  AND briefing_date = :report_date
-                  AND shift = :shift
+                  AND briefing_date = CAST(:report_date AS date)
                   AND is_deleted = false
+                ORDER BY created_at DESC
                 LIMIT 1
             """),
                 {
                     "org_id": user["org_id"],
                     "project_id": report["project_id"],
-                    "report_date": report["report_date"],
-                    "shift": report.get("shift", "day"),
+                    "report_date": str(report["report_date"]),
                 },
             )
         ).scalar()
@@ -2936,20 +2941,32 @@ async def sync_all_daily_report(
                 text("UPDATE projects.daily_site_reports SET briefing_id = :bid WHERE id = :rid"),
                 {"bid": b_row, "rid": report_id},
             )
-    if briefing_id:
-        await sync_attendance_to_daily_report(db, briefing_id=briefing_id, report_id=report_id, org_id=user["org_id"])
 
-    # Auto-sync active plant
+    # Always sync labour from attendance registered for this briefing or project on this date
+    try:
+        await sync_attendance_to_daily_report(
+            db,
+            briefing_id=briefing_id,
+            report_id=report_id,
+            org_id=user["org_id"],
+            project_id=report["project_id"],
+            report_date=report["report_date"],
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to sync attendance in sync_all_daily_report: {exc}")
+
+    # Auto-sync active plant deployed to this project into equipment lines
     try:
         active_fleet = (
             await db.execute(
                 text("""
-                SELECT f.id AS fleet_id, COALESCE(f.internal_rate_hourly, 0) AS cost_rate
+                SELECT f.id AS fleet_id,
+                       COALESCE(f.hourly_charge_rate, f.hourly_operating_cost, 0) AS cost_rate
                 FROM fleet.fleet f
                 WHERE f.organization_id = CAST(:org_id AS uuid)
-                  AND f.project_id = CAST(:project_id AS uuid)
+                  AND f.current_project_id = CAST(:project_id AS uuid)
                   AND f.is_deleted = false
-                  AND f.status IN ('active', 'in_use', 'operational')
+                  AND (f.operational_status IS NULL OR f.operational_status IN ('active', 'in_use', 'operational', 'available', 'dispatched'))
             """),
                 {"org_id": user["org_id"], "project_id": report["project_id"]},
             )
@@ -2969,12 +2986,19 @@ async def sync_all_daily_report(
     except Exception as exc:
         logger.warning(f"Failed to auto-sync fleet to daily report {report_id}: {exc}")
 
-    # Auto-sync store issues
+    # Auto-sync store issues & stock consumption on this date
     try:
         issues = (
             await db.execute(
-                text("SELECT sl.item_id, sl.store_id, sl.quantity, sl.unit_cost, sl.reference FROM procurement.stock_ledger sl WHERE sl.organization_id = CAST(:org_id AS uuid) AND sl.project_id = CAST(:project_id AS uuid) AND sl.movement_type IN ('issue', 'consumption') AND DATE(sl.created_at) = CAST(:dt AS date)"),
-                {"org_id": user["org_id"], "project_id": report["project_id"], "dt": report["report_date"]},
+                text("""
+                SELECT sl.item_id, sl.store_id, sl.quantity, COALESCE(sl.unit_cost, 0) AS unit_cost, sl.reference
+                FROM procurement.stock_ledger sl
+                WHERE sl.organization_id = CAST(:org_id AS uuid)
+                  AND sl.project_id = CAST(:project_id AS uuid)
+                  AND sl.movement_type IN ('issue', 'consumption', 'out')
+                  AND (DATE(sl.movement_at) = CAST(:dt AS date) OR DATE(sl.created_at) = CAST(:dt AS date))
+            """),
+                {"org_id": user["org_id"], "project_id": report["project_id"], "dt": str(report["report_date"])},
             )
         ).mappings().all()
         for iss in issues:
@@ -2991,6 +3015,26 @@ async def sync_all_daily_report(
                 )
     except Exception as exc:
         logger.warning(f"Failed to auto-sync store issues to daily report {report_id}: {exc}")
+
+    # Recalculate total daily report cost exposure across labour, equipment & materials
+    try:
+        cost_row = (await db.execute(
+            text("""
+            SELECT
+                COALESCE((SELECT SUM(regular_hours * cost_rate + overtime_hours * cost_rate * 1.5) FROM projects.daily_report_labour WHERE report_id = :rid AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false), 0) +
+                COALESCE((SELECT SUM(operating_hours * cost_rate) FROM projects.daily_report_equipment WHERE report_id = :rid AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false), 0) +
+                COALESCE((SELECT SUM(quantity_used * unit_cost) FROM projects.daily_report_materials WHERE report_id = :rid AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false), 0)
+                AS total_cost
+            """),
+            {"rid": report_id, "org_id": user["org_id"]}
+        )).scalar()
+        if cost_row is not None:
+            await db.execute(
+                text("UPDATE projects.daily_site_reports SET cost_exposure = :cost, labour_count_completed = true WHERE id = :rid"),
+                {"cost": cost_row, "rid": report_id}
+            )
+    except Exception as exc:
+        logger.warning(f"Failed to update cost exposure for report {report_id}: {exc}")
 
     await db.commit()
     return result({"id": str(report_id)}, "Daily site report fully synchronized.")

@@ -434,6 +434,55 @@ export async function updateProjectMilestone(projectId: string, milestoneId: str
   });
 }
 
+/** Logs a project risk into the project risk register. */
+export async function addProjectRisk(
+  projectId: string,
+  payload: {
+    title: string;
+    description?: string;
+    category?: string;
+    status?: string;
+    likelihood?: number;
+    impact?: number;
+    response_plan?: string;
+    owner_id?: string;
+    due_date?: string;
+  }
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/risks`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Autogenerates weekly project milestones from the project's BOQ line items. */
+export async function generateProjectMilestonesFromBOQ(
+  projectId: string
+): Promise<ApiResponse<Array<{ id: string; name: string; baseline_date: string; weight: number }>>> {
+  return fetchApi<ApiResponse<Array<{ id: string; name: string; baseline_date: string; weight: number }>>>(
+    `/api/v1/projects/${projectId}/generate-boq-milestones`,
+    {
+      method: 'POST',
+      allowFallback: false,
+    }
+  );
+}
+
+/** Links an existing project to a CRM opportunity deal. */
+export async function linkProjectToOpportunity(
+  projectId: string,
+  opportunityId: string
+): Promise<ApiResponse<{ project_id: string; opportunity_id: string }>> {
+  return fetchApi<ApiResponse<{ project_id: string; opportunity_id: string }>>(
+    `/api/v1/projects/${projectId}/link-opportunity/${opportunityId}`,
+    {
+      method: 'POST',
+      allowFallback: false,
+    }
+  );
+}
+
 /** Lists setup-phase (and ongoing) expenses recorded against a company-initiated project. */
 export async function getProductionExpenses(projectId: string): Promise<ApiResponse<{ items: Record<string, unknown>[]; total: number }>> {
   return fetchApi<ApiResponse<{ items: Record<string, unknown>[]; total: number }>>(`/api/v1/projects/${projectId}/production-expenses`, {
