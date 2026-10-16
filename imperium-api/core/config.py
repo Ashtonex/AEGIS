@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     # that account instead (core/email.py _delivery_addresses).
     WORK_MAILBOXES: str = (
         "nyasha@sixnineconstruction.com,cosmas@sixnineconstruction.com,"
-        "hitler@sixnineconstruction.com,pheobe@sixnineconstruction.com"
+        "hitler@sixnineconstruction.com"
     )
 
     REDIS_HOST: str = "redis"
