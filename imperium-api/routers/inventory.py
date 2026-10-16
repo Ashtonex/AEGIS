@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import require_permission, require_any_permission
 from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event
@@ -561,7 +561,7 @@ async def receive_inventory_invoice(
 @router.post("/issue", status_code=status.HTTP_201_CREATED)
 async def issue_stock(
     payload: StockMovementPayload,
-    user: dict = Depends(require_permission("inventory.issue.create")),
+    user: dict = Depends(require_any_permission("inventory.issue.create", "site_operations.material.record", "inventory.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     await require_ref(
@@ -606,9 +606,19 @@ async def issue_stock(
             )
             target_project_id = fa_proj.scalar()
 
-    await require_ref(
-        db, "projects.projects", target_project_id, user["org_id"], "Project"
-    )
+    # If project not explicitly provided, auto-resolve from the site store's linked project
+    if not target_project_id:
+        st_proj = (await db.execute(
+            text("SELECT project_id FROM procurement.stores WHERE id = :id AND organization_id = :org_id"),
+            {"id": payload.store_id, "org_id": user["org_id"]}
+        )).scalar()
+        if st_proj:
+            target_project_id = st_proj
+
+    if target_project_id:
+        await require_ref(
+            db, "projects.projects", target_project_id, user["org_id"], "Project"
+        )
     outcome = await inventory_service.issue_stock(
         db,
         user,

@@ -364,9 +364,18 @@ async def sync_attendance_to_daily_report(
                 WHERE a.organization_id = CAST(:org_id AS uuid)
                   AND (
                     (CAST(:briefing_id AS uuid) IS NOT NULL AND a.briefing_id = CAST(:briefing_id AS uuid))
-                    OR (CAST(:project_id AS uuid) IS NOT NULL AND a.project_id = CAST(:project_id AS uuid) AND (
-                        DATE(a.clock_in_at) = CAST(:report_date AS date)
-                        OR DATE(a.created_at) = CAST(:report_date AS date)
+                    OR (CAST(:project_id AS uuid) IS NOT NULL AND (
+                        (a.project_id = CAST(:project_id AS uuid) AND (
+                            DATE(a.clock_in_at) = CAST(:report_date AS date)
+                            OR DATE(a.created_at) = CAST(:report_date AS date)
+                        ))
+                        OR a.briefing_id IN (
+                            SELECT b.id FROM projects.site_day_briefings b
+                            WHERE b.organization_id = CAST(:org_id AS uuid)
+                              AND b.project_id = CAST(:project_id AS uuid)
+                              AND b.briefing_date = CAST(:report_date AS date)
+                              AND b.is_deleted = false
+                        )
                     ))
                   )
             """),
@@ -396,6 +405,7 @@ async def sync_attendance_to_daily_report(
                         (attendance_id = :att_id AND :att_id IS NOT NULL)
                         OR (employee_id = :emp_id AND :emp_id IS NOT NULL)
                         OR (site_worker_id = :site_worker_id AND :site_worker_id IS NOT NULL)
+                        OR (worker_name = :worker_name AND worker_name IS NOT NULL)
                       )
                       AND is_deleted = false
                     LIMIT 1
@@ -406,6 +416,7 @@ async def sync_attendance_to_daily_report(
                         "att_id": att["attendance_id"],
                         "emp_id": att["employee_id"],
                         "site_worker_id": att["site_worker_id"],
+                        "worker_name": worker_name,
                     },
                 )
             ).scalar()
@@ -437,33 +448,37 @@ async def sync_attendance_to_daily_report(
                     },
                 )
             else:
-                await db.execute(
-                    text("""
-                    INSERT INTO projects.daily_report_labour (
-                        organization_id, report_id, employee_id, site_worker_id,
-                        attendance_id, worker_name, worker_kind, role_on_site,
-                        regular_hours, overtime_hours, cost_rate, notes
-                    ) VALUES (
-                        CAST(:org_id AS uuid), :report_id, :employee_id, :site_worker_id,
-                        :att_id, :worker_name, :worker_kind, :trade,
-                        :reg_hours, :ot_hours, :cost_rate, :notes
-                    )
-                """),
-                    {
-                        "org_id": org_id,
-                        "report_id": report_id,
-                        "employee_id": att["employee_id"],
-                        "site_worker_id": att["site_worker_id"],
-                        "att_id": att["attendance_id"],
-                        "worker_name": worker_name,
-                        "worker_kind": worker_kind,
-                        "trade": trade,
-                        "reg_hours": reg_hours,
-                        "ot_hours": ot_hours,
-                        "cost_rate": cost_rate,
-                        "notes": att["notes"] or "",
-                    },
-                )
+                try:
+                    async with db.begin_nested():
+                        await db.execute(
+                            text("""
+                            INSERT INTO projects.daily_report_labour (
+                                organization_id, report_id, employee_id, site_worker_id,
+                                attendance_id, worker_name, worker_kind, role_on_site,
+                                regular_hours, overtime_hours, cost_rate, notes
+                            ) VALUES (
+                                CAST(:org_id AS uuid), :report_id, :employee_id, :site_worker_id,
+                                :att_id, :worker_name, :worker_kind, :trade,
+                                :reg_hours, :ot_hours, :cost_rate, :notes
+                            )
+                        """),
+                            {
+                                "org_id": org_id,
+                                "report_id": report_id,
+                                "employee_id": att["employee_id"],
+                                "site_worker_id": att["site_worker_id"],
+                                "att_id": att["attendance_id"],
+                                "worker_name": worker_name,
+                                "worker_kind": worker_kind,
+                                "trade": trade,
+                                "reg_hours": reg_hours,
+                                "ot_hours": ot_hours,
+                                "cost_rate": cost_rate,
+                                "notes": att["notes"] or "",
+                            },
+                        )
+                except Exception as exc_inner:
+                    logger.warning(f"Skipped duplicate or invalid labour line for {worker_name}: {exc_inner}")
     except Exception as exc:
         logger.warning("sync_attendance_to_daily_report_failed", error=str(exc))
 

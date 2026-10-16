@@ -176,3 +176,22 @@ export async function getProjectSupplyChain(
     }
   );
 }
+
+/**
+ * Retrieves the Month-End Leadership Accountability Dossier for a project,
+ * synthesizing KPIs and accountability talking points for Site Engineer, Foreman, and QS.
+ */
+export async function getProjectLeadershipDossier(
+  projectId: string,
+  month?: string
+): Promise<ApiResponse<any>> {
+  const query = month ? `?month=${encodeURIComponent(month)}` : "";
+  return fetchApi<ApiResponse<any>>(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/leadership-dossier${query}`,
+    {
+      cache: "no-store",
+      allowFallback: false,
+    }
+  );
+}
+

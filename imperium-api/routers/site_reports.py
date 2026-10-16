@@ -1657,6 +1657,25 @@ async def create_weekly_budget(
     total_planned = Decimal("0")
     variance_count = 0
     for line in payload.lines:
+        if line.boq_line_item_id is None and (line.work_package or line.description):
+            matched_boq = (await db.execute(
+                text("""
+                SELECT id FROM finance.boq_line_items
+                WHERE project_id = CAST(:proj_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false AND status != 'superseded'
+                  AND (
+                    (NULLIF(:wp, '') IS NOT NULL AND LOWER(work_package) = LOWER(:wp))
+                    OR (NULLIF(:desc, '') IS NOT NULL AND LOWER(description) = LOWER(:desc))
+                  )
+                ORDER BY (contract_qty - qty_measured_to_date) DESC
+                LIMIT 1
+            """),
+                {"proj_id": payload.project_id, "org_id": user["org_id"], "wp": line.work_package or "", "desc": line.description or ""},
+            )).scalar()
+            if matched_boq:
+                line.boq_line_item_id = matched_boq
+
         allowance = await execution_allowance_for_line(
             db, org_id=user["org_id"], line_item_id=line.boq_line_item_id
         )
@@ -2393,7 +2412,14 @@ async def get_daily_report(
                     SELECT sl.id, sl.item_id, sl.store_id, sl.quantity, COALESCE(sl.unit_cost, 0) AS unit_cost, sl.reference
                     FROM procurement.stock_ledger sl
                     WHERE sl.organization_id = CAST(:org_id AS uuid)
-                      AND sl.project_id = CAST(:project_id AS uuid)
+                      AND (
+                        sl.project_id = CAST(:project_id AS uuid)
+                        OR sl.store_id IN (
+                            SELECT s.id FROM procurement.stores s
+                            WHERE s.organization_id = CAST(:org_id AS uuid)
+                              AND s.project_id = CAST(:project_id AS uuid)
+                        )
+                      )
                       AND sl.movement_type IN ('issue', 'consumption', 'out')
                       AND (DATE(sl.movement_at) = CAST(:report_date AS date) OR DATE(sl.created_at) = CAST(:report_date AS date))
                 """),
@@ -2417,29 +2443,32 @@ async def get_daily_report(
                     )
                 ).scalar()
                 if not already_mat:
-                    await db.execute(
-                        text("""
-                        INSERT INTO projects.daily_report_materials (
-                            organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by
-                        ) VALUES (
-                            CAST(:org_id AS uuid), :report_id, :item_id, :store_id, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:user_id AS uuid)
-                        )
-                    """),
-                        {
-                            "org_id": user["org_id"],
-                            "report_id": report_id,
-                            "item_id": iss["item_id"],
-                            "store_id": iss["store_id"],
-                            "qty": iss["quantity"],
-                            "cost": iss["unit_cost"] or 0,
-                            "ref": iss["reference"] or "",
-                            "user_id": user["user_id"],
-                        },
-                    )
+                    try:
+                        async with db.begin_nested():
+                            await db.execute(
+                                text("""
+                                INSERT INTO projects.daily_report_materials (
+                                    organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by
+                                ) VALUES (
+                                    CAST(:org_id AS uuid), :report_id, :item_id, :store_id, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:user_id AS uuid)
+                                )
+                            """),
+                                {
+                                    "org_id": user["org_id"],
+                                    "report_id": report_id,
+                                    "item_id": iss["item_id"],
+                                    "store_id": iss["store_id"],
+                                    "qty": iss["quantity"],
+                                    "cost": iss["unit_cost"] or 0,
+                                    "ref": iss["reference"] or "",
+                                    "user_id": user["user_id"],
+                                },
+                            )
+                    except Exception as inner_exc:
+                        logger.warning(f"Skipped duplicate or invalid material line in get_daily_report: {inner_exc}")
             await db.commit()
         except Exception as exc:
             logger.warning(f"Failed to auto-sync materials in get_daily_report: {exc}")
-            await db.rollback()
 
     tables = {
         "labour": ("projects.daily_report_labour", "created_at"),
@@ -2911,7 +2940,7 @@ async def delete_daily_report_material(
 @router.post("/daily-reports/{report_id}/sync-all")
 async def sync_all_daily_report(
     report_id: UUID,
-    user: dict = Depends(require_permission("site_operations.daily_report.update")),
+    user: dict = Depends(require_any_permission("site_operations.daily_report.update", "site_operations.daily_report.create", "site_operations.labour_register.manage", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
     report = await report_or_404(db, report_id, user["org_id"], user=user)
@@ -2994,7 +3023,14 @@ async def sync_all_daily_report(
                 SELECT sl.item_id, sl.store_id, sl.quantity, COALESCE(sl.unit_cost, 0) AS unit_cost, sl.reference
                 FROM procurement.stock_ledger sl
                 WHERE sl.organization_id = CAST(:org_id AS uuid)
-                  AND sl.project_id = CAST(:project_id AS uuid)
+                  AND (
+                    sl.project_id = CAST(:project_id AS uuid)
+                    OR sl.store_id IN (
+                        SELECT s.id FROM procurement.stores s
+                        WHERE s.organization_id = CAST(:org_id AS uuid)
+                          AND s.project_id = CAST(:project_id AS uuid)
+                    )
+                  )
                   AND sl.movement_type IN ('issue', 'consumption', 'out')
                   AND (DATE(sl.movement_at) = CAST(:dt AS date) OR DATE(sl.created_at) = CAST(:dt AS date))
             """),
@@ -3009,10 +3045,14 @@ async def sync_all_daily_report(
                 )
             ).scalar()
             if not already:
-                await db.execute(
-                    text("INSERT INTO projects.daily_report_materials (organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :iid, :sid, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:uid AS uuid))"),
-                    {"org_id": user["org_id"], "rid": report_id, "iid": iss["item_id"], "sid": iss["store_id"], "qty": iss["quantity"], "cost": iss["unit_cost"] or 0, "ref": iss["reference"] or "", "uid": user["user_id"]},
-                )
+                try:
+                    async with db.begin_nested():
+                        await db.execute(
+                            text("INSERT INTO projects.daily_report_materials (organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :iid, :sid, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:uid AS uuid))"),
+                            {"org_id": user["org_id"], "rid": report_id, "iid": iss["item_id"], "sid": iss["store_id"], "qty": iss["quantity"], "cost": iss["unit_cost"] or 0, "ref": iss["reference"] or "", "uid": user["user_id"]},
+                        )
+                except Exception as inner_mat_exc:
+                    logger.warning(f"Skipped duplicate or invalid material line in sync_all: {inner_mat_exc}")
     except Exception as exc:
         logger.warning(f"Failed to auto-sync store issues to daily report {report_id}: {exc}")
 

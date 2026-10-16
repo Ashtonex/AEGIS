@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import Link from "next/link";
 import { usePathname, useParams } from "next/navigation";
 import {
@@ -24,11 +24,14 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   ExternalLink,
+  Award,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { ProjectWorkspaceProvider, useProject } from "@/context/ProjectWorkspaceContext";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { title, text, number, type Project } from "@/lib/projects/types";
+import { LeadershipAccountabilityModal } from "@/components/projects/LeadershipAccountabilityModal";
+import { ManpowerScenarioCalculator } from "@/components/projects/ManpowerScenarioCalculator";
 
 export default function ProjectWorkspaceLayout({
   children,
@@ -49,6 +52,8 @@ export default function ProjectWorkspaceLayout({
 
 function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
   const { project, detail, loading, error, refetch, refreshing } = useProject();
+  const [showLeadershipDossier, setShowLeadershipDossier] = useState(false);
+  const [showManpowerSimulator, setShowManpowerSimulator] = useState(false);
   const pathname = usePathname();
   const params = useParams();
   const projectId = typeof params?.id === "string" ? params.id : "";
@@ -115,6 +120,22 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowLeadershipDossier(true)}
+              className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-xs font-mono uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200 transition-colors"
+              title="Month-End Leadership Accountability Dossier"
+            >
+              <Award className="h-3 w-3" />
+              <span className="hidden sm:inline">Month-End Review</span>
+            </button>
+            <button
+              onClick={() => setShowManpowerSimulator(true)}
+              className="inline-flex items-center gap-1.5 border border-sky-500/50 bg-sky-500/10 px-2.5 py-1 text-xs font-mono uppercase tracking-wider text-sky-300 hover:bg-sky-500/20 hover:text-sky-200 transition-colors"
+              title="Manpower & Hours Sensitivity Simulator"
+            >
+              <Sliders className="h-3 w-3" />
+              <span className="hidden sm:inline">Manpower Sim</span>
+            </button>
             <button
               onClick={() => void refetch()}
               disabled={refreshing}
@@ -255,6 +276,27 @@ function ProjectWorkspaceInner({ children }: { children: React.ReactNode }) {
       <main className="w-full px-4 py-6 sm:px-8">
         {children}
       </main>
+
+      {/* Leadership Accountability Dossier Modal */}
+      {showLeadershipDossier && (
+        <LeadershipAccountabilityModal
+          projectId={projectId}
+          projectName={currentProject ? title(currentProject) : "Site Project"}
+          onClose={() => setShowLeadershipDossier(false)}
+        />
+      )}
+
+      {/* Manpower & Working Hours Scenario Simulator Modal */}
+      {showManpowerSimulator && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-4xl max-h-[92vh] overflow-y-auto">
+            <ManpowerScenarioCalculator
+              projectName={currentProject ? title(currentProject) : "Site Project"}
+              onClose={() => setShowManpowerSimulator(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

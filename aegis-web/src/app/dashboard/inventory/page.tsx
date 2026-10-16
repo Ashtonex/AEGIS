@@ -441,7 +441,7 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
   const tabActions: Record<ActiveTab, ReactNode> = {
     stock: (
       <>
-        <button onClick={() => setShowIssue(true)} className={`${btn} border-signal bg-signal font-bold text-ink`}><PackageMinus className="h-4 w-4" /> Issue</button>
+        <button onClick={() => setShowIssue(true)} className={`${btn} border-signal bg-signal font-bold text-ink`}><PackageMinus className="h-4 w-4" /> Issue / Site Usage</button>
         <button onClick={() => setShowReceive(true)} className={`${btn} border-emerald-500/40 bg-emerald-950/20 text-emerald-300 hover:border-emerald-400`}><PackagePlus className="h-4 w-4" /> Receive</button>
         <button onClick={() => setShowTransfer(true)} className={secondaryBtn}><ArrowLeftRight className="h-4 w-4" /> Transfer</button>
         <button onClick={() => setShowAdjust(true)} className={secondaryBtn}><ClipboardEdit className="h-4 w-4" /> Adjust</button>
@@ -852,8 +852,20 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
 }) {
   const [form, setForm] = useState({ item_id: "", store_id: "", quantity: "", project_id: "", work_package: "", notes: "" });
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const handleStoreChange = (storeId: string) => {
+    const selectedStore = stores.find((s) => String(s.id) === storeId);
+    setForm((f) => ({
+      ...f,
+      store_id: storeId,
+      project_id: selectedStore?.project_id ? String(selectedStore.project_id) : f.project_id,
+    }));
+  };
+
+  const linkedProject = projects.find((p) => String(p.id) === String(form.project_id));
+
   return (
-    <ModalShell title="Issue Stock" onClose={onClose}>
+    <ModalShell title="Issue Stock / Record Site Material Usage" onClose={onClose}>
       <div className="grid gap-3">
         <FieldGroup label="Item">
           <select value={form.item_id} onChange={(e) => set("item_id", e.target.value)} className="field">
@@ -862,9 +874,13 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
           </select>
         </FieldGroup>
         <FieldGroup label="Store">
-          <select value={form.store_id} onChange={(e) => set("store_id", e.target.value)} className="field">
+          <select value={form.store_id} onChange={(e) => handleStoreChange(e.target.value)} className="field">
             <option value="">Select store</option>
-            {stores.map((s) => <option key={s.id} value={s.id}>{tx(s.name ?? s.store_name)} ({tx(s.store_code)})</option>)}
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>
+                {tx(s.name ?? s.store_name)} ({tx(s.store_code)}) {s.project_id ? " [Site Store]" : ""}
+              </option>
+            ))}
           </select>
         </FieldGroup>
         <FieldGroup label="Quantity">
@@ -876,6 +892,11 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
             {projects.map((p) => <option key={p.id} value={p.id}>{tx(p.name ?? p.project_name ?? p.project_code, p.id)}</option>)}
           </select>
         </FieldGroup>
+        {linkedProject && (
+          <div className="rounded border border-emerald-500/40 bg-emerald-950/30 px-3 py-2 font-mono text-xs text-emerald-300">
+            Linked to <strong className="text-paper">{tx(linkedProject.name ?? linkedProject.project_name ?? linkedProject.project_code)}</strong> &mdash; This issue will automatically link to the site store and sync into today&apos;s Daily Site Report.
+          </div>
+        )}
         <FieldGroup label="Work Package">
           <input value={form.work_package} onChange={(e) => set("work_package", e.target.value)} placeholder="e.g. WP-05 Structural Concrete" className="field" />
         </FieldGroup>
@@ -891,7 +912,7 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
           className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
         >
           {saving && <Loader2 className="h-4 w-4 animate-spin" />}
-          <PackageMinus className="h-4 w-4" /> Issue Stock
+          <PackageMinus className="h-4 w-4" /> Record Issue
         </button>
       </div>
     </ModalShell>

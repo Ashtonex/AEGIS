@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { AlertTriangle, Check, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, DatabaseZap, Loader2, MapPin, RefreshCw, X, Award, Sliders } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { TodayPanel } from "./TodayPanel";
+import { LeadershipAccountabilityModal } from "@/components/projects/LeadershipAccountabilityModal";
+import { ManpowerScenarioCalculator } from "@/components/projects/ManpowerScenarioCalculator";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -413,7 +415,83 @@ function Modal({ title, onClose, children, wide = false }: { title: string; onCl
 function MetricDetailGrid({ rows }: { rows: Array<{ label: string; value: string; source: string }> }) { if (!rows.length) return <p className="mt-5 text-sm text-slate-light">No drill-down fields are configured for this metric.</p>; return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{rows.map((row) => <div key={`${row.label}-${row.source}`} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{row.label}</p><p className="font-mono text-sm text-paper mt-1">{row.value}</p><p className="mt-2 font-mono text-[10px] uppercase text-slate">Source: {row.source}</p></div>)}</div>; }
 function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{Object.entries(data).map(([key, value]) => <div key={key} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{titleCase(key)}</p><p className="font-mono text-sm text-paper mt-1">{displayValue(value)}</p></div>)}</div>; }
 function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (project: ApiData) => void }) { if (!projects.length) return <p className="text-slate-light mt-6">No active project records were found.</p>; return <div className="mt-5 space-y-2">{projects.map((project) => <button key={String(project.id)} onClick={() => void onSelect(project)} className="w-full flex justify-between gap-3 text-left border border-ink-mid p-3 hover:border-signal"><span className="text-paper">{displayValue(project.name)}</span><span className="font-mono text-xs text-slate-light">{displayValue(project.status)}</span></button>)}</div>; }
-function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; accessToken?: string }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); const projectId = project.id ? String(project.id) : null; return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{projectId && <section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Schedule Risk (Monte Carlo)</h3><ScheduleRiskPanel projectId={projectId} accessToken={accessToken} /></section>}{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
+function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; accessToken?: string }) {
+  const [showDossier, setShowDossier] = useState(false);
+  const [showManpowerSim, setShowManpowerSim] = useState(false);
+
+  if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>;
+  const project = (detail.project || {}) as ApiData;
+  const related = Object.entries(detail).filter(([key]) => key !== "project");
+  const projectId = project.id ? String(project.id) : null;
+
+  return (
+    <div className="space-y-5">
+      {projectId && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-mid/80 bg-ink-light/20 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setShowDossier(true)}
+              className="inline-flex items-center gap-1.5 rounded border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+            >
+              <Award className="h-4 w-4" /> Month-End Leadership Dossier
+            </button>
+            <button
+              onClick={() => setShowManpowerSim(true)}
+              className="inline-flex items-center gap-1.5 rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-sky-300 hover:bg-sky-500/20 transition-colors"
+            >
+              <Sliders className="h-4 w-4" /> Manpower & Hours Simulator
+            </button>
+          </div>
+          <Link
+            href={`/dashboard/projects/${projectId}`}
+            className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-signal hover:underline"
+          >
+            Open Mission Control →
+          </Link>
+        </div>
+      )}
+      <section>
+        <h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3>
+        <MetricFields data={project} />
+      </section>
+      {projectId && (
+        <section>
+          <h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Schedule Risk (Monte Carlo)</h3>
+          <ScheduleRiskPanel projectId={projectId} accessToken={accessToken} />
+        </section>
+      )}
+      {related.map(([key, value]) => (
+        <section key={key}>
+          <h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>
+          {Array.isArray(value) && value.length ? (
+            <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div>
+          ) : (
+            <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>
+          )}
+        </section>
+      ))}
+
+      {showDossier && projectId && (
+        <LeadershipAccountabilityModal
+          projectId={projectId}
+          projectName={String(project.name || "Project")}
+          onClose={() => setShowDossier(false)}
+        />
+      )}
+
+      {showManpowerSim && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-4xl max-h-[92vh] overflow-y-auto">
+            <ManpowerScenarioCalculator
+              projectName={String(project.name || "Project")}
+              onClose={() => setShowManpowerSim(false)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter(isExecutiveAttentionIssue); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; const iconClass = issues.length ? "text-amber-400" : "text-green-500"; return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className={`w-4 h-4 ${iconClass}`}/>{summary}</div>; }
 function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
 function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) {

@@ -1,7 +1,7 @@
 """Tenant-safe project lifecycle, programme, commercial and risk controls."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import gather_reads, get_db
 from core.logging import logger
-from core.security import get_current_user, require_permission, user_has_permission
+from core.security import get_current_user, require_permission, require_any_permission, user_has_permission
 from core.project_scope import enforce_project_path_scope, project_scope_sql, visible_project_ids
 from app.shared.events import emit_event, emit_notification
 from app.shared.sql import safe_payload_columns, tenant_upsert_sql, update_tenant_row_sql
@@ -3794,3 +3794,411 @@ async def get_project_supply_chain(
         },
     }
     return _result(data, "Project supply chain loaded successfully.")
+
+
+@router.get("/{project_id}/leadership-dossier")
+async def get_project_leadership_dossier(
+    project_id: UUID,
+    month: Optional[str] = Query(None, description="Month in YYYY-MM format, e.g. 2026-10"),
+    user: dict = Depends(require_any_permission(
+        "projects.project.read",
+        "executive.read",
+        "site_operations.read",
+        "finance.report.read",
+    )),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Month-End Leadership Accountability Dossier for Site Project Delivery.
+    Synthesizes delivery KPIs, compliance, and cost exposure across the three site pillars:
+    1. Site Engineer (daily site diaries, delays & issues, QA milestones)
+    2. Site Foreman (toolbox briefings, daily crew headcount, overtime burn, safety)
+    3. Quantity Surveyor (QS) (actual site costs vs weekly budgets, client variations, headroom)
+    Empowers executive leadership to sit down with site leadership with hard facts.
+    """
+    today = date.today()
+    if month:
+        try:
+            parts = month.split("-")
+            yr, mo = int(parts[0]), int(parts[1])
+            start_dt = date(yr, mo, 1)
+            next_month_start = date(yr + 1, 1, 1) if mo == 12 else date(yr, mo + 1, 1)
+            month_label = f"{yr:04d}-{mo:02d}"
+        except Exception:
+            start_dt = date(today.year, today.month, 1)
+            next_month_start = date(today.year + 1, 1, 1) if today.month == 12 else date(today.year, today.month + 1, 1)
+            month_label = f"{today.year:04d}-{today.month:02d}"
+    else:
+        start_dt = date(today.year, today.month, 1)
+        next_month_start = date(today.year + 1, 1, 1) if today.month == 12 else date(today.year, today.month + 1, 1)
+        month_label = f"{today.year:04d}-{today.month:02d}"
+
+    end_date_inclusive = next_month_start - timedelta(days=1)
+
+    cur = start_dt
+    working_days = 0
+    days_elapsed = 0
+    now_dt = min(today, end_date_inclusive)
+    while cur < next_month_start:
+        if cur.weekday() < 5:
+            working_days += 1
+            if cur <= now_dt:
+                days_elapsed += 1
+        cur += timedelta(days=1)
+    if working_days == 0:
+        working_days = 22
+    if days_elapsed == 0:
+        days_elapsed = 1
+
+    org_id = user["org_id"]
+    proj_res = await db.execute(
+        text("""
+            SELECT p.id, p.name, p.project_code, p.status, p.contract_value, p.start_date,
+                   p.planned_completion_date, p.health_status, c.name AS client_name
+            FROM projects.projects p
+            LEFT JOIN crm.clients c ON c.id = p.client_id
+            WHERE p.id = CAST(:project_id AS uuid) AND p.organization_id = CAST(:org_id AS uuid)
+        """),
+        {"project_id": project_id, "org_id": org_id},
+    )
+    project = proj_res.mappings().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    team_res = await db.execute(
+        text("""
+            SELECT pa.employee_id, pa.role_on_project,
+                   e.first_name || ' ' || e.last_name AS full_name, e.job_title, e.work_email, e.phone_number
+            FROM hr.project_allocations pa
+            JOIN hr.employees e ON e.id = pa.employee_id
+            WHERE pa.project_id = CAST(:project_id AS uuid) AND pa.organization_id = CAST(:org_id AS uuid) AND pa.is_deleted = false
+            UNION ALL
+            SELECT e.id AS employee_id, sra.role_name AS role_on_project,
+                   e.first_name || ' ' || e.last_name AS full_name, e.job_title, e.work_email, e.phone_number
+            FROM projects.site_role_assignments sra
+            JOIN hr.employees e ON e.linked_user_id = sra.user_id
+            WHERE sra.project_id = CAST(:project_id AS uuid) AND sra.organization_id = CAST(:org_id AS uuid) AND sra.is_deleted = false
+        """),
+        {"project_id": project_id, "org_id": org_id},
+    )
+    team_members = [dict(r) for r in team_res.mappings().all()]
+
+    engineer_member = next((m for m in team_members if any(k in (m.get("role_on_project") or "").lower() or k in (m.get("job_title") or "").lower() for k in ["engineer", "agent", "site manager"])), None)
+    foreman_member = next((m for m in team_members if any(k in (m.get("role_on_project") or "").lower() or k in (m.get("job_title") or "").lower() for k in ["foreman", "supervisor"])), None)
+    qs_member = next((m for m in team_members if any(k in (m.get("role_on_project") or "").lower() or k in (m.get("job_title") or "").lower() for k in ["quantity", "qs", "commercial"])), None)
+
+    # 1. Site Engineer Metrics
+    reports_res = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS total_reports,
+                COUNT(CASE WHEN issues_notes IS NOT NULL AND length(trim(issues_notes)) > 0 THEN 1 END) AS reports_with_issues,
+                COUNT(CASE WHEN delays_notes IS NOT NULL AND length(trim(delays_notes)) > 0 THEN 1 END) AS reports_with_delays
+            FROM projects.daily_site_reports
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND report_date >= CAST(:start_dt AS date)
+              AND report_date < CAST(:next_month_start AS date)
+              AND is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    report_stats = reports_res.mappings().first() or {}
+    total_reports = int(report_stats.get("total_reports") or 0)
+    reports_with_issues = int(report_stats.get("reports_with_issues") or 0)
+    reports_with_delays = int(report_stats.get("reports_with_delays") or 0)
+    reporting_compliance_pct = round(min(100.0, (total_reports / max(days_elapsed, 1)) * 100.0), 1)
+
+    recent_delays_res = await db.execute(
+        text("""
+            SELECT report_date, work_summary, issues_notes, delays_notes
+            FROM projects.daily_site_reports
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND report_date >= CAST(:start_dt AS date)
+              AND report_date < CAST(:next_month_start AS date)
+              AND (
+                (delays_notes IS NOT NULL AND length(trim(delays_notes)) > 0)
+                OR (issues_notes IS NOT NULL AND length(trim(issues_notes)) > 0)
+              )
+              AND is_deleted = false
+            ORDER BY report_date DESC
+            LIMIT 5
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    recent_delays = [dict(r) for r in recent_delays_res.mappings().all()]
+
+    milestones_res = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS total_milestones,
+                COUNT(CASE WHEN status = 'complete' THEN 1 END) AS completed_milestones,
+                COUNT(CASE WHEN status = 'in_progress' THEN 1 END) AS in_progress_milestones,
+                COUNT(CASE WHEN status = 'blocked' THEN 1 END) AS blocked_milestones
+            FROM projects.project_milestones
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    milestone_stats = milestones_res.mappings().first() or {}
+    m_total = int(milestone_stats.get("total_milestones") or 0)
+    m_completed = int(milestone_stats.get("completed_milestones") or 0)
+    milestone_pct = round((m_completed / max(m_total, 1)) * 100.0, 1) if m_total > 0 else 0.0
+
+    engineer_verdict = (
+        "EXEMPLARY - High reporting discipline & schedule tracking"
+        if reporting_compliance_pct >= 90 and reports_with_delays == 0
+        else "STABLE - Routine reporting maintained"
+        if reporting_compliance_pct >= 70
+        else "CRITICAL SCRUTINY - Site diaries lapsed, commercial exposure risk"
+    )
+    engineer_talking_points = [
+        f"{total_reports} daily reports filed out of {days_elapsed} active elapsed days ({reporting_compliance_pct}% compliance).",
+        f"{reports_with_delays} site delay events logged; {reports_with_issues} obstacle/blocker notes recorded.",
+        f"Milestone progress: {m_completed}/{m_total} milestones completed ({milestone_pct}% overall).",
+        "Mandate: Ensure contemporary site diaries are completed every day without exception to substantiate all client claims."
+    ]
+
+    # 2. Site Foreman Metrics
+    briefings_res = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS briefings_count,
+                COALESCE(SUM(attendees_count), 0) AS total_attendees,
+                COALESCE(AVG(attendees_count), 0) AS avg_attendees
+            FROM projects.site_day_briefings
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND briefing_date >= CAST(:start_dt AS date)
+              AND briefing_date < CAST(:next_month_start AS date)
+              AND is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    briefing_stats = briefings_res.mappings().first() or {}
+    briefings_conducted = int(briefing_stats.get("briefings_count") or 0)
+    briefing_compliance_pct = round(min(100.0, (briefings_conducted / max(days_elapsed, 1)) * 100.0), 1)
+
+    labour_res = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(drl.regular_hours), 0) AS total_regular_hours,
+                COALESCE(SUM(drl.overtime_hours), 0) AS total_overtime_hours,
+                COALESCE(SUM(drl.regular_hours * drl.cost_rate + drl.overtime_hours * drl.cost_rate * 1.5), 0) AS total_labour_cost,
+                COUNT(DISTINCT dr.report_date) AS active_site_days,
+                COUNT(drl.id) AS total_man_shifts
+            FROM projects.daily_report_labour drl
+            JOIN projects.daily_site_reports dr ON dr.id = drl.report_id
+            WHERE dr.organization_id = CAST(:org_id AS uuid)
+              AND dr.project_id = CAST(:project_id AS uuid)
+              AND dr.report_date >= CAST(:start_dt AS date)
+              AND dr.report_date < CAST(:next_month_start AS date)
+              AND drl.is_deleted = false
+              AND dr.is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    labour_stats = labour_res.mappings().first() or {}
+    total_reg_hrs = float(labour_stats.get("total_regular_hours") or 0)
+    total_ot_hrs = float(labour_stats.get("total_overtime_hours") or 0)
+    total_labour_cost = float(labour_stats.get("total_labour_cost") or 0)
+    active_site_days = int(labour_stats.get("active_site_days") or 0)
+    total_man_shifts = int(labour_stats.get("total_man_shifts") or 0)
+    avg_daily_headcount = round(total_man_shifts / max(active_site_days, 1), 1) if active_site_days > 0 else 0.0
+    total_work_hrs = total_reg_hrs + total_ot_hrs
+    overtime_ratio_pct = round((total_ot_hrs / max(total_work_hrs, 1.0)) * 100.0, 1)
+
+    foreman_verdict = (
+        "ELEVATED OVERTIME BURN - Scrutinize overtime productivity"
+        if overtime_ratio_pct > 20.0
+        else "DISCIPLINED EXECUTION - Active morning alignment & steady crew size"
+        if briefing_compliance_pct >= 80
+        else "CREW COORDINATION GAP - Improve daily briefing and attendance logging"
+    )
+    foreman_talking_points = [
+        f"{briefings_conducted} morning briefings recorded ({briefing_compliance_pct}% coverage). Average workforce: {avg_daily_headcount} operatives/day.",
+        f"Hours logged: {total_reg_hrs:,.1f} regular vs {total_ot_hrs:,.1f} overtime ({overtime_ratio_pct}% OT ratio).",
+        f"Direct site labour payroll incurred: ${total_labour_cost:,.2f} across {total_man_shifts} individual worker shifts.",
+        "Mandate: Reconcile daily attendance registers before 08:30 AM; eliminate unauthorized overtime premiums."
+    ]
+
+    # 3. Quantity Surveyor (QS) Metrics
+    plant_res = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(dre.operating_hours), 0) AS total_plant_operating_hours,
+                COALESCE(SUM(dre.idle_hours), 0) AS total_plant_idle_hours,
+                COALESCE(SUM(dre.operating_hours * dre.cost_rate), 0) AS total_plant_cost,
+                COALESCE(SUM(dre.fuel_litres), 0) AS total_fuel_litres
+            FROM projects.daily_report_equipment dre
+            JOIN projects.daily_site_reports dr ON dr.id = dre.report_id
+            WHERE dr.organization_id = CAST(:org_id AS uuid)
+              AND dr.project_id = CAST(:project_id AS uuid)
+              AND dr.report_date >= CAST(:start_dt AS date)
+              AND dr.report_date < CAST(:next_month_start AS date)
+              AND dre.is_deleted = false
+              AND dr.is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    plant_stats = plant_res.mappings().first() or {}
+    total_plant_cost = float(plant_stats.get("total_plant_cost") or 0)
+
+    mat_res = await db.execute(
+        text("""
+            SELECT
+                COALESCE(SUM(drm.quantity_used * drm.unit_cost), 0) AS total_material_cost,
+                COUNT(drm.id) AS material_issue_count
+            FROM projects.daily_report_materials drm
+            JOIN projects.daily_site_reports dr ON dr.id = drm.report_id
+            WHERE dr.organization_id = CAST(:org_id AS uuid)
+              AND dr.project_id = CAST(:project_id AS uuid)
+              AND dr.report_date >= CAST(:start_dt AS date)
+              AND dr.report_date < CAST(:next_month_start AS date)
+              AND drm.is_deleted = false
+              AND dr.is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    mat_stats = mat_res.mappings().first() or {}
+    total_mat_cost = float(mat_stats.get("total_material_cost") or 0)
+    total_direct_site_cost = round(total_labour_cost + total_plant_cost + total_mat_cost, 2)
+
+    var_res = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS total_variations,
+                COALESCE(SUM(amount), 0) AS total_variation_amount,
+                COALESCE(SUM(CASE WHEN client_approval_status = 'approved' THEN amount ELSE 0 END), 0) AS approved_variation_amount,
+                COALESCE(SUM(CASE WHEN client_approval_status != 'approved' THEN amount ELSE 0 END), 0) AS pending_variation_amount,
+                COUNT(CASE WHEN client_approval_status = 'approved' THEN 1 END) AS approved_count,
+                COUNT(CASE WHEN qs_review_status = 'pending' THEN 1 END) AS pending_qs_count
+            FROM finance.variations
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    var_stats = var_res.mappings().first() or {}
+    total_var_count = int(var_stats.get("total_variations") or 0)
+    total_var_amt = float(var_stats.get("total_variation_amount") or 0)
+    app_var_amt = float(var_stats.get("approved_variation_amount") or 0)
+    pend_var_amt = float(var_stats.get("pending_variation_amount") or 0)
+    pending_qs_count = int(var_stats.get("pending_qs_count") or 0)
+
+    wbud_res = await db.execute(
+        text("""
+            SELECT
+                COUNT(*) AS weekly_budgets_count,
+                COALESCE(SUM(total_budget), 0) AS total_budget_amount
+            FROM projects.weekly_budgets
+            WHERE organization_id = CAST(:org_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND start_date >= CAST(:start_dt AS date)
+              AND start_date < CAST(:next_month_start AS date)
+              AND is_deleted = false
+        """),
+        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+    )
+    wbud_stats = wbud_res.mappings().first() or {}
+    weekly_budgets_count = int(wbud_stats.get("weekly_budgets_count") or 0)
+    planned_weekly_budget = float(wbud_stats.get("total_budget_amount") or 0)
+    variance_to_weekly_budget = round(total_direct_site_cost - planned_weekly_budget, 2)
+
+    qs_verdict = (
+        "COMMERCIAL EXPOSURE - Unapproved client variations pending sign-off"
+        if pend_var_amt > 10000.0 or pending_qs_count > 0
+        else "BUDGET OVERRUN RISK - Direct site spend exceeds weekly planned baseline"
+        if variance_to_weekly_budget > 5000.0
+        else "COMMERCIALLY SOUND - Controlled site expenditures and variance headroom"
+    )
+    qs_talking_points = [
+        f"Month direct site spend: ${total_direct_site_cost:,.2f} (Labour: ${total_labour_cost:,.2f}, Plant: ${total_plant_cost:,.2f}, Materials: ${total_mat_cost:,.2f}).",
+        f"Planned weekly budgets: ${planned_weekly_budget:,.2f} across {weekly_budgets_count} weekly submissions. Variance: ${variance_to_weekly_budget:+,.2f}.",
+        f"Contract variations: {total_var_count} total claims (${total_var_amt:,.2f}). Approved: ${app_var_amt:,.2f}. Pending Client Sign-off: ${pend_var_amt:,.2f}.",
+        "Mandate: Submit formal pricing and notices for all site instructions to convert potential cost leaks into billable revenue."
+    ]
+
+    # Executive discipline score (0 - 100)
+    discipline_score = int(round(
+        (min(reporting_compliance_pct, 100.0) * 0.35) +
+        (min(briefing_compliance_pct, 100.0) * 0.35) +
+        (max(0.0, 100.0 - (overtime_ratio_pct * 2.0)) * 0.15) +
+        (100.0 if pend_var_amt == 0 else max(30.0, 100.0 - (pend_var_amt / 1000.0)) * 0.15)
+    ))
+
+    data = {
+        "project": {
+            "id": str(project["id"]),
+            "name": project["name"],
+            "project_code": project["project_code"],
+            "client_name": project["client_name"] or "Direct Client",
+            "contract_value": float(project["contract_value"] or 0),
+            "status": project["status"],
+            "health_status": project["health_status"] or "on_track",
+        },
+        "period": {
+            "month": month_label,
+            "start_date": str(start_dt),
+            "end_date": str(end_date_inclusive),
+            "working_days": working_days,
+            "days_elapsed": days_elapsed,
+        },
+        "discipline_score": discipline_score,
+        "engineer": {
+            "name": engineer_member["full_name"] if engineer_member else "Site Engineer / Lead Agent",
+            "role": engineer_member["role_on_project"] if engineer_member else "Site Engineer",
+            "reports_filed": total_reports,
+            "reporting_compliance_pct": reporting_compliance_pct,
+            "reports_with_issues": reports_with_issues,
+            "reports_with_delays": reports_with_delays,
+            "milestones_total": m_total,
+            "milestones_completed": m_completed,
+            "milestones_completion_pct": milestone_pct,
+            "recent_delays": recent_delays,
+            "verdict": engineer_verdict,
+            "talking_points": engineer_talking_points,
+        },
+        "foreman": {
+            "name": foreman_member["full_name"] if foreman_member else "General Site Foreman",
+            "role": foreman_member["role_on_project"] if foreman_member else "General Foreman",
+            "briefings_conducted": briefings_conducted,
+            "briefing_compliance_pct": briefing_compliance_pct,
+            "avg_daily_headcount": avg_daily_headcount,
+            "active_site_days": active_site_days,
+            "total_man_shifts": total_man_shifts,
+            "total_regular_hours": total_reg_hrs,
+            "total_overtime_hours": total_ot_hrs,
+            "overtime_ratio_pct": overtime_ratio_pct,
+            "verdict": foreman_verdict,
+            "talking_points": foreman_talking_points,
+        },
+        "qs": {
+            "name": qs_member["full_name"] if qs_member else "Lead Quantity Surveyor",
+            "role": qs_member["role_on_project"] if qs_member else "Quantity Surveyor",
+            "total_labour_cost": total_labour_cost,
+            "total_plant_cost": total_plant_cost,
+            "total_material_cost": total_mat_cost,
+            "total_direct_site_cost": total_direct_site_cost,
+            "weekly_budgets_count": weekly_budgets_count,
+            "planned_weekly_budget": planned_weekly_budget,
+            "variance_to_weekly_budget": variance_to_weekly_budget,
+            "total_variations_count": total_var_count,
+            "total_variation_amount": total_var_amt,
+            "approved_variation_amount": app_var_amt,
+            "pending_variation_amount": pend_var_amt,
+            "pending_qs_reviews": pending_qs_count,
+            "verdict": qs_verdict,
+            "talking_points": qs_talking_points,
+        },
+        "action_agenda": [
+            f"Review {total_reports} daily site diaries with Site Engineer; ensure unrecorded delays are substantiated.",
+            f"Audit Foreman workforce records: {overtime_ratio_pct}% overtime burn rate across ${total_labour_cost:,.2f} payroll.",
+            f"Review Quantity Surveyor claims: ${pend_var_amt:,.2f} pending client sign-off before month-end billing closure.",
+        ],
+    }
+    return _result(data, "Month-end leadership accountability dossier loaded successfully.")
