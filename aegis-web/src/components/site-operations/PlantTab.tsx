@@ -17,6 +17,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useOutbox } from "@/lib/offline";
 import {
   approveSitePlantRequest,
   createSitePlantRequest,
@@ -80,6 +81,7 @@ export function PlantTab({
   onPlantChanged?: () => void;
 }) {
   const { user, role, roles, isSuperAdmin } = useAuth();
+  const { enqueue: enqueueOutbox } = useOutbox(user?.id);
   const [requests, setRequests] = useState<PlantRequestRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -167,23 +169,50 @@ export function PlantTab({
       return;
     }
 
+    const payload = {
+      project_id: projectId,
+      required_asset_type: assetType,
+      fleet_id: form.fleet_id || null,
+      specification: form.specification || null,
+      quantity: Math.max(1, parseInt(form.quantity, 10) || 1),
+      work_location: form.work_location || projectName || "Site",
+      start_date: form.start_date || workDate,
+      end_date: form.end_date || null,
+      operating_hours_mode: form.operating_hours_mode,
+      operator_required: form.operator_required,
+      fuel_responsibility: form.fuel_responsibility,
+      priority: form.priority,
+      work_description: form.work_description.trim(),
+    };
+
     setSubmitting(true);
     try {
-      await createSitePlantRequest({
-        project_id: projectId,
-        required_asset_type: assetType,
-        fleet_id: form.fleet_id || null,
-        specification: form.specification || null,
-        quantity: Math.max(1, parseInt(form.quantity, 10) || 1),
-        work_location: form.work_location || projectName || "Site",
-        start_date: form.start_date || workDate,
-        end_date: form.end_date || null,
-        operating_hours_mode: form.operating_hours_mode,
-        operator_required: form.operator_required,
-        fuel_responsibility: form.fuel_responsibility,
-        priority: form.priority,
-        work_description: form.work_description.trim(),
-      });
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await enqueueOutbox({
+          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+          organizationId: "snc",
+          userId: user?.id || "site-engineer",
+          projectId,
+          entityType: "site_plant_request",
+          action: "create",
+          endpoint: "/api/v1/site-operations/plant-requests",
+          payload,
+        });
+        setNotice({
+          tone: "info",
+          text: `Offline: Plant request for ${assetType} saved to local outbox. It will synchronize once connected.`,
+        });
+        setForm((prev) => ({
+          ...prev,
+          custom_asset_type: "",
+          specification: "",
+          quantity: "1",
+          work_description: "",
+        }));
+        return;
+      }
+
+      await createSitePlantRequest(payload);
       setNotice({
         tone: "success",
         text: `Plant request for ${assetType} submitted. It will be reviewed by the Equipment Manager / Executive.`,
@@ -198,6 +227,30 @@ export function PlantTab({
       await loadRequests();
       if (onPlantChanged) onPlantChanged();
     } catch (err) {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await enqueueOutbox({
+          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+          organizationId: "snc",
+          userId: user?.id || "site-engineer",
+          projectId,
+          entityType: "site_plant_request",
+          action: "create",
+          endpoint: "/api/v1/site-operations/plant-requests",
+          payload,
+        });
+        setNotice({
+          tone: "info",
+          text: `Connection lost: Plant request saved to outbox. Will sync when reconnected.`,
+        });
+        setForm((prev) => ({
+          ...prev,
+          custom_asset_type: "",
+          specification: "",
+          quantity: "1",
+          work_description: "",
+        }));
+        return;
+      }
       setNotice({ tone: "error", text: errorText(err, "Failed to submit plant request.") });
     } finally {
       setSubmitting(false);

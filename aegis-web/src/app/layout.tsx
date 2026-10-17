@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { constructMetadata } from "@/lib/metadata";
 import { NavigationWrapper } from "@/components/layout/NavigationWrapper";
 import { PwaRegistration } from "@/components/PwaRegistration";
@@ -9,6 +9,14 @@ import { cn } from "@/lib/utils";
 import { AuthProvider } from "@/lib/auth/AuthContext";
 import { AppThemeProvider } from "@/components/theme/AppThemeProvider";
 import { ToastProvider } from "@/components/ui/ToastProvider";
+
+export const viewport: Viewport = {
+  themeColor: "#040810",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: "cover",
+};
 
 export const metadata: Metadata = constructMetadata();
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import {
   AlertTriangle,
   BadgeCheck,
+  Camera,
   CheckCircle2,
   Clock,
   DollarSign,
@@ -50,6 +51,7 @@ import {
   usd,
   type ApiRecord,
 } from "./ui";
+import { SiteEvidenceCapture } from "./SiteEvidenceCapture";
 
 export type DailyReportDetail = {
   report: ApiRecord;
@@ -1409,7 +1411,34 @@ export function ActiveDailyReport({
         )}
       </section>
 
-      {/* SECTION 5: APPROVAL AUDIT TIMELINE */}
+      {/* SECTION 5: SITE EVIDENCE & DOCKET CAPTURE */}
+      <section className="border border-ink-mid bg-ink p-4 space-y-3">
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-mid/40 pb-2">
+          <div className="flex items-center gap-2">
+            <Camera className="h-4 w-4 text-signal" />
+            <h3 className="font-mono text-xs font-bold uppercase tracking-widest text-paper">
+              5. Site Evidence &amp; Delivery Dockets
+            </h3>
+          </div>
+          <span className="font-mono text-[10px] text-slate-light">
+            Camera Photos &middot; In-Browser Compression &middot; Offline Queued
+          </span>
+        </header>
+
+        <SiteEvidenceCapture
+          reportId={reportId}
+          projectId={String(activeReport.project_id || "")}
+          documents={detail?.documents?.map((d) => ({
+            id: String(d.id),
+            title: String(d.title || d.name || "Site Attachment"),
+            file_name: d.file_name ? String(d.file_name) : undefined,
+            created_at: d.created_at ? String(d.created_at) : undefined,
+          }))}
+          onDocumentAdded={onRefresh}
+        />
+      </section>
+
+      {/* SECTION 6: APPROVAL AUDIT TIMELINE */}
       {detail?.approvals && detail.approvals.length > 0 && (
         <section className="border border-ink-mid bg-ink p-4">
           <h3 className="mb-2 font-mono text-xs uppercase tracking-widest text-paper">

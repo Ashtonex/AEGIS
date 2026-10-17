@@ -30,7 +30,7 @@ export interface FormFieldProps {
   min?: string | number;
   max?: string | number;
   step?: string | number;
-  multiple?: boolean;
+  inputMode?: "none" | "text" | "decimal" | "numeric" | "tel" | "search" | "email" | "url";
 }
 
 export const FormField = forwardRef<
@@ -46,12 +46,13 @@ export const FormField = forwardRef<
       className,
       containerClassName,
       rows,
+      inputMode,
       ...props
     },
     ref
   ) => {
     const baseClasses =
-      "w-full bg-ink-mid border border-ink-mid rounded-sm px-4 py-[14px] text-paper font-sans text-[15px] transition-colors duration-150 ease-out focus:outline-none focus:border-signal focus:shadow-[0_0_0_3px_rgba(200,150,12,0.08)] placeholder:text-slate-dark";
+      "w-full bg-ink-mid border border-ink-mid rounded-sm px-4 py-[14px] min-h-[48px] text-paper font-sans text-[16px] sm:text-[15px] transition-colors duration-150 ease-out focus:outline-none focus:border-signal focus:shadow-[0_0_0_3px_rgba(200,150,12,0.08)] placeholder:text-slate-dark";
 
     const errorClasses =
       "border-danger focus:border-danger focus:shadow-[0_0_0_3px_rgba(239,68,68,0.08)]";
@@ -74,6 +75,7 @@ export const FormField = forwardRef<
             <input
               ref={ref as React.Ref<HTMLInputElement>}
               className={resolvedClass}
+              inputMode={inputMode}
               {...(props as React.InputHTMLAttributes<HTMLInputElement>)}
             />
           )}

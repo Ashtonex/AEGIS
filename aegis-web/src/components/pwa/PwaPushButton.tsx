@@ -59,7 +59,7 @@ export function PwaPushButton() {
     try {
       const { data: config } = await getPwaConfig();
       if (!config?.push_enabled || !config.vapid_public_key) {
-        setNotice("Push notifications are not configured on this deployment.");
+        setNotice("Push notification service is temporarily initializing or unavailable. Please retry in a moment.");
         return;
       }
 

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowDown, ArrowRight, ArrowUp, Building2, ChevronRight, Loader2, MapPin, Plus, Search, Settings2, Sparkles, Store, Truck, Warehouse, Wrench, X } from "lucide-react";
 import { tx, num, money, qty, itemType, normalizeInventoryCategory, stockValue, dateShort, Loading, Empty, MovBadge, type Rec } from "./page";
 import { generateReplenishmentDrafts } from "@/lib/api/procurement";
+import { AdaptiveDataLayout, MobileDataCard } from "@/components/ui/OperationalTable";
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
 
@@ -157,14 +158,54 @@ export function StockLevelsTab({
           ) : rows.length === 0 ? (
             <Empty label="No stock records match this view." sub="Receive stock or loosen the filters to see balances." />
           ) : (
-            <div className="max-h-[calc(100vh-22rem)] min-h-[20rem] overflow-auto">
-              <table className="w-full min-w-[760px] text-sm">
-                <thead>
-                  <tr>
-                    {["Item", "Store", "Available", "Reserved", "Unit cost", "Value"].map((h) => <th key={h} className={thClass}>{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-mid">
+            <AdaptiveDataLayout
+              table={
+                <div className="max-h-[calc(100vh-22rem)] min-h-[20rem] overflow-auto">
+                  <table className="w-full min-w-[760px] text-sm">
+                    <thead>
+                      <tr>
+                        {["Item", "Store", "Available", "Reserved", "Unit cost", "Value"].map((h) => <th key={h} className={thClass}>{h}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-ink-mid">
+                      {rows.map((r) => {
+                        const avail = availableQty(r);
+                        const reorder = reorderLevel(r);
+                        const cost = num(r.unit_price_inc_vat ?? r.standard_cost ?? r.unit_cost);
+                        const isOut = avail <= 0;
+                        const isLow = !isOut && reorder > 0 && avail <= reorder;
+                        const fill = reorder > 0 ? Math.min(100, (avail / (reorder * 2)) * 100) : 100;
+                        return (
+                          <tr key={r.id} className={isOut ? "bg-red-950/10" : isLow ? "bg-amber-950/10" : "hover:bg-ink-light/40"}>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-paper">{tx(r.item_name ?? r.name)}</span>
+                                {itemType(r.item_type) === "tool" && <Wrench className="h-3 w-3 text-blue-300" />}
+                              </div>
+                              <p className="font-mono text-[10px] text-slate">{tx(r.item_code)} · {normalizeInventoryCategory(r.category, "Uncategorised")}</p>
+                            </td>
+                            <td className="px-3 py-2 text-slate-light">{tx(r.store_name ?? r.store_code)}</td>
+                            <td className="px-3 py-2">
+                              <p className={`font-mono font-semibold ${isOut ? "text-red-300" : isLow ? "text-amber-300" : "text-emerald-300"}`}>{qty(avail)} <span className="font-normal text-slate">{tx(r.uom ?? r.unit_of_measure, "")}</span></p>
+                              {reorder > 0 && (
+                                <div className="mt-1 flex items-center gap-2" title={`Reorder at ${qty(reorder)}`}>
+                                  <div className="h-1 w-20 bg-ink-mid"><div className={`h-full ${isOut ? "bg-red-400" : isLow ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${fill}%` }} /></div>
+                                  <span className="font-mono text-[10px] text-slate">re {qty(reorder)}</span>
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-slate-light">{num(r.reserved_qty) ? qty(r.reserved_qty) : "—"}</td>
+                            <td className="px-3 py-2 font-mono text-slate-light">{cost > 0 ? money(cost) : "—"}</td>
+                            <td className="px-3 py-2 font-mono font-semibold text-paper">{stockValue(r) ? money(stockValue(r)) : "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              }
+              cards={
+                <div className="p-3 space-y-3 max-h-[calc(100vh-22rem)] overflow-auto">
                   {rows.map((r) => {
                     const avail = availableQty(r);
                     const reorder = reorderLevel(r);
@@ -172,34 +213,47 @@ export function StockLevelsTab({
                     const isOut = avail <= 0;
                     const isLow = !isOut && reorder > 0 && avail <= reorder;
                     const fill = reorder > 0 ? Math.min(100, (avail / (reorder * 2)) * 100) : 100;
+                    const statusTone = isOut ? "text-red-400 bg-red-950/40 border-red-800/50" : isLow ? "text-amber-300 bg-amber-950/40 border-amber-800/50" : "text-emerald-300 bg-emerald-950/40 border-emerald-800/50";
+                    const statusLabel = isOut ? "Out of Stock" : isLow ? "Low Stock" : "In Stock";
                     return (
-                      <tr key={r.id} className={isOut ? "bg-red-950/10" : isLow ? "bg-amber-950/10" : "hover:bg-ink-light/40"}>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-paper">{tx(r.item_name ?? r.name)}</span>
-                            {itemType(r.item_type) === "tool" && <Wrench className="h-3 w-3 text-blue-300" />}
+                      <MobileDataCard
+                        key={r.id}
+                        title={
+                          <div className="flex items-center gap-1.5">
+                            <span>{tx(r.item_name ?? r.name)}</span>
+                            {itemType(r.item_type) === "tool" && <Wrench className="h-3.5 w-3.5 text-blue-300 inline" />}
                           </div>
-                          <p className="font-mono text-[10px] text-slate">{tx(r.item_code)} · {normalizeInventoryCategory(r.category, "Uncategorised")}</p>
-                        </td>
-                        <td className="px-3 py-2 text-slate-light">{tx(r.store_name ?? r.store_code)}</td>
-                        <td className="px-3 py-2">
-                          <p className={`font-mono font-semibold ${isOut ? "text-red-300" : isLow ? "text-amber-300" : "text-emerald-300"}`}>{qty(avail)} <span className="font-normal text-slate">{tx(r.uom ?? r.unit_of_measure, "")}</span></p>
-                          {reorder > 0 && (
-                            <div className="mt-1 flex items-center gap-2" title={`Reorder at ${qty(reorder)}`}>
-                              <div className="h-1 w-20 bg-ink-mid"><div className={`h-full ${isOut ? "bg-red-400" : isLow ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${fill}%` }} /></div>
-                              <span className="font-mono text-[10px] text-slate">re {qty(reorder)}</span>
+                        }
+                        subtitle={`${tx(r.item_code)} · ${normalizeInventoryCategory(r.category, "Uncategorised")}`}
+                        badge={
+                          <span className={`inline-block border px-2 py-0.5 font-mono text-[10px] uppercase font-semibold ${statusTone}`}>
+                            {statusLabel}
+                          </span>
+                        }
+                        metrics={[
+                          { label: "Available", value: `${qty(avail)} ${tx(r.uom ?? r.unit_of_measure, "")}` },
+                          { label: "Store", value: tx(r.store_name ?? r.store_code, "—") },
+                          { label: "Unit Cost", value: cost > 0 ? money(cost) : "—" },
+                          { label: "Total Value", value: stockValue(r) ? money(stockValue(r)) : "—" },
+                        ]}
+                      >
+                        {reorder > 0 && (
+                          <div className="pt-1">
+                            <div className="flex items-center justify-between text-[11px] font-mono text-slate mb-1">
+                              <span>Reorder threshold: {qty(reorder)} {tx(r.uom ?? r.unit_of_measure, "")}</span>
+                              <span>{Math.round(fill)}% target</span>
                             </div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 font-mono text-slate-light">{num(r.reserved_qty) ? qty(r.reserved_qty) : "—"}</td>
-                        <td className="px-3 py-2 font-mono text-slate-light">{cost > 0 ? money(cost) : "—"}</td>
-                        <td className="px-3 py-2 font-mono font-semibold text-paper">{stockValue(r) ? money(stockValue(r)) : "—"}</td>
-                      </tr>
+                            <div className="h-1.5 w-full bg-ink-mid">
+                              <div className={`h-full ${isOut ? "bg-red-400" : isLow ? "bg-amber-400" : "bg-emerald-500"}`} style={{ width: `${fill}%` }} />
+                            </div>
+                          </div>
+                        )}
+                      </MobileDataCard>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              }
+            />
           )}
           <div className="border-t border-ink-mid px-4 py-2 text-right font-mono text-[10px] uppercase text-slate">{rows.length} of {scopedStock.length} lines</div>
         </section>
@@ -350,42 +404,85 @@ export function ItemCatalogueTab({
           ) : rows.length === 0 ? (
             <Empty label="No catalogue items match." sub="Add an item, or pick another category." />
           ) : (
-            <div className="max-h-[calc(100vh-22rem)] min-h-[20rem] overflow-auto">
-              <table className="w-full min-w-[760px] text-sm">
-                <thead>
-                  <tr>
-                    {["Item", "Type", "UOM", "Ex VAT", "Inc VAT", "On hand", ""].map((h, i) => <th key={h || i} className={thClass}>{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-mid">
+            <AdaptiveDataLayout
+              table={
+                <div className="max-h-[calc(100vh-22rem)] min-h-[20rem] overflow-auto">
+                  <table className="w-full min-w-[760px] text-sm">
+                    <thead>
+                      <tr>
+                        {["Item", "Type", "UOM", "Ex VAT", "Inc VAT", "On hand", ""].map((h, i) => <th key={h || i} className={thClass}>{h}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-ink-mid">
+                      {rows.map((r) => {
+                        const stock = onHand(r);
+                        const exVat = num(r.unit_price_ex_vat ?? r.standard_cost);
+                        const incVat = num(r.unit_price_inc_vat ?? r.standard_cost);
+                        return (
+                          <tr key={r.id} className="cursor-pointer hover:bg-ink-light/40" onClick={() => setCatalogueDetail(r)}>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-paper">{tx(r.item_name ?? r.name ?? r.description)}</span>
+                                {r.is_hazardous && <span className="border border-red-500/40 px-1 font-mono text-[9px] uppercase text-red-300">Hazard</span>}
+                              </div>
+                              <p className="font-mono text-[10px] text-slate">{tx(r.item_code)}{!category ? ` · ${normalizeInventoryCategory(r.category, "Uncategorised")}` : ""}</p>
+                            </td>
+                            <td className="px-3 py-2 font-mono text-[10px] uppercase text-slate-light">{itemType(r.item_type)}</td>
+                            <td className="px-3 py-2 text-slate-light">{tx(r.uom ?? r.unit_of_measure)}</td>
+                            <td className="px-3 py-2 font-mono text-slate-light">{exVat > 0 ? money(exVat) : <span className="text-amber-300/80">not set</span>}</td>
+                            <td className="px-3 py-2 font-mono text-slate-light">{incVat > 0 ? money(incVat) : "—"}{num(r.vat_rate) > 0 && <span className="ml-1 text-[10px] text-slate">({num(r.vat_rate)}%)</span>}</td>
+                            <td className="px-3 py-2">
+                              <p className={`font-mono font-semibold ${stock.qty > 0 ? "text-emerald-300" : "text-slate"}`}>{qty(stock.qty)}</p>
+                              <p className="font-mono text-[10px] text-slate">{stock.stores ? `${stock.stores} store${stock.stores === 1 ? "" : "s"}` : "not stocked"}</p>
+                            </td>
+                            <td className="px-3 py-2 text-slate"><ChevronRight className="h-4 w-4" /></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              }
+              cards={
+                <div className="p-3 space-y-3 max-h-[calc(100vh-22rem)] overflow-auto">
                   {rows.map((r) => {
                     const stock = onHand(r);
                     const exVat = num(r.unit_price_ex_vat ?? r.standard_cost);
                     const incVat = num(r.unit_price_inc_vat ?? r.standard_cost);
                     return (
-                      <tr key={r.id} className="cursor-pointer hover:bg-ink-light/40" onClick={() => setCatalogueDetail(r)}>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-paper">{tx(r.item_name ?? r.name ?? r.description)}</span>
-                            {r.is_hazardous && <span className="border border-red-500/40 px-1 font-mono text-[9px] uppercase text-red-300">Hazard</span>}
-                          </div>
-                          <p className="font-mono text-[10px] text-slate">{tx(r.item_code)}{!category ? ` · ${normalizeInventoryCategory(r.category, "Uncategorised")}` : ""}</p>
-                        </td>
-                        <td className="px-3 py-2 font-mono text-[10px] uppercase text-slate-light">{itemType(r.item_type)}</td>
-                        <td className="px-3 py-2 text-slate-light">{tx(r.uom ?? r.unit_of_measure)}</td>
-                        <td className="px-3 py-2 font-mono text-slate-light">{exVat > 0 ? money(exVat) : <span className="text-amber-300/80">not set</span>}</td>
-                        <td className="px-3 py-2 font-mono text-slate-light">{incVat > 0 ? money(incVat) : "—"}{num(r.vat_rate) > 0 && <span className="ml-1 text-[10px] text-slate">({num(r.vat_rate)}%)</span>}</td>
-                        <td className="px-3 py-2">
-                          <p className={`font-mono font-semibold ${stock.qty > 0 ? "text-emerald-300" : "text-slate"}`}>{qty(stock.qty)}</p>
-                          <p className="font-mono text-[10px] text-slate">{stock.stores ? `${stock.stores} store${stock.stores === 1 ? "" : "s"}` : "not stocked"}</p>
-                        </td>
-                        <td className="px-3 py-2 text-slate"><ChevronRight className="h-4 w-4" /></td>
-                      </tr>
+                      <MobileDataCard
+                        key={r.id}
+                        onClick={() => setCatalogueDetail(r)}
+                        title={tx(r.item_name ?? r.name ?? r.description)}
+                        subtitle={`${tx(r.item_code)}${!category ? ` · ${normalizeInventoryCategory(r.category, "Uncategorised")}` : ""}`}
+                        badge={
+                          r.is_hazardous ? (
+                            <span className="border border-red-500/50 bg-red-950/40 px-2 py-0.5 font-mono text-[10px] uppercase text-red-300 font-semibold">
+                              Hazard
+                            </span>
+                          ) : (
+                            <span className="border border-ink-mid px-2 py-0.5 font-mono text-[10px] uppercase text-slate-light">
+                              {itemType(r.item_type)}
+                            </span>
+                          )
+                        }
+                        metrics={[
+                          { label: "UOM", value: tx(r.uom ?? r.unit_of_measure, "each") },
+                          { label: "On Hand", value: `${qty(stock.qty)} (${stock.stores ? `${stock.stores} store${stock.stores === 1 ? "" : "s"}` : "none"})` },
+                          { label: "Price (ex VAT)", value: exVat > 0 ? money(exVat) : "not set" },
+                          { label: "Price (inc VAT)", value: incVat > 0 ? money(incVat) : "—" },
+                        ]}
+                        actions={
+                          <span className="font-mono text-[11px] uppercase text-signal flex items-center gap-1">
+                            View details <ChevronRight className="h-3 w-3" />
+                          </span>
+                        }
+                      />
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              }
+            />
           )}
           <div className="border-t border-ink-mid px-4 py-2 text-right font-mono text-[10px] uppercase text-slate">{rows.length} items</div>
         </section>
@@ -502,23 +599,53 @@ export function StoresTab({
                   {selected.items.length === 0 ? (
                     <Empty label="Nothing in this store yet." sub="Use Manage store or Receive Stock to put items here." />
                   ) : (
-                    <table className="w-full text-sm">
-                      <thead><tr>{["Item", "Available", "Value"].map((h) => <th key={h} className={thClass}>{h}</th>)}</tr></thead>
-                      <tbody className="divide-y divide-ink-mid">
-                        {[...selected.items].sort((a, b) => stockValue(b) - stockValue(a)).map((r) => {
-                          const q = availableQty(r);
-                          const re = reorderLevel(r);
-                          const tone = q <= 0 ? "text-red-300" : re > 0 && q <= re ? "text-amber-300" : "text-emerald-300";
-                          return (
-                            <tr key={r.id} className="hover:bg-ink-light/40">
-                              <td className="px-3 py-2"><p className="text-paper">{tx(r.item_name ?? r.name)}</p><p className="font-mono text-[10px] text-slate">{tx(r.item_code)}</p></td>
-                              <td className={`px-3 py-2 font-mono font-semibold ${tone}`}>{qty(q)} <span className="font-normal text-slate">{tx(r.uom ?? r.unit_of_measure, "")}</span></td>
-                              <td className="px-3 py-2 font-mono text-paper">{stockValue(r) ? money(stockValue(r)) : "—"}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                    <AdaptiveDataLayout
+                      table={
+                        <table className="w-full text-sm">
+                          <thead><tr>{["Item", "Available", "Value"].map((h) => <th key={h} className={thClass}>{h}</th>)}</tr></thead>
+                          <tbody className="divide-y divide-ink-mid">
+                            {[...selected.items].sort((a, b) => stockValue(b) - stockValue(a)).map((r) => {
+                              const q = availableQty(r);
+                              const re = reorderLevel(r);
+                              const tone = q <= 0 ? "text-red-300" : re > 0 && q <= re ? "text-amber-300" : "text-emerald-300";
+                              return (
+                                <tr key={r.id} className="hover:bg-ink-light/40">
+                                  <td className="px-3 py-2"><p className="text-paper">{tx(r.item_name ?? r.name)}</p><p className="font-mono text-[10px] text-slate">{tx(r.item_code)}</p></td>
+                                  <td className={`px-3 py-2 font-mono font-semibold ${tone}`}>{qty(q)} <span className="font-normal text-slate">{tx(r.uom ?? r.unit_of_measure, "")}</span></td>
+                                  <td className="px-3 py-2 font-mono text-paper">{stockValue(r) ? money(stockValue(r)) : "—"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      }
+                      cards={
+                        <div className="p-3 space-y-2">
+                          {[...selected.items].sort((a, b) => stockValue(b) - stockValue(a)).map((r) => {
+                            const q = availableQty(r);
+                            const re = reorderLevel(r);
+                            const tone = q <= 0 ? "text-red-400 bg-red-950/40 border-red-800/50" : re > 0 && q <= re ? "text-amber-300 bg-amber-950/40 border-amber-800/50" : "text-emerald-300 bg-emerald-950/40 border-emerald-800/50";
+                            const statusText = q <= 0 ? "Out" : re > 0 && q <= re ? "Low" : "OK";
+                            return (
+                              <MobileDataCard
+                                key={r.id}
+                                title={tx(r.item_name ?? r.name)}
+                                subtitle={tx(r.item_code)}
+                                badge={
+                                  <span className={`inline-block border px-2 py-0.5 font-mono text-[10px] uppercase font-semibold ${tone}`}>
+                                    {statusText}
+                                  </span>
+                                }
+                                metrics={[
+                                  { label: "Available", value: `${qty(q)} ${tx(r.uom ?? r.unit_of_measure, "")}` },
+                                  { label: "Value", value: stockValue(r) ? money(stockValue(r)) : "—" },
+                                ]}
+                              />
+                            );
+                          })}
+                        </div>
+                      }
+                    />
                   )}
                 </div>
                 <div className="border-t border-ink-mid xl:border-t-0">

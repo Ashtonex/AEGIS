@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -212,6 +212,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
     )
+
+    @field_validator("PWA_VAPID_SUBJECT", mode="before")
+    @classmethod
+    def validate_pwa_vapid_subject(cls, value: Any) -> str:
+        if not value or not str(value).strip():
+            return "mailto:operations@sixnineconstruction.com"
+        subject = str(value).strip()
+        if not subject.startswith("mailto:") and not subject.startswith("https://"):
+            return f"mailto:{subject}"
+        return subject
 
     @field_validator("DATABASE_URL")
     @classmethod

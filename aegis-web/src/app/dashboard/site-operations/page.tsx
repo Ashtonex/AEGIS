@@ -60,6 +60,7 @@ import {
   updateDailySiteReport,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { useOfflineDraft, useOutbox } from "@/lib/offline";
 import { LabourRegisterTab, type SiteDay } from "@/components/site-operations/LabourRegisterTab";
 import { PlantTab } from "@/components/site-operations/PlantTab";
 import { ActiveDailyReport } from "@/components/site-operations/ActiveDailyReport";
@@ -161,7 +162,7 @@ export default function SiteOperationsPage() {
 }
 
 function SiteOperationsWorkspace() {
-  const { role, isSuperAdmin } = useAuth();
+  const { session, role, isSuperAdmin } = useAuth();
   const canApprove = isSuperAdmin || role === "admin" || role === "manager" || role === "executive";
 
   const searchParams = useSearchParams();
@@ -230,7 +231,18 @@ function SiteOperationsWorkspace() {
   const [sourceWarnings, setSourceWarnings] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
-  const [draft, setDraft] = useState({
+  const draftKey = useMemo(() => ({
+    organizationId: "snc",
+    userId: session?.user?.id || "site-engineer",
+    projectId: projectId || "global",
+    entityType: "site_daily_report",
+  }), [session?.user?.id, projectId]);
+
+  const {
+    draft,
+    updateDraft: setDraft,
+    clearDraft,
+  } = useOfflineDraft(draftKey, {
     shift: "day",
     planned_work: "",
     actual_work: "",
@@ -240,6 +252,8 @@ function SiteOperationsWorkspace() {
     toolbox_talk_completed: false,
     ppe_check_completed: false,
   });
+
+  const { enqueue: enqueueOutbox } = useOutbox(session?.user?.id);
   const [labour, setLabour] = useState({ employee_id: "", role_on_site: "", regular_hours: "8", overtime_hours: "0", cost_rate: "0", notes: "" });
   const [equipment, setEquipment] = useState({ fleet_id: "", operator_employee_id: "", operating_hours: "0", idle_hours: "0", fuel_litres: "0", cost_rate: "0", notes: "" });
   const [material, setMaterial] = useState({ item_id: "", store_id: "", quantity_used: "0", unit_cost: "0", wastage_quantity: "0", work_package: "", notes: "" });
@@ -450,14 +464,63 @@ function SiteOperationsWorkspace() {
     try {
       const b = day?.briefing;
       const safetyNotes = b?.safety_concern_raised ? `${text(b.safety_concerns, "Concern raised")}. Action: ${text(b.safety_actions, "not recorded")}` : null;
-      const res = await createDailySiteReport({ project_id: projectId, report_date: workDate, ...draft, safety_notes: safetyNotes, cost_exposure: Number(draft.cost_exposure || 0), weather: {} });
+      const payload = {
+        project_id: projectId,
+        report_date: workDate,
+        ...draft,
+        safety_notes: safetyNotes,
+        cost_exposure: Number(draft.cost_exposure || 0),
+        weather: {},
+      };
+
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await enqueueOutbox({
+          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+          organizationId: "snc",
+          userId: session?.user?.id || "site-engineer",
+          projectId,
+          entityType: "site_daily_report",
+          action: "create",
+          endpoint: "/api/v1/site-operations/daily-reports",
+          payload,
+        });
+        await clearDraft();
+        setNotice({ tone: "info", text: "Offline: Daily report saved to local outbox. It will synchronize automatically." });
+        return;
+      }
+
+      const res = await createDailySiteReport(payload);
       setNotice({ tone: "success", text: "Daily site report ready. Site activity synchronized." });
-      setDraft((d) => ({ ...d, planned_work: "", actual_work: "", delays: "", cost_exposure: "0" }));
+      await clearDraft();
       await load();
       if (res?.data?.id) {
         await loadTodayDetail(res.data.id);
       }
     } catch (reason: any) {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        const payload = {
+          project_id: projectId,
+          report_date: workDate,
+          ...draft,
+          safety_notes: null,
+          cost_exposure: Number(draft.cost_exposure || 0),
+          weather: {},
+        };
+        await enqueueOutbox({
+          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+          organizationId: "snc",
+          userId: session?.user?.id || "site-engineer",
+          projectId,
+          entityType: "site_daily_report",
+          action: "create",
+          endpoint: "/api/v1/site-operations/daily-reports",
+          payload,
+        });
+        await clearDraft();
+        setNotice({ tone: "info", text: "Network connection unavailable. Saved to local outbox and will sync when reconnected." });
+        return;
+      }
+
       const existing = reports.find(
         (r) => String(r.project_id) === String(projectId) && String(r.report_date) === String(workDate)
       );
@@ -519,8 +582,46 @@ function SiteOperationsWorkspace() {
     if (!projectId) { setNotice({ tone: "error", text: "Select a project before requesting site materials." }); return; }
     const desc = (materialRequest.material_description || materialSearch || "").trim();
     if (!materialRequest.item_id && !desc) { setNotice({ tone: "error", text: "Enter or select a material description before requesting site materials." }); return; }
+    
+    const payload = {
+      project_id: projectId,
+      item_id: materialRequest.item_id || null,
+      material_description: desc || null,
+      specifications: materialRequest.specifications || null,
+      unit_of_measure: materialRequest.unit_of_measure || "each",
+      store_id: materialRequest.store_id || null,
+      quantity: Number(materialRequest.quantity),
+      unit_cost: Number(materialRequest.unit_cost),
+      required_by_date: materialRequest.required_by_date,
+      priority: materialRequest.priority,
+      work_package: materialRequest.work_package || null,
+      justification: materialRequest.justification || null,
+      weekly_budget_item_id: materialRequest.weekly_budget_item_id || null,
+      auto_submit_requisition: true,
+    };
+
     setSaving("material-request");
     try {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await enqueueOutbox({
+          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+          organizationId: "snc",
+          userId: session?.user?.id || "site-engineer",
+          projectId,
+          entityType: "site_material_request",
+          action: "create",
+          endpoint: "/api/v1/site-operations/material-requests",
+          payload,
+        });
+        setNotice({
+          tone: "info",
+          text: `Offline: Material request for "${desc || "Item"}" saved to local outbox. It will synchronize once connected.`,
+        });
+        setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", justification: "", work_package: "" }));
+        setMaterialSearch("");
+        return;
+      }
+
       // CCB Commercial Guard audit; continue if the audit service is unreachable.
       try {
         await auditSiteRequest({
@@ -535,22 +636,7 @@ function SiteOperationsWorkspace() {
       } catch {
         // audit is advisory
       }
-      const response = await requestSiteMaterial({
-        project_id: projectId,
-        item_id: materialRequest.item_id || null,
-        material_description: desc || null,
-        specifications: materialRequest.specifications || null,
-        unit_of_measure: materialRequest.unit_of_measure || "each",
-        store_id: materialRequest.store_id || null,
-        quantity: Number(materialRequest.quantity),
-        unit_cost: Number(materialRequest.unit_cost),
-        required_by_date: materialRequest.required_by_date,
-        priority: materialRequest.priority,
-        work_package: materialRequest.work_package || null,
-        justification: materialRequest.justification || null,
-        weekly_budget_item_id: materialRequest.weekly_budget_item_id || null,
-        auto_submit_requisition: true,
-      });
+      const response = await requestSiteMaterial(payload);
       const data = response.data ?? {};
       const issued = data.issued_quantity ?? "0";
       const shortfall = data.shortfall_quantity ?? "0";
@@ -559,6 +645,25 @@ function SiteOperationsWorkspace() {
       setMaterialSearch("");
       await load();
     } catch (reason) {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await enqueueOutbox({
+          operationId: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `op-${Date.now()}`,
+          organizationId: "snc",
+          userId: session?.user?.id || "site-engineer",
+          projectId,
+          entityType: "site_material_request",
+          action: "create",
+          endpoint: "/api/v1/site-operations/material-requests",
+          payload,
+        });
+        setNotice({
+          tone: "info",
+          text: `Connection lost: Material request saved to local outbox. Will sync automatically.`,
+        });
+        setMaterialRequest((m) => ({ ...m, item_id: "", material_description: "", specifications: "", quantity: "1", justification: "", work_package: "" }));
+        setMaterialSearch("");
+        return;
+      }
       setNotice({ tone: "error", text: errorText(reason, "Material request failed.") });
     } finally {
       setSaving(null);

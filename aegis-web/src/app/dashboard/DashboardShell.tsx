@@ -18,8 +18,10 @@ import {
   Search, Bell, CircleHelp, User, ShieldAlert,
   Settings, LogOut, ChevronDown, ChevronRight, Menu, X,
   LockKeyhole, Package, ClipboardCheck, HardHat,
-  PanelLeft, PanelLeftClose,
+  PanelLeft, PanelLeftClose, Activity, CheckSquare, CloudUpload,
+  Plus, RefreshCw, WifiOff, ClipboardList,
 } from "lucide-react";
+import { useNetworkStatus } from "@/lib/offline";
 import {
   DOMAIN_META, DOMAIN_ORDER, getDomainForPathname, visibleModuleGroups,
   type ModuleGroup, type DomainKey,
@@ -48,6 +50,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   const pathname = usePathname();
   const router = useRouter();
   const { session, role, permissions, isSuperAdmin, isLoading, sessionLoading, signOut } = useAuth();
+  const { isOnline, isSyncing, pendingCount, syncNow } = useNetworkStatus();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
     if (typeof window === "undefined") return {};
@@ -563,6 +566,35 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <PwaPushButton />
           </div>
 
+          {!isOnline ? (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-medium rounded-sm bg-danger/15 text-danger border border-danger/30"
+              title="You are currently offline. Changes are saved to local device storage."
+            >
+              <WifiOff className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Offline</span>
+              {pendingCount > 0 && <span className="ml-0.5">({pendingCount})</span>}
+            </span>
+          ) : isSyncing ? (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-medium rounded-sm bg-signal/15 text-signal border border-signal/30 animate-pulse"
+              title="Synchronizing offline outbox with server..."
+            >
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span className="hidden xs:inline">Syncing</span>
+            </span>
+          ) : pendingCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => void syncNow()}
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-medium rounded-sm bg-signal/20 text-signal border border-signal/40 hover:bg-signal/30 transition-colors"
+              title="Tap to sync pending offline records"
+            >
+              <CloudUpload className="w-3.5 h-3.5" />
+              <span>{pendingCount}</span>
+            </button>
+          ) : null}
+
           <button
             type="button"
             onClick={openTour}
@@ -692,7 +724,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         {/* MAIN CONTENT AREA */}
         <main
           ref={mainScrollRef}
-          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 ${
+          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 pb-16 md:pb-0 ${
             currentDomain ? DOMAIN_META[currentDomain].accentTopBorderClass : "border-t-transparent"
           }`}
         >
@@ -700,6 +732,71 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           {children}
           {!isPortalRoute && <AttendanceCheckIn />}
         </main>
+
+        {/* MOBILE BOTTOM NAVIGATION DOCK (Thumb Zone for screens < 768px) */}
+        {!isPortalRoute && (
+          <nav
+            aria-label="Mobile Navigation Dock"
+            className="fixed bottom-0 inset-x-0 z-40 bg-ink-high/95 backdrop-blur-md border-t border-ink-mid md:hidden pb-[env(safe-area-inset-bottom)]"
+          >
+            <div className="flex items-center justify-around h-14 px-2">
+              <Link
+                href="/dashboard/site-operations"
+                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+                  pathname?.startsWith("/dashboard/site-operations") && !pathname.includes("tab=report")
+                    ? "text-signal font-semibold"
+                    : "text-slate hover:text-paper"
+                }`}
+              >
+                <Activity className="w-5 h-5 mb-0.5" />
+                <span>Site Feed</span>
+              </Link>
+
+              <Link
+                href="/dashboard/site-operations?tab=report"
+                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+                  pathname?.startsWith("/dashboard/site-operations") && pathname.includes("tab=report")
+                    ? "text-signal font-semibold"
+                    : "text-slate hover:text-paper"
+                }`}
+              >
+                <ClipboardList className="w-5 h-5 mb-0.5" />
+                <span>Report</span>
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => setCommandOpen(true)}
+                className="flex flex-col items-center justify-center -mt-4 bg-signal hover:bg-signal-hover text-ink w-11 h-11 rounded-full shadow-lg border-2 border-ink transition-transform active:scale-95"
+                aria-label="Quick Action"
+              >
+                <Plus className="w-6 h-6 stroke-[2.5]" />
+              </button>
+
+              <Link
+                href="/dashboard/executive"
+                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+                  pathname === "/dashboard/executive"
+                    ? "text-signal font-semibold"
+                    : "text-slate hover:text-paper"
+                }`}
+              >
+                <CheckSquare className="w-5 h-5 mb-0.5" />
+                <span>Tasks</span>
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                className="flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono text-slate hover:text-paper transition-colors"
+                aria-label="Open full menu"
+              >
+                <Menu className="w-5 h-5 mb-0.5" />
+                <span>Menu</span>
+              </button>
+            </div>
+          </nav>
+        )}
       </div>
 
       {/* MOBILE NAV DRAWER */}
