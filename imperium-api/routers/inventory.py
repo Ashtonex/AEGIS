@@ -183,6 +183,25 @@ async def require_site_for_project(
         raise HTTPException(status_code=404, detail="Site not found for this project")
 
 
+def _is_enterprise_store_viewer(user: dict) -> bool:
+    user_roles = set(user.get("roles") or [user.get("role")])
+    if user.get("role") == "SUPERADMIN":
+        return True
+    enterprise_roles = {
+        "SUPERADMIN",
+        "Managing Director",
+        "Executive (Admin)",
+        "Procurement Officer",
+        "Procurement Manager",
+        "Commercial Director",
+        "Finance Manager",
+        "Financial Controller",
+        "CFO",
+        "Auditor",
+    }
+    return bool(user_roles.intersection(enterprise_roles))
+
+
 @router.get("/stock-levels")
 async def stock_levels(
     store_id: Optional[UUID] = None,
@@ -192,6 +211,7 @@ async def stock_levels(
     user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    is_central = _is_enterprise_store_viewer(user)
     rows = await db.execute(
         text("""
         WITH balances AS (
@@ -223,6 +243,18 @@ async def stock_levels(
           AND (CAST(:item_id AS uuid) IS NULL OR i.id=CAST(:item_id AS uuid))
           AND (CAST(:search AS varchar) IS NULL OR (i.item_name ILIKE '%' || CAST(:search AS varchar) || '%' OR i.item_code ILIKE '%' || CAST(:search AS varchar) || '%'))
           AND (:below_reorder = false OR COALESCE(b.available_qty, 0) <= COALESCE(i.reorder_level, 0))
+          AND (
+            :is_central = true
+            OR st.id IS NULL
+            OR st.store_manager_id = CAST(:user_id AS uuid)
+            OR st.engineer_id = CAST(:user_id AS uuid)
+            OR st.foreman_id = CAST(:user_id AS uuid)
+            OR st.project_id IN (
+                SELECT sra.project_id FROM projects.site_role_assignments sra
+                WHERE sra.user_id = CAST(:user_id AS uuid)
+                  AND sra.is_active = true AND sra.is_deleted = false
+            )
+          )
         ORDER BY i.item_name NULLS LAST, st.name NULLS LAST
         LIMIT 1001
     """),
@@ -232,6 +264,8 @@ async def stock_levels(
             "item_id": item_id,
             "search": search,
             "below_reorder": below_reorder,
+            "user_id": user["user_id"],
+            "is_central": is_central,
         },
     )
     data = [dict(r._mapping) for r in capped(rows, 1000)]
@@ -276,6 +310,7 @@ async def list_stores(
     user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    is_central = _is_enterprise_store_viewer(user)
     rows = await db.execute(
         text("""
         SELECT st.*, p.name AS project_name, p.client_name, s.name AS site_name,
@@ -290,10 +325,21 @@ async def list_stores(
         LEFT JOIN core.users foreman ON foreman.id=st.foreman_id AND foreman.organization_id=st.organization_id
         WHERE st.organization_id=:org_id AND st.is_deleted=false
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
+          AND (
+            :is_central = true
+            OR st.store_manager_id = CAST(:user_id AS uuid)
+            OR st.engineer_id = CAST(:user_id AS uuid)
+            OR st.foreman_id = CAST(:user_id AS uuid)
+            OR st.project_id IN (
+                SELECT sra.project_id FROM projects.site_role_assignments sra
+                WHERE sra.user_id = CAST(:user_id AS uuid)
+                  AND sra.is_active = true AND sra.is_deleted = false
+            )
+          )
         ORDER BY st.store_type, st.name
         LIMIT 501
     """),
-        {"org_id": user["org_id"], "project_id": project_id},
+        {"org_id": user["org_id"], "project_id": project_id, "user_id": user["user_id"], "is_central": is_central},
     )
     data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Stores listed.", len(data))

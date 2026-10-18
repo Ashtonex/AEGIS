@@ -17,13 +17,24 @@ import {
   Clock,
   RefreshCw,
   FileText,
+  Plus,
+  Percent,
+  ShieldCheck,
+  ShieldAlert,
+  Scale,
+  X,
+  Send,
 } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
 import { formatCurrency } from "@/lib/utils";
 import { number } from "@/lib/projects/types";
-import { getProjectSupplyChain, type ProjectSupplyChainResponse } from "@/lib/api";
+import {
+  getProjectSupplyChain,
+  requestSiteMaterial,
+  type ProjectSupplyChainResponse,
+} from "@/lib/api";
 
-type TabKey = "inventory" | "requisitions" | "rfqs" | "orders" | "deliveries" | "consumption";
+type TabKey = "inventory" | "wastage" | "requisitions" | "rfqs" | "orders" | "deliveries" | "consumption";
 
 export default function ProjectMaterialsPage() {
   const params = useParams();
@@ -34,6 +45,21 @@ export default function ProjectMaterialsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("inventory");
+
+  // Site Requisition Modal State
+  const [isReqModalOpen, setIsReqModalOpen] = useState(false);
+  const [reqStoreId, setReqStoreId] = useState("");
+  const [reqItemDesc, setReqItemDesc] = useState("");
+  const [reqSelectedItemId, setReqSelectedItemId] = useState("");
+  const [reqQuantity, setReqQuantity] = useState("");
+  const [reqUom, setReqUom] = useState("bags");
+  const [reqWorkPackage, setReqWorkPackage] = useState("Substructure & Foundation");
+  const [reqPriority, setReqPriority] = useState("normal");
+  const [reqRequiredDate, setReqRequiredDate] = useState("");
+  const [reqJustification, setReqJustification] = useState("");
+  const [submittingReq, setSubmittingReq] = useState(false);
+  const [reqNotice, setReqNotice] = useState<string | null>(null);
+  const [reqError, setReqError] = useState<string | null>(null);
 
   const loadSupplyChain = async () => {
     if (!projectId) return;
@@ -68,10 +94,56 @@ export default function ProjectMaterialsPage() {
   const deliveries = supplyChain?.deliveries ?? [];
   const rfqs = supplyChain?.rfqs ?? [];
   const consumptionLogs = supplyChain?.consumption_logs?.length ? supplyChain.consumption_logs : fallbackMaterials;
+  const wastageRecords = supplyChain?.wastage_records ?? [];
+  const financeVerification = supplyChain?.finance_verification;
 
   const totalOnHandValue = supplyChain?.summary?.on_hand_inventory_value ?? 0;
   const openPOValue = supplyChain?.summary?.open_committed_po_value ?? 0;
+  const totalWastageCost = supplyChain?.summary?.total_wastage_cost ?? 0;
+  const avgWastagePercent = supplyChain?.summary?.average_wastage_percent ?? 0;
   const totalStores = siteStores.length;
+
+  const handleCreateRequisition = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!reqItemDesc.trim() && !reqSelectedItemId) || !reqQuantity || Number(reqQuantity) <= 0) {
+      setReqError("Please specify a material item/description and a valid quantity.");
+      return;
+    }
+    setSubmittingReq(true);
+    setReqError(null);
+    setReqNotice(null);
+    try {
+      const res = await requestSiteMaterial({
+        project_id: projectId,
+        site_id: (detail as any)?.sites?.[0]?.id || siteStores[0]?.site_id || undefined,
+        store_id: reqStoreId || siteStores[0]?.id || undefined,
+        item_id: reqSelectedItemId || undefined,
+        material_description: reqItemDesc.trim() || undefined,
+        quantity: Number(reqQuantity),
+        unit_of_measure: reqUom,
+        work_package: reqWorkPackage,
+        priority: reqPriority,
+        required_by_date: reqRequiredDate || undefined,
+        justification: reqJustification.trim() || `Material requested on site for ${reqWorkPackage}`,
+      });
+      if (res.success || res.data) {
+        setReqNotice("Site material requisition successfully logged and routed for project approval.");
+        setReqItemDesc("");
+        setReqSelectedItemId("");
+        setReqQuantity("");
+        setReqJustification("");
+        setIsReqModalOpen(false);
+        await loadSupplyChain();
+        setActiveTab("requisitions");
+      } else {
+        setReqError(res.message || "Failed to submit requisition.");
+      }
+    } catch (err: any) {
+      setReqError(err?.message || "Failed to submit requisition.");
+    } finally {
+      setSubmittingReq(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -83,22 +155,27 @@ export default function ProjectMaterialsPage() {
             Project Supply Chain &amp; Site Inventory Radar
           </h2>
           <p className="mt-1 text-xs text-slate-light">
-            Live integration tracking site stores, on-hand inventory, material requisitions, RFQs, purchase orders, and daily consumption.
+            Live integration tracking site stores, on-hand inventory, material requisitions, RFQs, purchase orders, wastage, and daily consumption.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href={`/dashboard/site-operations?projectId=${projectId}&tab=materials`}
-            className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs text-emerald-300 hover:bg-emerald-500/20 transition-colors"
-            title="Request materials from site operations"
+          <button
+            type="button"
+            onClick={() => {
+              setReqError(null);
+              setReqNotice(null);
+              setIsReqModalOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 border border-signal bg-signal px-3.5 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90 active:scale-[0.98] transition-all"
+            title="Raise a site material requisition (Engineers, Foremen, Site Clerks, Agents)"
           >
-            <ShoppingCart className="h-3.5 w-3.5" />
-            <span>Request Site Materials</span>
-          </Link>
+            <Plus className="h-3.5 w-3.5 text-ink stroke-[3]" />
+            <span>Raise Site Requisition</span>
+          </button>
           <Link
             href={`/dashboard/procurement?projectId=${projectId}`}
-            className="inline-flex items-center gap-1.5 border border-signal/50 bg-signal/10 px-3 py-1.5 font-mono text-xs text-signal hover:bg-signal/20 transition-colors"
+            className="inline-flex items-center gap-1.5 border border-signal/50 bg-signal/10 px-3 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs text-signal hover:bg-signal/20 active:scale-[0.98] transition-all"
             title="Open Procurement Command for this project"
           >
             <Truck className="h-3.5 w-3.5" />
@@ -107,7 +184,7 @@ export default function ProjectMaterialsPage() {
           <button
             onClick={() => void loadSupplyChain()}
             disabled={loading}
-            className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-paper hover:bg-ink-light transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs text-paper hover:bg-ink-light active:scale-[0.98] transition-all disabled:opacity-50"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             Sync Radar
@@ -115,17 +192,84 @@ export default function ProjectMaterialsPage() {
         </div>
       </div>
 
+      {/* Cross-Module Finance & Commercial Sanity Verification */}
+      {financeVerification && (
+        <div
+          className={`border p-4 transition-all ${
+            financeVerification.is_deposit_backed && financeVerification.is_within_budget
+              ? "border-emerald-500/40 bg-emerald-950/20"
+              : !financeVerification.is_deposit_backed
+              ? "border-amber-500/40 bg-amber-950/20"
+              : "border-rose-500/40 bg-rose-950/20"
+          }`}
+        >
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              {financeVerification.is_deposit_backed && financeVerification.is_within_budget ? (
+                <ShieldCheck className="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <ShieldAlert className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+              )}
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs font-bold uppercase tracking-wider text-paper">
+                    Cross-Module Finance &amp; Procurement Verification
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 text-[10px] font-mono font-bold uppercase rounded ${
+                      financeVerification.is_deposit_backed && financeVerification.is_within_budget
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                        : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                    }`}
+                  >
+                    {financeVerification.verdict.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-light leading-relaxed">
+                  {financeVerification.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 text-xs font-mono shrink-0 pt-2 md:pt-0 border-t md:border-t-0 border-ink-mid/40">
+              <div>
+                <span className="text-slate block text-[10px] uppercase">Material Exposure</span>
+                <span className="font-bold text-paper">
+                  {formatCurrency(financeVerification.total_material_exposure)}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate block text-[10px] uppercase">Advance Deposit</span>
+                <span className="font-bold text-signal">
+                  {formatCurrency(financeVerification.deposit_received_amount)}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate block text-[10px] uppercase">Deposit Coverage</span>
+                <span
+                  className={`font-bold ${
+                    financeVerification.deposit_coverage_percent >= 100 ? "text-emerald-400" : "text-amber-400"
+                  }`}
+                >
+                  {financeVerification.deposit_coverage_percent}%
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="border border-ink-mid bg-ink p-4">
           <div className="flex items-center justify-between text-slate-light">
-            <span className="font-mono text-xs uppercase tracking-wider">Site Stores</span>
+            <span className="font-mono text-xs uppercase tracking-wider">Available Site Stores</span>
             <Warehouse className="h-4 w-4 text-emerald-400" />
           </div>
           <div className="mt-2 font-mono text-2xl font-bold text-paper">
             {totalStores}
           </div>
-          <div className="mt-1 text-[11px] text-slate font-mono">
+          <div className="mt-1 text-[11px] text-slate font-mono truncate">
             {siteStores.map((s) => s.name).join(", ") || "No dedicated site store registered"}
           </div>
         </div>
@@ -139,7 +283,23 @@ export default function ProjectMaterialsPage() {
             {formatCurrency(totalOnHandValue)}
           </div>
           <div className="mt-1 text-[11px] text-slate font-mono">
-            {inventoryOnHand.length} distinct items held on site
+            {inventoryOnHand.length} distinct item lines held in site stores
+          </div>
+        </div>
+
+        <div className="border border-ink-mid bg-ink p-4">
+          <div className="flex items-center justify-between text-slate-light">
+            <span className="font-mono text-xs uppercase tracking-wider">Wastage &amp; Variance Cost</span>
+            <Percent className="h-4 w-4 text-rose-400" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span className="font-mono text-2xl font-bold text-rose-400">
+              {formatCurrency(totalWastageCost)}
+            </span>
+            <span className="text-xs font-mono text-slate-light">({avgWastagePercent}% avg)</span>
+          </div>
+          <div className="mt-1 text-[11px] text-slate font-mono">
+            {wastageRecords.filter((w) => w.status_flag === "critical_loss").length} items exceeding scrap allowance
           </div>
         </div>
 
@@ -152,20 +312,7 @@ export default function ProjectMaterialsPage() {
             {formatCurrency(openPOValue)}
           </div>
           <div className="mt-1 text-[11px] text-slate font-mono">
-            {supplyChain?.summary?.total_open_pos ?? 0} active procurement orders
-          </div>
-        </div>
-
-        <div className="border border-ink-mid bg-ink p-4">
-          <div className="flex items-center justify-between text-slate-light">
-            <span className="font-mono text-xs uppercase tracking-wider">Deliveries (GRNs)</span>
-            <Truck className="h-4 w-4 text-purple-400" />
-          </div>
-          <div className="mt-2 font-mono text-2xl font-bold text-paper">
-            {deliveries.length}
-          </div>
-          <div className="mt-1 text-[11px] text-slate font-mono">
-            Received &amp; inspected at site stores
+            {supplyChain?.summary?.total_open_pos ?? 0} active purchase commitments
           </div>
         </div>
       </div>
@@ -184,6 +331,17 @@ export default function ProjectMaterialsPage() {
           Site Store Inventory ({inventoryOnHand.length})
         </button>
         <button
+          onClick={() => setActiveTab("wastage")}
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "wastage"
+              ? "border-rose-400 text-rose-400 bg-ink-light/40"
+              : "border-transparent text-slate-light hover:text-paper"
+          }`}
+        >
+          <Scale className="h-3.5 w-3.5" />
+          Material Wastage &amp; Usage ({wastageRecords.length})
+        </button>
+        <button
           onClick={() => setActiveTab("requisitions")}
           className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
             activeTab === "requisitions"
@@ -192,7 +350,7 @@ export default function ProjectMaterialsPage() {
           }`}
         >
           <ClipboardList className="h-3.5 w-3.5" />
-          Material Requisitions ({requisitions.length})
+          Site Requisitions ({requisitions.length})
         </button>
         <button
           onClick={() => setActiveTab("rfqs")}
@@ -218,20 +376,20 @@ export default function ProjectMaterialsPage() {
         </button>
         <button
           onClick={() => setActiveTab("deliveries")}
-          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
             activeTab === "deliveries"
               ? "border-purple-400 text-purple-400 bg-ink-light/40"
               : "border-transparent text-slate-light hover:text-paper"
           }`}
         >
           <Truck className="h-3.5 w-3.5" />
-          Deliveries & GRNs ({deliveries.length})
+          Deliveries &amp; GRNs ({deliveries.length})
         </button>
         <button
           onClick={() => setActiveTab("consumption")}
-          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 ${
+          className={`px-4 py-2.5 font-bold border-b-2 transition-colors flex items-center gap-2 whitespace-nowrap ${
             activeTab === "consumption"
-              ? "border-rose-400 text-rose-400 bg-ink-light/40"
+              ? "border-lime-400 text-lime-400 bg-ink-light/40"
               : "border-transparent text-slate-light hover:text-paper"
           }`}
         >
@@ -300,6 +458,132 @@ export default function ProjectMaterialsPage() {
               </table>
             </div>
           )}
+        </section>
+      )}
+
+      {/* Tab Content: Material Wastage & Usage Radar */}
+      {activeTab === "wastage" && (
+        <section className="space-y-4">
+          <div className="border border-ink-mid bg-ink p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <span className="font-mono text-xs font-bold uppercase tracking-wider text-paper flex items-center gap-2">
+                <Scale className="h-4 w-4 text-rose-400" />
+                Material Wastage, Leakage &amp; In-Situ Consumption Radar
+              </span>
+              <p className="mt-0.5 text-[11px] text-slate-light">
+                Reconciliation comparing physical store issues against engineer daily site report logs (actual structural installation).
+              </p>
+            </div>
+            <div className="flex items-center gap-3 font-mono text-xs">
+              <span className="text-slate">Total Scrap/Variance Cost:</span>
+              <strong className="text-rose-400 text-sm">{formatCurrency(totalWastageCost)}</strong>
+            </div>
+          </div>
+
+          {/* Tolerance Legend & Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="border border-emerald-500/30 bg-emerald-950/20 p-3">
+              <span className="font-mono text-[10px] uppercase text-emerald-400 font-bold flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                Normal Allowance (&le; 3.5%)
+              </span>
+              <p className="mt-1 text-xs text-slate-light">
+                Standard construction fabrication cuts, batch over-pour &amp; allowable handling scrap.
+              </p>
+            </div>
+            <div className="border border-amber-500/30 bg-amber-950/20 p-3">
+              <span className="font-mono text-[10px] uppercase text-amber-400 font-bold flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-amber-400" />
+                Elevated Variance (3.5% - 7.0%)
+              </span>
+              <p className="mt-1 text-xs text-slate-light">
+                Requires site agent inspection to verify work quality and over-excavation dimensions.
+              </p>
+            </div>
+            <div className="border border-rose-500/30 bg-rose-950/20 p-3">
+              <span className="font-mono text-[10px] uppercase text-rose-400 font-bold flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-rose-400 animate-pulse" />
+                Critical Leakage Alert (&gt; 7.0%)
+              </span>
+              <p className="mt-1 text-xs text-slate-light">
+                Potential site theft, severe off-spec pours, or unrecorded store issues. Escalated to PM.
+              </p>
+            </div>
+          </div>
+
+          {/* Wastage Table */}
+          <div className="border border-ink-mid bg-ink">
+            {wastageRecords.length === 0 ? (
+              <div className="py-12 text-center text-xs text-slate-light font-mono">
+                No material wastage or variance records recorded yet. Data populates automatically as store issues are reconciled against daily site reports.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-ink-mid bg-ink-light/50 font-mono text-[11px] text-slate uppercase tracking-wider">
+                      <th className="py-2.5 px-4">Item Code</th>
+                      <th className="py-2.5 px-4">Material Description</th>
+                      <th className="py-2.5 px-4 text-right">Store Issued Qty</th>
+                      <th className="py-2.5 px-4 text-right">Installed In-Situ</th>
+                      <th className="py-2.5 px-4 text-right">Variance (Scrap)</th>
+                      <th className="py-2.5 px-4">UOM</th>
+                      <th className="py-2.5 px-4 text-right">Wastage %</th>
+                      <th className="py-2.5 px-4 text-right">Financial Exposure</th>
+                      <th className="py-2.5 px-4 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-ink-mid/40 font-mono">
+                    {wastageRecords.map((w, idx) => (
+                      <tr key={idx} className="hover:bg-ink-light/30 transition-colors">
+                        <td className="py-3 px-4 font-bold text-paper">{w.item_code}</td>
+                        <td className="py-3 px-4 text-paper">{w.item_name}</td>
+                        <td className="py-3 px-4 text-right font-bold text-paper">
+                          {Number(w.quantity_issued || 0).toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 text-right text-emerald-400 font-bold">
+                          {Number(w.quantity_consumed || 0).toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 text-right text-rose-400 font-bold">
+                          {Number(w.variance_quantity || 0).toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 uppercase text-slate-light">{w.unit_of_measure}</td>
+                        <td className="py-3 px-4 text-right">
+                          <span
+                            className={`font-bold ${
+                              w.status_flag === "critical_loss"
+                                ? "text-rose-400"
+                                : w.status_flag === "elevated"
+                                ? "text-amber-400"
+                                : "text-emerald-400"
+                            }`}
+                          >
+                            {w.wastage_percent}%
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-bold text-paper">
+                          {formatCurrency(Number(w.wastage_cost || 0))}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <span
+                            className={`inline-block px-2 py-0.5 text-[10px] uppercase font-bold border ${
+                              w.status_flag === "critical_loss"
+                                ? "border-rose-500/50 bg-rose-950/40 text-rose-300"
+                                : w.status_flag === "elevated"
+                                ? "border-amber-500/50 bg-amber-950/40 text-amber-300"
+                                : "border-emerald-500/50 bg-emerald-950/40 text-emerald-300"
+                            }`}
+                          >
+                            {w.status_flag.replace(/_/g, " ")}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </section>
       )}
 
@@ -589,6 +873,219 @@ export default function ProjectMaterialsPage() {
             </div>
           )}
         </section>
+      )}
+
+      {/* Inline Raise Site Requisition Modal */}
+      {isReqModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="w-full max-w-xl border border-signal/50 bg-ink p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90dvh] overflow-y-auto pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:pb-6 rounded-t-xl sm:rounded-none">
+            <div className="flex items-center justify-between border-b border-ink-mid/60 pb-3">
+              <div>
+                <h3 className="font-display text-lg font-bold text-paper flex items-center gap-2">
+                  <ClipboardList className="h-5 w-5 text-signal" />
+                  Raise Site Material Requisition
+                </h3>
+                <p className="text-xs text-slate-light mt-0.5">
+                  Demands raised by site engineers, agents, foremen &amp; clerks. Checked against site budget &amp; stores.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsReqModalOpen(false)}
+                className="text-slate hover:text-paper p-1"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {reqError && (
+              <div className="border border-rose-500/50 bg-rose-950/20 p-3 text-xs text-rose-300">
+                {reqError}
+              </div>
+            )}
+
+            <form onSubmit={handleCreateRequisition} className="space-y-4">
+              {/* Site Store */}
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate">
+                  Target Site Store *
+                </label>
+                <select
+                  value={reqStoreId}
+                  onChange={(e) => setReqStoreId(e.target.value)}
+                  className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                >
+                  <option value="">-- Project Site Store (Auto-assigned) --</option>
+                  {siteStores.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.code || s.store_type})
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-slate-light mt-0.5 block">
+                  Store clerk will review live inventory before issuing or forwarding to procurement.
+                </span>
+              </div>
+
+              {/* Material Item / Description */}
+              <div className="space-y-2">
+                <label className="block text-xs font-mono uppercase text-slate">
+                  Material Item *
+                </label>
+                {inventoryOnHand.length > 0 && (
+                  <div>
+                    <select
+                      value={reqSelectedItemId}
+                      onChange={(e) => {
+                        setReqSelectedItemId(e.target.value);
+                        const matched = inventoryOnHand.find((i) => i.item_id === e.target.value);
+                        if (matched) {
+                          setReqItemDesc(matched.item_name);
+                          setReqUom(matched.unit_of_measure || "each");
+                        }
+                      }}
+                      className="w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                    >
+                      <option value="">-- Select from Project Store On-Hand Catalogue --</option>
+                      {inventoryOnHand.map((item) => (
+                        <option key={item.item_id} value={item.item_id}>
+                          {item.item_name} [{item.item_code}] - Available: {Number(item.on_hand_quantity).toLocaleString()} {item.unit_of_measure}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div>
+                  <input
+                    value={reqItemDesc}
+                    onChange={(e) => setReqItemDesc(e.target.value)}
+                    placeholder="Or type custom description (e.g. 32.5R Portland Cement, Y12 High-Yield Rebar)"
+                    className="w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal min-h-[44px] sm:min-h-0"
+                  />
+                </div>
+              </div>
+
+              {/* Quantity & UOM */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate">
+                    Required Quantity *
+                  </label>
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="any"
+                    value={reqQuantity}
+                    onChange={(e) => setReqQuantity(e.target.value)}
+                    placeholder="e.g. 50"
+                    className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate">
+                    Unit of Measure *
+                  </label>
+                  <select
+                    value={reqUom}
+                    onChange={(e) => setReqUom(e.target.value)}
+                    className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                  >
+                    <option value="bags">Bags (50kg)</option>
+                    <option value="tonnes">Tonnes</option>
+                    <option value="kg">Kilograms (kg)</option>
+                    <option value="m3">Cubic Metres (m³)</option>
+                    <option value="linear_m">Linear Metres</option>
+                    <option value="pcs">Pieces / Units</option>
+                    <option value="sheets">Sheets / Boards</option>
+                    <option value="litres">Litres</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Work Package & Priority */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate">
+                    Work Package / Milestone
+                  </label>
+                  <select
+                    value={reqWorkPackage}
+                    onChange={(e) => setReqWorkPackage(e.target.value)}
+                    className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                  >
+                    <option value="Substructure & Foundation">Substructure &amp; Foundation</option>
+                    <option value="Superstructure Columns & Beams">Superstructure Columns &amp; Beams</option>
+                    <option value="Floor Slab Pour">Floor Slab Pour</option>
+                    <option value="Brickwork & Masonry">Brickwork &amp; Masonry</option>
+                    <option value="Structural Steel & Roofing">Structural Steel &amp; Roofing</option>
+                    <option value="Plastering & Wet Works">Plastering &amp; Wet Works</option>
+                    <option value="MEP & Conduits">MEP &amp; Conduits</option>
+                    <option value="External Works & Civil Drainage">External Works &amp; Drainage</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-mono uppercase text-slate">
+                    Urgency / Priority
+                  </label>
+                  <select
+                    value={reqPriority}
+                    onChange={(e) => setReqPriority(e.target.value)}
+                    className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                  >
+                    <option value="normal">Normal (Standard Delivery)</option>
+                    <option value="urgent">Urgent (Within 24-48 Hours)</option>
+                    <option value="critical">Critical (Work Stoppage Risk)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Required By Date */}
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate">
+                  Required on Site By Date
+                </label>
+                <input
+                  type="date"
+                  value={reqRequiredDate}
+                  onChange={(e) => setReqRequiredDate(e.target.value)}
+                  className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                />
+              </div>
+
+              {/* Justification / Notes */}
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate">
+                  Field Justification / Specific Section Location
+                </label>
+                <textarea
+                  rows={2}
+                  value={reqJustification}
+                  onChange={(e) => setReqJustification(e.target.value)}
+                  placeholder="e.g. Block B grid line 4 foundation rebar cage reinforcement."
+                  className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal"
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-ink-mid/60">
+                <button
+                  type="button"
+                  onClick={() => setIsReqModalOpen(false)}
+                  className="border border-ink-mid px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs text-slate-light hover:text-paper"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingReq || (!reqItemDesc.trim() && !reqSelectedItemId) || !reqQuantity}
+                  className="border border-signal bg-signal px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {submittingReq ? "Submitting..." : "Submit Requisition"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

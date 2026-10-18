@@ -69,6 +69,30 @@ export type CommercialReadiness = {
   cleared_by?: string;
 };
 
+export type ProjectMilestone = Record<string, unknown> & {
+  id: string;
+  name: string;
+  status: string;
+  baseline_date?: string | null;
+  forecast_date?: string | null;
+  actual_date?: string | null;
+  weight?: number | null;
+  owner_id?: string | null;
+  owner_name?: string | null;
+  notes?: string | null;
+  duration_days?: number;
+  predecessor_id?: string | null;
+  predecessor_name?: string | null;
+  lag_days?: number;
+  dependency_type?: string;
+  is_critical?: boolean;
+  total_float?: number;
+  early_start?: string | null;
+  early_finish?: string | null;
+  late_start?: string | null;
+  late_finish?: string | null;
+};
+
 export type Detail = Record<string, unknown> & {
   project?: Project;
   viability?: Record<string, unknown>[];
@@ -79,7 +103,7 @@ export type Detail = Record<string, unknown> & {
   procurement_orders?: Record<string, unknown>[];
   tenders?: Record<string, unknown>[];
   subcontractors?: Record<string, unknown>[];
-  milestones?: Record<string, unknown>[];
+  milestones?: ProjectMilestone[];
   changes?: Record<string, unknown>[];
   risks?: Record<string, unknown>[];
   pre_mobilisation?: PreMobilisationReadiness;

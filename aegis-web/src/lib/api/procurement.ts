@@ -416,8 +416,21 @@ export async function getProjectLifecycle(projectId: string): Promise<ApiRespons
   });
 }
 
-/** Adds a real schedule milestone to a project (real owner_id, not a placeholder name). */
-export async function addProjectMilestone(projectId: string, payload: { name: string; status?: string; baseline_date?: string; forecast_date?: string; actual_date?: string; weight?: number; owner_id?: string; notes?: string }): Promise<ApiResponse<{ id: string }>> {
+/** Adds a real schedule milestone to a project with CPM scheduling attributes. */
+export async function addProjectMilestone(projectId: string, payload: {
+  name: string;
+  status?: string;
+  baseline_date?: string;
+  forecast_date?: string;
+  actual_date?: string;
+  weight?: number;
+  owner_id?: string;
+  notes?: string;
+  duration_days?: number;
+  predecessor_id?: string;
+  lag_days?: number;
+  dependency_type?: string;
+}): Promise<ApiResponse<{ id: string }>> {
   return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -425,11 +438,27 @@ export async function addProjectMilestone(projectId: string, payload: { name: st
   });
 }
 
-/** Progresses an existing milestone (status, actual date, owner, etc). */
+/** Progresses an existing milestone (status, actual date, owner, duration, predecessor, etc). */
 export async function updateProjectMilestone(projectId: string, milestoneId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
   return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones/${milestoneId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Soft-deletes a milestone from the project schedule and updates dependencies. */
+export async function deleteProjectMilestone(projectId: string, milestoneId: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones/${milestoneId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+/** Recalculates Critical Path Method (CPM) across all project milestones. */
+export async function calculateProjectScheduleCPM(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/calculate-cpm`, {
+    method: 'POST',
     allowFallback: false,
   });
 }

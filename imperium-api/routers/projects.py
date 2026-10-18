@@ -29,6 +29,23 @@ from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
 from app.services.finance.project_forecast import seed_boq_line_items_from_quotation
+from app.services.project_cpm import CyclicDependencyError, calculate_cpm_schedule, recalculate_and_persist_project_cpm
+from app.services.project_plant import get_project_plant_analytics, record_project_plant_shift_log
+from app.services.project_delays_eot import (
+    list_project_delays,
+    create_project_delay,
+    list_project_eot_claims,
+    create_project_eot_claim,
+    determine_project_eot_claim,
+)
+from app.services.project_progress_pack import (
+    list_project_drawings,
+    record_controlled_drawing,
+    list_project_photos,
+    record_progress_photo,
+    generate_project_progress_pack,
+)
+from app.services.project_evm import calculate_project_evm
 
 # Every /{project_id} route is limited to the caller's visible projects.
 router = APIRouter(dependencies=[Depends(enforce_project_path_scope)])
@@ -249,6 +266,10 @@ class MilestonePayload(BaseModel):
     weight: Optional[Decimal] = Field(default=None, ge=0, le=100)
     owner_id: Optional[UUID] = None
     notes: Optional[str] = None
+    duration_days: Optional[int] = Field(default=1, ge=0)
+    predecessor_id: Optional[UUID] = None
+    lag_days: Optional[int] = Field(default=0)
+    dependency_type: Optional[Literal["FS", "SS", "FF", "SF"]] = "FS"
 
 
 class MilestoneUpdate(BaseModel):
@@ -262,6 +283,10 @@ class MilestoneUpdate(BaseModel):
     weight: Optional[Decimal] = Field(default=None, ge=0, le=100)
     owner_id: Optional[UUID] = None
     notes: Optional[str] = None
+    duration_days: Optional[int] = Field(default=None, ge=0)
+    predecessor_id: Optional[UUID] = None
+    lag_days: Optional[int] = None
+    dependency_type: Optional[Literal["FS", "SS", "FF", "SF"]] = None
 
 
 class ChangePayload(BaseModel):
@@ -1028,9 +1053,10 @@ async def project_lifecycle(
         db,
         read_project,
         rows(
-            """SELECT m.*, owner.full_name AS owner_name
+            """SELECT m.*, owner.full_name AS owner_name, pred.name AS predecessor_name
                FROM projects.project_milestones m
                LEFT JOIN core.users owner ON owner.id = m.owner_id
+               LEFT JOIN projects.project_milestones pred ON pred.id = m.predecessor_id
                WHERE m.project_id=:project_id AND m.organization_id=:org_id AND m.is_deleted=false
                ORDER BY m.baseline_date NULLS LAST, m.created_at"""
         ),
@@ -1065,13 +1091,22 @@ async def add_milestone(
     _: dict = Depends(require_permission("projects.update")),
 ):
     await _project_or_404(db, project_id, user["org_id"])
+    fields = payload.model_dump()
     row = (
         await db.execute(
             text(
-                """INSERT INTO projects.project_milestones (project_id, organization_id, created_by, name, status, baseline_date, forecast_date, actual_date, weight, owner_id, notes) VALUES (:project_id,:org_id,:user_id,:name,:status,:baseline_date,:forecast_date,:actual_date,:weight,:owner_id,:notes) RETURNING id"""
+                """INSERT INTO projects.project_milestones (
+                    project_id, organization_id, created_by, name, status,
+                    baseline_date, forecast_date, actual_date, weight, owner_id, notes,
+                    duration_days, predecessor_id, lag_days, dependency_type
+                ) VALUES (
+                    :project_id, :org_id, :user_id, :name, :status,
+                    :baseline_date, :forecast_date, :actual_date, :weight, :owner_id, :notes,
+                    COALESCE(:duration_days, 1), :predecessor_id, COALESCE(:lag_days, 0), COALESCE(:dependency_type, 'FS')
+                ) RETURNING id"""
             ),
             {
-                **payload.model_dump(),
+                **fields,
                 "project_id": project_id,
                 "org_id": user["org_id"],
                 "user_id": user["user_id"],
@@ -1079,6 +1114,12 @@ async def add_milestone(
         )
     ).first()
     await db.commit()
+
+    try:
+        await recalculate_and_persist_project_cpm(db, user["org_id"], project_id)
+    except Exception as cpm_err:
+        logger.warning(f"CPM calculation on milestone add non-fatal error: {cpm_err}")
+
     await _sync_milestone_calendar(db, org_id=user["org_id"], project_id=project_id, milestone_id=row.id)
     return _result({"id": str(row.id)}, "Milestone created.")
 
@@ -1093,9 +1134,7 @@ async def update_milestone(
     _: dict = Depends(require_permission("projects.update")),
 ):
     """Progresses a milestone after creation - mark it in-progress/complete,
-    record its actual_date, reassign its owner, etc. Fields left out of the
-    payload keep their existing value (same COALESCE pattern as
-    update_project_intake)."""
+    record its actual_date, reassign its owner, update predecessor, duration, lag, etc."""
     await _project_or_404(db, project_id, user["org_id"])
     fields = payload.model_dump(exclude_none=True)
     if not fields:
@@ -1112,6 +1151,10 @@ async def update_milestone(
                     weight = COALESCE(:weight, weight),
                     owner_id = COALESCE(:owner_id, owner_id),
                     notes = COALESCE(:notes, notes),
+                    duration_days = COALESCE(:duration_days, duration_days),
+                    predecessor_id = CASE WHEN :predecessor_id_provided THEN CAST(:predecessor_id AS uuid) ELSE predecessor_id END,
+                    lag_days = COALESCE(:lag_days, lag_days),
+                    dependency_type = COALESCE(:dependency_type, dependency_type),
                     updated_at = NOW()
                 WHERE id = :milestone_id AND project_id = :project_id AND organization_id = :org_id AND is_deleted = false
                 RETURNING id
@@ -1128,6 +1171,11 @@ async def update_milestone(
                 "weight": fields.get("weight"),
                 "owner_id": fields.get("owner_id"),
                 "notes": fields.get("notes"),
+                "duration_days": fields.get("duration_days"),
+                "predecessor_id_provided": "predecessor_id" in fields,
+                "predecessor_id": str(fields["predecessor_id"]) if fields.get("predecessor_id") else None,
+                "lag_days": fields.get("lag_days"),
+                "dependency_type": fields.get("dependency_type"),
             },
         )
     ).first()
@@ -1136,11 +1184,88 @@ async def update_milestone(
         raise HTTPException(status_code=404, detail="Milestone not found.")
     await db.commit()
 
+    try:
+        await recalculate_and_persist_project_cpm(db, user["org_id"], project_id)
+    except Exception as cpm_err:
+        logger.warning(f"CPM calculation on milestone update non-fatal error: {cpm_err}")
+
     calendar_fields = {"name", "status", "baseline_date", "forecast_date"}
     if calendar_fields & set(fields.keys()):
         await _sync_milestone_calendar(db, org_id=user["org_id"], project_id=project_id, milestone_id=milestone_id)
 
     return _result({"id": str(row.id)}, "Milestone updated.")
+
+
+@router.delete("/{project_id}/milestones/{milestone_id}")
+async def delete_milestone(
+    project_id: UUID,
+    milestone_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Soft-deletes a milestone and cleans up downstream references."""
+    await _project_or_404(db, project_id, user["org_id"])
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.project_milestones SET
+                    is_deleted = true,
+                    updated_at = NOW()
+                WHERE id = :milestone_id AND project_id = :project_id AND organization_id = :org_id AND is_deleted = false
+                RETURNING id
+            """),
+            {"milestone_id": milestone_id, "project_id": project_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Milestone not found.")
+
+    await db.execute(
+        text("""
+            UPDATE projects.project_milestones SET predecessor_id = NULL
+            WHERE predecessor_id = :milestone_id AND project_id = :project_id AND organization_id = :org_id
+        """),
+        {"milestone_id": milestone_id, "project_id": project_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+
+    try:
+        await recalculate_and_persist_project_cpm(db, user["org_id"], project_id)
+    except Exception as cpm_err:
+        logger.warning(f"CPM calculation on milestone delete non-fatal error: {cpm_err}")
+
+    return _result({"id": str(milestone_id)}, "Milestone deleted.")
+
+
+@router.post("/{project_id}/schedule/calculate-cpm")
+async def trigger_cpm_calculation(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Triggers Critical Path Method (CPM) calculation across all project milestones.
+    Computes Early Start/Finish, Late Start/Finish, Total Float, and tags Critical Path.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    try:
+        updated_milestones = await recalculate_and_persist_project_cpm(db, user["org_id"], project_id)
+        critical_count = sum(1 for m in updated_milestones if m.get("is_critical"))
+        return _result(
+            {
+                "milestones": updated_milestones,
+                "total_milestones": len(updated_milestones),
+                "critical_milestones": critical_count,
+            },
+            f"Schedule CPM calculation complete. {critical_count} critical path activities identified."
+        )
+    except CyclicDependencyError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Circular dependency detected in project schedule: {' -> '.join(exc.cycle_nodes)}. Break the loop to calculate CPM."
+        )
 
 
 @router.post("/{project_id}/changes", status_code=201)
@@ -3568,7 +3693,8 @@ async def get_project_supply_chain(
     # 1. Site stores linked to project
     stores_res = await db.execute(
         text("""
-            SELECT id, name, code, store_type, site_id, location, is_active, created_at
+            SELECT id, name, store_code AS code, store_type, site_id, location_label AS location,
+                   (status = 'active') AS is_active, created_at
             FROM procurement.stores
             WHERE organization_id = :org_id
               AND project_id = :project_id
@@ -3588,7 +3714,7 @@ async def get_project_supply_chain(
                 SELECT
                     sl.item_id,
                     COALESCE(i.item_code, 'UNLISTED') AS item_code,
-                    COALESCE(i.name, 'Uncatalogued Item') AS item_name,
+                    COALESCE(i.item_name, 'Uncatalogued Item') AS item_name,
                     COALESCE(i.unit_of_measure, 'units') AS unit_of_measure,
                     COALESCE(i.category, 'General') AS category,
                     sl.store_id,
@@ -3601,7 +3727,7 @@ async def get_project_supply_chain(
                 LEFT JOIN procurement.stores s ON s.id = sl.store_id
                 WHERE sl.organization_id = :org_id
                   AND (sl.project_id = :project_id OR sl.store_id = ANY(:store_ids))
-                GROUP BY sl.item_id, i.item_code, i.name, i.unit_of_measure, i.category, sl.store_id, s.name
+                GROUP BY sl.item_id, i.item_code, i.item_name, i.unit_of_measure, i.category, sl.store_id, s.name
                 HAVING SUM(sl.quantity) > 0
                 ORDER BY total_value DESC
             """),
@@ -3766,12 +3892,117 @@ async def get_project_supply_chain(
     )
     consumption_logs = [dict(r._mapping) for r in cons_res.fetchall()]
 
+    # 8. Wastage & Usage Variance Analysis (Stock Issued vs In-situ Consumed)
+    wastage_res = await db.execute(
+        text("""
+            SELECT
+                COALESCE(i.item_code, drm.item_code, 'MAT') AS item_code,
+                COALESCE(i.item_name, drm.item_name, 'Site Material') AS item_name,
+                COALESCE(i.unit_of_measure, drm.unit_of_measure, 'units') AS unit_of_measure,
+                COALESCE(iss.issued_qty, 0) AS quantity_issued,
+                COALESCE(con.consumed_qty, 0) AS quantity_consumed,
+                COALESCE(iss.avg_cost, i.standard_cost, 0) AS avg_unit_cost
+            FROM (
+                SELECT
+                    sl.item_id,
+                    SUM(CASE WHEN sl.movement_type = 'issue' THEN ABS(sl.quantity) ELSE 0 END) -
+                    SUM(CASE WHEN sl.movement_type = 'return' THEN ABS(sl.quantity) ELSE 0 END) AS issued_qty,
+                    AVG(COALESCE(sl.unit_cost, 0)) AS avg_cost
+                FROM procurement.stock_ledger sl
+                WHERE sl.organization_id = CAST(:org_id AS uuid)
+                  AND (sl.project_id = CAST(:project_id AS uuid) OR sl.store_id = ANY(:store_ids))
+                GROUP BY sl.item_id
+            ) iss
+            FULL OUTER JOIN (
+                SELECT
+                    drm.item_id,
+                    drm.item_code,
+                    drm.item_name,
+                    drm.unit_of_measure,
+                    SUM(drm.quantity_used) AS consumed_qty
+                FROM projects.daily_report_materials drm
+                JOIN projects.daily_site_reports dr ON dr.id = drm.report_id
+                WHERE dr.organization_id = CAST(:org_id AS uuid)
+                  AND dr.project_id = CAST(:project_id AS uuid)
+                  AND drm.is_deleted = false
+                GROUP BY drm.item_id, drm.item_code, drm.item_name, drm.unit_of_measure
+            ) con ON con.item_id = iss.item_id
+            LEFT JOIN procurement.inventory_items i ON i.id = COALESCE(iss.item_id, con.item_id)
+            WHERE COALESCE(iss.issued_qty, 0) > 0 OR COALESCE(con.consumed_qty, 0) > 0
+            LIMIT 50
+        """),
+        {"org_id": org_id, "project_id": project_id, "store_ids": store_ids or [dummy_uuid]},
+    )
+    wastage_rows = []
+    total_wastage_cost = 0.0
+    for r in wastage_res.fetchall():
+        row_dict = dict(r._mapping)
+        iss_q = float(row_dict.get("quantity_issued") or 0)
+        con_q = float(row_dict.get("quantity_consumed") or 0)
+        u_cost = float(row_dict.get("avg_unit_cost") or 0)
+        var_q = max(0.0, iss_q - con_q) if iss_q > 0 else 0.0
+        w_pct = round((var_q / iss_q * 100.0), 1) if iss_q > 0 else 0.0
+        w_cost = round(var_q * u_cost, 2)
+        total_wastage_cost += w_cost
+
+        status_flag = "balanced"
+        if iss_q > 0:
+            if w_pct <= 3.5:
+                status_flag = "normal"
+            elif w_pct <= 7.0:
+                status_flag = "elevated"
+            else:
+                status_flag = "critical_loss"
+
+        row_dict.update({
+            "quantity_issued": iss_q,
+            "quantity_consumed": con_q,
+            "variance_quantity": round(var_q, 2),
+            "wastage_percent": w_pct,
+            "wastage_cost": w_cost,
+            "status_flag": status_flag,
+        })
+        wastage_rows.append(row_dict)
+
+    # 9. Cross-module Financial Reconciliation & Sanity Verification
+    fin_res = await db.execute(
+        text("""
+            SELECT
+                COALESCE(contract_value, budget, 0) AS contract_value,
+                COALESCE(budget_amount, budget, 0) AS budget_amount,
+                COALESCE(deposit_received_amount, 0) AS deposit_received_amount,
+                COALESCE(actual_cost, 0) AS actual_cost,
+                COALESCE(committed_cost, 0) AS committed_cost
+            FROM projects.projects
+            WHERE id = CAST(:project_id AS uuid) AND organization_id = CAST(:org_id AS uuid)
+        """),
+        {"org_id": org_id, "project_id": project_id},
+    )
+    fin_mapping = fin_res.mappings().first() or {}
+    contract_val = float(fin_mapping.get("contract_value") or 0)
+    budget_amt = float(fin_mapping.get("budget_amount") or 0)
+    deposits_rec = float(fin_mapping.get("deposit_received_amount") or 0)
+
     total_on_hand_val = sum(float(r.get("total_value") or 0) for r in stock_rows)
     total_committed_po_val = sum(
         float(p.get("total_amount") or 0)
         for p in purchase_orders
         if p.get("status") in ("issued", "approved", "partially_received")
     )
+    total_exposure = round(total_on_hand_val + total_committed_po_val, 2)
+    deposit_coverage_pct = round((deposits_rec / total_exposure * 100.0), 1) if total_exposure > 0 else 100.0
+    is_deposit_backed = (deposits_rec >= total_exposure) or (total_exposure == 0)
+    is_within_budget = (total_exposure <= budget_amt) if budget_amt > 0 else True
+
+    if is_deposit_backed and is_within_budget:
+        sanity_verdict = "VERIFIED_SOUND"
+        sanity_message = "Material exposure is fully backed by cleared client advance deposits and stays within approved baseline budget."
+    elif not is_deposit_backed and is_within_budget:
+        sanity_verdict = "DEPOSIT_LAG"
+        sanity_message = "Material procurement exposure exceeds cleared client advance deposits. Commercial cashflow verification required."
+    else:
+        sanity_verdict = "BUDGET_OVERRUN_RISK"
+        sanity_message = "Total committed and on-hand material exposure exceeds project budget ceiling. Variation approval required."
 
     data = {
         "project_id": str(project_id),
@@ -3782,6 +4013,18 @@ async def get_project_supply_chain(
         "deliveries": deliveries,
         "rfqs": rfqs,
         "consumption_logs": consumption_logs,
+        "wastage_records": wastage_rows,
+        "finance_verification": {
+            "contract_value": contract_val,
+            "budget_amount": budget_amt,
+            "deposit_received_amount": deposits_rec,
+            "total_material_exposure": total_exposure,
+            "deposit_coverage_percent": deposit_coverage_pct,
+            "is_deposit_backed": is_deposit_backed,
+            "is_within_budget": is_within_budget,
+            "verdict": sanity_verdict,
+            "message": sanity_message,
+        },
         "summary": {
             "total_site_stores": len(site_stores),
             "total_inventory_items": len(stock_rows),
@@ -3791,6 +4034,10 @@ async def get_project_supply_chain(
             "total_requisitions": len(requisitions),
             "total_deliveries": len(deliveries),
             "total_rfqs": len(rfqs),
+            "total_wastage_cost": round(total_wastage_cost, 2),
+            "average_wastage_percent": round(
+                sum(r["wastage_percent"] for r in wastage_rows) / len(wastage_rows), 1
+            ) if wastage_rows else 0.0,
         },
     }
     return _result(data, "Project supply chain loaded successfully.")
@@ -3854,9 +4101,9 @@ async def get_project_leadership_dossier(
     proj_res = await db.execute(
         text("""
             SELECT p.id, p.name, p.project_code, p.status, p.contract_value, p.start_date,
-                   p.planned_completion_date, p.health_status, c.name AS client_name
+                   p.planned_completion_date, COALESCE(c.name, p.client_name) AS client_name
             FROM projects.projects p
-            LEFT JOIN crm.clients c ON c.id = p.client_id
+            LEFT JOIN crm.organizations c ON c.id = p.client_org_id
             WHERE p.id = CAST(:project_id AS uuid) AND p.organization_id = CAST(:org_id AS uuid)
         """),
         {"project_id": project_id, "org_id": org_id},
@@ -3868,13 +4115,13 @@ async def get_project_leadership_dossier(
     team_res = await db.execute(
         text("""
             SELECT pa.employee_id, pa.role_on_project,
-                   e.first_name || ' ' || e.last_name AS full_name, e.job_title, e.work_email, e.phone_number
+                   e.employee_name AS full_name, e.job_title, e.personal_email AS work_email, e.personal_phone AS phone_number
             FROM hr.project_allocations pa
             JOIN hr.employees e ON e.id = pa.employee_id
             WHERE pa.project_id = CAST(:project_id AS uuid) AND pa.organization_id = CAST(:org_id AS uuid) AND pa.is_deleted = false
             UNION ALL
             SELECT e.id AS employee_id, sra.role_name AS role_on_project,
-                   e.first_name || ' ' || e.last_name AS full_name, e.job_title, e.work_email, e.phone_number
+                   e.employee_name AS full_name, e.job_title, e.personal_email AS work_email, e.personal_phone AS phone_number
             FROM projects.site_role_assignments sra
             JOIN hr.employees e ON e.linked_user_id = sra.user_id
             WHERE sra.project_id = CAST(:project_id AS uuid) AND sra.organization_id = CAST(:org_id AS uuid) AND sra.is_deleted = false
@@ -3892,8 +4139,8 @@ async def get_project_leadership_dossier(
         text("""
             SELECT
                 COUNT(*) AS total_reports,
-                COUNT(CASE WHEN issues_notes IS NOT NULL AND length(trim(issues_notes)) > 0 THEN 1 END) AS reports_with_issues,
-                COUNT(CASE WHEN delays_notes IS NOT NULL AND length(trim(delays_notes)) > 0 THEN 1 END) AS reports_with_delays
+                COUNT(CASE WHEN safety_notes IS NOT NULL AND length(trim(safety_notes)) > 0 THEN 1 END) AS reports_with_issues,
+                COUNT(CASE WHEN delays IS NOT NULL AND length(trim(delays)) > 0 THEN 1 END) AS reports_with_delays
             FROM projects.daily_site_reports
             WHERE organization_id = CAST(:org_id AS uuid)
               AND project_id = CAST(:project_id AS uuid)
@@ -3901,7 +4148,7 @@ async def get_project_leadership_dossier(
               AND report_date < CAST(:next_month_start AS date)
               AND is_deleted = false
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
     report_stats = reports_res.mappings().first() or {}
     total_reports = int(report_stats.get("total_reports") or 0)
@@ -3911,21 +4158,21 @@ async def get_project_leadership_dossier(
 
     recent_delays_res = await db.execute(
         text("""
-            SELECT report_date, work_summary, issues_notes, delays_notes
+            SELECT report_date, actual_work AS work_summary, safety_notes AS issues_notes, delays AS delays_notes
             FROM projects.daily_site_reports
             WHERE organization_id = CAST(:org_id AS uuid)
               AND project_id = CAST(:project_id AS uuid)
               AND report_date >= CAST(:start_dt AS date)
               AND report_date < CAST(:next_month_start AS date)
               AND (
-                (delays_notes IS NOT NULL AND length(trim(delays_notes)) > 0)
-                OR (issues_notes IS NOT NULL AND length(trim(issues_notes)) > 0)
+                (delays IS NOT NULL AND length(trim(delays)) > 0)
+                OR (safety_notes IS NOT NULL AND length(trim(safety_notes)) > 0)
               )
               AND is_deleted = false
             ORDER BY report_date DESC
             LIMIT 5
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
     recent_delays = [dict(r) for r in recent_delays_res.mappings().all()]
 
@@ -3966,17 +4213,18 @@ async def get_project_leadership_dossier(
     briefings_res = await db.execute(
         text("""
             SELECT
-                COUNT(*) AS briefings_count,
-                COALESCE(SUM(attendees_count), 0) AS total_attendees,
-                COALESCE(AVG(attendees_count), 0) AS avg_attendees
-            FROM projects.site_day_briefings
-            WHERE organization_id = CAST(:org_id AS uuid)
-              AND project_id = CAST(:project_id AS uuid)
-              AND briefing_date >= CAST(:start_dt AS date)
-              AND briefing_date < CAST(:next_month_start AS date)
-              AND is_deleted = false
+                COUNT(DISTINCT sdb.id) AS briefings_count,
+                COUNT(sda.id) AS total_attendees,
+                ROUND(COUNT(sda.id)::numeric / GREATEST(COUNT(DISTINCT sdb.id), 1), 1) AS avg_attendees
+            FROM projects.site_day_briefings sdb
+            LEFT JOIN projects.site_day_attendance sda ON sda.briefing_id = sdb.id
+            WHERE sdb.organization_id = CAST(:org_id AS uuid)
+              AND sdb.project_id = CAST(:project_id AS uuid)
+              AND sdb.briefing_date >= CAST(:start_dt AS date)
+              AND sdb.briefing_date < CAST(:next_month_start AS date)
+              AND sdb.is_deleted = false
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
     briefing_stats = briefings_res.mappings().first() or {}
     briefings_conducted = int(briefing_stats.get("briefings_count") or 0)
@@ -3999,7 +4247,7 @@ async def get_project_leadership_dossier(
               AND drl.is_deleted = false
               AND dr.is_deleted = false
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
     labour_stats = labour_res.mappings().first() or {}
     total_reg_hrs = float(labour_stats.get("total_regular_hours") or 0)
@@ -4042,7 +4290,7 @@ async def get_project_leadership_dossier(
               AND dre.is_deleted = false
               AND dr.is_deleted = false
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
     plant_stats = plant_res.mappings().first() or {}
     total_plant_cost = float(plant_stats.get("total_plant_cost") or 0)
@@ -4061,7 +4309,7 @@ async def get_project_leadership_dossier(
               AND drm.is_deleted = false
               AND dr.is_deleted = false
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
     mat_stats = mat_res.mappings().first() or {}
     total_mat_cost = float(mat_stats.get("total_material_cost") or 0)
@@ -4071,10 +4319,10 @@ async def get_project_leadership_dossier(
         text("""
             SELECT
                 COUNT(*) AS total_variations,
-                COALESCE(SUM(amount), 0) AS total_variation_amount,
-                COALESCE(SUM(CASE WHEN client_approval_status = 'approved' THEN amount ELSE 0 END), 0) AS approved_variation_amount,
-                COALESCE(SUM(CASE WHEN client_approval_status != 'approved' THEN amount ELSE 0 END), 0) AS pending_variation_amount,
-                COUNT(CASE WHEN client_approval_status = 'approved' THEN 1 END) AS approved_count,
+                COALESCE(SUM(cost_impact), 0) AS total_variation_amount,
+                COALESCE(SUM(CASE WHEN client_approval_status = 'approved' OR status = 'approved' THEN cost_impact ELSE 0 END), 0) AS approved_variation_amount,
+                COALESCE(SUM(CASE WHEN COALESCE(client_approval_status, status) != 'approved' THEN cost_impact ELSE 0 END), 0) AS pending_variation_amount,
+                COUNT(CASE WHEN client_approval_status = 'approved' OR status = 'approved' THEN 1 END) AS approved_count,
                 COUNT(CASE WHEN qs_review_status = 'pending' THEN 1 END) AS pending_qs_count
             FROM finance.variations
             WHERE organization_id = CAST(:org_id AS uuid)
@@ -4094,16 +4342,17 @@ async def get_project_leadership_dossier(
         text("""
             SELECT
                 COUNT(*) AS weekly_budgets_count,
-                COALESCE(SUM(total_budget), 0) AS total_budget_amount
+                COALESCE(SUM(total_planned_amount), 0) AS total_budget_amount
             FROM projects.weekly_budgets
             WHERE organization_id = CAST(:org_id AS uuid)
               AND project_id = CAST(:project_id AS uuid)
-              AND start_date >= CAST(:start_dt AS date)
-              AND start_date < CAST(:next_month_start AS date)
+              AND week_start >= CAST(:start_dt AS date)
+              AND week_start < CAST(:next_month_start AS date)
               AND is_deleted = false
         """),
-        {"org_id": org_id, "project_id": project_id, "start_dt": str(start_dt), "next_month_start": str(next_month_start)},
+        {"org_id": org_id, "project_id": project_id, "start_dt": start_dt, "next_month_start": next_month_start},
     )
+
     wbud_stats = wbud_res.mappings().first() or {}
     weekly_budgets_count = int(wbud_stats.get("weekly_budgets_count") or 0)
     planned_weekly_budget = float(wbud_stats.get("total_budget_amount") or 0)
@@ -4124,12 +4373,25 @@ async def get_project_leadership_dossier(
     ]
 
     # Executive discipline score (0 - 100)
+    var_score = 100.0 if pend_var_amt == 0 else max(30.0, 100.0 - (pend_var_amt / 1000.0))
+    ot_score = max(0.0, 100.0 - (overtime_ratio_pct * 2.0)) if total_work_hrs > 0 else (100.0 if total_reports > 0 else 0.0)
     discipline_score = int(round(
         (min(reporting_compliance_pct, 100.0) * 0.35) +
         (min(briefing_compliance_pct, 100.0) * 0.35) +
-        (max(0.0, 100.0 - (overtime_ratio_pct * 2.0)) * 0.15) +
-        (100.0 if pend_var_amt == 0 else max(30.0, 100.0 - (pend_var_amt / 1000.0)) * 0.15)
+        (ot_score * 0.15) +
+        (var_score * 0.15)
     ))
+
+    # Dynamic Truthful Health Assessment
+    # Honest evaluation: never fabricate an 'on_track' status if operations or commercial variances indicate distress
+    assessed_health = project.get("health_status")
+    if not assessed_health:
+        if reports_with_delays >= 3 or variance_to_weekly_budget > 10000.0 or discipline_score < 40:
+            assessed_health = "critical"
+        elif reports_with_delays >= 1 or variance_to_weekly_budget > 2500.0 or discipline_score < 70 or (days_elapsed > 3 and reporting_compliance_pct < 50.0):
+            assessed_health = "at_risk"
+        else:
+            assessed_health = "on_track"
 
     data = {
         "project": {
@@ -4139,7 +4401,7 @@ async def get_project_leadership_dossier(
             "client_name": project["client_name"] or "Direct Client",
             "contract_value": float(project["contract_value"] or 0),
             "status": project["status"],
-            "health_status": project["health_status"] or "on_track",
+            "health_status": assessed_health,
         },
         "period": {
             "month": month_label,
@@ -4163,6 +4425,18 @@ async def get_project_leadership_dossier(
             "verdict": engineer_verdict,
             "talking_points": engineer_talking_points,
         },
+        "site_engineer": {
+            "name": engineer_member["full_name"] if engineer_member else "Site Engineer / Lead Agent",
+            "role": engineer_member["role_on_project"] if engineer_member else "Site Engineer",
+            "reports_recorded": total_reports,
+            "reporting_compliance_pct": reporting_compliance_pct,
+            "reports_with_issues": reports_with_issues,
+            "reports_with_delays": reports_with_delays,
+            "milestones_total": m_total,
+            "milestones_completed": m_completed,
+            "milestones_completion_pct": milestone_pct,
+        },
+
         "foreman": {
             "name": foreman_member["full_name"] if foreman_member else "General Site Foreman",
             "role": foreman_member["role_on_project"] if foreman_member else "General Foreman",
@@ -4202,3 +4476,1455 @@ async def get_project_leadership_dossier(
         ],
     }
     return _result(data, "Month-end leadership accountability dossier loaded successfully.")
+
+
+# ---------------------------------------------------------------------------
+# CAPABILITY 2: Concrete Pour Cards & Site Quality Management
+# ---------------------------------------------------------------------------
+
+class PourCardCreate(BaseModel):
+    pour_number: str = Field(min_length=1, max_length=80)
+    element_name: str = Field(min_length=1, max_length=255)
+    structure_level: Optional[str] = Field(default=None, max_length=80)
+    concrete_grade: str = Field(min_length=1, max_length=40)
+    design_volume_m3: Decimal = Field(default=Decimal("0"), ge=0)
+    target_slump_mm: Optional[int] = Field(default=100, ge=0, le=300)
+    supplier_name: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = None
+
+
+class PourCardUpdate(BaseModel):
+    element_name: Optional[str] = None
+    structure_level: Optional[str] = None
+    concrete_grade: Optional[str] = None
+    design_volume_m3: Optional[Decimal] = None
+    actual_volume_m3: Optional[Decimal] = None
+    target_slump_mm: Optional[int] = None
+    measured_slump_mm: Optional[int] = None
+    supplier_name: Optional[str] = None
+    status: Optional[str] = None
+    rebar_inspected: Optional[bool] = None
+    formwork_inspected: Optional[bool] = None
+    cleanliness_inspected: Optional[bool] = None
+    embedded_mep_inspected: Optional[bool] = None
+    cover_blocks_verified: Optional[bool] = None
+    pour_started_at: Optional[str] = None
+    pour_completed_at: Optional[str] = None
+    cubes_sampled_count: Optional[int] = None
+    cube_sample_ids: Optional[str] = None
+    strength_7d_mpa: Optional[Decimal] = None
+    strength_28d_mpa: Optional[Decimal] = None
+    test_result_verdict: Optional[str] = None
+    test_certificate_ref: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.get("/{project_id}/pour-cards")
+async def list_pour_cards(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+):
+    """Lists all concrete pour cards and QA inspection status for a project."""
+    await _project_or_404(db, project_id, user["org_id"])
+    query = """
+        SELECT c.*, eng.full_name AS approved_by_name, creator.full_name AS created_by_name
+        FROM projects.concrete_pour_cards c
+        LEFT JOIN core.users eng ON eng.id = c.pre_pour_approved_by
+        LEFT JOIN core.users creator ON creator.id = c.created_by
+        WHERE c.project_id = CAST(:project_id AS uuid)
+          AND c.organization_id = CAST(:org_id AS uuid)
+          AND c.is_deleted = false
+    """
+    params = {"project_id": str(project_id), "org_id": str(user["org_id"])}
+    if status_filter:
+        query += " AND c.status = :st"
+        params["st"] = status_filter
+    query += " ORDER BY c.created_at DESC"
+
+    res = await db.execute(text(query), params)
+    cards = [dict(r) for r in res.mappings().all()]
+    return _result(cards, f"Retrieved {len(cards)} concrete pour cards.")
+
+
+@router.post("/{project_id}/pour-cards", status_code=201)
+async def create_pour_card(
+    project_id: UUID,
+    payload: PourCardCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Creates a new Concrete Pour Card with mix specifications and pre-pour requirements."""
+    await _project_or_404(db, project_id, user["org_id"])
+    try:
+        row = (
+            await db.execute(
+                text("""
+                    INSERT INTO projects.concrete_pour_cards (
+                        organization_id, project_id, pour_number, element_name,
+                        structure_level, concrete_grade, design_volume_m3,
+                        target_slump_mm, supplier_name, notes, created_by,
+                        status, created_at, updated_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:project_id AS uuid), :pour_number, :element_name,
+                        :structure_level, :concrete_grade, :design_volume_m3,
+                        :target_slump_mm, :supplier_name, :notes, CAST(:user_id AS uuid),
+                        'pre_pour_check', NOW(), NOW()
+                    ) RETURNING id
+                """),
+                {
+                    **payload.model_dump(),
+                    "org_id": str(user["org_id"]),
+                    "project_id": str(project_id),
+                    "user_id": str(user["user_id"]),
+                },
+            )
+        ).first()
+        await db.commit()
+        return _result({"id": str(row.id)}, "Concrete pour card created successfully.")
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Pour card number '{payload.pour_number}' already exists for this project."
+        ) from exc
+
+
+@router.patch("/{project_id}/pour-cards/{pour_id}")
+async def update_pour_card(
+    project_id: UUID,
+    pour_id: UUID,
+    payload: PourCardUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Updates QA pre-pour checklist, execution metrics, or 7d/28d cube crushing strength results."""
+    await _project_or_404(db, project_id, user["org_id"])
+    fields = payload.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.concrete_pour_cards SET
+                    element_name = COALESCE(:element_name, element_name),
+                    structure_level = COALESCE(:structure_level, structure_level),
+                    concrete_grade = COALESCE(:concrete_grade, concrete_grade),
+                    design_volume_m3 = COALESCE(:design_volume_m3, design_volume_m3),
+                    actual_volume_m3 = COALESCE(:actual_volume_m3, actual_volume_m3),
+                    target_slump_mm = COALESCE(:target_slump_mm, target_slump_mm),
+                    measured_slump_mm = COALESCE(:measured_slump_mm, measured_slump_mm),
+                    supplier_name = COALESCE(:supplier_name, supplier_name),
+                    status = COALESCE(:status, status),
+                    rebar_inspected = COALESCE(:rebar_inspected, rebar_inspected),
+                    formwork_inspected = COALESCE(:formwork_inspected, formwork_inspected),
+                    cleanliness_inspected = COALESCE(:cleanliness_inspected, cleanliness_inspected),
+                    embedded_mep_inspected = COALESCE(:embedded_mep_inspected, embedded_mep_inspected),
+                    cover_blocks_verified = COALESCE(:cover_blocks_verified, cover_blocks_verified),
+                    cubes_sampled_count = COALESCE(:cubes_sampled_count, cubes_sampled_count),
+                    cube_sample_ids = COALESCE(:cube_sample_ids, cube_sample_ids),
+                    strength_7d_mpa = COALESCE(:strength_7d_mpa, strength_7d_mpa),
+                    strength_28d_mpa = COALESCE(:strength_28d_mpa, strength_28d_mpa),
+                    test_result_verdict = COALESCE(:test_result_verdict, test_result_verdict),
+                    test_certificate_ref = COALESCE(:test_certificate_ref, test_certificate_ref),
+                    notes = COALESCE(:notes, notes),
+                    updated_at = NOW()
+                WHERE id = CAST(:pour_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false
+                RETURNING id
+            """),
+            {
+                "pour_id": str(pour_id),
+                "project_id": str(project_id),
+                "org_id": str(user["org_id"]),
+                "element_name": fields.get("element_name"),
+                "structure_level": fields.get("structure_level"),
+                "concrete_grade": fields.get("concrete_grade"),
+                "design_volume_m3": fields.get("design_volume_m3"),
+                "actual_volume_m3": fields.get("actual_volume_m3"),
+                "target_slump_mm": fields.get("target_slump_mm"),
+                "measured_slump_mm": fields.get("measured_slump_mm"),
+                "supplier_name": fields.get("supplier_name"),
+                "status": fields.get("status"),
+                "rebar_inspected": fields.get("rebar_inspected"),
+                "formwork_inspected": fields.get("formwork_inspected"),
+                "cleanliness_inspected": fields.get("cleanliness_inspected"),
+                "embedded_mep_inspected": fields.get("embedded_mep_inspected"),
+                "cover_blocks_verified": fields.get("cover_blocks_verified"),
+                "cubes_sampled_count": fields.get("cubes_sampled_count"),
+                "cube_sample_ids": fields.get("cube_sample_ids"),
+                "strength_7d_mpa": fields.get("strength_7d_mpa"),
+                "strength_28d_mpa": fields.get("strength_28d_mpa"),
+                "test_result_verdict": fields.get("test_result_verdict"),
+                "test_certificate_ref": fields.get("test_certificate_ref"),
+                "notes": fields.get("notes"),
+            },
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Pour card not found.")
+    await db.commit()
+    return _result({"id": str(pour_id)}, "Pour card updated.")
+
+
+class ConcretePourAuthorizeRequest(BaseModel):
+    rebar_inspected: Optional[bool] = None
+    formwork_inspected: Optional[bool] = None
+    cleanliness_inspected: Optional[bool] = None
+    embedded_mep_inspected: Optional[bool] = None
+    cover_blocks_verified: Optional[bool] = None
+
+
+@router.post("/{project_id}/pour-cards/{pour_id}/authorize-pour")
+async def authorize_concrete_pour(
+    project_id: UUID,
+    pour_id: UUID,
+    payload: Optional[ConcretePourAuthorizeRequest] = None,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.approve")),
+):
+    """Site Engineer Authorization Gate: Verifies rebar, formwork, cleanliness, MEP, and cover blocks
+
+    before advancing status to 'approved_for_pour'.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    if payload:
+        update_fields = payload.model_dump(exclude_none=True)
+        if update_fields:
+            set_clauses = [f"{k} = :{k}" for k in update_fields.keys()]
+            params = {k: v for k, v in update_fields.items()}
+            params["pour_id"] = str(pour_id)
+            params["project_id"] = str(project_id)
+            params["org_id"] = str(user["org_id"])
+            await db.execute(
+                text(f"""
+                    UPDATE projects.concrete_pour_cards SET
+                        {", ".join(set_clauses)},
+                        updated_at = NOW()
+                    WHERE id = CAST(:pour_id AS uuid)
+                      AND project_id = CAST(:project_id AS uuid)
+                      AND organization_id = CAST(:org_id AS uuid)
+                      AND is_deleted = false
+                """),
+                params,
+            )
+            await db.flush()
+
+    res = await db.execute(
+        text("""
+            SELECT id, rebar_inspected, formwork_inspected, cleanliness_inspected,
+                   embedded_mep_inspected, cover_blocks_verified, status
+            FROM projects.concrete_pour_cards
+            WHERE id = CAST(:pour_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND organization_id = CAST(:org_id AS uuid)
+              AND is_deleted = false
+        """),
+        {"pour_id": str(pour_id), "project_id": str(project_id), "org_id": str(user["org_id"])},
+    )
+    card = res.mappings().first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Pour card not found.")
+
+    # Verification gate
+    missing_checks = []
+    if not card["rebar_inspected"]:
+        missing_checks.append("Rebar reinforcement placement & tie-wire check")
+    if not card["formwork_inspected"]:
+        missing_checks.append("Formwork alignment, bracing & release agent check")
+    if not card["cleanliness_inspected"]:
+        missing_checks.append("Formwork cleanliness & air-blowout check")
+    if not card["embedded_mep_inspected"]:
+        missing_checks.append("Embedded MEP conduits & cast-in sleeves check")
+    if not card["cover_blocks_verified"]:
+        missing_blocks_verified = True
+        missing_checks.append("Concrete cover spacer blocks verification")
+
+    if missing_checks:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pour cannot be authorized. Missing mandatory pre-pour inspections: {'; '.join(missing_checks)}."
+        )
+
+    user_id = user.get("user_id") or user.get("id")
+    await db.execute(
+        text("""
+            UPDATE projects.concrete_pour_cards SET
+                status = 'approved_for_pour',
+                pre_pour_approved_by = CAST(:user_id AS uuid),
+                pre_pour_approved_at = NOW(),
+                updated_at = NOW()
+            WHERE id = CAST(:pour_id AS uuid)
+        """),
+        {"pour_id": str(pour_id), "user_id": str(user_id)},
+    )
+    await db.commit()
+    return _result({"id": str(pour_id), "status": "approved_for_pour"}, "Concrete pour authorized by Site Engineer.")
+
+
+# ---------------------------------------------------------------------------
+# CAPABILITY 2 (Continued): Mobile Snag / Defect Management
+# ---------------------------------------------------------------------------
+
+class SnagCreate(BaseModel):
+    snag_number: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = None
+    location_zone: str = Field(min_length=1, max_length=255)
+    severity: Literal["cosmetic", "minor", "major", "critical_safety"] = "minor"
+    subcontractor_id: Optional[UUID] = None
+    trade: Optional[str] = Field(default=None, max_length=80)
+    due_date: Optional[date] = None
+    photo_url: Optional[str] = None
+
+
+class SnagUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    location_zone: Optional[str] = None
+    severity: Optional[str] = None
+    status: Optional[str] = None
+    trade: Optional[str] = None
+    subcontractor_id: Optional[UUID] = None
+    due_date: Optional[date] = None
+    photo_url: Optional[str] = None
+    rectified_photo_url: Optional[str] = None
+
+
+@router.get("/{project_id}/snags")
+async def list_snags(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    severity_filter: Optional[str] = Query(default=None, alias="severity"),
+):
+    """Lists defects and snags for the project with trade assignment and resolution status."""
+    await _project_or_404(db, project_id, user["org_id"])
+    query = """
+        SELECT s.*, sub.name AS subcontractor_name, creator.full_name AS created_by_name,
+               rectifier.full_name AS rectified_by_name, closer.full_name AS closed_by_name
+        FROM projects.site_snags s
+        LEFT JOIN crm.subcontractors sub ON sub.id = s.subcontractor_id
+        LEFT JOIN core.users creator ON creator.id = s.created_by
+        LEFT JOIN core.users rectifier ON rectifier.id = s.rectified_by
+        LEFT JOIN core.users closer ON closer.id = s.closed_by
+        WHERE s.project_id = CAST(:project_id AS uuid)
+          AND s.organization_id = CAST(:org_id AS uuid)
+          AND s.is_deleted = false
+    """
+    params = {"project_id": str(project_id), "org_id": str(user["org_id"])}
+    if status_filter:
+        query += " AND s.status = :st"
+        params["st"] = status_filter
+    if severity_filter:
+        query += " AND s.severity = :sev"
+        params["sev"] = severity_filter
+    query += " ORDER BY s.created_at DESC"
+
+    res = await db.execute(text(query), params)
+    snags = [dict(r) for r in res.mappings().all()]
+    return _result(snags, f"Retrieved {len(snags)} site snags.")
+
+
+@router.post("/{project_id}/snags", status_code=201)
+async def create_snag(
+    project_id: UUID,
+    payload: SnagCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Logs a site snag or defect with location, trade, severity, and photo."""
+    await _project_or_404(db, project_id, user["org_id"])
+    try:
+        row = (
+            await db.execute(
+                text("""
+                    INSERT INTO projects.site_snags (
+                        organization_id, project_id, snag_number, title, description,
+                        location_zone, severity, status, subcontractor_id, trade,
+                        due_date, photo_url, created_by, created_at, updated_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:project_id AS uuid), :snag_number, :title, :description,
+                        :location_zone, :severity, 'open', CAST(:subcontractor_id AS uuid), :trade,
+                        :due_date, :photo_url, CAST(:user_id AS uuid), NOW(), NOW()
+                    ) RETURNING id
+                """),
+                {
+                    **payload.model_dump(),
+                    "org_id": str(user["org_id"]),
+                    "project_id": str(project_id),
+                    "user_id": str(user["user_id"]),
+                    "subcontractor_id": str(payload.subcontractor_id) if payload.subcontractor_id else None,
+                },
+            )
+        ).first()
+        await db.commit()
+        return _result({"id": str(row.id)}, "Site snag recorded.")
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Snag number '{payload.snag_number}' already exists for this project."
+        ) from exc
+
+
+@router.patch("/{project_id}/snags/{snag_id}")
+async def update_snag(
+    project_id: UUID,
+    snag_id: UUID,
+    payload: SnagUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Updates snag details or marks rectification."""
+    await _project_or_404(db, project_id, user["org_id"])
+    fields = payload.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+
+    is_rectifying = fields.get("status") == "rectified"
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.site_snags SET
+                    title = COALESCE(:title, title),
+                    description = COALESCE(:description, description),
+                    location_zone = COALESCE(:location_zone, location_zone),
+                    severity = COALESCE(:severity, severity),
+                    status = COALESCE(:status, status),
+                    trade = COALESCE(:trade, trade),
+                    subcontractor_id = CASE WHEN :subcontractor_id_provided THEN CAST(:subcontractor_id AS uuid) ELSE subcontractor_id END,
+                    due_date = COALESCE(:due_date, due_date),
+                    photo_url = COALESCE(:photo_url, photo_url),
+                    rectified_photo_url = COALESCE(:rectified_photo_url, rectified_photo_url),
+                    rectified_at = CASE WHEN :is_rectifying THEN NOW() ELSE rectified_at END,
+                    rectified_by = CASE WHEN :is_rectifying THEN CAST(:user_id AS uuid) ELSE rectified_by END,
+                    updated_at = NOW()
+                WHERE id = CAST(:snag_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false
+                RETURNING id
+            """),
+            {
+                "snag_id": str(snag_id),
+                "project_id": str(project_id),
+                "org_id": str(user["org_id"]),
+                "user_id": str(user["user_id"]),
+                "title": fields.get("title"),
+                "description": fields.get("description"),
+                "location_zone": fields.get("location_zone"),
+                "severity": fields.get("severity"),
+                "status": fields.get("status"),
+                "trade": fields.get("trade"),
+                "subcontractor_id_provided": "subcontractor_id" in fields,
+                "subcontractor_id": str(fields["subcontractor_id"]) if fields.get("subcontractor_id") else None,
+                "due_date": fields.get("due_date"),
+                "photo_url": fields.get("photo_url"),
+                "rectified_photo_url": fields.get("rectified_photo_url"),
+                "is_rectifying": is_rectifying,
+            },
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Snag not found.")
+    await db.commit()
+    return _result({"id": str(snag_id)}, "Snag updated.")
+
+
+@router.post("/{project_id}/snags/{snag_id}/sign-off")
+async def close_snag_sign_off(
+    project_id: UUID,
+    snag_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.approve")),
+):
+    """QA Engineer sign-off gate: Formally closes a rectified defect."""
+    await _project_or_404(db, project_id, user["org_id"])
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.site_snags SET
+                    status = 'closed',
+                    closed_at = NOW(),
+                    closed_by = CAST(:user_id AS uuid),
+                    updated_at = NOW()
+                WHERE id = CAST(:snag_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false
+                RETURNING id
+            """),
+            {"snag_id": str(snag_id), "project_id": str(project_id), "org_id": str(user["org_id"]), "user_id": str(user["user_id"])},
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Snag not found.")
+    await db.commit()
+    return _result({"id": str(snag_id), "status": "closed"}, "Defect inspection signed off and closed.")
+
+
+# ---------------------------------------------------------------------------
+# CAPABILITY 1: Subcontractor Packages, Payment Certification, Retentions & Back-Charges
+# ---------------------------------------------------------------------------
+
+class SubcontractPackageCreate(BaseModel):
+    package_number: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=255)
+    subcontractor_id: UUID
+    trade: str = Field(min_length=1, max_length=80)
+    award_value: Decimal = Field(default=Decimal("0"), ge=0)
+    retention_percentage: Decimal = Field(default=Decimal("10.0"), ge=0, le=20)
+    retention_cap: Optional[Decimal] = Field(default=Decimal("0"), ge=0)
+    start_date: Optional[date] = None
+    completion_date: Optional[date] = None
+    scope_description: Optional[str] = None
+
+
+class SubcontractPackageUpdate(BaseModel):
+    title: Optional[str] = None
+    trade: Optional[str] = None
+    award_value: Optional[Decimal] = None
+    retention_percentage: Optional[Decimal] = None
+    retention_cap: Optional[Decimal] = None
+    status: Optional[str] = None
+    start_date: Optional[date] = None
+    completion_date: Optional[date] = None
+    scope_description: Optional[str] = None
+
+
+class SubcontractCertificateCreate(BaseModel):
+    certificate_number: str = Field(min_length=1, max_length=80)
+    valuation_date: date
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    claimed_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    certified_gross_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    notes: Optional[str] = None
+
+
+class SubcontractBackChargeCreate(BaseModel):
+    package_id: UUID
+    subcontractor_id: UUID
+    charge_number: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=255)
+    reason_category: Literal[
+        "defective_work_rectification",
+        "plant_hire_recovery",
+        "material_usage_recovery",
+        "site_cleaning_penalty",
+        "safety_non_compliance",
+    ]
+    amount: Decimal = Field(gt=0)
+    evidence_reference: Optional[str] = None
+
+
+class SubcontractBackChargeUpdate(BaseModel):
+    title: Optional[str] = None
+    reason_category: Optional[str] = None
+    amount: Optional[Decimal] = None
+    evidence_reference: Optional[str] = None
+    status: Optional[str] = None
+
+
+@router.get("/{project_id}/subcontracts")
+async def list_subcontract_packages(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lists all subcontract packages for a project with aggregated valuations,
+
+    retention held, back-charges, and net payments.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    query = """
+        SELECT
+            p.*,
+            sub.name AS subcontractor_name,
+            sub.contact_email AS subcontractor_email,
+            sub.contact_phone AS subcontractor_phone,
+            COALESCE(SUM(c.certified_gross_amount), 0) AS total_certified_gross,
+            COALESCE(SUM(c.retention_deducted), 0) AS total_retention_held,
+            COALESCE(SUM(c.contra_charges_deducted), 0) AS total_contra_deducted,
+            COALESCE(SUM(c.net_payable_amount), 0) AS total_net_payable,
+            COUNT(c.id) AS certificates_count
+        FROM projects.subcontract_packages p
+        LEFT JOIN crm.subcontractors sub ON sub.id = p.subcontractor_id
+        LEFT JOIN projects.subcontractor_certificates c ON c.package_id = p.id AND c.is_deleted = false AND c.status != 'rejected'
+        WHERE p.project_id = CAST(:project_id AS uuid)
+          AND p.organization_id = CAST(:org_id AS uuid)
+          AND p.is_deleted = false
+        GROUP BY p.id, sub.id
+        ORDER BY p.created_at DESC
+    """
+    res = await db.execute(text(query), {"project_id": str(project_id), "org_id": str(user["org_id"])})
+    packages = [dict(r) for r in res.mappings().all()]
+    return _result(packages, f"Retrieved {len(packages)} subcontract packages.")
+
+
+@router.post("/{project_id}/subcontracts", status_code=201)
+async def create_subcontract_package(
+    project_id: UUID,
+    payload: SubcontractPackageCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "procurement.order.create")),
+):
+    """Creates a new subcontract package tied to a verified subcontractor and project."""
+    await _project_or_404(db, project_id, user["org_id"])
+    try:
+        row = (
+            await db.execute(
+                text("""
+                    INSERT INTO projects.subcontract_packages (
+                        organization_id, project_id, package_number, title,
+                        subcontractor_id, trade, award_value, retention_percentage,
+                        retention_cap, start_date, completion_date, scope_description,
+                        status, created_by, created_at, updated_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:project_id AS uuid), :package_number, :title,
+                        CAST(:subcontractor_id AS uuid), :trade, :award_value, :retention_percentage,
+                        :retention_cap, :start_date, :completion_date, :scope_description,
+                        'awarded', CAST(:user_id AS uuid), NOW(), NOW()
+                    ) RETURNING id
+                """),
+                {
+                    **payload.model_dump(),
+                    "org_id": str(user["org_id"]),
+                    "project_id": str(project_id),
+                    "user_id": str(user["user_id"]),
+                    "subcontractor_id": str(payload.subcontractor_id),
+                },
+            )
+        ).first()
+        await db.commit()
+        return _result({"id": str(row.id)}, "Subcontract package created successfully.")
+    except Exception as exc:
+        await db.rollback()
+        err_msg = str(exc)
+        if "unique" in err_msg.lower() or "duplicate" in err_msg.lower():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Subcontract package number '{payload.package_number}' already exists for this project."
+            ) from exc
+        raise HTTPException(status_code=400, detail=f"Failed to create subcontract package: {err_msg}") from exc
+
+
+
+@router.patch("/{project_id}/subcontracts/{package_id}")
+async def update_subcontract_package(
+    project_id: UUID,
+    package_id: UUID,
+    payload: SubcontractPackageUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "procurement.order.create")),
+):
+    """Updates terms, value, or lifecycle status of a subcontract package."""
+    await _project_or_404(db, project_id, user["org_id"])
+    fields = payload.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.subcontract_packages SET
+                    title = COALESCE(:title, title),
+                    trade = COALESCE(:trade, trade),
+                    award_value = COALESCE(:award_value, award_value),
+                    retention_percentage = COALESCE(:retention_percentage, retention_percentage),
+                    retention_cap = COALESCE(:retention_cap, retention_cap),
+                    status = COALESCE(:status, status),
+                    start_date = COALESCE(:start_date, start_date),
+                    completion_date = COALESCE(:completion_date, completion_date),
+                    scope_description = COALESCE(:scope_description, scope_description),
+                    updated_at = NOW()
+                WHERE id = CAST(:package_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false
+                RETURNING id
+            """),
+            {
+                "package_id": str(package_id),
+                "project_id": str(project_id),
+                "org_id": str(user["org_id"]),
+                "title": fields.get("title"),
+                "trade": fields.get("trade"),
+                "award_value": fields.get("award_value"),
+                "retention_percentage": fields.get("retention_percentage"),
+                "retention_cap": fields.get("retention_cap"),
+                "status": fields.get("status"),
+                "start_date": fields.get("start_date"),
+                "completion_date": fields.get("completion_date"),
+                "scope_description": fields.get("scope_description"),
+            },
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Subcontract package not found.")
+    await db.commit()
+    return _result({"id": str(package_id)}, "Subcontract package updated.")
+
+
+@router.get("/{project_id}/subcontracts/{package_id}/certificates")
+async def list_subcontract_certificates(
+    project_id: UUID,
+    package_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lists all interim payment certificates for a subcontract package."""
+    await _project_or_404(db, project_id, user["org_id"])
+    query = """
+        SELECT c.*, qs.full_name AS qs_assessor_name, mgr.full_name AS manager_approver_name
+        FROM projects.subcontractor_certificates c
+        LEFT JOIN core.users qs ON qs.id = c.qs_assessor_id
+        LEFT JOIN core.users mgr ON mgr.id = c.commercial_manager_approver_id
+        WHERE c.package_id = CAST(:package_id AS uuid)
+          AND c.project_id = CAST(:project_id AS uuid)
+          AND c.organization_id = CAST(:org_id AS uuid)
+          AND c.is_deleted = false
+        ORDER BY c.valuation_date DESC, c.created_at DESC
+    """
+    res = await db.execute(text(query), {
+        "package_id": str(package_id),
+        "project_id": str(project_id),
+        "org_id": str(user["org_id"]),
+    })
+    certs = [dict(r) for r in res.mappings().all()]
+    return _result(certs, f"Retrieved {len(certs)} payment certificates.")
+
+
+@router.post("/{project_id}/subcontracts/{package_id}/certificates", status_code=201)
+async def create_subcontract_certificate(
+    project_id: UUID,
+    package_id: UUID,
+    payload: SubcontractCertificateCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "finance.manage")),
+):
+    """Creates a new Interim Payment Certificate with automatic retention and contra-charge deduction."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # 1. Fetch subcontract package terms
+    pkg_res = await db.execute(
+        text("""
+            SELECT id, award_value, retention_percentage, retention_cap, subcontractor_id
+            FROM projects.subcontract_packages
+            WHERE id = CAST(:package_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND organization_id = CAST(:org_id AS uuid)
+              AND is_deleted = false
+        """),
+        {"package_id": str(package_id), "project_id": str(project_id), "org_id": str(user["org_id"])},
+    )
+    pkg = pkg_res.mappings().first()
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Subcontract package not found.")
+
+    # 2. Fetch previous certified gross to date
+    prev_res = await db.execute(
+        text("""
+            SELECT COALESCE(MAX(certified_gross_amount), 0) AS max_prev_gross,
+                   COALESCE(SUM(retention_deducted), 0) AS total_retention_so_far
+            FROM projects.subcontractor_certificates
+            WHERE package_id = CAST(:package_id AS uuid)
+              AND status IN ('certified', 'approved', 'posted_to_finance', 'paid')
+              AND is_deleted = false
+        """),
+        {"package_id": str(package_id)},
+    )
+    prev = prev_res.mappings().first() or {}
+    prev_gross = Decimal(str(prev.get("max_prev_gross") or 0))
+    total_ret_so_far = Decimal(str(prev.get("total_retention_so_far") or 0))
+
+    # 3. Calculate retention deduction
+    gross = payload.certified_gross_amount
+    ret_pct = Decimal(str(pkg["retention_percentage"])) / Decimal("100")
+    ret_cap = Decimal(str(pkg["retention_cap"] or 0))
+
+    incremental_gross = max(Decimal("0"), gross - prev_gross)
+    raw_retention = incremental_gross * ret_pct
+
+    if ret_cap > 0 and (total_ret_so_far + raw_retention) > ret_cap:
+        retention_to_deduct = max(Decimal("0"), ret_cap - total_ret_so_far)
+    else:
+        retention_to_deduct = raw_retention
+
+    # 4. Fetch pending approved back-charges to apply
+    bc_res = await db.execute(
+        text("""
+            SELECT id, amount
+            FROM projects.subcontractor_back_charges
+            WHERE package_id = CAST(:package_id AS uuid)
+              AND status = 'approved'
+              AND is_deleted = false
+        """),
+        {"package_id": str(package_id)},
+    )
+    approved_charges = [dict(r) for r in bc_res.mappings().all()]
+    total_contra = sum(Decimal(str(c["amount"])) for c in approved_charges)
+
+    # 5. Calculate net payable
+    net_payable = max(Decimal("0"), incremental_gross - retention_to_deduct - total_contra)
+
+    # 6. Insert Certificate
+    cert_row = (
+        await db.execute(
+            text("""
+                INSERT INTO projects.subcontractor_certificates (
+                    organization_id, project_id, package_id, certificate_number,
+                    valuation_date, period_start, period_end, claimed_amount,
+                    certified_gross_amount, retention_deducted, contra_charges_deducted,
+                    previous_certified_gross, net_payable_amount, status,
+                    qs_assessor_id, certified_at, notes, created_by, created_at, updated_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:project_id AS uuid), CAST(:package_id AS uuid), :cert_num,
+                    :val_date, :p_start, :p_end, :claimed,
+                    :gross, :retention, :contra,
+                    :prev_gross, :net_payable, 'certified',
+                    CAST(:user_id AS uuid), NOW(), :notes, CAST(:user_id AS uuid), NOW(), NOW()
+                ) RETURNING id
+            """),
+            {
+                "org_id": str(user["org_id"]),
+                "project_id": str(project_id),
+                "package_id": str(package_id),
+                "cert_num": payload.certificate_number,
+                "val_date": payload.valuation_date,
+                "p_start": payload.period_start,
+                "p_end": payload.period_end,
+                "claimed": payload.claimed_amount,
+                "gross": gross,
+                "retention": retention_to_deduct,
+                "contra": total_contra,
+                "prev_gross": prev_gross,
+                "net_payable": net_payable,
+                "user_id": str(user["user_id"]),
+                "notes": payload.notes,
+            },
+        )
+    ).first()
+    cert_id = cert_row.id
+
+    # 7. Mark back-charges as applied to this certificate
+    if approved_charges:
+        charge_ids = [str(c["id"]) for c in approved_charges]
+        await db.execute(
+            text("""
+                UPDATE projects.subcontractor_back_charges
+                SET status = 'applied_to_certificate',
+                    applied_certificate_id = CAST(:cert_id AS uuid),
+                    updated_at = NOW()
+                WHERE id = ANY(CAST(:ids AS uuid[]))
+            """),
+            {"cert_id": str(cert_id), "ids": charge_ids},
+        )
+
+    await db.commit()
+    return _result({
+        "id": str(cert_id),
+        "gross": float(gross),
+        "retention_deducted": float(retention_to_deduct),
+        "contra_charges_deducted": float(total_contra),
+        "net_payable": float(net_payable),
+    }, "Payment certificate certified successfully.")
+
+
+@router.post("/{project_id}/subcontracts/{package_id}/certificates/{cert_id}/post-to-finance")
+async def post_certificate_to_finance(
+    project_id: UUID,
+    package_id: UUID,
+    cert_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "finance.manage")),
+):
+    """Posts certified subcontractor liability into finance.cost_transactions and
+
+    retention held into finance.retention_ledger idempotently.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # 1. Fetch certificate
+    cert_res = await db.execute(
+        text("""
+            SELECT id, certificate_number, valuation_date, certified_gross_amount,
+                   previous_certified_gross, net_payable_amount, retention_deducted, status
+            FROM projects.subcontractor_certificates
+            WHERE id = CAST(:cert_id AS uuid)
+              AND package_id = CAST(:package_id AS uuid)
+              AND project_id = CAST(:project_id AS uuid)
+              AND organization_id = CAST(:org_id AS uuid)
+              AND is_deleted = false
+        """),
+        {
+            "cert_id": str(cert_id),
+            "package_id": str(package_id),
+            "project_id": str(project_id),
+            "org_id": str(user["org_id"]),
+        },
+    )
+    cert = cert_res.mappings().first()
+    if not cert:
+        raise HTTPException(status_code=404, detail="Payment certificate not found.")
+
+    if cert["status"] == "posted_to_finance":
+        return _result(
+            {
+                "id": str(cert_id),
+                "status": "posted_to_finance",
+                "already_posted": True,
+            },
+            message="Payment certificate was already posted to finance.",
+        )
+
+    gross_val = Decimal(str(cert["certified_gross_amount"] or cert["net_payable_amount"]))
+    prev_val = Decimal(str(cert["previous_certified_gross"] or 0))
+    incurred_cost = (gross_val - prev_val) if (gross_val - prev_val) > 0 else gross_val
+    retention = Decimal(str(cert["retention_deducted"] or 0))
+    val_date = cert["valuation_date"]
+    cert_num = cert["certificate_number"]
+
+    # 2. Post gross work liability into finance.cost_transactions (category: 'subcontract')
+    # FIDIC/JBCC accounting rule: Incurred cost reflects gross work executed; retention is balance-sheet security withholding
+    if incurred_cost > 0:
+        await db.execute(
+            text("""
+                INSERT INTO finance.cost_transactions (
+                    organization_id, project_id, source_type, source_id,
+                    cost_category, description, quantity, unit_cost, amount,
+                    transaction_date, status, posted_by, posted_at, created_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:project_id AS uuid), 'subcontractor_certificate', CAST(:cert_id AS uuid),
+                    'subcontract', :desc, 1, :amount, :amount,
+                    :txn_date, 'posted', CAST(:user_id AS uuid), NOW(), NOW()
+                )
+                ON CONFLICT (organization_id, source_type, source_id, cost_category)
+                DO UPDATE SET
+                    amount = EXCLUDED.amount,
+                    posted_at = NOW()
+            """),
+            {
+                "org_id": str(user["org_id"]),
+                "project_id": str(project_id),
+                "cert_id": str(cert_id),
+                "desc": f"Subcontractor Valuation {cert_num} gross certified liability",
+                "amount": incurred_cost,
+                "txn_date": val_date,
+                "user_id": str(user["user_id"]),
+            },
+        )
+
+
+    # 3. Post retention into finance.retention_ledger
+    if retention > 0:
+        await db.execute(
+            text("""
+                INSERT INTO finance.retention_ledger (
+                    organization_id, project_id, source_type, source_id,
+                    movement_type, amount, movement_date, notes, recorded_by, created_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:project_id AS uuid), 'progress_claim', CAST(:cert_id AS uuid),
+                    'held', :amount, :m_date, :notes, CAST(:user_id AS uuid), NOW()
+                )
+            """),
+            {
+                "org_id": str(user["org_id"]),
+                "project_id": str(project_id),
+                "cert_id": str(cert_id),
+                "amount": retention,
+                "m_date": val_date,
+                "notes": f"Retention held on Subcontractor IPC {cert_num}",
+                "user_id": str(user["user_id"]),
+            },
+        )
+
+    already_posted = (cert["status"] == "posted_to_finance")
+
+    # 4. Update certificate status to 'posted_to_finance'
+    await db.execute(
+        text("""
+            UPDATE projects.subcontractor_certificates
+            SET status = 'posted_to_finance',
+                commercial_manager_approver_id = CAST(:user_id AS uuid),
+                updated_at = NOW()
+            WHERE id = CAST(:cert_id AS uuid)
+        """),
+        {"cert_id": str(cert_id), "user_id": str(user["user_id"])},
+    )
+
+    await db.commit()
+    return _result(
+        {
+            "id": str(cert_id),
+            "status": "posted_to_finance",
+            "already_posted": already_posted,
+        },
+        "Certificate posted to general finance ledgers."
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Back-Charges & Contra-Charges API
+# ---------------------------------------------------------------------------
+
+@router.get("/{project_id}/back-charges")
+async def list_subcontractor_back_charges(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    package_id: Optional[UUID] = None,
+):
+    """Lists contra-charges and back-charges across the project."""
+    await _project_or_404(db, project_id, user["org_id"])
+    query = """
+        SELECT b.*, sub.name AS subcontractor_name, pkg.package_number, pkg.title AS package_title,
+               approver.full_name AS approver_name
+        FROM projects.subcontractor_back_charges b
+        LEFT JOIN crm.subcontractors sub ON sub.id = b.subcontractor_id
+        LEFT JOIN projects.subcontract_packages pkg ON pkg.id = b.package_id
+        LEFT JOIN core.users approver ON approver.id = b.approved_by
+        WHERE b.project_id = CAST(:project_id AS uuid)
+          AND b.organization_id = CAST(:org_id AS uuid)
+          AND b.is_deleted = false
+    """
+    params = {"project_id": str(project_id), "org_id": str(user["org_id"])}
+    if package_id:
+        query += " AND b.package_id = CAST(:pkg_id AS uuid)"
+        params["pkg_id"] = str(package_id)
+    query += " ORDER BY b.created_at DESC"
+
+    res = await db.execute(text(query), params)
+    charges = [dict(r) for r in res.mappings().all()]
+    return _result(charges, f"Retrieved {len(charges)} back-charges.")
+
+
+@router.post("/{project_id}/back-charges", status_code=201)
+async def create_subcontractor_back_charge(
+    project_id: UUID,
+    payload: SubcontractBackChargeCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Issues a contra-charge / back-charge notice to a subcontractor."""
+    await _project_or_404(db, project_id, user["org_id"])
+    try:
+        row = (
+            await db.execute(
+                text("""
+                    INSERT INTO projects.subcontractor_back_charges (
+                        organization_id, project_id, package_id, subcontractor_id,
+                        charge_number, title, reason_category, amount,
+                        evidence_reference, status, created_by, created_at, updated_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:project_id AS uuid), CAST(:package_id AS uuid), CAST(:sub_id AS uuid),
+                        :charge_number, :title, :reason_category, :amount,
+                        :evidence_reference, 'approved', CAST(:user_id AS uuid), NOW(), NOW()
+                    ) RETURNING id
+                """),
+                {
+                    "org_id": str(user["org_id"]),
+                    "project_id": str(project_id),
+                    "package_id": str(payload.package_id),
+                    "sub_id": str(payload.subcontractor_id),
+                    "charge_number": payload.charge_number,
+                    "title": payload.title,
+                    "reason_category": payload.reason_category,
+                    "amount": payload.amount,
+                    "evidence_reference": payload.evidence_reference,
+                    "user_id": str(user["user_id"]),
+                },
+            )
+        ).first()
+        await db.commit()
+        return _result({"id": str(row.id)}, "Back-charge notice issued and approved.")
+    except Exception as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Back-charge number '{payload.charge_number}' already exists for this project."
+        ) from exc
+
+
+@router.patch("/{project_id}/back-charges/{charge_id}")
+async def update_subcontractor_back_charge(
+    project_id: UUID,
+    charge_id: UUID,
+    payload: SubcontractBackChargeUpdate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Updates back-charge status (e.g. waived, disputed, approved)."""
+    await _project_or_404(db, project_id, user["org_id"])
+    fields = payload.model_dump(exclude_none=True)
+    if not fields:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+
+    row = (
+        await db.execute(
+            text("""
+                UPDATE projects.subcontractor_back_charges SET
+                    title = COALESCE(:title, title),
+                    reason_category = COALESCE(:reason_category, reason_category),
+                    amount = COALESCE(:amount, amount),
+                    evidence_reference = COALESCE(:evidence_reference, evidence_reference),
+                    status = COALESCE(:status, status),
+                    updated_at = NOW()
+                WHERE id = CAST(:charge_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false
+                RETURNING id
+            """),
+            {
+                "charge_id": str(charge_id),
+                "project_id": str(project_id),
+                "org_id": str(user["org_id"]),
+                "title": fields.get("title"),
+                "reason_category": fields.get("reason_category"),
+                "amount": fields.get("amount"),
+                "evidence_reference": fields.get("evidence_reference"),
+                "status": fields.get("status"),
+            },
+        )
+    ).first()
+    if not row:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Back-charge not found.")
+    await db.commit()
+    return _result({"id": str(charge_id)}, "Back-charge updated.")
+
+
+# ==============================================================================
+# PROJECT PLANT & FLEET OPERATIONS (fleet.fleet_assignments & utilization_logs)
+# ==============================================================================
+
+class PlantShiftLogCreate(BaseModel):
+    fleet_id: UUID
+    occurred_on: Optional[date] = None
+    operating_hours: float = Field(ge=0, le=24, default=0.0)
+    idle_hours: float = Field(ge=0, le=24, default=0.0)
+    breakdown_downtime_hours: float = Field(ge=0, le=24, default=0.0)
+    weather_downtime_hours: float = Field(ge=0, le=24, default=0.0)
+    output_quantity: Optional[float] = Field(ge=0, default=None)
+    output_unit: Optional[str] = Field(max_length=30, default=None)
+    fuel_litres: float = Field(ge=0, default=0.0)
+    work_performed: Optional[str] = None
+
+
+@router.get("/{project_id}/plant/analytics")
+async def get_project_plant_operations_analytics(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "site_operations.report.view")),
+):
+    """
+    Returns unified project plant allocations, utilization rates,
+    downtimes, fuel burn rates vs benchmark, and productivity metrics.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    analytics = await get_project_plant_analytics(db, project_id, user["org_id"])
+    return _result(analytics, "Plant operations analytics retrieved.")
+
+
+@router.post("/{project_id}/plant/quick-log")
+async def create_project_plant_shift_log(
+    project_id: UUID,
+    payload: PlantShiftLogCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """
+    Directly logs a daily plant shift hours, downtime, output, and fuel
+    for plant assigned to this project.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    result = await record_project_plant_shift_log(
+        db=db,
+        project_id=project_id,
+        org_id=user["org_id"],
+        user_id=user.get("user_id") or user.get("id"),
+        payload=payload.model_dump(),
+    )
+    return _result(result, "Plant shift log recorded successfully.")
+
+
+# ==============================================================================
+# CONTRACTUAL DELAY EVENTS & EXTENSION OF TIME CLAIMS (FIDIC / NEC / JBCC)
+# ==============================================================================
+
+class ContractualDelayCreate(BaseModel):
+    event_number: str = Field(min_length=2, max_length=60)
+    title: str = Field(min_length=2, max_length=255)
+    cause_category: str = Field(min_length=2, max_length=60)
+    contract_clause_reference: Optional[str] = Field(max_length=120, default=None)
+    event_occurred_date: date
+    event_ended_date: Optional[date] = None
+    notice_required_days: int = Field(ge=1, default=28)
+    notice_served_date: Optional[date] = None
+    notice_status: Optional[str] = Field(default="draft")
+    estimated_days_impact: int = Field(ge=0, default=0)
+    mitigation_actions: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ExtensionOfTimeClaimCreate(BaseModel):
+    claim_reference: str = Field(min_length=2, max_length=80)
+    title: str = Field(min_length=2, max_length=255)
+    delay_event_id: Optional[UUID] = None
+    days_requested: int = Field(gt=0)
+    impacted_milestone_id: Optional[UUID] = None
+    is_critical_path_impact: bool = True
+    prolongation_cost_claimed: Decimal = Field(ge=0, default=Decimal("0"))
+    submission_date: date = Field(default_factory=date.today)
+
+
+class ExtensionOfTimeDeterminationCreate(BaseModel):
+    days_granted: int = Field(ge=0, default=0)
+    prolongation_cost_approved: Decimal = Field(ge=0, default=Decimal("0"))
+    determination_date: Optional[date] = None
+    determination_notes: Optional[str] = None
+    engineer_representative_name: Optional[str] = Field(max_length=160, default=None)
+    revised_contractual_completion_date: Optional[date] = None
+    status: Optional[str] = Field(default="determined")
+
+
+@router.get("/{project_id}/delays")
+async def get_project_contractual_delays(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "site_operations.report.view")),
+):
+    """Returns all contractual delay events with notice time-bar tracking."""
+    await _project_or_404(db, project_id, user["org_id"])
+    delays = await list_project_delays(db, project_id, user["org_id"])
+    return _result(delays, "Contractual delay events retrieved.")
+
+
+@router.post("/{project_id}/delays")
+async def create_project_contractual_delay(
+    project_id: UUID,
+    payload: ContractualDelayCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Records a new contractual delay event with statutory notice countdown."""
+    await _project_or_404(db, project_id, user["org_id"])
+    result = await create_project_delay(
+        db=db,
+        project_id=project_id,
+        org_id=user["org_id"],
+        user_id=user.get("user_id") or user.get("id"),
+        payload=payload.model_dump(),
+    )
+    return _result(result, "Contractual delay event recorded.")
+
+
+@router.get("/{project_id}/eot-claims")
+async def get_project_eot_claims(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "site_operations.report.view")),
+):
+    """Returns all EOT claims, prolongation requests, and determinations."""
+    await _project_or_404(db, project_id, user["org_id"])
+    claims = await list_project_eot_claims(db, project_id, user["org_id"])
+    return _result(claims, "Extension of Time claims retrieved.")
+
+
+@router.post("/{project_id}/eot-claims")
+async def create_project_extension_of_time_claim(
+    project_id: UUID,
+    payload: ExtensionOfTimeClaimCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Submits an Extension of Time (EOT) claim linked to delay event and CPM milestone."""
+    await _project_or_404(db, project_id, user["org_id"])
+    result = await create_project_eot_claim(
+        db=db,
+        project_id=project_id,
+        org_id=user["org_id"],
+        user_id=user.get("user_id") or user.get("id"),
+        payload=payload.model_dump(),
+    )
+    return _result(result, "Extension of Time claim submitted successfully.")
+
+
+@router.post("/{project_id}/eot-claims/{claim_id}/determine")
+async def determine_project_extension_of_time(
+    project_id: UUID,
+    claim_id: UUID,
+    payload: ExtensionOfTimeDeterminationCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Records the Engineer / Client determination on an EOT claim."""
+    await _project_or_404(db, project_id, user["org_id"])
+    result = await determine_project_eot_claim(
+        db=db,
+        project_id=project_id,
+        claim_id=claim_id,
+        org_id=user["org_id"],
+        user_id=user.get("user_id") or user.get("id"),
+        payload=payload.model_dump(),
+    )
+    return _result(result, "EOT claim determination registered.")
+
+
+# ==============================================================================
+# CONTROLLED DRAWING REGISTER, PHOTO DIARY & MONTH-END PROGRESS PACK
+# ==============================================================================
+
+class ControlledDrawingCreate(BaseModel):
+    drawing_number: str = Field(min_length=2, max_length=100)
+    title: str = Field(min_length=2, max_length=255)
+    discipline: str = Field(min_length=2, max_length=60)
+    current_revision: str = Field(default="Rev A")
+    ifc_status: str = Field(default="issued_for_construction")
+    date_received: date = Field(default_factory=date.today)
+    file_url: Optional[str] = None
+
+
+class ProgressPhotoCreate(BaseModel):
+    photo_url: str = Field(min_length=5)
+    caption: str = Field(min_length=2, max_length=255)
+    element_tag: str = Field(min_length=2, max_length=100)
+    captured_date: date = Field(default_factory=date.today)
+    weather_condition: Optional[str] = Field(default="clear_sunny")
+    gps_lat: Optional[float] = None
+    gps_lng: Optional[float] = None
+
+
+@router.get("/{project_id}/drawings")
+async def get_project_controlled_drawings(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "site_operations.report.view")),
+):
+    """Returns the controlled drawing revision register for a project."""
+    await _project_or_404(db, project_id, user["org_id"])
+    drawings = await list_project_drawings(db, project_id, user["org_id"])
+    return _result(drawings, "Controlled drawings retrieved.")
+
+
+@router.post("/{project_id}/drawings")
+async def create_or_revise_project_drawing(
+    project_id: UUID,
+    payload: ControlledDrawingCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Registers a new drawing or uploads a new revision, superseding the previous version."""
+    await _project_or_404(db, project_id, user["org_id"])
+    result = await record_controlled_drawing(
+        db=db,
+        project_id=project_id,
+        org_id=user["org_id"],
+        user_id=user.get("user_id") or user.get("id"),
+        payload=payload.model_dump(),
+    )
+    return _result(result, "Controlled drawing registered successfully.")
+
+
+@router.get("/{project_id}/photos")
+async def get_project_progress_photos(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "site_operations.report.view")),
+):
+    """Returns site progress photo diary entries."""
+    await _project_or_404(db, project_id, user["org_id"])
+    photos = await list_project_photos(db, project_id, user["org_id"])
+    return _result(photos, "Progress photos retrieved.")
+
+
+@router.post("/{project_id}/photos")
+async def add_project_progress_photo(
+    project_id: UUID,
+    payload: ProgressPhotoCreate,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.update", "site_operations.report.submit")),
+):
+    """Records a progress photo entry with element tag, capture date, and weather."""
+    await _project_or_404(db, project_id, user["org_id"])
+    result = await record_progress_photo(
+        db=db,
+        project_id=project_id,
+        org_id=user["org_id"],
+        user_id=user.get("user_id") or user.get("id"),
+        payload=payload.model_dump(),
+    )
+    return _result(result, "Progress photo diary entry recorded.")
+
+
+@router.get("/{project_id}/progress-pack")
+async def get_project_consolidated_progress_pack(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "site_operations.report.view")),
+):
+    """
+    Generates a consolidated client and month-end progress pack compiling
+    schedule CPM, quality, plant, subcontractor commercials, contractual delays,
+    drawings, and progress photos.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    pack = await generate_project_progress_pack(db, project_id, user["org_id"])
+    return _result(pack, "Consolidated progress pack retrieved.")
+
+
+@router.get("/{project_id}/evm-analytics")
+async def get_project_evm_analytics(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_any_permission("projects.read", "finance.report.view")),
+):
+    """
+    Returns Earned Value Management (EVM) commercial indices:
+    BAC, PV, EV, AC, CV, SV, CPI, SPI, EAC, VAC, TCPI, and S-Curve trajectory points.
+    """
+    await _project_or_404(db, project_id, user["org_id"])
+    evm_data = await calculate_project_evm(db, project_id, user["org_id"])
+    return _result(evm_data, "Project EVM analytics retrieved successfully.")
+
+
+
+
+

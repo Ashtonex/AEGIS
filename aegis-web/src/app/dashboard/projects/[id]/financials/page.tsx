@@ -35,13 +35,15 @@ import {
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { ProjectMoneyModal } from "@/app/dashboard/finance/ProjectMoneyModal";
-import { number } from "@/lib/projects/types";
+import { SubcontractCommercialsWorkspace } from "@/components/projects/SubcontractCommercialsWorkspace";
+import { ProjectEvmStudio } from "@/components/projects/ProjectEvmStudio";
 
 export default function ProjectFinancialsPage() {
   const params = useParams();
   const projectId = typeof params?.id === "string" ? params.id : "";
   const { project, detail } = useProject();
 
+  const [commercialTab, setCommercialTab] = useState<"client" | "subcontracts" | "evm">("client");
   const [loading, setLoading] = useState(true);
   const [variations, setVariations] = useState<Record<string, unknown>[]>([]);
   const [claims, setClaims] = useState<Record<string, unknown>[]>([]);
@@ -93,12 +95,12 @@ export default function ProjectFinancialsPage() {
   }, [projectId]);
 
   const source = detail?.project ?? project;
-  const contractVal = number(source?.contract_value ?? source?.budget ?? source?.budget_value) ?? 0;
-  const budgetedCost = number(source?.budget_amount ?? (detail as any)?.viability?.[0]?.budget_amount ?? (financeDetail as any)?.approved_budget) ?? 0;
-  const actualCost = number(source?.actual_cost ?? (financeDetail as any)?.total_cost_incurred ?? (financeDetail as any)?.actual_cost_to_date) ?? 0;
-  const committedCost = number(source?.committed_cost ?? (financeDetail as any)?.total_commitments ?? (financeDetail as any)?.committed_cost) ?? 0;
-  const siteStoreInventoryValue = number((financeDetail as any)?.site_store_inventory_value ?? (financeDetail as any)?.materials_summary?.store_inventory_value) ?? 0;
-  const collectedCash = number((financeDetail as any)?.total_cash_collected ?? (financeDetail as any)?.cash_collected) ?? 0;
+  const contractVal = Number(source?.contract_value ?? source?.budget ?? source?.budget_value) || 0;
+  const budgetedCost = Number(source?.budget_amount ?? (detail as any)?.viability?.[0]?.budget_amount ?? (financeDetail as any)?.approved_budget) || 0;
+  const actualCost = Number(source?.actual_cost ?? (financeDetail as any)?.total_cost_incurred ?? (financeDetail as any)?.actual_cost_to_date) || 0;
+  const committedCost = Number(source?.committed_cost ?? (financeDetail as any)?.total_commitments ?? (financeDetail as any)?.committed_cost) || 0;
+  const siteStoreInventoryValue = Number((financeDetail as any)?.site_store_inventory_value ?? (financeDetail as any)?.materials_summary?.store_inventory_value) || 0;
+  const collectedCash = Number((financeDetail as any)?.total_cash_collected ?? (financeDetail as any)?.cash_collected) || 0;
 
   const totalExposure = actualCost + committedCost;
   const baseline = budgetedCost > 0 ? budgetedCost : contractVal;
@@ -198,7 +200,7 @@ export default function ProjectFinancialsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Link
             href={`/dashboard/finance/project-financials?projectId=${projectId}`}
-            className="inline-flex items-center gap-1.5 border border-lime-500/50 bg-lime-950/20 px-3 py-1.5 font-mono text-xs text-lime-400 hover:bg-lime-500 hover:text-ink transition-colors"
+            className="inline-flex items-center gap-1.5 border border-lime-500/50 bg-lime-950/20 px-3 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs text-lime-400 hover:bg-lime-500 hover:text-ink active:scale-[0.98] transition-all"
             title="Open in Corporate Finance Command"
           >
             <Coins className="h-3.5 w-3.5" />
@@ -208,7 +210,7 @@ export default function ProjectFinancialsPage() {
           <button
             type="button"
             onClick={() => setIsMoneyModalOpen(true)}
-            className="inline-flex items-center gap-1.5 border border-signal/60 bg-signal/15 px-3 py-1.5 font-mono text-xs font-semibold text-signal hover:bg-signal hover:text-ink transition-colors"
+            className="inline-flex items-center gap-1.5 border border-signal/60 bg-signal/15 px-3 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs font-semibold text-signal hover:bg-signal hover:text-ink active:scale-[0.98] transition-all"
             title="Open Project Money Attribution and Ledger Modal"
           >
             <Banknote className="h-3.5 w-3.5" />
@@ -218,7 +220,7 @@ export default function ProjectFinancialsPage() {
           <button
             type="button"
             onClick={() => setIsDepositModalOpen(true)}
-            className="inline-flex items-center gap-1.5 border border-sky-500/50 bg-sky-950/30 px-3.5 py-1.5 font-mono text-xs text-sky-300 hover:bg-sky-500 hover:text-ink transition-colors"
+            className="inline-flex items-center gap-1.5 border border-sky-500/50 bg-sky-950/30 px-3.5 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs text-sky-300 hover:bg-sky-500 hover:text-ink active:scale-[0.98] transition-all"
           >
             <DollarSign className="h-3.5 w-3.5" />
             <span>Add Deposit</span>
@@ -226,7 +228,7 @@ export default function ProjectFinancialsPage() {
           <button
             type="button"
             onClick={() => setIsVariationModalOpen(true)}
-            className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink-light px-3 py-1.5 font-mono text-xs text-paper hover:border-signal transition-colors"
+            className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink-light px-3 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs text-paper hover:border-signal active:scale-[0.98] transition-all"
           >
             <Plus className="h-3.5 w-3.5 text-signal" />
             <span>Record Variation</span>
@@ -234,7 +236,7 @@ export default function ProjectFinancialsPage() {
           <button
             type="button"
             onClick={() => setIsClaimModalOpen(true)}
-            className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-950/20 px-3 py-1.5 font-mono text-xs text-emerald-300 hover:bg-emerald-500 hover:text-ink transition-colors"
+            className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-950/20 px-3 py-2 sm:py-1.5 min-h-[38px] sm:min-h-0 font-mono text-xs text-emerald-300 hover:bg-emerald-500 hover:text-ink active:scale-[0.98] transition-all"
           >
             <Send className="h-3.5 w-3.5" />
             <span>Progress Claim</span>
@@ -242,8 +244,54 @@ export default function ProjectFinancialsPage() {
         </div>
       </div>
 
-      {/* Financial Radar KPI Cards */}
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      {/* Commercial View Switcher */}
+      <div className="flex border-b border-ink-mid">
+        <button
+          type="button"
+          onClick={() => setCommercialTab("client")}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+            commercialTab === "client"
+              ? "border-signal text-signal font-bold bg-signal/5"
+              : "border-transparent text-slate hover:text-paper hover:bg-ink-light/40"
+          }`}
+        >
+          <DollarSign className="h-4 w-4" />
+          <span>Client Commercials & Cashflow</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setCommercialTab("subcontracts")}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+            commercialTab === "subcontracts"
+              ? "border-signal text-signal font-bold bg-signal/5"
+              : "border-transparent text-slate hover:text-paper hover:bg-ink-light/40"
+          }`}
+        >
+          <HardHat className="h-4 w-4" />
+          <span>Subcontractor Packages & Valuations</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setCommercialTab("evm")}
+          className={`flex items-center gap-2 border-b-2 px-4 py-2.5 font-mono text-xs uppercase tracking-wider transition-colors ${
+            commercialTab === "evm"
+              ? "border-signal text-signal font-bold bg-signal/5"
+              : "border-transparent text-slate hover:text-paper hover:bg-ink-light/40"
+          }`}
+        >
+          <TrendingUp className="h-4 w-4" />
+          <span>Earned Value (EVM) & S-Curves</span>
+        </button>
+      </div>
+
+      {commercialTab === "subcontracts" ? (
+        <SubcontractCommercialsWorkspace projectId={projectId} />
+      ) : commercialTab === "evm" ? (
+        <ProjectEvmStudio projectId={projectId} />
+      ) : (
+        <>
+          {/* Financial Radar KPI Cards */}
+          <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <div className="border border-ink-mid bg-ink/70 p-4">
           <span className="font-mono text-[10px] uppercase text-slate">Contract Value</span>
           <p className="mt-1 font-mono text-2xl font-bold text-paper">
@@ -617,11 +665,13 @@ export default function ProjectFinancialsPage() {
           </p>
         </section>
       )}
+        </>
+      )}
 
       {/* Add Deposit Modal */}
       {isDepositModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md border border-sky-500/50 bg-ink p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="w-full max-w-md border border-sky-500/50 bg-ink p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90dvh] overflow-y-auto pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:pb-6 rounded-t-xl sm:rounded-none">
             <h3 className="font-display text-lg font-bold text-paper">Add Client Advance Deposit</h3>
             <p className="text-xs text-slate-light">
               Confirm cash received from client. Automatically posts as certified revenue &amp; cashbook inflow.
@@ -633,7 +683,7 @@ export default function ProjectFinancialsPage() {
                 value={depositAmount}
                 onChange={(e) => setDepositAmount(e.target.value)}
                 placeholder="Amount in USD"
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-sky-500 font-mono"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-sky-500 font-mono min-h-[44px] sm:min-h-0"
               />
             </div>
             <div>
@@ -642,7 +692,7 @@ export default function ProjectFinancialsPage() {
                 value={depositRef}
                 onChange={(e) => setDepositRef(e.target.value)}
                 placeholder="e.g. Wire transfer ref / RTGS-8821"
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-sky-500 font-mono"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-sky-500 font-mono min-h-[44px] sm:min-h-0"
               />
             </div>
             <div>
@@ -652,14 +702,14 @@ export default function ProjectFinancialsPage() {
                 value={depositNotes}
                 onChange={(e) => setDepositNotes(e.target.value)}
                 placeholder="Initial project advance payment from client..."
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-sky-500"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-sky-500"
               />
             </div>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setIsDepositModalOpen(false)}
-                className="border border-ink-mid px-4 py-2 font-mono text-xs text-slate-light hover:text-paper"
+                className="border border-ink-mid px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs text-slate-light hover:text-paper"
               >
                 Cancel
               </button>
@@ -667,7 +717,7 @@ export default function ProjectFinancialsPage() {
                 type="button"
                 onClick={handleCreateDeposit}
                 disabled={savingDeposit || !depositAmount || Number(depositAmount) <= 0}
-                className="border border-sky-500 bg-sky-500 px-4 py-2 font-mono text-xs font-bold uppercase text-ink hover:bg-sky-400 disabled:opacity-50"
+                className="border border-sky-500 bg-sky-500 px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs font-bold uppercase text-ink hover:bg-sky-400 disabled:opacity-50"
               >
                 {savingDeposit ? "Recording..." : "Confirm Deposit"}
               </button>
@@ -678,8 +728,8 @@ export default function ProjectFinancialsPage() {
 
       {/* Variations Modal */}
       {isVariationModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md border border-ink-mid bg-ink p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="w-full max-w-md border border-ink-mid bg-ink p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90dvh] overflow-y-auto pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:pb-6 rounded-t-xl sm:rounded-none">
             <h3 className="font-display text-lg font-bold text-paper">Record Project Variation</h3>
             <div>
               <label className="block text-xs font-mono uppercase text-slate">Description *</label>
@@ -687,7 +737,7 @@ export default function ProjectFinancialsPage() {
                 value={variationTitle}
                 onChange={(e) => setVariationTitle(e.target.value)}
                 placeholder="e.g. Additional retaining wall drainage"
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-signal"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal min-h-[44px] sm:min-h-0"
               />
             </div>
             <div>
@@ -697,7 +747,7 @@ export default function ProjectFinancialsPage() {
                 value={variationAmount}
                 onChange={(e) => setVariationAmount(e.target.value)}
                 placeholder="Cost in USD"
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-signal font-mono"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
               />
             </div>
             <div>
@@ -705,7 +755,7 @@ export default function ProjectFinancialsPage() {
               <select
                 value={variationType}
                 onChange={(e) => setVariationType(e.target.value)}
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-signal uppercase font-mono"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal uppercase font-mono min-h-[44px] sm:min-h-0"
               >
                 <option value="addition">Addition (Scope expansion)</option>
                 <option value="omission">Omission (Scope deduction)</option>
@@ -716,7 +766,7 @@ export default function ProjectFinancialsPage() {
               <button
                 type="button"
                 onClick={() => setIsVariationModalOpen(false)}
-                className="border border-ink-mid px-4 py-2 font-mono text-xs text-slate-light hover:text-paper"
+                className="border border-ink-mid px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs text-slate-light hover:text-paper"
               >
                 Cancel
               </button>
@@ -724,7 +774,7 @@ export default function ProjectFinancialsPage() {
                 type="button"
                 onClick={handleCreateVariation}
                 disabled={savingVariation || !variationTitle.trim()}
-                className="border border-signal bg-signal px-4 py-2 font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90 disabled:opacity-50"
+                className="border border-signal bg-signal px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs font-bold uppercase text-ink hover:bg-signal/90 disabled:opacity-50"
               >
                 {savingVariation ? "Saving..." : "Save Variation"}
               </button>
@@ -735,8 +785,8 @@ export default function ProjectFinancialsPage() {
 
       {/* Progress Claim Modal */}
       {isClaimModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md border border-emerald-500/50 bg-ink p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4">
+          <div className="w-full max-w-md border border-emerald-500/50 bg-ink p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90dvh] overflow-y-auto pb-[max(1.5rem,env(safe-area-inset-bottom))] sm:pb-6 rounded-t-xl sm:rounded-none">
             <h3 className="font-display text-lg font-bold text-paper">Submit Progress Claim</h3>
             <div>
               <label className="block text-xs font-mono uppercase text-slate">Claim Amount ($) *</label>
@@ -745,7 +795,7 @@ export default function ProjectFinancialsPage() {
                 value={claimAmount}
                 onChange={(e) => setClaimAmount(e.target.value)}
                 placeholder="Amount in USD"
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-signal font-mono"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
               />
             </div>
             <div>
@@ -755,14 +805,14 @@ export default function ProjectFinancialsPage() {
                 value={claimNotes}
                 onChange={(e) => setClaimNotes(e.target.value)}
                 placeholder="Scope milestone completed for certification..."
-                className="mt-1 w-full border border-ink-mid bg-ink-light p-2 text-xs text-paper outline-none focus:border-signal"
+                className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal"
               />
             </div>
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setIsClaimModalOpen(false)}
-                className="border border-ink-mid px-4 py-2 font-mono text-xs text-slate-light hover:text-paper"
+                className="border border-ink-mid px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs text-slate-light hover:text-paper"
               >
                 Cancel
               </button>
@@ -770,7 +820,7 @@ export default function ProjectFinancialsPage() {
                 type="button"
                 onClick={handleCreateClaim}
                 disabled={savingClaim || !claimAmount}
-                className="border border-emerald-500 bg-emerald-500 px-4 py-2 font-mono text-xs font-bold uppercase text-ink hover:bg-emerald-400 disabled:opacity-50"
+                className="border border-emerald-500 bg-emerald-500 px-4 py-2.5 min-h-[44px] sm:min-h-[36px] font-mono text-xs font-bold uppercase text-ink hover:bg-emerald-400 disabled:opacity-50"
               >
                 {savingClaim ? "Submitting..." : "Submit Claim"}
               </button>

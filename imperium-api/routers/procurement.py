@@ -2041,8 +2041,8 @@ async def issue_purchase_order(
     )
     await db.execute(
         text("""
-        INSERT INTO finance.commitments (organization_id, project_id, cost_code_id, cost_category, source_type, source_id, description, committed_amount, outstanding_amount, commitment_date, created_by)
-        VALUES (:org_id, :project_id, :cost_code_id, 'materials', 'purchase_order', :po_id, :description, :amount, :amount, CURRENT_DATE, :user_id)
+        INSERT INTO finance.commitments (organization_id, project_id, cost_code_id, cost_category, source_type, source_id, description, committed_amount, commitment_date, created_by)
+        VALUES (:org_id, :project_id, :cost_code_id, 'materials', 'purchase_order', :po_id, :description, :amount, CURRENT_DATE, :user_id)
         ON CONFLICT (organization_id, source_type, source_id) DO NOTHING
     """),
         {
@@ -2827,9 +2827,8 @@ async def payment_decision(
             text("""
             UPDATE finance.commitments
             SET invoiced_amount = LEAST(committed_amount, invoiced_amount + :amount),
-                outstanding_amount = GREATEST(0, committed_amount - (invoiced_amount + :amount)),
                 status = CASE
-                    WHEN GREATEST(0, committed_amount - (invoiced_amount + :amount)) <= 0 THEN 'fulfilled'
+                    WHEN (invoiced_amount + :amount) >= committed_amount THEN 'fully_invoiced'
                     ELSE 'partially_invoiced'
                 END,
                 updated_at=NOW()
