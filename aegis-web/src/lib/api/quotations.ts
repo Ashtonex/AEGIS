@@ -98,6 +98,38 @@ export async function decideQuotation(id: string, status: 'won' | 'lost', notes?
   });
 }
 
+/** Convert an approved/won quotation into an operational project. */
+export async function convertQuotationToProject(
+  quotationId: string,
+  payload?: {
+    name?: string;
+    project_code?: string;
+    project_type?: string;
+    department_id?: string;
+    start_date?: string;
+    planned_completion_date?: string;
+  }
+): Promise<ApiResponse<{ project_id: string; project_code: string; project_name: string; budget_id?: string; already_exists?: boolean }>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${quotationId}/convert-to-project`, {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+    allowFallback: false,
+  });
+}
+
+/** Explicitly link an existing project to a quotation and seed execution budget. */
+export async function linkQuotationToProject(
+  quotationId: string,
+  projectId: string,
+  seedBudget = true
+): Promise<ApiResponse<{ project_id: string; project_name: string; project_code: string; quotation_id: string; budget_id?: string }>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${quotationId}/link-project`, {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId, seed_budget: seedBudget }),
+    allowFallback: false,
+  });
+}
+
 export async function deleteQuotation(id: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/quotations/${id}`, {
     method: 'DELETE',

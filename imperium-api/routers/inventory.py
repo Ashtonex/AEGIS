@@ -561,7 +561,7 @@ async def receive_inventory_invoice(
 @router.post("/issue", status_code=status.HTTP_201_CREATED)
 async def issue_stock(
     payload: StockMovementPayload,
-    user: dict = Depends(require_any_permission("inventory.issue.create", "site_operations.material.record", "inventory.manage")),
+    user: dict = Depends(require_permission("inventory.issue.create")),
     db: AsyncSession = Depends(get_db),
 ):
     await require_ref(

@@ -1,6 +1,7 @@
 "use client";
 
 import type React from "react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, ArrowDownLeft, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3,
@@ -450,6 +451,14 @@ export function ProjectCommercialWorkspace({
               <Coins className="h-3.5 w-3.5" />
               <span>Project Money</span>
             </button>
+            <Link
+              href={`/dashboard/projects/${selectedId}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono uppercase bg-ink border border-ink-mid text-slate-light hover:text-paper hover:border-signal/50 transition-colors"
+              title="Return to Project Workspace"
+            >
+              <FolderKanban className="h-3.5 w-3.5" />
+              <span>Project Workspace</span>
+            </Link>
           </div>
         ) : (
           <div className="text-xs text-slate-light font-mono">

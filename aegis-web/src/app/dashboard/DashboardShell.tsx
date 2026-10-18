@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
@@ -19,7 +19,7 @@ import {
   Settings, LogOut, ChevronDown, ChevronRight, Menu, X,
   LockKeyhole, Package, ClipboardCheck, HardHat,
   PanelLeft, PanelLeftClose, Activity, CheckSquare, CloudUpload,
-  Plus, RefreshCw, WifiOff, ClipboardList,
+  Plus, RefreshCw, WifiOff, ClipboardList, LayoutDashboard, FolderKanban,
 } from "lucide-react";
 import { useNetworkStatus } from "@/lib/offline";
 import {
@@ -243,6 +243,21 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      if (mobileMenuOpen) {
+        document.body.style.overflow = "hidden";
+      } else {
+        document.body.style.overflow = "";
+      }
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.body.style.overflow = "";
+      }
+    };
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     if (!session || !pathname?.startsWith("/dashboard")) {
@@ -543,11 +558,12 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             type="button"
             onClick={() => setCommandOpen(true)}
             data-tour="dashboard-search"
-            className="flex items-center gap-2.5 px-3 py-1.5 rounded-sm bg-ink-light border border-ink-mid hover:border-signal/40 text-slate hover:text-paper transition-all text-sm w-44 sm:w-64 text-left group"
+            className="flex items-center justify-center sm:justify-start gap-2.5 p-2 sm:px-3 sm:py-1.5 rounded-sm bg-ink-light border border-ink-mid hover:border-signal/40 text-slate hover:text-paper transition-all text-sm w-9 sm:w-64 text-left group shrink-0"
             title="Search Imperium (⌘K)"
+            aria-label="Search or jump to"
           >
             <Search className="w-4 h-4 text-slate group-hover:text-signal transition-colors shrink-0" />
-            <span className="truncate flex-1 text-xs">Search or jump to...</span>
+            <span className="hidden sm:inline truncate flex-1 text-xs">Search or jump to...</span>
             <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-light bg-ink border border-ink-mid rounded-xs">
               <span className="text-xs">⌘</span>K
             </kbd>
@@ -562,7 +578,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
           <CalendarDropdown />
           <NotificationBell />
-          <div>
+          <div className="hidden sm:block">
             <PwaPushButton />
           </div>
 
@@ -630,7 +646,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
             {/* USER PROFILE DROPDOWN MENU */}
             {userMenuOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-ink-light border border-white/10 rounded-sm shadow-2xl z-50 py-2 animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="absolute right-0 mt-2 w-64 max-w-[calc(100vw-1.5rem)] bg-ink-light border border-white/10 rounded-sm shadow-2xl z-50 py-2 animate-in fade-in slide-in-from-top-2 duration-150">
                 {/* User Identity Header */}
                 <div className="px-4 py-3 border-b border-white/10">
                   <p className="text-xs font-semibold text-paper truncate">{userEmail}</p>
@@ -724,7 +740,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         {/* MAIN CONTENT AREA */}
         <main
           ref={mainScrollRef}
-          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 pb-16 md:pb-0 ${
+          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 pb-28 md:pb-0 ${
             currentDomain ? DOMAIN_META[currentDomain].accentTopBorderClass : "border-t-transparent"
           }`}
         >
@@ -734,69 +750,15 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </main>
 
         {/* MOBILE BOTTOM NAVIGATION DOCK (Thumb Zone for screens < 768px) */}
-        {!isPortalRoute && (
-          <nav
-            aria-label="Mobile Navigation Dock"
-            className="fixed bottom-0 inset-x-0 z-40 bg-ink-high/95 backdrop-blur-md border-t border-ink-mid md:hidden pb-[env(safe-area-inset-bottom)]"
-          >
-            <div className="flex items-center justify-around h-14 px-2">
-              <Link
-                href="/dashboard/site-operations"
-                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
-                  pathname?.startsWith("/dashboard/site-operations") && !pathname.includes("tab=report")
-                    ? "text-signal font-semibold"
-                    : "text-slate hover:text-paper"
-                }`}
-              >
-                <Activity className="w-5 h-5 mb-0.5" />
-                <span>Site Feed</span>
-              </Link>
-
-              <Link
-                href="/dashboard/site-operations?tab=report"
-                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
-                  pathname?.startsWith("/dashboard/site-operations") && pathname.includes("tab=report")
-                    ? "text-signal font-semibold"
-                    : "text-slate hover:text-paper"
-                }`}
-              >
-                <ClipboardList className="w-5 h-5 mb-0.5" />
-                <span>Report</span>
-              </Link>
-
-              <button
-                type="button"
-                onClick={() => setCommandOpen(true)}
-                className="flex flex-col items-center justify-center -mt-4 bg-signal hover:bg-signal-hover text-ink w-11 h-11 rounded-full shadow-lg border-2 border-ink transition-transform active:scale-95"
-                aria-label="Quick Action"
-              >
-                <Plus className="w-6 h-6 stroke-[2.5]" />
-              </button>
-
-              <Link
-                href="/dashboard/executive"
-                className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
-                  pathname === "/dashboard/executive"
-                    ? "text-signal font-semibold"
-                    : "text-slate hover:text-paper"
-                }`}
-              >
-                <CheckSquare className="w-5 h-5 mb-0.5" />
-                <span>Tasks</span>
-              </Link>
-
-              <button
-                type="button"
-                onClick={() => setMobileMenuOpen(true)}
-                className="flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono text-slate hover:text-paper transition-colors"
-                aria-label="Open full menu"
-              >
-                <Menu className="w-5 h-5 mb-0.5" />
-                <span>Menu</span>
-              </button>
-            </div>
-          </nav>
-        )}
+        <Suspense fallback={null}>
+          <MobileBottomDock
+            isPortalRoute={isPortalRoute}
+            onOpenCommand={() => setCommandOpen(true)}
+            onOpenMenu={() => setMobileMenuOpen(true)}
+            canExecutive={Boolean(isSuperAdmin || permissions?.has("executive.view_dashboard") || permissions?.has("kpi_metrics.read"))}
+            canProjects={Boolean(isSuperAdmin || permissions?.has("projects.read"))}
+          />
+        </Suspense>
       </div>
 
       {/* MOBILE NAV DRAWER */}
@@ -816,8 +778,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 py-4">
+            <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 pt-4 pb-24">
               {renderNavGroups(true)}
+              <div className="mt-6 border-t border-ink-mid pt-4 px-1 space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-light">
+                  <span className="font-mono uppercase text-[10px] tracking-wider text-slate">Device Alerts</span>
+                  <PwaPushButton />
+                </div>
+              </div>
             </nav>
           </aside>
         </div>
@@ -832,5 +800,109 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
       <PwaNotificationPrompt />
     </div>
+  );
+}
+
+function MobileBottomDock({
+  isPortalRoute,
+  onOpenCommand,
+  onOpenMenu,
+  canExecutive,
+  canProjects,
+}: {
+  isPortalRoute: boolean;
+  onOpenCommand: () => void;
+  onOpenMenu: () => void;
+  canExecutive: boolean;
+  canProjects: boolean;
+}) {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tab = searchParams?.get("tab");
+
+  if (isPortalRoute) return null;
+
+  const isSiteOps = pathname?.startsWith("/dashboard/site-operations");
+  const isSiteFeedActive = Boolean(isSiteOps && tab !== "report");
+  const isReportActive = Boolean(isSiteOps && tab === "report");
+
+  return (
+    <nav
+      aria-label="Mobile Navigation Dock"
+      className="fixed bottom-0 inset-x-0 z-40 bg-ink-high/95 backdrop-blur-md border-t border-ink-mid md:hidden pb-[env(safe-area-inset-bottom)]"
+    >
+      <div className="flex items-center justify-around h-14 px-2">
+        <Link
+          href="/dashboard/site-operations"
+          className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+            isSiteFeedActive ? "text-signal font-semibold" : "text-slate hover:text-paper"
+          }`}
+        >
+          <Activity className="w-5 h-5 mb-0.5" />
+          <span>Site Feed</span>
+        </Link>
+
+        <Link
+          href="/dashboard/site-operations?tab=report"
+          className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+            isReportActive ? "text-signal font-semibold" : "text-slate hover:text-paper"
+          }`}
+        >
+          <ClipboardList className="w-5 h-5 mb-0.5" />
+          <span>Report</span>
+        </Link>
+
+        <button
+          type="button"
+          onClick={onOpenCommand}
+          className="flex flex-col items-center justify-center -mt-4 bg-signal hover:bg-signal-hover text-ink w-11 h-11 rounded-full shadow-lg border-2 border-ink transition-transform active:scale-95"
+          aria-label="Quick Action"
+        >
+          <Plus className="w-6 h-6 stroke-[2.5]" />
+        </button>
+
+        {canExecutive ? (
+          <Link
+            href="/dashboard/executive"
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+              pathname === "/dashboard/executive" ? "text-signal font-semibold" : "text-slate hover:text-paper"
+            }`}
+          >
+            <LayoutDashboard className="w-5 h-5 mb-0.5" />
+            <span>Overview</span>
+          </Link>
+        ) : canProjects ? (
+          <Link
+            href="/dashboard/projects"
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+              pathname?.startsWith("/dashboard/projects") ? "text-signal font-semibold" : "text-slate hover:text-paper"
+            }`}
+          >
+            <FolderKanban className="w-5 h-5 mb-0.5" />
+            <span>Projects</span>
+          </Link>
+        ) : (
+          <Link
+            href="/dashboard/executive"
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+              pathname === "/dashboard/executive" ? "text-signal font-semibold" : "text-slate hover:text-paper"
+            }`}
+          >
+            <CheckSquare className="w-5 h-5 mb-0.5" />
+            <span>Tasks</span>
+          </Link>
+        )}
+
+        <button
+          type="button"
+          onClick={onOpenMenu}
+          className="flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono text-slate hover:text-paper transition-colors"
+          aria-label="Open full menu"
+        >
+          <Menu className="w-5 h-5 mb-0.5" />
+          <span>Menu</span>
+        </button>
+      </div>
+    </nav>
   );
 }

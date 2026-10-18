@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   AlertTriangle, BadgeCheck, DollarSign, Loader2, Plus, RefreshCw, Search,
@@ -243,19 +243,29 @@ export function FinancePage({ initialTab }: { initialTab: FinanceTab }) {
 
 function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const queryProjectId = searchParams?.get("projectId") || searchParams?.get("project") || "";
   const financeTour = useModuleTour("finance");
   // Each route (see the sibling tab folders) mounts this component with a
   // fixed initialTab - no local mutation needed since switching tabs is now
   // a real navigation, not client-side state.
   const activeTab = initialTab;
-  const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(queryProjectId);
   const [projectDetail, setProjectDetail] = useState<RecordData | null>(null);
-  const [moneyProjectId, setMoneyProjectId] = useState<string>("");
+  const [moneyProjectId, setMoneyProjectId] = useState<string>(queryProjectId);
   const [departmentId, setDepartmentId] = useState<string>("");
   const [budgetsSubView, setBudgetsSubView] = useState<"project" | "company">("project");
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [claimGroupsOpen, setClaimGroupsOpen] = useState<Record<string, boolean>>({});
   const quickEntryRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (queryProjectId) {
+      setSelectedProjectId(queryProjectId);
+      setMoneyProjectId(queryProjectId);
+      void loadProjectDetail(queryProjectId);
+    }
+  }, [queryProjectId]);
 
   // The quick-entry dropdown closes on an outside click or Escape.
   useEffect(() => {

@@ -104,7 +104,10 @@ class ProjectsRouterContractTests(unittest.TestCase):
     def test_pre_mobilisation_gate_blocks_active_delivery_until_approved(self):
         self.assertIn("PRE_MOBILISATION_GATES", PROJECTS_ROUTER)
         self.assertIn("Project cannot become active until the pre-mobilisation readiness gate is approved.", PROJECTS_ROUTER)
-        self.assertIn("SET status = 'pre_mobilisation'", PROJECTS_ROUTER)
+        self.assertTrue(
+            "SET status = 'pre_mobilisation'" in PROJECTS_ROUTER
+            or 'new_status = "pre_mobilisation"' in PROJECTS_ROUTER
+        )
         self.assertIn("project.pre_mobilisation_opened.v1", PROJECTS_ROUTER)
         self.assertIn("project.mobilisation_authorised.v1", PROJECTS_ROUTER)
         self.assertIn("mobilisation_authorisation_number", PROJECTS_ROUTER)

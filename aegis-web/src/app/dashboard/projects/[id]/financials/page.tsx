@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState, useEffect } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   DollarSign,
@@ -19,6 +20,8 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   RefreshCw,
+  ExternalLink,
+  Coins,
 } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
 import {
@@ -31,6 +34,7 @@ import {
   confirmProjectDeposit,
 } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { ProjectMoneyModal } from "@/app/dashboard/finance/ProjectMoneyModal";
 import { number } from "@/lib/projects/types";
 
 export default function ProjectFinancialsPage() {
@@ -43,6 +47,7 @@ export default function ProjectFinancialsPage() {
   const [claims, setClaims] = useState<Record<string, unknown>[]>([]);
   const [financeDetail, setFinanceDetail] = useState<Record<string, unknown> | null>(null);
   const [pettyCash, setPettyCash] = useState<Record<string, unknown> | null>(null);
+  const [isMoneyModalOpen, setIsMoneyModalOpen] = useState(false);
 
   // Quick modals
   const [isVariationModalOpen, setIsVariationModalOpen] = useState(false);
@@ -190,7 +195,25 @@ export default function ProjectFinancialsPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/dashboard/finance/project-financials?projectId=${projectId}`}
+            className="inline-flex items-center gap-1.5 border border-lime-500/50 bg-lime-950/20 px-3 py-1.5 font-mono text-xs text-lime-400 hover:bg-lime-500 hover:text-ink transition-colors"
+            title="Open in Corporate Finance Command"
+          >
+            <Coins className="h-3.5 w-3.5" />
+            <span>Finance Command</span>
+            <ExternalLink className="h-3 w-3" />
+          </Link>
+          <button
+            type="button"
+            onClick={() => setIsMoneyModalOpen(true)}
+            className="inline-flex items-center gap-1.5 border border-signal/60 bg-signal/15 px-3 py-1.5 font-mono text-xs font-semibold text-signal hover:bg-signal hover:text-ink transition-colors"
+            title="Open Project Money Attribution and Ledger Modal"
+          >
+            <Banknote className="h-3.5 w-3.5" />
+            <span>Money Ledger</span>
+          </button>
           {/* Add Deposit Button */}
           <button
             type="button"
@@ -754,6 +777,17 @@ export default function ProjectFinancialsPage() {
             </div>
           </div>
         </div>
+      )}
+      {isMoneyModalOpen && (
+        <ProjectMoneyModal
+          projectId={projectId}
+          projects={[]}
+          onClose={() => {
+            setIsMoneyModalOpen(false);
+            void reloadData();
+          }}
+          onChanged={() => void reloadData()}
+        />
       )}
     </div>
   );

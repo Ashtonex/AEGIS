@@ -1,6 +1,7 @@
 "use client";
 
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
@@ -10,6 +11,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   FileText,
+  FolderKanban,
   HardHat,
   Loader2,
   Lock,
@@ -166,9 +168,15 @@ function SiteOperationsWorkspace() {
   const canApprove = isSuperAdmin || role === "admin" || role === "manager" || role === "executive";
 
   const searchParams = useSearchParams();
-  const queryProjectId = searchParams?.get("projectId") || "";
+  const queryProjectId = searchParams?.get("projectId") || searchParams?.get("project") || "";
+  const queryTab = searchParams?.get("tab") || "";
 
-  const [tab, setTab] = useState<TabKey>("register");
+  const [tab, setTab] = useState<TabKey>(() => {
+    if (queryTab === "register" || queryTab === "report" || queryTab === "plant" || queryTab === "materials" || queryTab === "targets") {
+      return queryTab;
+    }
+    return "register";
+  });
   const [projectId, setProjectId] = useState(queryProjectId);
   const [workDate, setWorkDate] = useState(harareToday());
 
@@ -322,14 +330,26 @@ function SiteOperationsWorkspace() {
     setShowSuggestions(false);
   };
 
-  // Deep links from Teams cards: ?tab=targets&project=…&date=…
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const t = params.get("tab");
-    if (t === "register" || t === "report" || t === "plant" || t === "materials" || t === "targets") setTab(t);
-    if (params.get("project")) setProjectId(params.get("project") ?? "");
-    if (params.get("date")) setWorkDate(params.get("date") ?? harareToday());
+  const changeTab = useCallback((nextTab: TabKey) => {
+    setTab(nextTab);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", nextTab);
+      window.history.replaceState(null, "", url.toString());
+    }
   }, []);
+
+  // Deep links from mobile bottom dock / Teams cards: ?tab=…&projectId=…&date=…
+  useEffect(() => {
+    const t = searchParams?.get("tab");
+    if (t === "register" || t === "report" || t === "plant" || t === "materials" || t === "targets") {
+      setTab(t);
+    }
+    const p = searchParams?.get("projectId") || searchParams?.get("project");
+    if (p) setProjectId(p);
+    const d = searchParams?.get("date");
+    if (d) setWorkDate(d);
+  }, [searchParams]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -698,7 +718,7 @@ function SiteOperationsWorkspace() {
 
   const lockedPanel = (what: string) => (
     <Locked title={`${what} is locked`} body="Start the site day first. Complete the labour register, PPE check and toolbox talk, and deal with any safety concern, in the Labour Register tab."
-      action={<Btn icon={<HardHat className="h-4 w-4" />} onClick={() => setTab("register")}>Go to Labour Register</Btn>} />
+      action={<Btn icon={<HardHat className="h-4 w-4" />} onClick={() => changeTab("register")}>Go to Labour Register</Btn>} />
   );
 
   return (
@@ -728,6 +748,22 @@ function SiteOperationsWorkspace() {
           <div className="flex flex-wrap items-center gap-2">
             {projectId ? (
               <>
+                <Link
+                  href={`/dashboard/projects/${projectId}/site-logs`}
+                  className="inline-flex items-center gap-1.5 border border-signal/50 bg-signal/15 px-2.5 py-1 font-mono text-xs text-signal hover:bg-signal hover:text-ink transition-colors"
+                  title="View Project Site Logs"
+                >
+                  <ClipboardCheck className="h-3.5 w-3.5" />
+                  <span>Project Logs</span>
+                </Link>
+                <Link
+                  href={`/dashboard/projects/${projectId}`}
+                  className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-2.5 py-1 font-mono text-xs text-slate-light hover:text-paper hover:border-signal/50 transition-colors"
+                  title="Return to Project Command Workspace"
+                >
+                  <FolderKanban className="h-3.5 w-3.5" />
+                  <span>Project Workspace</span>
+                </Link>
                 <Pill tone={dayStatus === "started" ? "green" : dayStatus === "closed" ? "slate" : "amber"}>
                   {dayStatus === "started" ? "Day running" : dayStatus === "closed" ? "Day closed" : dayStatus === "open" ? "Pre-start checks" : "Day not started"}
                 </Pill>
@@ -739,7 +775,7 @@ function SiteOperationsWorkspace() {
         </div>
         <nav className="mt-3 flex gap-1 overflow-x-auto" role="tablist" aria-label="Site operations">
           {tabs.map((t, i) => (
-            <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)}
+            <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => changeTab(t.key)}
               className={`group flex shrink-0 items-center gap-2 border-b-2 px-4 py-2.5 text-sm transition ${tab === t.key ? "border-signal text-paper" : "border-transparent text-slate-light hover:text-paper"}`}>
               <span className={`flex h-5 w-5 items-center justify-center font-mono text-[10px] ${tab === t.key ? "bg-signal text-ink" : "border border-ink-mid"}`}>{i + 1}</span>
               {t.icon}

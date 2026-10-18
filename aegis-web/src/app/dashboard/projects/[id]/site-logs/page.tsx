@@ -112,6 +112,20 @@ export default function ProjectSiteLogsPage() {
                 <p className="text-xs text-paper leading-relaxed font-sans">
                   {String(rep.summary || rep.notes || rep.work_completed || "Daily site operations completed.")}
                 </p>
+
+                <div className="flex items-center justify-between pt-1 border-t border-ink-mid/30 text-[11px] font-mono text-slate">
+                  <div className="flex items-center gap-3">
+                    {Boolean(rep.shift) && <span>Shift: {String(rep.shift)}</span>}
+                    {Boolean(rep.delays) && <span className="text-amber-400">Delay: {String(rep.delays)}</span>}
+                  </div>
+                  <Link
+                    href={`/dashboard/site-operations?projectId=${projectId}&date=${String(rep.report_date || rep.created_at || '').slice(0, 10)}`}
+                    className="inline-flex items-center gap-1 text-signal hover:underline"
+                  >
+                    <span>View Site Day &amp; Activity</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </Link>
+                </div>
               </div>
             ))}
           </div>

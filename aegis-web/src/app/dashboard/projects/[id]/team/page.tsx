@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   Users,
@@ -350,6 +351,22 @@ export default function ProjectTeamPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/dashboard/site-operations?projectId=${projectId}&tab=register`}
+            className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-slate-light hover:text-paper hover:border-signal/50 transition-colors"
+            title="Open Site Labour & Daily Attendance Register"
+          >
+            <HardHat className="h-3.5 w-3.5 text-signal" />
+            <span>Site Labour Register</span>
+          </Link>
+          <Link
+            href={`/dashboard/workforce?projectId=${projectId}`}
+            className="inline-flex items-center gap-1.5 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-slate-light hover:text-paper hover:border-signal/50 transition-colors"
+            title="Open Corporate Workforce & HR Command"
+          >
+            <Users className="h-3.5 w-3.5 text-signal" />
+            <span>HR &amp; Payroll Command</span>
+          </Link>
           <button
             onClick={() => void loadWorkforceData()}
             disabled={loading}

@@ -7,6 +7,7 @@ import {
   getProjectLifecycle,
   getProjectTeam,
   getFinanceProjectDetail,
+  getDailySiteReports,
   updateInternalProject,
   setProjectBudget,
   approveProjectPreMobilisation,
@@ -61,13 +62,18 @@ export function useProjectWorkspace(projectId: string): ProjectWorkspaceData {
           // Will try lifecycle / executive detail below
         }
 
-        // 2. Fetch lifecycle, team, finance summary, and optionally executive detail concurrently
-        const [lifecycleResult, teamResult, financeResult, execResult] = await Promise.allSettled([
+        // 2. Fetch lifecycle, team, finance summary, site reports, and optionally executive detail concurrently
+        const [lifecycleResult, teamResult, financeResult, execResult, siteReportsResult] = await Promise.allSettled([
           getProjectLifecycle(projectId),
           getProjectTeam(projectId),
           getFinanceProjectDetail(projectId),
           getExecutiveProjectDetail(projectId),
+          getDailySiteReports({ projectId }),
         ]);
+
+        const directSiteReports = siteReportsResult.status === 'fulfilled' && Array.isArray(siteReportsResult.value?.data)
+          ? (siteReportsResult.value.data as Record<string, unknown>[])
+          : [];
 
         let mergedDetail: Detail | null = null;
 
@@ -100,6 +106,7 @@ export function useProjectWorkspace(projectId: string): ProjectWorkspaceData {
               risks: (lc.risks as any) || [],
               pre_mobilisation: (lc.pre_mobilisation as any),
               commercial_readiness: (lc.commercial_readiness as any),
+              site_reports: directSiteReports,
             };
           }
         }

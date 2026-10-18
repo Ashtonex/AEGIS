@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   Package,
@@ -86,14 +87,32 @@ export default function ProjectMaterialsPage() {
           </p>
         </div>
 
-        <button
-          onClick={() => void loadSupplyChain()}
-          disabled={loading}
-          className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-paper hover:bg-ink-light transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          Sync Radar
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/dashboard/site-operations?projectId=${projectId}&tab=materials`}
+            className="inline-flex items-center gap-1.5 border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+            title="Request materials from site operations"
+          >
+            <ShoppingCart className="h-3.5 w-3.5" />
+            <span>Request Site Materials</span>
+          </Link>
+          <Link
+            href={`/dashboard/procurement?projectId=${projectId}`}
+            className="inline-flex items-center gap-1.5 border border-signal/50 bg-signal/10 px-3 py-1.5 font-mono text-xs text-signal hover:bg-signal/20 transition-colors"
+            title="Open Procurement Command for this project"
+          >
+            <Truck className="h-3.5 w-3.5" />
+            <span>Procurement Command</span>
+          </Link>
+          <button
+            onClick={() => void loadSupplyChain()}
+            disabled={loading}
+            className="inline-flex items-center gap-2 border border-ink-mid bg-ink px-3 py-1.5 font-mono text-xs text-paper hover:bg-ink-light transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+            Sync Radar
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards */}

@@ -118,6 +118,7 @@ def _decode_with_jwks(token: str, header: dict) -> dict | None:
         algorithms=[header.get("alg")],
         audience=settings.JWT_AUDIENCE,
         issuer=f"{settings.SUPABASE_URL.rstrip('/')}/auth/v1",
+        leeway=60,
     )
 
 
@@ -237,6 +238,7 @@ def verify_jwt(credentials: HTTPAuthorizationCredentials = Security(security)) -
                 algorithms=[settings.JWT_ALGORITHM],
                 audience=settings.JWT_AUDIENCE,
                 issuer=settings.JWT_ISSUER,
+                leeway=60,
             )
             return payload
         except jwt.ExpiredSignatureError as e:
@@ -316,6 +318,7 @@ def _decode_locally(token: str) -> dict | None:
                     algorithms=[settings.JWT_ALGORITHM],
                     audience=settings.JWT_AUDIENCE,
                     issuer=issuer,
+                    leeway=60,
                 )
             except jwt.ExpiredSignatureError:
                 raise

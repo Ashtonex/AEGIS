@@ -3801,10 +3801,10 @@ async def get_project_leadership_dossier(
     project_id: UUID,
     month: Optional[str] = Query(None, description="Month in YYYY-MM format, e.g. 2026-10"),
     user: dict = Depends(require_any_permission(
-        "projects.project.read",
-        "executive.read",
+        "projects.read",
+        "executive.view_dashboard",
         "site_operations.read",
-        "finance.report.read",
+        "financial_performance.read",
     )),
     db: AsyncSession = Depends(get_db),
 ):

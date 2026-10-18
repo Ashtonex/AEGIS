@@ -157,7 +157,7 @@ export function PwaPushButton() {
         </span>
       </button>
       {notice && (
-        <span className="max-w-56 text-[10px] text-slate-light font-mono truncate" title={notice}>
+        <span className="max-w-44 sm:max-w-56 text-[10px] text-slate-light font-mono truncate" title={notice}>
           {notice}
         </span>
       )}

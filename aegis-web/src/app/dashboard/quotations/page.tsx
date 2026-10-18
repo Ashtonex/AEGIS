@@ -6,7 +6,8 @@ import {
   FileText, Plus, Trash2, CheckCircle,
   AlertCircle, Loader2, RefreshCw, Search, ArrowRight,
   TrendingUp, Calendar, DollarSign, BarChart2, Briefcase, FileDown, Layers, Brain,
-  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp, Scale, TrendingDown
+  ThumbsUp, ThumbsDown, ShieldCheck, Copy, ArrowUpDown, ChevronLeft, ChevronRight, History, CircleHelp, Scale, TrendingDown,
+  FolderKanban, Link2
 } from "lucide-react";
 import { getQuotations, getInternalProjects, getQuotationsNeedsBoq, decideQuotation, createQuotation, deleteQuotation, describeActionError } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -17,6 +18,7 @@ import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader"
 import SopChecklistModal from "./SopChecklistModal";
 import QuotationHistoryModal from "./QuotationHistoryModal";
 import CashCurveModal from "./CashCurveModal";
+import ConvertProjectModal from "./ConvertProjectModal";
 
 const QUOTATIONS_TOUR_STEPS: ModuleTourStep[] = [
   {
@@ -70,6 +72,7 @@ export default function QuotationsDashboard() {
   const [sopModalQuote, setSopModalQuote] = useState<{ id: string; label: string } | null>(null);
   const [historyModalQuote, setHistoryModalQuote] = useState<{ id: string; label: string } | null>(null);
   const [cashCurveQuote, setCashCurveQuote] = useState<{ id: string; label: string } | null>(null);
+  const [convertModalQuote, setConvertModalQuote] = useState<any | null>(null);
   const PAGE_SIZE = 15;
   const LOAD_LIMIT = 200;
 
@@ -91,6 +94,13 @@ export default function QuotationsDashboard() {
         }
         setSuccessMsg(msg);
         await loadData();
+        // If quotation won without a linked project, open conversion modal automatically
+        if (status === "won" && !res.data?.project_linked) {
+          const matchingQuote = quotes.find((q) => q.id === id);
+          if (matchingQuote) {
+            setConvertModalQuote(matchingQuote);
+          }
+        }
       } else {
         setErrorMsg(res.message || "Failed to record decision.");
       }
@@ -539,8 +549,28 @@ export default function QuotationsDashboard() {
                             <p className="font-mono text-white text-xs font-semibold">{refNum}</p>
                             <p className="text-slate mt-0.5">{q.client_name}</p>
                           </td>
-                          <td className="py-4 text-slate-light font-medium max-w-[200px] truncate">
-                            {q.metadata?.project_title || "Untitled Estimate"}
+                          <td className="py-4 text-slate-light font-medium max-w-[220px]">
+                            <div className="truncate">{q.metadata?.project_title || "Untitled Estimate"}</div>
+                            {q.project_id ? (
+                              <Link
+                                href={`/dashboard/projects/${q.project_id}`}
+                                className="inline-flex items-center gap-1 text-[10px] font-mono text-signal hover:underline mt-0.5"
+                                title="View synced Project Workspace"
+                              >
+                                <FolderKanban className="w-3 h-3 text-signal" />
+                                <span>Project: {projectsList.find((p) => p.id === q.project_id)?.code || q.project_id.slice(0, 8)}</span>
+                              </Link>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConvertModalQuote(q)}
+                                className="inline-flex items-center gap-1 text-[10px] font-mono text-slate hover:text-signal transition-colors mt-0.5"
+                                title="Convert to Project or Link Existing"
+                              >
+                                <Link2 className="w-2.5 h-2.5" />
+                                <span>Unlinked &middot; Connect</span>
+                              </button>
+                            )}
                           </td>
                           <td className="py-4 text-right font-semibold text-white font-mono">
                             ${Number(q.quote_amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -555,6 +585,14 @@ export default function QuotationsDashboard() {
                           </td>
                           <td className="py-4 text-right">
                             <div className="flex items-center justify-end space-x-2">
+                              <button
+                                type="button"
+                                onClick={() => setConvertModalQuote(q)}
+                                className="p-1.5 border border-ink-mid bg-ink rounded-sm hover:border-signal/50 text-slate hover:text-signal transition-colors"
+                                title={q.project_id ? "Project synchronization details" : "Convert quotation to Project / Link Project"}
+                              >
+                                <FolderKanban className="w-3.5 h-3.5" />
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => setCashCurveQuote({ id: q.id, label: `${refNum} - ${q.client_name} - ${q.metadata?.project_title || "Untitled Estimate"}` })}
@@ -794,6 +832,17 @@ export default function QuotationsDashboard() {
           quotationId={historyModalQuote.id}
           quotationLabel={historyModalQuote.label}
           onClose={() => setHistoryModalQuote(null)}
+        />
+      )}
+
+      {convertModalQuote && (
+        <ConvertProjectModal
+          quotation={convertModalQuote}
+          projectsList={projectsList}
+          onClose={() => setConvertModalQuote(null)}
+          onSuccess={async () => {
+            await loadData();
+          }}
         />
       )}
 
