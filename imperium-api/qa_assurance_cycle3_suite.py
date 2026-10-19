@@ -134,6 +134,7 @@ class Cycle3AssuranceRunner:
 
             await db.execute(text("DELETE FROM procurement.suppliers WHERE supplier_name LIKE :pfx"), {"pfx": f"{TEST_PREFIX}%"})
             await db.execute(text("DELETE FROM core.documents WHERE title LIKE :pfx"), {"pfx": f"{TEST_PREFIX}%"})
+            await db.execute(text("DELETE FROM core.file_attachments WHERE file_name LIKE :pfx"), {"pfx": f"{TEST_PREFIX}%"})
             await db.commit()
 
             print(f"[SETUP] Provisioning Isolated Synthetic Tenant B...")
@@ -543,17 +544,39 @@ class Cycle3AssuranceRunner:
                 )).first()
                 self.grn_id = str(grn_row.id)
 
+                att_row = (await db.execute(
+                    text("""
+                    INSERT INTO core.file_attachments (
+                        organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:user_id AS uuid), :fname, '/storage/cycle3_evidence.pdf', 'application/pdf', 10240
+                    ) RETURNING id
+                    """),
+                    {
+                        "org_id": self.org_a_id,
+                        "user_id": self.user_a_id,
+                        "fname": f"{TEST_PREFIX}evidence.pdf",
+                    },
+                )).first()
+                self.att_id = str(att_row.id)
+
                 doc_row = (await db.execute(
                     text("""
                     INSERT INTO core.documents (
-                        organization_id, title, document_type, file_path, file_size_bytes, mime_type,
-                        created_by, is_deleted, created_at, updated_at
+                        organization_id, created_by, title, file_attachment_id, category, file_size_bytes, file_name,
+                        is_deleted, created_at, updated_at
                     ) VALUES (
-                        CAST(:org_id AS uuid), :title, 'evidence', '/storage/cycle3_evidence.pdf', 10240, 'application/pdf',
-                        CAST(:user_id AS uuid), false, NOW(), NOW()
+                        CAST(:org_id AS uuid), CAST(:user_id AS uuid), :title, CAST(:att_id AS uuid), 'evidence', 10240, :fname,
+                        false, NOW(), NOW()
                     ) RETURNING id
                     """),
-                    {"org_id": self.org_a_id, "title": f"{TEST_PREFIX}Evidence_Doc", "user_id": self.user_a_id},
+                    {
+                        "org_id": self.org_a_id,
+                        "user_id": self.user_a_id,
+                        "title": f"{TEST_PREFIX}Evidence_Doc",
+                        "att_id": self.att_id,
+                        "fname": f"{TEST_PREFIX}evidence.pdf",
+                    },
                 )).first()
                 self.doc_id = str(doc_row.id)
                 await db.commit()
@@ -921,10 +944,42 @@ class Cycle3AssuranceRunner:
             t_iso2 = self.add("CYC3-ISOL-002", "Package C (Isolation)", "Route Write Matrix: 5 mutation endpoints probed by Tenant B return HTTP 404 (Zero Mutation)", "P0")
             t0 = time.time()
             mutations = {
-                "post_subcontract": (await client_b.post(f"/api/v1/projects/{self.project_a_id}/subcontracts", json={"title": "Hacked", "trade": "None"})).status_code,
-                "post_delay": (await client_b.post(f"/api/v1/projects/{self.project_a_id}/delays", json={"delay_event_title": "Hacked", "delay_type": "access_delay", "delay_start_date": date.today().isoformat()})).status_code,
-                "post_drawing": (await client_b.post(f"/api/v1/projects/{self.project_a_id}/drawings", json={"drawing_number": "HACK-01", "title": "Hacked", "discipline": "structural"})).status_code,
-                "post_pour": (await client_b.post(f"/api/v1/projects/{self.project_a_id}/pour-cards", json={"element_type": "slab", "planned_volume_m3": 10.0, "planned_pour_date": date.today().isoformat()})).status_code,
+                "post_subcontract": (await client_b.post(
+                    f"/api/v1/projects/{self.project_a_id}/subcontracts",
+                    json={
+                        "package_number": "SUB-HACK",
+                        "title": "Hacked Subcontract",
+                        "subcontractor_id": self.supplier_id,
+                        "trade": "Electrical",
+                        "award_value": 10000.00,
+                    }
+                )).status_code,
+                "post_delay": (await client_b.post(
+                    f"/api/v1/projects/{self.project_a_id}/delays",
+                    json={
+                        "event_number": "DEL-HACK-01",
+                        "title": "Hacked Delay",
+                        "cause_category": "access_delay",
+                        "event_occurred_date": date.today().isoformat(),
+                    }
+                )).status_code,
+                "post_drawing": (await client_b.post(
+                    f"/api/v1/projects/{self.project_a_id}/drawings",
+                    json={
+                        "drawing_number": "HACK-01",
+                        "title": "Hacked Drawing",
+                        "discipline": "structural",
+                    }
+                )).status_code,
+                "post_pour": (await client_b.post(
+                    f"/api/v1/projects/{self.project_a_id}/pour-cards",
+                    json={
+                        "pour_number": "PC-HACK-01",
+                        "element_name": "Slab Hack",
+                        "concrete_grade": "C30",
+                        "design_volume_m3": 10.0,
+                    }
+                )).status_code,
                 "delete_project": (await client_b.delete(f"/api/v1/projects/{self.project_a_id}")).status_code,
             }
             t_iso2.latency_ms = round((time.time() - t0) * 1000, 1)
@@ -1015,6 +1070,7 @@ class Cycle3AssuranceRunner:
                     await db.execute(text("DELETE FROM procurement.suppliers WHERE id=CAST(:sid AS uuid)"), {"sid": self.supplier_id})
                 if self.doc_id:
                     await db.execute(text("DELETE FROM core.documents WHERE id=CAST(:did AS uuid)"), {"did": self.doc_id})
+                await db.execute(text("DELETE FROM core.file_attachments WHERE file_name LIKE :pfx"), {"pfx": f"{TEST_PREFIX}%"})
 
                 # Tenant B cleanup
                 await db.execute(text("DELETE FROM core.user_roles WHERE user_id=CAST(:uid AS uuid)"), {"uid": self.tenant_b_user_id})

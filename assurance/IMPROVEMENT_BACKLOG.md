@@ -16,9 +16,14 @@ This backlog prioritizes high-impact operational improvements, failure modes, an
 - [x] **IMP-005 (Certificate Reposting Idempotency Guard)**: Implemented short-circuit idempotency guard in `post_certificate_to_finance` returning `already_posted: true` when a certificate has already been posted to finance, eliminating duplicate entries in `finance.retention_ledger`.
 - [x] **IMP-008 (Discipline Score Precedence & Truthful Risk Escalation)**: Corrected operator precedence bug in `discipline_score` calculation in [routers/projects.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/projects.py) where zero pending variations erroneously yielded 100 bonus points. Verified projects with elapsed schedule days and zero daily site reports escalate to `critical` or `at_risk` rather than masking absence of supervision.
 
+### Cycle 3
+- [x] **IMP-011 (Subcontract Certificate Concurrency Row-Lock)**: Deployed PostgreSQL `FOR UPDATE` row lock on `projects.subcontractor_certificates` and pre-insert existence check on `finance.retention_ledger` in [routers/projects.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/projects.py). Proved that 5 simultaneous asynchronous threads attempting to post the same certificate serialize safely without creating duplicate cost or retention ledger records.
+- [x] **IMP-012 (Invoice Payment Decision Idempotency Guard)**: Deployed short-circuit guard in [routers/procurement.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/procurement.py) returning `already_approved: True` when an invoice has already been approved, preventing duplicate clicks or network retries from repeatedly decrementing open commitments.
+- [x] **IMP-013 (Full Route Matrix Isolation Probe)**: Built and verified automated penetration suite across 10 read endpoints and 5 write mutation endpoints under an isolated Tenant B auditor, proving zero data leakage and zero cross-tenant mutation capability.
+
 ---
 
-## Active & Prioritized Backlog (Cycle 3 & Beyond)
+## Active & Prioritized Backlog (Cycle 4 & Beyond)
 
 ### 1. High Priority (P0) — Immutability & Contract Enforcement
 - [ ] **IMP-009 (Certificate Row-Level Immutability)**: Enforce database constraint/trigger preventing modification of certified amounts or dates in `projects.subcontractor_certificates` once `status = 'posted_to_finance'` (requiring formal cancellation or credit adjustment voucher).
