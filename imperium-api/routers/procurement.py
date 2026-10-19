@@ -2744,7 +2744,7 @@ async def payment_decision(
         (
             await db.execute(
                 text(
-                    "SELECT * FROM procurement.supplier_invoices WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                    "SELECT * FROM procurement.supplier_invoices WHERE id=:id AND organization_id=:org_id AND is_deleted=false FOR UPDATE"
                 ),
                 {"id": invoice_id, "org_id": user["org_id"]},
             )
@@ -2830,23 +2830,46 @@ async def payment_decision(
         },
     )
     if status_value == "approved":
-        await db.execute(
+        # Concurrency & Over-Invoice Protection: Fetch & lock commitment
+        comm_res = await db.execute(
             text("""
-            UPDATE finance.commitments
-            SET invoiced_amount = LEAST(committed_amount, invoiced_amount + :amount),
-                status = CASE
-                    WHEN (invoiced_amount + :amount) >= committed_amount THEN 'fully_invoiced'
-                    ELSE 'partially_invoiced'
-                END,
-                updated_at=NOW()
-            WHERE organization_id=:org_id AND source_type='purchase_order' AND source_id=:po_id
-        """),
-            {
-                "org_id": user["org_id"],
-                "po_id": inv["po_id"],
-                "amount": inv["total_amount"],
-            },
+                SELECT id, committed_amount, invoiced_amount,
+                       (committed_amount - invoiced_amount) AS open_amount, status
+                FROM finance.commitments
+                WHERE organization_id=:org_id AND source_type='purchase_order' AND source_id=:po_id
+                FOR UPDATE
+            """),
+            {"org_id": user["org_id"], "po_id": inv["po_id"]},
         )
+        comm = comm_res.mappings().first()
+        if comm:
+            open_amount = Decimal(str(comm["open_amount"] or 0))
+            inv_total = Decimal(str(inv["total_amount"] or 0))
+            if inv_total > open_amount:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Invoice total (${inv_total:,.2f}) exceeds remaining purchase order commitment "
+                        f"(${open_amount:,.2f}). An approved variation order or purchase order amendment "
+                        "is required to authorize excess expenditure."
+                    ),
+                )
+            await db.execute(
+                text("""
+                UPDATE finance.commitments
+                SET invoiced_amount = invoiced_amount + :amount,
+                    status = CASE
+                        WHEN (invoiced_amount + :amount) >= committed_amount THEN 'fully_invoiced'
+                        ELSE 'partially_invoiced'
+                    END,
+                    updated_at=NOW()
+                WHERE id = CAST(:comm_id AS uuid)
+            """),
+                {
+                    "comm_id": str(comm["id"]),
+                    "amount": inv_total,
+                },
+            )
     invoice_event = (
         "finance.invoice_approved.v1"
         if status_value == "approved"

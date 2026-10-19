@@ -1,7 +1,7 @@
 """Tenant-safe project lifecycle, programme, commercial and risk controls."""
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
@@ -4395,16 +4395,40 @@ async def get_project_leadership_dossier(
         (var_score * 0.15)
     ))
 
-    # Dynamic Truthful Health Assessment
-    # Honest evaluation: never fabricate an 'on_track' status if operations or commercial variances indicate distress
-    assessed_health = project.get("health_status")
-    if not assessed_health:
-        if reports_with_delays >= 3 or variance_to_weekly_budget > 10000.0 or discipline_score < 40:
-            assessed_health = "critical"
-        elif reports_with_delays >= 1 or variance_to_weekly_budget > 2500.0 or discipline_score < 70 or (days_elapsed > 3 and reporting_compliance_pct < 50.0):
-            assessed_health = "at_risk"
-        else:
-            assessed_health = "on_track"
+    # Dynamic Truthful Health Assessment (Approved Policy A2)
+    # Honest evaluation: Adverse operational signals strictly take precedence over stored manual status.
+    calculated_health = "on_track"
+    health_reasons = []
+    if reports_with_delays >= 3 or variance_to_weekly_budget > 10000.0 or discipline_score < 40:
+        calculated_health = "critical"
+        if reports_with_delays >= 3:
+            health_reasons.append(f"{reports_with_delays} active contractual delay reports recorded")
+        if variance_to_weekly_budget > 10000.0:
+            health_reasons.append(f"Direct site spend exceeds weekly planned budget by ${variance_to_weekly_budget:,.2f}")
+        if discipline_score < 40:
+            health_reasons.append(f"Low site reporting discipline score ({discipline_score}/100)")
+    elif reports_with_delays >= 1 or variance_to_weekly_budget > 2500.0 or discipline_score < 70 or (days_elapsed > 3 and reporting_compliance_pct < 50.0):
+        calculated_health = "at_risk"
+        if reports_with_delays >= 1:
+            health_reasons.append(f"{reports_with_delays} active delay report(s)")
+        if variance_to_weekly_budget > 2500.0:
+            health_reasons.append(f"Direct site spend exceeds weekly budget by ${variance_to_weekly_budget:,.2f}")
+        if discipline_score < 70:
+            health_reasons.append(f"Suboptimal site discipline score ({discipline_score}/100)")
+        if days_elapsed > 3 and reporting_compliance_pct < 50.0:
+            health_reasons.append(f"Site reporting compliance below threshold ({reporting_compliance_pct:.1f}%)")
+
+    stored_health = project.get("health_status")
+    # Approved Rule A2: Adverse signals (critical, at_risk) strictly override manual stored status.
+    if calculated_health in ("critical", "at_risk"):
+        assessed_health = calculated_health
+        health_provenance = "dynamic_operational_assessment"
+    elif stored_health:
+        assessed_health = stored_health
+        health_provenance = "manual_stored_override"
+    else:
+        assessed_health = calculated_health
+        health_provenance = "dynamic_operational_assessment"
 
     data = {
         "project": {
@@ -4415,6 +4439,9 @@ async def get_project_leadership_dossier(
             "contract_value": float(project["contract_value"] or 0),
             "status": project["status"],
             "health_status": assessed_health,
+            "health_provenance": health_provenance,
+            "health_assessment_reasons": health_reasons,
+            "assessed_at": datetime.now(timezone.utc).isoformat(),
         },
         "period": {
             "month": month_label,

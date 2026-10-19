@@ -103,3 +103,39 @@ This register documents each claim from earlier audits, subjecting it to formal 
     - 5 mutation endpoints (`post_subcontract`, `post_delay`, `post_drawing`, `post_pour`, `delete_project`): 5/5 returned HTTP 404.
 - **Status**: **VERIFIED (Full 15-Route Matrix Isolation Enforced)**.
 
+---
+
+### Claim 9: Test Harness Fail-Closed Process Exit Code Contract
+- **Exact Claim**: "Test suite runners must terminate with a non-zero exit code on any test failure, blocker, or unexpected exception so CI/CD pipelines cannot report false positives."
+- **Cycle 4 Status**: REJECTED / BLOCKER `DEF-TEST-001` (Harnesses captured failures in `self.results` but terminated with code 0).
+- **Cycle 5 Remediation & Empirical Proof**:
+  - Remediated all 4 test harnesses to log detailed summary statistics (`passed`, `failed`, `blocked`, `skipped`, `not_run`) and execute `sys.exit(1 if failed > 0 or blocked > 0 else 0)`. Unhandled exceptions caught in `try...finally` emit `sys.exit(2)`.
+  - Authored [imperium-api/qa_harness_selftest.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_harness_selftest.py) executing child processes under controlled conditions:
+    - Normal passing test: Exits with code 0.
+    - Injected assertion failure: Exits with code 1.
+    - Injected unhandled exception: Exits with code 2.
+- **Status**: **VERIFIED (Fail-Closed Contract Proven via Subprocess Self-Test)**.
+
+---
+
+### Claim 10: Invoice Concurrency Serialization & Policy A1 Over-Invoice Gating
+- **Exact Claim**: "Simultaneous payment decisions on supplier invoices cannot cause double-decrements or commit exposure leaks; invoices exceeding open purchase order commitment must be rejected."
+- **Cycle 4 Status**: REJECTED / BLOCKERS `DEF-FIN-001` & `DEF-FIN-002` (Absence of row locks allowed concurrency race conditions; over-invoicing silently capped rather than requiring formal commercial approval).
+- **Cycle 5 Remediation & Empirical Proof**:
+  - Remediated [imperium-api/routers/procurement.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/procurement.py) with PostgreSQL `FOR UPDATE` row locks on `supplier_invoices` and `finance.commitments`.
+  - Implemented User Policy A1: Invoice total exceeding open commitment ($85,000 > $80,000 open) raises HTTP 409 Conflict with detail requiring a formal variation claim or PO amendment.
+  - Verified by tests `CYC3-COM-002` (5 concurrent approvals serialize with 1 approval and 4 `already_approved: True`) and `CYC3-COM-005` (over-invoice attempt cleanly rejected with HTTP 409).
+- **Status**: **VERIFIED (Serialized & Strict Variation Control Enforced; Release on HOLD Pending Commercial Sign-Off)**.
+
+---
+
+### Claim 11: Dynamic Project Health Precedence over Stored Manual Status
+- **Exact Claim**: "Adverse operational indicators dynamically calculated from site diaries and active delays must strictly take precedence over manual or stale project status."
+- **Cycle 4 Status**: REJECTED / BLOCKER `DEF-GOV-001` (Manual stored status overrode dynamic risk assessment).
+- **Cycle 5 Remediation & Empirical Proof**:
+  - Remediated [imperium-api/routers/projects.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/projects.py) to implement User Policy A2: Adverse signals (`critical` or `at_risk`) dynamically computed strictly override any manual stored status.
+  - Added provenance tracking to leadership dossier: `health_provenance` (`dynamic_operational_assessment`), `health_assessment_reasons`, and `assessed_at`.
+  - Verified by tests `CYC3-HLTH-001` and `CYC2-HLTH-002` (distressed project with 3 active delays forced to `critical` regardless of stored database status).
+- **Status**: **VERIFIED (Adverse Precedence & Provenance Audit Trail Enforced)**.
+
+

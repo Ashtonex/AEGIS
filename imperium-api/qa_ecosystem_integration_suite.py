@@ -73,12 +73,16 @@ class EcosystemAuditReport:
             if r.reconciliation:
                 print(f"       Reconciliation: {json.dumps(r.reconciliation)}")
 
+        skipped = sum(1 for r in self.results if r.status == "SKIPPED")
+        not_run = total - (passed + failed + blocked + skipped)
         print("-" * 80)
         print(f" TOTAL PLANNED: {total}")
-        print(f" EXECUTED:      {executed}")
+        print(f" EXECUTED:      {total - not_run}")
         print(f" PASSED:        {passed}")
         print(f" FAILED:        {failed}")
         print(f" BLOCKED:       {blocked}")
+        print(f" SKIPPED:       {skipped}")
+        print(f" NOT RUN:       {not_run}")
         print(f" PASS RATE:     {rate}%")
         print("=" * 80 + "\n")
 
@@ -618,4 +622,12 @@ async def run_ecosystem_audit() -> EcosystemAuditReport:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_ecosystem_audit())
+    try:
+        report = asyncio.run(run_ecosystem_audit())
+    except Exception as exc:
+        print(f"\n[FATAL ERROR] Ecosystem integration suite failed with unhandled exception: {exc}")
+        sys.exit(2)
+    failed = sum(1 for r in report.results if r.status in ("FAILED", "BLOCKED"))
+    if failed > 0:
+        sys.exit(1)
+    sys.exit(0)

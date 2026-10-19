@@ -30,6 +30,7 @@ const nextConfig: NextConfig = {
   // from them (nearly all of dashboard/).
   experimental: {
     optimizePackageImports: ["lucide-react", "framer-motion"],
+    cpus: 2,
   },
   // Who may put AEGIS in a frame. Nothing was sent before, so any site
   // could embed it (clickjacking). Now: AEGIS itself, plus the Microsoft

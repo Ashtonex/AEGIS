@@ -395,12 +395,17 @@ def run_qa_suite():
         if r.latency_ms > 0:
             print(f"       Latency: {r.latency_ms}ms")
 
+    skipped_count = sum(1 for r in report.results if r.status == "SKIPPED")
+    not_run_count = len(report.results) - (passed_count + failed_count + blocked_count + skipped_count)
+
     print("\n================================================================================")
     print(f" TOTAL PLANNED: {len(report.results)}")
     print(f" EXECUTED:      {total_exec}")
     print(f" PASSED:        {passed_count}")
     print(f" FAILED:        {failed_count}")
     print(f" BLOCKED:       {blocked_count}")
+    print(f" SKIPPED:       {skipped_count}")
+    print(f" NOT RUN:       {not_run_count}")
     pass_rate = round((passed_count / total_exec) * 100, 1) if total_exec > 0 else 0
     print(f" PASS RATE:     {pass_rate}%")
     print("================================================================================\n")
@@ -408,4 +413,12 @@ def run_qa_suite():
     return report
 
 if __name__ == "__main__":
-    run_qa_suite()
+    try:
+        rep = run_qa_suite()
+    except Exception as exc:
+        print(f"\n[FATAL ERROR] Projects QA suite failed with unhandled exception: {exc}")
+        sys.exit(2)
+    failed = sum(1 for r in rep.results if r.status in ("FAILED", "BLOCKED"))
+    if failed > 0:
+        sys.exit(1)
+    sys.exit(0)

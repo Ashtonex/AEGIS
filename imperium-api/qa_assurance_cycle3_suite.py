@@ -13,6 +13,7 @@ Tests:
 import asyncio
 from datetime import date, timedelta
 from decimal import Decimal
+import sys
 import time
 from typing import Dict, Any, List, Optional
 from uuid import uuid4
@@ -727,13 +728,17 @@ class Cycle3AssuranceRunner:
                 t_com3.status = "FAILED"
                 t_com3.actual_result = f"Payment decision 1 failed: HTTP {pay1_resp.status_code}: {pay1_resp.text}"
 
-            # --- Test CYC3-COM-004: Duplicate Payment Decision Idempotency Guard ---
-            t_com4 = self.add("CYC3-COM-004", "Package B (Commitments)", "Idempotency Guard: Re-approving Invoice 1 returns already_approved=True without double-decrementing", "P0")
+            # --- Test CYC3-COM-004: Concurrent & Duplicate Payment Decision Idempotency Guard ---
+            t_com4 = self.add("CYC3-COM-004", "Package B (Commitments)", "Idempotency & Concurrency: 5 parallel approvals return already_approved=True without double-decrementing", "P0")
             t0 = time.time()
-            repay_resp = await client_a.post(
-                f"/api/v1/procurement/invoices/{self.inv1_id}/payment-decision",
-                json={"decision": "approved", "approval_document_id": self.doc_id},
-            )
+            concurrent_tasks = [
+                client_a.post(
+                    f"/api/v1/procurement/invoices/{self.inv1_id}/payment-decision",
+                    json={"decision": "approved", "approval_document_id": self.doc_id},
+                )
+                for _ in range(5)
+            ]
+            concurrent_resps = await asyncio.gather(*concurrent_tasks)
             t_com4.latency_ms = round((time.time() - t0) * 1000, 1)
 
             async with AsyncSessionLocal() as db:
@@ -748,16 +753,22 @@ class Cycle3AssuranceRunner:
 
             inv_re = float(comm_re["invoiced_amount"])
             out_re = float(comm_re["outstanding_amount"])
-            is_already = repay_resp.json().get("already_approved", False)
+            all_200 = all(r.status_code == 200 for r in concurrent_resps)
+            all_already = all(r.json().get("already_approved", False) is True for r in concurrent_resps)
 
-            t_com4.metrics = {"already_approved": is_already, "invoiced_amount": inv_re, "outstanding_amount": out_re}
+            t_com4.metrics = {
+                "concurrent_status_codes": [r.status_code for r in concurrent_resps],
+                "all_already_approved": all_already,
+                "invoiced_amount": inv_re,
+                "outstanding_amount": out_re,
+            }
 
-            if repay_resp.status_code == 200 and is_already is True and inv_re == 40000.00 and out_re == 80000.00:
+            if all_200 and all_already and inv_re == 40000.00 and out_re == 80000.00:
                 t_com4.status = "PASSED"
-                t_com4.actual_result = f"Idempotency verified: already_approved=True, Invoiced remains ${inv_re:,.2f}, Outstanding remains ${out_re:,.2f}"
+                t_com4.actual_result = f"Concurrency & idempotency verified: 5/5 returned already_approved=True, Invoiced remains ${inv_re:,.2f}, Outstanding remains ${out_re:,.2f}"
             else:
                 t_com4.status = "FAILED"
-                t_com4.actual_result = f"Idempotency violated: code={repay_resp.status_code}, already_approved={is_already}, Invoiced={inv_re}, Outstanding={out_re}"
+                t_com4.actual_result = f"Concurrency/idempotency violated: all_200={all_200}, all_already={all_already}, Invoiced={inv_re}, Outstanding={out_re}"
 
             # --- Test CYC3-COM-005: Rejected Invoice Leaves Commitment Intact ---
             t_com5 = self.add("CYC3-COM-005", "Package B (Commitments)", "Rejected Invoice Isolation: Rejecting Invoice 2 leaves commitment outstanding unchanged at $80k", "P0")
@@ -831,7 +842,8 @@ class Cycle3AssuranceRunner:
                 t_com5.actual_result = f"Rejection side effect: code={rej_resp.status_code}, Invoiced={inv_rej}, Outstanding={out_rej}"
 
             # --- Test CYC3-COM-006: Final Fulfillment & Over-Invoice Handling ($85k against $80k open) ---
-            t_com6 = self.add("CYC3-COM-006", "Package B (Commitments)", "Over-Invoice Cap: Invoice 3 ($85k) caps invoiced at $120k with status='fully_invoiced' and $0 outstanding", "P0")
+            # --- Test CYC3-COM-006: Over-Invoice Policy A1 Enforcement & Exact Remaining Fulfillment ---
+            t_com6 = self.add("CYC3-COM-006", "Package B (Commitments)", "Over-Invoice Policy A1: Invoice exceeding commitment rejected with HTTP 409; exact limit approved", "P0")
             t0 = time.time()
 
             async with AsyncSessionLocal() as db:
@@ -872,8 +884,53 @@ class Cycle3AssuranceRunner:
                 )
                 await db.commit()
 
-            pay3_resp = await client_a.post(
+            # Attempt 1: Over-invoice approval ($85k against $80k open) -> MUST REJECT WITH 409
+            over_pay_resp = await client_a.post(
                 f"/api/v1/procurement/invoices/{self.inv3_id}/payment-decision",
+                json={"decision": "approved", "approval_document_id": self.doc_id},
+            )
+
+            # Attempt 2: Exact remaining fulfillment ($80k exact remaining on PO)
+            async with AsyncSessionLocal() as db:
+                inv_row4 = (await db.execute(
+                    text("""
+                    INSERT INTO procurement.supplier_invoices (
+                        organization_id, invoice_number, supplier_invoice_ref, supplier_id, po_id, grn_id, project_id,
+                        invoice_date, due_date, subtotal, tax_amount, total_amount, match_status, status,
+                        is_deleted, created_by, created_at, updated_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), :inv_num, :ref, CAST(:sup_id AS uuid), CAST(:po_id AS uuid), CAST(:grn_id AS uuid), CAST(:proj_id AS uuid),
+                        CURRENT_DATE, CURRENT_DATE + 30, 80000.00, 0.00, 80000.00, 'matched', 'matched',
+                        false, CAST(:user_id AS uuid), NOW(), NOW()
+                    ) RETURNING id
+                    """),
+                    {
+                        "org_id": self.org_a_id,
+                        "inv_num": f"INV-C3-004-{suffix}",
+                        "ref": f"REF-C3-004-{suffix}",
+                        "sup_id": self.supplier_id,
+                        "po_id": self.po_id,
+                        "grn_id": self.grn_id,
+                        "proj_id": self.project_a_id,
+                        "user_id": self.user_a_id,
+                    },
+                )).first()
+                self.inv4_id = str(inv_row4.id)
+
+                await db.execute(
+                    text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, project_id, linked_by, linked_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:doc_id AS uuid), 'supplier_invoice', CAST(:ent_id AS uuid), 'evidence', CAST(:proj_id AS uuid), CAST(:user_id AS uuid), NOW()
+                    )
+                    """),
+                    {"org_id": self.org_a_id, "doc_id": self.doc_id, "ent_id": self.inv4_id, "proj_id": self.project_a_id, "user_id": self.user_a_id},
+                )
+                await db.commit()
+
+            exact_pay_resp = await client_a.post(
+                f"/api/v1/procurement/invoices/{self.inv4_id}/payment-decision",
                 json={"decision": "approved", "approval_document_id": self.doc_id},
             )
             t_com6.latency_ms = round((time.time() - t0) * 1000, 1)
@@ -893,17 +950,19 @@ class Cycle3AssuranceRunner:
             st_fin = comm_final["status"]
 
             t_com6.metrics = {
-                "invoiced_amount": inv_fin,
-                "outstanding_amount": out_fin,
-                "status": st_fin,
+                "over_invoice_status": over_pay_resp.status_code,
+                "exact_invoice_status": exact_pay_resp.status_code,
+                "final_invoiced_amount": inv_fin,
+                "final_outstanding_amount": out_fin,
+                "final_status": st_fin,
             }
 
-            if pay3_resp.status_code == 200 and inv_fin == 120000.00 and out_fin == 0.00 and st_fin == "fully_invoiced":
+            if over_pay_resp.status_code == 409 and exact_pay_resp.status_code == 200 and inv_fin == 120000.00 and out_fin == 0.00 and st_fin == "fully_invoiced":
                 t_com6.status = "PASSED"
-                t_com6.actual_result = f"Commitment fully fulfilled: Invoiced=${inv_fin:,.2f}, Outstanding=${out_fin:,.2f}, Status='{st_fin}'"
+                t_com6.actual_result = f"Policy A1 enforced: Excess invoice rejected with HTTP 409; exact limit ($80k) approved, Invoiced=${inv_fin:,.2f}, Outstanding=${out_fin:,.2f}, Status='{st_fin}'"
             else:
                 t_com6.status = "FAILED"
-                t_com6.actual_result = f"Fulfillment error: code={pay3_resp.status_code}, Invoiced=${inv_fin} (exp 120k), Outstanding=${out_fin} (exp 0), Status='{st_fin}'"
+                t_com6.actual_result = f"Policy A1 verification failed: over_code={over_pay_resp.status_code} (exp 409), exact_code={exact_pay_resp.status_code} (exp 200), inv={inv_fin}, out={out_fin}"
 
             # ==================================================================
             # WORK PACKAGE C: TENANT & ROLE ISOLATION ROUTE MATRIX
@@ -1120,18 +1179,30 @@ class Cycle3AssuranceRunner:
         passed = sum(1 for r in self.results if r.status == "PASSED")
         failed = sum(1 for r in self.results if r.status == "FAILED")
         blocked = sum(1 for r in self.results if r.status == "BLOCKED")
+        skipped = sum(1 for r in self.results if r.status == "SKIPPED")
+        not_run = total - (passed + failed + blocked + skipped)
         pass_rate = (passed / max(total, 1)) * 100
 
         print("-" * 80)
         print(f" TOTAL PLANNED: {total}")
-        print(f" EXECUTED:      {total}")
+        print(f" EXECUTED:      {total - not_run}")
         print(f" PASSED:        {passed}")
         print(f" FAILED:        {failed}")
         print(f" BLOCKED:       {blocked}")
+        print(f" SKIPPED:       {skipped}")
+        print(f" NOT RUN:       {not_run}")
         print(f" PASS RATE:     {pass_rate:.1f}%")
         print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":
     runner = Cycle3AssuranceRunner()
-    asyncio.run(runner.run())
+    try:
+        asyncio.run(runner.run())
+    except Exception as exc:
+        print(f"\n[FATAL ERROR] Cycle 3 suite failed with unhandled exception: {exc}")
+        sys.exit(2)
+    failed = sum(1 for r in runner.results if r.status in ("FAILED", "BLOCKED"))
+    if failed > 0:
+        sys.exit(1)
+    sys.exit(0)

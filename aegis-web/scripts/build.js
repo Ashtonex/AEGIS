@@ -71,8 +71,9 @@ function writeVersionManifest() {
 }
 
 function runBuild() {
+  const nodeOptions = [process.env.NODE_OPTIONS, "--max-old-space-size=4096", "--stack-size=4096"].filter(Boolean).join(" ");
   return spawnSync(process.execPath, [nextBin, "build"], {
-    env: { ...process.env, AEGIS_SKIP_NEXT_TYPECHECK: "1" },
+    env: { ...process.env, AEGIS_SKIP_NEXT_TYPECHECK: "1", NODE_OPTIONS: nodeOptions },
     stdio: "inherit",
   });
 }

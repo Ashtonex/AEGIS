@@ -21,9 +21,15 @@ This backlog prioritizes high-impact operational improvements, failure modes, an
 - [x] **IMP-012 (Invoice Payment Decision Idempotency Guard)**: Deployed short-circuit guard in [routers/procurement.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/procurement.py) returning `already_approved: True` when an invoice has already been approved, preventing duplicate clicks or network retries from repeatedly decrementing open commitments.
 - [x] **IMP-013 (Full Route Matrix Isolation Probe)**: Built and verified automated penetration suite across 10 read endpoints and 5 write mutation endpoints under an isolated Tenant B auditor, proving zero data leakage and zero cross-tenant mutation capability.
 
+### Cycle 5
+- [x] **IMP-014 (Fail-Closed Test Harness Process Contract)**: Updated all 4 QA test suites (`qa_assurance_cycle3_suite.py`, `qa_assurance_cycle2_suite.py`, `qa_ecosystem_integration_suite.py`, `qa_projects_execution_suite.py`) to enforce strict fail-closed exit codes: `sys.exit(1)` on test failures/blockers and `sys.exit(2)` on unhandled exceptions. Authored and proved with `qa_harness_selftest.py`.
+- [x] **IMP-015 (Invoice Approval PostgreSQL Row-Lock Concurrency)**: Deployed `FOR UPDATE` row locks on `procurement.supplier_invoices` and `finance.commitments` in [routers/procurement.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/procurement.py), eliminating concurrent race condition vulnerabilities during payment decisions.
+- [x] **IMP-016 (Policy A1 Over-Invoice Gating & Variation Enforcement)**: Enforced User Policy A1: Invoices exceeding remaining open commitment are rejected with HTTP 409 Conflict requiring formal variation approval; release held pending formal sign-off.
+- [x] **IMP-017 (Policy A2 Adverse Dynamic Health Status Precedence)**: Remediated [routers/projects.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/projects.py) to ensure adverse dynamic operational signals (`critical` or `at_risk`) strictly override any manual stored status, with provenance metadata recorded in the leadership dossier.
+
 ---
 
-## Active & Prioritized Backlog (Cycle 4 & Beyond)
+## Active & Prioritized Backlog (Post-Release / Next Milestones)
 
 ### 1. High Priority (P0) — Immutability & Contract Enforcement
 - [ ] **IMP-009 (Certificate Row-Level Immutability)**: Enforce database constraint/trigger preventing modification of certified amounts or dates in `projects.subcontractor_certificates` once `status = 'posted_to_finance'` (requiring formal cancellation or credit adjustment voucher).
