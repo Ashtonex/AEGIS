@@ -68,6 +68,8 @@ import {
   TenderComplianceSummary,
   getDocuments,
   createDocument,
+  linkDocument,
+  deleteDocument,
   getDocumentSignedUrl,
   describeActionError,
   ApiError,
@@ -568,7 +570,7 @@ export function CommercialWorkspaceModal({
         .upload(filePath, file, { cacheControl: "3600", upsert: false });
       if (uploadError) throw uploadError;
 
-      await createDocument({
+      const created = await createDocument({
         title: file.name,
         category: isTender ? "tender" : "contract",
         tender_id: isTender ? entity.id : undefined,
@@ -578,6 +580,16 @@ export function CommercialWorkspaceModal({
         storage_path: filePath,
         mime_type: file.type || undefined,
       });
+
+      if (created.success && created.data?.id) {
+        await linkDocument(created.data.id, {
+          entity_type: isTender ? "tender" : "opportunity",
+          entity_id: entity.id,
+          link_role: "attachment",
+        }).catch((err) => {
+          console.warn("Document auto-link warning:", err);
+        });
+      }
 
       setFeedback({ type: "success", message: `Uploaded ${file.name} to deal registry.` });
       await loadEntityDocuments();
@@ -610,6 +622,22 @@ export function CommercialWorkspaceModal({
       }
     } catch (e) {
       console.warn("Failed to preview document", e);
+    }
+  };
+
+  // Document Delete Handler
+  const handleDeleteDocument = async (docId: string) => {
+    if (!window.confirm("Are you sure you want to remove this document from this record?")) return;
+    try {
+      const res = await deleteDocument(docId);
+      if (res.success) {
+        setFeedback({ type: "success", message: "Document removed." });
+        await loadEntityDocuments();
+      } else {
+        setFeedback({ type: "error", message: res.message || "Failed to delete document." });
+      }
+    } catch (e: any) {
+      setFeedback({ type: "error", message: e?.message || "Failed to delete document." });
     }
   };
 
@@ -1357,6 +1385,14 @@ export function CommercialWorkspaceModal({
                           title="Download"
                         >
                           <Download className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          className="p-1.5 text-slate-light hover:text-rose-400 hover:bg-rose-500/10 rounded-sm transition-colors"
+                          title="Remove document"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>

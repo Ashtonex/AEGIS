@@ -61,6 +61,12 @@ class DocumentsContractTests(unittest.TestCase):
         self.assertNotIn("getDocumentVersions(id).catch", DOC_PAGE)
         self.assertNotIn("getDocumentLinks(id).catch", DOC_PAGE)
 
+    def test_opportunity_document_scoping_supported(self):
+        self.assertIn("opportunity_id: Optional[UUID] = None", DOC_ROUTER)
+        self.assertIn("d.opportunity_id = :opportunity_id", DOC_ROUTER)
+        self.assertIn("dl.entity_type = 'opportunity'", DOC_ROUTER)
+        self.assertIn(":entity_type = 'opportunity' AND d.opportunity_id = :entity_id", DOC_ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()

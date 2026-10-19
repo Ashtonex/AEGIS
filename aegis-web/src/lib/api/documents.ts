@@ -9,7 +9,15 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- DOCUMENT MANAGEMENT --- //
 
-export async function getDocuments(params?: { category?: string; status?: string; classification?: string; search?: string; project_id?: string; tender_id?: string }): Promise<ApiResponse<any[]>> {
+export async function getDocuments(params?: {
+  category?: string;
+  status?: string;
+  classification?: string;
+  search?: string;
+  project_id?: string;
+  tender_id?: string;
+  opportunity_id?: string;
+}): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.category && params.category !== 'all') search.set('category', params.category);
   if (params?.status && params.status !== 'all') search.set('status', params.status);
@@ -17,6 +25,7 @@ export async function getDocuments(params?: { category?: string; status?: string
   if (params?.search) search.set('search', params.search);
   if (params?.project_id) search.set('project_id', params.project_id);
   if (params?.tender_id) search.set('tender_id', params.tender_id);
+  if (params?.opportunity_id) search.set('opportunity_id', params.opportunity_id);
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/documents/${qs}`, { cache: 'no-store', allowFallback: false });
 }

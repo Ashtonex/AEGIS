@@ -147,6 +147,7 @@ async def list_documents(
     search: Optional[str] = None,
     project_id: Optional[UUID] = None,
     tender_id: Optional[UUID] = None,
+    opportunity_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("documents.read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -170,11 +171,38 @@ async def list_documents(
         query_str += " AND d.classification = :classification"
         params["classification"] = classification
     if project_id:
-        query_str += " AND d.project_id = :project_id"
+        query_str += """ AND EXISTS (
+            SELECT 1 FROM core.document_links dl
+            WHERE dl.document_id = d.id
+              AND dl.organization_id = :org_id
+              AND dl.is_deleted = false
+              AND (dl.project_id = :project_id OR (dl.entity_type = 'project' AND dl.entity_id = :project_id))
+        )"""
         params["project_id"] = project_id
     if tender_id:
-        query_str += " AND d.tender_id = :tender_id"
+        query_str += """ AND (
+            d.tender_id = :tender_id OR EXISTS (
+                SELECT 1 FROM core.document_links dl
+                WHERE dl.document_id = d.id
+                  AND dl.organization_id = :org_id
+                  AND dl.is_deleted = false
+                  AND dl.entity_type = 'tender'
+                  AND dl.entity_id = :tender_id
+            )
+        )"""
         params["tender_id"] = tender_id
+    if opportunity_id:
+        query_str += """ AND (
+            d.opportunity_id = :opportunity_id OR EXISTS (
+                SELECT 1 FROM core.document_links dl
+                WHERE dl.document_id = d.id
+                  AND dl.organization_id = :org_id
+                  AND dl.is_deleted = false
+                  AND dl.entity_type = 'opportunity'
+                  AND dl.entity_id = :opportunity_id
+            )
+        )"""
+        params["opportunity_id"] = opportunity_id
     if search:
         query_str += " AND (d.title ILIKE :search OR d.file_name ILIKE :search OR d.doc_number ILIKE :search)"
         params["search"] = f"%{search}%"
@@ -210,14 +238,28 @@ async def list_documents_for_entity(
 
     result = await db.execute(
         text("""
-            SELECT d.*, fa.mime_type, fa.storage_path, dl.link_role,
+            SELECT d.*, fa.mime_type, fa.storage_path,
+                   COALESCE(dl.link_role, 'attachment') AS link_role,
                    u.full_name AS uploaded_by_name, u.email AS uploaded_by_email
-            FROM core.document_links dl
-            JOIN core.documents d ON d.id = dl.document_id AND d.is_deleted = false
+            FROM core.documents d
+            LEFT JOIN LATERAL (
+                SELECT link_role
+                FROM core.document_links dl
+                WHERE dl.document_id = d.id
+                  AND dl.organization_id = :org_id
+                  AND dl.is_deleted = false
+                  AND dl.entity_type = :entity_type
+                  AND dl.entity_id = :entity_id
+                LIMIT 1
+            ) dl ON true
             LEFT JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
             LEFT JOIN core.users u ON u.id = d.created_by AND u.organization_id = d.organization_id
-            WHERE dl.organization_id = :org_id AND dl.is_deleted = false
-              AND dl.entity_type = :entity_type AND dl.entity_id = :entity_id
+            WHERE d.organization_id = :org_id AND d.is_deleted = false
+              AND (
+                  dl.link_role IS NOT NULL
+                  OR (:entity_type = 'opportunity' AND d.opportunity_id = :entity_id)
+                  OR (:entity_type = 'tender' AND d.tender_id = :entity_id)
+              )
             ORDER BY d.created_at DESC
         """),
         {"org_id": user["org_id"], "entity_type": entity_key, "entity_id": entity_id},
@@ -351,7 +393,38 @@ async def create_document(
                 },
             )
         ).scalar()
+        if payload.opportunity_id:
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :doc_id, 'opportunity', :entity_id, 'attachment', :user_id
+                    )
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "doc_id": doc_id,
+                    "entity_id": payload.opportunity_id,
+                    "user_id": user["user_id"],
+                },
+            )
         if payload.tender_id:
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :doc_id, 'tender', :entity_id, 'attachment', :user_id
+                    )
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "doc_id": doc_id,
+                    "entity_id": payload.tender_id,
+                    "user_id": user["user_id"],
+                },
+            )
             await _auto_match_tender_requirements(
                 db,
                 org_id=user["org_id"],
