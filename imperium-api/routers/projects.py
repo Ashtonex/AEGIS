@@ -24,7 +24,12 @@ from app.shared.task_gates import (
     complete_stage_pack,
     sync_tasks_from_gate,
 )
-from app.shared.project_delete import find_project_blockers, hard_delete_project, money_attached
+from app.shared.project_delete import (
+    find_project_blockers,
+    hard_delete_project,
+    money_attached,
+    purge_project_in_entirety,
+)
 from app.shared.project_setup import ensure_project_operational_setup
 from app.services.microsoft.project_calendar import sync_milestone, sync_mobilisation
 from app.services.finance.deposit_recognition import NoCashAccountError, recognise_deposit_as_claimed_revenue
@@ -2476,6 +2481,7 @@ async def get_project_delete_impact(
 async def delete_project(
     project_id: UUID,
     acknowledge_money: bool = Query(default=False, description="Required when bank lines, claims, costs or ledger entries are attached"),
+    purge_all: bool = Query(default=False, description="Permanently delete project and purge all linked records (financial movements, tasks, site logs, etc.)"),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("projects.delete")),
@@ -2493,6 +2499,13 @@ async def delete_project(
                            "Confirm to archive it anyway, or move its bank lines to another project first.",
                 "money": money,
             },
+        )
+
+    if purge_all:
+        await purge_project_in_entirety(db, org_id=user["org_id"], project_id=project_id)
+        return _result(
+            {"wiped": True, "archived": False, "blocked_by": []},
+            "Project and all associated financial movements and records permanently deleted.",
         )
 
     blockers = await find_project_blockers(db, project_id)
@@ -5365,7 +5378,7 @@ async def post_certificate_to_finance(
     """
     await _project_or_404(db, project_id, user["org_id"])
 
-    # 1. Fetch certificate
+    # 1. Fetch certificate with row-level lock to serialize concurrent posts
     cert_res = await db.execute(
         text("""
             SELECT id, certificate_number, valuation_date, certified_gross_amount,
@@ -5376,6 +5389,7 @@ async def post_certificate_to_finance(
               AND project_id = CAST(:project_id AS uuid)
               AND organization_id = CAST(:org_id AS uuid)
               AND is_deleted = false
+            FOR UPDATE
         """),
         {
             "cert_id": str(cert_id),
@@ -5435,29 +5449,38 @@ async def post_certificate_to_finance(
             },
         )
 
-
-    # 3. Post retention into finance.retention_ledger
+    # 3. Post retention into finance.retention_ledger idempotently
     if retention > 0:
-        await db.execute(
+        existing_ret = (await db.execute(
             text("""
-                INSERT INTO finance.retention_ledger (
-                    organization_id, project_id, source_type, source_id,
-                    movement_type, amount, movement_date, notes, recorded_by, created_at
-                ) VALUES (
-                    CAST(:org_id AS uuid), CAST(:project_id AS uuid), 'progress_claim', CAST(:cert_id AS uuid),
-                    'held', :amount, :m_date, :notes, CAST(:user_id AS uuid), NOW()
-                )
+                SELECT id FROM finance.retention_ledger
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND source_id = CAST(:cert_id AS uuid)
+                  AND movement_type = 'held'
             """),
-            {
-                "org_id": str(user["org_id"]),
-                "project_id": str(project_id),
-                "cert_id": str(cert_id),
-                "amount": retention,
-                "m_date": val_date,
-                "notes": f"Retention held on Subcontractor IPC {cert_num}",
-                "user_id": str(user["user_id"]),
-            },
-        )
+            {"org_id": str(user["org_id"]), "cert_id": str(cert_id)}
+        )).scalar()
+        if not existing_ret:
+            await db.execute(
+                text("""
+                    INSERT INTO finance.retention_ledger (
+                        organization_id, project_id, source_type, source_id,
+                        movement_type, amount, movement_date, notes, recorded_by, created_at
+                    ) VALUES (
+                        CAST(:org_id AS uuid), CAST(:project_id AS uuid), 'progress_claim', CAST(:cert_id AS uuid),
+                        'held', :amount, :m_date, :notes, CAST(:user_id AS uuid), NOW()
+                    )
+                """),
+                {
+                    "org_id": str(user["org_id"]),
+                    "project_id": str(project_id),
+                    "cert_id": str(cert_id),
+                    "amount": retention,
+                    "m_date": val_date,
+                    "notes": f"Retention held on Subcontractor IPC {cert_num}",
+                    "user_id": str(user["user_id"]),
+                },
+            )
 
     already_posted = (cert["status"] == "posted_to_finance")
 

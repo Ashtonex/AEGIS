@@ -2754,6 +2754,13 @@ async def payment_decision(
     )
     if not inv:
         raise HTTPException(status_code=404, detail="Supplier invoice not found")
+    if inv["status"] == "approved":
+        if payload.decision == "approved":
+            return {"id": str(invoice_id), "status": "approved", "already_approved": True}
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot alter payment decision on an already approved supplier invoice.",
+        )
     if payload.decision == "approved" and is_procurement_manager(user):
         raise HTTPException(
             status_code=403,

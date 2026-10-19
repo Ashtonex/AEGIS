@@ -383,9 +383,17 @@ export async function getProjectDeleteImpact(projectId: string): Promise<ApiResp
   );
 }
 
-/** acknowledgeMoney must be true when the project has bank lines, claims, costs or ledger entries attached. */
-export async function deleteInternalProject(projectId: string, acknowledgeMoney = false): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
-  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}${acknowledgeMoney ? '?acknowledge_money=true' : ''}`, {
+/** acknowledgeMoney must be true when the project has bank lines, claims, costs or ledger entries attached. purgeAll wipes the project and all attached financial movements and records in their entirety. */
+export async function deleteInternalProject(
+  projectId: string,
+  acknowledgeMoney = false,
+  purgeAll = false,
+): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
+  const params = new URLSearchParams();
+  if (acknowledgeMoney) params.set('acknowledge_money', 'true');
+  if (purgeAll) params.set('purge_all', 'true');
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}${qs}`, {
     method: 'DELETE',
     allowFallback: false,
   });
