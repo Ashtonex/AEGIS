@@ -236,6 +236,14 @@ async def list_documents_for_entity(
             detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
         )
 
+    entity_table = _DOCUMENT_LINK_ENTITY_TABLES[entity_key]
+    entity_check = await db.execute(
+        text(f"SELECT 1 FROM {entity_table} WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": entity_id, "org_id": user["org_id"]},
+    )
+    if not entity_check.first():
+        raise HTTPException(status_code=404, detail=f"{entity_type} not found.")
+
     result = await db.execute(
         text("""
             SELECT d.*, fa.mime_type, fa.storage_path,
@@ -998,6 +1006,68 @@ async def create_link(
         await db.commit()
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
     return ok({"id": str(link_id) if link_id else None}, "Document link recorded.")
+ 
+ 
+@router.delete("/{document_id}/links/{entity_type}/{entity_id}")
+async def unlink_document_from_entity(
+    document_id: UUID,
+    entity_type: str,
+    entity_id: UUID,
+    user: dict = Depends(require_permission("documents.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unlinks a document from a specific entity without deleting the underlying
+    source document from the organization's document vault."""
+    entity_key = entity_type.strip().lower()
+    if entity_key not in _DOCUMENT_LINK_ENTITY_TABLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
+        )
+
+    result = await db.execute(
+        text("""
+            UPDATE core.document_links
+            SET is_deleted = true, updated_at = NOW()
+            WHERE document_id = :document_id
+              AND entity_type = :entity_type
+              AND entity_id = :entity_id
+              AND organization_id = :org_id
+              AND is_deleted = false
+            RETURNING id
+        """),
+        {
+            "document_id": document_id,
+            "entity_type": entity_key,
+            "entity_id": entity_id,
+            "org_id": user["org_id"],
+        },
+    )
+    unlinked_id = result.scalar()
+
+    if entity_key == "opportunity":
+        await db.execute(
+            text("""
+                UPDATE core.documents
+                SET opportunity_id = NULL, updated_at = NOW()
+                WHERE id = :document_id
+                  AND opportunity_id = :entity_id
+                  AND organization_id = :org_id
+            """),
+            {"document_id": document_id, "entity_id": entity_id, "org_id": user["org_id"]},
+        )
+    elif entity_key == "tender":
+        await db.execute(
+            text("""
+                UPDATE core.documents
+                SET tender_id = NULL, updated_at = NOW()
+                WHERE id = :document_id
+                  AND tender_id = :entity_id
+                  AND organization_id = :org_id
+            """),
+            {"document_id": document_id, "entity_id": entity_id, "org_id": user["org_id"]},
+        )
+
+    await db.commit()
+    return ok({"unlinked": bool(unlinked_id)}, "Document unlinked from entity.")

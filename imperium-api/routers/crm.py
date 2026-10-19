@@ -1712,6 +1712,7 @@ _OPPORTUNITY_CARD_SELECT = """
         o.competitor, o.margin_approval_required, o.risk_approval_required, o.approval_status,
         o.originating_department_id,
         o.region, o.latitude::float AS latitude, o.longitude::float AS longitude,
+        o.created_at, o.updated_at,
         c.contact_name as client_name,
         co.name as organization_name,
         q.status AS quote_status,

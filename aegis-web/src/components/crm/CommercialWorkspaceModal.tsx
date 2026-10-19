@@ -67,6 +67,7 @@ import {
   getTenderComplianceSummary,
   TenderComplianceSummary,
   getDocuments,
+  getDocumentsForEntity,
   createDocument,
   linkDocument,
   deleteDocument,
@@ -240,22 +241,28 @@ export function CommercialWorkspaceModal({
     }
   }, [entity, isTender]);
 
-  // Load Documents
+  // Load Documents (strictly entity-scoped to prevent leaking global organization documents)
   const loadEntityDocuments = useCallback(async () => {
-    if (!entity?.id) return;
+    if (!entity?.id) {
+      setEntityDocs([]);
+      return;
+    }
     setLoadingDocs(true);
     try {
-      const filter = isTender ? { tender_id: entity.id } : { opportunity_id: entity.id };
-      const res = await getDocuments(filter);
+      const entityType = isTender ? "tender" : "opportunity";
+      const res = await getDocumentsForEntity(entityType, entity.id);
       if (res.success && Array.isArray(res.data)) {
         setEntityDocs(res.data);
+      } else {
+        setEntityDocs([]);
       }
     } catch (e) {
-      console.warn("Failed to load documents", e);
+      console.warn("Failed to load entity-scoped documents", e);
+      setEntityDocs([]);
     } finally {
       setLoadingDocs(false);
     }
-  }, [entity, isTender]);
+  }, [entity?.id, isTender]);
 
   // Load Tender Requirements
   const loadTenderRequirementsList = useCallback(async () => {

@@ -2,10 +2,18 @@
 
 import React, { use, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, Loader2, AlertCircle } from "lucide-react";
-import { getCrmOpportunityById } from "@/lib/api/crm";
+import {
+  getCrmOpportunityById,
+  getCrmContacts,
+  getCrmOrganizations,
+} from "@/lib/api/crm";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
-import { CommercialWorkspaceModal, type CommercialEntityData } from "@/components/crm/CommercialWorkspaceModal";
+import {
+  OpportunityDetailDrawer,
+  type OpportunityDetailData,
+} from "@/components/crm/OpportunityDetailDrawer";
 
 export default function OpportunityCanonicalPage({
   params,
@@ -13,7 +21,10 @@ export default function OpportunityCanonicalPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [opportunity, setOpportunity] = useState<CommercialEntityData | null>(null);
+  const router = useRouter();
+  const [opportunity, setOpportunity] = useState<OpportunityDetailData | null>(null);
+  const [contacts, setContacts] = useState<Array<{ id: string; contact_name: string; email?: string }>>([]);
+  const [organizations, setOrganizations] = useState<Array<{ id: string; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,12 +32,16 @@ export default function OpportunityCanonicalPage({
     setLoading(true);
     setError(null);
     try {
-      const res = await getCrmOpportunityById(id);
-      if (res.success && res.data) {
-        const d = res.data;
+      const [oppRes, contactsRes, orgsRes] = await Promise.allSettled([
+        getCrmOpportunityById(id),
+        getCrmContacts(),
+        getCrmOrganizations(),
+      ]);
+
+      if (oppRes.status === "fulfilled" && oppRes.value.success && oppRes.value.data) {
+        const d = oppRes.value.data;
         setOpportunity({
           id: d.id,
-          kind: "opportunity",
           name: d.name,
           stage: d.stage,
           budget: Number(d.deal_value || d.budget || 0),
@@ -34,24 +49,33 @@ export default function OpportunityCanonicalPage({
           probability: Number(d.win_probability || d.probability || 50),
           expected_margin: d.expected_margin,
           risk_level: d.risk_level,
+          client_id: d.client_id || d.contact_id,
           client_name: d.organization_name || d.client_name,
+          client_org_id: d.client_org_id,
           organization_name: d.organization_name,
-          sales_owner_id: d.sales_owner_id,
-          sales_owner_name: d.sales_owner_name,
-          expected_close_date: d.expected_close_date,
           next_activity_due_at: d.next_activity_due_at,
           quote_id: d.quote_id,
           quote_status: d.quote_status,
-          quote_amount: d.quote_amount,
           project_id: d.project_id,
           project_name: d.project_name,
           is_stale: d.is_stale,
-          approval_status: d.approval_status,
           originating_department_id: d.originating_department_id,
           region: d.region,
+          created_at: d.created_at,
         });
       } else {
-        setError(res.message || "Opportunity not found.");
+        const msg =
+          oppRes.status === "fulfilled"
+            ? oppRes.value.message || "Opportunity not found."
+            : "Failed to load opportunity.";
+        setError(msg);
+      }
+
+      if (contactsRes.status === "fulfilled" && contactsRes.value.success && Array.isArray(contactsRes.value.data)) {
+        setContacts(contactsRes.value.data);
+      }
+      if (orgsRes.status === "fulfilled" && orgsRes.value.success && Array.isArray(orgsRes.value.data)) {
+        setOrganizations(orgsRes.value.data);
       }
     } catch (err: any) {
       setError(err?.message || "Failed to load opportunity.");
@@ -74,9 +98,9 @@ export default function OpportunityCanonicalPage({
         ]}
         backHref="/dashboard/crm/opportunities"
         backLabel="Back to Pipeline"
-        eyebrow={{ label: "Commercial Workspace" }}
-        title={opportunity?.name || "Opportunity Workspace"}
-        subtitle="Full-page canonical console for quotations, BOQ structures, touchpoint logs, and project readiness."
+        eyebrow={{ label: "Commercial Pipeline" }}
+        title={opportunity?.name || "Opportunity Detail"}
+        subtitle="Focused deal workspace for client touchpoints, estimation handoff, strictly scoped attachments, and execution release."
       />
 
       <main className="p-4 sm:p-6">
@@ -108,20 +132,18 @@ export default function OpportunityCanonicalPage({
             </Link>
           </div>
         ) : (
-          <div className="relative">
-            {/* Embedded Workspace View */}
-            <CommercialWorkspaceModal
-              isOpen={true}
-              onClose={() => {
-                window.location.href = "/dashboard/crm/opportunities";
-              }}
-              entity={opportunity}
-              kind="opportunity"
-              onEntityUpdated={() => {
-                fetchOpportunity();
-              }}
-            />
-          </div>
+          <OpportunityDetailDrawer
+            isOpen={true}
+            onClose={() => {
+              router.push("/dashboard/crm/opportunities");
+            }}
+            opportunity={opportunity}
+            onOpportunityUpdated={() => {
+              void fetchOpportunity();
+            }}
+            contacts={contacts}
+            organizations={organizations}
+          />
         )}
       </main>
     </div>

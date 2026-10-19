@@ -173,6 +173,12 @@ class PurchaseOrderDecisionPayload(Payload):
     reason: Optional[str] = Field(default=None, max_length=2000)
 
 
+class PurchaseOrderAmendmentPayload(Payload):
+    additional_amount: Decimal = Field(gt=0, decimal_places=2, description="Additional authorized commitment amount")
+    reason: str = Field(min_length=5, max_length=2000, description="Commercial justification or variation claim note")
+    variation_id: Optional[UUID] = Field(default=None, description="Optional approved variation order ID")
+
+
 class ProcurementDocumentLinkPayload(Payload):
     entity_type: Literal["purchase_order", "goods_received_note", "supplier_invoice"]
     entity_id: UUID
@@ -2153,6 +2159,149 @@ async def decide_purchase_order(
     return ok(
         {"id": str(po_id), "status": payload.decision},
         f"Purchase order {payload.decision}.",
+    )
+
+
+@router.post("/purchase-orders/{po_id}/amend")
+async def amend_purchase_order(
+    po_id: UUID,
+    payload: PurchaseOrderAmendmentPayload,
+    user: dict = Depends(require_permission("procurement.po.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Authorize a commercial amendment to an issued Purchase Order.
+    Increases both the Purchase Order total and the corresponding Finance
+    Commitment, reopening exposure to permit valid variation/over-invoice approvals.
+    """
+    po = (
+        (
+            await db.execute(
+                text(
+                    "SELECT * FROM procurement.purchase_orders WHERE id=:id AND organization_id=:org_id AND is_deleted=false FOR UPDATE"
+                ),
+                {"id": po_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not po:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    if po["status"] not in {"issued", "partially_received", "received", "invoiced"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only active purchase orders can be amended (current status: '{po['status']}').",
+        )
+    if is_procurement_manager(user):
+        raise HTTPException(
+            status_code=403,
+            detail="Procurement Manager cannot self-authorize commercial PO amendments; independent approval required.",
+        )
+
+    # If linked variation supplied, ensure it exists and is approved
+    if payload.variation_id:
+        var = (
+            await db.execute(
+                text(
+                    "SELECT * FROM finance.variations WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                ),
+                {"id": payload.variation_id, "org_id": user["org_id"]},
+            )
+        ).mappings().first()
+        if not var:
+            raise HTTPException(status_code=404, detail="Linked variation order not found.")
+        if var["status"] != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Linked variation must be approved before amending purchase order (current status: '{var['status']}').",
+            )
+
+    # Lock and update finance.commitments
+    comm_res = await db.execute(
+        text("""
+            SELECT id, committed_amount, invoiced_amount,
+                   (committed_amount - invoiced_amount) AS open_amount, status
+            FROM finance.commitments
+            WHERE organization_id=:org_id AND source_type='purchase_order' AND source_id=:po_id
+            FOR UPDATE
+        """),
+        {"org_id": user["org_id"], "po_id": po_id},
+    )
+    comm = comm_res.mappings().first()
+    if not comm:
+        raise HTTPException(status_code=404, detail="Purchase order commitment not found in finance.")
+
+    add_amt = Decimal(str(payload.additional_amount))
+    cur_committed = Decimal(str(comm["committed_amount"] or 0))
+    new_committed = cur_committed + add_amt
+    cur_invoiced = Decimal(str(comm["invoiced_amount"] or 0))
+    new_open = new_committed - cur_invoiced
+    new_status = "fully_invoiced" if cur_invoiced >= new_committed else "partially_invoiced" if cur_invoiced > 0 else "active"
+
+    # Update PO total
+    await db.execute(
+        text("""
+            UPDATE procurement.purchase_orders
+            SET total_amount = total_amount + :add_amt,
+                subtotal = subtotal + :add_amt,
+                notes = CONCAT(COALESCE(notes, ''), CASE WHEN notes IS NULL OR notes='' THEN '' ELSE E'\n' END, 'Commercial Amendment (+', :add_amt, '): ', :reason),
+                updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {
+            "id": po_id,
+            "org_id": user["org_id"],
+            "add_amt": add_amt,
+            "reason": payload.reason,
+        },
+    )
+
+    # Update commitment
+    await db.execute(
+        text("""
+            UPDATE finance.commitments
+            SET committed_amount = :new_committed,
+                status = CAST(:new_status AS varchar),
+                updated_at = NOW()
+            WHERE id = CAST(:comm_id AS uuid)
+        """),
+        {
+            "comm_id": str(comm["id"]),
+            "new_committed": new_committed,
+            "new_status": new_status,
+        },
+    )
+
+    await emit_event(
+        db,
+        user=user,
+        event_type="procurement.purchase_order.amended.v1",
+        aggregate_type="purchase_order",
+        aggregate_id=po_id,
+        project_id=po["project_id"],
+        payload={
+            "po_number": po["po_number"],
+            "additional_amount": str(add_amt),
+            "new_committed_amount": str(new_committed),
+            "variation_id": str(payload.variation_id) if payload.variation_id else None,
+            "reason": payload.reason,
+        },
+    )
+    await db.commit()
+
+    return ok(
+        {
+            "id": str(po_id),
+            "po_number": po["po_number"],
+            "previous_committed_amount": float(cur_committed),
+            "additional_amount": float(add_amt),
+            "new_committed_amount": float(new_committed),
+            "invoiced_amount": float(cur_invoiced),
+            "new_open_amount": float(new_open),
+            "status": new_status,
+        },
+        f"Purchase order amended successfully with ${add_amt:,.2f} additional commitment.",
     )
 
 

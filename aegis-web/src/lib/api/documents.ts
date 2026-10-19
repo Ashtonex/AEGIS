@@ -88,3 +88,19 @@ export async function deleteDocument(id: string): Promise<ApiResponse<any>> {
   });
 }
 
+/** Unlinks a document from a specific entity without deleting the shared source document. */
+export async function unlinkDocumentFromEntity(
+  documentId: string,
+  entityType: string,
+  entityId: string
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(
+    `/api/v1/documents/${encodeURIComponent(documentId)}/links/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`,
+    {
+      method: 'DELETE',
+      allowFallback: false,
+    }
+  );
+}
+
+

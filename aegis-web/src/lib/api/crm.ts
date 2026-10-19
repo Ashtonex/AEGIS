@@ -588,11 +588,21 @@ export interface CrmActivity {
   created_at?: string;
 }
 
-export async function getCrmActivities(params?: { start_date?: string; end_date?: string; limit?: number }): Promise<ApiResponse<any[]>> {
+export async function getCrmActivities(params?: {
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  opportunity_id?: string;
+  contact_id?: string;
+  lead_id?: string;
+}): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.start_date) search.set("start_date", params.start_date);
   if (params?.end_date) search.set("end_date", params.end_date);
   if (params?.limit) search.set("limit", String(params.limit));
+  if (params?.opportunity_id) search.set("opportunity_id", params.opportunity_id);
+  if (params?.contact_id) search.set("contact_id", params.contact_id);
+  if (params?.lead_id) search.set("lead_id", params.lead_id);
   const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-activities/${query}`, { cache: 'no-store' });
 }

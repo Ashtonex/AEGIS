@@ -67,6 +67,18 @@ class DocumentsContractTests(unittest.TestCase):
         self.assertIn("dl.entity_type = 'opportunity'", DOC_ROUTER)
         self.assertIn(":entity_type = 'opportunity' AND d.opportunity_id = :entity_id", DOC_ROUTER)
 
+    def test_document_for_entity_validates_tenant_ownership(self):
+        self.assertIn('"opportunity": "crm.opportunities"', DOC_ROUTER)
+        self.assertIn("SELECT 1 FROM {entity_table} WHERE id = :id AND organization_id = :org_id AND is_deleted = false", DOC_ROUTER)
+        self.assertIn('detail=f"{entity_type} not found."', DOC_ROUTER)
+
+    def test_document_unlink_endpoint_preserves_source_document(self):
+        self.assertIn('@router.delete("/{document_id}/links/{entity_type}/{entity_id}"', DOC_ROUTER)
+        self.assertIn("UPDATE core.document_links", DOC_ROUTER)
+        self.assertIn("SET is_deleted = true", DOC_ROUTER)
+        self.assertIn("SET opportunity_id = NULL", DOC_ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()
+

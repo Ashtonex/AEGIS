@@ -38,9 +38,7 @@ import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
 import { matchesAnyRole } from '@/lib/rbacMatch';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
-import { DealDocumentsPanel } from '@/components/crm/DealDocumentsPanel';
-import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
-import { CommercialWorkspaceModal } from '@/components/crm/CommercialWorkspaceModal';
+import { OpportunityDetailDrawer } from '@/components/crm/OpportunityDetailDrawer';
 
 // A deal that's already won (Contract) or lost is a decided deal - only
 // these roles can reopen/re-stage it (matches the backend's
@@ -192,8 +190,6 @@ export default function OpportunitiesKanban() {
     targetFrontendStage: string;
     source: 'drag' | 'button' | 'drawer';
   } | null>(null);
-  const [isCreateQuoteOpen, setIsCreateQuoteOpen] = useState(false);
-  const [createQuoteNote, setCreateQuoteNote] = useState('');
   const [nextActionForm, setNextActionForm] = useState({
     type: 'Follow-up',
     dueDate: tomorrowDateInputValue(),
@@ -260,26 +256,6 @@ export default function OpportunitiesKanban() {
   const [loadingMoreColumn, setLoadingMoreColumn] = useState<string | null>(null);
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
-  // Edit Drawer Form State
-  const [editForm, setEditForm] = useState<{
-    name: string;
-    stage: string;
-    budget: string;
-    probability: string;
-    expected_margin: string;
-    risk_level: string;
-    client_id: string;
-    client_org_id: string;
-    originating_department_id: string;
-    next_activity_due_at: string;
-  } | null>(null);
-
-  // New Note State
-  const [newNote, setNewNote] = useState({
-    type: 'Meeting',
-    notes: ''
-  });
-
   const loadFailureMessage = (reason: unknown) => {
     const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
     const normalizedMessage = rawMessage.toLowerCase();
@@ -309,6 +285,16 @@ export default function OpportunitiesKanban() {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const openId = params.get('open') || params.get('id');
+      if (openId) {
+        setSelectedOpportunityId(openId);
+      }
+    }
+  }, []);
 
   const boardFilters = useMemo<OpportunityBoardFilters>(() => ({
     search: debouncedSearch || undefined,
@@ -658,130 +644,6 @@ export default function OpportunitiesKanban() {
     }
   };
 
-  const handleUpdateDealDetails = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedOpportunityId || !editForm) return;
-
-    // A stage change from this form goes through the same stage-move gate as
-    // the board (activity log note + next action), after the other
-    // parameters save - so stage is never sent from here directly.
-    let pendingStageMove: { from: string; to: string } | null = null;
-    if (selectedOpp) {
-      const currentFrontendStage = BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || 'Qualification';
-      if (editForm.stage !== currentFrontendStage) {
-        if (CLOSED_FRONTEND_STAGES.includes(editForm.stage)) {
-          alert("Use Mark won or Mark lost so AEGIS can run the proper commercial handoff.");
-          return;
-        }
-        pendingStageMove = { from: currentFrontendStage, to: editForm.stage };
-      }
-    }
-
-    setIsSubmitting(true);
-    try {
-      const budgetVal = Number(editForm.budget) || 0;
-      const probVal = Number(editForm.probability) || 0;
-      const marginVal = Number(editForm.expected_margin) || 0;
-
-      const updatePayload = {
-        name: editForm.name,
-        budget: budgetVal,
-        probability: probVal,
-        expected_margin: marginVal,
-        risk_level: editForm.risk_level,
-        client_id: editForm.client_id || null,
-        client_org_id: editForm.client_org_id || null,
-        originating_department_id: editForm.originating_department_id || null,
-        next_activity_due_at: editForm.next_activity_due_at || null
-      };
-
-      const res = await updateCrmOpportunity(selectedOpportunityId, updatePayload);
-      if (res.success) {
-        await loadData();
-        try {
-          await createCrmActivity({
-            type: 'Update',
-            ...activityLogFields(`Updated deal parameters: Win Prob ${probVal}%, Est Margin ${marginVal}%, Risk: ${editForm.risk_level}`),
-            opportunity_id: selectedOpportunityId
-          });
-          const actRes = await getCrmActivities();
-          if (actRes.success && Array.isArray(actRes.data)) {
-            setActivities(actRes.data);
-          }
-        } catch (logErr) {
-          // The deal update already succeeded - a logging hiccup shouldn't surface as an error.
-          console.warn('Failed to log deal-update activity:', logErr);
-        }
-        if (pendingStageMove) {
-          openStageMoveGate(selectedOpportunityId, pendingStageMove.from, pendingStageMove.to, 'drawer');
-        }
-      }
-    } catch (err) {
-      console.error('Failed to update opportunity details:', err);
-      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleAddNote = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedOpportunityId || !newNote.notes.trim()) return;
-
-    setIsSubmitting(true);
-    try {
-      const res = await createCrmActivity({
-        type: newNote.type,
-        ...activityLogFields(newNote.notes.trim()),
-        opportunity_id: selectedOpportunityId
-      });
-      if (res.success) {
-        setNewNote(prev => ({ ...prev, notes: '' }));
-        const actRes = await getCrmActivities();
-        if (actRes.success && Array.isArray(actRes.data)) {
-          setActivities(actRes.data);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to add note:', err);
-      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // Creating the first quote on an early-stage deal moves it to Quotation,
-  // so it goes through the same activity-log note as any stage move.
-  const handleCreateQuotation = async () => {
-    if (!selectedOpportunityId || !selectedOpp) return;
-    if (PRE_QUOTATION_BACKEND_STAGES.includes(selectedOpp.stage) && !selectedOpp.quote_id) {
-      setCreateQuoteNote('');
-      setIsCreateQuoteOpen(true);
-      return;
-    }
-    await submitCreateQuotation();
-  };
-
-  const submitCreateQuotation = async (stageNote?: string) => {
-    if (!selectedOpportunityId || !selectedOpp) return;
-    setIsSubmitting(true);
-    try {
-      const response = await createCrmOpportunityQuotation(selectedOpportunityId, {
-        quote_amount: Number(selectedOpp.budget || selectedOpp.weighted_value || 0),
-        status: "sent",
-        ...(stageNote ? { stage_note: stageNote } : {})
-      });
-      if (!response?.data?.id) throw new Error("CRM quotation response did not include an id.");
-      setIsCreateQuoteOpen(false);
-      await loadData();
-    } catch (error) {
-      console.warn("Quotation handoff failed", error);
-      alert(normalizeActionError(error, "Quotation was not created. Check the CRM service connection and retry."));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   const handleMarkWon = async () => {
     setWinNotes('');
     setSelectedWinReasonId('');
@@ -969,33 +831,6 @@ export default function OpportunitiesKanban() {
   }, [contacts]);
 
   const selectedOpp = opportunities.find(o => o.id === selectedOpportunityId);
-  const selectedOppActivities = activities.filter(a => a.opportunity_id === selectedOpportunityId);
-  const selectedOppContact = selectedOpp?.client_id
-    ? contacts.find(c => c.id === selectedOpp.client_id)
-    : null;
-  const selectedOppOrganization = selectedOpp?.client_org_id
-    ? organizations.find(o => o.id === selectedOpp.client_org_id)
-    : null;
-
-  // Initialize edit drawer form when drawer opens
-  useEffect(() => {
-    if (selectedOpp) {
-      setEditForm({
-        name: selectedOpp.name,
-        stage: BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || 'Qualification',
-        budget: String(selectedOpp.budget || ''),
-        probability: String(selectedOpp.probability || ''),
-        expected_margin: String(selectedOpp.expected_margin || ''),
-        risk_level: selectedOpp.risk_level || 'Low',
-        client_id: selectedOpp.client_id || '',
-        client_org_id: selectedOpp.client_org_id || '',
-        originating_department_id: selectedOpp.originating_department_id || '',
-        next_activity_due_at: selectedOpp.next_activity_due_at ? toDateInputValue(new Date(selectedOpp.next_activity_due_at)) : ''
-      });
-    } else {
-      setEditForm(null);
-    }
-  }, [selectedOpp]);
 
   // Whole-pipeline figures from the server, exact however many cards are loaded.
   const missingNextActionCount = boardSummary?.missing_next_action ?? 0;
@@ -1495,59 +1330,6 @@ export default function OpportunitiesKanban() {
         </div>
       )}
 
-      {isCreateQuoteOpen && selectedOpp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/85 backdrop-blur-sm" onClick={() => setIsCreateQuoteOpen(false)} />
-          <form
-            onSubmit={(e) => { e.preventDefault(); if (createQuoteNote.trim().length >= STAGE_LOG_MIN_LENGTH) void submitCreateQuotation(createQuoteNote.trim()); }}
-            className="relative bg-[#0A0A0A] border border-white/10 w-full max-w-md rounded-sm p-5 space-y-4"
-          >
-            <div className="flex justify-between items-center">
-              <h2 className="font-sans font-bold text-sm text-paper uppercase tracking-wider">Create quote</h2>
-              <button type="button" onClick={() => setIsCreateQuoteOpen(false)} className="text-slate-light hover:text-paper"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="bg-black/40 border border-white/5 p-3 rounded-sm">
-              <span className="block font-mono text-[8px] text-slate-light uppercase tracking-wider truncate">{selectedOpp.name}</span>
-              <div className="mt-1 flex items-center gap-2 text-xs text-paper">
-                <span>{BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || selectedOpp.stage}</span>
-                <ArrowRight className="w-3.5 h-3.5 text-[#D4AF37]" />
-                <span className="font-bold">Proposal</span>
-              </div>
-            </div>
-            <div className="space-y-1">
-              <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">
-                Activity log - what happened so far and why it is ready to quote (required)
-              </label>
-              <textarea
-                required
-                autoFocus
-                rows={3}
-                minLength={STAGE_LOG_MIN_LENGTH}
-                value={createQuoteNote}
-                onChange={e => setCreateQuoteNote(e.target.value)}
-                className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none resize-none placeholder:text-slate"
-                placeholder="e.g. Scope confirmed on site with the client; drawings received - pricing now."
-              />
-              <p className="font-mono text-[9px] text-slate-light">
-                Creating the quote moves this deal to Proposal. The note goes to the activity log and the current stage&apos;s open tasks are marked complete.
-              </p>
-            </div>
-            <div className="pt-3 border-t border-white/5 flex justify-end space-x-2">
-              <button type="button" onClick={() => setIsCreateQuoteOpen(false)} className="px-4 py-2 font-mono text-[10px] text-slate-light hover:text-paper hover:bg-white/5 rounded-sm uppercase">
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={isSubmitting || createQuoteNote.trim().length < STAGE_LOG_MIN_LENGTH}
-                className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 uppercase"
-              >
-                {isSubmitting ? 'Creating...' : 'Create quote'}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
       {/* CREATE DEAL MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1747,36 +1529,18 @@ export default function OpportunitiesKanban() {
         </div>
       )}
 
-      {/* Commercial Workspace: Quote & Project Handoff (Create quote, Mark won, Mark lost) */}
-      {/* SPACIOUS COMMERCIAL WORKSPACE MODAL (z-[70], never clipped by navbar) */}
+      {/* Quote & Project Handoff: Focused Opportunity Detail Drawer exposes Create quote, Mark won, Mark lost, and project release */}
       {selectedOpportunityId && selectedOpp && (
-        <CommercialWorkspaceModal
+        <OpportunityDetailDrawer
           isOpen={true}
           onClose={() => setSelectedOpportunityId(null)}
-          entity={{
-            id: selectedOpp.id,
-            kind: 'opportunity',
-            name: selectedOpp.name,
-            stage: selectedOpp.stage,
-            budget: Number(selectedOpp.budget || 0),
-            deal_value: Number(selectedOpp.budget || 0),
-            probability: Number(selectedOpp.probability || 50),
-            expected_margin: typeof selectedOpp.expected_margin === 'number' ? selectedOpp.expected_margin : (selectedOpp.expected_margin ? Number(selectedOpp.expected_margin) : undefined),
-            risk_level: selectedOpp.risk_level,
-            client_name: selectedOpp.organization_name || selectedOpp.client_name,
-            organization_name: selectedOpp.organization_name,
-            quote_id: selectedOpp.quote_id,
-            quote_status: selectedOpp.quote_status,
-            project_id: selectedOpp.project_id,
-            project_name: selectedOpp.project_name,
-            is_stale: selectedOpp.is_stale,
-            approval_status: selectedOpp.approval_status,
-            originating_department_id: selectedOpp.originating_department_id,
-          }}
-          kind="opportunity"
-          onEntityUpdated={() => {
+          opportunity={selectedOpp}
+          onOpportunityUpdated={() => {
             fetchBoard();
           }}
+          contacts={contacts}
+          organizations={organizations}
+          canOverrideStage={canOverrideStage}
         />
       )}
 
