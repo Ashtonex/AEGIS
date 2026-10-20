@@ -84,11 +84,14 @@ class CrmOpportunitiesContractTests(unittest.TestCase):
     def test_operational_database_guard_blocks_mutations_when_live_pooler_detected(self):
         """Verifies that assert_mutation_allowed_for_testing raises OperationalDatabaseProtectionError when targeting operational db."""
         import sys
+        from unittest.mock import patch
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
+        from core.config import settings
         from core.database import assert_mutation_allowed_for_testing, OperationalDatabaseProtectionError
-        with self.assertRaises(OperationalDatabaseProtectionError):
-            assert_mutation_allowed_for_testing()
+        with patch.object(settings, "DATABASE_URL", "postgresql://test@aws-0-eu-west-1.pooler.supabase.com/mzwwkwokpakdweyyscef"):
+            with self.assertRaises(OperationalDatabaseProtectionError):
+                assert_mutation_allowed_for_testing()
 
 
 if __name__ == "__main__":
