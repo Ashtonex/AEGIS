@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
@@ -258,6 +258,25 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
   const [quickEntryOpen, setQuickEntryOpen] = useState(false);
   const [claimGroupsOpen, setClaimGroupsOpen] = useState<Record<string, boolean>>({});
   const quickEntryRef = useRef<HTMLDivElement>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const loadProjectDetail = useCallback(async (id: string) => {
+    setSelectedProjectId(id);
+    if (!id) {
+      setProjectDetail(null);
+      return;
+    }
+    setDetailLoading(true);
+    try {
+      const res = await getFinanceProjectDetail(id);
+      setProjectDetail(res.data || null);
+    } catch (err) {
+      setNotice(normalizeActionError(err, "Failed to load project details."));
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (queryProjectId) {
@@ -265,7 +284,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
       setMoneyProjectId(queryProjectId);
       void loadProjectDetail(queryProjectId);
     }
-  }, [queryProjectId]);
+  }, [queryProjectId, loadProjectDetail]);
 
   // The quick-entry dropdown closes on an outside click or Escape.
   useEffect(() => {
@@ -279,8 +298,7 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
     return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
   }, [quickEntryOpen]);
 
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+
 
   // Modal States
   const [showCostCodeModal, setShowCostCodeModal] = useState(false);
@@ -343,23 +361,6 @@ function FinanceWorkspace({ initialTab }: { initialTab: FinanceTab }) {
 
   useLiveTable("finance.budgets", () => void loadData());
   const error = loadError ? loadFailureMessage(loadError) : null;
-
-  const loadProjectDetail = async (id: string) => {
-    setSelectedProjectId(id);
-    if (!id) {
-      setProjectDetail(null);
-      return;
-    }
-    setDetailLoading(true);
-    try {
-      const res = await getFinanceProjectDetail(id);
-      setProjectDetail(res.data || null);
-    } catch (err) {
-      setNotice(normalizeActionError(err, "Failed to load project details."));
-    } finally {
-      setDetailLoading(false);
-    }
-  };
 
   const handleCreateCostCode = async (e: React.FormEvent) => {
     e.preventDefault();

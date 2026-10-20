@@ -86,30 +86,20 @@ export function ProjectEvmStudio({ projectId }: ProjectEvmStudioProps) {
   }, [sCurve, maxValue]);
 
   const earnedPath = useMemo(() => {
-    let first = true;
-    return sCurve
-      .map((pt, i) => {
-        const coords = getCoordinates(i, pt.earned_value);
-        if (!coords) return "";
-        const cmd = first ? "M" : "L";
-        first = false;
-        return `${cmd} ${coords.x.toFixed(1)} ${coords.y.toFixed(1)}`;
-      })
-      .filter(Boolean)
+    const valid = sCurve
+      .map((pt, i) => ({ i, coords: getCoordinates(i, pt.earned_value) }))
+      .filter((x): x is { i: number; coords: { x: number; y: number } } => Boolean(x.coords));
+    return valid
+      .map((x, idx) => `${idx === 0 ? "M" : "L"} ${x.coords.x.toFixed(1)} ${x.coords.y.toFixed(1)}`)
       .join(" ");
   }, [sCurve, maxValue]);
 
   const actualPath = useMemo(() => {
-    let first = true;
-    return sCurve
-      .map((pt, i) => {
-        const coords = getCoordinates(i, pt.actual_cost);
-        if (!coords) return "";
-        const cmd = first ? "M" : "L";
-        first = false;
-        return `${cmd} ${coords.x.toFixed(1)} ${coords.y.toFixed(1)}`;
-      })
-      .filter(Boolean)
+    const valid = sCurve
+      .map((pt, i) => ({ i, coords: getCoordinates(i, pt.actual_cost) }))
+      .filter((x): x is { i: number; coords: { x: number; y: number } } => Boolean(x.coords));
+    return valid
+      .map((x, idx) => `${idx === 0 ? "M" : "L"} ${x.coords.x.toFixed(1)} ${x.coords.y.toFixed(1)}`)
       .join(" ");
   }, [sCurve, maxValue]);
 

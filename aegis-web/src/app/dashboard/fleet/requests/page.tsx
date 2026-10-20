@@ -897,7 +897,7 @@ function ValidatePlantRequestModal({
           <div className="border border-purple-500/30 bg-purple-500/10 p-3 rounded-sm flex items-start gap-2.5">
             <ArrowRightLeft className="text-purple-400 shrink-0 mt-0.5" size={16} />
             <div className="text-xs">
-              <p className="font-semibold text-purple-200">Don't have this unit in company fleet?</p>
+              <p className="font-semibold text-purple-200">Don&apos;t have this unit in company fleet?</p>
               <p className="text-slate-light text-[11px] mt-0.5">
                 If the machine is missing from company stock, you can source it from an external owner (Party A) at buy rate and lease it to this job or commercial client (Party B) at sell rate via Commercial Hire.
               </p>

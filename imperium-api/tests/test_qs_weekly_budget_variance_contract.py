@@ -59,7 +59,10 @@ class QsWeeklyBudgetVarianceContractTests(unittest.TestCase):
         self.assertIn("QS review is required before approving this site-originated variance.", FINANCE)
         self.assertIn("Client approval is required before approving this variation.", FINANCE)
         self.assertIn("finance.variations", FINANCE)
-        self.assertIn("execution_blocked = CASE WHEN :status='approved' THEN false", FINANCE)
+        self.assertTrue(
+            "execution_blocked = CASE WHEN :status='approved' THEN false" in FINANCE
+            or "execution_blocked = CASE WHEN CAST(:status AS varchar)='approved' THEN false" in FINANCE
+        )
 
 
 if __name__ == "__main__":

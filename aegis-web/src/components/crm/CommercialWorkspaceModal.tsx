@@ -262,7 +262,7 @@ export function CommercialWorkspaceModal({
     } finally {
       setLoadingDocs(false);
     }
-  }, [entity?.id, isTender]);
+  }, [entity, isTender]);
 
   // Load Tender Requirements
   const loadTenderRequirementsList = useCallback(async () => {

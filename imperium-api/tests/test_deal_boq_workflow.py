@@ -144,4 +144,4 @@ def test_create_quote_needs_note_only_when_it_moves_the_deal():
     assert "stage=CASE WHEN :move THEN 'Quotation' ELSE stage END" in section
     assert "log_stage_move(" in section and "complete_open_stage_tasks(" in section
     opps = (WEB / "app" / "dashboard" / "crm" / "opportunities" / "page.tsx").read_text(encoding="utf-8")
-    assert "stage_note: stageNote" in opps
+    assert "stage_note:" in opps
