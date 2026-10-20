@@ -78,7 +78,20 @@ class DocumentsContractTests(unittest.TestCase):
         self.assertIn("SET is_deleted = true", DOC_ROUTER)
         self.assertIn("SET opportunity_id = NULL", DOC_ROUTER)
 
+    def test_document_multi_link_safety_and_permission_enforcement(self):
+        # Permission gate requires documents.delete
+        self.assertIn('user: dict = Depends(require_permission("documents.delete"))', DOC_ROUTER)
+        # Targeted soft-delete applies only to the requested entity association, preserving other entity links
+        self.assertIn("WHERE document_id = :document_id", DOC_ROUTER)
+        self.assertIn("AND entity_type = :entity_type", DOC_ROUTER)
+        self.assertIn("AND entity_id = :entity_id", DOC_ROUTER)
+        self.assertIn("AND organization_id = :org_id", DOC_ROUTER)
+        # Clears opportunity legacy foreign key only when opportunity_id matches entity_id, leaving source intact
+        self.assertIn("SET opportunity_id = NULL, updated_at = NOW()", DOC_ROUTER)
+        self.assertIn("AND opportunity_id = :entity_id", DOC_ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

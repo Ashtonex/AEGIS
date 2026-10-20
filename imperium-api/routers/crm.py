@@ -972,7 +972,17 @@ async def send_campaign(
         sent_count += 1
 
     await db.commit()
-    return {"success": True, "data": {"sent_count": sent_count}, "message": f"Campaign sent to {sent_count} member(s).", "meta": {}}
+    meta = {
+        "queued_count": sent_count,
+        "selected_recipients": len(members),
+        "delivery_status": "queued_for_dispatch",
+    }
+    return {
+        "success": True,
+        "data": {"sent_count": sent_count},
+        "message": f"{sent_count} message(s) queued for outbound dispatch.",
+        "meta": meta,
+    }
 
 
 @router.get("/segments")
@@ -2433,6 +2443,7 @@ async def create_opportunity_quotation(
         LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
         LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
         WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        FOR UPDATE OF o
         """,
         {"opportunity_id": opportunity_id, "org_id": org_id},
     )
@@ -2618,6 +2629,7 @@ async def record_client_quotation(
         LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
         LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
         WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        FOR UPDATE OF o
         """,
         {"opportunity_id": opportunity_id, "org_id": org_id},
     )
@@ -2858,6 +2870,7 @@ async def mark_opportunity_won(
         LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
         LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
         WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        FOR UPDATE OF o
         """,
         {"opportunity_id": opportunity_id, "org_id": org_id},
     )
@@ -2866,6 +2879,15 @@ async def mark_opportunity_won(
     await _ensure_opportunity_stage_unlocked(db, user, opportunity.get("stage"))
 
     project_id = payload.project_id or opportunity.get("project_id")
+    if not project_id:
+        existing_proj = await _single_row(
+            db,
+            "SELECT id FROM projects.projects WHERE opportunity_id = :opp_id AND organization_id = :org_id AND is_deleted = false LIMIT 1",
+            {"opp_id": opportunity_id, "org_id": org_id},
+        )
+        if existing_proj:
+            project_id = existing_proj["id"]
+
     budget_id = None
     forecast_metrics = None
     margin_alert_raised = False

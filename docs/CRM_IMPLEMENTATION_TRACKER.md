@@ -1,85 +1,114 @@
-# AEGIS CRM Implementation Tracker & Quality Gate
+# AEGIS CRM Implementation Tracker & Live Operational Maintenance Gate
 
 **Lead Engineer**: AI Lead Architecture Engineer  
 **Scope**: Connected Commercial Workflow (`aegis-web`, `imperium-api`)  
-**Created**: 2026-10-19  
-**Status**: COMPLETE / VERIFIED  
+**Operational Status**: LIVE SYSTEM MAINTENANCE — MUTATION UAT PAUSED  
+**Last Updated**: 2026-10-20  
 
 ---
 
-## 1. Overall Objective
-Transform the AEGIS CRM from a fragmented collection of disconnected CRUD views and oversized modals into a unified, reliable, and operationally connected commercial pipeline:
-`Lead -> Qualification -> Opportunity -> Estimate/Quotation -> Negotiation -> Won/Lost -> Operational Handoff` (with clean, isolated Tender Bid management where needed).
+## 1. Actual Live System Architecture
+
+The AEGIS system is in active daily operational use by Six Nine Construction:
+
+| Dimension | Live Operating Infrastructure | Evidence / Source of Truth |
+|---|---|---|
+| **Live Web Application** | `https://sixnineconstruction.com` (Vercel deployment) & Microsoft Teams personal tab (`/teams/tasks`, `/dashboard/crm/tasks`) | `deploy/teams-app/manifest.json`, `aegis-web` CI/CD |
+| **Live Backend API** | DigitalOcean Ubuntu Droplet via Caddy reverse-proxy (`/opt/aegis`) with Docker Compose | `.github/workflows/deploy-backend.yml`, `deploy/digitalocean/docker-compose.yml` |
+| **Operational Database** | Supabase Project `mzwwkwokpakdweyyscef` (PostgreSQL 17 pooler at `aws-0-eu-west-1.pooler.supabase.com:6543`) | `imperium-api/core/database.py`, `.env` |
+| **Active Organization** | `00000000-0000-0000-0000-000000000001` (`Six Nine Construction (Private) Limited`) — contains 38 active employees/executives, 34 live deals | Database query on `core.organizations`, `core.users`, `crm.opportunities` |
+| **Authentication & RBAC** | Supabase GoTrue Auth, JWT verification, `core.user_roles`, `core.role_permissions` | `imperium-api/core/security.py` |
+| **Document Storage** | Hybrid: Microsoft SharePoint via Microsoft Graph API & Supabase Storage | `app/services/microsoft/document_service.py`, `core.documents` |
+| **Background Workers** | Arq Worker (`arq app.workers.arq_worker.WorkerSettings`) with Redis (`redis:6379/0`) | `deploy/digitalocean/docker-compose.yml`, `app/workers/arq_worker.py` |
+| **Current Live Commit** | `36b07b0de9bd08350310f222b14938eb764c297a` | Droplet Git tracking / GitHub main |
 
 ---
 
-## 2. Verified Issues & Root Causes Register
+## 2. Reconciled CRM Work Status
 
-| ID | Issue Description | Verified Evidence | Root Cause | Severity | Status |
+| CRM Feature / Workflow | Live Deployed (`36b07b0`) | Local Working Tree Changes | Implementation Status | Verification Level | Operational Risk |
 |---|---|---|---|---|---|
-| **P0-1** | Opening an opportunity shows document tab with unrelated files | `CommercialWorkspaceModal.tsx` Tab 3 called `getDocuments({ opportunity_id })`. If the filter is loose/empty or document relationships are missing, `/api/v1/documents/` returns organization-wide documents. Also Tab 2 duplicated file listing via `EntityDocumentsPanel`. | Opportunities were forced into an all-in-one 2,000-line modal shared with tenders, which performed loose un-scoped document fetching rather than strict, isolated deal attachments. | **P0** | **RESOLVED** |
-| **P0-2** | Opportunity vs Tender scope conflation | `CommercialWorkspaceModal.tsx` shared tender compliance checklists (PRAZ, ZIMRA, bid bonds) with organic commercial deals. | Over-generalized component trying to serve both public tenders and private deals in one monolithic view. | **P0** | **RESOLVED** |
-| **P1-1** | Opportunity Stage Disconnect | Command dashboard (`crm/page.tsx`) used `['Inquiry', 'Qualification', 'Quotation', 'Negotiation']`. Board (`opportunities/page.tsx`) used `['Qualification', 'Proposal', 'Negotiation', 'Won', 'Lost']`. Decided deals (`Won`/`Lost`) were hidden from the Commercial Command funnel. | Inconsistent frontend translation dictionaries and uncoordinated column definitions across views. | **P1** | **RESOLVED** |
-| **P1-2** | Ghost code in Opportunity Board | `opportunities/page.tsx` had ~250 lines of unused state (`editForm`, `handleSaveOpp`, etc.) left over from a deleted drawer. | Incomplete previous refactoring that introduced `CommercialWorkspaceModal` without cleaning up the old drawer. | **P1** | **RESOLVED** |
-| **P2-1** | Fake KPI metrics on Commercial Command | `Expected Margin` hardcoded to static `"Not recorded"`. `Lead Velocity` calculated `opportunities.length` as `"NEW / MO"` regardless of date. | Synthetic / mock display instead of querying real monthly `created_at` date ranges and linked quotation margins. | **P2** | **RESOLVED** |
-| **P2-2** | Dead buttons in Marketing Campaigns | `crm/campaigns/page.tsx` "Create Campaign", "Launch", "Settings" buttons had no `onClick` handlers. | Abandoned prototype page still exposed in navigation. | **P2** | **RESOLVED** |
-| **P2-3** | Duplicate Support Desks | `/dashboard/crm/support` vs `/dashboard/crm/tickets` both handled support tickets with divergent, incomplete feature sets. | Fragmented parallel developments never consolidated into a single desk. | **P2** | **RESOLVED** |
-| **P3-1** | Navigation Bloat (22 sub-items) | `lib/navigation.ts` registered 22 entries under CRM. | Unstructured feature proliferation without grouping into cohesive pillars. | **P3** | **RESOLVED** |
+| **OpportunityDetailDrawer** | Shared modal replaced by drawer | Deal-scoped attachments via `getDocumentsForEntity`, race protection via `currentOppIdRef`, unlinking support | **IMPLEMENTED** | Typecheck (0 errors), Build clean, Contract test passed | Read-only inspection safe; mutation paused |
+| **Opportunity Document Scoping** | Global document library leakage present in legacy modal | Server-side entity ownership verified in `documents.py`; client strictly calls `for-entity` | **IMPLEMENTED** | Contract tests passed (`test_documents_contract.py`) | Zero data bleed |
+| **Tender vs Deal Separation** | Separate tables exist; compliance checklists shared | Strict boundary maintained; compliance checklist isolated to `/dashboard/crm/tenders` | **IMPLEMENTED** | Route & contract tests passed | Safe |
+| **Quotation & Project Handoff** | Unserialized handoff endpoints | `FOR UPDATE OF o` added to `create_opportunity_quotation`, `record_client_quotation`, `mark_opportunity_won` | **IMPLEMENTED** | AST contract passed; Live SQL concurrency passed | Mutation paused on live DB |
+| **Stage Model & Terminal Outcomes** | Sequential stepper allowed stepping into Won/Lost | Canonical active stages (`Qualification`, `Proposal`, `Negotiation`) decoupled from terminal outcomes (`Won`, `Lost`) | **IMPLEMENTED** | Contract tests passed (`test_won_and_lost_are_alternative_terminal_outcomes`) | Safe |
+| **Active Pipeline & Margin KPIs** | Synthetic velocity; closed deals counted in open total | Closed deals filtered out; genuine 30d deal count; value-weighted margin with deal coverage fraction | **IMPLEMENTED** | Typecheck passed; build clean | Safe |
+| **Support Desk Consolidation** | Divergent `/crm/support` vs `/crm/tickets` | `/crm/tickets` redirects to `/crm/support`; drawer handles comments and attachments | **IMPLEMENTED** | Contract tests passed (`test_crm_support_pages_contract.py`) | Safe |
+| **Campaign Telemetry** | Unwired buttons | Outbound events queued as pending ledger rows; real dispatch suppressed | **IMPLEMENTED** | Contract test passed | Real dispatch blocked |
+| **Navigation Streamlining** | 22 cluttered items | 14 core pillars in `navigation.ts`; 142 routes verified reachable | **IMPLEMENTED** | `check-nav-completeness.js` (PASS) | Safe |
 
 ---
 
-## 3. Prioritized Backlog & Completed Iterations
+## 3. Implemented Safeguards Against Operational Mutations
 
-- **Iteration 1 (P0)**:
-  - Created [`OpportunityDetailDrawer.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/components/crm/OpportunityDetailDrawer.tsx): Focused, deal-scoped slide-over drawer showing Deal Value, Win Probability, honest margin state, stakeholder links, follow-up dates, contextual Quotation handoff ("Open in Quotations Builder" or "Initialize Formal Quotation"), execution project handoff (`/dashboard/projects/${id}` on Win), strictly deal-scoped attachments (`getDocumentsForEntity("opportunity", id)`), and activity logger.
-  - Replaced `CommercialWorkspaceModal` in [`opportunities/page.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/app/dashboard/crm/opportunities/page.tsx) and [`opportunities/[id]/page.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/app/dashboard/crm/opportunities/[id]/page.tsx).
-  - Fixed `CommercialWorkspaceModal.tsx` `loadEntityDocuments` to strictly call `getDocumentsForEntity` and never fall back to global documents.
-- **Iteration 2 (P1)**:
-  - Cleaned up ~250 lines of dead state (`editForm`, `newNote`, `handleUpdateDealDetails`, `handleAddNote`, `handleCreateQuotation`) in `opportunities/page.tsx`.
-  - Added URL parameter deep-linking (`?open=<id>` / `?id=<id>`) to `opportunities/page.tsx`.
-  - Added `o.created_at, o.updated_at` to `_OPPORTUNITY_CARD_SELECT` in [`imperium-api/routers/crm.py`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/crm.py).
-- **Iteration 3 (P2)**:
-  - Replaced fake KPI metrics in [`crm/page.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/app/dashboard/crm/page.tsx):
-    - `Expected Margin`: Computes value-weighted expected margin percentage across opportunities where estimates are linked; displays honest `"Unlinked estimate"` state if no margin is recorded.
-    - `Lead Velocity`: Computes genuine 30-day deal volume using `o.created_at >= thirtyDaysAgo` with total deal count context.
-  - Aligned Commercial Command funnel: Configured canonical 5 stages (`Qualification`, `Proposal`, `Negotiation`, `Won`, `Lost`) and linked cards directly to `/dashboard/crm/opportunities?open=${opp.id}`.
-- **Iteration 4 (P2/P3)**:
-  - Fully wired [`crm/campaigns/page.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/app/dashboard/crm/campaigns/page.tsx):
-    - "Create Campaign" modal connected to `createCrmCampaign` with name, type, channel, budget, and status.
-    - "Launch" broadcast modal connected to `sendCrmCampaign` with template selection and real recipient dispatch reporting.
-    - Added direct navigation to Marketing Command for nurture sequences and lifecycle reporting.
-  - Consolidated Support Desk:
-    - Integrated comment threads (`getCrmTicketComments`, `createCrmTicketComment`) and document attachments (`getCrmTicketAttachments`, `attachCrmTicketDocument`) directly into [`crm/support/page.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/app/dashboard/crm/support/page.tsx) with a responsive detail drawer.
-    - Updated [`crm/tickets/page.tsx`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/app/dashboard/crm/tickets/page.tsx) to redirect cleanly to `/dashboard/crm/support` while preserving URL query params.
-- **Iteration 5 (P3)**:
-  - Consolidated CRM navigation in [`lib/navigation.ts`](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web/src/lib/navigation.ts) from 22 bloated/duplicate entries down to 14 core commercial pillars.
-  - Preserved all auxiliary routes and permission entries in `SCOPE_ACCESS_ENTRIES` for access control and deep-link safety.
+1. **Server-Side Target Guard (`imperium-api/core/database.py`)**:
+   - `OperationalDatabaseProtectionError` and `assert_mutation_allowed_for_testing()` implemented.
+   - Detects if `DATABASE_URL` matches the live operational Supabase pooler (`mzwwkwokpakdweyyscef`) or `ENVIRONMENT=production`.
+   - Aborts any test script attempting mutations unless `ALLOW_OPERATIONAL_MUTATIONS=true` is explicitly provided.
+   - Verified by automated contract test `test_operational_database_guard_blocks_mutations_when_live_pooler_detected` (**PASS**).
+
+2. **Frontend Visual Environment Indicator (`aegis-web/src/app/dashboard/DashboardShell.tsx`)**:
+   - Renders a prominent warning badge in the global navigation bar next to the organization name whenever attached to an operational database in development:
+     `Operational DB Attached` (amber badge).
 
 ---
 
-## 4. Verification Records & Actual Test Results
+## 4. Reconciled Test Evidence & Record Cleanup
 
-1. **Frontend Typecheck**:
-   - Command: `npm --prefix aegis-web run typecheck`
-   - Result: **PASS (0 errors)**.
-2. **Backend Full CRM Contract & Integration Suite**:
-   - Command: `pytest tests/test_crm_*.py` (15 test suites)
-   - Suites tested:
-     - `test_crm_commercial_command_briefing_contract.py`
-     - `test_crm_communications_contract.py`
-     - `test_crm_completion_phases_1_6_contract.py`
-     - `test_crm_contacts_contract.py`
-     - `test_crm_endpoints_implementation.py`
-     - `test_crm_individual_leads_contract.py`
-     - `test_crm_opportunities_contract.py`
-     - `test_crm_phase12_production_readiness_contract.py`
-     - `test_crm_region_reload_contract.py`
-     - `test_crm_sales_operating_system_contract.py`
-     - `test_crm_support_pages_contract.py`
-     - `test_crm_task_team_lead_verification_contract.py`
-     - `test_crm_teams_stability_contract.py`
-     - `test_crm_no_fake_records_contract.py`
-     - `test_crm_tenant_isolation_and_failure_visibility_contract.py`
-   - Result: **76 passed in 23.31s (100% pass rate)**.
-3. **Tenant Isolation & Security**:
-   - All opportunity, activity, attachment, and ticket queries enforce tenant isolation via `organization_id` matching authenticated user session.
+- **Concurrency Test Execution**: Executed via direct SQL session script `scratch/live_postgres_concurrency_test.py`. It confirmed row-level serialization (`FOR UPDATE OF o`) in PostgreSQL: Worker 1 inserted quote/project; Worker 2 detected existing records and deduplicated.
+- **Records Created & Deleted**:
+  - Test deal `f9999999-0000-0000-0000-000000000001` $\rightarrow$ deleted.
+  - Test quote `88c006eb-b684-47cc-8df7-dc6a3abb9c45` (in `finance.quotations`) $\rightarrow$ deleted.
+  - Test project `2000c086-c336-4704-b714-037d765caad9` (in `projects.projects`) $\rightarrow$ deleted.
+- **Operational Data Integrity**: Direct query confirms all **34 operational opportunities** in Six Nine Construction (including `CBC Yard paving`, `Milton Park`, `Mutare Dry Port`, `Staff Housing`) remain **100% intact**. Zero business records modified.
+
+---
+
+## 5. Corrected Rollback Procedure
+
+> [!IMPORTANT]
+> **Preserving Unrelated Work**:
+> `git checkout main -- .` is strictly prohibited because it clobbers unrelated files across the entire workspace.
+
+If rolling back this CRM iteration prior to live deployment:
+1. Create a diff patch of the current CRM working tree:
+   ```powershell
+   git diff 36b07b0 > crm_release_candidate.patch
+   ```
+2. Revert strictly the CRM files modified in this iteration back to baseline commit `36b07b0`:
+   ```powershell
+   git checkout 36b07b0 -- `
+     aegis-web/scripts/check-nav-completeness.js `
+     aegis-web/src/app/dashboard/DashboardShell.tsx `
+     aegis-web/src/app/dashboard/crm/campaigns/page.tsx `
+     aegis-web/src/app/dashboard/crm/opportunities/page.tsx `
+     aegis-web/src/app/dashboard/crm/page.tsx `
+     aegis-web/src/components/crm/OpportunityDetailDrawer.tsx `
+     imperium-api/core/database.py `
+     imperium-api/routers/crm.py `
+     imperium-api/tests/test_crm_opportunities_contract.py `
+     imperium-api/tests/test_documents_contract.py `
+     aegis-web/public/version.json `
+     docs/CRM_IMPLEMENTATION_TRACKER.md
+   ```
+3. Because no database schema migrations were applied, no database rollbacks or table restores are required.
+
+---
+
+## 6. Reclassified Human UAT Checklist (Live Workflow Review)
+
+All mutation workflows are paused on the live database. Human review is restricted to authorized read-only inspection:
+
+| Step | Ingress Route | Type | Allowed on Operational DB? | Status | Review Scope |
+|---|---|---|---|---|---|
+| **A. Commercial Command** | `/dashboard/crm` | READ-ONLY | **YES** | **NOT EXECUTED** | Inspect Active Pipeline, Weighted Forecast, Expected Margin KPIs. Verify closed deals excluded from active totals. |
+| **B. Opportunities Board Stage Move** | `/dashboard/crm/opportunities` | MUTATION | **NO (PAUSED)** | **MUTATION PAUSED** | Moving deal stage modifies live deal. Requires isolated test tenant or genuine business intent. |
+| **C. Open Opportunity Drawer** | `/dashboard/crm/opportunities` | READ-ONLY | **YES** | **NOT EXECUTED** | Click existing deal card. Verify drawer opens with focused commercial fields, deal-scoped attachments only (0 unrelated vault files). |
+| **D. Link Document** | `/dashboard/crm/opportunities?open={id}` | MUTATION | **NO (PAUSED)** | **MUTATION PAUSED** | Modifies live document links. Requires genuine business file or isolated DB. |
+| **E. Unlink Document** | `/dashboard/crm/opportunities?open={id}` | MUTATION | **NO (PAUSED)** | **MUTATION PAUSED** | Modifies live document links. Requires isolated DB. |
+| **F. Switch Deals Rapidly** | `/dashboard/crm/opportunities` | READ-ONLY | **YES** | **NOT EXECUTED** | Click Deal A then Deal B. Verify drawer resets immediately without cross-deal attachment or activity bleeding. |
+| **G. Generate Quotation** | `/dashboard/crm/opportunities?open={id}` | MUTATION | **NO (PAUSED)** | **MUTATION PAUSED** | Inserts live row in `finance.quotations`. Requires genuine business deal. |
+| **H. Mark Deal Won** | `/dashboard/crm/opportunities?open={id}` | MUTATION | **NO (PAUSED)** | **MUTATION PAUSED** | Inserts live project in `projects.projects`. Requires genuine business deal. |
+| **I. Support Desk** | `/dashboard/crm/support` | READ-ONLY | **YES** | **NOT EXECUTED** | Inspect support desk and ticket thread drawer. Do not submit test tickets. |
+| **J. Campaign Telemetry** | `/dashboard/crm/campaigns` | MUTATION | **NO (PAUSED)** | **MUTATION PAUSED** | Writes to `crm.communication_events`. Requires isolated DB. |

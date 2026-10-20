@@ -97,7 +97,7 @@ export default function CampaignsPage() {
       if (res.success) {
         setFeedback({
           type: 'success',
-          message: res.message || `Dispatched to ${res.data?.sent_count ?? 0} recipients.`
+          message: res.message || `${res.data?.queued_count ?? res.data?.sent_count ?? 0} outbound message(s) queued for delivery.`
         });
         setLaunchingCampaign(null);
         setSelectedTemplateId('');

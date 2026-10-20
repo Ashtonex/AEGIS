@@ -585,27 +585,57 @@ export function OpportunityDetailDrawer({
           </div>
         )}
 
-        {/* Pipeline Stage Bar */}
+        {/* Pipeline Stage Bar: Active Pipeline + Alternative Terminal Outcomes */}
         <div className="px-4 py-2 bg-black/40 border-b border-white/5 flex items-center justify-between gap-1 overflow-x-auto text-[10px] font-mono shrink-0">
-          <span className="text-slate-light mr-1 uppercase text-[8px] tracking-wider">Stage:</span>
-          {STAGES.map((s) => {
-            const isActive = s === currentCanonicalStage;
-            return (
-              <button
-                key={s}
-                type="button"
-                onClick={() => handleStageSelect(s)}
-                disabled={isSaving}
-                className={`px-2 py-1 rounded-sm transition-all whitespace-nowrap ${
-                  isActive
-                    ? "bg-signal text-ink font-bold shadow"
-                    : "text-slate-light hover:text-paper hover:bg-white/5"
-                }`}
-              >
-                {s}
-              </button>
-            );
-          })}
+          <div className="flex items-center gap-1">
+            <span className="text-slate-light mr-1 uppercase text-[8px] tracking-wider">Stage:</span>
+            {["Inquiry", "Qualification", "Site Visit", "Proposal", "Negotiation"].map((s) => {
+              const isActive = s === currentCanonicalStage;
+              return (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => handleStageSelect(s)}
+                  disabled={isSaving}
+                  className={`px-2 py-1 rounded-sm transition-all whitespace-nowrap ${
+                    isActive
+                      ? "bg-signal text-ink font-bold shadow"
+                      : "text-slate-light hover:text-paper hover:bg-white/5"
+                  }`}
+                >
+                  {s}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-1.5 pl-2 border-l border-white/10 shrink-0">
+            <span className="text-slate-light mr-1 uppercase text-[8px] tracking-wider">Outcome:</span>
+            <button
+              type="button"
+              onClick={() => handleStageSelect("Won")}
+              disabled={isSaving}
+              className={`px-2 py-1 rounded-sm transition-all whitespace-nowrap ${
+                isWon
+                  ? "bg-emerald-500 text-ink font-bold shadow"
+                  : "text-emerald-400/80 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
+              }`}
+            >
+              Won
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStageSelect("Lost")}
+              disabled={isSaving}
+              className={`px-2 py-1 rounded-sm transition-all whitespace-nowrap ${
+                isLost
+                  ? "bg-rose-500 text-ink font-bold shadow"
+                  : "text-rose-400/80 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20"
+              }`}
+            >
+              Lost
+            </button>
+          </div>
         </div>
 
         {/* Navigation Tabs */}

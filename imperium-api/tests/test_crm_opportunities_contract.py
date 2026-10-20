@@ -62,7 +62,36 @@ class CrmOpportunitiesContractTests(unittest.TestCase):
             "FastAPI evaluates routes sequentially: /opportunities/duplicates must be declared before /opportunities/{opportunity_id}.",
         )
 
+    def test_concurrent_duplicate_prevention_locking(self):
+        """Verifies row-level locking (FOR UPDATE OF o) in quote creation and mark-won transactions."""
+        quote_def = CRM_ROUTER.index('@router.post("/opportunities/{opportunity_id}/create-quotation"')
+        won_def = CRM_ROUTER.index('@router.post("/opportunities/{opportunity_id}/mark-won")')
+        lost_def = CRM_ROUTER.index('@router.post("/opportunities/{opportunity_id}/mark-lost")')
+
+        quote_code = CRM_ROUTER[quote_def:won_def]
+        won_code = CRM_ROUTER[won_def:lost_def]
+
+        self.assertIn("FOR UPDATE OF o", quote_code, "Quote creation must serialize concurrent requests with row-level locking")
+        self.assertIn("FOR UPDATE OF o", won_code, "Mark-won must serialize concurrent handoffs with row-level locking")
+        self.assertIn("existing_proj", won_code, "Mark-won must check for existing linked project to prevent duplicate projects")
+
+    def test_won_and_lost_are_alternative_terminal_outcomes(self):
+        """Verifies Won and Lost are treated as terminal outcomes, not sequential steps."""
+        self.assertIn("CLOSED_FRONTEND_STAGES", CRM_PAGE)
+        self.assertIn("Terminal closed stages cannot be stepped sequentially", CRM_PAGE)
+        self.assertIn("ACTIVE_STAGES = ['Qualification', 'Proposal', 'Negotiation']", CRM_PAGE)
+
+    def test_operational_database_guard_blocks_mutations_when_live_pooler_detected(self):
+        """Verifies that assert_mutation_allowed_for_testing raises OperationalDatabaseProtectionError when targeting operational db."""
+        import sys
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from core.database import assert_mutation_allowed_for_testing, OperationalDatabaseProtectionError
+        with self.assertRaises(OperationalDatabaseProtectionError):
+            assert_mutation_allowed_for_testing()
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

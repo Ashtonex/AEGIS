@@ -558,19 +558,31 @@ export default function OpportunitiesKanban() {
     openStageMoveGate(oppId, currentFrontendStage, targetStage, 'drag');
   };
 
-  // Quick fallback step mover
+  // Active pipeline step mover (Won and Lost are alternative terminal outcomes, not sequential steps)
   const handleStageMove = async (oppId: string, currentFrontendStage: string, direction: 'prev' | 'next') => {
     const opp = opportunities.find(o => o.id === oppId);
-    const currentIndex = STAGES.indexOf(currentFrontendStage);
+    if (!opp) return;
+
+    // Terminal closed stages cannot be stepped sequentially
+    if (CLOSED_FRONTEND_STAGES.includes(currentFrontendStage) || isOpportunityLocked(opp)) {
+      setSelectedOpportunityId(oppId);
+      return;
+    }
+
+    const ACTIVE_STAGES = ['Qualification', 'Proposal', 'Negotiation'];
+    const currentIndex = ACTIVE_STAGES.indexOf(currentFrontendStage);
     if (currentIndex === -1) return;
 
-    let nextIndex = currentIndex;
-    if (direction === 'prev' && currentIndex > 0) nextIndex--;
-    if (direction === 'next' && currentIndex < STAGES.length - 1) nextIndex++;
-
-    if (nextIndex === currentIndex) return;
-    const nextFrontendStage = STAGES[nextIndex];
-    openStageMoveGate(oppId, currentFrontendStage, nextFrontendStage, 'button');
+    if (direction === 'prev' && currentIndex > 0) {
+      openStageMoveGate(oppId, currentFrontendStage, ACTIVE_STAGES[currentIndex - 1], 'button');
+    } else if (direction === 'next') {
+      if (currentIndex < ACTIVE_STAGES.length - 1) {
+        openStageMoveGate(oppId, currentFrontendStage, ACTIVE_STAGES[currentIndex + 1], 'button');
+      } else {
+        // At Negotiation: terminal outcome must be explicitly decided via Won or Lost handoff
+        setSelectedOpportunityId(oppId);
+      }
+    }
   };
 
   const handleCreateDeal = async (e: React.FormEvent) => {

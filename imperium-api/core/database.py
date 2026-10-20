@@ -237,3 +237,26 @@ async def check_database_health() -> dict:
 
 
 supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+
+class OperationalDatabaseProtectionError(RuntimeError):
+    """Raised when a destructive script, test mutation, or purge attempts to run against the operational database."""
+    pass
+
+
+def assert_mutation_allowed_for_testing() -> None:
+    """Guards operational database from accidental test mutations or wipe scripts.
+
+    If DATABASE_URL targets the known operational database, test scripts attempting
+    mutations are immediately blocked unless ALLOW_OPERATIONAL_MUTATIONS=true is explicitly set.
+    """
+    import os
+    db_url = settings.DATABASE_URL or ""
+    is_operational_target = "mzwwkwokpakdweyyscef" in db_url or settings.ENVIRONMENT == "production"
+    allow_override = os.getenv("ALLOW_OPERATIONAL_MUTATIONS", "").lower() in ("true", "1")
+
+    if is_operational_target and not allow_override:
+        raise OperationalDatabaseProtectionError(
+            f"MUTATION BLOCKED: Active target ({settings.ENVIRONMENT}) contains live operational company data. "
+            "Test mutations and cleanup scripts are forbidden against this database."
+        )
+

@@ -574,6 +574,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
           <div className="hidden lg:flex items-center space-x-2 border-r border-ink-mid pr-6">
             <span className="w-2 h-2 rounded-full bg-signal animate-pulse-signal"></span>
             <span className="text-data-sm font-mono text-slate-light tracking-widest uppercase">Six Nine Construction</span>
+            {process.env.NODE_ENV !== "production" && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                title="Connected to active operational database. Mutation-based test workflows are restricted."
+              >
+                Operational DB Attached
+              </span>
+            )}
           </div>
 
           <CalendarDropdown />

@@ -306,9 +306,20 @@ export default function CRMCommercialEngine() {
       setRegionAssigning(null);
     }
   };
+
+  const isClosedDeal = (deal: any) => {
+    const status = (deal.win_loss_status || '').toLowerCase();
+    const stage = (deal.stage || '').toLowerCase();
+    return status === 'won' || status === 'lost' || stage === 'contract' || stage === 'lost';
+  };
+
   const calculateTotalPipeline = () => {
-    const oppValue = opportunities.reduce((acc, opp) => acc + (Number(opp.budget) || 0), 0);
-    const tenderValue = tenders.reduce((acc, t) => acc + (Number(t.bid_amount) || 0), 0);
+    const oppValue = opportunities
+      .filter((opp) => !isClosedDeal(opp))
+      .reduce((acc, opp) => acc + (Number(opp.budget || opp.deal_value) || 0), 0);
+    const tenderValue = tenders
+      .filter((t) => !['awarded', 'lost', 'awarded/lost'].includes((t.stage || '').toLowerCase()))
+      .reduce((acc, t) => acc + (Number(t.bid_amount) || 0), 0);
     return oppValue + tenderValue;
   };
 
@@ -335,35 +346,45 @@ export default function CRMCommercialEngine() {
 
   const calculateWeightedPipeline = () => {
     let missingProbabilityCount = 0;
-    const oppValue = opportunities.reduce((acc, opp) => {
-      const budget = Number(opp.budget) || 0;
-      const probability = parseProbability(opp.probability ?? opp.win_probability);
-      if (budget > 0 && probability === null) missingProbabilityCount += 1;
-      return probability === null ? acc : acc + (budget * probability / 100);
-    }, 0);
-    const tenderValue = tenders.reduce((acc, tender) => {
-      const amount = Number(tender.bid_amount) || 0;
-      const probability = parseProbability(tender.probability ?? tender.win_probability);
-      if (amount > 0 && probability === null) missingProbabilityCount += 1;
-      return probability === null ? acc : acc + (amount * probability / 100);
-    }, 0);
+    const oppValue = opportunities
+      .filter((opp) => !isClosedDeal(opp))
+      .reduce((acc, opp) => {
+        const budget = Number(opp.budget || opp.deal_value) || 0;
+        const probability = parseProbability(opp.probability ?? opp.win_probability);
+        if (budget > 0 && probability === null) missingProbabilityCount += 1;
+        return probability === null ? acc : acc + (budget * probability / 100);
+      }, 0);
+    const tenderValue = tenders
+      .filter((t) => !['awarded', 'lost', 'awarded/lost'].includes((t.stage || '').toLowerCase()))
+      .reduce((acc, tender) => {
+        const amount = Number(tender.bid_amount) || 0;
+        const probability = parseProbability(tender.probability ?? tender.win_probability);
+        if (amount > 0 && probability === null) missingProbabilityCount += 1;
+        return probability === null ? acc : acc + (amount * probability / 100);
+      }, 0);
 
     return { value: oppValue + tenderValue, missingProbabilityCount };
   };
 
   const calculateExpectedMargin = () => {
-    const oppsWithMargin = opportunities.filter(
+    const activeOpps = opportunities.filter((o) => !isClosedDeal(o));
+    const oppsWithMargin = activeOpps.filter(
       (o) => typeof o.expected_margin === "number" && !isNaN(o.expected_margin) && o.expected_margin > 0
     );
     if (oppsWithMargin.length === 0) {
       return null;
     }
-    const totalWeight = oppsWithMargin.reduce((sum, o) => sum + (Number(o.budget || o.deal_value) || 1), 0);
+    const totalWeight = oppsWithMargin.reduce((sum, o) => sum + (Number(o.budget || o.deal_value) || 0), 0);
+    if (totalWeight <= 0) return null;
     const weightedMarginSum = oppsWithMargin.reduce(
-      (sum, o) => sum + (Number(o.expected_margin) * (Number(o.budget || o.deal_value) || 1)),
+      (sum, o) => sum + (Number(o.expected_margin) * (Number(o.budget || o.deal_value) || 0)),
       0
     );
-    return totalWeight > 0 ? (weightedMarginSum / totalWeight).toFixed(1) : null;
+    return {
+      margin: (weightedMarginSum / totalWeight).toFixed(1),
+      count: oppsWithMargin.length,
+      total: activeOpps.length,
+    };
   };
 
   const calculateRecentVelocity = () => {
@@ -474,7 +495,7 @@ export default function CRMCommercialEngine() {
         <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
           <div className="flex items-center space-x-2 mb-0.5">
             <Target className="w-3.5 h-3.5 text-slate-light" />
-            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Total Pipeline</h3>
+            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Active Pipeline</h3>
           </div>
           <span className="font-display text-lg text-paper tracking-tight">${calculateTotalPipeline().toLocaleString()}</span>
         </div>
@@ -494,9 +515,14 @@ export default function CRMCommercialEngine() {
           </div>
           <div className="flex items-end space-x-2">
             {expectedMargin !== null ? (
-              <span className="font-display text-lg text-paper tracking-tight">
-                {expectedMargin}% <span className="text-[10px] text-slate-light font-mono">WEIGHTED</span>
-              </span>
+              <div className="flex flex-col">
+                <span className="font-display text-lg text-paper tracking-tight">
+                  {expectedMargin.margin}% <span className="text-[10px] text-slate-light font-mono">WEIGHTED</span>
+                </span>
+                <span className="font-mono text-[9px] text-slate-dark">
+                  ({expectedMargin.count}/{expectedMargin.total} active deals)
+                </span>
+              </div>
             ) : (
               <span className="font-mono text-xs text-slate-light tracking-tight">Unlinked estimate</span>
             )}
@@ -506,7 +532,7 @@ export default function CRMCommercialEngine() {
         <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
           <div className="flex items-center space-x-2 mb-0.5">
             <TrendingUp className="w-3.5 h-3.5 text-slate-light" />
-            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Lead Velocity</h3>
+            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">New opportunities — past 30 days</h3>
           </div>
           <div className="flex items-baseline space-x-1.5">
             <span className="font-display text-lg text-paper tracking-tight">{recentVelocity.count}</span>
