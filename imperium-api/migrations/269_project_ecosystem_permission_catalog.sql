@@ -65,4 +65,4 @@ JOIN (VALUES
 ) AS grant_def(role_name, permission_key) ON grant_def.role_name = r.name
 JOIN core.permissions p ON p.key = grant_def.permission_key
 WHERE o.is_deleted = false
-ON CONFLICT (organization_id, role_id, permission_id) DO NOTHING;
+ON CONFLICT (role_id, permission_id) DO NOTHING;
