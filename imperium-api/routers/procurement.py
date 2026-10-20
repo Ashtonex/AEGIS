@@ -2245,7 +2245,7 @@ async def amend_purchase_order(
             UPDATE procurement.purchase_orders
             SET total_amount = total_amount + :add_amt,
                 subtotal = subtotal + :add_amt,
-                notes = CONCAT(COALESCE(notes, ''), CASE WHEN notes IS NULL OR notes='' THEN '' ELSE E'\n' END, 'Commercial Amendment (+', :add_amt, '): ', :reason),
+                notes = CONCAT(COALESCE(notes, ''), CASE WHEN notes IS NULL OR notes='' THEN '' ELSE E'\n' END, 'Commercial Amendment (+', CAST(:add_amt AS varchar), '): ', CAST(:reason AS text)),
                 updated_at = NOW()
             WHERE id = :id AND organization_id = :org_id
         """),

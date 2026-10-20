@@ -1054,9 +1054,9 @@ async def decide_variation(
     await db.execute(
         text("""
         UPDATE finance.variations
-        SET status = :status, approved_by = :user_id, approved_at = NOW(),
+        SET status = CAST(:status AS varchar), approved_by = :user_id, approved_at = NOW(),
             rejection_reason = :rejection_reason,
-            execution_blocked = CASE WHEN :status='approved' THEN false ELSE execution_blocked END,
+            execution_blocked = CASE WHEN CAST(:status AS varchar)='approved' THEN false ELSE execution_blocked END,
             updated_at = NOW()
         WHERE id = :id AND organization_id = :org_id
     """),

@@ -1,10 +1,10 @@
 # AEGIS Persistent Assurance State
 
-> **Last Updated**: 2026-10-19 21:50  
-> **Active Objective**: Cycle 5 — Release-Blocker Remediation & Candidate Verification  
+> **Last Updated**: 2026-10-20 06:45  
+> **Active Objective**: Cycle 6 — Business Acceptance, Complete Exception Workflow, and Controlled Release Rehearsal  
 > **Environment**: Staging / Local Dev (`FastAPI` + `PostgreSQL` + `Redis`)  
 > **Authorized Auditor**: AEGIS Integration Assurance Lead  
-> **Release Candidate Recommendation**: **HOLD** (Awaiting formal commercial & executive variation sign-off per Policy A1)  
+> **Release Candidate Recommendation**: **HOLD / READY FOR AUTHORIZED RELEASE REVIEW** (Awaiting formal human sign-offs on Gate A Commercial Policy A1, Gate B Governance Policy A2, and Gate C Candidate Release Promotion)  
 
 ---
 
@@ -13,12 +13,13 @@
 - **Authenticated Role**: System Administrator (`ashton@admin.com`)
 - **Active Subsystems**: Projects, Site Operations, Finance, Estimations & Quotations, Procurement
 - **Test Automation Harnesses**:
+  - [qa_over_invoice_workflow_suite.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_over_invoice_workflow_suite.py) (10 tests executed, 10 passed, 100% pass rate, exit code 0)
   - [qa_assurance_cycle3_suite.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_assurance_cycle3_suite.py) (16 tests executed, 16 passed, 100% pass rate, exit code 0)
   - [qa_assurance_cycle2_suite.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_assurance_cycle2_suite.py) (13 tests executed, 13 passed, 100% pass rate, exit code 0)
   - [qa_ecosystem_integration_suite.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_ecosystem_integration_suite.py) (9 tests executed, 9 passed, 100% pass rate, exit code 0)
   - [qa_projects_execution_suite.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_projects_execution_suite.py) (15 tests executed, 15 passed, 100% pass rate, exit code 0)
-  - [qa_harness_selftest.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_harness_selftest.py) (Fail-closed self-test harness verifying exit codes 0, 1, and 2 under injected errors)
-- **Cumulative Regression Coverage**: 53 executed tests across 4 suites, 53 passed (100% pass rate)
+  - [qa_harness_selftest.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_harness_selftest.py) (3 subprocess tests executed, 3 passed: verifies exit codes 0, 1, and 2 under injected errors)
+- **Cumulative Regression Coverage**: 66 executed tests (63 domain/integration tests + 3 process self-tests), 66 passed (100% pass rate)
 - **Frontend Build Verification**: `aegis-web` Next.js production build (`--max-old-space-size=8192`) compiling all 211 static & dynamic routes.
 
 ---
@@ -40,20 +41,19 @@
 | **CHK-012** | Test Harness Fail-Closed | All 4 test runners enforce `sys.exit(1)` on any failure/blocker and `sys.exit(2)` on unhandled exceptions; proven via subprocess self-test `qa_harness_selftest.py` | VERIFIED | 2026-10-19 |
 | **CHK-013** | Invoice Approval Concurrency & Policy A1 | Concurrent invoice payment approvals serialized via PostgreSQL `FOR UPDATE` row lock on `supplier_invoices` and `finance.commitments`; invoices exceeding remaining open commitment rejected with HTTP 409 Conflict | VERIFIED | 2026-10-19 |
 | **CHK-014** | Operational Health Precedence | Adverse dynamic operational indicators (`critical` / `at_risk`) strictly override any manual stored status per User Policy A2; leadership dossier provides provenance and assessment reasons | VERIFIED | 2026-10-19 |
+| **CHK-015** | Commercial PO Amendment Protocol | Authorized endpoint `POST /api/v1/procurement/purchase-orders/{id}/amend` linking approved `finance.variations`, expanding both PO total and commitment headroom; unapproved variations gated with HTTP 409 | VERIFIED | 2026-10-20 |
+| **CHK-016** | End-to-End Exception Resolution | Full lifecycle demonstrated: partial consumption $\rightarrow$ over-invoice 409 $\rightarrow$ pending variation gate 409 $\rightarrow$ approved variation & PO amendment $\rightarrow$ re-evaluation approval $\rightarrow$ concurrency race serialization $\rightarrow$ total exposure invariance ($130k) | VERIFIED | 2026-10-20 |
 
 ---
 
-## 3. High-Impact Risks Remediated in Cycle 5
-1. **DEF-TEST-001 (Silent Test Harness Exit Code Vulnerability)**: RESOLVED. Updated all 4 test harnesses to fail closed with `sys.exit(1)` whenever `failed > 0` or `blocked > 0`. Created `qa_harness_selftest.py` proving process termination and non-zero exit codes under error injection.
-2. **DEF-FIN-001 (Invoice Concurrency Double-Decrement Vulnerability)**: RESOLVED. Deployed PostgreSQL `FOR UPDATE` row locks in [routers/procurement.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/procurement.py) across both `procurement.supplier_invoices` and `finance.commitments`, serializing race condition payment decisions.
-3. **DEF-FIN-002 (Uncontrolled Over-Invoicing Permissiveness)**: RESOLVED PER USER POLICY A1. Replaced silent commitment capping with strict rejection (HTTP 409 Conflict) when invoice total exceeds remaining open commitment, requiring a formal variation claim. Release candidate kept on **HOLD** until formal commercial sign-off.
-4. **DEF-GOV-001 (Manual Health Status Concealing Operational Distress)**: RESOLVED PER USER POLICY A2. Dynamic operational distress signals (`critical` or `at_risk`) take precedence over stale manual database columns in [routers/projects.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/projects.py).
-
----
-
-## 4. Release Recommendation & Outstanding Conditions
-- **Current Candidate Status**: **HOLD**
-- **Prerequisites for Promotion to Production**:
-  1. Executive and Commercial Director sign-off on Policy A1 (formal variation order protocol for over-invoiced procurement).
-  2. Production deployment dry-run in staging environment with live database replication.
-  3. Formal sign-off on Policy A2 (adverse dynamic operational health precedence).
+## 3. Reviewable Release Gates & Ownership Matrix
+- **Current Candidate State**: **TECHNICALLY VERIFIED** across 66 tests. Transition to **BUSINESS ACCEPTED** and **RELEASE APPROVED** requires designated human signatures below:
+  1. **Gate A (Commercial Policy A1 Sign-Off)**: Formally accepts the strict over-invoice variation order protocol (rejection with HTTP 409 when invoice exceeds remaining commitment, requiring approved variation order before PO amendment).  
+     - *Designated Role*: Commercial Director / Financial Controller.  
+     - *State*: PENDING HUMAN REVIEW.
+  2. **Gate B (Governance Policy A2 Sign-Off)**: Formally accepts adverse dynamic health precedence (dynamic operational risk flags `critical` and `at_risk` supersede manual stored status, backed by transparent audit trail and assessment reasons).  
+     - *Designated Role*: Operations Director / Project Controls Lead.  
+     - *State*: PENDING HUMAN REVIEW.
+  3. **Gate C (Release Candidate Promotion)**: Formally authorizes production staging promotion and deployment execution.  
+     - *Designated Role*: Managing Director / Release Authority.  
+     - *State*: PENDING GATES A & B.

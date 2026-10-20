@@ -57,6 +57,7 @@ class Cycle6AssuranceRunner:
         self.po_id: Optional[str] = None
         self.grn_id: Optional[str] = None
         self.doc_id: Optional[str] = None
+        self.att_id: Optional[str] = None
         self.variation_id: Optional[str] = None
 
         self.inv1_id: Optional[str] = None
@@ -74,19 +75,53 @@ class Cycle6AssuranceRunner:
         await db.execute(text("DELETE FROM core.domain_events WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM core.approval_instances WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM core.document_links WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM core.sharepoint_folder_map WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM finance.cost_transactions WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM finance.journal_lines WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM finance.vendor_payment_requests WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM finance.client_payment_requests WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM finance.retention_ledger WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM finance.commitments WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM finance.progress_claims WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM finance.variations WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM finance.project_budgets WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM procurement.supplier_invoice_lines WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM procurement.supplier_invoices WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM procurement.grn_lines WHERE grn_id IN (SELECT id FROM procurement.goods_received_notes WHERE project_id=CAST(:p_id AS uuid))"), {"p_id": p_id})
         await db.execute(text("DELETE FROM procurement.goods_received_notes WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM procurement.purchase_orders WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM procurement.purchase_requisitions WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM procurement.material_requests WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM procurement.stock_ledger WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM procurement.stores WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM projects.daily_site_reports WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM projects.subcontractor_certificates WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM projects.subcontract_packages WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM projects.sites WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+        await db.execute(text("DELETE FROM projects.project_profiles WHERE project_id=CAST(:p_id AS uuid)"), {"p_id": p_id})
         await db.execute(text("DELETE FROM projects.projects WHERE id=CAST(:p_id AS uuid)"), {"p_id": p_id})
+
+    async def link_evidence(self, entity_type: str, entity_id: str):
+        """Link test document as evidence for 3-way match compliance."""
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text("""
+                INSERT INTO core.document_links (
+                    organization_id, document_id, entity_type, entity_id, link_role, project_id, linked_by, linked_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:doc_id AS uuid), :ent_type, CAST(:ent_id AS uuid), 'evidence', CAST(:proj_id AS uuid), CAST(:user_id AS uuid), NOW()
+                )
+                """),
+                {
+                    "org_id": self.org_a_id,
+                    "doc_id": self.doc_id,
+                    "ent_type": entity_type,
+                    "ent_id": entity_id,
+                    "proj_id": self.project_id,
+                    "user_id": self.user_a_id,
+                },
+            )
+            await db.commit()
 
     async def setup(self):
         print("[SETUP] Authenticating Primary Admin User (Tenant A)...")
@@ -165,55 +200,115 @@ class Cycle6AssuranceRunner:
             self.supplier_id = str(s_row.scalar())
 
             # Document for 3-way match
-            d_row = await db.execute(
+            att_row = (await db.execute(
                 text("""
-                    INSERT INTO core.documents (organization_id, title, document_type, status, created_by)
-                    VALUES (:org_id, :title, 'financial_record', 'active', :u_id)
-                    RETURNING id
+                INSERT INTO core.file_attachments (
+                    organization_id, uploaded_by, file_name, storage_path, mime_type, size_bytes
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:user_id AS uuid), :fname, '/storage/cycle6_evidence.pdf', 'application/pdf', 10240
+                ) RETURNING id
                 """),
-                {"org_id": self.org_a_id, "title": f"{TEST_PREFIX}Payment_Evidence_Receipt", "u_id": self.user_a_id},
-            )
-            self.doc_id = str(d_row.scalar())
+                {
+                    "org_id": self.org_a_id,
+                    "user_id": self.user_a_id,
+                    "fname": f"{TEST_PREFIX}evidence.pdf",
+                },
+            )).first()
+            self.att_id = str(att_row.id)
+
+            d_row = (await db.execute(
+                text("""
+                INSERT INTO core.documents (
+                    organization_id, created_by, title, file_attachment_id, category, file_size_bytes, file_name,
+                    is_deleted, created_at, updated_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:user_id AS uuid), :title, CAST(:att_id AS uuid), 'evidence', 10240, :fname,
+                    false, NOW(), NOW()
+                ) RETURNING id
+                """),
+                {
+                    "org_id": self.org_a_id,
+                    "user_id": self.user_a_id,
+                    "title": f"{TEST_PREFIX}Payment_Evidence_Receipt",
+                    "att_id": self.att_id,
+                    "fname": f"{TEST_PREFIX}evidence.pdf",
+                },
+            )).first()
+            self.doc_id = str(d_row.id)
             await db.commit()
 
-        # 3. Create PO ($100k)
-        po_res = await client.post(
-            f"{BASE_URL}/api/v1/procurement/purchase-orders",
-            headers={"Authorization": f"Bearer {self.user_a_token}"},
-            json={
-                "project_id": self.project_id,
-                "site_id": self.site_id,
-                "supplier_id": self.supplier_id,
-                "title": f"{TEST_PREFIX}ReadyMix_PO",
-                "subtotal": 100000.0,
-                "tax_amount": 0.0,
-                "lines": [{"description": "Ready-mix batch", "quantity": 100, "unit_of_measure": "m3", "unit_price": 1000.0}],
-            },
-        )
-        assert po_res.status_code == 201, f"PO creation failed: {po_res.text}"
-        self.po_id = po_res.json()["data"]["id"]
+        # 3. Create PO ($100k) & GRN in approved/confirmed state
+        suffix = int(time.time()) % 100000
+        async with AsyncSessionLocal() as db:
+            po_row = (await db.execute(
+                text("""
+                INSERT INTO procurement.purchase_orders (
+                    organization_id, po_number, project_id, supplier_id, subtotal, tax_amount, total_amount, status,
+                    currency, payment_terms_days, is_deleted, created_by, created_at, updated_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), :po_num, CAST(:proj_id AS uuid), CAST(:sup_id AS uuid),
+                    100000.00, 0.00, 100000.00, 'approved', 'USD', 30, false, CAST(:user_id AS uuid), NOW(), NOW()
+                ) RETURNING id
+                """),
+                {
+                    "org_id": self.org_a_id,
+                    "po_num": f"PO-C6-{suffix}",
+                    "proj_id": self.project_id,
+                    "sup_id": self.supplier_id,
+                    "user_id": self.user_a_id,
+                },
+            )).first()
+            self.po_id = str(po_row.id)
 
-        # Issue PO
+            grn_row = (await db.execute(
+                text("""
+                INSERT INTO procurement.goods_received_notes (
+                    organization_id, grn_number, po_id, project_id, supplier_id, delivery_date,
+                    status, received_by, is_deleted, created_by, created_at, updated_at
+                ) VALUES (
+                    CAST(:org_id AS uuid), :grn_num, CAST(:po_id AS uuid), CAST(:proj_id AS uuid), CAST(:sup_id AS uuid),
+                    CURRENT_DATE, 'confirmed', CAST(:user_id AS uuid), false, CAST(:user_id AS uuid), NOW(), NOW()
+                ) RETURNING id
+                """),
+                {
+                    "org_id": self.org_a_id,
+                    "grn_num": f"GRN-C6-{suffix}",
+                    "po_id": self.po_id,
+                    "proj_id": self.project_id,
+                    "sup_id": self.supplier_id,
+                    "user_id": self.user_a_id,
+                },
+            )).first()
+            self.grn_id = str(grn_row.id)
+
+            await db.execute(
+                text("""
+                INSERT INTO procurement.grn_lines (
+                    organization_id, grn_id, description,
+                    quantity_ordered, quantity_received, quantity_rejected, unit_price, is_deleted
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:grn_id AS uuid), 'Direct Materials',
+                    200, 200, 0, 1000.00, false
+                )
+                """),
+                {
+                    "org_id": self.org_a_id,
+                    "grn_id": self.grn_id,
+                },
+            )
+            await db.commit()
+
+        # Link PO and GRN 3-way match evidence
+        await self.link_evidence("purchase_order", self.po_id)
+        await self.link_evidence("goods_received_note", self.grn_id)
+
+        # Issue PO via API to trigger finance commitment creation
         issue_res = await client.post(
             f"{BASE_URL}/api/v1/procurement/purchase-orders/{self.po_id}/issue",
             headers={"Authorization": f"Bearer {self.user_a_token}"},
             json={},
         )
         assert issue_res.status_code == 200, f"PO issue failed: {issue_res.text}"
-
-        # Confirm GRN
-        grn_res = await client.post(
-            f"{BASE_URL}/api/v1/procurement/goods-received",
-            headers={"Authorization": f"Bearer {self.user_a_token}"},
-            json={
-                "po_id": self.po_id,
-                "received_date": str(date.today()),
-                "delivery_note_ref": f"C6-DN-{int(time.time()) % 10000}",
-                "lines": [{"quantity_received": 100}],
-            },
-        )
-        assert grn_res.status_code == 201, f"GRN creation failed: {grn_res.text}"
-        self.grn_id = grn_res.json()["data"]["id"]
 
         # Create Invoice 1 ($40,000)
         inv1_res = await client.post(
@@ -222,16 +317,15 @@ class Cycle6AssuranceRunner:
             json={
                 "po_id": self.po_id,
                 "grn_id": self.grn_id,
-                "supplier_id": self.supplier_id,
                 "supplier_invoice_ref": f"C6-INV-1-{int(time.time()) % 10000}",
                 "invoice_date": str(date.today()),
                 "subtotal": 40000.0,
                 "tax_amount": 0.0,
-                "lines": [{"description": "Partial delivery 40m3", "quantity": 40, "unit_price": 1000.0}],
             },
         )
         assert inv1_res.status_code == 201, f"Invoice 1 creation failed: {inv1_res.text}"
         self.inv1_id = inv1_res.json()["data"]["id"]
+        await self.link_evidence("supplier_invoice", self.inv1_id)
 
         # Match invoice 1
         m_res = await client.post(
@@ -275,16 +369,15 @@ class Cycle6AssuranceRunner:
             json={
                 "po_id": self.po_id,
                 "grn_id": self.grn_id,
-                "supplier_id": self.supplier_id,
                 "supplier_invoice_ref": f"C6-INV-2-{int(time.time()) % 10000}",
                 "invoice_date": str(date.today()),
                 "subtotal": 85000.0,
                 "tax_amount": 0.0,
-                "lines": [{"description": "Excess delivery 85m3", "quantity": 85, "unit_price": 1000.0}],
             },
         )
         assert inv2_res.status_code == 201, f"Invoice 2 creation failed: {inv2_res.text}"
         self.inv2_id = inv2_res.json()["data"]["id"]
+        await self.link_evidence("supplier_invoice", self.inv2_id)
 
         # Match invoice 2
         await client.post(
@@ -509,25 +602,33 @@ class Cycle6AssuranceRunner:
             f"{BASE_URL}/api/v1/procurement/invoices",
             headers={"Authorization": f"Bearer {self.user_a_token}"},
             json={
-                "po_id": self.po_id, "grn_id": self.grn_id, "supplier_id": self.supplier_id,
+                "po_id": self.po_id,
+                "grn_id": self.grn_id,
                 "supplier_invoice_ref": f"C6-COMP-A-{int(time.time()) % 10000}",
-                "invoice_date": str(date.today()), "subtotal": 5000.0, "tax_amount": 0.0,
-                "lines": [{"description": "Final batch A", "quantity": 5, "unit_price": 1000.0}],
+                "invoice_date": str(date.today()),
+                "subtotal": 5000.0,
+                "tax_amount": 0.0,
             },
         )
+        assert inv3_res.status_code == 201, f"Invoice 3 creation failed: {inv3_res.text}"
         self.inv3_id = inv3_res.json()["data"]["id"]
+        await self.link_evidence("supplier_invoice", self.inv3_id)
 
         inv4_res = await client.post(
             f"{BASE_URL}/api/v1/procurement/invoices",
             headers={"Authorization": f"Bearer {self.user_a_token}"},
             json={
-                "po_id": self.po_id, "grn_id": self.grn_id, "supplier_id": self.supplier_id,
+                "po_id": self.po_id,
+                "grn_id": self.grn_id,
                 "supplier_invoice_ref": f"C6-COMP-B-{int(time.time()) % 10000}",
-                "invoice_date": str(date.today()), "subtotal": 5000.0, "tax_amount": 0.0,
-                "lines": [{"description": "Final batch B", "quantity": 5, "unit_price": 1000.0}],
+                "invoice_date": str(date.today()),
+                "subtotal": 5000.0,
+                "tax_amount": 0.0,
             },
         )
+        assert inv4_res.status_code == 201, f"Invoice 4 creation failed: {inv4_res.text}"
         self.inv4_id = inv4_res.json()["data"]["id"]
+        await self.link_evidence("supplier_invoice", self.inv4_id)
 
         # Match both invoices
         await client.post(f"{BASE_URL}/api/v1/procurement/invoices/{self.inv3_id}/match", headers={"Authorization": f"Bearer {self.user_a_token}"})
@@ -615,6 +716,8 @@ class Cycle6AssuranceRunner:
                 await db.execute(text("DELETE FROM procurement.suppliers WHERE id=CAST(:id AS uuid)"), {"id": self.supplier_id})
             if self.doc_id:
                 await db.execute(text("DELETE FROM core.documents WHERE id=CAST(:id AS uuid)"), {"id": self.doc_id})
+            if self.att_id:
+                await db.execute(text("DELETE FROM core.file_attachments WHERE id=CAST(:id AS uuid)"), {"id": self.att_id})
             await db.commit()
 
             # Verify 0 residual records

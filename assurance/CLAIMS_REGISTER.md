@@ -138,4 +138,39 @@ This register documents each claim from earlier audits, subjecting it to formal 
   - Verified by tests `CYC3-HLTH-001` and `CYC2-HLTH-002` (distressed project with 3 active delays forced to `critical` regardless of stored database status).
 - **Status**: **VERIFIED (Adverse Precedence & Provenance Audit Trail Enforced)**.
 
+---
+
+### Claim 12: Commercial Purchase Order Amendment & Variation Enforcement
+- **Exact Claim**: "Purchase orders cannot be arbitrarily amended; amendments require independent commercial authorization, must link approved variation orders in finance, and must expand commitment exposure without leaking liabilities."
+- **Cycle 5 Status**: DEFICIENT / PARTIALLY IMPLEMENTED (Invoices were rejected with 409, but no authorized endpoint existed to amend the PO and expand commitment headroom once a variation order was approved).
+- **Cycle 6 Remediation & Empirical Proof**:
+  - Implemented `POST /api/v1/procurement/purchase-orders/{id}/amend` in [imperium-api/routers/procurement.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/routers/procurement.py).
+  - Enforced RBAC check (`procurement.po.approve`), row locks on PO and commitment (`FOR UPDATE`), and strict validation that any linked variation has `status = 'approved'`.
+  - Verified by tests `CYC6-EXC-003`, `CYC6-EXC-004`, and `CYC6-EXC-005`:
+    - Unauthorized user attempt: Rejected with HTTP 401/403.
+    - Pending variation linkage: Rejected with HTTP 409 Conflict (`"Linked variation must be approved"`).
+    - Formally approved variation linkage: Expands PO total from $100k to $130k and commitment from $100k to $130k ($90k open), appends commercial audit notes, and emits `procurement.purchase_order.amended.v1`.
+- **Status**: **VERIFIED (Strict Variation Linkage & Headroom Expansion Enforced)**.
+
+---
+
+### Claim 13: End-to-End Over-Invoice Exception-to-Resolution Lifecycle
+- **Exact Claim**: "The operating ecosystem demonstrates a complete, traceable exception lifecycle when an invoice exceeds open commitments, transitioning safely through rejection, variation gating, amendment, re-evaluation approval, and race condition serialization."
+- **Cycle 5 Status**: CLAIM NEEDING INTEGRATED PROOF.
+- **Cycle 6 Remediation & Empirical Proof**:
+  - Executed [imperium-api/qa_over_invoice_workflow_suite.py](file:///g:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/qa_over_invoice_workflow_suite.py) covering tests `CYC6-EXC-001` through `CYC6-EXC-010`.
+  - Empirical metrics recorded:
+    - Step 1: Within-balance Invoice 1 ($40k approved on $100k PO) leaves $60k open.
+    - Step 2: Over-balance Invoice 2 ($85k > $60k open) rejected with HTTP 409 Conflict. Invoice preserved as unapproved (`matched`), open commitment unchanged at $60k.
+    - Step 3: Unauthorized amendment blocked with HTTP 401.
+    - Step 4: Pending variation ($30k) cannot amend PO (rejected with HTTP 409).
+    - Step 5: Approved variation authorizes PO amendment (+$30k), expanding commitment to $130k ($90k open).
+    - Step 6: Invoice 2 re-evaluated ($85k <= $90k open) and approved (HTTP 200), bringing invoiced liability to $125k and open commitment to $5k.
+    - Step 7: Duplicate retry of Invoice 2 short-circuits with `already_approved=True` in 1.9s with 0 commitment mutation.
+    - Step 8: Concurrent competition for remaining $5k balance between two $5k invoices (A and B): row-level locks serialize execution; exactly one returns HTTP 200 ($130k invoiced, $0 open, status `fully_invoiced`), and the other is rejected with HTTP 409 Conflict.
+    - Step 9: Financial liability and project exposure invariance verified at exactly $130,000.00 (invoiced $130,000 + open $0). Zero double-counting.
+    - Step 10: Scoped teardown confirms 0 residual synthetic records.
+- **Status**: **VERIFIED (10/10 Empirical Tests Passed, 100% Pass Rate)**.
+
+
 
