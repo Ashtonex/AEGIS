@@ -1,3 +1,4 @@
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -431,6 +432,7 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
   const [budgetAmount, setBudgetAmount] = useState("");
   const [depositReference, setDepositReference] = useState("");
   const [depositReceivedAmount, setDepositReceivedAmount] = useState("");
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -551,6 +553,17 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
 
       {isPendingDeposit && (
         <div className="border-t border-ink-mid/50 pt-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[11px] font-mono uppercase text-slate">Deposit Settlement</span>
+            <button
+              type="button"
+              onClick={() => setShowInvoiceModal(true)}
+              className="inline-flex items-center gap-1.5 border border-signal bg-signal/15 px-2.5 py-1 font-mono text-xs font-semibold text-signal hover:bg-signal hover:text-ink transition-colors"
+            >
+              <FileText size={13} />
+              <span>Generate Proforma Deposit Invoice (PDF)</span>
+            </button>
+          </div>
           <p className="mb-2 text-xs text-slate-light">
             This project was created from a won deal and is pending deposit confirmation. Once Finance confirms receipt, it moves into the pre-mobilisation readiness gate before active delivery.
           </p>
@@ -587,6 +600,25 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
       )}
 
       {msg && <p className="text-xs text-slate-light">{msg}</p>}
+
+      <GenerateInvoiceModal
+        isOpen={showInvoiceModal}
+        onClose={() => setShowInvoiceModal(false)}
+        initialData={{
+          invoiceType: "PROFORMA INVOICE",
+          subject: `40% deposit — ${String(project.name || "Commercial Project")}`,
+          clientName: String(project.client_name || "Gold Coast Properties (Pvt) Ltd"),
+          quotationRef: String(project.project_code || project.code || "TCT-2026-014"),
+          depositPercentage: 40,
+          items: [
+            {
+              item_no: "1",
+              description: `Initial mobilisation & works deposit for ${String(project.name || "works")}`,
+              amount_excl_vat: Number(project.contract_value || 88371.46),
+            }
+          ]
+        }}
+      />
     </div>
   );
 }

@@ -238,6 +238,15 @@ export async function reservePlantAsset(plantRequestId: string, payload: Record<
   });
 }
 
+export async function switchPlantAsset(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/switch-machine`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    headers: { 'Idempotency-Key': `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}` },
+    allowFallback: false,
+  });
+}
+
 export async function dispatchPlantAsset(plantRequestId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/fleet/plant/requests/${plantRequestId}/dispatch`, {
     method: 'POST',

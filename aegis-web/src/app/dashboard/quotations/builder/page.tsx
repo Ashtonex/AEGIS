@@ -177,6 +177,7 @@ export default function QuotationBuilder() {
 
   // PDF & Excel generator Preview modal state
   const [printQuoteData, setPrintQuoteData] = useState<any | null>(null);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [printType, setPrintType] = useState<"quotation" | "boq" | "schedule">("quotation");
 
   // Load project options and populate edit fields if in edit mode
@@ -1600,6 +1601,15 @@ export default function QuotationBuilder() {
                 </label>
                 <div className="flex items-end">
                   <button
+                    type="button"
+                    onClick={() => setShowInvoiceModal(true)}
+                    className="flex items-center space-x-1.5 border border-signal bg-signal/15 text-signal px-3.5 py-2.5 text-xs font-bold uppercase tracking-wide rounded-sm hover:bg-signal hover:text-ink transition-all mr-2"
+                    title="Generate official Proforma Invoice / Deposit Invoice matching SNC standard"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Generate Invoice</span>
+                  </button>
+                  <button
                     type="submit"
                     disabled={submitting}
                     className="flex items-center space-x-2 bg-signal text-ink px-6 py-2.5 text-sm font-bold uppercase tracking-wide rounded-sm hover:bg-signal-hover hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50"
@@ -1818,6 +1828,13 @@ export default function QuotationBuilder() {
                   className="inline-flex items-center gap-1.5 border border-signal bg-signal/15 px-3 py-1.5 font-mono text-[10px] uppercase text-signal hover:bg-signal/25 transition-all"
                 >
                   <Printer className="w-3.5 h-3.5" /> Browser Print (PDF)
+                </button>
+                <button 
+                  onClick={() => setShowInvoiceModal(true)}
+                  className="inline-flex items-center gap-1.5 border border-amber-500/50 bg-amber-500/20 px-3 py-1.5 font-mono text-[10px] uppercase text-amber-300 hover:bg-amber-500/30 transition-all font-bold"
+                  title="Generate SNC Proforma / Deposit Invoice matching official corporate layout"
+                >
+                  <FileText className="w-3.5 h-3.5 text-amber-300" /> Generate SNC Invoice
                 </button>
                 <button 
                   onClick={() => handleBackendExport("pdf")}

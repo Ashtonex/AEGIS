@@ -1,3 +1,4 @@
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
@@ -144,6 +145,7 @@ export function CommercialWorkspaceModal({
   onEntityUpdated,
 }: CommercialWorkspaceModalProps) {
   const isTender = kind === "tender";
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [activeTab, setActiveTab] = useState<
     "overview" | "boq" | "documents" | "compliance" | "assignment" | "activity"
   >("overview");
@@ -1345,6 +1347,14 @@ export function CommercialWorkspaceModal({
                     <Eye className="h-3.5 w-3.5" />
                     <span>View / Export PDF</span>
                   </Link>
+                  <button
+                    type="button"
+                    onClick={() => setShowInvoiceModal(true)}
+                    className="inline-flex items-center gap-1.5 border border-amber-500/50 bg-amber-500/20 px-3 py-1.5 font-mono text-xs text-amber-300 hover:bg-amber-500/30 transition-colors font-bold"
+                  >
+                    <FileText className="h-3.5 w-3.5 text-amber-300" />
+                    <span>Generate Invoice (PDF)</span>
+                  </button>
                 </div>
               )}
 
@@ -2001,6 +2011,24 @@ export function CommercialWorkspaceModal({
           </div>
         )}
       </div>
+      <GenerateInvoiceModal
+        isOpen={showInvoiceModal}
+        onClose={() => setShowInvoiceModal(false)}
+        initialData={{
+          invoiceType: "PROFORMA INVOICE",
+          subject: `40% deposit — ${entity.name || "Commercial Opportunity"}`,
+          clientName: entity.client_name || entity.organization_name || "Gold Coast Properties (Pvt) Ltd",
+          quotationRef: entity.quote_id ? `QT-${String(entity.quote_id).slice(0, 8)}` : "TCT-2026-014",
+          depositPercentage: 40,
+          items: [
+            {
+              item_no: "1",
+              description: `Scope of works and deliverables for ${entity.name || "Project"}`,
+              amount_excl_vat: Number(entity.deal_value || 50000),
+            }
+          ]
+        }}
+      />
     </div>
   );
 }

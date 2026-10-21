@@ -1,3 +1,4 @@
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 "use client";
 
 import React, { useState, useEffect } from "react";
@@ -29,6 +30,7 @@ interface ProgressPackModalProps {
 export function ProgressPackModal({ projectId, onClose }: ProgressPackModalProps) {
   const [loading, setLoading] = useState(true);
   const [pack, setPack] = useState<ProjectProgressPackData | null>(null);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 
   useEffect(() => {
     async function fetchPack() {
@@ -339,6 +341,27 @@ export function ProgressPackModal({ projectId, onClose }: ProgressPackModalProps
           )}
         </div>
       </div>
+      {pack && (
+        <GenerateInvoiceModal
+          isOpen={showInvoiceModal}
+          onClose={() => setShowInvoiceModal(false)}
+          initialData={{
+            invoiceType: "TAX INVOICE",
+            subject: `Progress Claim — ${pack.project.name}`,
+            clientName: pack.project.client_name || "Client Principal",
+            quotationRef: pack.project.code || "PRJ-SNC",
+            depositPercentage: 0,
+            items: [
+              {
+                item_no: "1",
+                description: `Certified works executed for ${pack.project.name} (Progress claim)`,
+                amount_excl_vat: Number(pack.project.contract_value ? pack.project.contract_value * 0.2 : 25000),
+                already_pro_rated: true,
+              }
+            ]
+          }}
+        />
+      )}
     </div>
   );
 }

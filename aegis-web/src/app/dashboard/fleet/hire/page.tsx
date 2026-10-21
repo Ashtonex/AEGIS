@@ -26,6 +26,7 @@ import {
   DollarSign,
   FileCheck,
   FileSpreadsheet,
+  FileText,
   HandCoins,
   Layers,
   Loader2,
@@ -38,6 +39,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { GenerateInvoiceModal as OfficialInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 type RecordItem = Record<string, unknown> & { id: string };
 
@@ -52,6 +54,91 @@ function text(record: RecordItem, ...keys: string[]): string {
 function fmtMoney(amount: number | null | undefined): string {
   if (amount === null || amount === undefined || isNaN(Number(amount))) return "$0.00";
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(amount));
+}
+
+function buildHireAgreementInvoiceData(agr: RecordItem, bHours?: number, sHours?: number) {
+  const rateCard = (agr.rate_card && typeof agr.rate_card === "object" ? agr.rate_card : {}) as Record<string, unknown>;
+  const hourlyRate = Number(rateCard.hourly_rate ?? rateCard.rate ?? 0);
+  const billableHours = bHours !== undefined ? bHours : Number(agr.projected_hours_or_units ?? 40);
+  const standingRate = Number(agr.standing_time_rate ?? hourlyRate * 0.5);
+  const standingHours = sHours !== undefined ? sHours : 4;
+  const mobCharge = Number(agr.mobilisation_charge ?? 0);
+  const demobCharge = Number(agr.demobilisation_charge ?? 0);
+  const deposit = Number(agr.deposit_required ?? 0);
+  const isCrossHire = ["cross_hire", "sub_lease"].includes(text(agr, "fulfillment_type"));
+  const agrNum = text(agr, "hire_agreement_number") || `AGR-${agr.id.slice(0, 6).toUpperCase()}`;
+  const assetName = text(agr, "sourced_asset_make_model") || text(agr, "sourced_asset_category") || "Heavy Plant Machine";
+  const client = text(agr, "customer_name") || "Commercial Plant Client";
+  const hireType = text(agr, "hire_type")?.replace(/_/g, " ").toUpperCase() || "COMMERCIAL HIRE";
+
+  const items = [
+    {
+      item_no: "1",
+      description: `${assetName} (Serial/Reg: ${text(agr, "sourced_asset_reg_serial") || "Fleet Unit"}) — ${hireType} productive execution (${billableHours.toFixed(1)} billable hrs @ $${hourlyRate.toFixed(2)}/hr)`,
+      amount_excl_vat: billableHours * hourlyRate,
+      already_pro_rated: true,
+    },
+  ];
+
+  if (standingHours > 0) {
+    items.push({
+      item_no: String(items.length + 1),
+      description: `Site Standby / Standing Charge — ${standingHours.toFixed(1)} hrs @ $${standingRate.toFixed(2)}/hr (Inclement weather / site operational standby per agreement)`,
+      amount_excl_vat: standingHours * standingRate,
+      already_pro_rated: true,
+    });
+  }
+
+  if (mobCharge > 0) {
+    items.push({
+      item_no: String(items.length + 1),
+      description: `Lowbed Heavy Plant Mobilization — Site logistics and carrier delivery`,
+      amount_excl_vat: mobCharge,
+      already_pro_rated: true,
+    });
+  }
+
+  if (demobCharge > 0) {
+    items.push({
+      item_no: String(items.length + 1),
+      description: `Lowbed Heavy Plant Demobilization — Site logistics and asset recovery`,
+      amount_excl_vat: demobCharge,
+      already_pro_rated: true,
+    });
+  }
+
+  if (deposit > 0) {
+    items.push({
+      item_no: String(items.length + 1),
+      description: `Security Deposit Credited Against Gross Hire Charges — Ref ${agrNum}`,
+      amount_excl_vat: -deposit,
+      already_pro_rated: true,
+    });
+  }
+
+  const notes = [
+    `Agreement Reference: ${agrNum}.`,
+    `Asset Deployed: ${assetName} (Reg/SN: ${text(agr, "sourced_asset_reg_serial") || "N/A"}), Initial Hour Meter: ${Number(agr.sourced_meter_start ?? 0).toFixed(1)} hrs.`,
+    `Supply Model: ${isCrossHire ? `Cross-hire sublease underwritten by SNC via ${text(agr, "supplier_name") || "Third-Party Owner"}` : "Company-owned internal fleet asset"}.`,
+    `Operating Terms: ${hireType} terms with certified equipment operator.`,
+    `Settlement: Please quote invoice reference when remitting funds to Banc ABC Southerton Branch account 54925046633016.`,
+  ];
+
+  return {
+    invoiceType: "TAX INVOICE" as const,
+    invoiceNumber: agrNum,
+    subject: `Plant & Equipment Hire — ${assetName} for ${client}`,
+    clientName: client,
+    clientAddress: text(agr, "site_location") || "On-site Project Location, Zimbabwe",
+    clientVat: "220207665",
+    clientTin: "2000039441",
+    quotationRef: agrNum,
+    clientPo: "—",
+    depositPercentage: 0,
+    applyVat: true,
+    items,
+    notes,
+  };
 }
 
 export default function CommercialHirePage() {
@@ -71,6 +158,7 @@ function CommercialHireDashboard() {
     | { type: "new" }
     | { type: "invoice"; agreement: RecordItem }
     | { type: "supplier_invoice"; agreement: RecordItem }
+    | { type: "official_invoice"; agreement: RecordItem; billableHours?: number; standingHours?: number }
     | null
   >(null);
 
@@ -419,8 +507,17 @@ function CommercialHireDashboard() {
                             type="button"
                             onClick={() => setModal({ type: "invoice", agreement: agr })}
                             className="border border-signal/60 bg-signal/10 px-2 py-1 text-[11px] text-signal hover:bg-signal/20"
+                            title="Calculate client gross/net billable & supplier spread"
                           >
                             Client (B) Inv
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setModal({ type: "official_invoice", agreement: agr })}
+                            className="border border-emerald-500/60 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/20 inline-flex items-center gap-1"
+                            title="Generate and download official SNC Tax/Proforma Invoice with SNC watermark & banking"
+                          >
+                            <FileText size={11} /> SNC Invoice
                           </button>
                         </div>
                       </TableCell>
@@ -450,11 +547,24 @@ function CommercialHireDashboard() {
           <GenerateInvoiceModal
             agreement={modal.agreement}
             onClose={() => setModal(null)}
+            onOpenOfficialInvoice={(bHours, sHours) => {
+              const agr = modal.agreement;
+              setModal({ type: "official_invoice", agreement: agr, billableHours: bHours, standingHours: sHours });
+            }}
             onSuccess={() => {
               setModal(null);
               setNotice("Draft commercial invoice generated and staged for billing.");
               void refetch();
             }}
+          />
+        )}
+
+        {/* Modal: Official SNC Storytelling Invoice */}
+        {modal?.type === "official_invoice" && modal.agreement && (
+          <OfficialInvoiceModal
+            isOpen={true}
+            onClose={() => setModal(null)}
+            initialData={buildHireAgreementInvoiceData(modal.agreement, modal.billableHours, modal.standingHours)}
           />
         )}
 
@@ -900,10 +1010,12 @@ function GenerateInvoiceModal({
   agreement,
   onClose,
   onSuccess,
+  onOpenOfficialInvoice,
 }: {
   agreement: RecordItem;
   onClose: () => void;
   onSuccess: () => void;
+  onOpenOfficialInvoice?: (billableHours: number, standingHours: number) => void;
 }) {
   const isCrossHire = ["cross_hire", "sub_lease"].includes(text(agreement, "fulfillment_type"));
   const rateCard = (agreement.rate_card && typeof agreement.rate_card === "object" ? agreement.rate_card : {}) as Record<string, unknown>;
@@ -1026,18 +1138,35 @@ function GenerateInvoiceModal({
             )}
           </div>
 
-          <div className="flex justify-end gap-2 pt-2 border-t border-ink-mid">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-slate hover:text-paper">
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={submitting}
-              className="bg-signal px-4 py-2 text-xs font-semibold text-ink hover:bg-signal/90 disabled:opacity-50"
-            >
-              {submitting ? "Staging..." : "Commit Invoices & Margin"}
-            </button>
+          <div className="flex justify-between items-center gap-2 pt-2 border-t border-ink-mid">
+            <div>
+              {onOpenOfficialInvoice && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenOfficialInvoice(billableHours, standingHours);
+                  }}
+                  className="border border-emerald-500/60 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 inline-flex items-center gap-1.5"
+                  title="Generate official client SNC Invoice with logo watermark & banking details"
+                >
+                  <FileText size={13} /> Official SNC PDF
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-slate hover:text-paper">
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={submitting}
+                className="bg-signal px-4 py-2 text-xs font-semibold text-ink hover:bg-signal/90 disabled:opacity-50"
+              >
+                {submitting ? "Staging..." : "Commit Invoices & Margin"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

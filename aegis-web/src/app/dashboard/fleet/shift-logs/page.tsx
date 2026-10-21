@@ -29,7 +29,10 @@ import {
   UserCheck,
   X,
   XCircle,
+  Receipt,
+  FileText,
 } from "lucide-react";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 type RecordItem = Record<string, unknown> & { id: string };
 
@@ -46,6 +49,72 @@ function fmtDate(value: string): string {
   return Number.isNaN(d.getTime()) ? value : new Intl.DateTimeFormat("en-GB", { dateStyle: "medium" }).format(d);
 }
 
+function buildShiftLogInvoiceData(log: RecordItem) {
+  const opHours = Number(log.operating_hours ?? 0);
+  const idleHours = Number(log.idle_hours ?? 0);
+  const hourlyRate = 120.0;
+  const standingRate = 60.0;
+  const assetCode = text(log, "asset_code", "vehicle_registration") || "Plant Unit";
+  const category = text(log, "asset_category") || "Heavy Plant";
+  const project = text(log, "project_name") || "Civil Engineering Site";
+  const startM = Number(log.start_engine_hours ?? log.engine_hours ?? 0);
+  const endM = Number(log.end_engine_hours ?? startM + opHours);
+  const shiftDate = log.occurred_on ? fmtDate(String(log.occurred_on)) : "Recent Shift Operations";
+  const invNumber = `SNC-SFT-${log.id.slice(0, 6).toUpperCase()}`;
+
+  const items = [
+    {
+      item_no: "1",
+      description: `${category} Operational Run (${assetCode}) — ${text(log, "work_performed") || "Productive site operations"} (${opHours.toFixed(1)} operating hrs @ $${hourlyRate.toFixed(2)}/hr | Meter: ${startM.toFixed(1)}h → ${endM.toFixed(1)}h)`,
+      amount_excl_vat: opHours * hourlyRate,
+      already_pro_rated: true,
+    },
+  ];
+
+  if (idleHours > 0) {
+    items.push({
+      item_no: String(items.length + 1),
+      description: `Machine Idle / Standby Delay Charge — ${idleHours.toFixed(1)} hrs @ $${standingRate.toFixed(2)}/hr (Weather downtime / awaiting site instructions)`,
+      amount_excl_vat: idleHours * standingRate,
+      already_pro_rated: true,
+    });
+  }
+
+  if (log.output_quantity) {
+    items.push({
+      item_no: String(items.length + 1),
+      description: `Earthworks / Output Accomplished — ${log.output_quantity} ${text(log, "output_unit") || "m³"} certified haulage / excavation output`,
+      amount_excl_vat: 0.0,
+      already_pro_rated: true,
+    });
+  }
+
+  const notes = [
+    `Shift Utilization Reference: ${invNumber} on ${shiftDate}.`,
+    `Equipment: ${assetCode} (${category}), Hour Meter: ${startM.toFixed(1)}h to ${endM.toFixed(1)}h (Net active run: ${opHours.toFixed(1)}h).`,
+    `Project Location: ${project}.`,
+    `Assigned Operator: ${text(log, "operator_name") || "Certified SNC Equipment Operator"}.`,
+    `Client Sign-Off Verification: ${text(log, "client_signoff_name") || "Verified by Resident Site Agent"}.`,
+    `Payment Details: Banc ABC Southerton Branch account 54925046633016. Reference ${invNumber}.`,
+  ];
+
+  return {
+    invoiceType: "TAX INVOICE" as const,
+    invoiceNumber: invNumber,
+    subject: `Heavy Plant Shift Utilization — ${assetCode} on ${shiftDate}`,
+    clientName: project,
+    clientAddress: `${project}, Zimbabwe`,
+    clientVat: "220207665",
+    clientTin: "2000039441",
+    quotationRef: text(log, "request_number") || invNumber,
+    clientPo: "—",
+    depositPercentage: 0,
+    applyVat: true,
+    items,
+    notes,
+  };
+}
+
 export default function DailyShiftLogsPage() {
   return (
     <RBACGuard permission="fleet.utilization.record">
@@ -59,6 +128,7 @@ function DailyShiftLogsDashboard() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [notice, setNotice] = useState<string | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
+  const [invoiceModalLog, setInvoiceModalLog] = useState<RecordItem | null>(null);
 
   const { data, isLoading, refetch } = useApiQueries(
     {
@@ -303,6 +373,14 @@ function DailyShiftLogsDashboard() {
                               </button>
                             </>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => setInvoiceModalLog(log)}
+                            className="border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/20 inline-flex items-center gap-1"
+                            title="Generate official client SNC Invoice for this shift run"
+                          >
+                            <Receipt size={11} /> Invoice
+                          </button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -323,6 +401,15 @@ function DailyShiftLogsDashboard() {
               setNotice("Daily Plant Sheet recorded.");
               void refetch();
             }}
+          />
+        )}
+
+        {/* Modal: Official SNC Invoice for Shift Utilization */}
+        {invoiceModalLog && (
+          <GenerateInvoiceModal
+            isOpen={true}
+            onClose={() => setInvoiceModalLog(null)}
+            initialData={buildShiftLogInvoiceData(invoiceModalLog)}
           />
         )}
       </div>

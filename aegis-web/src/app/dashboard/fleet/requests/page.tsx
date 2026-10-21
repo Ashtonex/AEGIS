@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useAuth } from "@/lib/auth/AuthContext";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import {
@@ -10,6 +11,7 @@ import {
   getPlantLifecycleSummary,
   getPlantRequests,
   reservePlantAsset,
+  switchPlantAsset,
   updatePlantRequestStatus,
   getFleet,
 } from "@/lib/api";
@@ -35,7 +37,9 @@ import {
   ArrowRightLeft,
   DollarSign,
   Clock,
+  Receipt,
 } from "lucide-react";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 type RecordItem = Record<string, unknown> & { id: string };
 
@@ -57,6 +61,65 @@ function fmtMoney(amount: number | null | undefined): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(amount));
 }
 
+function buildPlantRequestInvoiceData(req: RecordItem) {
+  const reqNum = text(req, "request_number") || `REQ-${req.id.slice(0, 8).toUpperCase()}`;
+  const assetType = text(req, "required_asset_type") || "Heavy Plant Asset";
+  const location = text(req, "work_location") || "Project Site";
+  const startDate = req.start_date ? fmtDate(String(req.start_date)) : "Mobilisation Date";
+  const endDate = req.end_date ? fmtDate(String(req.end_date)) : "Ongoing Operations";
+  const workDesc = text(req, "work_description") || "Commercial plant works execution";
+  const fuelResp = text(req, "fuel_responsibility") || "snc";
+  const transportReq = text(req, "transport_requirement") || "low_bed";
+  const opMode = text(req, "operating_hours_mode") || "normal";
+  const assignedAsset = text(req, "assigned_asset_name") || text(req, "fleet_id") || "Allocated Plant Unit";
+
+  const items = [
+    {
+      item_no: "1",
+      description: `Plant Equipment Deployment: ${assetType} — ${workDesc} at ${location} (${opMode} shift operations)`,
+      amount_excl_vat: 4800.0,
+      already_pro_rated: true,
+    },
+    {
+      item_no: "2",
+      description: `Transport & Heavy Carrier Logistics — Heavy ${transportReq.replace(/_/g, " ")} mobilization to ${location}`,
+      amount_excl_vat: 650.0,
+      already_pro_rated: true,
+    },
+    {
+      item_no: "3",
+      description: `Operator & Fuel Surcharge Provision (${fuelResp.toUpperCase()} fuel responsibility & certified plant operator)`,
+      amount_excl_vat: 350.0,
+      already_pro_rated: true,
+    },
+  ];
+
+  const notes = [
+    `Plant Request Reference: ${reqNum}.`,
+    `Operational Deployment Period: ${startDate} to ${endDate}.`,
+    `Designated Asset: ${assignedAsset} (${assetType}).`,
+    `Work Location & Site Scope: ${location} — ${workDesc}.`,
+    `Fuel & Operator Responsibility: Fuel provided by ${fuelResp.toUpperCase()}, machine operated by certified SNC plant operator.`,
+    `Settlement Terms: Banc ABC Southerton Branch account 54925046633016. Reference ${reqNum}.`,
+  ];
+
+  return {
+    invoiceType: "TAX INVOICE" as const,
+    invoiceNumber: reqNum,
+    subject: `Heavy Plant Job Invoice — ${assetType} Deployment at ${location}`,
+    clientName: location.includes("Site") || location.includes("Project") ? location : `Client Works — ${location}`,
+    clientAddress: `${location}, Zimbabwe`,
+    clientVat: "220207665",
+    clientTin: "2000039441",
+    quotationRef: reqNum,
+    clientPo: "—",
+    depositPercentage: 0,
+    applyVat: true,
+    items,
+    notes,
+  };
+}
+
 export default function PlantRequestsPage() {
   return (
     <RBACGuard permission="fleet.read">
@@ -70,7 +133,18 @@ function PlantRequestsDashboard() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [actionModal, setActionModal] = useState<{ type: "new" | "dispatch" | "reserve" | "validate"; request?: RecordItem } | null>(null);
+  const [actionModal, setActionModal] = useState<{
+    type: "new" | "dispatch" | "reserve" | "validate" | "switch_machine" | "generate_invoice";
+    request?: RecordItem;
+  } | null>(null);
+  const { role, roles, isSuperAdmin } = useAuth();
+  const isMachineSwitchAuthorized = useMemo(() => {
+    if (isSuperAdmin) return true;
+    const allRoles = [role, ...(roles || [])].filter(Boolean).map((r) => String(r).toLowerCase().replace(/_/g, " ").trim());
+    const allowed = ["superadmin", "admin", "executive", "executive (admin)", "plant manager", "equipment manager", "fleet manager", "managing director", "director"];
+    return allRoles.some((r) => allowed.some((a) => r.includes(a)));
+  }, [role, roles, isSuperAdmin]);
+
 
   const { data, isLoading, refetch } = useApiQueries(
     {
@@ -313,6 +387,16 @@ function PlantRequestsDashboard() {
                               Reserve Plant
                             </button>
                           )}
+                          {isMachineSwitchAuthorized && ["approved", "reserved", "ready_for_dispatch", "dispatched", "active"].includes(st) && (
+                            <button
+                              type="button"
+                              onClick={() => setActionModal({ type: "switch_machine", request: req })}
+                              className="border border-purple-500/40 bg-purple-500/10 px-2 py-1 text-[11px] text-purple-200 hover:bg-purple-500/20"
+                              title="Switch machine (Executives, Plant Manager, Admin)"
+                            >
+                              <ArrowRightLeft size={11} className="inline mr-1" /> Switch
+                            </button>
+                          )}
                           {st === "reserved" && (
                             <button
                               type="button"
@@ -331,6 +415,14 @@ function PlantRequestsDashboard() {
                               Confirm On-Site
                             </button>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => setActionModal({ type: "generate_invoice", request: req })}
+                            className="border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/20 inline-flex items-center gap-1"
+                            title="Generate and download official SNC Tax/Proforma Invoice for this plant deployment job"
+                          >
+                            <Receipt size={11} /> Invoice
+                          </button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -380,6 +472,20 @@ function PlantRequestsDashboard() {
           />
         )}
 
+        {/* Modal: Switch Machine */}
+        {actionModal?.type === "switch_machine" && actionModal.request && (
+          <SwitchPlantMachineModal
+            request={actionModal.request}
+            fleetAssets={fleetAssets}
+            onClose={() => setActionModal(null)}
+            onSuccess={() => {
+              setActionModal(null);
+              setNotice("Machine successfully switched.");
+              void refetch();
+            }}
+          />
+        )}
+
         {/* Modal: Dispatch Plant */}
         {actionModal?.type === "dispatch" && actionModal.request && (
           <DispatchPlantModal
@@ -391,6 +497,15 @@ function PlantRequestsDashboard() {
               setNotice("Dispatch note issued and plant mobilized.");
               void refetch();
             }}
+          />
+        )}
+
+        {/* Modal: Official SNC Invoice for Plant Request */}
+        {actionModal?.type === "generate_invoice" && actionModal.request && (
+          <GenerateInvoiceModal
+            isOpen={true}
+            onClose={() => setActionModal(null)}
+            initialData={buildPlantRequestInvoiceData(actionModal.request)}
           />
         )}
       </div>
@@ -588,6 +703,13 @@ function ReservePlantModal({
   onSuccess: () => void;
 }) {
   const [selectedAssetId, setSelectedAssetId] = useState(fleetAssets[0]?.id || "");
+  const [reservedFrom, setReservedFrom] = useState(
+    request.start_date ? String(request.start_date).slice(0, 10) : new Date().toISOString().slice(0, 10)
+  );
+  const [reservedUntil, setReservedUntil] = useState(
+    request.end_date ? String(request.end_date).slice(0, 10) : ""
+  );
+  const [conditions, setConditions] = useState(`Reserved for ${text(request, "request_number") || "plant request"}`);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -598,7 +720,9 @@ function ReservePlantModal({
     try {
       await reservePlantAsset(request.id, {
         fleet_id: selectedAssetId,
-        notes: `Reserved for ${text(request, "request_number")}`,
+        reserved_from: reservedFrom ? new Date(reservedFrom).toISOString() : new Date().toISOString(),
+        reserved_until: reservedUntil ? new Date(reservedUntil).toISOString() : undefined,
+        conditions: conditions,
       });
       onSuccess();
     } catch (e: any) {
@@ -636,6 +760,37 @@ function ReservePlantModal({
               ))}
             </select>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Reserved From</label>
+              <input
+                type="date"
+                value={reservedFrom}
+                onChange={(e) => setReservedFrom(e.target.value)}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-mono uppercase text-slate mb-1">Reserved Until</label>
+              <input
+                type="date"
+                value={reservedUntil}
+                onChange={(e) => setReservedUntil(e.target.value)}
+                className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] font-mono uppercase text-slate mb-1">Conditions & Notes</label>
+            <textarea
+              rows={2}
+              value={conditions}
+              onChange={(e) => setConditions(e.target.value)}
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper resize-none"
+              placeholder="Pre-delivery inspection, attachments required..."
+            />
+          </div>
           <div className="flex justify-end gap-2 pt-2 border-t border-ink-mid">
             <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-slate hover:text-paper">
               Cancel
@@ -666,8 +821,12 @@ function DispatchPlantModal({
   onClose: () => void;
   onSuccess: () => void;
 }) {
+  const [selectedAssetId, setSelectedAssetId] = useState(
+    (request.fleet_id as string) || fleetAssets[0]?.id || ""
+  );
   const [transporter, setTransporter] = useState("SNC Logistics Lowbed");
   const [driver, setDriver] = useState("");
+  const [destination, setDestination] = useState(text(request, "work_location") || "Project Site");
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -677,6 +836,8 @@ function DispatchPlantModal({
     setErr(null);
     try {
       await dispatchPlantAsset(request.id, {
+        fleet_id: selectedAssetId || undefined,
+        destination_location: destination,
         transporter_name: transporter,
         driver_name: driver,
         dispatch_notes: notes,
@@ -699,6 +860,33 @@ function DispatchPlantModal({
         </div>
         <div className="p-5 space-y-4">
           {err && <div className="border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{err}</div>}
+          
+          <div>
+            <label className="block text-[11px] font-mono uppercase text-slate mb-1">Confirm Machine Dispatched</label>
+            <select
+              value={selectedAssetId}
+              onChange={(e) => setSelectedAssetId(e.target.value)}
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+            >
+              {fleetAssets.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {text(a, "asset_code", "vehicle_registration")} — {text(a, "name", "asset_type")} ({text(a, "operational_status")})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-mono uppercase text-slate mb-1">Delivery Destination / Site</label>
+            <input
+              type="text"
+              value={destination}
+              onChange={(e) => setDestination(e.target.value)}
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+              required
+            />
+          </div>
+
           <div>
             <label className="block text-[11px] font-mono uppercase text-slate mb-1">Transporter / Lowbed Vehicle</label>
             <input
@@ -725,7 +913,7 @@ function DispatchPlantModal({
               rows={2}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper resize-none"
               placeholder="Abnormal load permit ref, escort details..."
             />
           </div>
@@ -740,6 +928,116 @@ function DispatchPlantModal({
               className="bg-signal px-4 py-2 text-xs font-semibold text-ink hover:bg-signal/90 disabled:opacity-50"
             >
               {submitting ? "Dispatching..." : "Authorize & Dispatch"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SwitchPlantMachineModal({
+  request,
+  fleetAssets,
+  onClose,
+  onSuccess,
+}: {
+  request: RecordItem;
+  fleetAssets: RecordItem[];
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [selectedAssetId, setSelectedAssetId] = useState(fleetAssets[0]?.id || "");
+  const [reason, setReason] = useState("Machine breakdown / mechanical replacement");
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleSwitch = async () => {
+    if (!selectedAssetId) return;
+    setSubmitting(true);
+    setErr(null);
+    try {
+      await switchPlantAsset(request.id, {
+        new_fleet_id: selectedAssetId,
+        reason,
+        notes: notes || undefined,
+      });
+      onSuccess();
+    } catch (e: any) {
+      setErr(e instanceof ApiError ? e.message : "Failed to switch machine.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-4 backdrop-blur-sm">
+      <div className="relative w-full max-w-md border border-purple-500/40 bg-ink shadow-2xl">
+        <div className="flex items-center justify-between border-b border-ink-mid px-5 py-4">
+          <div className="flex items-center gap-2">
+            <ArrowRightLeft className="text-purple-400" size={16} />
+            <h2 className="text-sm font-semibold text-paper">Switch / Substitute Allocated Machine</h2>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate hover:text-paper">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {err && <div className="border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-200">{err}</div>}
+          <div className="border border-ink-mid bg-ink-light p-3 space-y-1">
+            <p className="text-xs text-slate-light">Request Ref: <span className="font-semibold text-paper">{text(request, "request_number") || request.id.slice(0, 8)}</span></p>
+            <p className="text-xs text-slate-light">Required Asset: <span className="text-paper">{text(request, "required_asset_type")}</span></p>
+            <p className="text-xs text-slate-light">Current Status: <span className="uppercase font-mono text-purple-300">{text(request, "status")}</span></p>
+          </div>
+          <div>
+            <label className="block text-[11px] font-mono uppercase text-slate mb-1">New Replacement Machine</label>
+            <select
+              value={selectedAssetId}
+              onChange={(e) => setSelectedAssetId(e.target.value)}
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+            >
+              {fleetAssets.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {text(a, "asset_code", "vehicle_registration")} — {text(a, "name", "asset_type")} ({text(a, "operational_status")})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] font-mono uppercase text-slate mb-1">Reason for Switch</label>
+            <select
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper"
+            >
+              <option value="Machine breakdown / mechanical replacement">Machine breakdown / mechanical replacement</option>
+              <option value="Routine PM / Service due on current asset">Routine PM / Service due on current asset</option>
+              <option value="Capacity / Output upgrade required for site">Capacity / Output upgrade required for site</option>
+              <option value="Operational reallocation by Plant Manager">Operational reallocation by Plant Manager</option>
+              <option value="Executive override">Executive override</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-[11px] font-mono uppercase text-slate mb-1">Authorization Notes & Remarks</label>
+            <textarea
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper resize-none"
+              placeholder="Provide hand-over details or logbook odometer reference..."
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2 border-t border-ink-mid">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-xs text-slate hover:text-paper">
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSwitch}
+              disabled={submitting || !selectedAssetId}
+              className="bg-purple-600 px-4 py-2 text-xs font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
+            >
+              {submitting ? "Switching..." : "Confirm Machine Switch"}
             </button>
           </div>
         </div>

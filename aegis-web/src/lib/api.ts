@@ -25,3 +25,4 @@ export * from "./api/banking";
 export * from "./api/data-room";
 export * from "./api/site-day";
 export * from "./api/projects";
+export * from "./api/invoices";

@@ -546,28 +546,42 @@ class PlantRequestStatusPayload(Payload):
 
 class PlantReservationPayload(Payload):
     fleet_id: UUID
-    reserved_from: datetime
+    reserved_from: Optional[datetime] = None
     reserved_until: Optional[datetime] = None
     conditions: Optional[str] = None
+    notes: Optional[str] = None
 
     @model_validator(mode="after")
     def valid_reservation_range(self):
+        if self.reserved_from is None:
+            self.reserved_from = datetime.now(timezone.utc)
+        if self.notes and not self.conditions:
+            self.conditions = self.notes
         if self.reserved_until and self.reserved_until < self.reserved_from:
             raise ValueError("reserved_until cannot precede reserved_from")
         return self
 
 
+class SwitchPlantMachinePayload(Payload):
+    new_fleet_id: UUID
+    reason: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class PlantDispatchPayload(Payload):
-    fleet_id: UUID
+    fleet_id: Optional[UUID] = None
     reservation_id: Optional[UUID] = None
     project_id: Optional[UUID] = None
     assigned_to_user_id: Optional[UUID] = None
     operator_employee_id: Optional[UUID] = None
     dispatch_at: Optional[datetime] = None
-    destination_location: str = Field(min_length=1, max_length=255)
+    destination_location: Optional[str] = None
     origin_location: Optional[str] = Field(default=None, max_length=255)
     transport_instructions: Optional[str] = None
     receiving_party: Optional[str] = Field(default=None, max_length=255)
+    transporter_name: Optional[str] = None
+    driver_name: Optional[str] = None
+    dispatch_notes: Optional[str] = None
     handover_signatures: dict = Field(default_factory=dict)
     dispatch_pack: dict = Field(default_factory=dict)
     odometer_out: Optional[Decimal] = Field(
@@ -1766,11 +1780,11 @@ async def generate_external_hire_invoice(
             SET status = 'debtor_follow_up',
                 debtor_follow_up_status = 'pending',
                 invoice_instruction = :invoice_ref,
-                invoiced_amount = :gross_amount,
+                invoiced_amount = CAST(:gross_amount AS NUMERIC(15,2)),
                 invoice_reference = :inv_number,
                 invoice_generated_at = NOW(),
-                supplier_payable_amount = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN :supplier_payable ELSE supplier_payable_amount END,
-                realized_gross_profit = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN :realized_profit ELSE gross_amount END,
+                supplier_payable_amount = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN CAST(:supplier_payable AS NUMERIC(15,2)) ELSE supplier_payable_amount END,
+                realized_gross_profit = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN CAST(:realized_profit AS NUMERIC(15,2)) ELSE CAST(:default_profit AS NUMERIC(15,2)) END,
                 updated_at = NOW()
             WHERE id = :id AND organization_id = :org_id
         """),
@@ -1782,6 +1796,7 @@ async def generate_external_hire_invoice(
             "inv_number": invoice_ref,
             "supplier_payable": supplier_payable,
             "realized_profit": realized_profit,
+            "default_profit": gross_amount,
         }
     )
     await db.commit()
@@ -3409,6 +3424,196 @@ async def _count_critical_defects(org_id: str, fleet_id) -> int:
         return int(res.scalar() or 0)
 
 
+
+def _check_plant_management_authority(user: dict):
+    roles = [r.lower().replace("_", " ").strip() for r in (user.get("role_names") or [user.get("role") or ""])]
+    user_role = (user.get("role") or "").lower().replace("_", " ").strip()
+    authorized_keywords = {
+        "superadmin", "admin", "executive", "executive (admin)", 
+        "plant manager", "equipment manager", "fleet manager", 
+        "managing director", "director"
+    }
+    is_auth = (
+        user.get("is_superadmin")
+        or any(keyword in r for r in roles for keyword in authorized_keywords)
+        or any(keyword in user_role for keyword in authorized_keywords)
+    )
+    if not is_auth:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Machine switching is restricted to Executives, Plant Manager, Admin, and Superadmin.",
+        )
+
+
+@router.post("/plant/requests/{plant_request_id}/switch-machine", status_code=status.HTTP_200_OK)
+async def switch_plant_machine(
+    plant_request_id: UUID,
+    payload: SwitchPlantMachinePayload,
+    user: dict = Depends(require_permission("fleet.plant_requests.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Allows Executives, Plant Managers, Admin, and Superadmin to switch or substitute
+    the allocated machine on a plant request or dispatch.
+    """
+    _check_plant_management_authority(user)
+    new_asset = await asset_or_404(db, payload.new_fleet_id, user["org_id"])
+    
+    plant_request = (
+        (
+            await db.execute(
+                text("""
+                    SELECT * FROM fleet.plant_requests
+                    WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+                """),
+                {"id": plant_request_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not plant_request:
+        raise HTTPException(status_code=404, detail="Plant request not found.")
+
+    # 1. Look up existing active reservation
+    curr_res = (
+        (
+            await db.execute(
+                text("""
+                    SELECT id, fleet_id, status FROM fleet.plant_reservations
+                    WHERE plant_request_id = :id AND organization_id = :org_id
+                      AND status IN ('provisional', 'confirmed') AND is_deleted = false
+                    ORDER BY created_at DESC LIMIT 1
+                """),
+                {"id": plant_request_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+
+    old_fleet_id = curr_res["fleet_id"] if curr_res else None
+
+    # 2. Release/update reservation to new asset
+    if curr_res:
+        await db.execute(
+            text("""
+                UPDATE fleet.plant_reservations
+                SET fleet_id = :new_fleet_id,
+                    conditions = COALESCE(conditions, '') || ' | Switched from ' || CAST(:old_fleet_id AS text) || ' (Reason: ' || :reason || ')',
+                    updated_at = NOW()
+                WHERE id = :res_id AND organization_id = :org_id
+            """),
+            {
+                "new_fleet_id": payload.new_fleet_id,
+                "old_fleet_id": old_fleet_id,
+                "reason": payload.reason or payload.notes or "Operational substitution",
+                "res_id": curr_res["id"],
+                "org_id": user["org_id"],
+            },
+        )
+    else:
+        # Create a new reservation if none existed
+        await db.execute(
+            text("""
+                INSERT INTO fleet.plant_reservations (
+                    organization_id, plant_request_id, fleet_id, reservation_number,
+                    status, reserved_from, conditions, created_by
+                ) VALUES (
+                    :org_id, :plant_request_id, :new_fleet_id,
+                    'PA-' || LPAD(nextval('fleet.plant_allocation_seq')::text, 6, '0'),
+                    'confirmed', NOW(), :reason, :user_id
+                )
+            """),
+            {
+                "org_id": user["org_id"],
+                "plant_request_id": plant_request_id,
+                "new_fleet_id": payload.new_fleet_id,
+                "reason": payload.reason or payload.notes or "Allocated via machine switch",
+                "user_id": user["sub"],
+            },
+        )
+
+    # 3. Restore old asset to available
+    if old_fleet_id and old_fleet_id != payload.new_fleet_id:
+        await db.execute(
+            text("""
+                UPDATE fleet.fleet
+                SET operational_status = 'available', updated_at = NOW()
+                WHERE id = :old_id AND organization_id = :org_id
+            """),
+            {"old_id": old_fleet_id, "org_id": user["org_id"]},
+        )
+
+    # 4. Set new asset status
+    target_status = 'deployed' if plant_request["status"] in ('dispatched', 'active') else 'assigned'
+    await db.execute(
+        text("""
+            UPDATE fleet.fleet
+            SET operational_status = :st, updated_at = NOW()
+            WHERE id = :new_id AND organization_id = :org_id
+        """),
+        {"st": target_status, "new_id": payload.new_fleet_id, "org_id": user["org_id"]},
+    )
+
+    # 5. Update active fleet assignments if already dispatched
+    if old_fleet_id:
+        await db.execute(
+            text("""
+                UPDATE fleet.fleet_assignments
+                SET fleet_id = :new_fleet_id,
+                    purpose = COALESCE(purpose, '') || ' [Switched from ' || CAST(:old_fleet_id AS text) || ']',
+                    updated_at = NOW()
+                WHERE organization_id = :org_id AND fleet_id = :old_fleet_id AND status IN ('planned', 'dispatched', 'active')
+            """),
+            {
+                "new_fleet_id": payload.new_fleet_id,
+                "old_fleet_id": old_fleet_id,
+                "org_id": user["org_id"],
+            },
+        )
+
+    # 6. Append audit note to plant request
+    switch_note = f"\n[Machine Switched by {user.get('email', 'Authorized User')} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}: {new_asset.get('asset_code', '')} ({new_asset.get('name', '')}). Reason: {payload.reason or payload.notes or 'Operational requirement'}]"
+    await db.execute(
+        text("""
+            UPDATE fleet.plant_requests
+            SET work_description = COALESCE(work_description, '') || :switch_note,
+                status = CASE WHEN status = 'approved' THEN 'reserved' ELSE status END,
+                updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {"switch_note": switch_note, "id": plant_request_id, "org_id": user["org_id"]},
+    )
+
+    await emit_event(
+        db,
+        user=user,
+        event_type="plant.machine_switched.v1",
+        aggregate_type="plant_request",
+        aggregate_id=plant_request_id,
+        project_id=plant_request["project_id"],
+        event_payload={
+            "old_fleet_id": str(old_fleet_id) if old_fleet_id else None,
+            "new_fleet_id": str(payload.new_fleet_id),
+            "reason": payload.reason or payload.notes,
+            "switched_by": user.get("email"),
+        },
+    )
+    await db.commit()
+    return result(
+        {
+            "id": str(plant_request_id),
+            "old_fleet_id": str(old_fleet_id) if old_fleet_id else None,
+            "new_fleet_id": str(payload.new_fleet_id),
+            "new_asset_code": new_asset.get("asset_code"),
+            "new_asset_name": new_asset.get("name"),
+            "status": "switched",
+        },
+        f"Machine successfully switched to {new_asset.get('asset_code')}.",
+    )
+
+
 @router.post("/plant/requests/{plant_request_id}/dispatch", status_code=status.HTTP_201_CREATED)
 async def dispatch_plant_asset(
     plant_request_id: UUID,
@@ -3416,7 +3621,6 @@ async def dispatch_plant_asset(
     user: dict = Depends(require_permission("fleet.plant_requests.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    asset = await asset_or_404(db, payload.fleet_id, user["org_id"])
     request = (
         (
             await db.execute(
@@ -3430,6 +3634,27 @@ async def dispatch_plant_asset(
         .mappings()
         .first()
     )
+    if not request:
+        raise HTTPException(status_code=404, detail="Plant request not found")
+
+    fleet_id = payload.fleet_id
+    if not fleet_id:
+        res = await db.execute(
+            text("""
+                SELECT fleet_id FROM fleet.plant_reservations
+                WHERE plant_request_id = :id AND organization_id = :org_id
+                  AND status IN ('provisional', 'confirmed') AND is_deleted = false
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"id": plant_request_id, "org_id": user["org_id"]},
+        )
+        row = res.first()
+        if row and row.fleet_id:
+            fleet_id = row.fleet_id
+        else:
+            raise HTTPException(status_code=400, detail="No machine specified or reserved for this plant request.")
+
+    asset = await asset_or_404(db, fleet_id, user["org_id"])
     if not request:
         raise HTTPException(status_code=404, detail="Plant request not found")
     if request["status"] not in ("approved", "reserved", "ready_for_dispatch"):
@@ -3448,7 +3673,7 @@ async def dispatch_plant_asset(
     _, _, critical_defects_count = await asyncio.gather(
         _check_project_reference(payload.project_id or request["project_id"], user["org_id"]),
         _check_reservation_reference(payload.reservation_id, user["org_id"]),
-        _count_critical_defects(user["org_id"], payload.fleet_id),
+        _count_critical_defects(user["org_id"], fleet_id),
     )
 
     readiness_blockers = plant_readiness_blockers(
@@ -3484,8 +3709,18 @@ async def dispatch_plant_asset(
         )
     starts_at = payload.dispatch_at or datetime.utcnow()
     ends_at = datetime.combine(request["end_date"], datetime.min.time()) if request["end_date"] else None
+    destination_location = payload.destination_location or request["work_location"] or "Project Site"
+    transport_instr = payload.transport_instructions or ""
+    if payload.transporter_name:
+        transport_instr += f" Transporter: {payload.transporter_name}."
+    if payload.driver_name:
+        transport_instr += f" Driver: {payload.driver_name}."
+    if payload.dispatch_notes:
+        transport_instr += f" Notes: {payload.dispatch_notes}."
+    transport_instr = transport_instr.strip() or None
+
     assignment = AssignmentPayload(
-        fleet_id=payload.fleet_id,
+        fleet_id=fleet_id,
         project_id=payload.project_id or request["project_id"],
         assigned_to_user_id=payload.assigned_to_user_id,
         operator_employee_id=payload.operator_employee_id,
@@ -3494,7 +3729,8 @@ async def dispatch_plant_asset(
         ends_at=ends_at,
         status="dispatched",
         origin_location=payload.origin_location,
-        destination_location=payload.destination_location,
+        destination_location=destination_location,
+        transport_instructions=transport_instr,
         purpose=request["work_description"],
         odometer_out=payload.odometer_out,
     )
@@ -4112,3 +4348,30 @@ async def retire_asset(
         raise HTTPException(status_code=404, detail="Fleet asset not found")
     await db.commit()
     return result(None, "Fleet asset retired.")
+
+from typing import Any, Dict
+from app.services.documents.invoice_renderer import SNCInvoicePDFRenderer
+
+
+@router.post("/invoices/generate-pdf")
+async def generate_fleet_invoice_pdf(
+    payload: Dict[str, Any],
+    user: dict = Depends(get_current_user),
+):
+    """
+    Renders official Six Nine Construction Plant & Equipment commercial invoice PDF
+    with watermark, duty hours, standing hours, logistics breakdown, and storytelling notes.
+    """
+    renderer = SNCInvoicePDFRenderer()
+    inv_no = str(payload.get("invoice_number") or payload.get("invoice_reference") or "USD211")
+    temp_dir = tempfile.gettempdir()
+    clean_inv_no = "".join(c for c in inv_no if c.isalnum() or c in "-_") or "fleet_inv"
+    output_filename = f"SNC_Plant_Invoice_{clean_inv_no}.pdf"
+    output_path = os.path.join(temp_dir, output_filename)
+
+    renderer.render_invoice_pdf(payload, output_path)
+    return FileResponse(
+        path=output_path,
+        media_type="application/pdf",
+        filename=output_filename,
+    )
