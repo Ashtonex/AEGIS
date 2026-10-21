@@ -52,9 +52,9 @@ interface Lead {
   contact_email?: string;
   contact_phone?: string;
   sector: string;
-  estimated_budget: number;
-  ai_score: number;
-  ai_rationale: string;
+  estimated_budget?: number | null;
+  ai_score?: number | null;
+  ai_rationale?: string | null;
   lead_source: string;
   status: string;
   created_at: string;
@@ -601,9 +601,10 @@ export default function CRMLeadsApp() {
     }
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5';
-    if (score >= 50) return 'text-amber-400 border-amber-500/30 bg-amber-500/5';
+  const getScoreColor = (score?: number | null) => {
+    const s = Number(score) || 0;
+    if (s >= 80) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5';
+    if (s >= 50) return 'text-amber-400 border-amber-500/30 bg-amber-500/5';
     return 'text-rose-400 border-rose-500/30 bg-rose-500/5';
   };
 
@@ -788,7 +789,7 @@ export default function CRMLeadsApp() {
                   <TableRow key={lead.id}>
                     <TableCell className="font-semibold text-paper">
                       {leadPrimaryName(lead)}
-                      {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
+                      {Array.isArray(lead.missing_compliance_labels) && lead.missing_compliance_labels.length > 0 && (
                         <span
                           title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
                           className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-amber-500/10 text-amber-400 border border-amber-500/30"
@@ -800,13 +801,13 @@ export default function CRMLeadsApp() {
                     <TableCell>{leadContactName(lead)}</TableCell>
                     <TableCell>{lead.sector}</TableCell>
                     <TableCell className="font-semibold text-emerald-400">
-                      ${lead.estimated_budget.toLocaleString()}
+                      ${(Number(lead.estimated_budget) || 0).toLocaleString()}
                       {!lead.budget_confirmed && (
                         <span title="Estimated - not yet confirmed by the client" className="ml-1.5 text-[9px] font-semibold text-amber-400 align-middle">Est.</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}</span>
+                      <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score ?? 0}</span>
                     </TableCell>
                     <TableCell>
                       <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">{lead.status || 'Inquiry'}</span>
@@ -902,7 +903,7 @@ export default function CRMLeadsApp() {
                           <h4 className="text-sm font-bold text-white line-clamp-1">{leadPrimaryName(lead)}</h4>
                           <span className="text-[9px] font-mono text-slate-400">{lead.sector} | {lead.lead_source}</span>
                         </div>
-                        {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
+                        {Array.isArray(lead.missing_compliance_labels) && lead.missing_compliance_labels.length > 0 && (
                           <div
                             title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
                             className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 w-fit"
@@ -912,10 +913,10 @@ export default function CRMLeadsApp() {
                         )}
                         <div className="flex justify-between items-center text-xs">
                           <span className="font-semibold text-emerald-400">
-                            ${lead.estimated_budget.toLocaleString()}
+                            ${(Number(lead.estimated_budget) || 0).toLocaleString()}
                             {!lead.budget_confirmed && <span title="Estimated - not yet confirmed by the client" className="ml-1 text-[9px] font-semibold text-amber-400">Est.</span>}
                           </span>
-                          <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}%</span>
+                          <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score ?? 0}%</span>
                         </div>
                         <div draggable={false} className="border-t border-[#1E293B] pt-2 space-y-2">
                           <div draggable={false} className="flex gap-1 items-center flex-wrap">
