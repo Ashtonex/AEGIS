@@ -39,6 +39,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { title, text, number } from "@/lib/projects/types";
 import { getProjectProgressPack, type ProjectProgressPackData } from "@/lib/api/projects";
 import { ProgressPackModal } from "@/components/projects/ProgressPackModal";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 export { title, text, number };
 
@@ -50,6 +51,7 @@ export default function ProjectMissionControlPage() {
   const [packData, setPackData] = useState<ProjectProgressPackData | null>(null);
   const [packLoading, setPackLoading] = useState(false);
   const [isPackModalOpen, setIsPackModalOpen] = useState(false);
+  const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
 
   useEffect(() => {
     if (!projectId) return;
@@ -250,6 +252,14 @@ export default function ProjectMissionControlPage() {
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             type="button"
+            onClick={() => setIsInvoiceModalOpen(true)}
+            className="inline-flex items-center gap-2 border border-signal/80 bg-signal/15 px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-all shadow-sm active:scale-[0.98]"
+          >
+            <FileText className="h-4 w-4" />
+            <span>Generate Official Invoice (PDF)</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setIsPackModalOpen(true)}
             className="inline-flex items-center gap-2 border border-signal bg-signal px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90 shadow-lg shadow-signal/15 active:scale-[0.98] transition-all"
           >
@@ -421,6 +431,37 @@ export default function ProjectMissionControlPage() {
         <ProgressPackModal
           projectId={projectId}
           onClose={() => setIsPackModalOpen(false)}
+        />
+      )}
+
+      {/* Official SNC Storytelling Invoice Modal */}
+      {isInvoiceModalOpen && (
+        <GenerateInvoiceModal
+          isOpen={isInvoiceModalOpen}
+          onClose={() => setIsInvoiceModalOpen(false)}
+          initialData={{
+            invoiceType: "PROFORMA INVOICE",
+            invoiceNumber: `USD${String(source?.project_code || "PRJ").replace(/[^0-9]/g, "").padStart(3, "1") || "212"}`,
+            subject: `Contract Works & Mobilisation Deposit — ${String(source?.name || "Civil Works")}`,
+            clientName: String(source?.client_name || "Client Principal (Pvt) Ltd"),
+            quotationRef: String(source?.project_code || "QT-SNC-2026"),
+            depositPercentage: 40,
+            applyVat: true,
+            vatRate: 0.155,
+            items: [
+              {
+                item_no: "1",
+                description: `Scope of works as per contract agreement: ${String(source?.name || "Civil Works & Surfacing")}`,
+                amount_excl_vat: contractValue > 0 ? contractValue : 18275.90,
+              },
+            ],
+            notes: [
+              `This proforma invoice covers the 40% advance deposit for ${String(source?.name || "the project")}.`,
+              `Please quote USD${String(source?.project_code || "PRJ").replace(/[^0-9]/g, "").padStart(3, "1") || "212"} as the payment reference.`,
+              "A fiscal tax invoice will be issued on receipt of payment.",
+              "Mobilisation and plant allocation are active on site.",
+            ],
+          }}
         />
       )}
     </div>

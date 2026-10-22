@@ -159,6 +159,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Intelligence Engine", href: "/dashboard/quotations/intelligence", icon: Brain },
       { name: "Drawing Takeoff", href: "/dashboard/quotations/drawings", icon: Layers },
       { name: "Export & History", href: "/dashboard/quotations/history", icon: BookOpen },
+      { name: "Official Invoices (PDF)", href: "/dashboard/finance/invoices", icon: FileText },
     ],
   },
   {
@@ -173,6 +174,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Schedule", href: "/dashboard/projects/schedule", icon: Activity },
       { name: "Financials", href: "/dashboard/projects/financials", icon: DollarSign },
       { name: "Materials", href: "/dashboard/projects/materials", icon: Package },
+      { name: "Invoices & Billing", href: "/dashboard/finance/invoices", icon: FileText },
     ],
   },
   {
@@ -212,6 +214,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Maintenance & Workshop", href: "/dashboard/fleet/maintenance", icon: Wrench, requiredPermission: "fleet.read" },
       { name: "Operators & Safety", href: "/dashboard/fleet/operators", icon: Users, requiredPermission: "fleet.operator_profiles.read" },
       { name: "Asset Financials & P&L", href: "/dashboard/fleet/performance", icon: Gauge, requiredPermission: "fleet.profitability.view" },
+      { name: "Official Invoices (PDF)", href: "/dashboard/finance/invoices", icon: FileText, requiredPermission: "fleet.external_hire.read" },
     ],
   },
 
@@ -272,6 +275,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       { name: "Close-Out", href: "/dashboard/finance/close-out", icon: ShieldCheck },
       { name: "Client Payments", href: "/dashboard/finance/client-payments", icon: Banknote },
       { name: "Project Portfolio", href: "/dashboard/finance/project-portfolio", icon: Layers },
+      { name: "Official Invoices (PDF)", href: "/dashboard/finance/invoices", icon: FileText },
     ],
   },
   {
