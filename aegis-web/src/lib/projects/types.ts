@@ -77,6 +77,7 @@ export type ProjectMilestone = Record<string, unknown> & {
   forecast_date?: string | null;
   actual_date?: string | null;
   weight?: number | null;
+  percent_complete?: number | null;
   owner_id?: string | null;
   owner_name?: string | null;
   notes?: string | null;
@@ -92,6 +93,31 @@ export type ProjectMilestone = Record<string, unknown> & {
   late_start?: string | null;
   late_finish?: string | null;
 };
+
+export interface SiteScheduleSync {
+  total_reports: number;
+  latest_report?: {
+    id: string;
+    report_date: string;
+    shift?: string;
+    status?: string;
+    weather?: { summary?: string; temperature_c?: number };
+    planned_work?: string;
+    actual_work?: string;
+    delays?: string;
+    safety_notes?: string;
+    cost_exposure?: number;
+    submitted_at?: string;
+    approved_at?: string;
+  } | null;
+  recent_reports?: Record<string, unknown>[];
+  overall_physical_progress_pct: number;
+  overall_planned_progress_pct: number;
+  schedule_variance_pct: number;
+  active_milestone?: ProjectMilestone | null;
+  field_date: string;
+  today_date: string;
+}
 
 export type Detail = Record<string, unknown> & {
   project?: Project;

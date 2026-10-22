@@ -432,6 +432,7 @@ export async function addProjectMilestone(projectId: string, payload: {
   forecast_date?: string;
   actual_date?: string;
   weight?: number;
+  percent_complete?: number;
   owner_id?: string;
   notes?: string;
   duration_days?: number;
@@ -466,6 +467,22 @@ export async function deleteProjectMilestone(projectId: string, milestoneId: str
 /** Recalculates Critical Path Method (CPM) across all project milestones. */
 export async function calculateProjectScheduleCPM(projectId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/calculate-cpm`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Synchronizes schedule and Gantt with contemporary daily site reports. */
+export async function getProjectScheduleSiteSync(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/site-sync`, {
+    method: 'GET',
+    allowFallback: false,
+  });
+}
+
+/** Triggers automatic alignment between schedule milestones and daily site reports. */
+export async function syncScheduleFromSiteReports(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/sync-from-site-reports`, {
     method: 'POST',
     allowFallback: false,
   });

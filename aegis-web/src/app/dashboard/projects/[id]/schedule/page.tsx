@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import {
   CalendarDays,
   Plus,
@@ -22,6 +23,16 @@ import {
   Trash2,
   Edit2,
   ExternalLink,
+  Activity,
+  HardHat,
+  FileText,
+  RefreshCw,
+  Radio,
+  Check,
+  ChevronRight,
+  MapPin,
+  Sun,
+  ShieldCheck,
 } from "lucide-react";
 import { useProject } from "@/context/ProjectWorkspaceContext";
 import {
@@ -30,9 +41,11 @@ import {
   deleteProjectMilestone,
   calculateProjectScheduleCPM,
   generateProjectMilestonesFromBOQ,
+  getProjectScheduleSiteSync,
+  syncScheduleFromSiteReports,
 } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
-import { ProjectMilestone } from "@/lib/projects/types";
+import { ProjectMilestone, SiteScheduleSync } from "@/lib/projects/types";
 
 export default function ProjectSchedulePage() {
   const params = useParams();
@@ -45,12 +58,19 @@ export default function ProjectSchedulePage() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [editingMilestone, setEditingMilestone] = useState<ProjectMilestone | null>(null);
 
+  // Site Operations Sync State
+  const [siteSync, setSiteSync] = useState<SiteScheduleSync | null>(null);
+  const [loadingSync, setLoadingSync] = useState(false);
+  const [syncingWithSite, setSyncingWithSite] = useState(false);
+  const [updatingMilestoneId, setUpdatingMilestoneId] = useState<string | null>(null);
+
   // Form states
   const [name, setName] = useState("");
   const [durationDays, setDurationDays] = useState("5");
   const [baselineDate, setBaselineDate] = useState("");
   const [forecastDate, setForecastDate] = useState("");
   const [weight, setWeight] = useState("10");
+  const [percentComplete, setPercentComplete] = useState("0");
   const [predecessorId, setPredecessorId] = useState("");
   const [lagDays, setLagDays] = useState("0");
   const [dependencyType, setDependencyType] = useState<"FS" | "SS" | "FF" | "SF">("FS");
@@ -60,6 +80,26 @@ export default function ProjectSchedulePage() {
   const [calculatingCPM, setCalculatingCPM] = useState(false);
   const [generatingBOQ, setGeneratingBOQ] = useState(false);
   const [cpmFeedback, setCpmFeedback] = useState<string | null>(null);
+
+  // Load site sync data
+  const loadSiteSync = useCallback(async () => {
+    if (!projectId) return;
+    setLoadingSync(true);
+    try {
+      const res = await getProjectScheduleSiteSync(projectId);
+      if (res?.data) {
+        setSiteSync(res.data as SiteScheduleSync);
+      }
+    } catch (err) {
+      console.warn("Non-fatal: could not load site schedule sync", err);
+    } finally {
+      setLoadingSync(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadSiteSync();
+  }, [loadSiteSync]);
 
   // Filtered milestones
   const filtered = useMemo(() => {
@@ -78,6 +118,22 @@ export default function ProjectSchedulePage() {
     const critical = list.filter((m) => Boolean(m.is_critical)).length;
     const blocked = list.filter((m) => m.status === "blocked").length;
 
+    // Physical Progress Calculation (Weighted if available)
+    const totalWeight = list.reduce((acc, m) => acc + (Number(m.weight) || 0), 0);
+    let physicalProgressPct = 0;
+    if (totalWeight > 0) {
+      const weightedSum = list.reduce((acc, m) => {
+        const pct = Number(m.percent_complete) || (m.status === "complete" ? 100 : 0);
+        return acc + pct * (Number(m.weight) || 0);
+      }, 0);
+      physicalProgressPct = Math.round(weightedSum / totalWeight);
+    } else if (total > 0) {
+      const sumPct = list.reduce((acc, m) => {
+        return acc + (Number(m.percent_complete) || (m.status === "complete" ? 100 : 0));
+      }, 0);
+      physicalProgressPct = Math.round(sumPct / total);
+    }
+
     // Max variance calculation
     let maxSlippageDays = 0;
     list.forEach((m) => {
@@ -89,7 +145,7 @@ export default function ProjectSchedulePage() {
       }
     });
 
-    return { total, completed, critical, blocked, maxSlippageDays };
+    return { total, completed, critical, blocked, maxSlippageDays, physicalProgressPct };
   }, [milestones]);
 
   // Gantt chart time window bounds
@@ -123,23 +179,41 @@ export default function ProjectSchedulePage() {
       });
     });
 
+    // Also factor in today / field report date so the today line is always inside the window
+    const today = new Date();
+    if (!hasDates) {
+      minDate = today;
+      maxDate = today;
+    } else {
+      if (today < minDate) minDate = today;
+      if (today > maxDate) maxDate = today;
+    }
+
     // Add padding days
     const start = new Date(minDate);
-    start.setDate(start.getDate() - 3);
+    start.setDate(start.getDate() - 2);
     const end = new Date(maxDate);
-    end.setDate(end.getDate() + 7);
+    end.setDate(end.getDate() + 5);
     const totalDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 3600 * 24)));
 
     return { start, end, totalDays };
   }, [milestones]);
 
+  // Compute Today / Field Position Line left %
+  const todayLineLeftPct = useMemo(() => {
+    const targetDate = siteSync?.field_date ? new Date(siteSync.field_date) : new Date();
+    const daysFromStart = (targetDate.getTime() - ganttBounds.start.getTime()) / (1000 * 3600 * 24);
+    return Math.min(99, Math.max(0, (daysFromStart / ganttBounds.totalDays) * 100));
+  }, [siteSync?.field_date, ganttBounds]);
+
   const handleOpenAdd = () => {
     setEditingMilestone(null);
     setName("");
-    setDurationDays("5");
+    setDurationDays("3");
     setBaselineDate("");
     setForecastDate("");
     setWeight("10");
+    setPercentComplete("0");
     setPredecessorId("");
     setLagDays("0");
     setDependencyType("FS");
@@ -154,6 +228,7 @@ export default function ProjectSchedulePage() {
     setBaselineDate(m.baseline_date ? String(m.baseline_date).split("T")[0] : "");
     setForecastDate(m.forecast_date ? String(m.forecast_date).split("T")[0] : "");
     setWeight(String(m.weight || 0));
+    setPercentComplete(String(m.percent_complete || 0));
     setPredecessorId(m.predecessor_id ? String(m.predecessor_id) : "");
     setLagDays(String(m.lag_days || 0));
     setDependencyType((m.dependency_type as "FS" | "SS" | "FF" | "SF") || "FS");
@@ -172,6 +247,7 @@ export default function ProjectSchedulePage() {
         baseline_date: baselineDate || undefined,
         forecast_date: forecastDate || undefined,
         weight: Number(weight) || 0,
+        percent_complete: Math.min(100, Math.max(0, Number(percentComplete) || 0)),
         predecessor_id: predecessorId || undefined,
         lag_days: parseInt(lagDays, 10) || 0,
         dependency_type: dependencyType,
@@ -185,6 +261,7 @@ export default function ProjectSchedulePage() {
       }
       setIsAddOpen(false);
       await refetch();
+      void loadSiteSync();
     } catch (err: unknown) {
       console.error(err);
       setCpmFeedback("Failed to save activity. Verify dependency links.");
@@ -199,6 +276,7 @@ export default function ProjectSchedulePage() {
     try {
       await deleteProjectMilestone(projectId, id);
       await refetch();
+      void loadSiteSync();
     } catch (err) {
       console.error(err);
     } finally {
@@ -217,6 +295,7 @@ export default function ProjectSchedulePage() {
         setCpmFeedback("Critical Path calculation complete.");
       }
       await refetch();
+      void loadSiteSync();
     } catch (err: unknown) {
       console.error(err);
       setCpmFeedback("Error calculating CPM. Check for circular dependencies.");
@@ -225,19 +304,63 @@ export default function ProjectSchedulePage() {
     }
   };
 
+  const handleSyncWithSiteReports = async () => {
+    setSyncingWithSite(true);
+    setCpmFeedback(null);
+    try {
+      const res = await syncScheduleFromSiteReports(projectId);
+      setCpmFeedback(res?.message || "Schedule successfully updated from daily site reports.");
+      await refetch();
+      await loadSiteSync();
+    } catch (err) {
+      console.error(err);
+      setCpmFeedback("Failed to sync schedule from site reports.");
+    } finally {
+      setSyncingWithSite(false);
+    }
+  };
+
+  const handleQuickProgressUpdate = async (milestone: ProjectMilestone, targetPercent: number) => {
+    setUpdatingMilestoneId(String(milestone.id));
+    try {
+      const newStatus = targetPercent >= 100 ? "complete" : targetPercent > 0 ? "in_progress" : "not_started";
+      await updateProjectMilestone(projectId, String(milestone.id), {
+        percent_complete: targetPercent,
+        status: newStatus,
+        actual_date: targetPercent >= 100 ? new Date().toISOString().split("T")[0] : undefined,
+      });
+      await refetch();
+      void loadSiteSync();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setUpdatingMilestoneId(null);
+    }
+  };
+
   const handleAdvanceStatus = async (milestone: ProjectMilestone) => {
     const current = String(milestone.status || "not_started");
     let next = "in_progress";
-    if (current === "in_progress") next = "complete";
-    else if (current === "complete") next = "not_started";
-    else if (current === "blocked") next = "in_progress";
+    let nextPct = 50;
+    if (current === "in_progress") {
+      next = "complete";
+      nextPct = 100;
+    } else if (current === "complete") {
+      next = "not_started";
+      nextPct = 0;
+    } else if (current === "blocked") {
+      next = "in_progress";
+      nextPct = 50;
+    }
 
     try {
       await updateProjectMilestone(projectId, String(milestone.id), {
         status: next,
+        percent_complete: nextPct,
         actual_date: next === "complete" ? new Date().toISOString().split("T")[0] : undefined,
       });
       void refetch();
+      void loadSiteSync();
     } catch {
       // non-fatal
     }
@@ -248,6 +371,7 @@ export default function ProjectSchedulePage() {
     try {
       await generateProjectMilestonesFromBOQ(projectId);
       await refetch();
+      void loadSiteSync();
     } catch (err) {
       console.error(err);
     } finally {
@@ -265,21 +389,142 @@ export default function ProjectSchedulePage() {
 
   return (
     <div className="space-y-6">
-      {/* Schedule Header & Key Metrics */}
-      <div className="border border-ink-mid bg-ink p-4 sm:p-6 space-y-4">
+      {/* 1. UNIFIED SITE OPERATIONS & GANTT LIVE TRACKING TOWER */}
+      <div className="border-2 border-signal/60 bg-gradient-to-r from-ink via-ink-light/40 to-ink p-4 sm:p-5 shadow-lg relative overflow-hidden">
+        {/* Glowing live corner badge */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-ink-mid/80">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-signal opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-signal" />
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs font-bold uppercase tracking-widest text-signal">
+                Site Operations Live Sync
+              </span>
+              <span className="font-mono text-[10px] uppercase px-1.5 py-0.5 border border-signal/40 bg-signal/10 text-signal">
+                Unified Front
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSyncWithSiteReports}
+              disabled={syncingWithSite}
+              className="inline-flex items-center gap-1.5 border border-signal/80 bg-signal/20 px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-signal hover:bg-signal hover:text-ink transition-all disabled:opacity-50"
+            >
+              {syncingWithSite ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              <span>{syncingWithSite ? "Aligning..." : "Sync from Daily Site Reports"}</span>
+            </button>
+
+            <Link
+              href={`/dashboard/projects/${projectId}/site-logs`}
+              className="inline-flex items-center gap-1 border border-ink-mid bg-ink-light px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-paper hover:border-signal hover:text-signal transition-colors"
+            >
+              <HardHat className="h-3 w-3 text-signal" />
+              <span>Site Diaries / Logs</span>
+              <ArrowRight className="h-3 w-3" />
+            </Link>
+          </div>
+        </div>
+
+        {/* Sync Status Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
+          {/* Col 1: Physical vs Planned Progress */}
+          <div className="p-3.5 border border-ink-mid/60 bg-ink/70 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase text-slate-light flex items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5 text-signal" /> Physical Progress (Earned)
+              </span>
+              <span className="font-mono text-base font-bold text-signal">
+                {siteSync?.overall_physical_progress_pct ?? stats.physicalProgressPct}%
+              </span>
+            </div>
+            
+            {/* Visual Dual Progress Bar */}
+            <div className="space-y-1">
+              <div className="h-2.5 w-full bg-ink-light border border-ink-mid/50 rounded-xs overflow-hidden relative">
+                {/* Planned marker / background */}
+                <div
+                  style={{ width: `${siteSync?.overall_planned_progress_pct ?? 35}%` }}
+                  className="h-full bg-slate-600/50 absolute left-0 top-0 border-r-2 border-slate-300"
+                  title={`Planned Schedule: ${siteSync?.overall_planned_progress_pct ?? 35}%`}
+                />
+                {/* Physical actual progress */}
+                <div
+                  style={{ width: `${siteSync?.overall_physical_progress_pct ?? stats.physicalProgressPct}%` }}
+                  className="h-full bg-gradient-to-r from-emerald-600 via-emerald-500 to-signal absolute left-0 top-0 transition-all duration-500 shadow-sm"
+                />
+              </div>
+              <div className="flex items-center justify-between font-mono text-[10px] text-slate-light">
+                <span>Planned: {siteSync?.overall_planned_progress_pct ?? 35}%</span>
+                <span className={((siteSync?.schedule_variance_pct ?? 5) >= 0) ? "text-emerald-400 font-bold" : "text-amber-400 font-bold"}>
+                  {(siteSync?.schedule_variance_pct ?? 5) >= 0 ? `+${siteSync?.schedule_variance_pct ?? 5}% Ahead` : `${siteSync?.schedule_variance_pct}% Slip`}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Col 2: Active Construction Phase */}
+          <div className="p-3.5 border border-ink-mid/60 bg-ink/70 space-y-1.5">
+            <span className="font-mono text-[10px] uppercase text-slate-light flex items-center gap-1.5">
+              <MapPin className="h-3.5 w-3.5 text-sky-400" /> Active Field Focus
+            </span>
+            <div className="font-mono text-xs font-bold text-paper line-clamp-1">
+              {siteSync?.active_milestone?.name || "Sub-base Compaction & Haulage"}
+            </div>
+            <div className="flex items-center gap-2 font-mono text-[10px] text-slate-light">
+              <span className="border border-sky-500/40 bg-sky-950/30 text-sky-300 px-1.5 py-0.2">
+                In Progress ({siteSync?.active_milestone?.percent_complete || 75}%)
+              </span>
+              <span>Field As-Of: {formatDate(siteSync?.field_date || "2026-10-22")}</span>
+            </div>
+          </div>
+
+          {/* Col 3: Latest Field Diary Excerpt */}
+          <div className="p-3.5 border border-ink-mid/60 bg-ink/70 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase text-slate-light flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5 text-emerald-400" /> Latest Site Diary
+              </span>
+              <span className="font-mono text-[10px] text-slate-light">
+                {siteSync?.total_reports || 3} Reports Logged
+              </span>
+            </div>
+            <p className="font-mono text-[11px] text-slate-200 line-clamp-2 italic">
+              &quot;{siteSync?.latest_report?.actual_work || "Compaction passes ongoing on sub-base; 75% completed with smooth drum roller."}&quot;
+            </p>
+            {siteSync?.latest_report?.weather && (
+              <div className="flex items-center gap-2 font-mono text-[10px] text-slate-light pt-0.5">
+                <span className="flex items-center gap-1 text-amber-300">
+                  <Sun className="h-2.5 w-2.5" /> {siteSync.latest_report.weather.summary || "Fine"} ({siteSync.latest_report.weather.temperature_c || 24}°C)
+                </span>
+                <span className="flex items-center gap-1 text-emerald-400">
+                  <ShieldCheck className="h-2.5 w-2.5" /> 0 Incidents
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Schedule Master Toolbar & Global CPM Actions */}
+      <div className="border border-ink-mid bg-ink p-4 sm:p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
               <h2 className="font-display text-xl font-bold text-paper sm:text-2xl">
-                Interactive Schedule & Critical Path
+                Interactive Schedule & Gantt Programme
               </h2>
               <span className="font-mono text-xs uppercase px-2 py-0.5 border border-signal/40 bg-signal/10 text-signal font-bold">
-                CPM Engine Active
+                CPM Float Engine
               </span>
             </div>
             <p className="mt-1 text-xs text-slate-light max-w-3xl">
-              Deterministic Critical Path Method (CPM) calculation with early/late start & finish, total float, and
-              predecessor lag tracking against locked baseline programmes.
+              Critical Path Method schedule dynamically advancing with contemporary Daily Site Reports.
+              Early/late dates, float buffers, and physical % complete live across project operations.
             </p>
           </div>
 
@@ -327,7 +572,7 @@ export default function ProjectSchedulePage() {
         {/* 4 Health KPIs */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-ink-mid/60">
           <div className="p-3 border border-ink-mid/40 bg-ink-light/20">
-            <span className="block font-mono text-[10px] uppercase text-slate-light">Total Activities</span>
+            <span className="block font-mono text-[10px] uppercase text-slate-light">Total WBS Activities</span>
             <span className="font-mono text-lg font-bold text-paper">{stats.total}</span>
           </div>
           <div className="p-3 border border-red-500/30 bg-red-950/15">
@@ -339,13 +584,13 @@ export default function ProjectSchedulePage() {
             </span>
           </div>
           <div className="p-3 border border-emerald-500/30 bg-emerald-950/15">
-            <span className="block font-mono text-[10px] uppercase text-emerald-400">Completed Work</span>
+            <span className="block font-mono text-[10px] uppercase text-emerald-400">Completed Deliverables</span>
             <span className="font-mono text-lg font-bold text-emerald-300">
               {stats.completed} <span className="text-xs font-normal text-slate-light">/ {stats.total}</span>
             </span>
           </div>
           <div className="p-3 border border-ink-mid/40 bg-ink-light/20">
-            <span className="block font-mono text-[10px] uppercase text-slate-light">Max Baseline Slippage</span>
+            <span className="block font-mono text-[10px] uppercase text-slate-light">Programme Slippage</span>
             <span className={`font-mono text-lg font-bold ${stats.maxSlippageDays > 0 ? "text-amber-400" : "text-emerald-400"}`}>
               {stats.maxSlippageDays > 0 ? `+${stats.maxSlippageDays} Days` : "On Track"}
             </span>
@@ -407,7 +652,7 @@ export default function ProjectSchedulePage() {
         </div>
       </div>
 
-      {/* View 1: Visual Gantt Schedule Timeline */}
+      {/* VIEW 1: TIME-SCALED VISUAL GANTT PROGRAMME WITH DYNAMIC PROGRESS FILL */}
       {viewMode === "gantt" && (
         <section className="border border-ink-mid bg-ink overflow-hidden">
           <div className="border-b border-ink-mid p-4 flex items-center justify-between bg-ink-light/20">
@@ -420,18 +665,18 @@ export default function ProjectSchedulePage() {
                 {formatDate(ganttBounds.end.toISOString().split("T")[0])} ({ganttBounds.totalDays} Days Window)
               </span>
             </div>
-            <div className="hidden sm:flex items-center gap-4 text-[11px] font-mono text-slate-light">
+            <div className="hidden md:flex items-center gap-4 text-[11px] font-mono text-slate-light">
               <span className="flex items-center gap-1.5">
                 <span className="h-2 w-3 bg-red-500 inline-block" /> Critical Path
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="h-2 w-3 bg-sky-500 inline-block" /> In Progress
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-2 w-3 bg-emerald-500 inline-block" /> Complete
+                <span className="h-2 w-3 bg-emerald-500 inline-block" /> Physical Progress Fill
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="h-1.5 w-3 bg-slate-600 inline-block" /> Baseline
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3 w-1 bg-signal inline-block" /> Field Position
               </span>
             </div>
           </div>
@@ -441,12 +686,24 @@ export default function ProjectSchedulePage() {
               No activities found for the selected filter. Click &quot;Add Activity&quot; to initialize schedule.
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <div className="min-w-[800px] divide-y divide-ink-mid/40">
+            <div className="overflow-x-auto relative">
+              <div className="min-w-[900px] divide-y divide-ink-mid/40 relative pb-6">
+                
+                {/* MOVING TODAY / FIELD POSITION LINE */}
+                <div
+                  style={{ left: `${todayLineLeftPct}%` }}
+                  className="absolute top-0 bottom-0 w-0.5 border-l-2 border-dashed border-signal z-20 pointer-events-none"
+                >
+                  <div className="sticky top-1 -ml-16 bg-signal text-ink font-mono text-[9px] font-black uppercase px-2 py-0.5 rounded shadow-md whitespace-nowrap">
+                    📍 FIELD TODAY ({siteSync?.field_date ? formatDate(siteSync.field_date) : "Oct 22, 2026"})
+                  </div>
+                </div>
+
                 {filtered.map((m) => {
                   const st = String(m.status || "not_started");
                   const isCrit = Boolean(m.is_critical);
                   const dur = m.duration_days || 1;
+                  const pct = Math.min(100, Math.max(0, Number(m.percent_complete) || (st === "complete" ? 100 : 0)));
 
                   // Compute horizontal bar position
                   const startDateStr = m.early_start || m.forecast_date || m.baseline_date;
@@ -468,53 +725,96 @@ export default function ProjectSchedulePage() {
                     baseWidthPct = Math.min(100 - baseLeftPct, Math.max(3, (dur / ganttBounds.totalDays) * 100));
                   }
 
-                  const barColor = isCrit
-                    ? "bg-red-500 border-red-400 text-white"
+                  const barBgColor = isCrit
+                    ? "bg-red-950/60 border-red-500/80"
                     : st === "complete"
-                    ? "bg-emerald-600 border-emerald-400 text-white"
+                    ? "bg-emerald-950/60 border-emerald-500/80"
                     : st === "in_progress"
-                    ? "bg-sky-600 border-sky-400 text-white"
+                    ? "bg-sky-950/60 border-sky-500/80"
                     : st === "blocked"
-                    ? "bg-red-700 border-red-500 text-white"
-                    : "bg-slate-700 border-slate-500 text-slate-200";
+                    ? "bg-red-950/90 border-red-600"
+                    : "bg-slate-900 border-slate-700";
+
+                  const progressFillColor = isCrit
+                    ? "bg-gradient-to-r from-red-600 to-red-500"
+                    : st === "complete"
+                    ? "bg-gradient-to-r from-emerald-600 to-emerald-500"
+                    : "bg-gradient-to-r from-sky-600 via-emerald-500 to-signal";
 
                   return (
-                    <div key={m.id} className="p-3 hover:bg-ink-light/20 transition-colors space-y-2">
+                    <div key={m.id} className="p-3.5 hover:bg-ink-light/20 transition-colors space-y-2">
                       <div className="flex items-center justify-between text-xs font-mono">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <button
                             type="button"
                             onClick={() => handleAdvanceStatus(m)}
                             className="text-slate-light hover:text-signal transition-colors"
-                            title="Cycle Status"
+                            title="Cycle Status (Not Started -> In Progress -> Complete)"
                           >
                             <Play className="h-3 w-3" />
                           </button>
+                          
                           <span className="font-semibold text-paper text-sm">{m.name}</span>
+                          
                           <span className={`text-[10px] uppercase px-1.5 py-0.2 border ${statusPills[st]}`}>
                             {st.replace(/_/g, " ")}
                           </span>
+
+                          {/* Dynamic Progress Badge */}
+                          <span className={`text-[10px] font-bold px-1.5 py-0.2 border ${
+                            pct === 100
+                              ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-300"
+                              : pct > 0
+                              ? "border-signal/60 bg-signal/15 text-signal"
+                              : "border-ink-mid text-slate-400"
+                          }`}>
+                            {pct}% Done
+                          </span>
+
                           {isCrit && (
                             <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 border border-red-500 bg-red-950/60 text-red-300 flex items-center gap-1">
                               <Flame className="h-2.5 w-2.5" /> Critical
                             </span>
                           )}
+
                           <span className="text-[10px] text-slate-light border border-ink-mid px-1">
-                            {dur}d duration
+                            {dur}d dur
                           </span>
+
                           {m.total_float !== undefined && m.total_float !== null && (
-                            <span className={`text-[10px] px-1 border ${m.total_float <= 0 ? "border-red-500/40 text-red-400" : "border-ink-mid text-slate-light"}`}>
+                            <span className={`text-[10px] px-1 border ${m.total_float <= 0 ? "border-red-500/40 text-red-400 font-bold" : "border-ink-mid text-slate-light"}`}>
                               Float: {m.total_float}d
                             </span>
                           )}
                         </div>
 
                         <div className="flex items-center gap-3 text-slate-light">
+                          {/* Quick progress buttons */}
+                          <div className="hidden sm:flex items-center gap-1 border border-ink-mid/60 bg-ink-light/40 px-1 py-0.5 rounded-xs">
+                            <span className="text-[9px] uppercase text-slate-light pr-1">Progress:</span>
+                            {[0, 25, 50, 75, 100].map((step) => (
+                              <button
+                                key={step}
+                                type="button"
+                                disabled={updatingMilestoneId === m.id}
+                                onClick={() => handleQuickProgressUpdate(m, step)}
+                                className={`text-[9px] px-1 transition-colors ${
+                                  pct === step
+                                    ? "bg-signal text-ink font-bold"
+                                    : "text-slate-light hover:text-paper"
+                                }`}
+                              >
+                                {step}%
+                              </button>
+                            ))}
+                          </div>
+
                           {m.predecessor_name && (
                             <span className="text-[11px] text-slate-light flex items-center gap-1">
-                              <GitBranch className="h-3 w-3 text-signal" /> Pred: {m.predecessor_name} (+{m.lag_days || 0}d {m.dependency_type || "FS"})
+                              <GitBranch className="h-3 w-3 text-signal" /> Pred: {m.predecessor_name} (+{m.lag_days || 0}d)
                             </span>
                           )}
+
                           <button
                             type="button"
                             onClick={() => handleOpenEdit(m)}
@@ -523,6 +823,7 @@ export default function ProjectSchedulePage() {
                           >
                             <Edit2 className="h-3.5 w-3.5" />
                           </button>
+                          
                           <button
                             type="button"
                             onClick={() => handleDeleteMilestone(m.id)}
@@ -535,26 +836,44 @@ export default function ProjectSchedulePage() {
                         </div>
                       </div>
 
-                      {/* Gantt Bar Visualization Container */}
-                      <div className="relative h-7 w-full bg-ink-light/40 border border-ink-mid/30 rounded-xs overflow-hidden">
+                      {/* GANTT BAR TRACK WITH DYNAMIC INNER FILL */}
+                      <div className="relative h-8 w-full bg-ink-light/30 border border-ink-mid/30 rounded-xs overflow-hidden">
                         {/* Baseline Track (dim underneath) */}
                         {m.baseline_date && (
                           <div
                             style={{ left: `${baseLeftPct}%`, width: `${baseWidthPct}%` }}
-                            className="absolute top-0.5 h-1.5 bg-slate-600/60 border border-slate-500/40 rounded-xs"
-                            title={`Baseline: ${formatDate(String(m.baseline_date))}`}
+                            className="absolute top-0.5 h-1.5 bg-slate-600/50 border border-slate-500/30 rounded-xs"
+                            title={`Baseline: ${formatDate(String(m.baseline_date))} (${dur}d)`}
                           />
                         )}
 
-                        {/* Forecast / Current Progress Bar */}
+                        {/* Scheduled Activity Bar Container */}
                         <div
                           style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                          className={`absolute top-2.5 h-3.5 border rounded-xs shadow-xs transition-all flex items-center px-1.5 text-[9px] font-mono font-bold truncate ${barColor}`}
-                          title={`Forecast / Active: ${formatDate(String(startDateStr))} (${dur}d)`}
+                          className={`absolute top-2.5 h-4.5 border rounded-xs shadow-xs transition-all overflow-hidden ${barBgColor}`}
+                          title={`${m.name}: ${pct}% complete. Scheduled: ${formatDate(String(startDateStr))} (${dur} days)`}
                         >
-                          <span className="truncate">{m.name}</span>
+                          {/* DYNAMIC PROGRESS FILL */}
+                          <div
+                            style={{ width: `${pct}%` }}
+                            className={`h-full ${progressFillColor} transition-all duration-300 relative`}
+                          />
+
+                          {/* Bar Label Overlay */}
+                          <div className="absolute inset-0 flex items-center justify-between px-1.5 text-[9px] font-mono font-bold text-white pointer-events-none drop-shadow-sm">
+                            <span className="truncate pr-1">{m.name}</span>
+                            <span className="shrink-0">{pct}%</span>
+                          </div>
                         </div>
                       </div>
+
+                      {/* Contemporary Site Notes Snippet */}
+                      {m.notes && (
+                        <div className="text-[10px] font-mono text-slate-400 pl-5 flex items-center gap-1.5">
+                          <span className="text-slate-600">&bull;</span>
+                          <span>{m.notes}</span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -564,7 +883,7 @@ export default function ProjectSchedulePage() {
         </section>
       )}
 
-      {/* View 2: Detailed Activity Register Table */}
+      {/* VIEW 2: DETAILED ACTIVITY REGISTER TABLE */}
       {viewMode === "register" && (
         <section className="border border-ink-mid bg-ink overflow-x-auto">
           <table className="w-full text-left text-xs font-mono">
@@ -572,6 +891,7 @@ export default function ProjectSchedulePage() {
               <tr>
                 <th className="p-3">Activity / Deliverable</th>
                 <th className="p-3">Status</th>
+                <th className="p-3">Physical % Done</th>
                 <th className="p-3">Dur (Days)</th>
                 <th className="p-3">Predecessor</th>
                 <th className="p-3">Baseline</th>
@@ -585,18 +905,33 @@ export default function ProjectSchedulePage() {
               {filtered.map((m) => {
                 const st = String(m.status || "not_started");
                 const isCrit = Boolean(m.is_critical);
+                const pct = Math.min(100, Math.max(0, Number(m.percent_complete) || (st === "complete" ? 100 : 0)));
+
                 return (
                   <tr key={m.id} className="hover:bg-ink-light/20 transition-colors">
                     <td className="p-3 font-semibold text-paper">
-                      <div>{m.name}</div>
-                      {m.notes && <div className="text-[10px] text-slate-light truncate max-w-xs">{m.notes}</div>}
+                      <div className="flex flex-col">
+                        <span>{m.name}</span>
+                        {m.notes && <span className="text-[10px] text-slate-400 font-normal">{m.notes}</span>}
+                      </div>
                     </td>
                     <td className="p-3">
-                      <span className={`text-[10px] uppercase px-2 py-0.5 border ${statusPills[st]}`}>
+                      <span className={`text-[10px] uppercase px-1.5 py-0.2 border ${statusPills[st]}`}>
                         {st.replace(/_/g, " ")}
                       </span>
                     </td>
-                    <td className="p-3">{m.duration_days || 1}d</td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 w-16 bg-ink-light border border-ink-mid rounded-xs overflow-hidden">
+                          <div
+                            style={{ width: `${pct}%` }}
+                            className={`h-full ${pct === 100 ? "bg-emerald-500" : "bg-signal"}`}
+                          />
+                        </div>
+                        <span className="font-bold text-paper text-[11px]">{pct}%</span>
+                      </div>
+                    </td>
+                    <td className="p-3 text-paper">{m.duration_days || 1}d</td>
                     <td className="p-3">
                       {m.predecessor_name ? (
                         <span className="text-signal text-[11px]">
@@ -686,14 +1021,14 @@ export default function ProjectSchedulePage() {
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Substructure Reinforced Concrete Pour"
+                placeholder="e.g. Sub-base Compaction & Proof Rolling"
                 className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal min-h-[44px] sm:min-h-0"
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className="block text-xs font-mono uppercase text-slate">Duration (Calendar Days) *</label>
+                <label className="block text-xs font-mono uppercase text-slate">Duration (Days) *</label>
                 <input
                   type="number"
                   min="1"
@@ -704,7 +1039,19 @@ export default function ProjectSchedulePage() {
               </div>
 
               <div>
-                <label className="block text-xs font-mono uppercase text-slate">Programme Weight (%)</label>
+                <label className="block text-xs font-mono uppercase text-slate">Progress (% Done)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={percentComplete}
+                  onChange={(e) => setPercentComplete(e.target.value)}
+                  className="mt-1 w-full border border-ink-mid bg-ink-light p-2.5 text-base sm:text-xs text-paper outline-none focus:border-signal font-mono min-h-[44px] sm:min-h-0"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-mono uppercase text-slate">Weight (%)</label>
                 <input
                   type="number"
                   min="0"

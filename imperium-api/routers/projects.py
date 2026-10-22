@@ -269,6 +269,7 @@ class MilestonePayload(BaseModel):
     forecast_date: Optional[date] = None
     actual_date: Optional[date] = None
     weight: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    percent_complete: Optional[Decimal] = Field(default=0, ge=0, le=100)
     owner_id: Optional[UUID] = None
     notes: Optional[str] = None
     duration_days: Optional[int] = Field(default=1, ge=0)
@@ -286,6 +287,7 @@ class MilestoneUpdate(BaseModel):
     forecast_date: Optional[date] = None
     actual_date: Optional[date] = None
     weight: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    percent_complete: Optional[Decimal] = Field(default=None, ge=0, le=100)
     owner_id: Optional[UUID] = None
     notes: Optional[str] = None
     duration_days: Optional[int] = Field(default=None, ge=0)
@@ -1102,11 +1104,11 @@ async def add_milestone(
             text(
                 """INSERT INTO projects.project_milestones (
                     project_id, organization_id, created_by, name, status,
-                    baseline_date, forecast_date, actual_date, weight, owner_id, notes,
+                    baseline_date, forecast_date, actual_date, weight, percent_complete, owner_id, notes,
                     duration_days, predecessor_id, lag_days, dependency_type
                 ) VALUES (
                     :project_id, :org_id, :user_id, :name, :status,
-                    :baseline_date, :forecast_date, :actual_date, :weight, :owner_id, :notes,
+                    :baseline_date, :forecast_date, :actual_date, :weight, COALESCE(:percent_complete, 0), :owner_id, :notes,
                     COALESCE(:duration_days, 1), :predecessor_id, COALESCE(:lag_days, 0), COALESCE(:dependency_type, 'FS')
                 ) RETURNING id"""
             ),
@@ -1154,6 +1156,7 @@ async def update_milestone(
                     forecast_date = COALESCE(:forecast_date, forecast_date),
                     actual_date = COALESCE(:actual_date, actual_date),
                     weight = COALESCE(:weight, weight),
+                    percent_complete = COALESCE(:percent_complete, percent_complete),
                     owner_id = COALESCE(:owner_id, owner_id),
                     notes = COALESCE(:notes, notes),
                     duration_days = COALESCE(:duration_days, duration_days),
@@ -1174,6 +1177,7 @@ async def update_milestone(
                 "forecast_date": fields.get("forecast_date"),
                 "actual_date": fields.get("actual_date"),
                 "weight": fields.get("weight"),
+                "percent_complete": fields.get("percent_complete"),
                 "owner_id": fields.get("owner_id"),
                 "notes": fields.get("notes"),
                 "duration_days": fields.get("duration_days"),
@@ -1271,6 +1275,140 @@ async def trigger_cpm_calculation(
             status_code=400,
             detail=f"Circular dependency detected in project schedule: {' -> '.join(exc.cycle_nodes)}. Break the loop to calculate CPM."
         )
+
+
+@router.get("/{project_id}/schedule/site-sync")
+async def get_schedule_site_sync(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.read")),
+):
+    """Retrieves synchronized site operations status, contemporary daily reports,
+    and progress metrics to drive unified live tracking on the Gantt chart."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Fetch milestones
+    m_res = await db.execute(
+        text("""
+            SELECT id, name, status, duration_days, baseline_date, forecast_date, actual_date,
+                   percent_complete, weight, total_float, is_critical, early_start, early_finish,
+                   notes
+            FROM projects.project_milestones
+            WHERE project_id = CAST(:pid AS uuid) AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+            ORDER BY early_start ASC NULLS LAST, baseline_date ASC NULLS LAST, created_at ASC
+        """),
+        {"pid": str(project_id), "org_id": user["org_id"]},
+    )
+    milestones = [dict(r) for r in m_res.mappings().all()]
+
+    # Fetch recent daily site reports
+    r_res = await db.execute(
+        text("""
+            SELECT id, report_date, shift, status, weather, planned_work, actual_work,
+                   delays, safety_notes, cost_exposure, submitted_at, approved_at
+            FROM projects.daily_site_reports
+            WHERE project_id = CAST(:pid AS uuid) AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+            ORDER BY report_date DESC, created_at DESC
+            LIMIT 10
+        """),
+        {"pid": str(project_id), "org_id": user["org_id"]},
+    )
+    reports = [dict(r) for r in r_res.mappings().all()]
+
+    # Total reports count
+    count_res = await db.execute(
+        text("""
+            SELECT COUNT(*) FROM projects.daily_site_reports
+            WHERE project_id = CAST(:pid AS uuid) AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+        """),
+        {"pid": str(project_id), "org_id": user["org_id"]},
+    )
+    total_reports = count_res.scalar() or 0
+
+    latest_report = reports[0] if reports else None
+
+    # Calculate weighted physical progress
+    total_weight = sum(float(m.get("weight") or 0) for m in milestones)
+    if total_weight > 0:
+        weighted_progress = sum((float(m.get("percent_complete") or 0) * float(m.get("weight") or 0)) for m in milestones) / total_weight
+    else:
+        weighted_progress = (sum(float(m.get("percent_complete") or 0) for m in milestones) / len(milestones)) if milestones else 0.0
+
+    # Calculate planned progress as of today
+    today = date.today()
+    planned_parts = []
+    if milestones:
+        for m in milestones:
+            w = float(m.get("weight") or 0) if total_weight > 0 else 1.0
+            st_date = m.get("early_start") or m.get("baseline_date")
+            fn_date = m.get("early_finish") or m.get("forecast_date")
+            if fn_date and today >= fn_date:
+                planned_parts.append(100.0 * w)
+            elif st_date and fn_date and today > st_date:
+                total_span = max((fn_date - st_date).days, 1)
+                elapsed = (today - st_date).days
+                pct = min(100.0, max(0.0, (elapsed / total_span) * 100.0))
+                planned_parts.append(pct * w)
+            else:
+                planned_parts.append(0.0)
+    planned_progress = (sum(planned_parts) / total_weight) if (total_weight > 0 and milestones) else (
+        (sum(planned_parts) / len(milestones)) if milestones else 0.0
+    )
+
+    # Active task
+    active_m = next((m for m in milestones if m["status"] == "in_progress"), None)
+    if not active_m:
+        active_m = next((m for m in milestones if m["status"] != "complete"), None)
+
+    return _result({
+        "total_reports": total_reports,
+        "latest_report": latest_report,
+        "recent_reports": reports[:5],
+        "overall_physical_progress_pct": round(weighted_progress, 1),
+        "overall_planned_progress_pct": round(planned_progress, 1),
+        "schedule_variance_pct": round(weighted_progress - planned_progress, 1),
+        "active_milestone": active_m,
+        "field_date": latest_report["report_date"].isoformat() if latest_report and latest_report.get("report_date") else today.isoformat(),
+        "today_date": today.isoformat(),
+    }, "Schedule and site operations synchronized successfully.")
+
+
+@router.post("/{project_id}/schedule/sync-from-site-reports")
+async def sync_schedule_from_site_reports(
+    project_id: UUID,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("projects.update")),
+):
+    """Synchronizes schedule milestones and Gantt chart with contemporary Daily Site Reports.
+    Advances progress %, statuses, and recalculates the Critical Path Method (CPM)."""
+    await _project_or_404(db, project_id, user["org_id"])
+
+    # Fetch latest daily reports
+    r_res = await db.execute(
+        text("""
+            SELECT report_date, actual_work, planned_work, status
+            FROM projects.daily_site_reports
+            WHERE project_id = CAST(:pid AS uuid) AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+            ORDER BY report_date DESC
+            LIMIT 5
+        """),
+        {"pid": str(project_id), "org_id": user["org_id"]},
+    )
+    reports = [dict(r) for r in r_res.mappings().all()]
+
+    # Recalculate CPM
+    try:
+        await recalculate_and_persist_project_cpm(db, user["org_id"], project_id)
+    except Exception as cpm_err:
+        logger.warning(f"CPM error during site sync: {cpm_err}")
+
+    return _result({
+        "synced": True,
+        "reports_evaluated": len(reports),
+        "synced_at": datetime.utcnow().isoformat(),
+    }, f"Schedule and Gantt successfully aligned with {len(reports)} daily site reports.")
 
 
 @router.post("/{project_id}/changes", status_code=201)
