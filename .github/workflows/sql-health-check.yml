@@ -1,0 +1,46 @@
+name: SQL Health Check
+
+# Plans every SQL statement in imperium-api against the live database schema
+# without executing any of them (EXPLAIN only, READ ONLY transaction, rolled
+# back), and dumps the API's recent error log. Run it before/after a deploy:
+#   gh workflow run sql-health-check.yml -f ref=<branch-or-sha>
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit of imperium-api to check
+        required: false
+        default: main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Shares the deploy's group: both touch /opt/aegis's git state on the droplet.
+    concurrency:
+      group: deploy-backend
+      cancel-in-progress: false
+    steps:
+      - name: Plan all SQL and collect API errors
+        uses: appleboy/ssh-action@v1
+        env:
+          CHECK_REF: ${{ inputs.ref }}
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          envs: CHECK_REF
+          command_timeout: 15m
+          script: |
+            set -uo pipefail
+            COMPOSE="docker compose -f /opt/aegis/deploy/digitalocean/docker-compose.yml --env-file /opt/aegis/deploy/digitalocean/.env"
+            WORK=/tmp/aegis-sqlcheck
+            rm -rf "$WORK" && mkdir -p "$WORK"
+            git -C /opt/aegis fetch --quiet origin "$CHECK_REF"
+            git -C /opt/aegis archive FETCH_HEAD imperium-api | tar -x -C "$WORK"
+            echo "--- checking imperium-api at $(git -C /opt/aegis rev-parse --short FETCH_HEAD) ---"
+            $COMPOSE run --rm --no-deps -T -v "$WORK/imperium-api:/app" imperium-api python scripts/sql_explain_check.py
+            STATUS=$?
+            rm -rf "$WORK"
+            echo "--- imperium-api errors / 500s in the running container (last 24h) ---"
+            $COMPOSE logs --since=24h imperium-api 2>&1 | grep -iE "error|500 Internal|traceback|exception" | grep -viE "GET /health" | tail -300 || true
+            exit $STATUS

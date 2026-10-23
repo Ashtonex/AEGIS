@@ -148,6 +148,26 @@ function getTierTextColor(tier: number): string {
   }
 }
 
+// The API stores compliance as compliant / pending / non_compliant / exempt (a DB
+// CHECK constraint on procurement.suppliers enforces it); this page labels them in
+// title case, so convert at the load and save boundaries.
+const COMPLIANCE_LABELS: Record<string, string> = {
+  compliant: 'Compliant',
+  pending: 'Pending',
+  non_compliant: 'Non-Compliant',
+  exempt: 'Exempt',
+};
+
+function complianceLabel(status: string | null | undefined): string {
+  const key = String(status || 'pending').trim().toLowerCase().replace(/[s-]+/g, '_');
+  return COMPLIANCE_LABELS[key] ?? 'Pending';
+}
+
+function complianceValue(label: string): string {
+  const key = String(label || '').trim().toLowerCase().replace(/[s-]+/g, '_');
+  return key in COMPLIANCE_LABELS ? key : 'pending';
+}
+
 function getComplianceCls(status: string): string {
   if (status === 'Compliant')    return "text-green-400 border-green-500/30 bg-green-500/5";
   if (status === 'Pending')      return "text-yellow-400 border-yellow-500/30 bg-yellow-500/5";
@@ -296,7 +316,7 @@ export default function SubcontractorRegistry() {
       try {
         const response = await getSubcontractors();
         if (response.success && Array.isArray(response.data)) {
-          setSubs(response.data as Subcontractor[]);
+          setSubs((response.data as Subcontractor[]).map((s) => ({ ...s, compliance_status: complianceLabel(s.compliance_status) })));
         } else {
           setSubs([]);
         }
@@ -367,7 +387,7 @@ export default function SubcontractorRegistry() {
     try {
       const payload: Record<string, unknown> = {
         name: formData.name, capability_tags: formData.capability_tags,
-        compliance_status: formData.compliance_status,
+        compliance_status: complianceValue(formData.compliance_status),
         registration_number: formData.registration_number, tax_clearance_number: formData.tax_clearance_number,
         vat_status: formData.vat_status || null,
         vat_number: formData.vat_status === 'registered' ? formData.vat_number : null,

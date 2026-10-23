@@ -487,7 +487,7 @@ async def get_project_financial_detail(
                     )) AND sl.organization_id = :org_id
                 ), 0) AS store_inventory_value,
                 COALESCE((
-                    SELECT SUM(pol.total_price)
+                    SELECT SUM(pol.line_total)
                     FROM procurement.purchase_order_lines pol
                     JOIN procurement.purchase_orders po ON po.id = pol.po_id
                     WHERE po.project_id = :project_id AND po.organization_id = :org_id

@@ -383,6 +383,19 @@ class TenderCreate(CrmPayload):
         return _normalize_stage(value, TENDER_STAGE_ALIASES)
 
 
+SUBCONTRACTOR_COMPLIANCE_STATUSES = {"compliant", "non_compliant", "pending", "exempt"}
+
+
+def _normalize_compliance_status(value: Any) -> Any:
+    """Map UI labels like 'Non-Compliant' onto the values the DB CHECK allows."""
+    if value is None:
+        return None
+    key = "_".join(str(value).strip().lower().replace("-", " ").split())
+    if key not in SUBCONTRACTOR_COMPLIANCE_STATUSES:
+        raise ValueError(f"compliance_status must be one of {sorted(SUBCONTRACTOR_COMPLIANCE_STATUSES)}")
+    return key
+
+
 class SubcontractorCreate(CrmPayload):
     name: str = Field(..., min_length=1, max_length=255)
     capability_tags: Optional[List[str]] = None
@@ -414,6 +427,11 @@ class SubcontractorCreate(CrmPayload):
     # how Managed Accounts already gates this.
     issue_portal_login: bool = False
 
+    @field_validator("compliance_status", mode="before")
+    @classmethod
+    def normalize_compliance_status(cls, value: Any) -> Any:
+        return _normalize_compliance_status(value)
+
 
 class SubcontractorUpdate(CrmPayload):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
@@ -438,6 +456,11 @@ class SubcontractorUpdate(CrmPayload):
     accounts_contact_email: Optional[str] = Field(default=None, max_length=255)
     accounts_contact_phone: Optional[str] = Field(default=None, max_length=50)
     capability_matrix: Optional[List[Dict[str, Any]]] = None
+
+    @field_validator("compliance_status", mode="before")
+    @classmethod
+    def normalize_compliance_status(cls, value: Any) -> Any:
+        return _normalize_compliance_status(value)
 
 
 SUBCONTRACTOR_COLUMNS = (

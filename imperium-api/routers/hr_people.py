@@ -290,6 +290,7 @@ async def _dossier(db: AsyncSession, user: dict, employee_id, *, is_self: bool =
         for r in (
             await db.execute(
                 text("""
+                SELECT * FROM (
                 SELECT a.id, a.project_id, p.name AS project_name, p.project_code, a.role_on_project,
                        a.allocation_percent, a.starts_on, a.ends_on, a.status, a.compliance_status
                 FROM hr.project_allocations a
@@ -310,7 +311,8 @@ async def _dossier(db: AsyncSession, user: dict, employee_id, *, is_self: bool =
                       SELECT 1 FROM hr.project_allocations pa
                       WHERE pa.employee_id = :id AND pa.project_id = sra.project_id AND pa.is_deleted = false
                   )
-
+                ) assignments
+                -- Postgres rejects expressions in a UNION's own ORDER BY, so sort the wrapped result.
                 ORDER BY (status IN ('planned','active') AND (ends_on IS NULL OR ends_on >= CURRENT_DATE)) DESC, starts_on DESC
                 LIMIT 100
                 """),
