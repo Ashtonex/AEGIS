@@ -60,18 +60,11 @@ export function GenerateInvoiceModal({
   const [subject, setSubject] = useState(
     initialData?.subject || "40% deposit — Commercial Works & Execution"
   );
-  const [clientName, setClientName] = useState(
-    initialData?.clientName || "Gold Coast Properties (Pvt) Ltd"
-  );
-  const [clientAddress, setClientAddress] = useState(
-    initialData?.clientAddress ||
-      "Bally House, 870 Endeavor Crescent,\nMt Pleasant Business Park, Harare"
-  );
-  const [clientVat, setClientVat] = useState(initialData?.clientVat || "220207665");
-  const [clientTin, setClientTin] = useState(initialData?.clientTin || "2000039441");
-  const [quotationRef, setQuotationRef] = useState(
-    initialData?.quotationRef || "TCT-2026-014 Rev 1"
-  );
+  const [clientName, setClientName] = useState(initialData?.clientName || "");
+  const [clientAddress, setClientAddress] = useState(initialData?.clientAddress || "");
+  const [clientVat, setClientVat] = useState(initialData?.clientVat || "");
+  const [clientTin, setClientTin] = useState(initialData?.clientTin || "");
+  const [quotationRef, setQuotationRef] = useState(initialData?.quotationRef || "");
   const [clientPo, setClientPo] = useState(initialData?.clientPo || "—");
 
   const [depositPct, setDepositPct] = useState<number>(
@@ -85,23 +78,12 @@ export function GenerateInvoiceModal({
   const [items, setItems] = useState<InvoiceItem[]>(
     initialData?.items && initialData.items.length > 0
       ? initialData.items
-      : [
-          {
-            item_no: "1",
-            description: "Phase 1 — Canopy tour. Scope of works as per contract bill of quantities",
-            amount_excl_vat: 159108.90,
-          },
-          {
-            item_no: "2",
-            description: "Phase 2 — Main zipline. Scope of works as per contract bill of quantities",
-            amount_excl_vat: 32171.32,
-          },
-        ]
+      : [{ item_no: "1", description: "", amount_excl_vat: 0 }]
   );
 
   const [notes, setNotes] = useState<string[]>(
     initialData?.notes || [
-      `This proforma invoice covers the ${depositPct}% deposit on works set out in Quotation ${quotationRef}.`,
+      `This proforma invoice covers the ${depositPct}% deposit on works set out in ${quotationRef ? `Quotation ${quotationRef}` : "the agreed quotation"}.`,
       `Please quote ${invoiceNumber} as the reference on your payment.`,
       "A fiscal tax invoice will be issued on receipt of payment.",
       "Ordering of materials and mobilisation to site begin on receipt of the full deposit.",
@@ -175,9 +157,17 @@ export function GenerateInvoiceModal({
   };
 
   const handleDownload = async () => {
-    setGenerating(true);
     setErrorMsg(null);
     setSuccessMsg(null);
+    if (!clientName.trim()) {
+      setErrorMsg("Enter the client name before generating an official invoice.");
+      return;
+    }
+    if (!items.some((item) => Number(item.amount_excl_vat) > 0)) {
+      setErrorMsg("Add at least one line item with an amount greater than zero.");
+      return;
+    }
+    setGenerating(true);
 
     const payload = {
       invoice_type: invoiceType,

@@ -1,5 +1,5 @@
-import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 "use client";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 import React, { useState, useEffect } from "react";
 import {
@@ -348,14 +348,14 @@ export function ProgressPackModal({ projectId, onClose }: ProgressPackModalProps
           initialData={{
             invoiceType: "TAX INVOICE",
             subject: `Progress Claim — ${pack.project.name}`,
-            clientName: pack.project.client_name || "Client Principal",
+            clientName: pack.project.client_name || "",
             quotationRef: pack.project.code || "PRJ-SNC",
             depositPercentage: 0,
             items: [
               {
                 item_no: "1",
                 description: `Certified works executed for ${pack.project.name} (Progress claim)`,
-                amount_excl_vat: Number(pack.project.contract_value ? pack.project.contract_value * 0.2 : 25000),
+                amount_excl_vat: Number(pack.project.contract_value ? pack.project.contract_value * 0.2 : 0),
                 already_pro_rated: true,
               }
             ]

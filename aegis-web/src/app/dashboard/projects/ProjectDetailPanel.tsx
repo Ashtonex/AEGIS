@@ -1,5 +1,5 @@
-import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 "use client";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
@@ -607,14 +607,14 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
         initialData={{
           invoiceType: "PROFORMA INVOICE",
           subject: `40% deposit — ${String(project.name || "Commercial Project")}`,
-          clientName: String(project.client_name || "Gold Coast Properties (Pvt) Ltd"),
-          quotationRef: String(project.project_code || project.code || "TCT-2026-014"),
+          clientName: String(project.client_name || ""),
+          quotationRef: String(project.project_code || project.code || ""),
           depositPercentage: 40,
           items: [
             {
               item_no: "1",
               description: `Initial mobilisation & works deposit for ${String(project.name || "works")}`,
-              amount_excl_vat: Number(project.contract_value || 88371.46),
+              amount_excl_vat: Number(project.contract_value || 0),
             }
           ]
         }}

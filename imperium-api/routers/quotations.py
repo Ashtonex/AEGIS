@@ -3108,7 +3108,7 @@ async def link_quotation_to_project(
 
 
 
-from app.services.documents.invoice_renderer import SNCInvoicePDFRenderer
+from app.services.documents.invoice_renderer import invoice_pdf_response
 
 
 @router.post("/invoices/generate-pdf")
@@ -3119,16 +3119,4 @@ async def generate_quotation_invoice_pdf(
     """
     Generates an official SNC Proforma / Tax invoice from Quotation data.
     """
-    renderer = SNCInvoicePDFRenderer()
-    inv_no = str(payload.get("invoice_number") or payload.get("invoice_reference") or payload.get("quotation_id") or "USD211")
-    temp_dir = tempfile.gettempdir()
-    clean_inv_no = "".join(c for c in inv_no if c.isalnum() or c in "-_") or "quote_inv"
-    output_filename = f"SNC_Invoice_{clean_inv_no}.pdf"
-    output_path = os.path.join(temp_dir, output_filename)
-
-    renderer.render_invoice_pdf(payload, output_path)
-    return FileResponse(
-        path=output_path,
-        media_type="application/pdf",
-        filename=output_filename,
-    )
+    return await invoice_pdf_response(payload, "SNC_Invoice")

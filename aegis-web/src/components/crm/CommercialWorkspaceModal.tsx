@@ -1,5 +1,5 @@
-import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 "use client";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
@@ -2017,14 +2017,14 @@ export function CommercialWorkspaceModal({
         initialData={{
           invoiceType: "PROFORMA INVOICE",
           subject: `40% deposit — ${entity.name || "Commercial Opportunity"}`,
-          clientName: entity.client_name || entity.organization_name || "Gold Coast Properties (Pvt) Ltd",
-          quotationRef: entity.quote_id ? `QT-${String(entity.quote_id).slice(0, 8)}` : "TCT-2026-014",
+          clientName: entity.client_name || entity.organization_name || "",
+          quotationRef: entity.quote_id ? `QT-${String(entity.quote_id).slice(0, 8)}` : "",
           depositPercentage: 40,
           items: [
             {
               item_no: "1",
               description: `Scope of works and deliverables for ${entity.name || "Project"}`,
-              amount_excl_vat: Number(entity.deal_value || 50000),
+              amount_excl_vat: Number(entity.deal_value || 0),
             }
           ]
         }}

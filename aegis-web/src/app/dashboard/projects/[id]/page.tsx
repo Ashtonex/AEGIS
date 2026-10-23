@@ -443,7 +443,7 @@ export default function ProjectMissionControlPage() {
             invoiceType: "PROFORMA INVOICE",
             invoiceNumber: `USD${String(source?.project_code || "PRJ").replace(/[^0-9]/g, "").padStart(3, "1") || "212"}`,
             subject: `Contract Works & Mobilisation Deposit — ${String(source?.name || "Civil Works")}`,
-            clientName: String(source?.client_name || "Client Principal (Pvt) Ltd"),
+            clientName: String(source?.client_name || ""),
             quotationRef: String(source?.project_code || "QT-SNC-2026"),
             depositPercentage: 40,
             applyVat: true,
@@ -452,7 +452,7 @@ export default function ProjectMissionControlPage() {
               {
                 item_no: "1",
                 description: `Scope of works as per contract agreement: ${String(source?.name || "Civil Works & Surfacing")}`,
-                amount_excl_vat: contractValue > 0 ? contractValue : 18275.90,
+                amount_excl_vat: contractValue > 0 ? contractValue : 0,
               },
             ],
             notes: [

@@ -6119,7 +6119,7 @@ async def get_project_evm_analytics(
 
 
 from typing import Any, Dict
-from app.services.documents.invoice_renderer import SNCInvoicePDFRenderer
+from app.services.documents.invoice_renderer import invoice_pdf_response
 
 
 @router.post("/invoices/generate-pdf")
@@ -6130,16 +6130,4 @@ async def generate_project_invoice_pdf(
     """
     Generates an official SNC Proforma / Tax invoice for project billing, deposit, or claims.
     """
-    renderer = SNCInvoicePDFRenderer()
-    inv_no = str(payload.get("invoice_number") or payload.get("invoice_reference") or "USD211")
-    temp_dir = tempfile.gettempdir()
-    clean_inv_no = "".join(c for c in inv_no if c.isalnum() or c in "-_") or "proj_inv"
-    output_filename = f"SNC_Invoice_{clean_inv_no}.pdf"
-    output_path = os.path.join(temp_dir, output_filename)
-
-    renderer.render_invoice_pdf(payload, output_path)
-    return FileResponse(
-        path=output_path,
-        media_type="application/pdf",
-        filename=output_filename,
-    )
+    return await invoice_pdf_response(payload, "SNC_Invoice")

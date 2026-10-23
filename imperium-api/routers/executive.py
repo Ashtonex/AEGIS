@@ -2828,7 +2828,7 @@ async def get_executive_overview_bundle(
     eliminating the 6-request waterfall fan-out on initial dashboard mount."""
     kpis_res = await get_executive_kpis(user, db)
     stats_res = await get_executive_stats(user, db)
-    regions_res = await get_executive_regions(user, db)
+    regions_res = await get_regional_footprint(user, db)
     projects_res = await get_active_projects(user, db)
     health_res = await get_executive_data_health(user, db)
     exceptions_res = await get_executive_exceptions(user, db)

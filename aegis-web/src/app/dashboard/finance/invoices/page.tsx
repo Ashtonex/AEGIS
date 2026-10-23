@@ -133,7 +133,7 @@ export default function FinanceInvoicesPage() {
     notes: [
       "Tax invoice for plant hire and telematics-verified machine hours on site.",
       "Machine switch approved by Plant Manager and Executive under verified equipment logs.",
-      "Payment terms: strictly 7 days from invoice date to Stanbic Bank Zimbabwe.",
+      "Payment terms: strictly 7 days from invoice date.",
     ],
   };
 
@@ -159,8 +159,28 @@ export default function FinanceInvoicesPage() {
     }
   };
 
+  // The sample payloads use the API's snake_case keys; the builder modal takes camelCase props.
   const openBuilder = (initial?: any) => {
-    setModalData(initial || null);
+    setModalData(
+      initial
+        ? {
+            invoiceType: initial.invoice_type,
+            invoiceNumber: initial.invoice_number,
+            subject: initial.subject,
+            clientName: initial.client_name,
+            clientAddress: initial.client_address,
+            clientVat: initial.client_vat,
+            clientTin: initial.client_tin,
+            quotationRef: initial.quotation_ref,
+            clientPo: initial.client_po,
+            depositPercentage: initial.deposit_percentage,
+            applyVat: initial.apply_vat,
+            vatRate: initial.vat_rate,
+            items: initial.items,
+            notes: initial.notes,
+          }
+        : null
+    );
     setModalOpen(true);
   };
 
@@ -179,11 +199,11 @@ export default function FinanceInvoicesPage() {
               </span>
             </div>
             <h1 className="mt-2 font-display text-2xl sm:text-3xl font-bold text-paper">
-              Official Invoices &amp; Billing Deck
+              Official Invoices &amp; Billing Desk
             </h1>
             <p className="mt-1 text-xs sm:text-sm text-slate-light max-w-3xl">
               Produces verified, beautifully aligned Proforma &amp; Fiscal Tax Invoices featuring the official SNC watermark,
-              Stanbic Bank Zimbabwe escrow details, ZIMRA 15.5% tax calculations, and storytelling job narratives across Projects, CRM, Quotations, and Plant Hire.
+              Banc ABC settlement details, ZIMRA 15.5% tax calculations, and storytelling job narratives across Projects, CRM, Quotations, and Plant Hire.
             </p>
           </div>
 
@@ -414,9 +434,9 @@ export default function FinanceInvoicesPage() {
           </div>
           <div className="space-y-1">
             <span className="text-paper font-semibold block">Corporate Banking</span>
-            <p className="text-signal font-bold">Stanbic Bank Zimbabwe</p>
-            <p>Branch: Minerva Branch (Code 0207)</p>
-            <p>Account No: 9140005436665</p>
+            <p className="text-signal font-bold">Banc ABC</p>
+            <p>Branch: 117 (Southerton)</p>
+            <p>Account No: 54925046633016</p>
             <p>Currency: United States Dollars (USD)</p>
           </div>
           <div className="space-y-1">

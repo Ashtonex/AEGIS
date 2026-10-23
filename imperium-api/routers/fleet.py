@@ -1,7 +1,7 @@
 """Tenant-scoped fleet asset, dispatch, compliance and cost controls."""
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
 from typing import Any, Literal, Mapping, Optional
@@ -4350,7 +4350,7 @@ async def retire_asset(
     return result(None, "Fleet asset retired.")
 
 from typing import Any, Dict
-from app.services.documents.invoice_renderer import SNCInvoicePDFRenderer
+from app.services.documents.invoice_renderer import invoice_pdf_response
 
 
 @router.post("/invoices/generate-pdf")
@@ -4362,16 +4362,4 @@ async def generate_fleet_invoice_pdf(
     Renders official Six Nine Construction Plant & Equipment commercial invoice PDF
     with watermark, duty hours, standing hours, logistics breakdown, and storytelling notes.
     """
-    renderer = SNCInvoicePDFRenderer()
-    inv_no = str(payload.get("invoice_number") or payload.get("invoice_reference") or "USD211")
-    temp_dir = tempfile.gettempdir()
-    clean_inv_no = "".join(c for c in inv_no if c.isalnum() or c in "-_") or "fleet_inv"
-    output_filename = f"SNC_Plant_Invoice_{clean_inv_no}.pdf"
-    output_path = os.path.join(temp_dir, output_filename)
-
-    renderer.render_invoice_pdf(payload, output_path)
-    return FileResponse(
-        path=output_path,
-        media_type="application/pdf",
-        filename=output_filename,
-    )
+    return await invoice_pdf_response(payload, "SNC_Plant_Invoice")

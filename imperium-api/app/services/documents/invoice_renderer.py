@@ -11,10 +11,11 @@ Renders high-fidelity Six Nine Construction invoices matching the corporate stan
 - SNC Watermark on all pages
 """
 
+import io
 import os
 import math
 from decimal import Decimal
-from typing import Dict, Any, List, Optional
+from typing import BinaryIO, Dict, Any, List, Optional, Union
 from datetime import datetime
 
 from reportlab.lib.pagesizes import A4
@@ -127,7 +128,7 @@ class NumberedCanvas(canvas.Canvas):
         if self._pageNumber > 1:
             self.setFont("Helvetica", 7.5)
             self.setFillColor(colors.HexColor("#64748B"))
-            doc_ref = getattr(self, "invoice_ref", "USD211")
+            doc_ref = getattr(self, "invoice_ref", "DRAFT")
             client_name = getattr(self, "client_name", "Client")
             project_title = getattr(self, "project_title", "Project")
             header_text = f"Six Nine Construction (Pvt) Ltd · Invoice {doc_ref} · {client_name} · {project_title}    Page {self._pageNumber} of {total_pages}"
@@ -153,7 +154,7 @@ class NumberedCanvas(canvas.Canvas):
 class SNCInvoicePDFRenderer:
     """Renderer for Six Nine Construction Proforma and Tax Invoices."""
 
-    def render_invoice_pdf(self, data: Dict[str, Any], output_path: str) -> bool:
+    def render_invoice_pdf(self, data: Dict[str, Any], output_path: Union[str, BinaryIO]) -> bool:
         doc = SimpleDocTemplate(
             output_path,
             pagesize=A4,
@@ -317,7 +318,7 @@ class SNCInvoicePDFRenderer:
 
         # Extract payload values
         invoice_type = data.get("invoice_type", "PROFORMA INVOICE").upper()
-        invoice_number = data.get("invoice_number") or data.get("invoice_reference") or "USD211"
+        invoice_number = data.get("invoice_number") or data.get("invoice_reference") or "DRAFT"
         invoice_date_raw = data.get("invoice_date") or datetime.now().strftime("%d %B %Y")
         if isinstance(invoice_date_raw, str) and "-" in invoice_date_raw and len(invoice_date_raw) == 10:
             try:
@@ -326,12 +327,12 @@ class SNCInvoicePDFRenderer:
                 pass
 
         subject = data.get("subject") or data.get("title") or "Commercial Works & Services Deposit"
-        client_name = data.get("client_name") or data.get("customer_name") or "Gold Coast Properties (Pvt) Ltd"
-        client_address = data.get("client_address") or "Harare, Zimbabwe"
-        client_vat = data.get("client_vat") or data.get("vat_number") or "220207665"
-        client_tin = data.get("client_tin") or data.get("tin_number") or "2000039441"
+        client_name = data.get("client_name") or data.get("customer_name") or "—"
+        client_address = data.get("client_address") or "—"
+        client_vat = data.get("client_vat") or data.get("vat_number") or "—"
+        client_tin = data.get("client_tin") or data.get("tin_number") or "—"
 
-        quotation_ref = data.get("quotation_ref") or data.get("reference_number") or data.get("quotation_id") or "TCT-2026-014 Rev 1"
+        quotation_ref = data.get("quotation_ref") or data.get("reference_number") or data.get("quotation_id") or "—"
         client_po = data.get("client_po") or "—"
         currency = data.get("currency", "USD")
 
@@ -431,7 +432,10 @@ class SNCInvoicePDFRenderer:
         raw_items = data.get("items") or []
         if not raw_items:
             # Fallback single line item if none provided
-            subtotal_excl = float(data.get("subtotal") or data.get("amount") or data.get("gross_amount") or 10000.0)
+            subtotal_raw = data.get("subtotal") or data.get("amount") or data.get("gross_amount")
+            if subtotal_raw is None:
+                raise ValueError("invoice requires line items or a subtotal amount")
+            subtotal_excl = float(subtotal_raw)
             raw_items = [
                 {
                     "item_no": "1",
@@ -676,3 +680,41 @@ class SNCInvoicePDFRenderer:
 
         doc.build(story, canvasmaker=make_canvas)
         return True
+
+
+def render_invoice_pdf_bytes(data: Dict[str, Any]) -> bytes:
+    """Render an invoice in memory. Raises ValueError/TypeError on bad input."""
+    buffer = io.BytesIO()
+    SNCInvoicePDFRenderer().render_invoice_pdf(data, buffer)
+    return buffer.getvalue()
+
+
+def invoice_pdf_filename(data: Dict[str, Any], prefix: str = "SNC_Invoice") -> str:
+    inv_no = str(data.get("invoice_number") or data.get("invoice_reference") or data.get("quotation_id") or "")
+    clean = "".join(c for c in inv_no if c.isalnum() or c in "-_")[:64] or "draft"
+    return f"{prefix}_{clean}.pdf"
+
+
+async def invoice_pdf_response(data: Dict[str, Any], prefix: str = "SNC_Invoice"):
+    """Shared HTTP handler body for every ``/invoices/generate-pdf`` route.
+
+    Renders in memory (no shared temp files that concurrent requests could
+    clobber) and off the event loop, since ReportLab is CPU-bound.
+    """
+    from fastapi import HTTPException, status
+    from fastapi.concurrency import run_in_threadpool
+    from fastapi.responses import Response
+
+    items = data.get("items")
+    if items is not None and not isinstance(items, list):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invoice items must be a list.")
+    filename = invoice_pdf_filename(data, prefix)
+    try:
+        pdf = await run_in_threadpool(render_invoice_pdf_bytes, data)
+    except (TypeError, ValueError, KeyError, AttributeError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Invalid invoice data: {exc}") from exc
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
