@@ -73,3 +73,9 @@ jobs:
             docker image prune -f
             echo "--- disk usage after build ---"
             df -h /
+
+  # Plan every SQL statement against the live schema once the new release is up.
+  sql-health:
+    needs: deploy
+    uses: ./.github/workflows/sql-health-check.yml
+    secrets: inherit

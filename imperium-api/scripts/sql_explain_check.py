@@ -35,16 +35,43 @@ PARAM_ARTEFACT_STATES = {
     "2201W", "2201X",  # invalid LIMIT/OFFSET
     "42725",  # ambiguous function (NULL argument)
 }
+DYNAMIC_REAL_STATES = {"42703", "42883"}  # undefined column / undefined function
+
+
+def _filler(preceding: str) -> str | None:
+    """Stand-in for an interpolated f-string piece, chosen from the SQL before it."""
+    tail = preceding.rstrip().upper()
+    if tail.endswith(("WHERE", "AND", "OR", "ON", "HAVING", "(")):
+        return "TRUE"
+    if tail.endswith(("ORDER BY", "GROUP BY")):
+        return "1"
+    if tail.endswith(("SELECT", ",")):
+        return "NULL"
+    if tail.endswith(("SET", "FROM", "JOIN", "INTO", "UPDATE", "TABLE")):
+        return None  # interpolated identifiers/assignments: cannot be planned
+    return ""  # optional clause fragments ({where_sql}, {limit_sql}, ...)
 
 
 def _literal(node):
+    """Return (sql, dynamic) for a string literal, or (None, True) if unplannable."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+        return node.value, False
+    if isinstance(node, ast.JoinedStr):
+        out = ""
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                out += value.value
+                continue
+            filler = _filler(out)
+            if filler is None:
+                return None, True
+            out += f" {filler} "
+        return out, True
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _literal(node.left), _literal(node.right)
+        (left, dl), (right, dr) = _literal(node.left), _literal(node.right)
         if left is not None and right is not None:
-            return left + right
-    return None  # f-strings and runtime-built SQL are skipped
+            return left + right, dl or dr
+    return None, True
 
 
 def extract_statements():
@@ -58,12 +85,12 @@ def extract_statements():
             name = getattr(node.func, "id", getattr(node.func, "attr", None))
             if name != "text":
                 continue
-            sql = _literal(node.args[0])
+            sql, is_dynamic = _literal(node.args[0])
             if sql is None:
                 dynamic += 1
                 continue
             if re.search(r"\b(SELECT|INSERT|UPDATE|DELETE|WITH)\b", sql, re.I):
-                statements.append((str(path.relative_to(ROOT)).replace("\\", "/"), node.lineno, sql))
+                statements.append((str(path.relative_to(ROOT)).replace("\\", "/"), node.lineno, sql, is_dynamic))
     return statements, dynamic
 
 
@@ -75,38 +102,69 @@ def substitute_params(sql: str) -> str:
     return sql.strip().rstrip(";")
 
 
-async def main() -> int:
-    from sqlalchemy import text
+WORKERS = 6
 
-    from core.database import engine
 
-    statements, dynamic = extract_statements()
-    failures = []
-    async with engine.connect() as conn:
-        for file, line, raw in statements:
+async def _check_chunk(dsn: str, chunk, failures, progress) -> None:
+    """One READ ONLY transaction per connection; a savepoint per statement.
+
+    ``SAVEPOINT; EXPLAIN`` goes as one simple-protocol message (one round trip),
+    and the whole transaction is rolled back at the end.
+    """
+    import asyncpg
+
+    conn = await asyncpg.connect(dsn, statement_cache_size=0, command_timeout=30)
+    try:
+        await conn.execute("BEGIN READ ONLY")
+        for file, line, raw, is_dynamic in chunk:
             sql = substitute_params(raw)
-            if re.search(r"\bANALYZE\b", sql, re.I) or ";" in sql:
+            if re.search(r"ANALYZE", sql, re.I) or ";" in sql:
                 failures.append({"file": file, "line": line, "state": "SKIP", "error": "multi-statement or ANALYZE; not checked"})
                 continue
-            trans = await conn.begin()
             try:
-                await conn.exec_driver_sql("SET TRANSACTION READ ONLY")
-                await conn.execute(text("EXPLAIN " + sql))
-            except Exception as exc:  # noqa: BLE001 - we report every planner failure
-                orig = getattr(exc, "orig", exc)
-                state = getattr(orig, "sqlstate", None) or getattr(getattr(orig, "__cause__", None), "sqlstate", None) or "?"
-                message = str(orig).splitlines()[0][:300]
-                failures.append({"file": file, "line": line, "state": state, "error": message})
-            finally:
-                await trans.rollback()
-    await engine.dispose()
+                # Newlines keep a trailing "-- comment" in sql from eating the RELEASE.
+                await conn.execute("SAVEPOINT chk; EXPLAIN\n" + sql + "\n; RELEASE SAVEPOINT chk")
+            except asyncpg.PostgresError as exc:
+                failures.append({
+                    "file": file, "line": line, "state": exc.sqlstate or "?",
+                    "error": str(exc).splitlines()[0][:300], "dynamic": is_dynamic,
+                })
+                await conn.execute("ROLLBACK TO SAVEPOINT chk")
+            progress[0] += 1
+            if progress[0] % 250 == 0:
+                print(f"  ... {progress[0]} planned", flush=True)
+    finally:
+        try:
+            await conn.execute("ROLLBACK")
+        finally:
+            await conn.close()
 
-    real = [f for f in failures if f["state"] not in PARAM_ARTEFACT_STATES and f["state"] != "SKIP"]
+
+async def main() -> int:
+    from core.config import settings
+
+    # Same transaction-pooler endpoint the app uses (core/database.py).
+    dsn = settings.DATABASE_URL.replace(":5432/", ":6543/").replace("postgresql+asyncpg://", "postgresql://")
+    statements, dynamic = extract_statements()
+    print(f"Planning {len(statements)} statements on {WORKERS} connections ...", flush=True)
+    failures, progress = [], [0]
+    chunks = [statements[i::WORKERS] for i in range(WORKERS)]
+    await asyncio.gather(*(_check_chunk(dsn, chunk, failures, progress) for chunk in chunks))
+    failures.sort(key=lambda f: (f["file"], f["line"]))
+
+    # For f-string SQL only an unknown column/function is unambiguous; anything
+    # else may come from the stand-in text used for the interpolated pieces.
+    real = [
+        f for f in failures
+        if f["state"] not in PARAM_ARTEFACT_STATES and f["state"] != "SKIP"
+        and (not f.get("dynamic") or f["state"] in DYNAMIC_REAL_STATES)
+    ]
     artefacts = [f for f in failures if f not in real]
     if "--json" in sys.argv:
         print(json.dumps({"checked": len(statements), "dynamic_skipped": dynamic, "failures": real, "artefacts": artefacts}))
     else:
-        print(f"Checked {len(statements)} statements ({dynamic} dynamically built statements not checked).")
+        fstrings = sum(1 for stmt in statements if stmt[3])
+        print(f"Checked {len(statements)} statements, {fstrings} of them f-string SQL ({dynamic} more could not be planned statically).")
         print(f"FAILURES: {len(real)}")
         for f in real:
             print(f"  {f['file']}:{f['line']}  [{f['state']}]  {f['error']}")

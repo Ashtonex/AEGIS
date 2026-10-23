@@ -1080,7 +1080,7 @@ export async function markCrmOpportunityLost(opportunityId: string, payload: Rec
 }
 
 export async function executeCrmAutomations(payload: Record<string, unknown>): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-lifecycle/automations/execute', {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-automations/execute', {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,
