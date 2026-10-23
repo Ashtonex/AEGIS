@@ -5,6 +5,12 @@ name: SQL Health Check
 # back), and dumps the API's recent error log. Run it before/after a deploy:
 #   gh workflow run sql-health-check.yml -f ref=<branch-or-sha>
 on:
+  # After every backend push; queued behind the deploy (same concurrency
+  # group), so it checks the release that just went out.
+  push:
+    branches: [ "main" ]
+    paths:
+      - "imperium-api/**"
   workflow_dispatch:
     inputs:
       ref:
@@ -23,7 +29,7 @@ jobs:
       - name: Plan all SQL and collect API errors
         uses: appleboy/ssh-action@v1
         env:
-          CHECK_REF: ${{ inputs.ref }}
+          CHECK_REF: ${{ inputs.ref || github.sha }}
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
