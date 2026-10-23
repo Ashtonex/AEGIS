@@ -3108,13 +3108,14 @@ async def link_quotation_to_project(
 
 
 
-from app.services.documents.invoice_renderer import invoice_pdf_response
+from core.security import require_any_permission
+from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, invoice_pdf_response
 
 
 @router.post("/invoices/generate-pdf")
 async def generate_quotation_invoice_pdf(
     payload: Dict[str, Any],
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
 ):
     """
     Generates an official SNC Proforma / Tax invoice from Quotation data.

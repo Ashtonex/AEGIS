@@ -441,10 +441,9 @@ export default function ProjectMissionControlPage() {
           onClose={() => setIsInvoiceModalOpen(false)}
           initialData={{
             invoiceType: "PROFORMA INVOICE",
-            invoiceNumber: `USD${String(source?.project_code || "PRJ").replace(/[^0-9]/g, "").padStart(3, "1") || "212"}`,
             subject: `Contract Works & Mobilisation Deposit — ${String(source?.name || "Civil Works")}`,
             clientName: String(source?.client_name || ""),
-            quotationRef: String(source?.project_code || "QT-SNC-2026"),
+            quotationRef: String(source?.project_code || ""),
             depositPercentage: 40,
             applyVat: true,
             vatRate: 0.155,
@@ -457,7 +456,7 @@ export default function ProjectMissionControlPage() {
             ],
             notes: [
               `This proforma invoice covers the 40% advance deposit for ${String(source?.name || "the project")}.`,
-              `Please quote USD${String(source?.project_code || "PRJ").replace(/[^0-9]/g, "").padStart(3, "1") || "212"} as the payment reference.`,
+              "Please quote the invoice number as the payment reference.",
               "A fiscal tax invoice will be issued on receipt of payment.",
               "Mobilisation and plant allocation are active on site.",
             ],

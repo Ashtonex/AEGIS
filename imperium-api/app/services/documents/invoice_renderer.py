@@ -718,3 +718,38 @@ async def invoice_pdf_response(data: Dict[str, Any], prefix: str = "SNC_Invoice"
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# Roles holding any of these may issue official SNC invoices (Executive, Finance,
+# Project Manager, QS, Commercial, Fleet Supervisor, Equipment Manager, ...).
+INVOICE_ISSUER_PERMISSIONS = (
+    "finance.manage",
+    "finance.claim.create",
+    "fleet.hire.invoice",
+    "quotations.create",
+    "quotations.update",
+)
+
+# Numbers USD211 (the original Gold Coast proforma) and the USD212/USD213 sample
+# cards are already in circulation, so allocation starts above them.
+INVOICE_NUMBER_FLOOR = 214
+
+
+async def allocate_invoice_number(db, org_id: str) -> str:
+    """Atomically reserve the organisation's next ``USD<n>`` invoice number."""
+    from sqlalchemy import text
+
+    row = await db.execute(
+        text("""
+            INSERT INTO core.sequences (organization_id, sequence_name, last_value)
+            VALUES (:org_id, 'sales_invoice', :floor)
+            ON CONFLICT (organization_id, sequence_name)
+            DO UPDATE SET last_value = GREATEST(core.sequences.last_value + 1, :floor),
+                          updated_at = NOW()
+            RETURNING last_value
+        """),
+        {"org_id": org_id, "floor": INVOICE_NUMBER_FLOOR},
+    )
+    number = row.scalar_one()
+    await db.commit()
+    return f"USD{number}"

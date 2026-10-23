@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.services.documents.invoice_renderer import (
+    allocate_invoice_number,
     invoice_pdf_filename,
     invoice_pdf_response,
     render_invoice_pdf_bytes,
@@ -56,3 +57,56 @@ def test_filename_is_sanitised():
 def test_renders_without_optional_client_fields():
     pdf = render_invoice_pdf_bytes({"items": [{"description": "Works", "amount_excl_vat": 100}]})
     assert pdf.startswith(b"%PDF-")
+
+
+class _FakeResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one(self):
+        return self._value
+
+
+class _FakeDb:
+    """Mimics the ON CONFLICT upsert on core.sequences."""
+
+    def __init__(self, last_value=None):
+        self.last_value = last_value
+        self.commits = 0
+
+    async def execute(self, _stmt, params):
+        floor = params["floor"]
+        self.last_value = floor if self.last_value is None else max(self.last_value + 1, floor)
+        return _FakeResult(self.last_value)
+
+    async def commit(self):
+        self.commits += 1
+
+
+def test_invoice_numbers_start_above_numbers_in_circulation_and_increment():
+    db = _FakeDb()
+    assert asyncio.run(allocate_invoice_number(db, "org")) == "USD214"
+    assert asyncio.run(allocate_invoice_number(db, "org")) == "USD215"
+    assert db.commits == 2
+
+
+def test_invoice_number_floor_does_not_rewind_an_existing_counter():
+    db = _FakeDb(last_value=500)
+    assert asyncio.run(allocate_invoice_number(db, "org")) == "USD501"
+
+
+def test_every_invoice_route_requires_an_issuer_permission():
+    from fastapi.routing import APIRoute
+
+    from routers import documents, fleet, projects, quotations
+
+    routes = [
+        r
+        for module in (documents, fleet, projects, quotations)
+        for r in module.router.routes
+        if isinstance(r, APIRoute) and r.path.endswith(("/invoices/generate-pdf", "/invoices/next-number"))
+    ]
+    assert len(routes) == 5
+    for route in routes:
+        dep_names = {d.call.__qualname__ for d in route.dependant.dependencies}
+        assert any("require_any_permission" in n for n in dep_names), route.path

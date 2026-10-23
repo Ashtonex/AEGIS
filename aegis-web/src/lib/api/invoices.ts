@@ -22,3 +22,23 @@ export async function generateSNCInvoicePdf(payload: Record<string, unknown>, to
 
   return res.blob();
 }
+
+export async function reserveInvoiceNumber(token?: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(resolveApiUrl("/api/v1/documents/invoices/next-number"), {
+    method: "POST",
+    headers,
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Failed to reserve invoice number (${res.status}): ${errorText}`);
+  }
+
+  const body = await res.json();
+  return String(body?.data?.invoice_number);
+}

@@ -1074,14 +1074,27 @@ async def unlink_document_from_entity(
 
 
 from typing import Dict, Any
-from core.security import get_current_user
-from app.services.documents.invoice_renderer import invoice_pdf_response
+from core.security import require_any_permission
+from app.services.documents.invoice_renderer import (
+    INVOICE_ISSUER_PERMISSIONS,
+    allocate_invoice_number,
+    invoice_pdf_response,
+)
+
+
+@router.post("/invoices/next-number")
+async def reserve_invoice_number(
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reserve the next sequential SNC invoice number (e.g. ``USD214``)."""
+    return ok({"invoice_number": await allocate_invoice_number(db, user["org_id"])})
 
 
 @router.post("/invoices/generate-pdf")
 async def generate_invoice_pdf(
     payload: Dict[str, Any],
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
 ):
     """
     Renders official Six Nine Construction Proforma or Tax Invoice PDF

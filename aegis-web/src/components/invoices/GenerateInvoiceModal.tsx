@@ -13,7 +13,7 @@ import {
   AlertCircle,
   FileCheck,
 } from "lucide-react";
-import { generateSNCInvoicePdf } from "@/lib/api/invoices";
+import { generateSNCInvoicePdf, reserveInvoiceNumber } from "@/lib/api/invoices";
 import { useAuth } from "@/lib/auth/AuthContext";
 
 export interface InvoiceItem {
@@ -54,9 +54,8 @@ export function GenerateInvoiceModal({
   const [invoiceType, setInvoiceType] = useState<"PROFORMA INVOICE" | "TAX INVOICE">(
     initialData?.invoiceType || "PROFORMA INVOICE"
   );
-  const [invoiceNumber, setInvoiceNumber] = useState(
-    initialData?.invoiceNumber || `USD${Math.floor(100 + Math.random() * 900)}`
-  );
+  // Blank means "assign the next sequential USD number when downloading".
+  const [invoiceNumber, setInvoiceNumber] = useState(initialData?.invoiceNumber || "");
   const [subject, setSubject] = useState(
     initialData?.subject || "40% deposit — Commercial Works & Execution"
   );
@@ -84,7 +83,7 @@ export function GenerateInvoiceModal({
   const [notes, setNotes] = useState<string[]>(
     initialData?.notes || [
       `This proforma invoice covers the ${depositPct}% deposit on works set out in ${quotationRef ? `Quotation ${quotationRef}` : "the agreed quotation"}.`,
-      `Please quote ${invoiceNumber} as the reference on your payment.`,
+      "Please quote the invoice number as the reference on your payment.",
       "A fiscal tax invoice will be issued on receipt of payment.",
       "Ordering of materials and mobilisation to site begin on receipt of the full deposit.",
     ]
@@ -169,9 +168,21 @@ export function GenerateInvoiceModal({
     }
     setGenerating(true);
 
+    let number = invoiceNumber.trim();
+    if (!number) {
+      try {
+        number = await reserveInvoiceNumber(session?.access_token);
+        setInvoiceNumber(number);
+      } catch (err: any) {
+        setErrorMsg(err.message || "Failed to reserve an invoice number.");
+        setGenerating(false);
+        return;
+      }
+    }
+
     const payload = {
       invoice_type: invoiceType,
-      invoice_number: invoiceNumber,
+      invoice_number: number,
       subject,
       client_name: clientName,
       client_address: clientAddress,
@@ -192,7 +203,7 @@ export function GenerateInvoiceModal({
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `SNC_${invoiceType.replace(/\s+/g, "_")}_${invoiceNumber}.pdf`;
+      link.download = `SNC_${invoiceType.replace(/\s+/g, "_")}_${number}.pdf`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -271,8 +282,8 @@ export function GenerateInvoiceModal({
                 type="text"
                 value={invoiceNumber}
                 onChange={(e) => setInvoiceNumber(e.target.value)}
+                placeholder="Auto-assigned on download"
                 className="w-full border border-ink-mid bg-ink-light px-3 py-2 text-xs text-paper focus:border-signal outline-none font-mono"
-                required
               />
             </div>
             <div>

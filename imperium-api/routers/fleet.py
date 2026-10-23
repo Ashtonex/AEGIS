@@ -4350,13 +4350,14 @@ async def retire_asset(
     return result(None, "Fleet asset retired.")
 
 from typing import Any, Dict
-from app.services.documents.invoice_renderer import invoice_pdf_response
+from core.security import require_any_permission
+from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, invoice_pdf_response
 
 
 @router.post("/invoices/generate-pdf")
 async def generate_fleet_invoice_pdf(
     payload: Dict[str, Any],
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
 ):
     """
     Renders official Six Nine Construction Plant & Equipment commercial invoice PDF

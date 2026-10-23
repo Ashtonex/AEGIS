@@ -6119,13 +6119,13 @@ async def get_project_evm_analytics(
 
 
 from typing import Any, Dict
-from app.services.documents.invoice_renderer import invoice_pdf_response
+from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, invoice_pdf_response
 
 
 @router.post("/invoices/generate-pdf")
 async def generate_project_invoice_pdf(
     payload: Dict[str, Any],
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
 ):
     """
     Generates an official SNC Proforma / Tax invoice for project billing, deposit, or claims.
