@@ -105,39 +105,60 @@ def substitute_params(sql: str) -> str:
 WORKERS = 6
 
 
-async def _check_chunk(dsn: str, chunk, failures, progress) -> None:
-    """One READ ONLY transaction per connection; a savepoint per statement.
-
-    ``SAVEPOINT; EXPLAIN`` goes as one simple-protocol message (one round trip),
-    and the whole transaction is rolled back at the end.
-    """
+async def _open(dsn: str):
+    """A connection inside a READ ONLY transaction holding savepoint ``chk``."""
     import asyncpg
 
     conn = await asyncpg.connect(dsn, statement_cache_size=0, command_timeout=30)
+    await conn.execute("BEGIN READ ONLY")
+    await conn.execute("SAVEPOINT chk")
+    return conn
+
+
+async def _close(conn) -> None:
     try:
-        await conn.execute("BEGIN READ ONLY")
+        await conn.execute("ROLLBACK")
+    except Exception:  # noqa: BLE001 - connection may already be gone
+        pass
+    finally:
+        await conn.close()
+
+
+async def _check_chunk(dsn: str, chunk, failures, progress) -> None:
+    """Plan each statement with a lone EXPLAIN (one round trip).
+
+    A successful EXPLAIN changes nothing, so the single savepoint stays valid; a
+    failure aborts the transaction and ``ROLLBACK TO SAVEPOINT`` restores it
+    (keeping the savepoint for the next statement). Everything is rolled back
+    at the end. Statements are sent alone because a parse error rejects an
+    entire multi-statement message.
+    """
+    import asyncpg
+
+    conn = await _open(dsn)
+    try:
         for file, line, raw, is_dynamic in chunk:
             sql = substitute_params(raw)
-            if re.search(r"ANALYZE", sql, re.I) or ";" in sql:
+            if re.search(r"\bANALYZE\b", sql, re.I) or ";" in sql:
                 failures.append({"file": file, "line": line, "state": "SKIP", "error": "multi-statement or ANALYZE; not checked"})
                 continue
             try:
-                # Newlines keep a trailing "-- comment" in sql from eating the RELEASE.
-                await conn.execute("SAVEPOINT chk; EXPLAIN\n" + sql + "\n; RELEASE SAVEPOINT chk")
+                await conn.execute("EXPLAIN\n" + sql)
             except asyncpg.PostgresError as exc:
                 failures.append({
                     "file": file, "line": line, "state": exc.sqlstate or "?",
                     "error": str(exc).splitlines()[0][:300], "dynamic": is_dynamic,
                 })
-                await conn.execute("ROLLBACK TO SAVEPOINT chk")
+                try:
+                    await conn.execute("ROLLBACK TO SAVEPOINT chk")
+                except Exception:  # noqa: BLE001 - start over on a fresh connection
+                    await _close(conn)
+                    conn = await _open(dsn)
             progress[0] += 1
             if progress[0] % 250 == 0:
                 print(f"  ... {progress[0]} planned", flush=True)
     finally:
-        try:
-            await conn.execute("ROLLBACK")
-        finally:
-            await conn.close()
+        await _close(conn)
 
 
 async def main() -> int:

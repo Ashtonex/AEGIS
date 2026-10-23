@@ -950,7 +950,7 @@ async def emit_event(
     event_type: str,
     aggregate_type: str,
     aggregate_id: UUID,
-    project_id: Optional[UUID],
+    project_id: Optional[UUID] = None,
     event_payload: Mapping[str, Any],
 ) -> None:
     await db.execute(
@@ -3730,7 +3730,6 @@ async def dispatch_plant_asset(
         status="dispatched",
         origin_location=payload.origin_location,
         destination_location=destination_location,
-        transport_instructions=transport_instr,
         purpose=request["work_description"],
         odometer_out=payload.odometer_out,
     )
@@ -3798,6 +3797,7 @@ async def dispatch_plant_asset(
     """),
         {
             **payload.model_dump(),
+            "transport_instructions": transport_instr,
             "plant_request_id": plant_request_id,
             "assignment_id": assignment_id,
             "inspection_id": inspection_id,
