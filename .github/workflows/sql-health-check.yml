@@ -2,15 +2,15 @@ name: SQL Health Check
 
 # Plans every SQL statement in imperium-api against the live database schema
 # without executing any of them (EXPLAIN only, READ ONLY transaction, rolled
-# back), and dumps the API's recent error log. Run it before/after a deploy:
+# back), and dumps the API's recent error log. Runs after every backend push
+# to main; can also be run by hand once main is the repo's default branch:
 #   gh workflow run sql-health-check.yml -f ref=<branch-or-sha>
 on:
-  # After every backend push; queued behind the deploy (same concurrency
-  # group), so it checks the release that just went out.
   push:
     branches: [ "main" ]
     paths:
       - "imperium-api/**"
+      - ".github/workflows/sql-health-check.yml"
   workflow_dispatch:
     inputs:
       ref:
@@ -21,29 +21,40 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Shares the deploy's group: both touch /opt/aegis's git state on the droplet.
+    # Own group: sharing deploy-backend's would let a queued check replace
+    # (cancel) a pending deploy, since a group holds only one pending job.
     concurrency:
-      group: deploy-backend
+      group: sql-health-check
       cancel-in-progress: false
     steps:
-      - name: Plan all SQL and collect API errors
-        uses: appleboy/ssh-action@v1
-        env:
-          CHECK_REF: ${{ inputs.ref || github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          sparse-checkout: imperium-api
+      - name: Copy the code under test to the droplet
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
-          envs: CHECK_REF
-          command_timeout: 15m
+          source: imperium-api
+          target: /tmp/aegis-sqlcheck-${{ github.run_id }}
+      - name: Plan all SQL and collect API errors
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          command_timeout: 30m
           script: |
             set -uo pipefail
+            WORK=/tmp/aegis-sqlcheck-${{ github.run_id }}
             COMPOSE="docker compose -f /opt/aegis/deploy/digitalocean/docker-compose.yml --env-file /opt/aegis/deploy/digitalocean/.env"
-            WORK=/tmp/aegis-sqlcheck
-            rm -rf "$WORK" && mkdir -p "$WORK"
-            git -C /opt/aegis fetch --quiet origin "$CHECK_REF"
-            git -C /opt/aegis archive FETCH_HEAD imperium-api | tar -x -C "$WORK"
-            echo "--- checking imperium-api at $(git -C /opt/aegis rev-parse --short FETCH_HEAD) ---"
+            # Let an in-flight deploy (build / recreate / migrate) finish first.
+            for i in $(seq 1 120); do
+              pgrep -f "deploy/digitalocean/docker-compose.yml" >/dev/null || break
+              sleep 10
+            done
             $COMPOSE run --rm --no-deps -T -v "$WORK/imperium-api:/app" imperium-api python scripts/sql_explain_check.py
             STATUS=$?
             rm -rf "$WORK"
