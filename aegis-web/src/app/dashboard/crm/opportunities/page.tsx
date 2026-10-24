@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useState, useEffect, useMemo } from 'react';
+import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 
 import {
@@ -12,7 +12,10 @@ import {
 } from 'lucide-react';
 import {
   ApiError,
-  getCrmOpportunities,
+  getCrmOpportunityBoard,
+  type OpportunityBoardColumn,
+  type OpportunityBoardFilters,
+  type OpportunityBoardSummary,
   createCrmOpportunity,
   updateCrmOpportunity,
   deleteCrmOpportunity,
@@ -33,17 +36,23 @@ import {
 import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { matchesRole } from '@/lib/rbacMatch';
+import { matchesAnyRole } from '@/lib/rbacMatch';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
-import { EntityDocumentsPanel } from '@/components/documents/EntityDocumentsPanel';
-import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
+import { OpportunityDetailDrawer } from '@/components/crm/OpportunityDetailDrawer';
 
 // A deal that's already won (Contract) or lost is a decided deal - only
 // these roles can reopen/re-stage it (matches the backend's
 // crm.opportunities.override_stage permission grants).
 const PRIVILEGED_STAGE_OVERRIDE_ROLES = ['Executive (Admin)', 'Managing Director'];
 const LOCKED_BACKEND_STAGES = ['Contract', 'Lost'];
+// Cards per Kanban column per request (GET /crm/opportunities/board);
+// "Show more" fetches the next batch of one column.
+const BOARD_PAGE = 50;
+const BOARD_MAX_PER_COLUMN = 200;
 const CLOSED_FRONTEND_STAGES = ['Won', 'Lost'];
+const STAGE_LOG_MIN_LENGTH = 10;
+// Backend stages that creating a quote moves into Quotation (needs a log note).
+const PRE_QUOTATION_BACKEND_STAGES = ['Inquiry', 'Qualification', 'Site Visit'];
 
 // Stages definition requested by user
 const STAGES = [
@@ -155,8 +164,8 @@ interface ActivityLog {
 }
 
 export default function OpportunitiesKanban() {
-  const { role } = useAuth();
-  const canOverrideStage = role ? matchesRole(role, PRIVILEGED_STAGE_OVERRIDE_ROLES) : false;
+  const { roles } = useAuth();
+  const canOverrideStage = matchesAnyRole(roles, PRIVILEGED_STAGE_OVERRIDE_ROLES);
   const isOpportunityLocked = (opp: Opportunity) => LOCKED_BACKEND_STAGES.includes(opp.stage);
   const isOpenOpportunity = (opp: Opportunity) => {
     const frontendStage = BACKEND_TO_FRONTEND_STAGE[opp.stage] || 'Qualification';
@@ -185,6 +194,7 @@ export default function OpportunitiesKanban() {
     type: 'Follow-up',
     dueDate: tomorrowDateInputValue(),
     notes: '',
+    stageLog: '',
     dealValue: ''
   });
 
@@ -238,26 +248,13 @@ export default function OpportunitiesKanban() {
   // instead of a separate lazy fetch each time the Mark Won modal opened.
   const { departments } = useFinanceDepartments();
   const [departmentFilter, setDepartmentFilter] = useState('');
-
-  // Edit Drawer Form State
-  const [editForm, setEditForm] = useState<{
-    name: string;
-    stage: string;
-    budget: string;
-    probability: string;
-    expected_margin: string;
-    risk_level: string;
-    client_id: string;
-    client_org_id: string;
-    originating_department_id: string;
-    next_activity_due_at: string;
-  } | null>(null);
-
-  // New Note State
-  const [newNote, setNewNote] = useState({
-    type: 'Meeting',
-    notes: ''
-  });
+  // Server-side board: exact per-column counts/totals and the whole-pipeline
+  // summary, however many cards are loaded. `opportunities` holds the
+  // loaded cards of every column.
+  const [boardColumns, setBoardColumns] = useState<Record<string, OpportunityBoardColumn>>({});
+  const [boardSummary, setBoardSummary] = useState<OpportunityBoardSummary | null>(null);
+  const [loadingMoreColumn, setLoadingMoreColumn] = useState<string | null>(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   const loadFailureMessage = (reason: unknown) => {
     const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
@@ -270,7 +267,7 @@ export default function OpportunitiesKanban() {
     ) {
       return "The CRM feed is still synchronizing. Please retry once the connection is ready.";
     }
-    return "Error loading CRM opportunities data.";
+    return rawMessage.trim() ? rawMessage : "Error loading CRM opportunities data.";
   };
 
   const normalizeActionError = (reason: unknown, fallback: string) => {
@@ -284,20 +281,61 @@ export default function OpportunitiesKanban() {
     return rawMessage || fallback;
   };
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const openId = params.get('open') || params.get('id');
+      if (openId) {
+        setSelectedOpportunityId(openId);
+      }
+    }
+  }, []);
+
+  const boardFilters = useMemo<OpportunityBoardFilters>(() => ({
+    search: debouncedSearch || undefined,
+    min_budget: minBudget === '' ? undefined : minBudget,
+    value_range: valueRange === 'All' ? undefined : (valueRange as OpportunityBoardFilters['value_range']),
+    risk_level: selectedRisk === 'All' ? undefined : selectedRisk,
+    department_id: departmentFilter || undefined,
+  }), [debouncedSearch, minBudget, valueRange, selectedRisk, departmentFilter]);
+  // Read by loadData through a ref so its identity stays stable (it's also
+  // the live-update and post-action refresh); filter changes refetch just
+  // the board (effect below).
+  const boardFiltersRef = useRef(boardFilters);
+  boardFiltersRef.current = boardFilters;
+  // Reloads keep as many cards per column as the user has expanded to.
+  const boardPerColumnRef = useRef(BOARD_PAGE);
+
+  const applyBoard = useCallback((columns: OpportunityBoardColumn[], summary?: OpportunityBoardSummary) => {
+    setBoardColumns(Object.fromEntries(columns.map((column) => [column.key, column])));
+    setOpportunities(columns.flatMap((column) => column.cards));
+    if (summary) setBoardSummary(summary);
+  }, []);
+
+  const fetchBoard = useCallback(
+    () => getCrmOpportunityBoard(boardFiltersRef.current, { perColumn: boardPerColumnRef.current }),
+    [],
+  );
+
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
       const [oppsRes, contactsRes, activitiesRes, orgsRes] = await Promise.allSettled([
-        getCrmOpportunities(),
+        fetchBoard(),
         getCrmContacts(),
         getCrmActivities(),
         getCrmOrganizations()
       ]);
 
       const warnings: string[] = [];
-      if (oppsRes.status === "fulfilled" && oppsRes.value.success && Array.isArray(oppsRes.value.data)) {
-        setOpportunities(oppsRes.value.data);
+      if (oppsRes.status === "fulfilled" && oppsRes.value.success && Array.isArray(oppsRes.value.data?.columns)) {
+        applyBoard(oppsRes.value.data.columns, oppsRes.value.data.summary);
       } else {
         warnings.push("Opportunities could not be loaded.");
       }
@@ -326,11 +364,57 @@ export default function OpportunitiesKanban() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [applyBoard, fetchBoard]);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  // A filter change refetches only the board (not contacts/activities).
+  const filtersInitialised = useRef(false);
+  useEffect(() => {
+    if (!filtersInitialised.current) {
+      filtersInitialised.current = true;
+      return;
+    }
+    let cancelled = false;
+    void fetchBoard()
+      .then((res) => {
+        if (!cancelled && res.success && res.data) applyBoard(res.data.columns, res.data.summary);
+      })
+      .catch((error) => {
+        if (!cancelled) setLoadError(loadFailureMessage(error));
+      });
+    return () => { cancelled = true; };
+    // loadFailureMessage is a plain helper recreated each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardFilters, applyBoard, fetchBoard]);
+
+  const loadMoreColumn = async (stage: string) => {
+    const column = boardColumns[stage];
+    if (!column || !column.has_more) return;
+    const loaded = opportunities.filter((o) => (BACKEND_TO_FRONTEND_STAGE[o.stage] || 'Qualification') === stage).length;
+    setLoadingMoreColumn(stage);
+    try {
+      const res = await getCrmOpportunityBoard(boardFiltersRef.current, {
+        perColumn: BOARD_PAGE,
+        column: stage as OpportunityBoardColumn['key'],
+        offset: loaded,
+      });
+      const next = res.data?.columns?.[0];
+      if (!next) return;
+      setOpportunities((prev) => {
+        const seen = new Set(prev.map((o) => o.id));
+        return [...prev, ...next.cards.filter((card) => !seen.has(card.id))];
+      });
+      setBoardColumns((prev) => ({ ...prev, [stage]: { ...next, cards: [] } }));
+      boardPerColumnRef.current = Math.min(BOARD_MAX_PER_COLUMN, Math.max(boardPerColumnRef.current, loaded + next.cards.length));
+    } catch (error) {
+      setLoadError(loadFailureMessage(error));
+    } finally {
+      setLoadingMoreColumn(null);
+    }
+  };
 
   // loadData() already fetches opportunities/contacts/activities together,
   // so a change to any of the three just triggers the same refetch - safe
@@ -387,6 +471,7 @@ export default function OpportunitiesKanban() {
       type: targetFrontendStage === 'Proposal' ? 'Email' : targetFrontendStage === 'Negotiation' ? 'Meeting' : 'Follow-up',
       dueDate: opp.next_activity_due_at ? toDateInputValue(new Date(opp.next_activity_due_at)) : tomorrowDateInputValue(),
       notes: '',
+      stageLog: '',
       dealValue: opp.budget ? String(opp.budget) : ''
     });
     setStageMoveRequest({ oppId, currentFrontendStage, targetFrontendStage, source });
@@ -412,7 +497,10 @@ export default function OpportunitiesKanban() {
     try {
       const updatePayload: Record<string, unknown> = {
         stage: backendStage,
-        next_activity_due_at: dueDate
+        next_activity_due_at: dueDate,
+        // Mandatory activity-log note; the backend records it against the
+        // deal and marks the stage-being-left's open tasks complete with it.
+        stage_note: nextActionForm.stageLog.trim()
       };
       if (request.targetFrontendStage === 'Proposal' && Number(nextActionForm.dealValue) > 0) {
         updatePayload.budget = Number(nextActionForm.dealValue);
@@ -434,14 +522,9 @@ export default function OpportunitiesKanban() {
         status: 'Planned',
         priority: request.targetFrontendStage === 'Negotiation' ? 'high' : 'normal'
       });
-      await createCrmActivity({
-        type: 'System Log',
-        ...activityLogFields(`Stage moved from ${request.currentFrontendStage} to ${request.targetFrontendStage}; next action set for ${dueDate}`),
-        opportunity_id: request.oppId
-      });
 
       setStageMoveRequest(null);
-      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '', dealValue: '' });
+      setNextActionForm({ type: 'Follow-up', dueDate: tomorrowDateInputValue(), notes: '', stageLog: '', dealValue: '' });
       await loadData();
     } catch (err) {
       console.error('Failed to update stage:', err);
@@ -455,6 +538,7 @@ export default function OpportunitiesKanban() {
   const handleConfirmStageMove = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stageMoveRequest || !nextActionForm.dueDate) return;
+    if (nextActionForm.stageLog.trim().length < STAGE_LOG_MIN_LENGTH) return;
     if (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0)) return;
     await executeStageMove(stageMoveRequest);
   };
@@ -474,19 +558,31 @@ export default function OpportunitiesKanban() {
     openStageMoveGate(oppId, currentFrontendStage, targetStage, 'drag');
   };
 
-  // Quick fallback step mover
+  // Active pipeline step mover (Won and Lost are alternative terminal outcomes, not sequential steps)
   const handleStageMove = async (oppId: string, currentFrontendStage: string, direction: 'prev' | 'next') => {
     const opp = opportunities.find(o => o.id === oppId);
-    const currentIndex = STAGES.indexOf(currentFrontendStage);
+    if (!opp) return;
+
+    // Terminal closed stages cannot be stepped sequentially
+    if (CLOSED_FRONTEND_STAGES.includes(currentFrontendStage) || isOpportunityLocked(opp)) {
+      setSelectedOpportunityId(oppId);
+      return;
+    }
+
+    const ACTIVE_STAGES = ['Qualification', 'Proposal', 'Negotiation'];
+    const currentIndex = ACTIVE_STAGES.indexOf(currentFrontendStage);
     if (currentIndex === -1) return;
 
-    let nextIndex = currentIndex;
-    if (direction === 'prev' && currentIndex > 0) nextIndex--;
-    if (direction === 'next' && currentIndex < STAGES.length - 1) nextIndex++;
-
-    if (nextIndex === currentIndex) return;
-    const nextFrontendStage = STAGES[nextIndex];
-    openStageMoveGate(oppId, currentFrontendStage, nextFrontendStage, 'button');
+    if (direction === 'prev' && currentIndex > 0) {
+      openStageMoveGate(oppId, currentFrontendStage, ACTIVE_STAGES[currentIndex - 1], 'button');
+    } else if (direction === 'next') {
+      if (currentIndex < ACTIVE_STAGES.length - 1) {
+        openStageMoveGate(oppId, currentFrontendStage, ACTIVE_STAGES[currentIndex + 1], 'button');
+      } else {
+        // At Negotiation: terminal outcome must be explicitly decided via Won or Lost handoff
+        setSelectedOpportunityId(oppId);
+      }
+    }
   };
 
   const handleCreateDeal = async (e: React.FormEvent) => {
@@ -555,113 +651,6 @@ export default function OpportunitiesKanban() {
     } catch (err) {
       console.error('Failed to create opportunity:', err);
       setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleUpdateDealDetails = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedOpportunityId || !editForm) return;
-
-    if (selectedOpp) {
-      const currentFrontendStage = BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || 'Qualification';
-      if (editForm.stage !== currentFrontendStage) {
-        if (CLOSED_FRONTEND_STAGES.includes(editForm.stage)) {
-          alert("Use Mark won or Mark lost so AEGIS can run the proper commercial handoff.");
-          return;
-        }
-        if (!editForm.next_activity_due_at) {
-          alert("Set the next action due date before moving this open deal.");
-          return;
-        }
-      }
-    }
-
-    setIsSubmitting(true);
-    try {
-      const budgetVal = Number(editForm.budget) || 0;
-      const probVal = Number(editForm.probability) || 0;
-      const marginVal = Number(editForm.expected_margin) || 0;
-
-      const updatePayload = {
-        name: editForm.name,
-        stage: FRONTEND_TO_BACKEND_STAGE[editForm.stage] || 'Qualification',
-        budget: budgetVal,
-        probability: probVal,
-        expected_margin: marginVal,
-        risk_level: editForm.risk_level,
-        client_id: editForm.client_id || null,
-        client_org_id: editForm.client_org_id || null,
-        originating_department_id: editForm.originating_department_id || null,
-        next_activity_due_at: editForm.next_activity_due_at || null
-      };
-
-      const res = await updateCrmOpportunity(selectedOpportunityId, updatePayload);
-      if (res.success) {
-        await loadData();
-        try {
-          await createCrmActivity({
-            type: 'Update',
-            ...activityLogFields(`Updated deal parameters: Stage: ${editForm.stage}, Win Prob ${probVal}%, Est Margin ${marginVal}%, Risk: ${editForm.risk_level}`),
-            opportunity_id: selectedOpportunityId
-          });
-          const actRes = await getCrmActivities();
-          if (actRes.success && Array.isArray(actRes.data)) {
-            setActivities(actRes.data);
-          }
-        } catch (logErr) {
-          // The deal update already succeeded - a logging hiccup shouldn't surface as an error.
-          console.warn('Failed to log deal-update activity:', logErr);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to update opportunity details:', err);
-      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleAddNote = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedOpportunityId || !newNote.notes.trim()) return;
-
-    setIsSubmitting(true);
-    try {
-      const res = await createCrmActivity({
-        type: newNote.type,
-        ...activityLogFields(newNote.notes.trim()),
-        opportunity_id: selectedOpportunityId
-      });
-      if (res.success) {
-        setNewNote(prev => ({ ...prev, notes: '' }));
-        const actRes = await getCrmActivities();
-        if (actRes.success && Array.isArray(actRes.data)) {
-          setActivities(actRes.data);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to add note:', err);
-      setLoadError(normalizeActionError(err, "The opportunity board is still synchronizing. Please retry once the connection is ready."));
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleCreateQuotation = async () => {
-    if (!selectedOpportunityId || !selectedOpp) return;
-    setIsSubmitting(true);
-    try {
-      const response = await createCrmOpportunityQuotation(selectedOpportunityId, {
-        quote_amount: Number(selectedOpp.budget || selectedOpp.weighted_value || 0),
-        status: "sent"
-      });
-      if (!response?.data?.id) throw new Error("CRM quotation response did not include an id.");
-      await loadData();
-    } catch (error) {
-      console.warn("Quotation handoff failed", error);
-      alert("Quotation was not created. Check the CRM service connection and retry.");
     } finally {
       setIsSubmitting(false);
     }
@@ -833,37 +822,10 @@ export default function OpportunitiesKanban() {
     }
   };
 
-  // Filter application
-  const filteredOpportunities = opportunities.filter(opp => {
-    // Search filter
-    const searchLower = searchQuery.toLowerCase();
-    const nameMatch = opp.name.toLowerCase().includes(searchLower);
-    const clientMatch = opp.client_name?.toLowerCase().includes(searchLower) ||
-                       (opp.client_id ? (contacts.find(c => c.id === opp.client_id)?.contact_name.toLowerCase().includes(searchLower)) : false);
-    const matchesSearch = searchQuery === '' || nameMatch || clientMatch;
-
-    // Minimum budget filter
-    const oppBudget = Number(opp.budget) || 0;
-    const matchesMinBudget = minBudget === '' || oppBudget >= minBudget;
-
-    // Value Range filter
-    let matchesRange = true;
-    if (valueRange === 'Under 50k') {
-      matchesRange = oppBudget < 50000;
-    } else if (valueRange === '50k-250k') {
-      matchesRange = oppBudget >= 50000 && oppBudget <= 250000;
-    } else if (valueRange === 'Over 250k') {
-      matchesRange = oppBudget > 250000;
-    }
-
-    // Risk level filter
-    const matchesRisk = selectedRisk === 'All' || opp.risk_level === selectedRisk;
-
-    // Department filter
-    const matchesDepartment = !departmentFilter || opp.originating_department_id === departmentFilter;
-
-    return matchesSearch && matchesMinBudget && matchesRange && matchesRisk && matchesDepartment;
-  });
+  // Search, budget, value-range, risk and department filters are applied by
+  // the server (GET /crm/opportunities/board), so the loaded cards are
+  // already the filtered set and column counts cover every match.
+  const filteredOpportunities = opportunities;
 
   // Contacts list is a raw, unjoined SELECT with no uniqueness guard on the
   // backend - the "+ New Client Contact" quick-add historically produced
@@ -881,38 +843,12 @@ export default function OpportunitiesKanban() {
   }, [contacts]);
 
   const selectedOpp = opportunities.find(o => o.id === selectedOpportunityId);
-  const selectedOppActivities = activities.filter(a => a.opportunity_id === selectedOpportunityId);
-  const selectedOppContact = selectedOpp?.client_id
-    ? contacts.find(c => c.id === selectedOpp.client_id)
-    : null;
-  const selectedOppOrganization = selectedOpp?.client_org_id
-    ? organizations.find(o => o.id === selectedOpp.client_org_id)
-    : null;
 
-  // Initialize edit drawer form when drawer opens
-  useEffect(() => {
-    if (selectedOpp) {
-      setEditForm({
-        name: selectedOpp.name,
-        stage: BACKEND_TO_FRONTEND_STAGE[selectedOpp.stage] || 'Qualification',
-        budget: String(selectedOpp.budget || ''),
-        probability: String(selectedOpp.probability || ''),
-        expected_margin: String(selectedOpp.expected_margin || ''),
-        risk_level: selectedOpp.risk_level || 'Low',
-        client_id: selectedOpp.client_id || '',
-        client_org_id: selectedOpp.client_org_id || '',
-        originating_department_id: selectedOpp.originating_department_id || '',
-        next_activity_due_at: selectedOpp.next_activity_due_at ? toDateInputValue(new Date(selectedOpp.next_activity_due_at)) : ''
-      });
-    } else {
-      setEditForm(null);
-    }
-  }, [selectedOpp]);
-
-  const openOpportunities = opportunities.filter(isOpenOpportunity);
-  const missingNextActionCount = openOpportunities.filter(needsNextAction).length;
-  const overdueNextActionCount = openOpportunities.filter(hasOverdueNextAction).length;
-  const staleOpportunityCount = openOpportunities.filter(o => o.is_stale).length;
+  // Whole-pipeline figures from the server, exact however many cards are loaded.
+  const missingNextActionCount = boardSummary?.missing_next_action ?? 0;
+  const overdueNextActionCount = boardSummary?.overdue_next_action ?? 0;
+  const staleOpportunityCount = boardSummary?.stale ?? 0;
+  const moneyWhole = (value: number | undefined) => (value ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   if (isLoading && opportunities.length === 0) {
     return (
@@ -974,19 +910,19 @@ export default function OpportunitiesKanban() {
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-slate-light uppercase tracking-wider mb-1">Pipeline Total</span>
           <span className="font-mono text-lg font-bold text-paper tabular-nums">
-            ${opportunities.reduce((sum, o) => sum + (Number(o.budget) || 0), 0).toLocaleString()}
+            ${(boardSummary?.pipeline_total ?? 0).toLocaleString()}
           </span>
         </div>
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-[#3B82F6] uppercase tracking-wider mb-1">Weighted Value</span>
           <span className="font-mono text-lg font-bold text-[#3B82F6] tabular-nums">
-            ${opportunities.reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            ${moneyWhole(boardSummary?.weighted_total)}
           </span>
         </div>
         <div className="bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
           <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider mb-1">Average Margin</span>
           <span className="font-mono text-lg font-bold text-[#D4AF37] tabular-nums">
-            {(opportunities.reduce((sum, o) => sum + (Number(o.expected_margin) || 0), 0) / (opportunities.filter(o => o.expected_margin).length || 1)).toFixed(1)}%
+            {(boardSummary?.average_margin ?? 0).toFixed(1)}%
           </span>
         </div>
         <div className={`border p-3 rounded-sm ${missingNextActionCount > 0 ? 'bg-amber-950/20 border-amber-500/25' : 'bg-[#0A0A0A] border-white/5'}`}>
@@ -1021,21 +957,21 @@ export default function OpportunitiesKanban() {
             <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
               <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">High Risk Weighted Exposure</h4>
               <span className="text-xl font-mono text-rose-400 font-bold block">
-                ${opportunities.filter(o => o.risk_level === 'High').reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${moneyWhole(boardSummary?.weighted_high_risk)}
               </span>
               <p className="text-[9px] text-slate mt-1 italic">High risk pipelines require stricter milestone clearance reviews.</p>
             </div>
             <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
               <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">Medium Risk Forecast</h4>
               <span className="text-xl font-mono text-amber-400 font-bold block">
-                ${opportunities.filter(o => o.risk_level === 'Medium' || !o.risk_level).reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${moneyWhole(boardSummary?.weighted_medium_risk)}
               </span>
               <p className="text-[9px] text-slate mt-1 italic">Balanced deals currently in negotiation or quotation phase.</p>
             </div>
             <div className="bg-black/40 border border-white/5 p-4 rounded-sm">
               <h4 className="text-[10px] font-mono text-slate uppercase tracking-wider mb-2">Low Risk Secure Pipeline</h4>
               <span className="text-xl font-mono text-emerald-400 font-bold block">
-                ${opportunities.filter(o => o.risk_level === 'Low').reduce((sum, o) => sum + ((Number(o.budget) || 0) * (Number(o.probability) || 0) / 100), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                ${moneyWhole(boardSummary?.weighted_low_risk)}
               </span>
               <p className="text-[9px] text-slate mt-1 italic">Highly probable closures aligned with secure public tenders.</p>
             </div>
@@ -1143,7 +1079,10 @@ export default function OpportunitiesKanban() {
             const displayStage = BACKEND_TO_FRONTEND_STAGE[o.stage] || 'Qualification';
             return displayStage === stage;
           });
-          const stageSum = stageOpps.reduce((sum, o) => sum + (Number(o.budget) || 0), 0);
+          const boardColumn = boardColumns[stage];
+          // Exact for the whole (filtered) column, not just the loaded cards.
+          const stageSum = boardColumn?.total_budget ?? stageOpps.reduce((sum, o) => sum + (Number(o.budget) || 0), 0);
+          const stageCount = boardColumn?.count ?? stageOpps.length;
 
           return (
             <div
@@ -1166,7 +1105,7 @@ export default function OpportunitiesKanban() {
                     ${stageSum.toLocaleString()}
                   </span>
                 </div>
-                <span className="font-mono text-[10px] text-slate bg-white/5 px-2 py-0.5 rounded-full">{stageOpps.length}</span>
+                <span className="font-mono text-[10px] text-slate bg-white/5 px-2 py-0.5 rounded-full" title={stageCount > stageOpps.length ? `${stageOpps.length} of ${stageCount} loaded` : undefined}>{stageCount}</span>
               </div>
 
               {/* Cards Container */}
@@ -1226,8 +1165,15 @@ export default function OpportunitiesKanban() {
                           ${(Number(opp.budget) || 0).toLocaleString()}
                         </span>
 
-                        {/* Quick stage move control buttons */}
+                        {/* Quick stage move control buttons and delete button */}
                         <div className="flex items-center space-x-1" onClick={e => e.stopPropagation()}>
+                          <button
+                            title="Delete Deal"
+                            onClick={() => handleDeleteOpportunity(opp)}
+                            className="w-5 h-5 bg-white/5 border border-white/5 hover:bg-red-500/20 hover:border-red-500/40 hover:text-red-400 rounded-sm flex items-center justify-center transition-all text-slate-light"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                           <button
                             disabled={STAGES.indexOf(stage) === 0 || !canMoveStage}
                             onClick={() => handleStageMove(opp.id, stage, 'prev')}
@@ -1252,6 +1198,18 @@ export default function OpportunitiesKanban() {
                   <div className="h-28 border border-dashed border-white/5 rounded-sm flex flex-col items-center justify-center opacity-40">
                     <span className="font-mono text-[9px] text-slate uppercase">Drop deal here</span>
                   </div>
+                )}
+
+                {boardColumn?.has_more && stageCount > stageOpps.length && (
+                  <button
+                    type="button"
+                    onClick={() => void loadMoreColumn(stage)}
+                    disabled={loadingMoreColumn === stage}
+                    className="w-full border border-white/10 rounded-sm py-2 font-mono text-[10px] uppercase tracking-wider text-slate hover:text-paper hover:border-[#D4AF37]/40 disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {loadingMoreColumn === stage && <Loader2 className="w-3 h-3 animate-spin" />}
+                    Show more ({(stageCount - stageOpps.length).toLocaleString()} not shown)
+                  </button>
                 )}
               </div>
             </div>
@@ -1288,9 +1246,27 @@ export default function OpportunitiesKanban() {
                 </div>
               </div>
 
+              <div className="space-y-1">
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">
+                  Activity log - what happened in {stageMoveRequest.currentFrontendStage} and why it is moving (required)
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  minLength={STAGE_LOG_MIN_LENGTH}
+                  value={nextActionForm.stageLog}
+                  onChange={e => setNextActionForm({ ...nextActionForm, stageLog: e.target.value })}
+                  className="w-full bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all resize-none placeholder:text-slate"
+                  placeholder="e.g. Site visit done with the client's engineer on Tuesday; measurements taken, scope confirmed - ready to price."
+                />
+                <p className="font-mono text-[9px] text-slate-light">
+                  Saved to the deal&apos;s activity log. Open tasks from {stageMoveRequest.currentFrontendStage} are marked complete when the new stage&apos;s tasks come in.
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Type</label>
+                  <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Next Action Type</label>
                   <select
                     value={nextActionForm.type}
                     onChange={e => setNextActionForm({ ...nextActionForm, type: e.target.value })}
@@ -1335,7 +1311,7 @@ export default function OpportunitiesKanban() {
               )}
 
               <div className="space-y-1">
-                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Action Notes</label>
+                <label className="block font-mono text-[9px] text-slate-light uppercase tracking-wider">Next Action Notes</label>
                 <textarea
                   rows={3}
                   value={nextActionForm.notes}
@@ -1355,7 +1331,7 @@ export default function OpportunitiesKanban() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || !nextActionForm.dueDate || (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0))}
+                  disabled={isSubmitting || !nextActionForm.dueDate || nextActionForm.stageLog.trim().length < STAGE_LOG_MIN_LENGTH || (stageMoveRequest.targetFrontendStage === 'Proposal' && !(Number(nextActionForm.dealValue) > 0))}
                   className="px-5 py-2 bg-[#D4AF37] text-black font-bold font-mono text-[10px] rounded-sm hover:bg-[#D4AF37]/90 disabled:opacity-50 transition-all uppercase"
                 >
                   {isSubmitting ? 'Saving...' : 'Move deal'}
@@ -1565,401 +1541,20 @@ export default function OpportunitiesKanban() {
         </div>
       )}
 
-      {/* DETAILED SLIDE-OUT SIDE DRAWER */}
-      <div className={`fixed inset-y-0 right-0 z-40 w-full max-w-lg bg-[#0A0A0A] border-l border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.9)] transform transition-transform duration-300 ease-out flex flex-col ${
-        selectedOpportunityId ? 'translate-x-0' : 'translate-x-full'
-      }`}>
-        {selectedOpp ? (
-          <>
-            {/* Drawer Header */}
-            <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.01]">
-              <div className="flex items-center space-x-2.5">
-                <div className={`w-2.5 h-2.5 rounded-full ${
-                  selectedOpp.risk_level === 'High' ? 'bg-red-500' :
-                  selectedOpp.risk_level === 'Medium' ? 'bg-[#D4AF37]' : 'bg-[#3B82F6]'
-                }`} />
-                <div>
-                  <span className="font-mono text-[8px] text-slate-light uppercase tracking-wider block">OPPORTUNITY CONSOLE</span>
-                  <h2 className="font-sans font-bold text-sm text-paper uppercase truncate max-w-[280px]">{selectedOpp.name}</h2>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedOpportunityId(null)}
-                className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Drawer Body - Split into edit form and activity log */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
-              <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Quote & Project Handoff</span>
-                  <div className="flex items-center gap-1.5">
-                    {selectedOpp.is_stale && (
-                      <span className="font-mono text-[8px] uppercase text-amber-300 border border-amber-500/30 px-1.5 py-0.5">Stale deal</span>
-                    )}
-                    {needsNextAction(selectedOpp) && (
-                      <span className="font-mono text-[8px] uppercase text-amber-200 border border-amber-400/30 px-1.5 py-0.5">No next action</span>
-                    )}
-                    {hasOverdueNextAction(selectedOpp) && (
-                      <span className="font-mono text-[8px] uppercase text-red-200 border border-red-400/30 px-1.5 py-0.5">Overdue</span>
-                    )}
-                    {isOpportunityLocked(selectedOpp) && (
-                      <span className="font-mono text-[8px] uppercase text-slate-light border border-white/10 px-1.5 py-0.5 flex items-center gap-1">
-                        <Lock className="w-2.5 h-2.5" /> {selectedOpp.stage === 'Contract' ? 'Won' : 'Lost'} - locked
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-light">
-                  <div className="bg-black/40 border border-white/5 p-2">
-                    <div className="uppercase">Quote status</div>
-                    <div className="mt-1 text-paper">{selectedOpp.quote_status || (selectedOpp.quote_id ? "linked" : "not created")}</div>
-                  </div>
-                  <div className="bg-black/40 border border-white/5 p-2">
-                    <div className="uppercase">Project handoff</div>
-                    <div className="mt-1 text-paper">{selectedOpp.project_name || (selectedOpp.project_id ? "linked" : "pending")}</div>
-                  </div>
-                  <div className="bg-black/40 border border-white/5 p-2">
-                    <div className="uppercase">Weighted forecast</div>
-                    <div className="mt-1 text-[#D4AF37]">{formatCurrency(selectedOpp.weighted_value || 0)}</div>
-                  </div>
-                  <div className="bg-black/40 border border-white/5 p-2">
-                    <div className="uppercase">Approval</div>
-                    <div className="mt-1 text-paper">{selectedOpp.approval_status || "not_required"}</div>
-                  </div>
-                  <div className="bg-black/40 border border-white/5 p-2 col-span-2">
-                    <div className="uppercase">Next required action</div>
-                    <div className={`mt-1 ${hasOverdueNextAction(selectedOpp) || needsNextAction(selectedOpp) ? 'text-amber-200' : 'text-paper'}`}>
-                      {selectedOpp.next_activity_due_at ? new Date(selectedOpp.next_activity_due_at).toLocaleDateString() : "not scheduled"}
-                    </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={handleCreateQuotation}
-                    disabled={isSubmitting}
-                    className="px-2 py-2 bg-white/5 hover:bg-white/10 border border-white/10 font-mono text-[9px] uppercase text-paper disabled:opacity-40"
-                  >
-                    Create quote
-                  </button>
-                  {(!isOpportunityLocked(selectedOpp) || canOverrideStage) && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={handleMarkWon}
-                        disabled={isSubmitting}
-                        className="px-2 py-2 bg-[#D4AF37] hover:bg-[#D4AF37]/90 font-mono text-[9px] font-bold uppercase text-black disabled:opacity-40"
-                      >
-                        Mark won
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleMarkLost}
-                        disabled={isSubmitting}
-                        className="px-2 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 font-mono text-[9px] uppercase text-red-200 disabled:opacity-40"
-                      >
-                        Mark lost
-                      </button>
-                    </>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
-                  <button
-                    type="button"
-                    onClick={() => handleCheckDuplicateOpportunities(selectedOpp)}
-                    disabled={isDuplicateChecking}
-                    className="px-2 py-2 bg-white/5 hover:bg-white/10 border border-white/10 font-mono text-[9px] uppercase text-paper disabled:opacity-40 flex items-center justify-center gap-1.5"
-                  >
-                    <Copy className="w-3 h-3" /> Find duplicates
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteOpportunity(selectedOpp)}
-                    disabled={isSubmitting}
-                    className="px-2 py-2 bg-red-950/40 hover:bg-red-900/40 border border-red-900/40 font-mono text-[9px] uppercase text-rose-400 disabled:opacity-40 flex items-center justify-center gap-1.5"
-                  >
-                    <Trash2 className="w-3 h-3" /> Delete deal
-                  </button>
-                </div>
-              </section>
-
-              {/* DOCUMENTS */}
-              <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
-                <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Documents</span>
-                <EntityDocumentsPanel entityType="opportunity" entityId={selectedOpp.id} />
-              </section>
-
-              {/* ASSIGNMENT */}
-              <section className="space-y-3 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
-                <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Assigned To</span>
-                <AssignmentPanel entityType="opportunity" entityId={selectedOpp.id} />
-              </section>
-
-              {/* EDIT FORM BLOCK */}
-              {editForm && (
-                <form onSubmit={handleUpdateDealDetails} className="space-y-4 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Deal Parameters</span>
-                    <button
-                      type="submit"
-                      disabled={isSubmitting}
-                      className="flex items-center space-x-1 text-[9px] font-mono bg-white/5 hover:bg-[#D4AF37] hover:text-black border border-white/10 px-2 py-0.5 rounded-sm uppercase transition-all"
-                    >
-                      <Save className="w-3 h-3" />
-                      <span>{isSubmitting ? 'Saving' : 'Save Params'}</span>
-                    </button>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Opportunity Title</label>
-                    <input
-                      type="text"
-                      value={editForm.name}
-                      onChange={e => setEditForm({ ...editForm, name: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Pipeline Stage</label>
-                      <select
-                        value={editForm.stage}
-                        onChange={e => setEditForm({ ...editForm, stage: e.target.value })}
-                        disabled={isOpportunityLocked(selectedOpp) && !canOverrideStage}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        {STAGES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Risk Classification</label>
-                      <select
-                        value={editForm.risk_level}
-                        onChange={e => setEditForm({ ...editForm, risk_level: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                      >
-                        <option value="Low">Low</option>
-                        <option value="Medium">Medium</option>
-                        <option value="High">High</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Department</label>
-                    <select
-                      value={editForm.originating_department_id}
-                      onChange={e => setEditForm({ ...editForm, originating_department_id: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                    >
-                      <option value="">Unassigned</option>
-                      {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Est Value ($)</label>
-                      <input
-                        type="number"
-                        value={editForm.budget}
-                        onChange={e => setEditForm({ ...editForm, budget: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Win Prob (%)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={editForm.probability}
-                        onChange={e => setEditForm({ ...editForm, probability: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Margin (%)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        value={editForm.expected_margin}
-                        onChange={e => setEditForm({ ...editForm, expected_margin: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Next Action Due</label>
-                    <input
-                      type="date"
-                      value={editForm.next_activity_due_at}
-                      onChange={e => setEditForm({ ...editForm, next_activity_due_at: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
-                    />
-                  </div>
-
-                  {/* Linked organization display/change */}
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Client Organization</label>
-                    <select
-                      value={editForm.client_org_id}
-                      onChange={e => setEditForm({ ...editForm, client_org_id: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                    >
-                      <option value="">-- No Organization --</option>
-                      {organizations.map(o => (
-                        <option key={o.id} value={o.id}>{o.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Linked client display/change */}
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Client Contact Link</label>
-                    <select
-                      value={editForm.client_id}
-                      onChange={e => setEditForm({ ...editForm, client_id: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                    >
-                      <option value="">-- No Contact --</option>
-                      {dedupedContacts.map(c => (
-                        <option key={c.id} value={c.id}>{c.contact_name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </form>
-              )}
-
-              {/* LINKED CONTACT DETAIL BLOCK */}
-              <div className="space-y-2 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
-                <span className="block font-mono text-[9px] text-[#3B82F6] uppercase tracking-wider">Associated client profile</span>
-
-                {selectedOppOrganization && (
-                  <Link
-                    href={`/dashboard/crm/organizations/${selectedOppOrganization.id}`}
-                    className="flex items-center space-x-3 pt-1 pb-2 border-b border-white/5 hover:bg-white/[0.02] -mx-1 px-1 rounded-sm transition-all"
-                  >
-                    <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-slate-light">
-                      <Landmark className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-semibold text-paper leading-tight">{selectedOppOrganization.name}</h4>
-                      <span className="font-mono text-[9px] text-slate">View Customer 360 &rarr;</span>
-                    </div>
-                  </Link>
-                )}
-
-                {selectedOppContact ? (
-                  <div className="flex items-center space-x-3 pt-1">
-                    <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-slate-light">
-                      <User className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-semibold text-paper leading-tight">{selectedOppContact.contact_name}</h4>
-                      {selectedOppContact.email && (
-                        <span className="font-mono text-[9px] text-slate flex items-center mt-1">
-                          <Mail className="w-3 h-3 mr-1 text-slate" />
-                          {selectedOppContact.email}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-2 text-center text-[10px] font-mono text-slate border border-dashed border-white/5 rounded-sm">
-                    No client contact profile linked. Add above.
-                  </div>
-                )}
-              </div>
-
-              {/* NOTES HISTORY / LOG SECTION */}
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="font-mono text-[9px] text-slate-light uppercase tracking-wider">Timeline / Activity Log</span>
-                  <span className="font-mono text-[9px] text-[#3B82F6] tabular-nums">{selectedOppActivities.length} logs cached</span>
-                </div>
-
-                {/* Add note inline form */}
-                <form onSubmit={handleAddNote} className="space-y-2 bg-white/[0.01] border border-white/5 p-3 rounded-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <select
-                      value={newNote.type}
-                      onChange={e => setNewNote({ ...newNote, type: e.target.value })}
-                      className="bg-black border border-white/5 rounded-sm px-2.5 py-1 text-[10px] font-mono text-slate-light outline-none"
-                    >
-                      <option value="Call">Call</option>
-                      <option value="Meeting">Meeting</option>
-                      <option value="WhatsApp">WhatsApp</option>
-                      <option value="Email">Email</option>
-                      <option value="Site Visit">Site Visit</option>
-                      <option value="System Log">System Log</option>
-                    </select>
-
-                    <button
-                      type="submit"
-                      disabled={isSubmitting || !newNote.notes.trim()}
-                      className="px-3 py-1 bg-[#D4AF37] hover:bg-[#D4AF37]/90 disabled:opacity-40 text-black font-mono font-bold text-[9px] rounded-sm transition-all"
-                    >
-                      APPEND LOG
-                    </button>
-                  </div>
-
-                  <textarea
-                    rows={2}
-                    value={newNote.notes}
-                    onChange={e => setNewNote({ ...newNote, notes: e.target.value })}
-                    className="w-full bg-black border border-white/5 rounded-sm p-2 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all resize-none placeholder:text-slate"
-                    placeholder="Enter activity log summary or meeting details..."
-                  />
-                </form>
-
-                {/* Interaction list */}
-                <div className="space-y-3 relative before:absolute before:left-[17px] before:top-2 before:bottom-2 before:w-[1px] before:bg-white/5">
-                  {selectedOppActivities.length > 0 ? (
-                    selectedOppActivities.map((act) => (
-                      <div key={act.id} className="flex items-start space-x-3 relative">
-                        <div className="w-9 h-9 rounded-full border border-white/5 bg-[#0A0A0A] flex items-center justify-center shrink-0 text-slate-light relative z-10">
-                          <MessageSquare className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="flex-1 bg-[#0A0A0A] border border-white/5 p-3 rounded-sm">
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="font-mono text-[9px] text-[#D4AF37] uppercase">{act.type}</span>
-                            {act.activity_date && (
-                              <span className="font-mono text-[8px] text-slate">
-                                {new Date(act.activity_date).toLocaleDateString()} {new Date(act.activity_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] text-slate-light leading-relaxed whitespace-pre-wrap">{act.description}</p>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="py-8 text-center text-[10px] font-mono text-slate border border-dashed border-white/5 rounded-sm">
-                      No interaction logs found. Initialize log append above.
-                    </div>
-                  )}
-                </div>
-
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-slate">
-            <span className="font-mono text-xs uppercase">No telemetry loaded.</span>
-          </div>
-        )}
-      </div>
+      {/* Quote & Project Handoff: Focused Opportunity Detail Drawer exposes Create quote, Mark won, Mark lost, and project release */}
+      {selectedOpportunityId && selectedOpp && (
+        <OpportunityDetailDrawer
+          isOpen={true}
+          onClose={() => setSelectedOpportunityId(null)}
+          opportunity={selectedOpp}
+          onOpportunityUpdated={() => {
+            fetchBoard();
+          }}
+          contacts={contacts}
+          organizations={organizations}
+          canOverrideStage={canOverrideStage}
+        />
+      )}
 
       {/* DUPLICATE RESOLUTION MODAL */}
       {isDupModalOpen && (

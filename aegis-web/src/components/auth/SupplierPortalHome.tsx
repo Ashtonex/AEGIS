@@ -23,6 +23,7 @@ import {
   VendorPaymentRequest,
   VendorRateItem,
   VendorRateType,
+  type VendorVatStatus,
   clearSupplierPortalPaymentRequest,
   createSupplierPortalPaymentRequest,
   createSupplierPortalRateItem,
@@ -61,7 +62,7 @@ const SUPPLIER_TOUR_STEPS: ModuleTourStep[] = [
   },
   {
     title: "Compliance documents",
-    body: "Upload your tax clearance, NSSA, PRAZ, VAT, and company registration documents here - these are required before you can be verified.",
+    body: "Upload your tax clearance, company registration and VAT certificates here - these are required before you can be verified. NSSA and PRAZ are optional.",
     target: "supplier-documents",
     placement: "top",
   },
@@ -139,12 +140,14 @@ type QuoteDocument = {
   created_at: string;
 };
 
-const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+// Tax clearance, company registration and VAT are required for verification
+// (VAT only if the company is VAT registered); NSSA and PRAZ are optional.
+const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string; optional?: boolean }> = [
   { key: "tax_clearance", label: "Tax Clearance" },
-  { key: "nssa", label: "NSSA" },
-  { key: "praz", label: "PRAZ" },
-  { key: "vat", label: "VAT" },
   { key: "company_registration", label: "Company Registration" },
+  { key: "vat", label: "VAT" },
+  { key: "nssa", label: "NSSA", optional: true },
+  { key: "praz", label: "PRAZ", optional: true },
 ];
 
 type RfqResponseForm = {
@@ -171,7 +174,8 @@ export function SupplierPortalHome() {
   const tour = usePortalTour("supplier_portal");
 
   const [profileForm, setProfileForm] = useState({
-    name: "", registration_number: "", tax_clearance_number: "", nssa_number: "", praz_number: "",
+    name: "", registration_number: "", tax_clearance_number: "", vat_status: "" as VendorVatStatus | "", vat_number: "",
+    nssa_number: "", praz_number: "",
     contact_name: "", contact_email: "", contact_phone: "", address: "",
     preferred_contact_method: "email", alternate_contact_name: "", alternate_contact_email: "",
     alternate_contact_phone: "", accounts_contact_email: "", accounts_contact_phone: "",
@@ -208,7 +212,9 @@ export function SupplierPortalHome() {
         setWorkspace(wsRes.value.data);
         setProfileForm({
           name: vendor.name ?? "", registration_number: vendor.registration_number ?? "",
-          tax_clearance_number: vendor.tax_clearance_number ?? "", nssa_number: vendor.nssa_number ?? "",
+          tax_clearance_number: vendor.tax_clearance_number ?? "",
+          vat_status: vendor.vat_status ?? "", vat_number: vendor.vat_number ?? "",
+          nssa_number: vendor.nssa_number ?? "",
           praz_number: vendor.praz_number ?? "", contact_name: vendor.contact_name ?? "",
           contact_email: vendor.contact_email ?? "", contact_phone: vendor.contact_phone ?? "",
           address: vendor.address ?? "",
@@ -251,7 +257,8 @@ export function SupplierPortalHome() {
     setError(null);
     setNotice(null);
     try {
-      await updateSupplierPortalProfile(profileForm);
+      const { vat_status, ...rest } = profileForm;
+      await updateSupplierPortalProfile(vat_status ? { ...rest, vat_status } : rest);
       setNotice("Profile updated.");
       await load();
     } catch (err) {
@@ -534,9 +541,46 @@ export function SupplierPortalHome() {
               </div>
               <div className="grid gap-4 p-4 md:grid-cols-2">
                 {([
-                  ["name", "Company name"], ["registration_number", "Registration number"],
-                  ["tax_clearance_number", "Tax clearance number"], ["nssa_number", "NSSA number"],
-                  ["praz_number", "PRAZ number (optional)"], ["contact_name", "Contact person"],
+                  ["name", "Registered company name"], ["registration_number", "Company registration number"],
+                  ["tax_clearance_number", "Tax clearance number"],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className="block">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">{label}</span>
+                    <input
+                      required
+                      value={profileForm[key]}
+                      onChange={(e) => setProfileForm((c) => ({ ...c, [key]: e.target.value }))}
+                      className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                    />
+                  </label>
+                ))}
+                <label className="block">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">VAT registration</span>
+                  <select
+                    required
+                    value={profileForm.vat_status}
+                    onChange={(e) => setProfileForm((c) => ({ ...c, vat_status: e.target.value as VendorVatStatus | "" }))}
+                    className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                  >
+                    <option value="">Select...</option>
+                    <option value="registered">VAT registered</option>
+                    <option value="not_registered">Not VAT registered</option>
+                  </select>
+                </label>
+                {profileForm.vat_status === "registered" && (
+                  <label className="block">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-slate-light">VAT number</span>
+                    <input
+                      required
+                      value={profileForm.vat_number}
+                      onChange={(e) => setProfileForm((c) => ({ ...c, vat_number: e.target.value }))}
+                      className="mt-2 h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal"
+                    />
+                  </label>
+                )}
+                {([
+                  ["nssa_number", "NSSA number (optional)"], ["praz_number", "PRAZ number (optional)"],
+                  ["contact_name", "Contact person"],
                   ["contact_email", "Contact email"], ["contact_phone", "Contact phone"],
                 ] as const).map(([key, label]) => (
                   <label key={key} className="block">
@@ -606,12 +650,16 @@ export function SupplierPortalHome() {
               <div className="grid gap-4 p-4 md:grid-cols-2">
                 {SUPPLIER_REQUIRED_DOCUMENTS.map((required) => {
                   const doc = workspace?.documents.find((item) => (item.document_type ?? item.category) === required.key);
-                  const reviewStatus = doc?.review_status ?? doc?.status ?? "pending_review";
+                  const notNeeded = required.key === "vat" && workspace?.vendor.vat_status === "not_registered";
+                  const reviewStatus = notNeeded && !doc ? "not needed" : doc?.review_status ?? doc?.status ?? "pending_review";
                   return (
                     <div key={required.key} className="border border-ink-mid bg-ink p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="font-semibold text-paper">{required.label}</p>
+                          <p className="font-semibold text-paper">
+                            {required.label}
+                            {(required.optional || notNeeded) && <span className="ml-2 font-mono text-[10px] uppercase text-slate-light">optional</span>}
+                          </p>
                           <p className="mt-1 truncate text-xs text-slate-light">
                             {doc ? doc.title : "No file uploaded yet."}
                           </p>

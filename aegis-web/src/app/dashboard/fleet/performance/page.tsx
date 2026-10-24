@@ -10,14 +10,6 @@ import { useApiQueries } from "@/hooks/useApiQueries";
 import { getFleetPerformance } from "@/lib/api";
 import { ASSET_CATEGORY_OPTIONS } from "@/components/fleet/AssetOperationsModals";
 
-// Fleet and Equipment are the same underlying data (fleet.fleet, see
-// AssetOperationsModals.tsx) - this dashboard is reachable from both nav
-// entries and shares their combined allowedRoles.
-const ALLOWED_ROLES = [
-  "Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Equipment Manager",
-  "Site Manager", "Maintenance Planner", "Executive Read Only",
-];
-
 const inputClass = "min-h-11 border border-ink-mid bg-ink px-3 py-2 text-sm text-paper focus:outline-none focus:border-signal/50";
 const buttonClass = "inline-flex items-center gap-2 border border-ink-mid px-3 py-2 font-mono text-[10px] uppercase tracking-widest text-signal hover:border-signal/50 disabled:opacity-50";
 
@@ -119,7 +111,7 @@ function PerformerTable({ title, rows }: { title: string; rows: PerformerRow[] }
 
 export default function FleetPerformancePage() {
   return (
-    <RBACGuard allowedRoles={ALLOWED_ROLES}>
+    <RBACGuard>
       <FleetPerformanceDashboard />
     </RBACGuard>
   );

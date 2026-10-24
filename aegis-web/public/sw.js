@@ -204,28 +204,41 @@ self.addEventListener("push", (event) => {
   try {
     payload = event.data ? event.data.json() : {};
   } catch {
-    payload = { title: "AEGIS alert", message: event.data ? event.data.text() : "" };
+    payload = { title: "AEGIS Alert", message: event.data ? event.data.text() : "" };
   }
 
-  const title = payload.title || "AEGIS alert";
-  const body = payload.message || payload.body || "";
-  const url = payload.action_url || payload.url || "/dashboard";
+  const title = payload.title || "AEGIS Alert";
+  const body = payload.message || payload.body || "New operational update.";
+  const url = payload.action_url || payload.url || "/dashboard/notifications";
+  const priority = payload.priority || "normal";
+  const isUrgent = priority === "urgent" || priority === "high";
 
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
       data: { url, payload },
-      tag: payload.id || payload.tag || "aegis-alert",
+      tag: payload.id || payload.tag || `aegis-${Date.now()}`,
       renotify: true,
-      icon: "/project_portal_dashboard.png",
-      badge: "/project_portal_dashboard.png",
+      requireInteraction: isUrgent,
+      vibrate: isUrgent ? [300, 100, 300, 100, 300] : [200, 100, 200],
+      icon: "/logo.png",
+      badge: "/logo.png",
+      actions: [
+        { action: "open", title: "View Details" },
+        { action: "dismiss", title: "Dismiss" },
+      ],
     })
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || "/dashboard";
+
+  if (event.action === "dismiss") {
+    return;
+  }
+
+  const url = event.notification.data?.url || "/dashboard/notifications";
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(async (clients) => {
@@ -238,7 +251,9 @@ self.addEventListener("notificationclick", (event) => {
           return;
         }
       }
-      await self.clients.openWindow(url);
+      if (self.clients.openWindow) {
+        await self.clients.openWindow(url);
+      }
     })
   );
 });

@@ -10,6 +10,7 @@ from app.shared.events import emit_event
 from app.shared.sql import insert_returning_id_sql, update_returning_id_sql
 from app.shared.workforce_transactions import audit_action, canonical_json
 import json
+import re
 
 PERSON_FIELDS = "e.id,e.employee_number,e.employee_name,e.job_title,e.employment_status,e.work_location,e.category_id,e.position_id,e.department_id,e.version,e.created_at"
 CATALOGUES = {"categories": "hr.worker_categories", "positions": "hr.positions"}
@@ -72,7 +73,7 @@ async def list_people(db, user, query, status, after, limit):
         LEFT JOIN finance.departments d ON d.id=e.department_id AND d.organization_id=e.organization_id
         WHERE e.organization_id=:org AND e.is_deleted=false
           AND (e.employee_name ILIKE :query OR e.employee_number ILIKE :query)
-          AND (CAST(:status AS text) IS NULL OR e.employment_status=:status)
+          AND ((CAST(:status AS text) IS NULL AND e.employment_status<>'terminated') OR e.employment_status=:status)
           AND (CAST(:after AS uuid) IS NULL OR e.id>CAST(:after AS uuid)) ORDER BY e.id LIMIT :limit
     """),
                 params,
@@ -86,9 +87,42 @@ async def list_people(db, user, query, status, after, limit):
     ) > limit else None
 
 
+async def position_defaults(db, user, values):
+    """A role implies its discipline and department; fill whatever the caller left blank."""
+    if not values.get("position_id"):
+        return
+    row = (
+        (
+            await db.execute(
+                text(
+                    "SELECT name,category_id,department_id FROM hr.positions WHERE organization_id=:org AND id=:id AND is_deleted=false"
+                ),
+                {"org": user["org_id"], "id": values["position_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not row:
+        raise HTTPException(422, "Invalid or inaccessible position_id")
+    values["category_id"] = values.get("category_id") or row["category_id"]
+    values["department_id"] = values.get("department_id") or row["department_id"]
+    values["job_title"] = values.get("job_title") or row["name"]
+
+
 async def create_person(db, user, payload):
-    values = payload.model_dump()
+    values = payload.model_dump(exclude_none=True)
+    await position_defaults(db, user, values)
+    if not values.get("category_id"):
+        raise HTTPException(422, "Choose a discipline for this worker")
     await validate_refs(db, user, values)
+    values["employment_status"] = "active"
+    values["employee_number"] = (
+        await db.execute(
+            text("SELECT hr.next_worker_number(CAST(:org AS uuid))"),
+            {"org": user["org_id"]},
+        )
+    ).scalar_one()
     row_id = (
         await db.execute(
             insert_returning_id_sql("hr.employees", values, values),
@@ -111,7 +145,7 @@ async def create_person(db, user, payload):
         aggregate_id=row_id,
         event_data={"worker_id": str(row_id), "version": 1},
     )
-    return {"id": str(row_id), "version": 1}
+    return {"id": str(row_id), "version": 1, "employee_number": values["employee_number"]}
 
 
 async def update_person(db, user, employee_id, payload):
@@ -151,16 +185,64 @@ async def update_person(db, user, employee_id, payload):
     return {"id": str(employee_id), "version": values["version"]}
 
 
+_CODE_STOPWORDS = {"and", "of", "the", "&", "for"}
+
+
+def code_stem(name: str) -> str:
+    """Quantity Surveyor -> QS, Engineering -> ENG, Health, Safety & Environment -> HSE."""
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", name) if w and w.lower() not in _CODE_STOPWORDS]
+    if not words:
+        return "X"
+    if len(words) == 1:
+        return words[0][:3].upper()
+    return "".join(w[0] for w in words[:5]).upper()
+
+
+async def generate_code(db, user, table, name):
+    stem = code_stem(name)
+    taken = {
+        r[0].upper()
+        for r in (
+            await db.execute(
+                text(f"SELECT code FROM {table} WHERE organization_id=:org AND code ILIKE :prefix"),
+                {"org": user["org_id"], "prefix": f"{stem}%"},
+            )
+        ).all()
+    }
+    if stem not in taken:
+        return stem
+    suffix = 2
+    while f"{stem}{suffix}" in taken:
+        suffix += 1
+    return f"{stem}{suffix}"
+
+
 async def create_catalogue(db, user, kind, payload):
     table = CATALOGUES.get(kind)
     if not table:
         raise HTTPException(404, "Catalogue not found")
     include = (
-        {"code", "name", "payroll_eligible"}
+        {"code", "name", "payroll_eligible", "description"}
         if kind == "categories"
-        else {"code", "name", "department_id", "trade", "grade"}
+        else {"code", "name", "department_id", "trade", "grade", "category_id"}
     )
-    values = payload.model_dump(include=include)
+    values = payload.model_dump(include=include, exclude_none=True)
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+        {"key": f"catalogue:{table}:{user['org_id']}"},
+    )
+    duplicate = (
+        await db.execute(
+            text(f"SELECT code FROM {table} WHERE organization_id=:org AND lower(name)=lower(:name) AND is_deleted=false"),
+            {"org": user["org_id"], "name": values["name"]},
+        )
+    ).scalar()
+    if duplicate:
+        raise HTTPException(409, f"'{values['name']}' already exists as {duplicate}")
+    if values.get("code"):
+        values["code"] = values["code"].upper()
+    else:
+        values["code"] = await generate_code(db, user, table, values["name"])
     await validate_refs(db, user, values)
     row_id = (
         await db.execute(
@@ -169,9 +251,9 @@ async def create_catalogue(db, user, kind, payload):
         )
     ).scalar_one()
     await audit_action(
-        db, user, table, row_id, "CREATE", {"code": payload.code, "version": 1}
+        db, user, table, row_id, "CREATE", {"code": values["code"], "version": 1}
     )
-    return {"id": str(row_id), "version": 1}
+    return {"id": str(row_id), "version": 1, "code": values["code"]}
 
 
 async def create_reporting_line(db, user, payload):

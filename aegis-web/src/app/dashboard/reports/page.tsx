@@ -72,7 +72,7 @@ function normalizeActionError(reason: unknown, fallback: string) {
 
 export default function ReportsDashboard() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Project Manager", "Finance Manager", "Compliance Officer", "Commercial Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard>
       <ReportsWorkspace />
     </RBACGuard>
   );

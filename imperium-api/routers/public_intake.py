@@ -1,19 +1,25 @@
 """Public website intake. This router deliberately never accepts a tenant ID from a visitor."""
 
+import functools
 import json
 import re
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.encoders import jsonable_encoder
 
+from core.cache import cache_get_json, cache_set_json
 from core.database import get_db
+from core.logging import logger
 from core.rate_limit import limiter
+from core.rate_limit import PUBLIC_READ_LIMIT
+from slowapi.util import get_remote_address
 
 router = APIRouter()
 
@@ -55,9 +61,13 @@ class EnquiryPayload(IntakePayload):
 
 
 class SupplierPayload(IntakePayload):
+    # Registered company name, company registration number, tax clearance
+    # and VAT are the key vendor requirements (app.shared.vendor_verification).
     companyName: str = Field(min_length=2, max_length=255)
     registrationNumber: str = Field(min_length=2, max_length=100)
     taxClearanceNumber: str = Field(min_length=2, max_length=100)
+    vatStatus: Literal["registered", "not_registered"]
+    vatNumber: Optional[str] = Field(default=None, max_length=100)
     prazNumber: Optional[str] = Field(default=None, max_length=100)
     yearEstablished: int = Field(ge=1800, le=2100)
     employees: int = Field(ge=1, le=10_000_000)
@@ -80,6 +90,15 @@ class SupplierPayload(IntakePayload):
             raise ValueError("List values must be unique")
         return cleaned
 
+    @model_validator(mode="after")
+    def vat_number_when_registered(self) -> "SupplierPayload":
+        if self.vatStatus == "registered":
+            if not self.vatNumber or len(self.vatNumber) < 2:
+                raise ValueError("A VAT number is required for a VAT-registered company")
+        else:
+            self.vatNumber = None
+        return self
+
 
 def _document_link(value: Optional[str]) -> Optional[str]:
     """Accept an actual document URL, never a client-side placeholder."""
@@ -101,11 +120,12 @@ class SupplierDocuments(BaseModel):
     profileUrl: Optional[str] = Field(default=None, max_length=2048)
     taxClearanceUrl: Optional[str] = Field(default=None, max_length=2048)
     incorporationUrl: Optional[str] = Field(default=None, max_length=2048)
+    vatUrl: Optional[str] = Field(default=None, max_length=2048)
     prazUrl: Optional[str] = Field(default=None, max_length=2048)
     isoUrl: Optional[str] = Field(default=None, max_length=2048)
 
     _validate_document_links = field_validator(
-        "profileUrl", "taxClearanceUrl", "incorporationUrl", "prazUrl", "isoUrl"
+        "profileUrl", "taxClearanceUrl", "incorporationUrl", "vatUrl", "prazUrl", "isoUrl"
     )(_document_link)
 
 
@@ -147,6 +167,28 @@ class TenderInterestPayload(IntakePayload):
 class NewsletterPayload(IntakePayload):
     email: EmailStr
 
+
+
+# Anonymous, unauthenticated reads that change rarely: cached for a minute in
+# Redis so website traffic (or a scraper) can't queue up the 5-connection
+# per-worker DB pool (stress test 2026-10-07). Fails open if Redis is down.
+PUBLIC_CACHE_SECONDS = 60
+
+
+def _public_cache(name: str):
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            key = "public:" + name + "".join(f":{v}" for k, v in sorted(kwargs.items()) if k not in ("db", "request"))
+            hit = await cache_get_json(key)
+            if hit is not None:
+                return hit
+            result = jsonable_encoder(await fn(*args, **kwargs))
+            if isinstance(result, dict) and result.get("success"):
+                await cache_set_json(key, result, PUBLIC_CACHE_SECONDS)
+            return result
+        return wrapper
+    return deco
 
 async def _public_org_id(db: AsyncSession) -> str:
     rows = (
@@ -255,7 +297,9 @@ def _receipt(reference: str, message: str) -> dict[str, Any]:
 
 
 @router.get("/tenders")
-async def list_public_tenders(db: AsyncSession = Depends(get_db)):
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("tenders")
+async def list_public_tenders(request: Request, db: AsyncSession = Depends(get_db)):
     """Return only live tender details that are suitable for public publication."""
     try:
         org_id = await _public_org_id(db)
@@ -279,6 +323,7 @@ async def list_public_tenders(db: AsyncSession = Depends(get_db)):
             "meta": {"total": len(tenders)},
         }
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch published tenders.",
@@ -367,6 +412,7 @@ async def submit_enquiry(
         await db.commit()
         return _receipt(reference, "Enquiry received.")
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -393,8 +439,8 @@ async def submit_supplier(
             return _receipt(reference, "Supplier registration received.")
         result = await db.execute(
             text("""
-            INSERT INTO crm.subcontractors (organization_id, name, capability_tags, compliance_status, praz_number, registration_number, tax_clearance_number, contact_name, contact_email, contact_phone, address, coverage_provinces, submission_data)
-            VALUES (:org_id, :name, :tags, 'pending_review', :praz, :registration, :tax, :contact, :email, :phone, :address, :provinces, CAST(:payload AS jsonb))
+            INSERT INTO crm.subcontractors (organization_id, name, capability_tags, compliance_status, praz_number, registration_number, tax_clearance_number, vat_status, vat_number, contact_name, contact_email, contact_phone, address, coverage_provinces, submission_data)
+            VALUES (:org_id, :name, :tags, 'pending_review', :praz, :registration, :tax, :vat_status, :vat_number, :contact, :email, :phone, :address, :provinces, CAST(:payload AS jsonb))
             ON CONFLICT (organization_id, registration_number) WHERE registration_number IS NOT NULL AND is_deleted = false DO UPDATE SET updated_at = NOW()
             RETURNING id
         """),
@@ -405,6 +451,8 @@ async def submit_supplier(
                 "praz": payload.prazNumber,
                 "registration": payload.registrationNumber,
                 "tax": payload.taxClearanceNumber,
+                "vat_status": payload.vatStatus,
+                "vat_number": payload.vatNumber,
                 "contact": payload.contactPerson,
                 "email": str(payload.email),
                 "phone": payload.phone,
@@ -420,6 +468,7 @@ async def submit_supplier(
         await db.commit()
         return _receipt(reference, "Supplier registration received.")
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -463,6 +512,7 @@ async def submit_application(
         await db.commit()
         return _receipt(reference, "Application received.")
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -516,6 +566,7 @@ async def submit_tender_interest(
         await db.commit()
         return _receipt(reference, "Tender interest received.")
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -524,7 +575,9 @@ async def submit_tender_interest(
 
 
 @router.get("/metrics/summary")
-async def get_public_metrics_summary(db: AsyncSession = Depends(get_db)):
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("metrics")
+async def get_public_metrics_summary(request: Request, db: AsyncSession = Depends(get_db)):
     """Aggregate counts for public marketing-site display. Every figure is a live
     query against real records - never a placeholder. Returns 0 honestly when
     there's nothing to count yet, rather than a fabricated number."""
@@ -561,6 +614,7 @@ async def get_public_metrics_summary(db: AsyncSession = Depends(get_db)):
             "meta": {},
         }
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch public metrics summary.",
@@ -610,6 +664,7 @@ async def submit_newsletter_signup(
         await db.commit()
         return _receipt(reference, "Subscribed to newsletter.")
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -618,7 +673,9 @@ async def submit_newsletter_signup(
 
 
 @router.get("/website-content")
-async def get_public_website_content(db: AsyncSession = Depends(get_db)):
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("website_content")
+async def get_public_website_content(request: Request, db: AsyncSession = Depends(get_db)):
     """Return published website content segments for the public site."""
     try:
         org_id = await _public_org_id(db)
@@ -640,6 +697,7 @@ async def get_public_website_content(db: AsyncSession = Depends(get_db)):
             "meta": {"total": len(content_items)},
         }
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch website content.",
@@ -647,7 +705,9 @@ async def get_public_website_content(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/broadcast-feeds")
-async def list_public_broadcast_feeds(db: AsyncSession = Depends(get_db)):
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("broadcast_feeds")
+async def list_public_broadcast_feeds(request: Request, db: AsyncSession = Depends(get_db)):
     """Return all active broadcasted images for public publication."""
     try:
         org_id = await _public_org_id(db)
@@ -672,6 +732,7 @@ async def list_public_broadcast_feeds(db: AsyncSession = Depends(get_db)):
             "meta": {"total": len(rows)},
         }
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch broadcast feeds.",
@@ -679,20 +740,26 @@ async def list_public_broadcast_feeds(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/projects")
-async def list_public_projects(db: AsyncSession = Depends(get_db)):
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("projects")
+async def list_public_projects(request: Request, db: AsyncSession = Depends(get_db)):
     """Return public project summaries without commercial or client-sensitive fields."""
     try:
         org_id = await _public_org_id(db)
         result = await db.execute(
             text("""
             SELECT p.id, p.name AS title, p.project_code, p.status,
-                   p.start_date, p.target_completion_date, p.actual_completion_date,
+                   p.start_date, p.planned_completion_date AS target_completion_date, p.actual_completion_date,
                    pp.region AS province, pp.project_category AS category,
                    pp.latitude::float AS latitude, pp.longitude::float AS longitude
             FROM projects.projects p
             LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
             WHERE p.organization_id = :org_id
               AND p.is_deleted = false
+              -- Public portfolio = delivered work only. There is no publish
+              -- flag on projects, so listing live jobs would put every
+              -- current client engagement on the public website.
+              AND p.actual_completion_date IS NOT NULL
             ORDER BY p.created_at DESC
         """),
             {"org_id": org_id},
@@ -712,6 +779,7 @@ async def list_public_projects(db: AsyncSession = Depends(get_db)):
             "meta": {"total": len(rows)},
         }
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch public projects.",
@@ -719,20 +787,23 @@ async def list_public_projects(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/projects/{slug_or_id}")
-async def get_public_project_detail(slug_or_id: str, db: AsyncSession = Depends(get_db)):
+@limiter.limit(PUBLIC_READ_LIMIT, key_func=get_remote_address)
+@_public_cache("project")
+async def get_public_project_detail(request: Request, slug_or_id: str, db: AsyncSession = Depends(get_db)):
     """Return public project detail without commercial or client-sensitive fields."""
     try:
         org_id = await _public_org_id(db)
         result = await db.execute(
             text("""
             SELECT p.id, p.name AS title, p.project_code, p.status,
-                   p.start_date, p.target_completion_date, p.actual_completion_date,
+                   p.start_date, p.planned_completion_date AS target_completion_date, p.actual_completion_date,
                    pp.region AS province, pp.project_category AS category,
                    pp.latitude::float AS latitude, pp.longitude::float AS longitude
             FROM projects.projects p
             LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
             WHERE p.organization_id = :org_id
               AND p.is_deleted = false
+              AND p.actual_completion_date IS NOT NULL
               AND (CAST(p.id AS text) = :slug_or_id OR lower(p.project_code) = lower(:slug_or_id) OR lower(replace(p.project_code, ' ', '-')) = lower(:slug_or_id))
             LIMIT 1
         """),
@@ -755,6 +826,7 @@ async def get_public_project_detail(slug_or_id: str, db: AsyncSession = Depends(
             "meta": {},
         }
     except SQLAlchemyError:
+        logger.exception("public_intake_db_error")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to fetch project detail.",

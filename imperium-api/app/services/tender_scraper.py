@@ -412,12 +412,12 @@ async def _fetch_remote_source(source_url: str) -> list[TenderSignal]:
             # Fallback to httpx below if playwright fails
 
     # HTTPX fallback
-    proxies = {"all://": proxy} if proxy else None
+    # httpx 0.28 dropped the plural proxies mapping; proxy takes a single URL.
     async with httpx.AsyncClient(
         timeout=settings.EXTERNAL_API_TIMEOUT_SECONDS,
         headers={"User-Agent": "AEGIS Tender Scraper/2.0"},
         follow_redirects=True,
-        proxies=proxies
+        proxy=proxy or None,
     ) as client:
         response = await client.get(source_url)
         response.raise_for_status()

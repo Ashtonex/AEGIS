@@ -4,6 +4,7 @@ from sqlalchemy import text
 
 from core.database import get_db
 from core.security import get_current_user, require_permission
+from core.project_scope import project_scope_sql, visible_project_ids
 from app.shared.sql import (
     insert_returning_id_sql,
     safe_payload_columns,
@@ -24,15 +25,16 @@ async def list_items(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_permission("site_operations.read")),
 ):
-    # Fetch active records scoped to the user's organization
-    query = text("""
+    # Fetch active records scoped to the user's organization and projects
+    scope_sql, scope_params = project_scope_sql("project_id", await visible_project_ids(db, user))
+    query = text(f"""
         SELECT *
         FROM projects.site_operations
-        WHERE organization_id = :org_id AND is_deleted = false
+        WHERE organization_id = :org_id AND is_deleted = false AND {scope_sql}
         ORDER BY created_at DESC
         LIMIT 100
     """)
-    result = await db.execute(query, {"org_id": user["org_id"]})
+    result = await db.execute(query, {"org_id": user["org_id"], **scope_params})
     items = [dict(row._mapping) for row in result]
 
     return {

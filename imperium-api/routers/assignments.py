@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import get_current_user, require_permission
 from app.shared.events import emit_notification
 
 router = APIRouter()
@@ -22,7 +22,9 @@ _ASSIGNABLE_ENTITIES = {
     "tender": ("crm.tenders", "assigned_to_user_id", "assigned_to_team_id", "tender_name", "/dashboard/crm/tenders"),
     "project": ("projects.projects", "assigned_to_user_id", "assigned_to_team_id", "name", "/dashboard/projects"),
     "fleet": ("fleet.fleet", "assigned_to_user_id", "assigned_to_team_id", "vehicle_registration", "/dashboard/fleet"),
-    "machinery": ("fleet.equipment_assets", "assigned_to_user_id", "assigned_to_team_id", "asset_name", "/dashboard/equipment"),
+    "machinery": ("fleet.fleet", "assigned_to_user_id", "assigned_to_team_id", "vehicle_registration", "/dashboard/equipment"),
+    "equipment": ("fleet.fleet", "assigned_to_user_id", "assigned_to_team_id", "vehicle_registration", "/dashboard/equipment"),
+    "equipment_asset": ("fleet.equipment_assets", "assigned_to_user_id", "assigned_to_team_id", "asset_name", "/dashboard/equipment"),
 }
 
 
@@ -55,7 +57,7 @@ def _entity_config(entity_type: str):
 async def get_assignment(
     entity_type: str = Query(...),
     entity_id: UUID = Query(...),
-    user: dict = Depends(require_permission("assignments.manage")),
+    user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     table, user_col, team_col, name_col, _ = _entity_config(entity_type)

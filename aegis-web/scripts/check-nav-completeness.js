@@ -15,7 +15,23 @@ const NAV_FILE = path.join(__dirname, "..", "src", "lib", "navigation.ts");
 const ALLOWLIST = new Set([
   "/dashboard", // redirects straight to /dashboard/executive
   "/dashboard/crm/quotations", // legacy redirect stub -> /dashboard/quotations
+  "/dashboard/crm/tickets", // legacy redirect stub -> /dashboard/crm/support
+  "/dashboard/crm/activities", // contextually linked from deal history and contact cards
+  "/dashboard/crm/campaigns", // contextually linked from /dashboard/crm/marketing command header
+  "/dashboard/crm/documents", // legacy CRM documents view; company vault is at /dashboard/documents
+  "/dashboard/crm/import", // contextually linked from CRM command intake actions
+  "/dashboard/crm/segments", // contextually linked from marketing audience builder
+  "/dashboard/crm/teams", // contextually linked from commercial team assignment modals
+  "/dashboard/crm/templates", // contextually linked from marketing and broadcast modals
+  "/dashboard/assets", // legacy and canonical assets stub -> /dashboard/fleet
+  "/dashboard/finance/cash-accounts", // legacy stub
+  "/dashboard/projects/assign", // replaced by dedicated /dashboard/projects/[id]/team
+  "/dashboard/projects/controls", // replaced by dedicated /dashboard/projects/[id]/controls
+  "/dashboard/projects/dashboard", // replaced by dedicated /dashboard/projects/[id]
+  "/dashboard/projects/documents", // replaced by dedicated /dashboard/projects/[id]/documents
+  "/dashboard/projects/team", // replaced by dedicated /dashboard/projects/[id]/team
 ]);
+
 
 function walkPageRoutes(dir, baseDir) {
   const routes = [];

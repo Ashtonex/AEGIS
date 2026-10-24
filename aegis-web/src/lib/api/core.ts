@@ -5,9 +5,14 @@ import { resolveBackendOrigin } from "../backend-url";
 import { getSupabase, getCachedAccessToken } from "../supabase";
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  public correlationId?: string;
+  public details?: unknown;
+
+  constructor(public status: number, message: string, correlationId?: string, details?: unknown) {
     super(message);
     this.name = "ApiError";
+    this.correlationId = correlationId;
+    this.details = details;
   }
 }
 
@@ -175,6 +180,10 @@ function normalizeApiError(error: unknown): ApiError {
 
   if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
     return new ApiError(0, "The service took too long to respond. Please retry once the connection is ready.");
+  }
+
+  if (normalizedMessage.includes("failed to fetch") || normalizedMessage.includes("econnrefused") || normalizedMessage.includes("networkerror")) {
+    return new ApiError(0, "The backend service could not be reached. Please verify the API server is online and retry.");
   }
 
   return new ApiError(0, "The service could not be reached. Please retry once the connection is ready.");
@@ -417,6 +426,33 @@ function extractApiErrorMessage(parsed: unknown): string | undefined {
     return payload.detail;
   }
 
+  // FastAPI validation error detail array
+  if (Array.isArray(payload.detail)) {
+    const messages = payload.detail
+      .map((item) => {
+        if (!item) return null;
+        if (typeof item === "string") return item;
+        if (typeof item === "object") {
+          const entry = item as { loc?: unknown[]; msg?: unknown; message?: unknown };
+          const locParts = Array.isArray(entry.loc)
+            ? entry.loc.filter((l) => l !== "body" && typeof l === "string" && l.length > 0)
+            : [];
+          const locStr = locParts.join(".");
+          const msgStr = typeof entry.msg === "string" ? entry.msg : (typeof entry.message === "string" ? entry.message : "");
+          if (locStr && msgStr) {
+            const field = locStr.replace(/_/g, " ");
+            return `${field}: ${msgStr}`;
+          }
+          if (msgStr) return msgStr;
+        }
+        return null;
+      })
+      .filter((m): m is string => Boolean(m));
+    if (messages.length > 0) {
+      return messages.join("; ");
+    }
+  }
+
   // Compliance deployment-gate blocks (core.compliance.validate_employee_deployment)
   // return a structured 409 detail object rather than a plain string, so the
   // missing licence/training/paperwork requirements would otherwise be
@@ -466,30 +502,60 @@ function extractApiErrorMessage(parsed: unknown): string | undefined {
 }
 
 export async function buildApiError(response: Response): Promise<ApiError> {
-  let message = "The requested data could not be loaded. Please retry in a moment.";
+  const correlationId = response.headers.get("X-Correlation-ID") || response.headers.get("X-Request-ID") || undefined;
+  let message = `Request failed with status ${response.status}. Please retry in a moment.`;
   const isTransientServiceError = isTransientServiceStatus(response.status);
-  if (response.status === 401) message = "Your session could not be verified. Please sign in again.";
-  if (response.status === 403) message = "You do not have permission to access this resource.";
-  if (response.status === 404) message = "Requested resource was not found.";
-  if (isTransientServiceError) {
-    message = "The backend service is waking up or temporarily unavailable. Please retry in a few seconds.";
+
+  if (response.status === 401) {
+    message = "Your session could not be verified. Please sign in again.";
+  } else if (response.status === 403) {
+    message = "You do not have permission to access this resource.";
+  } else if (response.status === 404) {
+    message = "Requested resource was not found.";
+  } else if (response.status === 429) {
+    message = "Too many requests. Please wait a moment before trying again.";
+  } else if (isTransientServiceError) {
+    message = "The backend service is restarting or temporarily unavailable. Please retry in a few seconds.";
   } else if (response.status >= 500) {
-    message = "The service is temporarily unavailable. Please try again.";
+    message = `Server error (HTTP ${response.status}). Please try again or contact support.`;
   }
 
+  let parsedBody: unknown = undefined;
   try {
     const body = await response.text();
     if (body) {
-      const parsed = JSON.parse(body) as unknown;
-      const extracted = extractApiErrorMessage(parsed);
-      message = isTransientServiceError ? message : extracted ?? message;
+      try {
+        const parsed = JSON.parse(body) as unknown;
+        parsedBody = parsed;
+        const extracted = extractApiErrorMessage(parsed);
+        if (extracted) {
+          message = extracted;
+        }
+      } catch {
+        // Body was plain text or HTML (e.g. proxy gateway error or unhandled backend exception)
+        const trimmed = body.trim();
+        if (trimmed && !trimmed.startsWith("<!DOCTYPE") && !trimmed.startsWith("<html") && trimmed.length < 300) {
+          message = trimmed;
+        } else if (response.status === 502) {
+          message = "Backend gateway unavailable (HTTP 502). The service may be restarting.";
+        } else if (response.status === 504) {
+          message = "Gateway timeout (HTTP 504). The request took too long to complete.";
+        }
+      }
     }
   } catch {
-    // Keep the status-based message when the backend did not return JSON.
+    // Network read error while getting response body
   }
 
-  return new ApiError(response.status, message);
+  if (correlationId && !message.includes("Ref: ")) {
+    message = `${message} (Ref: ${correlationId.slice(0, 8)})`;
+  }
+
+  return new ApiError(response.status, message, correlationId, parsedBody);
 }
+
+export const RESULTS_TRUNCATED_EVENT = "aegis:results-truncated";
+export type ResultsTruncatedDetail = { endpoint: string; limit: number };
 
 export async function fetchApi<T>(endpoint: string, options: ApiRequestOptions = {}): Promise<T> {
   const requestOptions: RequestInit = { ...options };
@@ -565,6 +631,13 @@ export async function fetchApi<T>(endpoint: string, options: ApiRequestOptions =
 
     if (!response.ok) {
       throw await buildApiError(response);
+    }
+
+    // The API caps some long lists (e.g. 500 rows) and says so in this header
+    // rather than silently dropping rows; the dashboard shows a notice.
+    const truncatedAt = response.headers.get("X-Results-Truncated");
+    if (truncatedAt && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(RESULTS_TRUNCATED_EVENT, { detail: { endpoint, limit: Number(truncatedAt) } }));
     }
 
     const data = await parseJsonResponse<T>(response);

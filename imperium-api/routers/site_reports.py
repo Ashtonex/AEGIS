@@ -13,10 +13,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import get_current_user, require_permission
+from core.logging import logger
+from core.security import get_current_user, require_any_permission, require_permission
+from core.project_scope import (
+    enforce_project_path_scope,
+    project_scope_sql,
+    require_project_access,
+    visible_project_ids,
+)
+from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.sequences import next_reference
+from routers.site_day import ensure_site_day_started, harare_today, sync_attendance_to_daily_report
 from app.shared.sql import (
     safe_payload_columns,
     tenant_child_rows_by_parent_sql,
@@ -24,7 +33,8 @@ from app.shared.sql import (
     update_tenant_row_sql,
 )
 
-router = APIRouter()
+# Every /{project_id} route is limited to the caller's visible projects.
+router = APIRouter(dependencies=[Depends(enforce_project_path_scope)])
 
 
 class Payload(BaseModel):
@@ -73,7 +83,11 @@ class DailyReportUpdate(Payload):
 
 
 class LabourLine(Payload):
-    employee_id: UUID
+    employee_id: Optional[UUID] = None
+    site_worker_id: Optional[UUID] = None
+    worker_name: Optional[str] = None
+    worker_kind: Literal["employee", "project_hire"] = "employee"
+    attendance_id: Optional[UUID] = None
     role_on_site: Optional[str] = Field(default=None, max_length=120)
     regular_hours: Decimal = Field(
         default=Decimal("0"), ge=0, le=24, max_digits=5, decimal_places=2
@@ -90,6 +104,8 @@ class LabourLine(Payload):
     def requires_hours(self):
         if self.regular_hours + self.overtime_hours <= 0:
             raise ValueError("labour line requires worked hours")
+        if not self.employee_id and not self.site_worker_id and not (self.worker_name or "").strip():
+            raise ValueError("labour line requires an employee, project hire, or worker name")
         return self
 
 
@@ -133,11 +149,54 @@ class MaterialLine(Payload):
     notes: Optional[str] = None
 
 
+class LabourLineUpdate(Payload):
+    regular_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=5, decimal_places=2)
+    overtime_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=5, decimal_places=2)
+    cost_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    role_on_site: Optional[str] = Field(default=None, max_length=120)
+    notes: Optional[str] = None
+
+
+class EquipmentLineUpdate(Payload):
+    operating_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=10, decimal_places=2)
+    idle_hours: Optional[Decimal] = Field(default=None, ge=0, le=24, max_digits=10, decimal_places=2)
+    fuel_litres: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    cost_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    notes: Optional[str] = None
+
+
+class MaterialLineUpdate(Payload):
+    quantity_used: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=3)
+    wastage_quantity: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    unit_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    work_package: Optional[str] = Field(default=None, max_length=160)
+    notes: Optional[str] = None
+
+
+class SitePlantRequestPayload(Payload):
+    project_id: UUID
+    required_asset_type: str = Field(min_length=1, max_length=120)
+    fleet_id: Optional[UUID] = None
+    specification: Optional[str] = None
+    quantity: int = Field(default=1, gt=0)
+    work_location: Optional[str] = None
+    start_date: date
+    end_date: Optional[date] = None
+    operating_hours_mode: Literal["normal", "extended", "continuous"] = "normal"
+    operator_required: bool = False
+    priority: Literal["routine", "urgent", "emergency"] = "routine"
+    work_description: str = Field(default="Site plant requirement")
+    fuel_responsibility: Literal["snc", "project", "client"] = "project"
+
+
 class SiteMaterialRequest(Payload):
     project_id: UUID
     site_id: Optional[UUID] = None
     store_id: Optional[UUID] = None
-    item_id: UUID
+    item_id: Optional[UUID] = None
+    material_description: Optional[str] = Field(default=None, max_length=255)
+    specifications: Optional[str] = None
+    unit_of_measure: str = Field(default="each", max_length=40)
     weekly_budget_item_id: Optional[UUID] = None
     variance_id: Optional[UUID] = None
     quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
@@ -256,7 +315,9 @@ def result(data, message: str, total: Optional[int] = None):
     }
 
 
-async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> None:
+async def project_or_404(
+    db: AsyncSession, project_id: UUID, org_id: str, *, user: Optional[dict] = None
+) -> None:
     found = await db.execute(
         text("""
         SELECT 1 FROM projects.projects
@@ -266,6 +327,8 @@ async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> Non
     )
     if not found.scalar():
         raise HTTPException(status_code=404, detail="Project not found")
+    if user is not None:
+        await require_project_access(db, user, project_id)
 
 
 async def site_or_404(
@@ -284,8 +347,25 @@ async def site_or_404(
         raise HTTPException(status_code=404, detail="Site not found")
 
 
+async def weekly_budget_project_guard(db: AsyncSession, budget_id: UUID, user: dict) -> None:
+    """404 unless the weekly budget exists and sits on a project the caller
+    may see. Runs before any write so out-of-scope budgets are untouched."""
+    project_id = (
+        await db.execute(
+            text("""
+            SELECT project_id FROM projects.weekly_budgets
+            WHERE id=:budget_id AND organization_id=:org_id AND is_deleted=false
+        """),
+            {"budget_id": budget_id, "org_id": user["org_id"]},
+        )
+    ).scalar()
+    if project_id is None:
+        raise HTTPException(status_code=404, detail="Weekly site budget not found.")
+    await require_project_access(db, user, project_id)
+
+
 async def report_or_404(
-    db: AsyncSession, report_id: UUID, org_id: str
+    db: AsyncSession, report_id: UUID, org_id: str, *, user: Optional[dict] = None
 ) -> dict[str, Any]:
     row = (
         (
@@ -302,6 +382,8 @@ async def report_or_404(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Daily site report not found")
+    if user is not None:
+        await require_project_access(db, user, row["project_id"])
     return dict(row)
 
 
@@ -390,16 +472,19 @@ async def process_verified_material_request(
             "purchase_requisition_id": str(request_row["purchase_requisition_id"]) if request_row.get("purchase_requisition_id") else None,
         }
 
-    item = await inventory_item(db, request_row["item_id"], user["org_id"])
-    available_stock = await inventory_service.stock_balance(
-        db,
-        org_id=user["org_id"],
-        item_id=request_row["item_id"],
-        store_id=request_row.get("store_id"),
-    )
+    item = None
+    available_stock = Decimal("0")
+    if request_row.get("item_id"):
+        item = await inventory_item(db, request_row["item_id"], user["org_id"])
+        available_stock = await inventory_service.stock_balance(
+            db,
+            org_id=user["org_id"],
+            item_id=request_row["item_id"],
+            store_id=request_row.get("store_id"),
+        )
     requested_quantity = Decimal(str(request_row["requested_quantity"]))
     unit_cost = Decimal(str(request_row.get("unit_cost") or 0))
-    issue_qty = min(requested_quantity, max(available_stock, Decimal("0")))
+    issue_qty = min(requested_quantity, max(available_stock, Decimal("0"))) if request_row.get("item_id") else Decimal("0")
     shortfall_qty = requested_quantity - issue_qty
     status_value = (
         "fulfilled_from_stock"
@@ -495,10 +580,10 @@ async def process_verified_material_request(
             {
                 "org_id": user["org_id"],
                 "requisition_id": requisition_id,
-                "item_id": request_row["item_id"],
-                "description": item.get("item_name") or item.get("item_code") or "Site material shortfall",
+                "item_id": request_row.get("item_id"),
+                "description": (item.get("item_name") if item else None) or request_row.get("material_description") or (item.get("item_code") if item else None) or "Site material shortfall",
                 "quantity": shortfall_qty,
-                "uom": item.get("unit_of_measure") or "each",
+                "uom": (item.get("unit_of_measure") if item else None) or request_row.get("unit_of_measure") or "each",
                 "unit_cost": unit_cost,
                 "work_package": request_row.get("work_package"),
                 "notes": f"Generated from engineer-verified material request {request_row['request_number']}",
@@ -795,16 +880,17 @@ async def list_sites(
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("s.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT s.*, p.name AS project_name
         FROM projects.sites s
         JOIN projects.projects p ON p.id=s.project_id AND p.organization_id=s.organization_id
-        WHERE s.organization_id=:org_id AND s.is_deleted=false
+        WHERE s.organization_id=:org_id AND s.is_deleted=false AND {scope_sql}
           AND (CAST(:project_id AS uuid) IS NULL OR s.project_id=CAST(:project_id AS uuid))
         ORDER BY s.name
     """),
-        {"org_id": user["org_id"], "project_id": project_id},
+        {"org_id": user["org_id"], "project_id": project_id, **scope_params},
     )
     data = [dict(row._mapping) for row in rows]
     return result(data, "Sites listed.", len(data))
@@ -816,7 +902,7 @@ async def create_site(
     user: dict = Depends(require_permission("site_operations.daily_report.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     try:
         site_id = (
             await db.execute(
@@ -852,7 +938,7 @@ async def create_site(
 
 @router.get("/inventory-items")
 async def list_inventory_items(
-    user: dict = Depends(require_permission("site_operations.material.record")),
+    user: dict = Depends(require_any_permission("site_operations.material.record", "site_operations.material.request", "inventory_items.read", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
     rows = await db.execute(
@@ -868,34 +954,36 @@ async def list_inventory_items(
         ) bal ON bal.item_id = i.id
         WHERE i.organization_id=:org_id AND i.is_deleted=false
         ORDER BY i.item_name NULLS LAST, i.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"]},
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 500)]
     return result(data, "Inventory items listed.", len(data))
 
 
 @router.get("/stores")
 async def list_stores(
     project_id: Optional[UUID] = None,
-    user: dict = Depends(require_permission("site_operations.material.record")),
+    user: dict = Depends(require_any_permission("site_operations.material.record", "site_operations.material.request", "inventory_items.read", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("st.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT st.*, p.name AS project_name, s.name AS site_name
         FROM procurement.stores st
         LEFT JOIN projects.projects p ON p.id=st.project_id AND p.organization_id=st.organization_id
         LEFT JOIN projects.sites s ON s.id=st.site_id AND s.organization_id=st.organization_id
         WHERE st.organization_id=:org_id AND st.is_deleted=false
+          AND (st.project_id IS NULL OR {scope_sql})
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
         ORDER BY st.store_type, st.name
-        LIMIT 500
+        LIMIT 501
     """),
-        {"org_id": user["org_id"], "project_id": project_id},
+        {"org_id": user["org_id"], "project_id": project_id, **scope_params},
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 500)]
     return result(data, "Stores listed.", len(data))
 
 
@@ -905,13 +993,82 @@ async def request_site_material(
     user: dict = Depends(require_permission("site_operations.material.request")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     await store_or_404(db, payload.store_id, payload.project_id, user["org_id"])
+    await ensure_site_day_started(db, org_id=user["org_id"], project_id=payload.project_id, on_date=harare_today())
     weekly_budget_id = await ensure_current_weekly_budget(
         db, org_id=user["org_id"], project_id=payload.project_id, site_id=payload.site_id
     )
-    await inventory_item(db, payload.item_id, user["org_id"])
+    if not payload.item_id and not (payload.material_description and payload.material_description.strip()):
+        raise HTTPException(status_code=422, detail="Either item_id or material_description is required.")
+
+    resolved_item_id = payload.item_id
+    candidate_id: Optional[UUID] = None
+    match_type = "catalogue_match"
+    material_desc = (payload.material_description or "").strip()
+    uom = payload.unit_of_measure or "each"
+
+    if resolved_item_id:
+        item = await inventory_item(db, resolved_item_id, user["org_id"])
+        if not material_desc:
+            material_desc = item.get("item_name") or item.get("item_code") or "Material"
+        uom = payload.unit_of_measure or item.get("unit_of_measure") or "each"
+        match_type = "catalogue_match"
+    else:
+        matched_cat = (
+            await db.execute(
+                text("""
+                SELECT id, item_name, unit_of_measure, standard_cost
+                FROM procurement.inventory_items
+                WHERE organization_id=:org_id AND LOWER(TRIM(item_name))=LOWER(TRIM(:name)) AND is_deleted=false
+                LIMIT 1
+            """),
+                {"org_id": user["org_id"], "name": material_desc},
+            )
+        ).mappings().first()
+        if matched_cat:
+            resolved_item_id = matched_cat["id"]
+            uom = payload.unit_of_measure or matched_cat.get("unit_of_measure") or "each"
+            match_type = "catalogue_match"
+        else:
+            norm_key = material_desc.lower().strip()
+            existing_candidate = (
+                await db.execute(
+                    text("""
+                    SELECT id FROM procurement.material_candidates
+                    WHERE organization_id=:org_id AND normalized_key=:norm_key AND is_deleted=false
+                    LIMIT 1
+                """),
+                    {"org_id": user["org_id"], "norm_key": norm_key},
+                )
+            ).mappings().first()
+            if existing_candidate:
+                candidate_id = existing_candidate["id"]
+            else:
+                candidate_id = (
+                    await db.execute(
+                        text("""
+                        INSERT INTO procurement.material_candidates (
+                            organization_id, raw_description, specifications, unit_of_measure,
+                            normalized_key, status, created_by
+                        ) VALUES (
+                            :org_id, :raw_desc, :specs, :uom,
+                            :norm_key, 'provisional', :user_id
+                        ) RETURNING id
+                    """),
+                        {
+                            "org_id": user["org_id"],
+                            "raw_desc": material_desc,
+                            "specs": payload.specifications,
+                            "uom": uom,
+                            "norm_key": norm_key,
+                            "user_id": user["user_id"],
+                        },
+                    )
+                ).scalar()
+            match_type = "new_description"
+
     linked_weekly_item: Optional[dict[str, Any]] = None
     if payload.weekly_budget_item_id:
         linked = (
@@ -947,12 +1104,14 @@ async def request_site_material(
             text("""
         INSERT INTO procurement.material_requests (
             organization_id, request_number, project_id, site_id, store_id, item_id,
+            material_description, specifications, unit_of_measure, candidate_id, match_type,
             requested_by, requested_quantity, issued_quantity, shortfall_quantity,
             unit_cost, total_estimated, required_by_date, priority, status,
             work_package, justification, created_by, is_price_confirmed, weekly_budget_id,
             weekly_budget_item_id, boq_line_item_id, variance_id, engineer_review_status
         ) VALUES (
             :org_id, :request_number, :project_id, :site_id, :store_id, :item_id,
+            :material_description, :specifications, :unit_of_measure, CAST(:candidate_id AS uuid), :match_type,
             :user_id, :requested_quantity, :issued_quantity, :shortfall_quantity,
             :unit_cost, :total_estimated, :required_by_date, :priority, :status,
             :work_package, :justification, :user_id, :is_price_confirmed, :weekly_budget_id,
@@ -965,7 +1124,12 @@ async def request_site_material(
                 "project_id": payload.project_id,
                 "site_id": payload.site_id,
                 "store_id": payload.store_id,
-                "item_id": payload.item_id,
+                "item_id": resolved_item_id,
+                "material_description": material_desc,
+                "specifications": payload.specifications,
+                "unit_of_measure": uom,
+                "candidate_id": str(candidate_id) if candidate_id else None,
+                "match_type": match_type,
                 "user_id": user["user_id"],
                 "requested_quantity": payload.quantity,
                 "issued_quantity": Decimal("0"),
@@ -986,6 +1150,16 @@ async def request_site_material(
         )
     ).scalar()
 
+    if candidate_id:
+        await db.execute(
+            text("""
+            UPDATE procurement.material_candidates
+            SET request_id=:request_id, updated_at=NOW()
+            WHERE id=:candidate_id AND organization_id=:org_id
+        """),
+            {"request_id": material_request_id, "candidate_id": candidate_id, "org_id": user["org_id"]},
+        )
+
     await emit_event(
         db,
         user=user,
@@ -997,6 +1171,7 @@ async def request_site_material(
             "request_number": request_number,
             "requested_quantity": str(payload.quantity),
             "engineer_review_status": "pending",
+            "match_type": match_type,
         },
     )
     await emit_role_notification(
@@ -1014,6 +1189,9 @@ async def request_site_material(
             "request_number": request_number,
             "status": "awaiting_engineer_review",
             "engineer_review_status": "pending",
+            "match_type": match_type,
+            "candidate_id": str(candidate_id) if candidate_id else None,
+            "material_description": material_desc,
         },
         "Site material request recorded for Site Engineer sign-off.",
     )
@@ -1023,11 +1201,14 @@ async def request_site_material(
 async def list_site_material_requests(
     project_id: Optional[UUID] = None,
     engineer_status: Optional[str] = Query(default=None),
-    user: dict = Depends(require_permission("site_operations.engineer_portal.read")),
+    user: dict = Depends(require_any_permission("site_operations.engineer_portal.read", "site_operations.material.request", "site_operations.read")),
     db: AsyncSession = Depends(get_db),
 ):
     filters = ["mr.organization_id=:org_id", "mr.is_deleted=false"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "engineer_status": engineer_status}
+    scope_sql, scope_params = project_scope_sql("mr.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("mr.project_id=:project_id")
     if engineer_status and engineer_status != "all":
@@ -1043,11 +1224,11 @@ async def list_site_material_requests(
         LEFT JOIN core.users requester ON requester.id=mr.requested_by AND requester.organization_id=mr.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY mr.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Site material requests listed.", len(data))
 
 
@@ -1073,6 +1254,7 @@ async def decide_site_material_request_engineer(
     )
     if not request_row:
         raise HTTPException(status_code=404, detail="Material request not found")
+    await require_project_access(db, user, request_row["project_id"])
     request_data = dict(request_row)
     if request_data.get("engineer_review_status") != "pending":
         raise HTTPException(status_code=409, detail="Material request has already received engineer review.")
@@ -1126,6 +1308,157 @@ async def decide_site_material_request_engineer(
     return result(processed, f"Material request {payload.decision} by Site Engineer.")
 
 
+@router.get("/materials/suggest")
+async def suggest_materials(
+    q: str = Query(..., min_length=1),
+    store_id: Optional[UUID] = Query(default=None),
+    user: dict = Depends(require_permission("site_operations.material.request")),
+    db: AsyncSession = Depends(get_db),
+):
+    query_pattern = f"%{q.strip()}%"
+    cat_rows = await db.execute(
+        text("""
+        SELECT i.id, i.item_name, i.item_code, i.unit_of_measure, i.standard_cost,
+               COALESCE((
+                   SELECT SUM(sl.quantity)
+                   FROM procurement.stock_ledger sl
+                   WHERE sl.organization_id=i.organization_id AND sl.item_id=i.id
+                     AND (CAST(:store_id AS uuid) IS NULL OR sl.store_id=CAST(:store_id AS uuid))
+               ), 0) AS stock_balance
+        FROM procurement.inventory_items i
+        WHERE i.organization_id=:org_id AND i.is_deleted=false
+          AND (i.item_name ILIKE :q OR i.item_code ILIKE :q)
+        ORDER BY i.item_name
+        LIMIT 10
+    """),
+        {"org_id": user["org_id"], "q": query_pattern, "store_id": store_id},
+    )
+    catalogue_matches = [
+        {
+            "id": str(r["id"]),
+            "name": r["item_name"],
+            "code": r["item_code"],
+            "unit_of_measure": r["unit_of_measure"] or "each",
+            "standard_cost": float(r["standard_cost"] or 0),
+            "stock_balance": float(r["stock_balance"] or 0),
+            "type": "catalogue",
+        }
+        for r in cat_rows.mappings().all()
+    ]
+
+    cand_rows = await db.execute(
+        text("""
+        SELECT id, raw_description, specifications, unit_of_measure, status, canonical_item_id
+        FROM procurement.material_candidates
+        WHERE organization_id=:org_id AND is_deleted=false
+          AND raw_description ILIKE :q
+        ORDER BY created_at DESC
+        LIMIT 5
+    """),
+        {"org_id": user["org_id"], "q": query_pattern},
+    )
+    candidate_matches = [
+        {
+            "id": str(r["id"]),
+            "name": r["raw_description"],
+            "specifications": r["specifications"],
+            "unit_of_measure": r["unit_of_measure"] or "each",
+            "status": r["status"],
+            "type": "candidate",
+        }
+        for r in cand_rows.mappings().all()
+    ]
+
+    return result(
+        {"catalogue": catalogue_matches, "candidates": candidate_matches},
+        "Material suggestions retrieved.",
+        len(catalogue_matches) + len(candidate_matches),
+    )
+
+
+class PromoteCandidatePayload(Payload):
+    category: Optional[str] = Field(default="General Building Materials", max_length=80)
+    standard_cost: Optional[Decimal] = Field(default=Decimal("0"), ge=0)
+    notes: Optional[str] = None
+
+
+@router.post("/materials/candidates/{candidate_id}/promote")
+async def promote_material_candidate(
+    candidate_id: UUID,
+    payload: PromoteCandidatePayload,
+    user: dict = Depends(require_permission("site_operations.engineer_verify")),
+    db: AsyncSession = Depends(get_db),
+):
+    candidate = (
+        await db.execute(
+            text("""
+            SELECT * FROM procurement.material_candidates
+            WHERE id=:candidate_id AND organization_id=:org_id AND is_deleted=false
+        """),
+            {"candidate_id": candidate_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Material candidate not found.")
+    if candidate["status"] == "promoted" and candidate.get("canonical_item_id"):
+        return result({"canonical_item_id": str(candidate["canonical_item_id"])}, "Candidate already promoted.")
+
+    item_code = await next_reference(db, user["org_id"], "inventory_item")
+    item_id = (
+        await db.execute(
+            text("""
+            INSERT INTO procurement.inventory_items (
+                organization_id, item_name, item_code, category, unit_of_measure,
+                standard_cost, created_by
+            ) VALUES (
+                :org_id, :name, :code, :category, :uom,
+                :cost, :user_id
+            ) RETURNING id
+        """),
+            {
+                "org_id": user["org_id"],
+                "name": candidate["raw_description"],
+                "code": item_code,
+                "category": payload.category or "General Building Materials",
+                "uom": candidate["unit_of_measure"] or "each",
+                "cost": payload.standard_cost or Decimal("0"),
+                "user_id": user["user_id"],
+            },
+        )
+    ).scalar()
+
+    await db.execute(
+        text("""
+        UPDATE procurement.material_candidates
+        SET status='promoted', canonical_item_id=:item_id, resolved_by=:user_id,
+            resolved_at=NOW(), notes=:notes, updated_at=NOW()
+        WHERE id=:candidate_id AND organization_id=:org_id
+    """),
+        {
+            "candidate_id": candidate_id,
+            "item_id": item_id,
+            "user_id": user["user_id"],
+            "notes": payload.notes,
+            "org_id": user["org_id"],
+        },
+    )
+
+    await db.execute(
+        text("""
+        UPDATE procurement.material_requests
+        SET item_id=:item_id, match_type='catalogue_match', updated_at=NOW()
+        WHERE candidate_id=:candidate_id AND organization_id=:org_id AND item_id IS NULL
+    """),
+        {"candidate_id": candidate_id, "item_id": item_id, "org_id": user["org_id"]},
+    )
+
+    await db.commit()
+    return result(
+        {"canonical_item_id": str(item_id), "item_code": item_code},
+        "Material candidate successfully promoted to catalogue item.",
+    )
+
+
 @router.get("/weekly-budgets")
 async def list_weekly_budgets(
     project_id: Optional[UUID] = None,
@@ -1135,6 +1468,9 @@ async def list_weekly_budgets(
 ):
     filters = ["wb.organization_id=:org_id", "wb.is_deleted=false"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "status": status_filter}
+    scope_sql, scope_params = project_scope_sql("wb.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("wb.project_id=:project_id")
     if status_filter and status_filter != "all":
@@ -1150,11 +1486,11 @@ async def list_weekly_budgets(
         LEFT JOIN core.users approver ON approver.id=wb.approved_by AND approver.organization_id=wb.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY wb.week_start DESC, wb.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Weekly site budgets listed.", len(data))
 
 
@@ -1164,7 +1500,7 @@ async def get_execution_budget(
     user: dict = Depends(require_permission("projects.execution_budget.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, project_id, user["org_id"])
+    await project_or_404(db, project_id, user["org_id"], user=user)
     budget = (
         (
             await db.execute(
@@ -1197,8 +1533,51 @@ async def get_execution_budget(
         {"org_id": user["org_id"], "project_id": project_id},
     )
     data = [dict(row._mapping) for row in rows]
+    summary_row = (
+        await db.execute(
+            text("""
+            SELECT
+                COALESCE((
+                    SELECT SUM(committed_amount)
+                    FROM finance.commitments
+                    WHERE organization_id=:org_id AND project_id=:project_id
+                      AND status <> 'cancelled' AND is_deleted=false
+                ), 0) AS total_committed,
+                COALESCE((
+                    SELECT SUM(amount)
+                    FROM finance.cost_transactions
+                    WHERE organization_id=:org_id AND project_id=:project_id
+                ), 0) AS total_actual_cost,
+                COALESCE((
+                    SELECT SUM(amount)
+                    FROM finance.cost_transactions
+                    WHERE organization_id=:org_id AND project_id=:project_id
+                      AND cost_category='materials'
+                ), 0) AS material_actual_cost
+        """),
+            {"org_id": user["org_id"], "project_id": project_id},
+        )
+    ).mappings().first()
+
+    total_budget = Decimal(str(budget["total_amount"])) if budget else Decimal("0")
+    total_committed = Decimal(str(summary_row["total_committed"] if summary_row else 0))
+    total_actual = Decimal(str(summary_row["total_actual_cost"] if summary_row else 0))
+    material_actual = Decimal(str(summary_row["material_actual_cost"] if summary_row else 0))
+    headroom = max(Decimal("0"), total_budget - total_committed - total_actual)
+
     return result(
-        {"budget": dict(budget) if budget else None, "line_items": data},
+        {
+            "budget": dict(budget) if budget else None,
+            "line_items": data,
+            "summary": {
+                "total_budget": float(total_budget),
+                "committed_spend": float(total_committed),
+                "recognized_actual_spend": float(total_actual),
+                "material_consumed_spend": float(material_actual),
+                "forecast_headroom": float(headroom),
+                "budget_explanation": "Headroom reflects approved budget minus purchase commitments and recognized actual costs. Material consumption updates actuals without charging purchase commitments twice.",
+            },
+        },
         "Execution budget allowances loaded.",
         len(data),
     )
@@ -1210,7 +1589,7 @@ async def create_weekly_budget(
     user: dict = Depends(require_permission("projects.weekly_budget.submit")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     source_budget_id = (
         await db.execute(
@@ -1279,6 +1658,25 @@ async def create_weekly_budget(
     total_planned = Decimal("0")
     variance_count = 0
     for line in payload.lines:
+        if line.boq_line_item_id is None and (line.work_package or line.description):
+            matched_boq = (await db.execute(
+                text("""
+                SELECT id FROM finance.boq_line_items
+                WHERE project_id = CAST(:proj_id AS uuid)
+                  AND organization_id = CAST(:org_id AS uuid)
+                  AND is_deleted = false AND status != 'superseded'
+                  AND (
+                    (NULLIF(:wp, '') IS NOT NULL AND LOWER(item_no) = LOWER(:wp))
+                    OR (NULLIF(:desc, '') IS NOT NULL AND LOWER(description) = LOWER(:desc))
+                  )
+                ORDER BY (contract_qty - qty_measured_to_date) DESC
+                LIMIT 1
+            """),
+                {"proj_id": payload.project_id, "org_id": user["org_id"], "wp": line.work_package or "", "desc": line.description or ""},
+            )).scalar()
+            if matched_boq:
+                line.boq_line_item_id = matched_boq
+
         allowance = await execution_allowance_for_line(
             db, org_id=user["org_id"], line_item_id=line.boq_line_item_id
         )
@@ -1380,6 +1778,7 @@ async def decide_weekly_budget(
     user: dict = Depends(require_permission("projects.weekly_budget.approve")),
     db: AsyncSession = Depends(get_db),
 ):
+    await weekly_budget_project_guard(db, budget_id, user)
     new_status = "approved" if payload.decision == "approved" else "rejected"
     row = await db.execute(
         text("""
@@ -1416,6 +1815,7 @@ async def list_weekly_budget_items(
     user: dict = Depends(require_permission("projects.weekly_budget.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    await weekly_budget_project_guard(db, budget_id, user)
     rows = await db.execute(
         text("""
         SELECT wbi.*, v.variation_number, v.status AS variation_status,
@@ -1440,6 +1840,9 @@ async def list_site_variances(
 ):
     filters = ["v.organization_id=:org_id", "v.is_deleted=false", "v.source_type='weekly_budget_item'"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "status": status_filter}
+    scope_sql, scope_params = project_scope_sql("v.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("v.project_id=:project_id")
     if status_filter and status_filter != "all":
@@ -1454,11 +1857,11 @@ async def list_site_variances(
         LEFT JOIN projects.weekly_budget_items wbi ON wbi.id=v.weekly_budget_item_id AND wbi.organization_id=v.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY v.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Site-originated variances listed.", len(data))
 
 
@@ -1484,6 +1887,7 @@ async def review_site_variance_qs(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Variance not found.")
+    await require_project_access(db, user, row["project_id"])
     status_value = "submitted" if payload.decision == "reviewed" else "rejected"
     await db.execute(
         text("""
@@ -1549,6 +1953,7 @@ async def decide_site_variance_client(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Variance not found.")
+    await require_project_access(db, user, row["project_id"])
     if not row["client_approval_required"]:
         raise HTTPException(status_code=409, detail="Client approval is not required for this variance.")
     status_value = "submitted" if payload.decision == "approved" else "rejected"
@@ -1593,13 +1998,16 @@ async def list_site_grns(
 ):
     filters = ["g.organization_id=:org_id", "g.is_deleted=false"]
     params: dict[str, Any] = {"org_id": user["org_id"], "project_id": project_id, "engineer_status": engineer_status}
+    scope_sql, scope_params = project_scope_sql("g.project_id", await visible_project_ids(db, user))
+    filters.append(scope_sql)
+    params.update(scope_params)
     if project_id:
         filters.append("g.project_id=:project_id")
     if engineer_status and engineer_status != "all":
         filters.append("g.engineer_review_status=:engineer_status")
     rows = await db.execute(
         text(f"""
-        SELECT g.*, p.name AS project_name, s.name AS supplier_name, st.name AS store_name,
+        SELECT g.*, p.name AS project_name, s.supplier_name AS supplier_name, st.name AS store_name,
                receiver.full_name AS received_by_name
         FROM procurement.goods_received_notes g
         LEFT JOIN projects.projects p ON p.id=g.project_id AND p.organization_id=g.organization_id
@@ -1608,11 +2016,11 @@ async def list_site_grns(
         LEFT JOIN core.users receiver ON receiver.id=g.received_by AND receiver.organization_id=g.organization_id
         WHERE {' AND '.join(filters)}
         ORDER BY g.created_at DESC
-        LIMIT 200
+        LIMIT 201
     """),
         params,
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 200)]
     return result(data, "Site GRNs listed.", len(data))
 
 
@@ -1640,15 +2048,18 @@ async def get_site_engineer_workspace(
     )
     assigned = [dict(row._mapping) for row in assigned_result]
     if not assigned:
+        # Fall back to the user's visible projects (team allocations etc.) -
+        # never the whole org unless they hold projects.read_all.
+        scope_sql, scope_params = project_scope_sql("id", await visible_project_ids(db, user))
         fallback_result = await db.execute(
-            text("""
+            text(f"""
             SELECT id, name, project_code, status, NULL::uuid AS site_id, NULL::text AS site_name
             FROM projects.projects
-            WHERE organization_id=:org_id AND is_deleted=false
+            WHERE organization_id=:org_id AND is_deleted=false AND {scope_sql}
             ORDER BY name
             LIMIT 100
         """),
-            {"org_id": user["org_id"]},
+            {"org_id": user["org_id"], **scope_params},
         )
         assigned = [dict(row._mapping) for row in fallback_result]
     return result({"projects": assigned}, "Site Engineer workspace loaded.")
@@ -1676,6 +2087,7 @@ async def decide_grn_engineer(
     )
     if not grn:
         raise HTTPException(status_code=404, detail="GRN not found.")
+    await require_project_access(db, user, grn["project_id"])
     if str(grn["received_by"]) == str(user["user_id"]):
         raise HTTPException(status_code=403, detail="Self-verification is not permitted for GRNs.")
     review_status = "verified" if payload.decision == "approved" else "rejected"
@@ -1708,11 +2120,12 @@ async def decide_grn_engineer(
 async def list_daily_reports(
     project_id: Optional[UUID] = None,
     status_filter: Optional[str] = Query(default=None, alias="status"),
-    user: dict = Depends(require_permission("site_operations.daily_report.read")),
+    user: dict = Depends(require_any_permission("site_operations.daily_report.read", "site_operations.read", "site_operations.daily_report.create")),
     db: AsyncSession = Depends(get_db),
 ):
+    scope_sql, scope_params = project_scope_sql("r.project_id", await visible_project_ids(db, user))
     rows = await db.execute(
-        text("""
+        text(f"""
         SELECT r.*, p.name AS project_name, s.name AS site_name,
                COUNT(l.id) FILTER (WHERE l.is_deleted=false) AS labour_lines,
                COUNT(e.id) FILTER (WHERE e.is_deleted=false) AS equipment_lines,
@@ -1723,7 +2136,7 @@ async def list_daily_reports(
         LEFT JOIN projects.daily_report_labour l ON l.report_id=r.id AND l.organization_id=r.organization_id
         LEFT JOIN projects.daily_report_equipment e ON e.report_id=r.id AND e.organization_id=r.organization_id
         LEFT JOIN projects.daily_report_materials m ON m.report_id=r.id AND m.organization_id=r.organization_id
-        WHERE r.organization_id=:org_id AND r.is_deleted=false
+        WHERE r.organization_id=:org_id AND r.is_deleted=false AND {scope_sql}
           AND (CAST(:project_id AS uuid) IS NULL OR r.project_id=CAST(:project_id AS uuid))
           AND (CAST(:status_filter AS varchar) IS NULL OR r.status=CAST(:status_filter AS varchar))
         GROUP BY r.id, p.name, s.name
@@ -1734,6 +2147,7 @@ async def list_daily_reports(
             "org_id": user["org_id"],
             "project_id": project_id,
             "status_filter": status_filter,
+            **scope_params,
         },
     )
     data = [dict(row._mapping) for row in rows]
@@ -1746,7 +2160,7 @@ async def create_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    await project_or_404(db, payload.project_id, user["org_id"])
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
     await site_or_404(db, payload.site_id, payload.project_id, user["org_id"])
     if not (
         payload.labour_count_completed
@@ -1757,29 +2171,102 @@ async def create_daily_report(
             status_code=409,
             detail="Labour count, toolbox talk and PPE check must be ticked before the site day can start.",
         )
+    await ensure_site_day_started(db, org_id=user["org_id"], project_id=payload.project_id, on_date=payload.report_date)
     values = payload.model_dump(exclude={"weather"})
     try:
-        report_id = (
+        existing = (
             await db.execute(
                 text("""
-            INSERT INTO projects.daily_site_reports (
-                organization_id, project_id, site_id, report_date, shift, weather, planned_work,
-                actual_work, delays, safety_notes, labour_count_completed,
-                toolbox_talk_completed, ppe_check_completed, cost_exposure, created_by
-            ) VALUES (
-                :org_id, :project_id, :site_id, :report_date, :shift, CAST(:weather AS jsonb),
-                :planned_work, :actual_work, :delays, :safety_notes, :labour_count_completed,
-                :toolbox_talk_completed, :ppe_check_completed, :cost_exposure, :user_id
-            ) RETURNING id
-        """),
+                SELECT id FROM projects.daily_site_reports
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND report_date = :report_date
+                  AND shift = :shift
+                  AND is_deleted = false
+                LIMIT 1
+            """),
                 {
-                    **values,
-                    "weather": json.dumps(payload.weather),
                     "org_id": user["org_id"],
-                    "user_id": user["user_id"],
+                    "project_id": payload.project_id,
+                    "report_date": payload.report_date,
+                    "shift": payload.shift,
                 },
             )
         ).scalar()
+
+        if existing:
+            await db.execute(
+                text("""
+                UPDATE projects.daily_site_reports
+                SET planned_work = COALESCE(NULLIF(:planned_work, ''), planned_work),
+                    actual_work = COALESCE(NULLIF(:actual_work, ''), actual_work),
+                    delays = COALESCE(NULLIF(:delays, ''), delays),
+                    safety_notes = COALESCE(NULLIF(:safety_notes, ''), safety_notes),
+                    cost_exposure = CASE WHEN :cost_exposure > 0 THEN :cost_exposure ELSE cost_exposure END,
+                    updated_at = NOW()
+                WHERE id = :report_id
+            """),
+                {
+                    **values,
+                    "report_id": existing,
+                },
+            )
+            report_id = existing
+        else:
+            report_id = (
+                await db.execute(
+                    text("""
+                INSERT INTO projects.daily_site_reports (
+                    organization_id, project_id, site_id, report_date, shift, weather, planned_work,
+                    actual_work, delays, safety_notes, labour_count_completed,
+                    toolbox_talk_completed, ppe_check_completed, cost_exposure, created_by
+                ) VALUES (
+                    CAST(:org_id AS uuid), CAST(:project_id AS uuid), :site_id, :report_date, :shift, CAST(:weather AS jsonb),
+                    :planned_work, :actual_work, :delays, :safety_notes, :labour_count_completed,
+                    :toolbox_talk_completed, :ppe_check_completed, :cost_exposure, CAST(:user_id AS uuid)
+                ) RETURNING id
+            """),
+                    {
+                        **values,
+                        "weather": json.dumps(payload.weather),
+                        "org_id": user["org_id"],
+                        "user_id": user["user_id"],
+                    },
+                )
+            ).scalar()
+
+        briefing_id = (
+            await db.execute(
+                text("""
+                SELECT id FROM projects.site_day_briefings
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND briefing_date = :report_date
+                  AND shift = :shift
+                  AND is_deleted = false
+                LIMIT 1
+            """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": payload.project_id,
+                    "report_date": payload.report_date,
+                    "shift": payload.shift,
+                },
+            )
+        ).scalar()
+        if briefing_id:
+            await db.execute(
+                text("""
+                UPDATE projects.daily_site_reports
+                SET briefing_id = :bid
+                WHERE id = :rid AND briefing_id IS NULL
+            """),
+                {"bid": briefing_id, "rid": report_id},
+            )
+            await sync_attendance_to_daily_report(
+                db, briefing_id=briefing_id, report_id=report_id, org_id=user["org_id"]
+            )
+
         await emit_event(
             db,
             user=user,
@@ -1789,14 +2276,17 @@ async def create_daily_report(
             project_id=payload.project_id,
             event_data=payload.model_dump(mode="json"),
         )
-        await emit_role_notification(
-            db,
-            org_id=user["org_id"],
-            role_names=["Site Engineer"],
-            title="Toolbox and start-of-day checks captured",
-            message=f"Daily report for {payload.report_date} has labour count, toolbox talk and PPE checks ready for technical sign-off.",
-            action_url="/portal/site-engineer",
-        )
+        try:
+            await emit_role_notification(
+                db,
+                org_id=user["org_id"],
+                role_names=["Site Engineer"],
+                title="Toolbox and start-of-day checks captured",
+                message=f"Daily report for {payload.report_date} has labour count, toolbox talk and PPE checks ready for technical sign-off.",
+                action_url="/portal/site-engineer",
+            )
+        except Exception:
+            pass
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -1813,7 +2303,174 @@ async def get_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+
+    if report.get("status") == "draft":
+        briefing_id = report.get("briefing_id")
+        if not briefing_id:
+            b_row = (
+                await db.execute(
+                    text("""
+                    SELECT id FROM projects.site_day_briefings
+                    WHERE organization_id = CAST(:org_id AS uuid)
+                      AND project_id = CAST(:project_id AS uuid)
+                      AND briefing_date = :report_date
+                      AND shift = :shift
+                      AND is_deleted = false
+                    LIMIT 1
+                """),
+                    {
+                        "org_id": user["org_id"],
+                        "project_id": report["project_id"],
+                        "report_date": report["report_date"],
+                        "shift": report.get("shift", "day"),
+                    },
+                )
+            ).scalar()
+            if b_row:
+                briefing_id = b_row
+                await db.execute(
+                    text("""
+                    UPDATE projects.daily_site_reports
+                    SET briefing_id = :bid
+                    WHERE id = :rid
+                """),
+                    {"bid": b_row, "rid": report_id},
+                )
+                report["briefing_id"] = briefing_id
+
+        try:
+            await sync_attendance_to_daily_report(
+                db,
+                briefing_id=briefing_id,
+                report_id=report_id,
+                org_id=user["org_id"],
+                project_id=report["project_id"],
+                report_date=report["report_date"],
+            )
+            await db.commit()
+        except Exception as exc:
+            logger.warning(f"Failed to sync attendance in get_daily_report: {exc}")
+            await db.rollback()
+
+        # Auto-sync active plant deployed to this project into equipment lines
+        try:
+            active_fleet = (
+                await db.execute(
+                    text("""
+                    SELECT f.id AS fleet_id,
+                           COALESCE(f.vehicle_registration, f.asset_code, 'Equipment') AS asset_name,
+                           f.vehicle_registration AS registration_number,
+                           COALESCE(f.hourly_charge_rate, f.hourly_operating_cost, 0) AS cost_rate
+                    FROM fleet.fleet f
+                    WHERE f.organization_id = CAST(:org_id AS uuid)
+                      AND f.current_project_id = CAST(:project_id AS uuid)
+                      AND f.is_deleted = false
+                      AND (f.operational_status IS NULL OR f.operational_status IN ('active', 'in_use', 'operational', 'available', 'dispatched'))
+                """),
+                    {"org_id": user["org_id"], "project_id": report["project_id"]},
+                )
+            ).mappings().all()
+
+            for fl in active_fleet:
+                already_eq = (
+                    await db.execute(
+                        text("""
+                        SELECT id FROM projects.daily_report_equipment
+                        WHERE report_id = :report_id AND fleet_id = :fleet_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+                        LIMIT 1
+                    """),
+                        {"report_id": report_id, "fleet_id": fl["fleet_id"], "org_id": user["org_id"]},
+                    )
+                ).scalar()
+                if not already_eq:
+                    await db.execute(
+                        text("""
+                        INSERT INTO projects.daily_report_equipment (
+                            organization_id, report_id, fleet_id, operating_hours, idle_hours, fuel_litres, cost_rate, notes, created_by
+                        ) VALUES (
+                            CAST(:org_id AS uuid), :report_id, :fleet_id, 8, 0, 0, :cost_rate, 'Auto-synced from active project plant', CAST(:user_id AS uuid)
+                        )
+                    """),
+                        {
+                            "org_id": user["org_id"],
+                            "report_id": report_id,
+                            "fleet_id": fl["fleet_id"],
+                            "cost_rate": fl["cost_rate"],
+                            "user_id": user["user_id"],
+                        },
+                    )
+            await db.commit()
+        except Exception as exc:
+            logger.warning(f"Failed to auto-sync fleet in get_daily_report: {exc}")
+            await db.rollback()
+
+        # Auto-sync store issues / consumption on this date into daily_report_materials
+        try:
+            issues = (
+                await db.execute(
+                    text("""
+                    SELECT sl.id, sl.item_id, sl.store_id, sl.quantity, COALESCE(sl.unit_cost, 0) AS unit_cost, sl.reference
+                    FROM procurement.stock_ledger sl
+                    WHERE sl.organization_id = CAST(:org_id AS uuid)
+                      AND (
+                        sl.project_id = CAST(:project_id AS uuid)
+                        OR sl.store_id IN (
+                            SELECT s.id FROM procurement.stores s
+                            WHERE s.organization_id = CAST(:org_id AS uuid)
+                              AND s.project_id = CAST(:project_id AS uuid)
+                        )
+                      )
+                      AND sl.movement_type IN ('issue', 'consumption', 'out')
+                      AND (DATE(sl.movement_at) = CAST(:report_date AS date) OR DATE(sl.created_at) = CAST(:report_date AS date))
+                """),
+                    {
+                        "org_id": user["org_id"],
+                        "project_id": report["project_id"],
+                        "report_date": str(report["report_date"]),
+                    },
+                )
+            ).mappings().all()
+
+            for iss in issues:
+                already_mat = (
+                    await db.execute(
+                        text("""
+                        SELECT id FROM projects.daily_report_materials
+                        WHERE report_id = :report_id AND item_id = :item_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+                        LIMIT 1
+                    """),
+                        {"report_id": report_id, "item_id": iss["item_id"], "org_id": user["org_id"]},
+                    )
+                ).scalar()
+                if not already_mat:
+                    try:
+                        async with db.begin_nested():
+                            await db.execute(
+                                text("""
+                                INSERT INTO projects.daily_report_materials (
+                                    organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by
+                                ) VALUES (
+                                    CAST(:org_id AS uuid), :report_id, :item_id, :store_id, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:user_id AS uuid)
+                                )
+                            """),
+                                {
+                                    "org_id": user["org_id"],
+                                    "report_id": report_id,
+                                    "item_id": iss["item_id"],
+                                    "store_id": iss["store_id"],
+                                    "qty": iss["quantity"],
+                                    "cost": iss["unit_cost"] or 0,
+                                    "ref": iss["reference"] or "",
+                                    "user_id": user["user_id"],
+                                },
+                            )
+                    except Exception as inner_exc:
+                        logger.warning(f"Skipped duplicate or invalid material line in get_daily_report: {inner_exc}")
+            await db.commit()
+        except Exception as exc:
+            logger.warning(f"Failed to auto-sync materials in get_daily_report: {exc}")
+
     tables = {
         "labour": ("projects.daily_report_labour", "created_at"),
         "equipment": ("projects.daily_report_equipment", "created_at"),
@@ -1854,6 +2511,100 @@ async def get_daily_report(
         {"report_id": report_id, "org_id": user["org_id"]},
     )
     detail["approvals"] = [dict(row._mapping) for row in approvals]
+
+    # Material Receipts (GRNs received at site on this report date)
+    receipts_rows = await db.execute(
+        text("""
+        SELECT grn.id, grn.grn_number, grn.delivery_note_ref, grn.delivery_date, grn.status,
+               s.supplier_name AS supplier_name,
+               gl.id AS line_id, gl.item_id, gl.description, gl.quantity_received, gl.unit_price,
+               i.item_code, i.unit_of_measure
+        FROM procurement.goods_received_notes grn
+        LEFT JOIN procurement.suppliers s ON s.id=grn.supplier_id AND s.organization_id=grn.organization_id
+        JOIN procurement.grn_lines gl ON gl.grn_id=grn.id AND gl.organization_id=grn.organization_id AND gl.is_deleted=false
+        LEFT JOIN procurement.inventory_items i ON i.id=gl.item_id AND i.organization_id=gl.organization_id
+        WHERE grn.organization_id=:org_id AND grn.project_id=:project_id
+          AND grn.delivery_date=:report_date AND grn.is_deleted=false
+        ORDER BY grn.created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": report["project_id"], "report_date": report["report_date"]},
+    )
+    detail["material_receipts"] = [dict(r._mapping) for r in receipts_rows]
+
+    # Material Issues & Consumption (stock movements from store to site on this date)
+    issues_rows = await db.execute(
+        text("""
+        SELECT sl.id, sl.item_id, sl.movement_type, sl.quantity, sl.unit_cost, sl.total_cost,
+               sl.reference, sl.created_at,
+               i.item_name, i.item_code, i.unit_of_measure,
+               st.name AS store_name
+        FROM procurement.stock_ledger sl
+        JOIN procurement.inventory_items i ON i.id=sl.item_id AND i.organization_id=sl.organization_id
+        LEFT JOIN procurement.stores st ON st.id=sl.store_id AND st.organization_id=sl.organization_id
+        WHERE sl.organization_id=:org_id AND sl.project_id=:project_id
+          AND sl.movement_type IN ('issue', 'consumption')
+          AND DATE(sl.created_at)=:report_date
+        ORDER BY sl.created_at DESC
+    """),
+        {"org_id": user["org_id"], "project_id": report["project_id"], "report_date": report["report_date"]},
+    )
+    detail["material_issues"] = [dict(r._mapping) for r in issues_rows]
+
+    # Open / Relevant Material Requests for this project on this date
+    requests_rows = await db.execute(
+        text("""
+        SELECT mr.id, mr.request_number, mr.material_description, mr.requested_quantity,
+               mr.unit_of_measure, mr.status, mr.engineer_review_status, mr.priority,
+               i.item_name, i.item_code
+        FROM procurement.material_requests mr
+        LEFT JOIN procurement.inventory_items i ON i.id=mr.item_id AND i.organization_id=mr.organization_id
+        WHERE mr.organization_id=:org_id AND mr.project_id=:project_id
+          AND mr.is_deleted=false
+          AND (DATE(mr.created_at)=:report_date OR mr.status IN ('pending', 'requisitioned'))
+        ORDER BY mr.created_at DESC
+        LIMIT 20
+    """),
+        {"org_id": user["org_id"], "project_id": report["project_id"], "report_date": report["report_date"]},
+    )
+    detail["open_requests"] = [dict(r._mapping) for r in requests_rows]
+
+    # Safety Briefing information from Site Day Briefing
+    safety_info = None
+    if report.get("briefing_id"):
+        safety_row = (
+            await db.execute(
+                text("""
+                SELECT b.id, b.briefing_date, b.shift, b.status, b.toolbox_topic, b.toolbox_notes,
+                       u.full_name AS toolbox_conductor, b.ppe_check_completed AS ppe_compliant,
+                       b.toolbox_talk_completed, b.labour_count_completed, b.safety_concern_raised,
+                       b.safety_concerns, b.safety_actions, b.started_at AS opened_at, b.closed_at
+                FROM projects.site_day_briefings b
+                LEFT JOIN core.users u ON u.id = b.started_by
+                WHERE b.id=:briefing_id AND b.organization_id=:org_id
+            """),
+                {"briefing_id": report["briefing_id"], "org_id": user["org_id"]},
+            )
+        ).mappings().first()
+        if safety_row:
+            safety_info = dict(safety_row)
+    detail["safety_briefing"] = safety_info
+
+    # Completeness calculations
+    has_labour = len(detail["labour"]) > 0 or bool(report.get("labour_count_completed"))
+    has_work = bool(report.get("actual_work") and report["actual_work"].strip())
+    has_safety = bool(safety_info or report.get("safety_notes") or report.get("toolbox_talk_completed"))
+    has_weather = bool(report.get("weather") or (safety_info and safety_info.get("weather_condition")))
+    checks = [has_labour, has_work, has_safety, has_weather]
+    completeness_pct = int((sum(1 for c in checks if c) / len(checks)) * 100)
+    detail["completeness"] = {
+        "score_percent": completeness_pct,
+        "labour_captured": has_labour,
+        "work_progress_logged": has_work,
+        "safety_checks_recorded": has_safety,
+        "weather_recorded": has_weather,
+        "is_ready_for_submission": all(checks),
+    }
+
     return result(detail, "Daily site report retrieved.")
 
 
@@ -1864,7 +2615,7 @@ async def update_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     values = payload.model_dump(exclude_unset=True)
     if payload.site_id is not None:
@@ -1909,7 +2660,7 @@ async def add_labour(
     user: dict = Depends(require_permission("site_operations.labour.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     await tenant_reference(
         db, "hr.employees", payload.employee_id, user["org_id"], "Employee"
@@ -1955,7 +2706,7 @@ async def add_equipment(
     user: dict = Depends(require_permission("site_operations.equipment.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     await tenant_reference(
         db, "fleet.fleet", payload.fleet_id, user["org_id"], "Fleet asset"
@@ -2004,7 +2755,7 @@ async def add_material(
     user: dict = Depends(require_permission("site_operations.material.record")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     await tenant_reference(
         db,
@@ -2048,6 +2799,386 @@ async def add_material(
     return result({"id": str(line_id)}, "Material consumption staged.")
 
 
+@router.patch("/daily-reports/{report_id}/labour/{line_id}")
+async def update_daily_report_labour(
+    report_id: UUID,
+    line_id: UUID,
+    payload: LabourLineUpdate,
+    user: dict = Depends(require_permission("site_operations.labour.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return result({"id": str(line_id)}, "No fields to update.")
+    set_clauses = [f"{k} = :{k}" for k in values.keys()]
+    await db.execute(
+        text(f"""
+        UPDATE projects.daily_report_labour
+        SET {", ".join(set_clauses)}
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {**values, "line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Labour line updated.")
+
+
+@router.delete("/daily-reports/{report_id}/labour/{line_id}")
+async def delete_daily_report_labour(
+    report_id: UUID,
+    line_id: UUID,
+    user: dict = Depends(require_permission("site_operations.labour.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    await db.execute(
+        text("""
+        UPDATE projects.daily_report_labour
+        SET is_deleted = true
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Labour line removed.")
+
+
+@router.patch("/daily-reports/{report_id}/equipment/{line_id}")
+async def update_daily_report_equipment(
+    report_id: UUID,
+    line_id: UUID,
+    payload: EquipmentLineUpdate,
+    user: dict = Depends(require_permission("site_operations.equipment.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return result({"id": str(line_id)}, "No fields to update.")
+    set_clauses = [f"{k} = :{k}" for k in values.keys()]
+    await db.execute(
+        text(f"""
+        UPDATE projects.daily_report_equipment
+        SET {", ".join(set_clauses)}
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {**values, "line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Equipment line updated.")
+
+
+@router.delete("/daily-reports/{report_id}/equipment/{line_id}")
+async def delete_daily_report_equipment(
+    report_id: UUID,
+    line_id: UUID,
+    user: dict = Depends(require_permission("site_operations.equipment.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    await db.execute(
+        text("""
+        UPDATE projects.daily_report_equipment
+        SET is_deleted = true
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Equipment line removed.")
+
+
+@router.patch("/daily-reports/{report_id}/materials/{line_id}")
+async def update_daily_report_material(
+    report_id: UUID,
+    line_id: UUID,
+    payload: MaterialLineUpdate,
+    user: dict = Depends(require_permission("site_operations.material.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return result({"id": str(line_id)}, "No fields to update.")
+    set_clauses = [f"{k} = :{k}" for k in values.keys()]
+    await db.execute(
+        text(f"""
+        UPDATE projects.daily_report_materials
+        SET {", ".join(set_clauses)}
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {**values, "line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Material line updated.")
+
+
+@router.delete("/daily-reports/{report_id}/materials/{line_id}")
+async def delete_daily_report_material(
+    report_id: UUID,
+    line_id: UUID,
+    user: dict = Depends(require_permission("site_operations.material.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    ensure_editable(report)
+    await db.execute(
+        text("""
+        UPDATE projects.daily_report_materials
+        SET is_deleted = true
+        WHERE id = :line_id AND report_id = :report_id AND organization_id = CAST(:org_id AS uuid)
+    """),
+        {"line_id": line_id, "report_id": report_id, "org_id": user["org_id"]},
+    )
+    await db.commit()
+    return result({"id": str(line_id)}, "Material line removed.")
+
+
+@router.post("/daily-reports/{report_id}/sync-all")
+async def sync_all_daily_report(
+    report_id: UUID,
+    user: dict = Depends(require_any_permission("site_operations.daily_report.update", "site_operations.daily_report.create", "site_operations.labour_register.manage", "site_operations.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
+    briefing_id = report.get("briefing_id")
+    if not briefing_id:
+        b_row = (
+            await db.execute(
+                text("""
+                SELECT id FROM projects.site_day_briefings
+                WHERE organization_id = CAST(:org_id AS uuid)
+                  AND project_id = CAST(:project_id AS uuid)
+                  AND briefing_date = CAST(:report_date AS date)
+                  AND is_deleted = false
+                ORDER BY created_at DESC
+                LIMIT 1
+            """),
+                {
+                    "org_id": user["org_id"],
+                    "project_id": report["project_id"],
+                    "report_date": str(report["report_date"]),
+                },
+            )
+        ).scalar()
+        if b_row:
+            briefing_id = b_row
+            await db.execute(
+                text("UPDATE projects.daily_site_reports SET briefing_id = :bid WHERE id = :rid"),
+                {"bid": b_row, "rid": report_id},
+            )
+
+    # Always sync labour from attendance registered for this briefing or project on this date
+    try:
+        await sync_attendance_to_daily_report(
+            db,
+            briefing_id=briefing_id,
+            report_id=report_id,
+            org_id=user["org_id"],
+            project_id=report["project_id"],
+            report_date=report["report_date"],
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to sync attendance in sync_all_daily_report: {exc}")
+
+    # Auto-sync active plant deployed to this project into equipment lines
+    try:
+        active_fleet = (
+            await db.execute(
+                text("""
+                SELECT f.id AS fleet_id,
+                       COALESCE(f.hourly_charge_rate, f.hourly_operating_cost, 0) AS cost_rate
+                FROM fleet.fleet f
+                WHERE f.organization_id = CAST(:org_id AS uuid)
+                  AND f.current_project_id = CAST(:project_id AS uuid)
+                  AND f.is_deleted = false
+                  AND (f.operational_status IS NULL OR f.operational_status IN ('active', 'in_use', 'operational', 'available', 'dispatched'))
+            """),
+                {"org_id": user["org_id"], "project_id": report["project_id"]},
+            )
+        ).mappings().all()
+        for fl in active_fleet:
+            already = (
+                await db.execute(
+                    text("SELECT id FROM projects.daily_report_equipment WHERE report_id=:rid AND fleet_id=:fid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
+                    {"rid": report_id, "fid": fl["fleet_id"], "org_id": user["org_id"]},
+                )
+            ).scalar()
+            if not already:
+                await db.execute(
+                    text("INSERT INTO projects.daily_report_equipment (organization_id, report_id, fleet_id, operating_hours, idle_hours, fuel_litres, cost_rate, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :fid, 8, 0, 0, :rate, 'Auto-synced from active project plant', CAST(:uid AS uuid))"),
+                    {"org_id": user["org_id"], "rid": report_id, "fid": fl["fleet_id"], "rate": fl["cost_rate"], "uid": user["user_id"]},
+                )
+    except Exception as exc:
+        logger.warning(f"Failed to auto-sync fleet to daily report {report_id}: {exc}")
+
+    # Auto-sync store issues & stock consumption on this date
+    try:
+        issues = (
+            await db.execute(
+                text("""
+                SELECT sl.item_id, sl.store_id, sl.quantity, COALESCE(sl.unit_cost, 0) AS unit_cost, sl.reference
+                FROM procurement.stock_ledger sl
+                WHERE sl.organization_id = CAST(:org_id AS uuid)
+                  AND (
+                    sl.project_id = CAST(:project_id AS uuid)
+                    OR sl.store_id IN (
+                        SELECT s.id FROM procurement.stores s
+                        WHERE s.organization_id = CAST(:org_id AS uuid)
+                          AND s.project_id = CAST(:project_id AS uuid)
+                    )
+                  )
+                  AND sl.movement_type IN ('issue', 'consumption', 'out')
+                  AND (DATE(sl.movement_at) = CAST(:dt AS date) OR DATE(sl.created_at) = CAST(:dt AS date))
+            """),
+                {"org_id": user["org_id"], "project_id": report["project_id"], "dt": str(report["report_date"])},
+            )
+        ).mappings().all()
+        for iss in issues:
+            already = (
+                await db.execute(
+                    text("SELECT id FROM projects.daily_report_materials WHERE report_id=:rid AND item_id=:iid AND organization_id=CAST(:org_id AS uuid) AND is_deleted=false LIMIT 1"),
+                    {"rid": report_id, "iid": iss["item_id"], "org_id": user["org_id"]},
+                )
+            ).scalar()
+            if not already:
+                try:
+                    async with db.begin_nested():
+                        await db.execute(
+                            text("INSERT INTO projects.daily_report_materials (organization_id, report_id, item_id, store_id, quantity_used, unit_cost, wastage_quantity, work_package, notes, created_by) VALUES (CAST(:org_id AS uuid), :rid, :iid, :sid, :qty, :cost, 0, :ref, 'Auto-synced from store issues', CAST(:uid AS uuid))"),
+                            {"org_id": user["org_id"], "rid": report_id, "iid": iss["item_id"], "sid": iss["store_id"], "qty": iss["quantity"], "cost": iss["unit_cost"] or 0, "ref": iss["reference"] or "", "uid": user["user_id"]},
+                        )
+                except Exception as inner_mat_exc:
+                    logger.warning(f"Skipped duplicate or invalid material line in sync_all: {inner_mat_exc}")
+    except Exception as exc:
+        logger.warning(f"Failed to auto-sync store issues to daily report {report_id}: {exc}")
+
+    # Recalculate total daily report cost exposure across labour, equipment & materials
+    try:
+        cost_row = (await db.execute(
+            text("""
+            SELECT
+                COALESCE((SELECT SUM(regular_hours * cost_rate + overtime_hours * cost_rate * 1.5) FROM projects.daily_report_labour WHERE report_id = :rid AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false), 0) +
+                COALESCE((SELECT SUM(operating_hours * cost_rate) FROM projects.daily_report_equipment WHERE report_id = :rid AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false), 0) +
+                COALESCE((SELECT SUM(quantity_used * unit_cost) FROM projects.daily_report_materials WHERE report_id = :rid AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false), 0)
+                AS total_cost
+            """),
+            {"rid": report_id, "org_id": user["org_id"]}
+        )).scalar()
+        if cost_row is not None:
+            await db.execute(
+                text("UPDATE projects.daily_site_reports SET cost_exposure = :cost, labour_count_completed = true WHERE id = :rid"),
+                {"cost": cost_row, "rid": report_id}
+            )
+    except Exception as exc:
+        logger.warning(f"Failed to update cost exposure for report {report_id}: {exc}")
+
+    await db.commit()
+    return result({"id": str(report_id)}, "Daily site report fully synchronized.")
+
+
+@router.get("/plant-requests")
+async def list_site_plant_requests(
+    project_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("site_operations.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await db.execute(
+        text("""
+        SELECT pr.*, p.name AS project_name
+        FROM fleet.plant_requests pr
+        LEFT JOIN projects.projects p ON p.id = pr.project_id AND p.organization_id = pr.organization_id
+        WHERE pr.organization_id = CAST(:org_id AS uuid)
+          AND (CAST(:project_id AS uuid) IS NULL OR pr.project_id = CAST(:project_id AS uuid))
+          AND pr.is_deleted = false
+        ORDER BY pr.created_at DESC
+        LIMIT 100
+    """),
+        {"org_id": user["org_id"], "project_id": project_id},
+    )
+    return result([dict(r._mapping) for r in rows], "Site plant requests listed.")
+
+
+@router.post("/plant-requests", status_code=status.HTTP_201_CREATED)
+async def create_site_plant_request(
+    payload: SitePlantRequestPayload,
+    user: dict = Depends(require_permission("site_operations.equipment.record")),
+    db: AsyncSession = Depends(get_db),
+):
+    await project_or_404(db, payload.project_id, user["org_id"], user=user)
+    row = (
+        await db.execute(
+            text("""
+        INSERT INTO fleet.plant_requests (
+            organization_id, request_number, request_type, status,
+            project_id, required_asset_type, specification, quantity,
+            work_location, start_date, end_date, operating_hours_mode,
+            operator_required, fuel_responsibility, work_description,
+            priority, requested_by_user_id, created_by
+        ) VALUES (
+            CAST(:org_id AS uuid),
+            'PR-' || LPAD(nextval('fleet.plant_request_seq')::text, 6, '0'),
+            'internal_project', 'submitted',
+            CAST(:project_id AS uuid), :required_asset_type, :specification, :quantity,
+            COALESCE(:work_location, 'Project site'), :start_date, :end_date, :operating_hours_mode,
+            :operator_required, :fuel_responsibility, :work_description,
+            :priority, CAST(:user_id AS uuid), CAST(:user_id AS uuid)
+        ) RETURNING id, request_number
+    """),
+            {
+                "org_id": user["org_id"],
+                "project_id": payload.project_id,
+                "required_asset_type": payload.required_asset_type,
+                "specification": payload.specification,
+                "quantity": payload.quantity,
+                "work_location": payload.work_location,
+                "start_date": payload.start_date,
+                "end_date": payload.end_date,
+                "operating_hours_mode": payload.operating_hours_mode,
+                "operator_required": payload.operator_required,
+                "fuel_responsibility": payload.fuel_responsibility,
+                "work_description": payload.work_description,
+                "priority": payload.priority,
+                "user_id": user["user_id"],
+            },
+        )
+    ).mappings().first()
+    await db.commit()
+    return result(dict(row), "Plant request submitted for approval.")
+
+
+@router.patch("/plant-requests/{request_id}/approve")
+async def approve_site_plant_request(
+    request_id: UUID,
+    user: dict = Depends(require_any_permission(["fleet.plant_requests.approve", "compliance.gate.override", "site_operations.site_agent_authorize", "site_operations.daily_report.update"])),
+    db: AsyncSession = Depends(get_db),
+):
+    row = (
+        await db.execute(
+            text("""
+        UPDATE fleet.plant_requests
+        SET status = 'approved',
+            approved_at = NOW(),
+            approved_by = CAST(:user_id AS uuid),
+            updated_at = NOW()
+        WHERE id = :request_id AND organization_id = CAST(:org_id AS uuid) AND is_deleted = false
+        RETURNING id, request_number, status
+    """),
+            {"request_id": request_id, "org_id": user["org_id"], "user_id": user["user_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Plant request not found.")
+    await db.commit()
+    return result(dict(row), "Plant request approved.")
+
+
 @router.post(
     "/daily-reports/{report_id}/documents", status_code=status.HTTP_201_CREATED
 )
@@ -2057,7 +3188,7 @@ async def link_document(
     user: dict = Depends(require_permission("documents.link")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     await tenant_reference(
         db, "core.documents", payload.document_id, user["org_id"], "Document"
     )
@@ -2109,7 +3240,7 @@ async def submit_daily_report(
     user: dict = Depends(require_permission("site_operations.daily_report.submit")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     ensure_editable(report)
     counts = (
         (
@@ -2205,7 +3336,7 @@ async def engineer_decide_daily_report(
     user: dict = Depends(require_permission("site_operations.engineer_verify")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     if report["status"] != "submitted":
         raise HTTPException(status_code=409, detail="Only submitted daily reports can receive engineer verification.")
     if str(report.get("submitted_by")) == str(user["user_id"]):
@@ -2390,7 +3521,7 @@ async def decide_daily_report(
     user: dict = Depends(require_permission("site_operations.site_agent_authorize")),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await report_or_404(db, report_id, user["org_id"])
+    report = await report_or_404(db, report_id, user["org_id"], user=user)
     if report["status"] != "submitted":
         raise HTTPException(
             status_code=409,

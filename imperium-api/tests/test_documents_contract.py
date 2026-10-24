@@ -61,6 +61,37 @@ class DocumentsContractTests(unittest.TestCase):
         self.assertNotIn("getDocumentVersions(id).catch", DOC_PAGE)
         self.assertNotIn("getDocumentLinks(id).catch", DOC_PAGE)
 
+    def test_opportunity_document_scoping_supported(self):
+        self.assertIn("opportunity_id: Optional[UUID] = None", DOC_ROUTER)
+        self.assertIn("d.opportunity_id = :opportunity_id", DOC_ROUTER)
+        self.assertIn("dl.entity_type = 'opportunity'", DOC_ROUTER)
+        self.assertIn(":entity_type = 'opportunity' AND d.opportunity_id = :entity_id", DOC_ROUTER)
+
+    def test_document_for_entity_validates_tenant_ownership(self):
+        self.assertIn('"opportunity": "crm.opportunities"', DOC_ROUTER)
+        self.assertIn("SELECT 1 FROM {entity_table} WHERE id = :id AND organization_id = :org_id AND is_deleted = false", DOC_ROUTER)
+        self.assertIn('detail=f"{entity_type} not found."', DOC_ROUTER)
+
+    def test_document_unlink_endpoint_preserves_source_document(self):
+        self.assertIn('@router.delete("/{document_id}/links/{entity_type}/{entity_id}"', DOC_ROUTER)
+        self.assertIn("UPDATE core.document_links", DOC_ROUTER)
+        self.assertIn("SET is_deleted = true", DOC_ROUTER)
+        self.assertIn("SET opportunity_id = NULL", DOC_ROUTER)
+
+    def test_document_multi_link_safety_and_permission_enforcement(self):
+        # Permission gate requires documents.delete
+        self.assertIn('user: dict = Depends(require_permission("documents.delete"))', DOC_ROUTER)
+        # Targeted soft-delete applies only to the requested entity association, preserving other entity links
+        self.assertIn("WHERE document_id = :document_id", DOC_ROUTER)
+        self.assertIn("AND entity_type = :entity_type", DOC_ROUTER)
+        self.assertIn("AND entity_id = :entity_id", DOC_ROUTER)
+        self.assertIn("AND organization_id = :org_id", DOC_ROUTER)
+        # Clears opportunity legacy foreign key only when opportunity_id matches entity_id, leaving source intact
+        self.assertIn("SET opportunity_id = NULL, updated_at = NOW()", DOC_ROUTER)
+        self.assertIn("AND opportunity_id = :entity_id", DOC_ROUTER)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

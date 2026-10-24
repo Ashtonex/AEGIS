@@ -59,6 +59,7 @@ export type ProjectTeamMember = {
   category_name?: string; payroll_eligible?: boolean;
   position_name?: string; trade?: string; grade?: string;
   assigned_by_email?: string; is_current?: boolean;
+  id?: string; is_deleted?: boolean;
 };
 
 export async function getProjectTeam(projectRef: string): Promise<ApiResponse<ProjectTeamMember[]>> {

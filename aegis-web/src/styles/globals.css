@@ -253,6 +253,12 @@
   .hide-scrollbar::-webkit-scrollbar { display: none; }
   .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
+  /* ── Mobile Safe Area Utilities ─────────────────────────────────────── */
+  .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .pl-safe { padding-left: env(safe-area-inset-left, 0px); }
+  .pr-safe { padding-right: env(safe-area-inset-right, 0px); }
+
   /* ── Prefers reduced motion — Volume II mandate ─────────────────────────── */
   @media (prefers-reduced-motion: reduce) {
     *,

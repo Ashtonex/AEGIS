@@ -52,10 +52,7 @@ def test_hr_operations_api_and_ui_are_wired():
     assert "createMyHRLeaveRequest" in API
     for marker in [
         "Recruitment and onboarding pipeline",
-        "Employee contracts and document expiry tracking",
-        "Certifications, medicals, inductions and license alerts",
         "Performance reviews and disciplinary records",
-        "PPE, tools, vehicle and asset assignments",
         "Training matrix by role and project",
         "Org chart and reporting lines",
         "Workforce planning by project and site",
@@ -64,6 +61,12 @@ def test_hr_operations_api_and_ui_are_wired():
     ]:
         assert marker in HR_PAGE
     assert "Submit leave from your account" in PROFILE_PAGE
+    # Contracts, credentials and assets moved to per-employee pages (HRFilesPage
+    # + the person card tabs), backed by routers/hr_files.py.
+    files_page = (WEB_ROOT / "src" / "app" / "dashboard" / "hr" / "HRFilesPage.tsx").read_text(encoding="utf-8")
+    assert "HRFilesPage" in HR_PAGE
+    for marker in ["Contracts & Docs", "Credentials", "Assets", "Expiry warnings"]:
+        assert marker in files_page
 
 
 def test_hr_leave_permissions_and_robustness():

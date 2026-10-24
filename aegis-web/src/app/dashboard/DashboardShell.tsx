@@ -1,45 +1,31 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { CalendarDropdown } from "@/components/layout/dashboard/CalendarDropdown";
 import { NotificationBell } from "@/components/layout/dashboard/NotificationBell";
 import { PwaPushButton } from "@/components/pwa/PwaPushButton";
-import { getMyProfile, updateMyProfile, getMyPermissions } from "@/lib/api";
+import { PwaNotificationPrompt } from "@/components/pwa/PwaNotificationPrompt";
+import { CommandPalette } from "@/components/command/CommandPalette";
+import { getMyProfile, updateMyProfile } from "@/lib/api";
 import { DashboardTour } from "@/components/onboarding/DashboardTour";
-import { matchesRole } from "@/lib/rbacMatch";
+import { AttendanceCheckIn } from "@/components/people/AttendanceCheckIn";
+import { TruncatedResultsNotice } from "@/components/dashboard/TruncatedResultsNotice";
 import {
   Search, Bell, CircleHelp, User, ShieldAlert,
   Settings, LogOut, ChevronDown, ChevronRight, Menu, X,
   LockKeyhole, Package, ClipboardCheck, HardHat,
+  PanelLeft, PanelLeftClose, Activity, CheckSquare, CloudUpload,
+  Plus, RefreshCw, WifiOff, ClipboardList, LayoutDashboard, FolderKanban,
 } from "lucide-react";
+import { useNetworkStatus } from "@/lib/offline";
 import {
-  MODULE_GROUPS, DOMAIN_META, DOMAIN_ORDER, SITE_FIELD_ROLES,
-  SITE_FIELD_DASHBOARD_GROUPS, getDomainForPathname,
+  DOMAIN_META, DOMAIN_ORDER, getDomainForPathname, visibleModuleGroups,
   type ModuleGroup, type DomainKey,
 } from "@/lib/navigation";
-
-// Plain case-insensitive membership check for restrictedRoles. Deliberately
-// not matchesRole - that helper always returns true for SUPERADMIN, which
-// would make SUPERADMIN itself the one role a restrictedRoles entry could
-// never actually restrict.
-function isRoleRestricted(userRole: string, restrictedRoles?: string[]): boolean {
-  if (!restrictedRoles || restrictedRoles.length === 0) return false;
-  const normUser = userRole.toLowerCase().trim();
-  return restrictedRoles.some((role) => role.toLowerCase().trim() === normUser);
-}
-
-function isExactRole(userRole: string, roles: string[]): boolean {
-  const normUser = userRole.toLowerCase().trim();
-  return roles.some((role) => role.toLowerCase().trim() === normUser);
-}
-
-function isSuperAdminRole(userRole: string): boolean {
-  return userRole.toLowerCase().trim() === "superadmin";
-}
 
 // Renders the CAT clock and owns its own 1s tick, so that tick re-renders
 // only this small leaf instead of the entire DashboardShell (and everything
@@ -63,70 +49,74 @@ function HarareClock() {
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { session, role, isLoading, sessionLoading, signOut } = useAuth();
+  const { session, role, permissions, isSuperAdmin, isLoading, sessionLoading, signOut } = useAuth();
+  const { isOnline, isSyncing, pendingCount, syncNow } = useNetworkStatus();
   const isPortalRoute = pathname?.startsWith("/portal") ?? false;
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    if (typeof window === "undefined") return {};
+    try {
+      const stored = window.localStorage.getItem("aegis:nav:open-groups");
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem("aegis:nav:sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("aegis:nav:sidebar-collapsed", String(next));
+        }
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const toggleGroup = useCallback((groupKey: string, nextState: boolean) => {
+    setOpenGroups((current) => {
+      const updated = { ...current, [groupKey]: nextState };
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("aegis:nav:open-groups", JSON.stringify(updated));
+        }
+      } catch {}
+      return updated;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleSidebar]);
+
   const [tourOpen, setTourOpen] = useState(false);
   const [tourReady, setTourReady] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  // Top bar auto-hide: visible on load, on scroll (either direction), or
-  // while hovering the bar itself or a thin trigger strip at the very top
-  // of the viewport; hides again after a short idle period. The bar is
-  // fixed/overlaid rather than in normal flow specifically so showing or
-  // hiding it never shifts or resizes the page content underneath.
-  //
-  // Desktop-only: the reveal mechanism is entirely hover-based (the bar
-  // itself, plus a thin trigger strip at the top of the viewport), and
-  // touch devices have no hover at all. On mobile the hamburger button
-  // that opens the side nav drawer lives inside this same bar, so once it
-  // auto-hid there - with no scrollable content to trigger the scroll
-  // fallback, which is exactly the case on short pages - there was no way
-  // to bring it back and both the top nav and side nav became unreachable.
-  const [topBarVisible, setTopBarVisible] = useState(true);
-  const [isDesktop, setIsDesktop] = useState(true);
-  const topBarHoveredRef = useRef(false);
-  const topBarHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [commandOpen, setCommandOpen] = useState(false);
   const mainScrollRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    const mql = window.matchMedia("(min-width: 768px)");
-    const update = () => setIsDesktop(mql.matches);
-    update();
-    mql.addEventListener("change", update);
-    return () => mql.removeEventListener("change", update);
-  }, []);
-
-  const scheduleTopBarHide = useCallback(() => {
-    if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
-    if (!isDesktop) return;
-    topBarHideTimerRef.current = setTimeout(() => {
-      if (!topBarHoveredRef.current) setTopBarVisible(false);
-    }, 2000);
-  }, [isDesktop]);
-
-  const revealTopBar = useCallback(() => {
-    setTopBarVisible(true);
-    scheduleTopBarHide();
-  }, [scheduleTopBarHide]);
-
-  useEffect(() => {
-    scheduleTopBarHide();
-    const mainEl = mainScrollRef.current;
-    if (!mainEl) return;
-    const onScroll = () => revealTopBar();
-    mainEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      mainEl.removeEventListener("scroll", onScroll);
-      if (topBarHideTimerRef.current) clearTimeout(topBarHideTimerRef.current);
-    };
-  }, [revealTopBar, scheduleTopBarHide]);
-
-  useEffect(() => {
     mainScrollRef.current?.scrollTo({ top: 0, left: 0 });
-    setTopBarVisible(true);
   }, [pathname]);
 
   // Extract user info from session
@@ -134,40 +124,6 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // Create a display name from email (e.g., admin@example.com -> Admin)
   const displayName = userEmail.split('@')[0].charAt(0).toUpperCase() + userEmail.split('@')[0].slice(1);
   const userRole = role;
-
-  // Resolved permission keys for the signed-in user, used to layer
-  // requiredPermission checks on top of the existing role-based nav gates.
-  // null = not loaded yet - treated as "no additional restriction" so
-  // existing role-gated items don't flash hidden while this is in flight;
-  // once loaded, items with a requiredPermission are gated strictly.
-  const [permissions, setPermissions] = useState<Set<string> | null>(null);
-  useEffect(() => {
-    // portalGroups (the nav rendered on /portal routes) carries no
-    // requiredPermission gates, so this fetch is dead weight there - one
-    // fewer request competing with the portal page's own data calls.
-    if (!session?.access_token || isPortalRoute) {
-      setPermissions(null);
-      return;
-    }
-    let cancelled = false;
-    setPermissions(null);
-    getMyPermissions()
-      .then((res) => {
-        if (!cancelled && res.success && Array.isArray(res.data)) setPermissions(new Set(res.data));
-      })
-      .catch(() => {
-        // Leave permissions null on failure - falls back to role-only gating.
-      });
-    return () => { cancelled = true; };
-  }, [session?.access_token, isPortalRoute]);
-
-  const hasPermission = useCallback(
-    (requiredPermission?: string) => {
-      if (!userRole) return false;
-      return isSuperAdminRole(userRole) || !requiredPermission || !permissions || permissions.has(requiredPermission);
-    },
-    [permissions, userRole]
-  );
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -199,32 +155,15 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     [portalHome]
   );
 
+  // Purely permission-driven: a user sees every page any of their roles
+  // grants, and nothing else. See MODULE_GROUPS in lib/navigation.ts.
   const visibleGroups = useMemo(
     () => {
       if (isPortalRoute) return portalGroups;
       if (!userRole) return [];
-      const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);
-      return MODULE_GROUPS.filter(
-        (group) =>
-          (group.permissionDriven || !isSiteFieldRole || SITE_FIELD_DASHBOARD_GROUPS.has(group.name)) &&
-          (!group.allowedRoles || matchesRole(userRole, group.allowedRoles)) &&
-          !isRoleRestricted(userRole, group.restrictedRoles) &&
-          hasPermission(group.requiredPermission)
-      )
-        .map((group) => ({
-          ...group,
-          subItems: group.subItems.filter(
-            (sub) =>
-              (!sub.allowedRoles || matchesRole(userRole, sub.allowedRoles)) &&
-              !isRoleRestricted(userRole, sub.restrictedRoles) &&
-              (group.permissionDriven
-                ? isSuperAdminRole(userRole) || !sub.requiredPermission || !!permissions?.has(sub.requiredPermission)
-                : hasPermission(sub.requiredPermission))
-          ),
-        }))
-        .filter((group) => group.subItems.length > 0);
+      return visibleModuleGroups(permissions, isSuperAdmin);
     },
-    [userRole, permissions, hasPermission, isPortalRoute, portalGroups]
+    [userRole, permissions, isSuperAdmin, isPortalRoute, portalGroups]
   );
 
   const activeGroup = useMemo(
@@ -286,16 +225,39 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
   useEffect(() => {
     if (!activeGroup) return;
-    setOpenGroups((current) => ({
-      ...current,
-      [activeGroup.name]: true,
-      ...(activeGroup.domain ? { [`domain:${activeGroup.domain}`]: true } : {}),
-    }));
+    setOpenGroups((current) => {
+      const updated = {
+        ...current,
+        [activeGroup.name]: true,
+        ...(activeGroup.domain ? { [`domain:${activeGroup.domain}`]: true } : {}),
+      };
+      try {
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("aegis:nav:open-groups", JSON.stringify(updated));
+        }
+      } catch {}
+      return updated;
+    });
   }, [activeGroup]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      if (mobileMenuOpen) {
+        document.body.style.overflow = "hidden";
+      } else {
+        document.body.style.overflow = "";
+      }
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.body.style.overflow = "";
+      }
+    };
+  }, [mobileMenuOpen]);
 
   useEffect(() => {
     if (!session || !pathname?.startsWith("/dashboard")) {
@@ -345,17 +307,41 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // back to the generic --dxl-signal amber for pinned/passthrough groups
   // that have no sibling domain to distinguish themselves from);
   // `indentClass` pushes it one level in when nested under a domain header.
-  const renderGroupLink = (group: ModuleGroup, opts: { indentClass?: string; accentClass?: string } = {}) => {
+  const renderGroupLink = (
+    group: ModuleGroup,
+    opts: { indentClass?: string; accentClass?: string; isMobile?: boolean } = {}
+  ) => {
     const accentClass = opts.accentClass ?? "text-signal";
     const isCurrent = pathname === group.href || pathname?.startsWith(`${group.href}/`);
+    const isCollapsedMode = sidebarCollapsed && !opts.isMobile;
 
     if (group.directLink || group.subItems.length === 1) {
       const target = group.subItems.length === 1 ? group.subItems[0] : { href: group.href, icon: group.icon };
+      if (isCollapsedMode) {
+        return (
+          <Link
+            key={group.name}
+            href={target.href}
+            prefetch
+            title={group.name}
+            onMouseEnter={() => prefetchRoute(target.href)}
+            onFocus={() => prefetchRoute(target.href)}
+            className={`mb-1 flex items-center justify-center rounded-sm p-2 text-sm font-medium transition-colors ${
+              isCurrent ? `${accentClass} bg-signal/10` : "text-slate-light hover:bg-ink-light hover:text-paper"
+            }`}
+          >
+            <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? accentClass : "text-slate"}`} />
+          </Link>
+        );
+      }
       return (
         <Link
           key={group.name}
           href={target.href}
           prefetch
+          onClick={() => {
+            if (opts.isMobile) setMobileMenuOpen(false);
+          }}
           onMouseEnter={() => prefetchRoute(target.href)}
           onFocus={() => prefetchRoute(target.href)}
           className={`mb-1 flex min-w-0 items-center gap-3 rounded-sm px-3 py-2 text-sm font-medium transition-colors ${opts.indentClass ?? ""} ${
@@ -368,11 +354,30 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       );
     }
 
+    if (isCollapsedMode) {
+      const target = group.subItems[0] || { href: group.href, icon: group.icon };
+      return (
+        <Link
+          key={group.name}
+          href={target.href}
+          prefetch
+          title={group.name}
+          onMouseEnter={() => prefetchRoute(target.href)}
+          onFocus={() => prefetchRoute(target.href)}
+          className={`mb-1 flex items-center justify-center rounded-sm p-2 text-sm font-medium transition-colors ${
+            isCurrent ? `${accentClass} bg-signal/10` : "text-slate-light hover:bg-ink-light hover:text-paper"
+          }`}
+        >
+          <group.icon className={`h-4 w-4 shrink-0 ${isCurrent ? accentClass : "text-slate"}`} />
+        </Link>
+      );
+    }
+
     const isOpen = Boolean(openGroups[group.name] ?? isCurrent);
     return (
       <div key={group.name} className="mb-1">
         <button
-          onClick={() => setOpenGroups((current) => ({ ...current, [group.name]: !isOpen }))}
+          onClick={() => toggleGroup(group.name, !isOpen)}
           className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-sm font-medium transition-colors ${opts.indentClass ?? ""} ${
             isCurrent ? `${accentClass} bg-signal/5` : "text-slate-light hover:text-paper hover:bg-ink-light"
           }`}
@@ -387,12 +392,19 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         {isOpen && (
           <div className="mt-1 flex flex-col space-y-1 relative before:absolute before:left-5 before:top-0 before:bottom-0 before:w-px before:bg-ink-mid">
             {group.subItems.map((sub) => {
-              const isSubCurrent = pathname === sub.href || pathname?.startsWith(`${sub.href}/`);
+              // Highlight only the most specific match: a landing item like
+              // /dashboard/finance must not light up alongside
+              // /dashboard/finance/payroll when that page is open.
+              const matches = (href: string) => pathname === href || !!pathname?.startsWith(`${href}/`);
+              const isSubCurrent = matches(sub.href) && !group.subItems.some((other) => other.href.length > sub.href.length && matches(other.href));
               return (
                 <Link
                   key={sub.name}
                   href={sub.href}
                   prefetch
+                  onClick={() => {
+                    if (opts.isMobile) setMobileMenuOpen(false);
+                  }}
                   onMouseEnter={() => prefetchRoute(sub.href)}
                   onFocus={() => prefetchRoute(sub.href)}
                   className={`flex min-w-0 items-center space-x-3 py-1.5 ${opts.indentClass ? "pl-14" : "pl-10"} pr-3 rounded-sm text-xs transition-colors relative ${
@@ -418,10 +430,29 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // Finance) or every sibling is permission-hidden for this role - skips
   // the wrapper and renders that group directly, so there's never a
   // pointless single-child accordion.
-  const renderDomainBlock = (domainKey: DomainKey, groups: ModuleGroup[]) => {
+  const renderDomainBlock = (
+    domainKey: DomainKey,
+    groups: ModuleGroup[],
+    opts: { isMobile?: boolean } = {}
+  ) => {
     const meta = DOMAIN_META[domainKey];
+    const isCollapsedMode = sidebarCollapsed && !opts.isMobile;
+
+    if (isCollapsedMode) {
+      const isDomainCurrent = groups.some((g) => pathname === g.href || pathname?.startsWith(`${g.href}/`));
+      const DomainIcon = meta.icon;
+      return (
+        <div key={domainKey} className="mb-2 border-t border-ink-mid/40 pt-1.5 flex flex-col items-center">
+          <div title={meta.label} className="flex justify-center p-1 text-[10px] font-mono text-slate">
+            <DomainIcon className={`h-3.5 w-3.5 ${isDomainCurrent ? meta.accentClass : "text-slate"}`} />
+          </div>
+          {groups.map((group) => renderGroupLink(group, { isMobile: opts.isMobile }))}
+        </div>
+      );
+    }
+
     if (groups.length === 1) {
-      return renderGroupLink(groups[0], { accentClass: meta.accentClass });
+      return renderGroupLink(groups[0], { accentClass: meta.accentClass, isMobile: opts.isMobile });
     }
     const stateKey = `domain:${domainKey}`;
     const isDomainCurrent = groups.some((g) => pathname === g.href || pathname?.startsWith(`${g.href}/`));
@@ -430,7 +461,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     return (
       <div key={domainKey} className="mb-1">
         <button
-          onClick={() => setOpenGroups((current) => ({ ...current, [stateKey]: !isDomainOpen }))}
+          onClick={() => toggleGroup(stateKey, !isDomainOpen)}
           className={`w-full flex min-w-0 items-center justify-between gap-3 px-3 py-2 rounded-sm text-xs font-semibold uppercase tracking-wide transition-colors ${
             isDomainCurrent ? `${meta.accentClass} ${meta.accentBgClass}` : "text-slate-light hover:text-paper hover:bg-ink-light"
           }`}
@@ -443,17 +474,17 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         </button>
         {isDomainOpen && (
           <div className="mt-1 flex flex-col space-y-1">
-            {groups.map((group) => renderGroupLink(group, { indentClass: "pl-4", accentClass: meta.accentClass }))}
+            {groups.map((group) => renderGroupLink(group, { indentClass: "pl-4", accentClass: meta.accentClass, isMobile: opts.isMobile }))}
           </div>
         )}
       </div>
     );
   };
 
-  const renderNavGroups = () => (
+  const renderNavGroups = (isMobile = false) => (
     <>
-      {pinnedGroups.map((group) => renderGroupLink(group))}
-      {visibleDomains.map(({ key, groups }) => renderDomainBlock(key, groups))}
+      {pinnedGroups.map((group) => renderGroupLink(group, { isMobile }))}
+      {visibleDomains.map(({ key, groups }) => renderDomainBlock(key, groups, { isMobile }))}
     </>
   );
 
@@ -497,32 +528,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   return (
     <div className="h-dvh bg-ink flex flex-col font-sans selection:bg-signal selection:text-ink overflow-hidden">
 
-      {/* Thin always-present strip at the very top of the viewport so hovering
-          there can bring the top bar back even while it's hidden - the bar
-          itself isn't there to hover over once translated out of view. */}
-      <div
-        className="fixed top-0 inset-x-0 h-2 z-40"
-        onMouseEnter={revealTopBar}
-      />
-
-      {/* GLOBAL TOP NAVIGATION BAR - fixed/overlaid, not in normal flow, so
-          hiding or showing it never shifts the page content beneath it. */}
+      {/* GLOBAL TOP NAVIGATION BAR - permanently fixed at top */}
       {/* Layout contract markers: className="fixed top-0 inset-x-0 h-14; hidden sm:block */}
       <header
-        onMouseEnter={() => { topBarHoveredRef.current = true; revealTopBar(); }}
-        onMouseLeave={() => { topBarHoveredRef.current = false; scheduleTopBarHide(); }}
-        className={`fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0 transition-transform duration-300 ease-out ${
-          // Mobile has no persistent sidebar - this bar (and the hamburger
-          // inside it) is the only way to reach navigation there, so it must
-          // never actually hide on mobile regardless of the desktop-only
-          // auto-hide timer's state. scheduleTopBarHide() already skips
-          // scheduling a hide on mobile, but that alone doesn't cover the
-          // case where the bar was auto-hidden at desktop width and the
-          // viewport is then narrowed below the breakpoint - this render-time
-          // guard is the single source of truth so there's no state-timing
-          // window where mobile navigation is unreachable.
-          (topBarVisible || !isDesktop) ? "translate-y-0" : "-translate-y-full"
-        }`}
+        className="fixed top-0 inset-x-0 h-14 border-b border-ink-mid bg-ink/95 backdrop-blur-md flex items-center justify-between gap-3 px-3 sm:px-4 lg:px-6 z-50 shrink-0"
       >
         <div className="flex min-w-0 items-center space-x-3 md:space-x-8">
           <button
@@ -545,27 +554,70 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             <span className="hidden font-display text-lg tracking-tight text-paper sm:inline">IMPERIUM</span>
           </Link>
           
-          <div className="relative group hidden md:block" data-tour="dashboard-search">
-            <Search className="w-4 h-4 text-slate absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-signal transition-colors" />
-            <input
-              type="text"
-              placeholder="Search Imperium..."
-              className="bg-ink-light border border-ink-mid rounded-sm pl-10 pr-4 py-1.5 text-sm text-paper placeholder-slate focus:outline-none focus:border-signal/50 focus:ring-1 focus:ring-signal/50 transition-all w-64"
-            />
-          </div>
+          <button
+            type="button"
+            onClick={() => setCommandOpen(true)}
+            data-tour="dashboard-search"
+            className="flex items-center justify-center sm:justify-start gap-2.5 p-2 sm:px-3 sm:py-1.5 rounded-sm bg-ink-light border border-ink-mid hover:border-signal/40 text-slate hover:text-paper transition-all text-sm w-9 sm:w-64 text-left group shrink-0"
+            title="Search Imperium (⌘K)"
+            aria-label="Search or jump to"
+          >
+            <Search className="w-4 h-4 text-slate group-hover:text-signal transition-colors shrink-0" />
+            <span className="hidden sm:inline truncate flex-1 text-xs">Search or jump to...</span>
+            <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-slate-light bg-ink border border-ink-mid rounded-xs">
+              <span className="text-xs">⌘</span>K
+            </kbd>
+          </button>
         </div>
 
         <div className="flex min-w-0 items-center space-x-2 sm:space-x-3 md:space-x-6">
           <div className="hidden lg:flex items-center space-x-2 border-r border-ink-mid pr-6">
             <span className="w-2 h-2 rounded-full bg-signal animate-pulse-signal"></span>
             <span className="text-data-sm font-mono text-slate-light tracking-widest uppercase">Six Nine Construction</span>
+            {process.env.NODE_ENV !== "production" && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold uppercase tracking-wider bg-amber-500/15 text-amber-300 border border-amber-500/30"
+                title="Connected to active operational database. Mutation-based test workflows are restricted."
+              >
+                Operational DB Attached
+              </span>
+            )}
           </div>
 
           <CalendarDropdown />
           <NotificationBell />
-          <div className="hidden md:block">
+          <div className="hidden sm:block">
             <PwaPushButton />
           </div>
+
+          {!isOnline ? (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-medium rounded-sm bg-danger/15 text-danger border border-danger/30"
+              title="You are currently offline. Changes are saved to local device storage."
+            >
+              <WifiOff className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Offline</span>
+              {pendingCount > 0 && <span className="ml-0.5">({pendingCount})</span>}
+            </span>
+          ) : isSyncing ? (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-medium rounded-sm bg-signal/15 text-signal border border-signal/30 animate-pulse"
+              title="Synchronizing offline outbox with server..."
+            >
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              <span className="hidden xs:inline">Syncing</span>
+            </span>
+          ) : pendingCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => void syncNow()}
+              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-medium rounded-sm bg-signal/20 text-signal border border-signal/40 hover:bg-signal/30 transition-colors"
+              title="Tap to sync pending offline records"
+            >
+              <CloudUpload className="w-3.5 h-3.5" />
+              <span>{pendingCount}</span>
+            </button>
+          ) : null}
 
           <button
             type="button"
@@ -602,7 +654,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
             {/* USER PROFILE DROPDOWN MENU */}
             {userMenuOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-ink-light border border-white/10 rounded-sm shadow-2xl z-50 py-2 animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="absolute right-0 mt-2 w-64 max-w-[calc(100vw-1.5rem)] bg-ink-light border border-white/10 rounded-sm shadow-2xl z-50 py-2 animate-in fade-in slide-in-from-top-2 duration-150">
                 {/* User Identity Header */}
                 <div className="px-4 py-3 border-b border-white/10">
                   <p className="text-xs font-semibold text-paper truncate">{userEmail}</p>
@@ -663,21 +715,58 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       <div className="box-border flex h-full min-h-0 overflow-hidden pt-14">
         
         {/* FIXED LEFT SIDEBAR (desktop) */}
-        <aside className="hidden md:flex md:flex-col w-56 flex-shrink-0 border-r border-ink-mid bg-ink z-20">
+        <aside
+          className={`hidden md:flex md:flex-col ${
+            sidebarCollapsed ? "w-16" : "w-56"
+          } flex-shrink-0 border-r border-ink-mid bg-ink z-20 transition-all duration-200`}
+        >
           <nav className="flex-1 py-4 overflow-y-auto no-scrollbar flex flex-col px-3" data-tour="dashboard-nav">
-            {renderNavGroups()}
+            {renderNavGroups(false)}
           </nav>
+
+          {/* SIDEBAR COLLAPSE TOGGLE BUTTON */}
+          <div className="border-t border-ink-mid p-2 flex items-center justify-center shrink-0">
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="flex items-center justify-center w-full py-1.5 text-xs text-slate hover:text-paper hover:bg-ink-light rounded-sm transition-colors"
+              title={sidebarCollapsed ? "Expand sidebar (⌘B)" : "Collapse sidebar (⌘B)"}
+              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {sidebarCollapsed ? (
+                <PanelLeft className="w-4 h-4 text-slate hover:text-signal transition-colors" />
+              ) : (
+                <div className="flex items-center gap-2">
+                  <PanelLeftClose className="w-4 h-4 text-slate hover:text-signal transition-colors" />
+                  <span className="text-[11px] font-mono tracking-wider uppercase text-slate">Collapse</span>
+                </div>
+              )}
+            </button>
+          </div>
         </aside>
 
         {/* MAIN CONTENT AREA */}
         <main
           ref={mainScrollRef}
-          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 ${
+          className={`relative min-w-0 flex-1 overflow-auto bg-ink border-t-2 pb-28 md:pb-0 ${
             currentDomain ? DOMAIN_META[currentDomain].accentTopBorderClass : "border-t-transparent"
           }`}
         >
+          <TruncatedResultsNotice />
           {children}
+          {!isPortalRoute && <AttendanceCheckIn />}
         </main>
+
+        {/* MOBILE BOTTOM NAVIGATION DOCK (Thumb Zone for screens < 768px) */}
+        <Suspense fallback={null}>
+          <MobileBottomDock
+            isPortalRoute={isPortalRoute}
+            onOpenCommand={() => setCommandOpen(true)}
+            onOpenMenu={() => setMobileMenuOpen(true)}
+            canExecutive={Boolean(isSuperAdmin || permissions?.has("executive.view_dashboard") || permissions?.has("kpi_metrics.read"))}
+            canProjects={Boolean(isSuperAdmin || permissions?.has("projects.read"))}
+          />
+        </Suspense>
       </div>
 
       {/* MOBILE NAV DRAWER */}
@@ -697,8 +786,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 py-4">
-              {renderNavGroups()}
+            <nav className="flex-1 overflow-y-auto no-scrollbar flex flex-col px-3 pt-4 pb-24">
+              {renderNavGroups(true)}
+              <div className="mt-6 border-t border-ink-mid pt-4 px-1 space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-light">
+                  <span className="font-mono uppercase text-[10px] tracking-wider text-slate">Device Alerts</span>
+                  <PwaPushButton />
+                </div>
+              </div>
             </nav>
           </aside>
         </div>
@@ -709,6 +804,113 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         onClose={closeTour}
         onComplete={completeTour}
       />
+
+      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
+      <PwaNotificationPrompt />
     </div>
+  );
+}
+
+function MobileBottomDock({
+  isPortalRoute,
+  onOpenCommand,
+  onOpenMenu,
+  canExecutive,
+  canProjects,
+}: {
+  isPortalRoute: boolean;
+  onOpenCommand: () => void;
+  onOpenMenu: () => void;
+  canExecutive: boolean;
+  canProjects: boolean;
+}) {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const tab = searchParams?.get("tab");
+
+  if (isPortalRoute) return null;
+
+  const isSiteOps = pathname?.startsWith("/dashboard/site-operations");
+  const isSiteFeedActive = Boolean(isSiteOps && tab !== "report");
+  const isReportActive = Boolean(isSiteOps && tab === "report");
+
+  return (
+    <nav
+      aria-label="Mobile Navigation Dock"
+      className="fixed bottom-0 inset-x-0 z-40 bg-ink-high/95 backdrop-blur-md border-t border-ink-mid md:hidden pb-[env(safe-area-inset-bottom)]"
+    >
+      <div className="flex items-center justify-around h-14 px-2">
+        <Link
+          href="/dashboard/site-operations"
+          className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+            isSiteFeedActive ? "text-signal font-semibold" : "text-slate hover:text-paper"
+          }`}
+        >
+          <Activity className="w-5 h-5 mb-0.5" />
+          <span>Site Feed</span>
+        </Link>
+
+        <Link
+          href="/dashboard/site-operations?tab=report"
+          className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+            isReportActive ? "text-signal font-semibold" : "text-slate hover:text-paper"
+          }`}
+        >
+          <ClipboardList className="w-5 h-5 mb-0.5" />
+          <span>Report</span>
+        </Link>
+
+        <button
+          type="button"
+          onClick={onOpenCommand}
+          className="flex flex-col items-center justify-center -mt-4 bg-signal hover:bg-signal-hover text-ink w-11 h-11 rounded-full shadow-lg border-2 border-ink transition-transform active:scale-95"
+          aria-label="Quick Action"
+        >
+          <Plus className="w-6 h-6 stroke-[2.5]" />
+        </button>
+
+        {canExecutive ? (
+          <Link
+            href="/dashboard/executive"
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+              pathname === "/dashboard/executive" ? "text-signal font-semibold" : "text-slate hover:text-paper"
+            }`}
+          >
+            <LayoutDashboard className="w-5 h-5 mb-0.5" />
+            <span>Overview</span>
+          </Link>
+        ) : canProjects ? (
+          <Link
+            href="/dashboard/projects"
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+              pathname?.startsWith("/dashboard/projects") ? "text-signal font-semibold" : "text-slate hover:text-paper"
+            }`}
+          >
+            <FolderKanban className="w-5 h-5 mb-0.5" />
+            <span>Projects</span>
+          </Link>
+        ) : (
+          <Link
+            href="/dashboard/executive"
+            className={`flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono transition-colors ${
+              pathname === "/dashboard/executive" ? "text-signal font-semibold" : "text-slate hover:text-paper"
+            }`}
+          >
+            <CheckSquare className="w-5 h-5 mb-0.5" />
+            <span>Tasks</span>
+          </Link>
+        )}
+
+        <button
+          type="button"
+          onClick={onOpenMenu}
+          className="flex flex-col items-center justify-center flex-1 h-full py-1 text-[10px] font-mono text-slate hover:text-paper transition-colors"
+          aria-label="Open full menu"
+        >
+          <Menu className="w-5 h-5 mb-0.5" />
+          <span>Menu</span>
+        </button>
+      </div>
+    </nav>
   );
 }

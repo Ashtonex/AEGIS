@@ -42,6 +42,9 @@ export function CashForecastPanel() {
   const labels: string[] = forecast.horizon_labels || [];
   const committed: RecordData[] = forecast.committed || [];
   const probable: RecordData[] = forecast.probable || [];
+  const openPos: RecordData = forecast.committed_purchase_orders || {};
+  const poByHorizon: RecordData[] = openPos.by_horizon || [];
+  const clientCollection: RecordData[] = forecast.assumptions?.client_collection || [];
 
   return (
     <div className="space-y-4">
@@ -49,7 +52,7 @@ export function CashForecastPanel() {
         <div>
           <h2 className="font-mono text-sm uppercase tracking-widest text-signal">Cash Position Command Centre</h2>
           <p className="text-xs text-slate-light mt-0.5">
-            Opening cash {money(forecast.opening_cash)} - projected forward using only real due-date/payment-date data. No what-if scenarios or Optimistic tier yet.
+            Opening cash {money(forecast.opening_cash)} - projected forward from real due dates, open purchase orders and each client&apos;s measured payment delay. No what-if scenarios or Optimistic tier yet.
           </p>
         </div>
         <button onClick={() => void load()} className="flex items-center gap-1.5 text-xs text-slate hover:text-paper"><RefreshCw className="h-3.5 w-3.5" />Refresh</button>
@@ -80,6 +83,15 @@ export function CashForecastPanel() {
                   <td key={idx} className={`p-3 text-right font-mono ${Number(p.projected_cash) < 0 ? "text-red-300" : "text-amber-300"}`}>{money(p.projected_cash)}</td>
                 ))}
               </tr>
+              <tr className="bg-ink/20">
+                <td className="p-3 text-slate-light text-xs">
+                  Open purchase orders
+                  <span className="block text-[11px] text-slate">{openPos.count ?? 0} not yet invoiced, {money(openPos.open_value)} - included in Committed</span>
+                </td>
+                {poByHorizon.map((po, idx) => (
+                  <td key={idx} className="p-3 text-right font-mono text-xs text-slate-light">{Number(po.cumulative_outflow) > 0 ? `-${money(po.cumulative_outflow)}` : "-"}</td>
+                ))}
+              </tr>
             </tbody>
           </table>
         </div>
@@ -96,10 +108,48 @@ export function CashForecastPanel() {
       <div className="bg-ink-light border border-ink-mid rounded-lg p-4">
         <p className="text-xs text-slate uppercase font-mono tracking-wider mb-2">Assumptions</p>
         <ul className="text-xs text-slate-light space-y-1 list-disc list-inside">
-          <li>Certified progress claims assumed collected {forecast.assumptions?.client_collection_days_after_certification} days after certification.</li>
-          <li>Submitted (not yet certified) claims assumed collected {forecast.assumptions?.client_collection_days_after_submission} days after submission.</li>
+          <li>Each client&apos;s claims are dated by that client&apos;s median days from certification (or submission) to receipt, measured from paid claims with allocated receipts.</li>
+          <li>Clients with fewer than {forecast.assumptions?.min_paid_claims_for_measured_delay} measured paid claims use the default: {forecast.assumptions?.client_collection_days_after_certification} days after certification, {forecast.assumptions?.client_collection_days_after_submission} days after submission.</li>
+          <li>Open purchase orders fall due at expected delivery plus payment terms (default {forecast.assumptions?.default_supplier_payment_terms_days} days), net of supplier invoices already in the forecast.</li>
           <li>{forecast.assumptions?.note}</li>
         </ul>
+      </div>
+
+      <div className="bg-ink-light border border-ink-mid rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b border-ink-mid bg-ink/30">
+          <span className="font-mono text-xs uppercase tracking-wider text-slate">Client Collection Delay</span>
+        </div>
+        {clientCollection.length === 0 ? (
+          <p className="p-4 text-xs text-slate-light">No client receipts in this forecast.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-ink-mid text-slate font-mono text-[11px] uppercase tracking-wider">
+                  <th className="p-3">Client</th>
+                  <th className="p-3 text-right">Days after certification</th>
+                  <th className="p-3 text-right">Days after submission</th>
+                  <th className="p-3 text-right">Paid claims measured</th>
+                  <th className="p-3">Basis</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-mid">
+                {clientCollection.map((c) => (
+                  <tr key={c.client_key}>
+                    <td className="p-3 text-paper">
+                      {c.client_name || "Unnamed client"}
+                      {!c.in_forecast && <span className="ml-2 text-[11px] text-slate">(nothing owed now)</span>}
+                    </td>
+                    <td className="p-3 text-right font-mono">{c.days_after_certification}</td>
+                    <td className="p-3 text-right font-mono">{c.days_after_submission}</td>
+                    <td className="p-3 text-right font-mono">{c.paid_claims_measured}</td>
+                    <td className={`p-3 text-xs ${c.source === "measured" ? "text-emerald-300" : "text-slate-light"}`}>{c.source === "measured" ? "Measured" : "Default - too little history"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

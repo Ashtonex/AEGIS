@@ -9,10 +9,12 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- INVENTORY & MATERIALS CONTROL ---
 
-/** Stock levels across all stores. Optionally filtered by store or reorder threshold. */
-export async function getInventoryStockLevels(params?: { store_id?: string; below_reorder?: boolean }): Promise<ApiResponse<any[]>> {
+/** Stock levels across all stores. Optionally filtered by store, item, search or reorder threshold. */
+export async function getInventoryStockLevels(params?: { store_id?: string; item_id?: string; search?: string; below_reorder?: boolean }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.store_id) search.set('store_id', params.store_id);
+  if (params?.item_id) search.set('item_id', params.item_id);
+  if (params?.search) search.set('search', params.search);
   if (params?.below_reorder) search.set('below_reorder', 'true');
   const qs = search.toString() ? `?${search.toString()}` : '';
   return fetchApi<ApiResponse<any[]>>(`/api/v1/inventory/stock-levels${qs}`, { cache: 'no-store', allowFallback: false });
@@ -148,11 +150,14 @@ export async function deleteFinanceCashAccount(cashAccountId: string): Promise<A
   });
 }
 
-export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string; department_id?: string }): Promise<ApiResponse<any[]>> {
+// Newest first, paged: meta.total / meta.has_more (backend default limit 200).
+export async function getFinanceCashbook(params?: { cash_account_id?: string; project_id?: string; department_id?: string; limit?: number; offset?: number }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.cash_account_id) search.set("cash_account_id", params.cash_account_id);
   if (params?.project_id) search.set("project_id", params.project_id);
   if (params?.department_id) search.set("department_id", params.department_id);
+  if (params?.limit) search.set("limit", String(params.limit));
+  if (params?.offset) search.set("offset", String(params.offset));
   const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/financial-performance/cashbook${query}`, { cache: "no-store", allowFallback: false });
 }
@@ -222,8 +227,13 @@ export async function runBankStatementMatching(importId: string): Promise<ApiRes
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}/run-matching`, { method: "POST", allowFallback: false });
 }
 
-export async function getBankStatementLines(importId: string, matchStatus?: string): Promise<ApiResponse<any[]>> {
-  const query = matchStatus ? `?match_status=${encodeURIComponent(matchStatus)}` : "";
+// Paged in line order: meta.total / meta.has_more (backend default limit 200).
+export async function getBankStatementLines(importId: string, params?: { matchStatus?: string; limit?: number; offset?: number }): Promise<ApiResponse<any[]>> {
+  const search = new URLSearchParams();
+  if (params?.matchStatus) search.set("match_status", params.matchStatus);
+  if (params?.limit) search.set("limit", String(params.limit));
+  if (params?.offset) search.set("offset", String(params.offset));
+  const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/bank-transactions/reconciliation/imports/${importId}/lines${query}`, { cache: "no-store", allowFallback: false });
 }
 
@@ -299,6 +309,52 @@ export type BankLineAllocation = {
 
 export async function getProjectMoneyWorkspace(projectId: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/projects/${projectId}/workspace`, { cache: "no-store", allowFallback: false });
+}
+
+export type ProjectMoneyEntryInput = {
+  direction: "in" | "out";
+  paid_via: "bank" | "cash";
+  entry_date: string;
+  amount: number;
+  category?: string | null;
+  counterparty_name?: string | null;
+  reference?: string | null;
+  description?: string | null;
+  pays_claim_id?: string | null;
+};
+
+const PROJECT_ENTRIES = "/api/v1/bank-transactions/reconciliation/project-entries";
+
+export async function createProjectMoneyEntry(projectId: string, entry: ProjectMoneyEntryInput): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/bank-transactions/reconciliation/projects/${projectId}/entries`, {
+    method: "POST", body: JSON.stringify(entry), allowFallback: false,
+  });
+}
+
+export async function updateProjectMoneyEntry(entryId: string, changes: Partial<ProjectMoneyEntryInput> & { project_id?: string }): Promise<ApiResponse<any>> {
+  const { direction: _direction, ...rest } = changes;
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}`, { method: "PATCH", body: JSON.stringify(rest), allowFallback: false });
+}
+
+export async function voidProjectMoneyEntry(entryId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}`, { method: "DELETE", allowFallback: false });
+}
+
+export async function getProjectEntryCandidates(entryId: string, q?: string): Promise<ApiResponse<any[]>> {
+  const query = compactQuery({ q: q || undefined });
+  return fetchApi<ApiResponse<any[]>>(`${PROJECT_ENTRIES}/${entryId}/candidates${query ? `?${query}` : ""}`, { cache: "no-store", allowFallback: false });
+}
+
+export async function matchProjectEntry(entryId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/match`, { method: "POST", body: JSON.stringify({ line_id: lineId }), allowFallback: false });
+}
+
+export async function unmatchProjectEntry(entryId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/unmatch`, { method: "POST", allowFallback: false });
+}
+
+export async function dismissProjectEntrySuggestion(entryId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`${PROJECT_ENTRIES}/${entryId}/dismiss`, { method: "POST", body: JSON.stringify({ line_id: lineId }), allowFallback: false });
 }
 
 export async function getBankLineAllocations(lineId: string): Promise<ApiResponse<BankLineAllocation[]>> {

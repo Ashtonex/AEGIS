@@ -9,12 +9,77 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- CRM API CALLS --- //
 
+export type OpportunityBoardColumnKey = 'Qualification' | 'Proposal' | 'Negotiation' | 'Won' | 'Lost';
+
+export type OpportunityBoardColumn = {
+  key: OpportunityBoardColumnKey;
+  count: number;
+  total_budget: number;
+  cards: any[];
+  offset: number;
+  has_more: boolean;
+};
+
+export type OpportunityBoardSummary = {
+  pipeline_total: number;
+  weighted_total: number;
+  average_margin: number;
+  missing_next_action: number;
+  overdue_next_action: number;
+  stale: number;
+  weighted_high_risk: number;
+  weighted_medium_risk: number;
+  weighted_low_risk: number;
+};
+
+export type OpportunityBoardFilters = {
+  search?: string;
+  min_budget?: number;
+  value_range?: 'Under 50k' | '50k-250k' | 'Over 250k';
+  risk_level?: string;
+  department_id?: string;
+};
+
+// The opportunities Kanban, bounded per column: each column's first
+// `perColumn` cards plus its exact count and budget total. Pass `column` +
+// `offset` to fetch that column's next cards ("Show more"); `summary` (the
+// stats banner and forecast, always the whole unfiltered pipeline) is only
+// returned for full-board requests.
+export async function getCrmOpportunityBoard(
+  filters: OpportunityBoardFilters = {},
+  options: { perColumn?: number; column?: OpportunityBoardColumnKey; offset?: number } = {},
+) {
+  const search = new URLSearchParams();
+  if (filters.search?.trim()) search.set('search', filters.search.trim());
+  if (filters.min_budget !== undefined) search.set('min_budget', String(filters.min_budget));
+  if (filters.value_range) search.set('value_range', filters.value_range);
+  if (filters.risk_level) search.set('risk_level', filters.risk_level);
+  if (filters.department_id) search.set('department_id', filters.department_id);
+  if (options.perColumn) search.set('per_column', String(options.perColumn));
+  if (options.column) search.set('column', options.column);
+  if (options.offset) search.set('offset', String(options.offset));
+  const qs = search.toString() ? `?${search.toString()}` : '';
+  return await fetchApi<ApiResponse<{ columns: OpportunityBoardColumn[]; summary?: OpportunityBoardSummary }>>(
+    `/api/v1/crm/opportunities/board${qs}`,
+    { cache: 'no-store', allowFallback: false },
+  );
+}
+
 export async function getCrmOpportunities(params?: { department_id?: string }) {
   const search = new URLSearchParams();
   if (params?.department_id) search.set('department_id', params.department_id);
   const qs = search.toString() ? `?${search.toString()}` : '';
   return await fetchApi<ApiResponse<any[]>>(`/api/v1/crm/opportunities${qs}`, { cache: 'no-store' });
 }
+
+export async function getCrmOpportunityById(id: string) {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/crm/opportunities/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
+export async function getCrmTenderById(id: string) {
+  return await fetchApi<ApiResponse<any>>(`/api/v1/crm/tenders/${id}`, { cache: 'no-store', allowFallback: false });
+}
+
 
 export async function createCrmOpportunity(data: { name: string, stage: string, budget?: number, probability?: number, client_org_id?: string, region?: string, latitude?: number, longitude?: number, originating_department_id?: string }): Promise<ApiResponse<any>> {
   return await fetchApi<ApiResponse<any>>('/api/v1/crm/opportunities', {
@@ -523,11 +588,21 @@ export interface CrmActivity {
   created_at?: string;
 }
 
-export async function getCrmActivities(params?: { start_date?: string; end_date?: string; limit?: number }): Promise<ApiResponse<any[]>> {
+export async function getCrmActivities(params?: {
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  opportunity_id?: string;
+  contact_id?: string;
+  lead_id?: string;
+}): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.start_date) search.set("start_date", params.start_date);
   if (params?.end_date) search.set("end_date", params.end_date);
   if (params?.limit) search.set("limit", String(params.limit));
+  if (params?.opportunity_id) search.set("opportunity_id", params.opportunity_id);
+  if (params?.contact_id) search.set("contact_id", params.contact_id);
+  if (params?.lead_id) search.set("lead_id", params.lead_id);
   const query = search.toString() ? `?${search.toString()}` : "";
   return fetchApi<ApiResponse<any[]>>(`/api/v1/crm-activities/${query}`, { cache: 'no-store' });
 }
@@ -1005,7 +1080,7 @@ export async function markCrmOpportunityLost(opportunityId: string, payload: Rec
 }
 
 export async function executeCrmAutomations(payload: Record<string, unknown>): Promise<ApiResponse<any[]>> {
-  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-lifecycle/automations/execute', {
+  return fetchApi<ApiResponse<any[]>>('/api/v1/crm-automations/execute', {
     method: 'POST',
     body: JSON.stringify(payload),
     allowFallback: false,
@@ -1187,6 +1262,196 @@ export async function assignTaskStack(entityType: string, entityId: string, assi
   return fetchApi<ApiResponse<{ task_count: number }>>('/api/v1/crm-tasks/assign-stack', {
     method: 'POST',
     body: JSON.stringify({ entity_type: entityType, entity_id: entityId, assigned_to_team_id: assignedToTeamId }),
+    allowFallback: false,
+  });
+}
+
+// ---- Task distribution (routing rules, auto-distribute, bulk assign) ----
+
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface TaskPlanItem {
+  task_id: string;
+  title: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  entity_name: string | null;
+  parent_state: string | null;
+  category_key: string | null;
+  category_label: string | null;
+  assignee_id: string | null;
+  assignee_name: string | null;
+  old_priority: TaskPriority;
+  new_priority: TaskPriority;
+  old_due_date: string | null;
+  due_date: string | null;
+  hard_deadline: string | null;
+  score: number;
+  reason: string;
+}
+
+export interface TaskPlanPerson {
+  user_id: string | null;
+  full_name: string | null;
+  count: number;
+  urgent: number;
+  high: number;
+  earliest_due: string | null;
+  latest_due: string | null;
+}
+
+export interface TaskPlanSummary {
+  total: number;
+  newly_assigned: number;
+  deadline_only: number;
+  unroutable: number;
+  by_person: TaskPlanPerson[];
+}
+
+export interface TaskDistributionPreview {
+  summary: TaskPlanSummary;
+  items: TaskPlanItem[];
+  unroutable: { task_id: string; title: string; category_label: string | null; reason: string }[];
+}
+
+export interface TaskRoutingRule {
+  id: string;
+  category_key: string;
+  label: string;
+  keywords: string[];
+  entity_types: string[];
+  assignee_user_ids: string[];
+  assignees: { id: string; full_name: string; is_active: boolean }[];
+  sort_order: number;
+  is_active: boolean;
+}
+
+export interface TaskRoutingSettings {
+  auto_distribute: boolean;
+  teams_webhook_configured: boolean;
+  teams_webhook_hint: string | null;
+  fallback_category: string | null;
+  due_days_urgent: number;
+  due_days_high: number;
+  due_days_normal: number;
+  due_days_low: number;
+  daily_capacity: number;
+  last_auto_run_at: string | null;
+}
+
+export interface TaskRoutingPerson {
+  id: string;
+  full_name: string;
+  email: string;
+  /** The identity Teams knows them by (e.g. a guest's #EXT# sign-in). Null = falls back to email. */
+  teams_account: string | null;
+}
+
+export interface TaskRoutingConfig {
+  rules: TaskRoutingRule[];
+  settings: TaskRoutingSettings;
+  people: TaskRoutingPerson[];
+}
+
+export async function previewTaskDistribution(): Promise<ApiResponse<TaskDistributionPreview>> {
+  return fetchApi<ApiResponse<TaskDistributionPreview>>('/api/v1/crm-tasks/distribute', {
+    method: 'POST',
+    body: JSON.stringify({ apply: false }),
+    allowFallback: false,
+  });
+}
+
+export async function applyTaskDistribution(): Promise<ApiResponse<{ summary: TaskPlanSummary; assigned: number; teams_messages: number }>> {
+  return fetchApi<ApiResponse<{ summary: TaskPlanSummary; assigned: number; teams_messages: number }>>('/api/v1/crm-tasks/distribute', {
+    method: 'POST',
+    body: JSON.stringify({ apply: true }),
+    allowFallback: false,
+  });
+}
+
+export interface BulkAssignRequest {
+  task_ids: string[];
+  assigned_to_user_id: string;
+  due_date?: string | null;
+  priority?: TaskPriority | null;
+  recalculate_due_dates?: boolean;
+  preview?: boolean;
+}
+
+export async function bulkAssignCrmTasks(payload: BulkAssignRequest): Promise<ApiResponse<{
+  summary?: TaskPlanSummary;
+  items: TaskPlanItem[];
+  assigned?: number;
+  newly_assigned?: number;
+  skipped_closed: number;
+  teams_messages?: number;
+}>> {
+  return fetchApi('/api/v1/crm-tasks/bulk-assign', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function getTaskRouting(): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing', { cache: 'no-store', allowFallback: false });
+}
+
+export async function updateTaskRoutingRule(
+  categoryKey: string,
+  payload: Partial<Pick<TaskRoutingRule, 'label' | 'keywords' | 'entity_types' | 'assignee_user_ids' | 'sort_order' | 'is_active'>>,
+): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>(`/api/v1/crm-tasks/routing/rules/${encodeURIComponent(categoryKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function createTaskRoutingRule(payload: {
+  category_key: string;
+  label: string;
+  keywords?: string[];
+  entity_types?: string[];
+  assignee_user_ids?: string[];
+  sort_order?: number;
+}): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing/rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateTaskRoutingSettings(
+  payload: Partial<Omit<TaskRoutingSettings, 'teams_webhook_configured' | 'teams_webhook_hint' | 'last_auto_run_at'>> & { teams_webhook_url?: string },
+): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>('/api/v1/crm-tasks/routing/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function updateTeamsAccount(personId: string, teamsAccount: string): Promise<ApiResponse<TaskRoutingConfig>> {
+  return fetchApi<ApiResponse<TaskRoutingConfig>>(`/api/v1/crm-tasks/routing/teams-accounts/${encodeURIComponent(personId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ teams_account: teamsAccount }),
+    allowFallback: false,
+  });
+}
+
+export async function sendTaskSummaryToEveryone(): Promise<ApiResponse<{ people: number; teams_sent: number; emails_sent: number; failed: string[] }>> {
+  return fetchApi<ApiResponse<{ people: number; teams_sent: number; emails_sent: number; failed: string[] }>>('/api/v1/crm-tasks/routing/send-summary', {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function testTaskRoutingTeams(userId?: string): Promise<ApiResponse<{ recipient: string; detail: string }>> {
+  return fetchApi<ApiResponse<{ recipient: string; detail: string }>>('/api/v1/crm-tasks/routing/test-teams', {
+    method: 'POST',
+    body: JSON.stringify(userId ? { user_id: userId } : {}),
     allowFallback: false,
   });
 }

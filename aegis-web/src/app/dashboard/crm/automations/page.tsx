@@ -483,27 +483,34 @@ export default function CRMAutomationsPage() {
       </section>
 
       {/* Tabs Selector */}
-      <div className="flex border-b border-ink-mid mb-4 shrink-0 font-mono text-xs">
-        <button
-          onClick={() => setActiveTab('visual')}
-          className={`px-4 py-2 uppercase border-b-2 transition-all ${
-            activeTab === 'visual' 
-              ? 'border-signal text-signal bg-signal/5 font-bold' 
-              : 'border-transparent text-slate hover:text-paper'
-          }`}
-        >
-          Visual Workflow Designer
-        </button>
-        <button
-          onClick={() => setActiveTab('telemetry')}
-          className={`px-4 py-2 uppercase border-b-2 transition-all ${
-            activeTab === 'telemetry' 
-              ? 'border-signal text-signal bg-signal/5' 
-              : 'border-transparent text-slate hover:text-paper'
-          }`}
-        >
-          Live Telemetry Logs
-        </button>
+      <div className="flex items-center justify-between border-b border-ink-mid mb-4 shrink-0 font-mono text-xs">
+        <div className="flex">
+          <button
+            onClick={() => setActiveTab('visual')}
+            className={`px-4 py-2 uppercase border-b-2 transition-all ${
+              activeTab === 'visual' 
+                ? 'border-signal text-signal bg-signal/5 font-bold' 
+                : 'border-transparent text-slate hover:text-paper'
+            }`}
+          >
+            Visual Workflow Designer
+          </button>
+          <button
+            onClick={() => setActiveTab('telemetry')}
+            className={`px-4 py-2 uppercase border-b-2 transition-all ${
+              activeTab === 'telemetry' 
+                ? 'border-signal text-signal bg-signal/5' 
+                : 'border-transparent text-slate hover:text-paper'
+            }`}
+          >
+            Live Telemetry Logs
+          </button>
+        </div>
+        <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-mono border border-amber-500/30 bg-amber-500/10 text-amber-300">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+          <span>SIMULATION &amp; STAGING MODE</span>
+          <span className="text-slate-light">| Rules staged in local state until engine deployment</span>
+        </div>
       </div>
 
       {/* Main workspace */}

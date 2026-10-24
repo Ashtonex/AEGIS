@@ -110,7 +110,9 @@ class AccountRoleMatrixContractTests(unittest.TestCase):
         )
         for role_name in expected_roles:
             self.assertIn(f"'{role_name}'", OPERATIONAL_ROLE_MIGRATION)
-            self.assertIn(f'"{role_name}"', DASHBOARD_SHELL)
+        # The sidebar is permission-driven: no role names are hard-coded, so
+        # these roles see whatever their seeded permissions grant.
+        self.assertNotIn("allowedRoles", DASHBOARD_SHELL)
 
         for permission_key in (
             "documents.link",
@@ -157,8 +159,10 @@ class AccountRoleMatrixContractTests(unittest.TestCase):
             "crm_tasks.read",
         ):
             self.assertIn(permission_key, CRM_ASSOCIATE_WORKSPACE_MIGRATION)
-        self.assertIn('"CRM Associate"', DASHBOARD_SHELL)
-        self.assertNotIn('name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, restrictedRoles: ["CRM Associate"]', DASHBOARD_SHELL)
+        # Commercial Command is gated by the permission CRM Associate holds,
+        # not by role name.
+        self.assertIn('name: "Commercial Command", href: "/dashboard/crm", icon: BarChart, requiredPermission: "crm.view_opportunities"', DASHBOARD_SHELL)
+        self.assertNotIn("restrictedRoles", DASHBOARD_SHELL)
 
     def test_crm_associate_can_assign_tenders_and_use_leave_self_service(self):
         for permission_key in (

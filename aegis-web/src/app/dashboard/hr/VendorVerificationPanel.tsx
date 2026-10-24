@@ -20,13 +20,26 @@ import {
 
 type RecordData = Record<string, any>;
 
-const REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+// Tax clearance, company registration and VAT (unless the vendor has declared
+// it isn't VAT registered) must be verified before approval; NSSA and PRAZ
+// are optional. Mirrors app/shared/vendor_verification.py.
+const REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string; optional?: boolean }> = [
   { key: "tax_clearance", label: "Tax Clearance" },
-  { key: "nssa", label: "NSSA" },
-  { key: "praz", label: "PRAZ" },
-  { key: "vat", label: "VAT" },
   { key: "company_registration", label: "Company Registration" },
+  { key: "vat", label: "VAT" },
+  { key: "nssa", label: "NSSA", optional: true },
+  { key: "praz", label: "PRAZ", optional: true },
 ];
+
+function isOptionalDocument(required: { key: SupplierComplianceDocumentType; optional?: boolean }, vatStatus?: string | null) {
+  return Boolean(required.optional) || (required.key === "vat" && vatStatus === "not_registered");
+}
+
+function vatSummary(vatStatus?: string | null, vatNumber?: string | null) {
+  if (vatStatus === "not_registered") return "Not VAT registered";
+  if (vatNumber) return `VAT ${vatNumber}`;
+  return "VAT not provided";
+}
 
 function textValue(value: unknown, fallback = "Not recorded") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -264,11 +277,11 @@ export function VendorVerificationPanel() {
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-slate-light">
-                      Reg. {textValue(row.registration_number)} · Tax {textValue(row.tax_clearance_number)} · Verified by system {dateValue(row.system_verified_at)}
+                      Reg. {textValue(row.registration_number)} · Tax clearance {textValue(row.tax_clearance_number)} · {vatSummary(row.vat_status, row.vat_number)} · Verified by system {dateValue(row.system_verified_at)}
                     </p>
                     <p className="mt-1 text-xs text-slate-light">{textValue(row.contact_email)} · {textValue(row.contact_phone)}</p>
                     <p className="mt-1 text-xs text-slate-light">
-                      Documents {row.compliance_document_count ?? 0}/5 uploaded · {row.verified_document_count ?? 0}/5 verified
+                      Documents {row.compliance_document_count ?? 0} uploaded · {row.verified_document_count ?? 0} verified
                     </p>
                     {!readyForDecision && row.system_verification_notes && (
                       <p className="mt-1 text-xs text-amber-300">{row.system_verification_notes}</p>
@@ -373,9 +386,12 @@ export function VendorVerificationPanel() {
                         return (
                           <div key={required.key} className="border border-ink-mid bg-ink p-3">
                             <div className="flex items-start justify-between gap-2">
-                              <p className="text-sm font-semibold">{required.label}</p>
+                              <p className="text-sm font-semibold">
+                                {required.label}
+                                {isOptionalDocument(required, row.vat_status) && <span className="ml-1 font-mono text-[10px] uppercase text-slate-light">optional</span>}
+                              </p>
                               <span className={`shrink-0 border px-2 py-0.5 font-mono text-[10px] uppercase ${docStatusClass(status)}`}>
-                                {doc ? status.replace("_", " ") : "missing"}
+                                {doc ? status.replace("_", " ") : isOptionalDocument(required, row.vat_status) ? "not required" : "missing"}
                               </span>
                             </div>
                             <p className="mt-2 min-h-8 text-xs text-slate-light">
@@ -522,7 +538,7 @@ function VendorReviewModal({
             <section className="p-4">
               <div className="flex items-center justify-between">
                 <h4 className="font-mono text-xs font-bold uppercase tracking-widest text-paper">Uploaded compliance documents</h4>
-                <span className="font-mono text-[10px] uppercase text-slate-light">{docs.length}/5 uploaded</span>
+                <span className="font-mono text-[10px] uppercase text-slate-light">{docs.length} uploaded</span>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 {REQUIRED_DOCUMENTS.map((required) => {
@@ -532,9 +548,12 @@ function VendorReviewModal({
                   return (
                     <div key={required.key} className="border border-ink-mid bg-ink-light p-3">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="text-sm font-semibold">{required.label}</p>
+                        <p className="text-sm font-semibold">
+                          {required.label}
+                          {isOptionalDocument(required, vendor?.vat_status) && <span className="ml-1 font-mono text-[10px] uppercase text-slate-light">optional</span>}
+                        </p>
                         <span className={`shrink-0 border px-2 py-0.5 font-mono text-[10px] uppercase ${docStatusClass(status)}`}>
-                          {doc ? status.replace("_", " ") : "missing"}
+                          {doc ? status.replace("_", " ") : isOptionalDocument(required, vendor?.vat_status) ? "not required" : "missing"}
                         </span>
                       </div>
                       <p className="mt-2 min-h-8 text-xs text-slate-light">

@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     RENDER_EXTERNAL_HOSTNAME: Optional[str] = None
     RENDER_EXTERNAL_URL: Optional[str] = None
     FRONTEND_HOSTNAME: Optional[str] = None
+    # The address people actually open AEGIS at - used for links sent OUT of
+    # the system (Teams cards, notification emails). Deliberately not derived
+    # from ALLOWED_ORIGINS: that list is for CORS, and on a dev machine (which
+    # shares the production database and so can message real people) it
+    # only holds localhost, which put localhost links in real Teams cards.
+    PUBLIC_APP_URL: str = "https://sixnineconstruction.com"
+    # The AEGIS Teams app (deploy/teams-app/manifest.json "id"). Cards link
+    # straight into its "My Tasks" tab when set.
+    TEAMS_APP_ID: Optional[str] = "7c98e29c-57c1-4f3d-bbd3-a70a17528dd3"
     # Most PaaS egress networking (Render, DigitalOcean App Platform, Railway,
     # AWS Lightsail) is IPv4-only, so Supabase's direct-connection host
     # (IPv6-only) is unreachable regardless of platform. Default to false so
@@ -46,6 +55,17 @@ class Settings(BaseSettings):
     # - deploy/digitalocean/docker-compose.yml does this for the container.
     DB_POOL_SIZE: int = Field(default=10, ge=1)
     DB_MAX_OVERFLOW: int = Field(default=10, ge=0)
+    # How long a request waits for a free pool connection before failing with
+    # a clear error. SQLAlchemy's default (30s) made a saturated worker look
+    # like a hung server in the 2026-10-07 stress test.
+    DB_POOL_TIMEOUT_SECONDS: int = Field(default=5, ge=1)
+    # Client-side cap on any single query (asyncpg cancels it server-side when
+    # exceeded), so one slow query can't hold a pooled connection indefinitely.
+    # The background worker can raise this for long imports via its own env.
+    DB_COMMAND_TIMEOUT_SECONDS: int = Field(default=30, ge=1)
+    # Request rate limiting (core/rate_limit.py). An operational off-switch;
+    # also lets a load test measure raw capacity instead of the limiter.
+    RATE_LIMIT_ENABLED: bool = True
     SUPABASE_URL: str
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_KEY: str
@@ -55,6 +75,28 @@ class Settings(BaseSettings):
     # pretending to send, so missing config is loud, not a silent no-op.
     RESEND_API_KEY: Optional[str] = None
     EMAIL_FROM_ADDRESS: Optional[str] = None
+
+    # Friday HR report (app/services/hr/weekly_report.py), comma-separated.
+    # Each address must belong to an AEGIS user: the report is built for that
+    # user's organization, so it can never carry another tenant's data.
+    # admin@ has no live AEGIS user; ashton@admin.com stands in for it and
+    # EMAIL_REDIRECTS delivers that to admin@sixnineconstruction.com.
+    HR_WEEKLY_REPORT_RECIPIENTS: str = (
+        "nyasha@sixnineconstruction.com,ashton@admin.com,cosmas@sixnineconstruction.com"
+    )
+
+    # Draft project budget reminders (app/services/finance/draft_budget_reminders.py):
+    # copied on every weekday reminder alongside the project's QS and PM.
+    # cosmas@ is the MD; nyasha@ asked to be on every draft.
+    DRAFT_BUDGET_REMINDER_ALWAYS: str = (
+        "cosmas@sixnineconstruction.com,nyasha@sixnineconstruction.com"
+    )
+    # HR expiry warnings (app/services/hr/expiry_alerts.py): contracts,
+    # credentials and assets due back. The employee is always told as well.
+    HR_EXPIRY_ALERT_ALWAYS: str = "nyasha@sixnineconstruction.com"
+    # Not-safe-for-business supplier alerts (phase 6) go to these plus the
+    # Procurement Manager role.
+    VENDOR_RISK_ALERT_ALWAYS: str = "cosmas@sixnineconstruction.com,nyasha@sixnineconstruction.com"
 
     # AI Financial Control Assistant (Phase 10B) - read-only, tool-calling
     # only against the allow-list in app/services/finance/ai_assistant_tools.py.
@@ -70,6 +112,21 @@ class Settings(BaseSettings):
     # boq_ai_analysis.py's fail-closed design.
     PERPLEXITY_API_KEY: Optional[str] = None
     QUOTATION_AI_ANALYSIS_MODEL: str = "sonar-reasoning-pro"
+
+    # Login-only addresses that can't receive mail, as "from=to" pairs,
+    # comma-separated. core/email.py delivers mail for the left address to
+    # the right one; the login itself is untouched.
+    EMAIL_REDIRECTS: str = "ashton@admin.com=admin@sixnineconstruction.com"
+    # Staff logins that are real, working mailboxes. sixnineconstruction.com
+    # is split-delivered (2026-10-03): Microsoft 365 holds admin@/operations@
+    # and relays every other address to Namecheap Private Email, where these
+    # mailboxes exist. Staff on this list get email at their work address
+    # only; other staff with a Teams account get it at the mailbox behind
+    # that account instead (core/email.py _delivery_addresses).
+    WORK_MAILBOXES: str = (
+        "nyasha@sixnineconstruction.com,cosmas@sixnineconstruction.com,"
+        "hitler@sixnineconstruction.com"
+    )
 
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
@@ -155,6 +212,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
     )
+
+    @field_validator("PWA_VAPID_SUBJECT", mode="before")
+    @classmethod
+    def validate_pwa_vapid_subject(cls, value: Any) -> str:
+        if not value or not str(value).strip():
+            return "mailto:operations@sixnineconstruction.com"
+        subject = str(value).strip()
+        if not subject.startswith("mailto:") and not subject.startswith("https://"):
+            return f"mailto:{subject}"
+        return subject
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -249,6 +316,15 @@ class Settings(BaseSettings):
             for origin in self.ALLOWED_ORIGINS.split(",")
             if origin.strip()
         ]
+
+    @property
+    def email_redirects(self) -> dict[str, str]:
+        pairs = (pair.split("=", 1) for pair in self.EMAIL_REDIRECTS.split(",") if "=" in pair)
+        return {src.strip().lower(): dst.strip() for src, dst in pairs if src.strip() and dst.strip()}
+
+    @property
+    def work_mailboxes(self) -> set[str]:
+        return {a.strip().lower() for a in self.WORK_MAILBOXES.split(",") if a.strip()}
 
     @property
     def cors_origins(self) -> List[str]:

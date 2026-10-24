@@ -72,7 +72,17 @@ class NotificationsContractTests(unittest.TestCase):
         self.assertIn("clearReconnectTimer()", LIVE_DATA_PROVIDER)
         self.assertIn("RECONNECT_JITTER_MS", LIVE_DATA_PROVIDER)
         self.assertIn("socket.onerror", LIVE_DATA_PROVIDER)
-        self.assertIn("socketRef.current?.close()", LIVE_DATA_PROVIDER)
+        # The previous socket is retired (handlers detached; a still-
+        # CONNECTING one is closed once it opens) rather than closed
+        # mid-handshake, so it can never trigger a second reconnect loop.
+        self.assertIn("retire(socketRef.current)", LIVE_DATA_PROVIDER)
+        self.assertIn("socket.onclose = null", LIVE_DATA_PROVIDER)
+
+    def test_notification_poll_backs_off_while_live_socket_is_open(self):
+        self.assertIn("export function useLiveConnected", LIVE_DATA_PROVIDER)
+        hook = (ROOT.parent / "aegis-web" / "src" / "hooks" / "useNotifications.ts").read_text(encoding="utf-8")
+        self.assertIn("useLiveConnected()", hook)
+        self.assertIn("liveConnected ? POLL_WHILE_LIVE_MS : POLL_MS", hook)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import jwt
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from core.logging import logger, correlation_id_ctx, user_id_ctx, duration_ctx
+from core.truncation import truncation_ctx
 
 
 class StructuredLoggingMiddleware(BaseHTTPMiddleware):
@@ -16,6 +17,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
             correlation_id = str(uuid.uuid4())
 
         correlation_id_token = correlation_id_ctx.set(correlation_id)
+        request.state.correlation_id = correlation_id
 
         # 2. Extract User ID from JWT token (if present) for tracing
         user_id = ""
@@ -30,6 +32,8 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
                 logger.debug(f"Unable to decode JWT subject for request tracing: {exc}")
 
         user_id_token = user_id_ctx.set(user_id)
+        truncation = {}
+        truncation_token = truncation_ctx.set(truncation)
 
         start_time = time.time()
 
@@ -46,6 +50,8 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
 
             response.headers["X-Correlation-ID"] = correlation_id
             response.headers["X-Process-Time"] = f"{duration:.4f}s"
+            if truncation.get("limit"):
+                response.headers["X-Results-Truncated"] = str(truncation["limit"])
             return response
 
         except Exception as e:
@@ -57,6 +63,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
             raise e
         finally:
             # Safely reset contextvars
+            truncation_ctx.reset(truncation_token)
             correlation_id_ctx.reset(correlation_id_token)
             user_id_ctx.reset(user_id_token)
             duration_ctx.set(None)

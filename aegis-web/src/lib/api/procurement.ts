@@ -9,6 +9,44 @@ import { bearerHeaders, EXECUTIVE_READ_TIMEOUT_MS } from "./website";
 
 // --- PROCUREMENT CONTROL TOWER --- //
 
+export interface SupplyControlTowerKPIs {
+  critical_low_stock: {
+    count: number;
+    out_of_stock: number;
+    store_id: string | null;
+  };
+  expected_deliveries: {
+    count: number;
+    overdue_count: number;
+    value: number;
+    currency: string;
+  };
+  pending_approvals: {
+    total: number;
+    requisitions: number;
+    orders: number;
+  };
+  unmatched_invoices: {
+    count: number;
+    disputed_count: number;
+    value: number;
+    currency: string;
+  };
+  financial_commitments: {
+    committed_amount: number;
+    approved_budget: number;
+    currency: string;
+  };
+}
+
+export async function getSupplyControlTowerKPIs(params?: { project_id?: string; store_id?: string }): Promise<ApiResponse<SupplyControlTowerKPIs>> {
+  const search = new URLSearchParams();
+  if (params?.project_id) search.set("project_id", params.project_id);
+  if (params?.store_id) search.set("store_id", params.store_id);
+  const query = search.toString() ? `?${search.toString()}` : "";
+  return fetchApi<ApiResponse<SupplyControlTowerKPIs>>(`/api/v1/procurement/control-tower${query}`, { cache: "no-store", allowFallback: false });
+}
+
 export async function getProcurementRequisitions(params?: { status?: string; project_id?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.status && params.status !== "all") search.set("status", params.status);
@@ -37,6 +75,23 @@ export async function createProcurementRequisition(payload: Record<string, unkno
   return fetchApi<ApiResponse<any>>("/api/v1/procurement/requisitions", {
     method: "POST",
     body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function generateReplenishmentDrafts(payload?: {
+  store_id?: string;
+  project_id?: string;
+  item_ids?: string[];
+}): Promise<ApiResponse<{
+  id: string;
+  requisition_number: string;
+  items_count: number;
+  total_estimated: number;
+} | null>> {
+  return fetchApi<ApiResponse<any>>("/api/v1/procurement/replenish/generate-drafts", {
+    method: "POST",
+    body: JSON.stringify(payload || {}),
     allowFallback: false,
   });
 }
@@ -232,6 +287,13 @@ export async function matchSupplierInvoice(id: string): Promise<ApiResponse<any>
   });
 }
 
+export async function getInvoiceMatchInspection(invoiceId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/invoices/${invoiceId}/match-inspection`, {
+    cache: "no-store",
+    allowFallback: false,
+  });
+}
+
 export async function linkProcurementDocument(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/documents/link`, {
     method: "POST",
@@ -321,9 +383,17 @@ export async function getProjectDeleteImpact(projectId: string): Promise<ApiResp
   );
 }
 
-/** acknowledgeMoney must be true when the project has bank lines, claims, costs or ledger entries attached. */
-export async function deleteInternalProject(projectId: string, acknowledgeMoney = false): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
-  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}${acknowledgeMoney ? '?acknowledge_money=true' : ''}`, {
+/** acknowledgeMoney must be true when the project has bank lines, claims, costs or ledger entries attached. purgeAll wipes the project and all attached financial movements and records in their entirety. */
+export async function deleteInternalProject(
+  projectId: string,
+  acknowledgeMoney = false,
+  purgeAll = false,
+): Promise<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>> {
+  const params = new URLSearchParams();
+  if (acknowledgeMoney) params.set('acknowledge_money', 'true');
+  if (purgeAll) params.set('purge_all', 'true');
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return fetchApi<ApiResponse<{ wiped: boolean; archived: boolean; blocked_by: { table: string; count: number }[] }>>(`/api/v1/projects/${projectId}${qs}`, {
     method: 'DELETE',
     allowFallback: false,
   });
@@ -354,8 +424,22 @@ export async function getProjectLifecycle(projectId: string): Promise<ApiRespons
   });
 }
 
-/** Adds a real schedule milestone to a project (real owner_id, not a placeholder name). */
-export async function addProjectMilestone(projectId: string, payload: { name: string; status?: string; baseline_date?: string; forecast_date?: string; actual_date?: string; weight?: number; owner_id?: string; notes?: string }): Promise<ApiResponse<{ id: string }>> {
+/** Adds a real schedule milestone to a project with CPM scheduling attributes. */
+export async function addProjectMilestone(projectId: string, payload: {
+  name: string;
+  status?: string;
+  baseline_date?: string;
+  forecast_date?: string;
+  actual_date?: string;
+  weight?: number;
+  percent_complete?: number;
+  owner_id?: string;
+  notes?: string;
+  duration_days?: number;
+  predecessor_id?: string;
+  lag_days?: number;
+  dependency_type?: string;
+}): Promise<ApiResponse<{ id: string }>> {
   return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones`, {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -363,13 +447,94 @@ export async function addProjectMilestone(projectId: string, payload: { name: st
   });
 }
 
-/** Progresses an existing milestone (status, actual date, owner, etc). */
+/** Progresses an existing milestone (status, actual date, owner, duration, predecessor, etc). */
 export async function updateProjectMilestone(projectId: string, milestoneId: string, payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> {
   return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones/${milestoneId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
     allowFallback: false,
   });
+}
+
+/** Soft-deletes a milestone from the project schedule and updates dependencies. */
+export async function deleteProjectMilestone(projectId: string, milestoneId: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/milestones/${milestoneId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+/** Recalculates Critical Path Method (CPM) across all project milestones. */
+export async function calculateProjectScheduleCPM(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/calculate-cpm`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Synchronizes schedule and Gantt with contemporary daily site reports. */
+export async function getProjectScheduleSiteSync(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/site-sync`, {
+    method: 'GET',
+    allowFallback: false,
+  });
+}
+
+/** Triggers automatic alignment between schedule milestones and daily site reports. */
+export async function syncScheduleFromSiteReports(projectId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/schedule/sync-from-site-reports`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+/** Logs a project risk into the project risk register. */
+export async function addProjectRisk(
+  projectId: string,
+  payload: {
+    title: string;
+    description?: string;
+    category?: string;
+    status?: string;
+    likelihood?: number;
+    impact?: number;
+    response_plan?: string;
+    owner_id?: string;
+    due_date?: string;
+  }
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/projects/${projectId}/risks`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Autogenerates weekly project milestones from the project's BOQ line items. */
+export async function generateProjectMilestonesFromBOQ(
+  projectId: string
+): Promise<ApiResponse<Array<{ id: string; name: string; baseline_date: string; weight: number }>>> {
+  return fetchApi<ApiResponse<Array<{ id: string; name: string; baseline_date: string; weight: number }>>>(
+    `/api/v1/projects/${projectId}/generate-boq-milestones`,
+    {
+      method: 'POST',
+      allowFallback: false,
+    }
+  );
+}
+
+/** Links an existing project to a CRM opportunity deal. */
+export async function linkProjectToOpportunity(
+  projectId: string,
+  opportunityId: string
+): Promise<ApiResponse<{ project_id: string; opportunity_id: string }>> {
+  return fetchApi<ApiResponse<{ project_id: string; opportunity_id: string }>>(
+    `/api/v1/projects/${projectId}/link-opportunity/${opportunityId}`,
+    {
+      method: 'POST',
+      allowFallback: false,
+    }
+  );
 }
 
 /** Lists setup-phase (and ongoing) expenses recorded against a company-initiated project. */
@@ -477,6 +642,8 @@ export async function decideProjectRegistration(projectId: string, decision: 'ap
   });
 }
 
+export type { PreMobilisationCheck, CommercialReadiness } from "../projects/types";
+
 export type ProjectBudgetUploadLine = {
   cost_code: string;
   description: string;
@@ -503,6 +670,204 @@ export async function setProjectBudget(
       budget_stage: options?.budgetStage ?? 'master',
       lines: options?.lines ?? [],
     }),
+    allowFallback: false,
+  });
+}
+
+/** Get bulk cost-category summary with side-by-side budget, commitments, actuals, headroom, and linked quotation. */
+export async function getProjectBudgetCategorySummary(projectId: string): Promise<ApiResponse<{
+  categories: Array<{
+    category: string;
+    label: string;
+    default_code: string;
+    estimated_cost: number;
+    budget: number;
+    committed: number;
+    actual: number;
+    headroom: number;
+    burn_pct: number;
+  }>;
+  totals: {
+    budget: number;
+    committed: number;
+    actual: number;
+    headroom: number;
+    burn_pct: number;
+  };
+  linked_quotation: {
+    id: string;
+    client_name: string;
+    quote_amount: number;
+    status: string;
+    created_at: string;
+    category_estimates: Record<string, number>;
+  } | null;
+}>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/budget/category-summary`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Import bulk-category execution budget directly from linked quotation. */
+export async function importProjectBudgetFromQuotation(
+  projectId: string,
+  quotationId?: string,
+  notes?: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/budget/import-quotation`, {
+    method: 'POST',
+    body: JSON.stringify({
+      quotation_id: quotationId || null,
+      notes,
+    }),
+    allowFallback: false,
+  });
+}
+
+/** Get project role assignments and available personnel to delegate. */
+export async function getProjectRoles(projectId: string): Promise<ApiResponse<{
+  assignments: Array<{
+    id: string;
+    project_id: string;
+    site_id: string | null;
+    user_id: string;
+    role_name: string;
+    starts_on: string | null;
+    ends_on: string | null;
+    is_active: boolean;
+    created_at: string;
+    user_name: string;
+    user_email: string;
+    assigned_by_name: string | null;
+    site_name: string | null;
+  }>;
+  available_users: Array<{
+    id: string;
+    full_name: string;
+    email: string;
+    role: string;
+  }>;
+  total_active: number;
+}>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Assign or delegate a project responsibility (Project Manager, Site Engineer, Foreman, etc.). */
+export async function assignProjectRole(
+  projectId: string,
+  payload: {
+    user_id: string;
+    role_name: string;
+    site_id?: string;
+    starts_on?: string;
+    ends_on?: string;
+  },
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Update or deactivate a project role assignment. */
+export async function updateProjectRole(
+  projectId: string,
+  assignmentId: string,
+  payload: {
+    role_name?: string;
+    site_id?: string;
+    starts_on?: string;
+    ends_on?: string;
+    is_active?: boolean;
+    reason?: string;
+  },
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles/${assignmentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Soft-deactivate a role assignment, ending future authority while preserving all historical records. */
+export async function deactivateProjectRole(
+  projectId: string,
+  assignmentId: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/roles/${assignmentId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+/** Get all project hires (casual/temporary workers) directly linked or logged on site for this project. */
+export async function getProjectTeamHires(projectId: string): Promise<ApiResponse<{
+  hires: Array<{
+    id: string;
+    full_name: string;
+    trade: string;
+    hourly_rate: number;
+    phone: string;
+    national_id: string;
+    status: string;
+    registered_via: string;
+    hr_verified: boolean;
+    hr_status: string;
+    hours_logged: number;
+    last_attended: string | null;
+    created_at: string;
+  }>;
+  total: number;
+  active_count: number;
+}>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/hires`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+/** Add a new project hire directly from the projects module. */
+export async function createProjectTeamHire(
+  projectId: string,
+  payload: {
+    full_name: string;
+    trade?: string;
+    hourly_rate?: number;
+    phone?: string;
+    national_id?: string;
+    payment_method?: string;
+  },
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/hires`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+/** Deactivate a project hire from the project. */
+export async function deactivateProjectTeamHire(
+  projectId: string,
+  workerId: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/hires/${workerId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+/** Remove / soft-end a permanent employee allocation from this project. */
+export async function removeProjectAllocation(
+  projectId: string,
+  allocationId: string,
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/projects/${projectId}/allocations/${allocationId}`, {
+    method: 'DELETE',
     allowFallback: false,
   });
 }
@@ -659,12 +1024,15 @@ export async function getClientPortalTickets(): Promise<ApiResponse<ClientPortal
 
 export type VendorVerificationStage = "incomplete" | "system_pending" | "system_verified" | "hr_verified" | "rejected";
 export type VendorRateType = "material" | "transport" | "service";
+export type VendorVatStatus = "registered" | "not_registered";
 
 export interface SupplierPortalVendor {
   subcontractor_id: string;
   name: string;
   registration_number?: string;
   tax_clearance_number?: string;
+  vat_status?: VendorVatStatus | null;
+  vat_number?: string;
   nssa_number?: string;
   praz_number?: string;
   contact_name?: string;
@@ -1073,6 +1441,11 @@ export interface AuthenticatedUser {
   org_id: string;
   email: string | null;
   role: string;
+  /** Every assigned role, primary first. Optional so an older backend that
+   * only returns `role` still works. */
+  roles?: string[];
+  /** Every permission key granted across all of the user's roles. */
+  permissions?: string[];
 }
 
 // The authoritative role assignment lives in core.user_roles, not in the
@@ -1178,6 +1551,23 @@ export async function requestSiteMaterial(payload: Record<string, unknown>): Pro
   });
 }
 
+export async function suggestMaterials(q: string, storeId?: string): Promise<ApiResponse<{ catalogue: any[]; candidates: any[] }>> {
+  const search = new URLSearchParams({ q });
+  if (storeId) search.set('store_id', storeId);
+  return fetchApi<ApiResponse<{ catalogue: any[]; candidates: any[] }>>(`/api/v1/site-operations/materials/suggest?${search.toString()}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function promoteMaterialCandidate(candidateId: string, payload: { category?: string; standard_cost?: number; notes?: string }): Promise<ApiResponse<{ canonical_item_id: string; item_code: string }>> {
+  return fetchApi<ApiResponse<{ canonical_item_id: string; item_code: string }>>(`/api/v1/site-operations/materials/candidates/${candidateId}/promote`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
 export async function getSiteMaterialRequests(params?: { projectId?: string; engineerStatus?: string }): Promise<ApiResponse<any[]>> {
   const search = new URLSearchParams();
   if (params?.projectId) search.set('project_id', params.projectId);
@@ -1202,8 +1592,8 @@ export async function getWeeklySiteBudgets(params?: { projectId?: string; status
   return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/weekly-budgets${query}`, { cache: 'no-store', allowFallback: false });
 }
 
-export async function getExecutionBudget(projectId: string): Promise<ApiResponse<{ budget: any; line_items: any[] }>> {
-  return fetchApi<ApiResponse<{ budget: any; line_items: any[] }>>(`/api/v1/site-operations/projects/${projectId}/execution-budget`, { cache: 'no-store', allowFallback: false });
+export async function getExecutionBudget(projectId: string): Promise<ApiResponse<{ budget: any; line_items: any[]; summary?: any }>> {
+  return fetchApi<ApiResponse<{ budget: any; line_items: any[]; summary?: any }>>(`/api/v1/site-operations/projects/${projectId}/execution-budget`, { cache: 'no-store', allowFallback: false });
 }
 
 export async function createWeeklySiteBudget(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
@@ -1329,6 +1719,81 @@ export async function decideDailySiteReportEngineer(reportId: string, decision: 
   return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/engineer-decision`, {
     method: 'POST',
     body: JSON.stringify({ decision, reason }),
+    allowFallback: false,
+  });
+}
+
+export async function updateDailyReportLabour(reportId: string, lineId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/labour/${lineId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDailyReportLabour(reportId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/labour/${lineId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function updateDailyReportEquipment(reportId: string, lineId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/equipment/${lineId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDailyReportEquipment(reportId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/equipment/${lineId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function updateDailyReportMaterial(reportId: string, lineId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/materials/${lineId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function deleteDailyReportMaterial(reportId: string, lineId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/materials/${lineId}`, {
+    method: 'DELETE',
+    allowFallback: false,
+  });
+}
+
+export async function syncDailyReport(reportId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/daily-reports/${reportId}/sync-all`, {
+    method: 'POST',
+    allowFallback: false,
+  });
+}
+
+export async function getSitePlantRequests(projectId?: string): Promise<ApiResponse<any[]>> {
+  const query = projectId ? `?project_id=${projectId}` : '';
+  return fetchApi<ApiResponse<any[]>>(`/api/v1/site-operations/plant-requests${query}`, {
+    cache: 'no-store',
+    allowFallback: false,
+  });
+}
+
+export async function createSitePlantRequest(payload: Record<string, unknown>): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>('/api/v1/site-operations/plant-requests', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function approveSitePlantRequest(requestId: string): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/site-operations/plant-requests/${requestId}/approve`, {
+    method: 'PATCH',
     allowFallback: false,
   });
 }

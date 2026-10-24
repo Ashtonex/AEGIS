@@ -28,12 +28,22 @@ export interface ApiError {
 export interface ApiMeta {
   timestamp: string;
   requestId: string;
+  // limit/offset lists (imperium-api app.shared.pagination.limited)
+  total?: number | null;
+  limit?: number;
+  offset?: number;
+  has_more?: boolean;
+  // whole-list endpoints capped at LIST_SAFETY_CAP (app.shared.pagination)
+  truncated?: boolean;
+  cap?: number;
 }
 
 export interface SupplierRegistrationPayload {
   companyName: string;
   registrationNumber: string;
   taxClearanceNumber: string;
+  vatStatus: "registered" | "not_registered";
+  vatNumber?: string;
   prazNumber?: string;
   yearEstablished: number;
   employees: number;

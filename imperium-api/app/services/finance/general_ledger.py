@@ -164,10 +164,21 @@ async def update_chart_of_account(
 
 
 async def get_account_ledger(
-    db: AsyncSession, *, org_id: str, account_id: UUID, date_from: Optional[date] = None, date_to: Optional[date] = None
+    db: AsyncSession,
+    *,
+    org_id: str,
+    account_id: UUID,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 500,
+    offset: int = 0,
 ) -> list[dict]:
+    """One page of an account's posted lines, oldest first. running_balance
+    stays correct across pages: Postgres evaluates the window function over
+    every matching row before LIMIT/OFFSET is applied. Each row carries
+    ``_total`` for app.shared.pagination.limited()."""
     filters = ["jl.organization_id = :org_id", "jl.account_id = :account_id", "je.status = 'posted'"]
-    params: dict = {"org_id": org_id, "account_id": account_id}
+    params: dict = {"org_id": org_id, "account_id": account_id, "limit": limit, "offset": offset}
     if date_from:
         filters.append("je.entry_date >= :date_from")
         params["date_from"] = date_from
@@ -182,11 +193,13 @@ async def get_account_ledger(
                 jl.project_id, jl.department_id, jl.cost_code_id,
                 je.id AS journal_entry_id, je.journal_number, je.entry_date, je.description AS journal_description,
                 je.source_type, je.source_id,
-                SUM(jl.debit_amount - jl.credit_amount) OVER (ORDER BY je.entry_date, je.journal_number, jl.line_number) AS running_balance
+                SUM(jl.debit_amount - jl.credit_amount) OVER (ORDER BY je.entry_date, je.journal_number, jl.line_number) AS running_balance,
+                COUNT(*) OVER () AS _total
             FROM finance.journal_lines jl
             JOIN finance.journal_entries je ON je.id = jl.journal_entry_id
             WHERE {where}
             ORDER BY je.entry_date, je.journal_number, jl.line_number
+            LIMIT :limit OFFSET :offset
         """),
         params,
     )

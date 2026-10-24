@@ -1,0 +1,55 @@
+name: SQL Health Check
+
+# Plans every SQL statement in imperium-api against the live database schema
+# without executing any of them (EXPLAIN only, READ ONLY transaction, rolled
+# back), and dumps the API's recent error log. Called by the deploy workflow
+# after every successful backend deploy; can also be run by hand once main is
+# the repo's default branch:
+#   gh workflow run sql-health-check.yml -f ref=<branch-or-sha>
+on:
+  workflow_call: {}
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit of imperium-api to check
+        required: false
+        default: main
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Own group: sharing deploy-backend's would let a queued check replace
+    # (cancel) a pending deploy, since a group holds only one pending job.
+    concurrency:
+      group: sql-health-check
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          sparse-checkout: imperium-api
+      - name: Copy the code under test to the droplet
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: imperium-api
+          target: /tmp/aegis-sqlcheck-${{ github.run_id }}
+      - name: Plan all SQL and collect API errors
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          command_timeout: 30m
+          script: |
+            set -uo pipefail
+            WORK=/tmp/aegis-sqlcheck-${{ github.run_id }}
+            COMPOSE="docker compose -f /opt/aegis/deploy/digitalocean/docker-compose.yml --env-file /opt/aegis/deploy/digitalocean/.env"
+            $COMPOSE run --rm --no-deps -T -e PYTHONUNBUFFERED=1 -v "$WORK/imperium-api:/app" imperium-api python scripts/sql_explain_check.py
+            STATUS=$?
+            rm -rf "$WORK"
+            echo "--- imperium-api errors / 500s in the running container (last 24h) ---"
+            $COMPOSE logs --since=24h imperium-api 2>&1 | grep -iE "error|500 Internal|traceback|exception" | grep -viE "GET /health" | tail -300 || true
+            exit $STATUS

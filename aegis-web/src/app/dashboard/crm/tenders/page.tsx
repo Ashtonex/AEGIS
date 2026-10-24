@@ -36,6 +36,8 @@ import { useFinanceDepartments } from '@/hooks/useFinanceDepartments';
 import { supabase } from '@/lib/supabase';
 import { DashboardPageHeader } from '@/components/dashboard/DashboardPageHeader';
 import { AssignmentPanel } from '@/components/documents/AssignmentPanel';
+import { TenderStageMoveModal, TenderActivityLog } from '@/components/crm/TenderStageMove';
+import { CommercialWorkspaceModal } from '@/components/crm/CommercialWorkspaceModal';
 
 // Stages definition. 'Awarded' and 'Lost' used to be a single combined
 // 'Awarded/Lost' stage with no conversion logic - now moving into 'Awarded'
@@ -198,6 +200,10 @@ export default function TendersCommand() {
 
   // Edit Drawer Form State
   const [editForm, setEditForm] = useState<Tender | null>(null);
+  // Every stage move goes through this gate: an activity-log note is
+  // mandatory, and the backend completes the stage-being-left's tasks.
+  const [stageMove, setStageMove] = useState<{ tenderId: string; tenderName: string; from: string; to: string } | null>(null);
+  const [activityLogRefresh, setActivityLogRefresh] = useState(0);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -273,24 +279,18 @@ export default function TendersCommand() {
       return;
     }
 
-    // Optimistically update local state
-    setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: targetStage } : t));
+    setStageMove({ tenderId, tenderName: tender.tender_name, from: tender.stage, to: targetStage });
+  };
 
-    try {
-      const res = await updateCrmTender(tenderId, { stage: targetStage });
-      if (!res.success) {
-        alert(res.message || "The stage move did not save. The tender has been put back where it was.");
-        await loadData();
-      }
-    } catch (err) {
-      console.error('Failed to update stage via drag-drop:', err);
-      alert(describeActionError(
-        err,
-        "You don't have permission to move this tender - it's been put back where it was.",
-        "The stage move didn't save. Check the CRM service connection and retry."
-      ));
-      loadData();
-    }
+  const handleConfirmStageMove = async (note: string) => {
+    if (!stageMove) return;
+    const { tenderId, to } = stageMove;
+    const res = await updateCrmTender(tenderId, { stage: to, stage_note: note });
+    if (!res.success) throw new Error(res.message || "The stage move did not save.");
+    setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: to } : t));
+    setStageMove(null);
+    setActivityLogRefresh(n => n + 1);
+    await loadData();
   };
 
   const handleOpenAward = async (tenderId: string) => {
@@ -465,24 +465,8 @@ export default function TendersCommand() {
       return;
     }
 
-    // Optimistically update state
-    setTenders(prev => prev.map(t => t.id === tenderId ? { ...t, stage: nextStage } : t));
-
-    try {
-      const res = await updateCrmTender(tenderId, { stage: nextStage });
-      if (!res.success) {
-        alert(res.message || "The stage move did not save. The tender has been put back where it was.");
-        await loadData();
-      }
-    } catch (err) {
-      console.error('Failed to update stage:', err);
-      alert(describeActionError(
-        err,
-        "You don't have permission to move this tender - it's been put back where it was.",
-        "The stage move didn't save. Check the CRM service connection and retry."
-      ));
-      loadData();
-    }
+    if (!tender) return;
+    setStageMove({ tenderId, tenderName: tender.tender_name, from: currentStage, to: nextStage });
   };
 
   const handleCreateTender = async (e: React.FormEvent) => {
@@ -593,7 +577,6 @@ export default function TendersCommand() {
         bid_number: editForm.bid_number || '',
         category: editForm.category || 'Civil Works',
         region: editForm.region?.trim() || null,
-        stage: editForm.stage,
         bid_amount: bidAmountStr !== '' ? Number(bidAmountStr) : null,
         bid_bond_secured: editForm.bid_bond_secured,
         jv_partners: editForm.jv_partners || null,
@@ -620,6 +603,14 @@ export default function TendersCommand() {
       const res = await updateCrmTender(selectedTenderId, payload);
       if (res.success) {
         await loadData();
+        // Stage changes go through the stage-move gate (activity log note)
+        // rather than riding along with the detail save.
+        const current = tenders.find(t => t.id === selectedTenderId);
+        if (current && editForm.stage !== current.stage) {
+          if (editForm.stage === 'Awarded') handleOpenAward(selectedTenderId);
+          else if (editForm.stage === 'Lost') handleOpenCloseout(selectedTenderId, 'lost');
+          else setStageMove({ tenderId: selectedTenderId, tenderName: current.tender_name, from: current.stage, to: editForm.stage });
+        }
       }
     } catch (err) {
       console.error('Failed to update tender details:', err);
@@ -965,6 +956,7 @@ export default function TendersCommand() {
   const selectedTender = tenders.find(t => t.id === selectedTenderId);
   const selectedTenderTimingStatus = selectedTender ? getTenderTimingStatus(selectedTender) : null;
   const selectedTenderSiteVisitStatus = selectedTender ? getSiteVisitStatus(selectedTender) : null;
+  const isSelectedTenderTimingVisible = Boolean(selectedTender && (selectedTender.submission_deadline || isPostSubmissionStage(selectedTender.stage)));
 
   // Initialize edit drawer form when drawer opens
   useEffect(() => {
@@ -1573,589 +1565,47 @@ export default function TendersCommand() {
         </div>
       )}
 
-      {/* DETAILED SLIDE-OUT EDIT DRAWER & CHECKLIST VALIDATOR */}
-      <div className={`fixed inset-y-0 right-0 z-40 w-full max-w-lg bg-[#0A0A0A] border-l border-white/10 shadow-[0_0_60px_rgba(0,0,0,0.9)] transform transition-transform duration-300 ease-out flex flex-col ${
-        selectedTenderId ? 'translate-x-0' : 'translate-x-full'
-      }`}>
-        {selectedTender ? (
-          <>
-            {/* Drawer Header */}
-            <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/[0.01]">
-              <div className="flex items-center space-x-2.5">
-                <FileText className="w-4 h-4 text-[#D4AF37]" />
-                <div>
-                  <span className="font-mono text-[8px] text-slate-light uppercase tracking-wider block">Bidding Control Deck</span>
-                  <h2 className="font-sans font-bold text-sm text-paper uppercase truncate max-w-[280px]">{selectedTender.tender_name}</h2>
-                </div>
-              </div>
-              <div className="flex items-center space-x-2 shrink-0">
-                <button
-                  onClick={() => setIsDeleteTenderModalOpen(true)}
-                  title="Delete tender"
-                  className="w-7 h-7 bg-white/5 hover:bg-red-500/20 hover:text-red-300 rounded-full flex items-center justify-center text-slate-light transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={() => setSelectedTenderId(null)}
-                  className="w-7 h-7 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-slate-light hover:text-paper transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+      {/* SPACIOUS COMMERCIAL WORKSPACE MODAL (z-[70], never clipped by navbar) */}
+      {selectedTenderId && selectedTender && (
+        <CommercialWorkspaceModal
+          isOpen={true}
+          onClose={() => setSelectedTenderId(null)}
+          entity={{
+            id: selectedTender.id,
+            kind: 'tender',
+            name: selectedTender.tender_name,
+            stage: selectedTender.stage,
+            budget: Number(selectedTender.bid_amount || 0),
+            deal_value: Number(selectedTender.bid_amount || 0),
+            probability: 50,
+            expected_margin: 18.5,
+            risk_level: 'Medium',
+            client_name: selectedTender.tender_name,
+            organization_name: selectedTender.tender_name,
+            expected_close_date: selectedTender.submission_deadline,
+            project_id: selectedTender.project_id || undefined,
+            region: selectedTender.region || undefined,
+            bid_number: selectedTender.bid_number,
+            submission_deadline: selectedTender.submission_deadline,
+            bid_bond_required: selectedTender.bid_bond_secured,
+            bid_bond_amount: Number(selectedTender.bond_amount || 0),
+          }}
+          kind="tender"
+          onEntityUpdated={() => {
+            loadData();
+          }}
+        />
+      )}
 
-            {/* Drawer Body */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
-
-              {/* Compliance readiness banner - deliberately labeled
-                  "Compliance Readiness", not "Overall Readiness": this is
-                  one dimension (documents/registrations), not the full
-                  technical/financial/commercial/submission engine. A FATAL
-                  gap always forces RED regardless of the percentage. */}
-              {complianceSummary && (
-                <div className={`space-y-2 border p-4 rounded-sm ${
-                  complianceSummary.status === 'RED' ? 'bg-red-500/5 border-red-500/30' :
-                  complianceSummary.status === 'AMBER' ? 'bg-amber-500/5 border-amber-500/30' :
-                  complianceSummary.status === 'GREEN' ? 'bg-emerald-500/5 border-emerald-500/30' :
-                  'bg-white/[0.01] border-white/5'
-                }`}>
-                  <div className="flex justify-between items-center">
-                    <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Compliance Readiness</span>
-                    <span className={`font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-sm border ${
-                      complianceSummary.status === 'RED' ? 'text-red-300 border-red-500/40' :
-                      complianceSummary.status === 'AMBER' ? 'text-amber-300 border-amber-500/40' :
-                      complianceSummary.status === 'GREEN' ? 'text-emerald-300 border-emerald-500/40' :
-                      'text-slate-light border-white/10'
-                    }`}>
-                      {complianceSummary.status}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-lg font-bold text-paper tabular-nums">
-                      {complianceSummary.percent === null ? 'No verified data available.' : `${complianceSummary.percent}%`}
-                    </span>
-                    <span className="text-[9px] font-mono uppercase text-slate-light">
-                      Bid Gate Signal: <span className="text-paper">{complianceSummary.bid_gate_signal}</span> (compliance only)
-                    </span>
-                  </div>
-                  {(complianceSummary.fatal_open > 0 || complianceSummary.critical_open > 0 || complianceSummary.expired > 0 || complianceSummary.missing > 0) && (
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[9px] font-mono uppercase pt-1 border-t border-white/5">
-                      {complianceSummary.fatal_open > 0 && <span className="text-red-300">🔴 {complianceSummary.fatal_open} Fatal Open</span>}
-                      {complianceSummary.critical_open > 0 && <span className="text-amber-300">🟠 {complianceSummary.critical_open} Critical Open</span>}
-                      {complianceSummary.missing > 0 && <span className="text-slate-light">{complianceSummary.missing} Missing</span>}
-                      {complianceSummary.expired > 0 && <span className="text-red-300">{complianceSummary.expired} Expired</span>}
-                      {complianceSummary.expiring > 0 && <span className="text-amber-300">{complianceSummary.expiring} Expiring</span>}
-                      {complianceSummary.unverified > 0 && <span className="text-blue-300">{complianceSummary.unverified} Unverified</span>}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* EDIT FORM BLOCK */}
-              {editForm && (
-                <form onSubmit={handleUpdateTenderDetails} className="space-y-4 bg-white/[0.01] border border-white/5 p-4 rounded-sm">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider font-bold">Bid Parameters</span>
-                    <button 
-                      type="submit"
-                      disabled={isSubmitting}
-                      className="flex items-center space-x-1 text-[9px] font-mono bg-white/5 hover:bg-[#D4AF37] hover:text-black border border-white/10 px-2.5 py-0.5 rounded-sm uppercase transition-all"
-                    >
-                      <Save className="w-3.5 h-3.5" />
-                      <span>{isSubmitting ? 'Saving' : 'Save Details'}</span>
-                    </button>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Tender Title / Reference</label>
-                    <input 
-                      type="text" 
-                      value={editForm.tender_name} 
-                      onChange={e => setEditForm({ ...editForm, tender_name: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all" 
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Bid Reference Number</label>
-                      <input 
-                        type="text" 
-                        value={editForm.bid_number || ''} 
-                        onChange={e => setEditForm({ ...editForm, bid_number: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono" 
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Category</label>
-                      <select 
-                        value={editForm.category || 'Civil Works'} 
-                        onChange={e => setEditForm({ ...editForm, category: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                      >
-                        {CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block font-mono text-[8px] text-slate-light uppercase">Location</label>
-                    <input
-                      type="text"
-                      value={editForm.region || ''}
-                      onChange={e => setEditForm({ ...editForm, region: e.target.value })}
-                      className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all"
-                      placeholder="e.g. Harare, Mashonaland East"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Bidding Stage</label>
-                      {/* 'Awarded' is deliberately not a plain option here - it
-                          creates a real project, so it only happens via the
-                          gated Award action (drag to the Awarded column, or
-                          the button below), never a bare stage save. */}
-                      <select
-                        value={editForm.stage}
-                        onChange={e => {
-                          const nextStage = e.target.value;
-                          if (nextStage === 'Awarded') {
-                            handleOpenAward(editForm.id);
-                            return;
-                          }
-                          if (nextStage === 'Lost') {
-                            handleOpenCloseout(editForm.id, 'lost');
-                            return;
-                          }
-                          setEditForm({ ...editForm, stage: nextStage });
-                        }}
-                        disabled={editForm.stage === 'Awarded'}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        {STAGES.filter(s => !RESOLVED_STAGES.includes(s) || s === editForm.stage).map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                      {!RESOLVED_STAGES.includes(editForm.stage) && (
-                        <div className="mt-1 flex flex-wrap gap-3">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenAward(editForm.id)}
-                            className="flex items-center gap-1 text-[9px] font-mono text-emerald-400 hover:text-emerald-300 uppercase tracking-wider"
-                          >
-                            <Briefcase className="w-2.5 h-2.5" /> Award & Create Project
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenCloseout(editForm.id, 'lost')}
-                            className="flex items-center gap-1 text-[9px] font-mono text-rose-300 hover:text-rose-200 uppercase tracking-wider"
-                          >
-                            <X className="w-2.5 h-2.5" /> Mark Lost
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Site Visit Date</label>
-                      <input
-                        type="datetime-local"
-                        value={toLocalDatetimeInputValue(editForm.site_visit_at)}
-                        onChange={e => setEditForm({ ...editForm, site_visit_at: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <label className="flex items-center space-x-2.5 cursor-pointer text-xs font-mono select-none text-slate-light py-2">
-                      <input
-                        type="checkbox"
-                        checked={!!editForm.site_visit_mandatory}
-                        onChange={e => setEditForm({ ...editForm, site_visit_mandatory: e.target.checked })}
-                        className="rounded border-white/10 bg-black text-[#D4AF37] focus:ring-0 focus:ring-offset-0 focus:outline-none"
-                      />
-                      <span className="uppercase text-[9px] tracking-wider font-bold text-[#D4AF37]">Mandatory Site Visit</span>
-                    </label>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Submission Deadline</label>
-                      <input
-                        type="datetime-local"
-                        value={toLocalDatetimeInputValue(editForm.submission_deadline)}
-                        onChange={e => setEditForm({ ...editForm, submission_deadline: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono" 
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Total Bid Amount ($)</label>
-                      <input
-                        type="number"
-                        value={editForm.bid_amount ?? ''}
-                        onChange={e => setEditForm({ ...editForm, bid_amount: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all font-mono"
-                        placeholder="TBD - pending BOQ"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase font-bold text-[#D4AF37]">JV Partners</label>
-                      <input 
-                        type="text" 
-                        value={editForm.jv_partners || ''} 
-                        onChange={e => setEditForm({ ...editForm, jv_partners: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none transition-all" 
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="block font-mono text-[8px] text-slate-light uppercase">Bid Bond / Liability ($)</label>
-                      <input 
-                        type="number" 
-                        value={editForm.bond_amount || ''} 
-                        onChange={e => setEditForm({ ...editForm, bond_amount: e.target.value })}
-                        className="w-full bg-black border border-white/5 rounded-sm px-3 py-1.5 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono" 
-                      />
-                    </div>
-
-                    <div className="flex flex-col justify-end">
-                      <label className="flex items-center space-x-2.5 cursor-pointer text-xs font-mono select-none text-slate-light py-2">
-                        <input 
-                          type="checkbox" 
-                          checked={editForm.bid_bond_secured} 
-                          onChange={e => setEditForm({ ...editForm, bid_bond_secured: e.target.checked })}
-                          className="rounded border-white/5 bg-black text-[#D4AF37] focus:ring-0"
-                        />
-                        <span className="uppercase text-[8px] font-bold text-[#D4AF37]">Bid Bond Secured</span>
-                      </label>
-                    </div>
-                  </div>
-                </form>
-              )}
-
-              {/* CHECKLIST VALIDATOR INTERFACE */}
-              {selectedTender.closeout_reason && (
-                <div className="space-y-2 bg-[#0C0C0C] border border-[#D4AF37]/20 p-4 rounded-sm">
-                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">
-                    {selectedTender.closeout_status === 'lost' ? 'Loss close-out' : 'Win close-out'}
-                  </span>
-                  <p className="text-xs text-paper">{selectedTender.closeout_reason}</p>
-                  {Array.isArray(selectedTender.closeout_next_steps) && selectedTender.closeout_next_steps.length > 0 && (
-                    <div className="space-y-1">
-                      {selectedTender.closeout_next_steps.map((step, index) => (
-                        <div key={`${step}-${index}`} className="border border-white/5 bg-black/40 px-2 py-1.5 text-[10px] text-slate-light">
-                          {step}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* CHECKLIST VALIDATOR INTERFACE */}
-              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
-                <div className="flex justify-between items-center mb-1">
-                  <span className="block font-mono text-[9px] text-[#3B82F6] uppercase tracking-wider">Deliverable Compliance checks</span>
-                  <span className="font-mono text-[10px] text-[#3B82F6] tabular-nums font-bold">
-                    {((getChecklistCount(selectedTender) / 5) * 100).toFixed(0)}% VALID
-                  </span>
-                </div>
-
-                <div className="space-y-2">
-                  {[
-                    { key: 'technical_proposal', label: 'Technical Proposal documentation', desc: 'SNC methodology, engineer CVs, schedule' },
-                    { key: 'financial_proposal', label: 'Financial Proposal bill of quantities', desc: 'Fully populated itemized costings' },
-                    { key: 'nssa_clearance', label: 'NSSA Compliance clearance letter', desc: 'National Social Security compliance audit' },
-                    { key: 'praz_registration', label: 'PRAZ Procurement Authority registration', desc: 'Active category registry' },
-                    { key: 'tax_clearance', label: 'ZIMRA Tax Clearance Certificate', desc: 'Valid tax clearance status token' }
-                  ].map(item => {
-                    const checked = !!(selectedTender as any)[item.key];
-                    return (
-                      <div 
-                        key={item.key}
-                        onClick={() => toggleChecklistItem(selectedTender.id, item.key as keyof Tender)}
-                        className={`flex items-center justify-between p-2.5 border rounded-sm transition-all cursor-pointer ${
-                          checked 
-                            ? 'bg-[#D4AF37]/5 border-[#D4AF37]/30 hover:border-[#D4AF37]/50' 
-                            : 'bg-black border-white/5 hover:border-white/10'
-                        }`}
-                      >
-                        <div className="pr-3">
-                          <h4 className={`text-xs font-semibold font-sans ${checked ? 'text-[#D4AF37]' : 'text-paper'}`}>
-                            {item.label}
-                          </h4>
-                          <p className="text-[9px] font-mono text-slate mt-0.5">{item.desc}</p>
-                        </div>
-                        <div className="shrink-0">
-                          {checked ? (
-                            <ToggleRight className="w-7 h-7 text-[#D4AF37]" />
-                          ) : (
-                            <ToggleLeft className="w-7 h-7 text-slate" />
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Compliance Matrix - structured requirements (migration 199),
-                  replacing the old freeform label+checkbox list. Each row
-                  can be seeded from the Zimbabwe Requirements Library and
-                  matched against the Corporate Credentials Vault. */}
-              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
-                <div className="flex justify-between items-center mb-1">
-                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Compliance Matrix</span>
-                  {requirements.length > 0 && (
-                    <span className="font-mono text-[10px] text-[#D4AF37] tabular-nums font-bold">
-                      {requirements.filter(r => r.is_satisfied).length}/{requirements.length}
-                    </span>
-                  )}
-                </div>
-
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newRequirementLabel}
-                    onChange={e => setNewRequirementLabel(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddRequirement(); } }}
-                    placeholder="Add a requirement..."
-                    className="flex-1 bg-black border border-white/10 rounded-sm px-3 py-2 text-xs text-paper focus:border-[#D4AF37] outline-none font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddRequirement}
-                    disabled={!newRequirementLabel.trim()}
-                    className="px-3 bg-[#D4AF37]/10 border border-[#D4AF37]/30 rounded-sm text-[#D4AF37] hover:bg-[#D4AF37]/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSeedRequirementsFromLibrary}
-                    disabled={isSeedingLibrary}
-                    className="px-3 bg-white/5 border border-white/10 rounded-sm text-[9px] font-mono uppercase text-slate-light hover:text-paper hover:bg-white/10 transition-colors disabled:opacity-40 whitespace-nowrap"
-                  >
-                    {isSeedingLibrary ? 'Seeding...' : 'Seed From Library'}
-                  </button>
-                </div>
-
-                {isLoadingRequirements ? (
-                  <div className="text-[10px] font-mono text-slate-light">Loading...</div>
-                ) : requirements.length === 0 ? (
-                  <div className="text-[10px] font-mono text-slate-light">No requirements logged yet.</div>
-                ) : (
-                  <div className="space-y-2">
-                    {requirements.map(req => {
-                      const severity = req.severity || 'MAJOR';
-                      const status = req.status || (req.is_satisfied ? 'SATISFIED' : 'PENDING');
-                      const isOpenGap = !['SATISFIED', 'PRESENT', 'NOT_APPLICABLE'].includes(status);
-                      const severityColor =
-                        severity === 'FATAL' ? 'text-red-300 border-red-500/40' :
-                        severity === 'CRITICAL' ? 'text-amber-300 border-amber-500/40' :
-                        severity === 'MAJOR' ? 'text-blue-300 border-blue-500/40' :
-                        'text-slate-light border-white/10';
-                      const statusColor =
-                        status === 'SATISFIED' || status === 'PRESENT' ? 'text-emerald-300 border-emerald-500/40' :
-                        status === 'NOT_APPLICABLE' ? 'text-slate-light border-white/10' :
-                        status === 'MISSING' || status === 'EXPIRED' || status === 'WRONG_CATEGORY' || status === 'WRONG_CLASSIFICATION' ? 'text-red-300 border-red-500/40' :
-                        status === 'EXPIRING' ? 'text-amber-300 border-amber-500/40' :
-                        'text-blue-300 border-blue-500/40';
-                      return (
-                        <div
-                          key={req.id}
-                          className={`space-y-2 p-2.5 border rounded-sm transition-all ${
-                            isOpenGap && (severity === 'FATAL' || severity === 'CRITICAL')
-                              ? 'bg-red-500/5 border-red-500/20'
-                              : req.is_satisfied ? 'bg-[#D4AF37]/5 border-[#D4AF37]/30' : 'bg-black border-white/5'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className={`text-xs font-sans flex-1 pr-2 ${req.is_satisfied ? 'text-[#D4AF37]' : 'text-paper'}`}>
-                              {req.label}
-                              {req.category && <span className="ml-2 text-[8px] font-mono uppercase text-slate-light">{req.category.replaceAll('_', ' ')}</span>}
-                            </span>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {req.satisfied_document_id && (
-                                <span className="text-[8px] font-mono uppercase tracking-wider text-[#D4AF37] border border-[#D4AF37]/30 px-1 py-0.5 shrink-0">Produced</span>
-                              )}
-                              <label
-                                title="Upload proof document - marks this requirement as produced"
-                                className={`cursor-pointer text-slate hover:text-[#D4AF37] transition-colors ${uploadingRequirementId === req.id ? 'opacity-40 pointer-events-none' : ''}`}
-                              >
-                                <input
-                                  type="file"
-                                  className="hidden"
-                                  onChange={e => {
-                                    const file = e.target.files?.[0];
-                                    if (file) handleUploadRequirementDocument(req, file);
-                                    e.target.value = '';
-                                  }}
-                                />
-                                {uploadingRequirementId === req.id ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <Upload className="w-4 h-4" />
-                                )}
-                              </label>
-                              <div onClick={() => handleToggleRequirement(req)} className="cursor-pointer" title="Toggle satisfied">
-                                {req.is_satisfied ? (
-                                  <ToggleRight className="w-6 h-6 text-[#D4AF37]" />
-                                ) : (
-                                  <ToggleLeft className="w-6 h-6 text-slate" />
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteRequirement(req)}
-                                className="text-slate hover:text-red-500 transition-colors"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <select
-                              value={severity}
-                              onChange={e => handleRequirementSeverityChange(req, e.target.value)}
-                              className={`bg-black border rounded-sm px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-wider outline-none ${severityColor}`}
-                            >
-                              {['FATAL', 'CRITICAL', 'MAJOR', 'MINOR', 'INFORMATIONAL'].map(s => <option key={s} value={s}>{s}</option>)}
-                            </select>
-                            <select
-                              value={status}
-                              onChange={e => handleRequirementStatusChange(req, e.target.value)}
-                              className={`bg-black border rounded-sm px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-wider outline-none ${statusColor}`}
-                            >
-                              {['PRESENT', 'MISSING', 'EXPIRED', 'EXPIRING', 'WRONG_CATEGORY', 'WRONG_CLASSIFICATION', 'UNVERIFIED', 'PENDING', 'SATISFIED', 'NOT_APPLICABLE'].map(s => (
-                                <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => handleMatchRequirementCredential(req)}
-                              disabled={matchingRequirementId === req.id}
-                              className="text-[8px] font-mono uppercase text-slate-light hover:text-[#D4AF37] border border-white/10 hover:border-[#D4AF37]/40 rounded-sm px-1.5 py-0.5 transition-colors disabled:opacity-40"
-                            >
-                              {matchingRequirementId === req.id ? 'Matching...' : req.credential_id ? 'Matched ✓' : 'Match Vault Credential'}
-                            </button>
-                            {req.valid_through_closing === false && (
-                              <span className="text-[8px] font-mono uppercase text-red-300">Expires before closing</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Tender documents */}
-              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
-                <div className="flex justify-between items-center mb-1">
-                  <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Tender Documents</span>
-                  <label className={`px-3 py-1.5 bg-[#D4AF37]/10 border border-[#D4AF37]/30 rounded-sm text-[8px] font-mono uppercase text-[#D4AF37] hover:bg-[#D4AF37]/20 transition-colors cursor-pointer ${isUploadingDocument ? 'opacity-40 pointer-events-none' : ''}`}>
-                    {isUploadingDocument ? 'Uploading...' : 'Upload'}
-                    <input
-                      type="file"
-                      className="hidden"
-                      disabled={isUploadingDocument}
-                      onChange={e => {
-                        const file = e.target.files?.[0];
-                        if (file) handleUploadTenderDocument(file);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                </div>
-
-                {isLoadingDocuments ? (
-                  <div className="text-[10px] font-mono text-slate-light">Loading...</div>
-                ) : tenderDocuments.length === 0 ? (
-                  <div className="text-[10px] font-mono text-slate-light">No documents uploaded yet.</div>
-                ) : (
-                  <div className="space-y-2">
-                    {tenderDocuments.map(doc => (
-                      <div
-                        key={doc.id}
-                        className="flex items-center gap-2 p-2.5 border border-white/5 bg-black rounded-sm hover:border-[#D4AF37]/30 transition-all"
-                      >
-                        <FileText className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
-                        <span className="flex-1 text-xs text-paper truncate">{doc.title || doc.file_name}</span>
-                        {isPreviewableFile(doc.file_name) && (
-                          <button
-                            type="button"
-                            onClick={() => void handlePreviewTenderDocument(doc)}
-                            title="Preview"
-                            className="shrink-0 text-slate-light hover:text-paper"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadTenderDocument(doc.id)}
-                          title="Download"
-                          className="shrink-0 text-slate-light hover:text-paper"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Assignment */}
-              <div className="space-y-3 bg-[#0C0C0C] border border-white/5 p-4 rounded-sm">
-                <span className="block font-mono text-[9px] text-[#D4AF37] uppercase tracking-wider">Assigned To</span>
-                <AssignmentPanel entityType="tender" entityId={selectedTender.id} />
-              </div>
-
-              {/* Bid timing panel */}
-              {selectedTenderSiteVisitStatus && !isPostSubmissionStage(selectedTender.stage) && (
-                <div className="bg-[#111111] border border-[#D4AF37]/20 p-4 rounded-sm font-mono text-xs flex justify-between items-center">
-                  <div className="flex items-center space-x-2 text-slate-light">
-                    <Calendar className="w-4 h-4 text-[#D4AF37]" />
-                    <span>{selectedTender.site_visit_mandatory ? 'Mandatory site visit:' : 'Site visit:'}</span>
-                  </div>
-                  <span className={`font-bold tracking-widest ${
-                    selectedTenderSiteVisitStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
-                    selectedTenderSiteVisitStatus.urgency === 'warning' ? 'text-[#D4AF37]' : 'text-paper'
-                  }`}>
-                    {new Date(selectedTender.site_visit_at as string).toLocaleString()}
-                  </span>
-                </div>
-              )}
-              {selectedTenderTimingStatus && (selectedTender.submission_deadline || isPostSubmissionStage(selectedTender.stage)) && (
-                <div className="bg-[#111111] border border-white/5 p-4 rounded-sm font-mono text-xs flex justify-between items-center">
-                  <div className="flex items-center space-x-2 text-slate-light">
-                    <Clock className="w-4 h-4 text-[#3B82F6]" />
-                    <span>{isPostSubmissionStage(selectedTender.stage) ? 'Bid status:' : 'Countdown metric:'}</span>
-                  </div>
-                  <span className={`font-bold tracking-widest ${
-                    selectedTenderTimingStatus.urgency === 'critical' ? 'text-red-500 animate-pulse' :
-                    selectedTenderTimingStatus.urgency === 'submitted' ? 'text-emerald-300' : 'text-[#3B82F6]'
-                  }`}>
-                    {selectedTenderTimingStatus.text.toUpperCase()}
-                  </span>
-                </div>
-              )}
-
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-slate">
-            <span className="font-mono text-xs uppercase">Telemetry not loaded.</span>
-          </div>
-        )}
-      </div>
+      {stageMove && (
+        <TenderStageMoveModal
+          tenderName={stageMove.tenderName}
+          fromStage={stageMove.from}
+          toStage={stageMove.to}
+          onCancel={() => setStageMove(null)}
+          onConfirm={handleConfirmStageMove}
+        />
+      )}
 
       {/* DELETE TENDER MODAL */}
       {isAwardModalOpen && (

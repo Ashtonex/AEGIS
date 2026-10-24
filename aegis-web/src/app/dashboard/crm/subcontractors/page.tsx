@@ -46,6 +46,11 @@ interface Subcontractor {
   linked_supplier_id?: string;
   capability_tags: string[];
   compliance_status: string;
+  registration_number?: string;
+  tax_clearance_number?: string;
+  vat_status?: 'registered' | 'not_registered' | '' | null;
+  vat_number?: string;
+  verification_stage?: string;
   nssa_number?: string;
   praz_number?: string;
   reliability_score: number;
@@ -89,6 +94,10 @@ function blankForm(): Subcontractor {
     name: '',
     capability_tags: [],
     compliance_status: 'Pending',
+    registration_number: '',
+    tax_clearance_number: '',
+    vat_status: '',
+    vat_number: '',
     nssa_number: '',
     praz_number: '',
     reliability_score: 75,
@@ -137,6 +146,26 @@ function getTierTextColor(tier: number): string {
     case 3: return "text-orange-400";
     default: return "text-red-400";
   }
+}
+
+// The API stores compliance as compliant / pending / non_compliant / exempt (a DB
+// CHECK constraint on procurement.suppliers enforces it); this page labels them in
+// title case, so convert at the load and save boundaries.
+const COMPLIANCE_LABELS: Record<string, string> = {
+  compliant: 'Compliant',
+  pending: 'Pending',
+  non_compliant: 'Non-Compliant',
+  exempt: 'Exempt',
+};
+
+function complianceLabel(status: string | null | undefined): string {
+  const key = String(status || 'pending').trim().toLowerCase().replace(/[s-]+/g, '_');
+  return COMPLIANCE_LABELS[key] ?? 'Pending';
+}
+
+function complianceValue(label: string): string {
+  const key = String(label || '').trim().toLowerCase().replace(/[s-]+/g, '_');
+  return key in COMPLIANCE_LABELS ? key : 'pending';
 }
 
 function getComplianceCls(status: string): string {
@@ -287,7 +316,7 @@ export default function SubcontractorRegistry() {
       try {
         const response = await getSubcontractors();
         if (response.success && Array.isArray(response.data)) {
-          setSubs(response.data as Subcontractor[]);
+          setSubs((response.data as Subcontractor[]).map((s) => ({ ...s, compliance_status: complianceLabel(s.compliance_status) })));
         } else {
           setSubs([]);
         }
@@ -358,7 +387,11 @@ export default function SubcontractorRegistry() {
     try {
       const payload: Record<string, unknown> = {
         name: formData.name, capability_tags: formData.capability_tags,
-        compliance_status: formData.compliance_status, nssa_number: formData.nssa_number,
+        compliance_status: complianceValue(formData.compliance_status),
+        registration_number: formData.registration_number, tax_clearance_number: formData.tax_clearance_number,
+        vat_status: formData.vat_status || null,
+        vat_number: formData.vat_status === 'registered' ? formData.vat_number : null,
+        nssa_number: formData.nssa_number,
         praz_number: formData.praz_number, reliability_score: formData.reliability_score,
         authorization_tier: formData.authorization_tier, contact_name: formData.contact_name,
         contact_email: formData.contact_email, contact_phone: formData.contact_phone,
@@ -628,6 +661,20 @@ export default function SubcontractorRegistry() {
                             </div>
                           </div>
                           <div className="bg-ink border border-ink-mid p-4">
+                            <div className="font-mono text-[9px] text-slate-light tracking-widest uppercase mb-2">COMPANY REG. NUMBER</div>
+                            <div className="font-mono text-[12px] text-paper font-semibold">{selectedSub.registration_number || '-- NOT SUBMITTED'}</div>
+                          </div>
+                          <div className="bg-ink border border-ink-mid p-4">
+                            <div className="font-mono text-[9px] text-slate-light tracking-widest uppercase mb-2">TAX CLEARANCE</div>
+                            <div className="font-mono text-[12px] text-paper font-semibold">{selectedSub.tax_clearance_number || '-- NOT SUBMITTED'}</div>
+                          </div>
+                          <div className="bg-ink border border-ink-mid p-4">
+                            <div className="font-mono text-[9px] text-slate-light tracking-widest uppercase mb-2">VAT</div>
+                            <div className="font-mono text-[12px] text-paper font-semibold">
+                              {selectedSub.vat_status === 'not_registered' ? 'NOT VAT REGISTERED' : selectedSub.vat_number || '-- NOT SUBMITTED'}
+                            </div>
+                          </div>
+                          <div className="bg-ink border border-ink-mid p-4">
                             <div className="font-mono text-[9px] text-slate-light tracking-widest uppercase mb-2">NSSA NUMBER</div>
                             <div className="font-mono text-[12px] text-paper font-semibold">{selectedSub.nssa_number || '-- NOT SUBMITTED'}</div>
                           </div>
@@ -851,7 +898,7 @@ export default function SubcontractorRegistry() {
               )}
 
               <div>
-                <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">COMPANY NAME *</label>
+                <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">REGISTERED COMPANY NAME *</label>
                 <input type="text" value={formData.name} onChange={e => setFormData(f => ({ ...f, name: e.target.value }))}
                   placeholder="e.g. Registered civil works subcontractor"
                   className="w-full bg-ink border border-ink-mid px-3 py-2 font-sans text-[13px] text-paper focus:outline-none focus:border-signal transition-colors" />
@@ -881,13 +928,42 @@ export default function SubcontractorRegistry() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">NSSA NUMBER</label>
+                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">COMPANY REG. NUMBER *</label>
+                  <input type="text" value={formData.registration_number || ''} onChange={e => setFormData(f => ({ ...f, registration_number: e.target.value }))}
+                    className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                </div>
+                <div>
+                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">TAX CLEARANCE NUMBER *</label>
+                  <input type="text" value={formData.tax_clearance_number || ''} onChange={e => setFormData(f => ({ ...f, tax_clearance_number: e.target.value }))}
+                    className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                </div>
+                <div>
+                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">VAT REGISTRATION *</label>
+                  <select value={formData.vat_status || ''} onChange={e => setFormData(f => ({ ...f, vat_status: e.target.value as Subcontractor['vat_status'] }))}
+                    className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal transition-colors">
+                    <option value="">NOT ANSWERED</option>
+                    <option value="registered">VAT REGISTERED</option>
+                    <option value="not_registered">NOT VAT REGISTERED</option>
+                  </select>
+                </div>
+                {formData.vat_status === 'registered' && (
+                  <div>
+                    <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">VAT NUMBER *</label>
+                    <input type="text" value={formData.vat_number || ''} onChange={e => setFormData(f => ({ ...f, vat_number: e.target.value }))}
+                      className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal transition-colors" />
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">NSSA NUMBER (OPTIONAL)</label>
                   <input type="text" value={formData.nssa_number || ''} onChange={e => setFormData(f => ({ ...f, nssa_number: e.target.value }))}
                     placeholder="NSSA-XXXXX-X"
                     className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal transition-colors" />
                 </div>
                 <div>
-                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">PRAZ NUMBER</label>
+                  <label className="font-mono text-[9px] text-slate-light tracking-widest uppercase block mb-1">PRAZ NUMBER (OPTIONAL)</label>
                   <input type="text" value={formData.praz_number || ''} onChange={e => setFormData(f => ({ ...f, praz_number: e.target.value }))}
                     placeholder="PRAZ-SUB-XXX-XX"
                     className="w-full bg-ink border border-ink-mid px-3 py-2 font-mono text-[11px] text-paper focus:outline-none focus:border-signal transition-colors" />

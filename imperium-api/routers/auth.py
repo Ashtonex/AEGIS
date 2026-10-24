@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from schemas.auth import UserRegister, UserLogin, TokenRefresh
 from core.database import supabase, get_db
@@ -11,27 +11,10 @@ router = APIRouter()
 @router.post("/register")
 @limiter.limit("5/minute")
 async def register_user(request: Request, payload: UserRegister):
-    try:
-        res = supabase.auth.sign_up(
-            {
-                "email": payload.email,
-                "password": payload.password,
-                "options": {
-                    "data": {
-                        "full_name": payload.full_name,
-                        "org_id": payload.organization_id,
-                    }
-                },
-            }
-        )
-        return {
-            "success": True,
-            "data": {"user_id": res.user.id if res.user else None},
-            "message": "User registered successfully.",
-            "meta": {},
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Public self-registration is disabled. Access to Project AEGIS requires an invitation from an organization administrator.",
+    )
 
 
 @router.post("/login")
@@ -69,10 +52,16 @@ async def logout_user(user: dict = Depends(get_current_user)):
 
 
 @router.get("/me")
-async def get_me(user: dict = Depends(get_current_user)):
+async def get_me(
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Permissions ride along with the role so the UI can gate the sidebar
+    # and every page by permission in the same round trip.
+    keys = await get_user_permission_keys(db, user)
     return {
         "success": True,
-        "data": user,
+        "data": {**user, "permissions": sorted(keys)},
         "message": "Current user retrieved.",
         "meta": {},
     }

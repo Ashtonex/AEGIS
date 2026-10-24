@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.compliance import validate_employee_deployment
-from core.security import get_current_user, require_permission
+from core.security import get_current_user, require_any_permission, require_permission
+from core.truncation import capped
 from app.shared.hr_self_service import resolve_own_employee_id
 
 from schemas.workforce_foundation import (
@@ -174,10 +175,13 @@ async def project_or_404(db: AsyncSession, project_id: UUID, org_id: str) -> Non
 
 @router.get("/")
 async def list_employees(
+    status_filter: Optional[str] = Query(default=None, alias="status", max_length=20),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    _: dict = Depends(require_permission("workforce.read")),
+    _: dict = Depends(require_any_permission("workforce.read", "site_operations.read", "site_operations.labour_register.manage", "projects.read")),
 ):
+    """Pickers across AEGIS call this. With no status, people who have left are
+    excluded; ?status=all includes them; any other value filters exactly."""
     rows = await db.execute(
         text("""
         SELECT e.id,e.employee_name,e.employee_number,e.job_title,e.employment_status,
@@ -185,9 +189,12 @@ async def list_employees(
                COUNT(c.id) FILTER (WHERE c.expires_on < CURRENT_DATE AND c.is_deleted = false) AS expired_certifications
         FROM hr.employees e LEFT JOIN hr.employee_certifications c ON c.employee_id = e.id AND c.organization_id = e.organization_id
         WHERE e.organization_id = :org_id AND e.is_deleted = false
+          AND (CAST(:status AS text) = 'all'
+               OR (CAST(:status AS text) IS NULL AND e.employment_status <> 'terminated')
+               OR e.employment_status = CAST(:status AS text))
         GROUP BY e.id ORDER BY e.employee_name LIMIT 250
     """),
-        {"org_id": user["org_id"]},
+        {"org_id": user["org_id"], "status": status_filter},
     )
     items = [dict(row._mapping) for row in rows]
     return result(items, "Workforce listed.", len(items))
@@ -341,10 +348,10 @@ async def list_allocations(
         JOIN hr.employees e ON e.id=a.employee_id AND e.organization_id=a.organization_id
         JOIN projects.projects p ON p.id=a.project_id AND p.organization_id=a.organization_id
         WHERE a.organization_id=:org_id AND a.is_deleted=false AND (CAST(:project_id AS uuid) IS NULL OR a.project_id=CAST(:project_id AS uuid))
-        ORDER BY a.starts_on DESC LIMIT 500"""),
+        ORDER BY a.starts_on DESC LIMIT 501"""),
         {"org_id": user["org_id"], "project_id": project_id},
     )
-    return result([dict(row._mapping) for row in rows], "Allocations listed.")
+    return result([dict(row._mapping) for row in capped(rows, 500)], "Allocations listed.")
 
 
 @router.post("/allocations", status_code=status.HTTP_201_CREATED)

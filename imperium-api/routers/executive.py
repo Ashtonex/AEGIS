@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, Any, List
 
 from app.shared.events import emit_role_notification
@@ -12,6 +12,7 @@ from core.database import gather_reads, get_db
 from core.logging import logger
 from core.security import SUPERADMIN_ROLE, require_permission
 from core.analytics_ml import ml_engine
+from app.services.finance import company_budget as budgets
 router = APIRouter()
 
 PROJECT_TERMINAL_STATUSES = (
@@ -1830,20 +1831,269 @@ async def get_material_forecast_alerts(
     }
 
 
+# Every source below is a state the owning module's own decision endpoint
+# requires before it will approve (see each decide_via). Deliberately left
+# out: site-level sign-offs (daily reports, GRNs, timesheets, BOQ
+# measurements, weekly site budgets, document reviews) - they belong to site
+# engineers and agents, not the executive queue.
+# Each query returns the same shape: id, reference, amount, waiting_since,
+# detail.
+_PENDING_APPROVAL_SOURCES: List[Dict[str, Any]] = [
+    {
+        "type": "purchase_order",
+        "module": "Procurement",
+        "source": "procurement.purchase_orders",
+        "reason": "Draft purchase order awaiting independent approval before it can be issued.",
+        "action_url": "/dashboard/procurement?tab=purchase-orders",
+        "decide_via": "POST /api/v1/procurement/purchase-orders/{id}/decision",
+        "sql": """
+            SELECT id, po_number AS reference, total_amount AS amount,
+                   created_at AS waiting_since, NULL::text AS detail
+            FROM procurement.purchase_orders
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+        """,
+    },
+    {
+        "type": "requisition",
+        "module": "Procurement",
+        "source": "procurement.purchase_requisitions",
+        "reason": "Submitted requisition awaiting approval before it can be ordered.",
+        "action_url": "/dashboard/procurement?tab=requisitions",
+        "decide_via": "POST /api/v1/procurement/requisitions/{id}/decision",
+        "sql": """
+            SELECT id, requisition_number AS reference, total_estimated AS amount,
+                   COALESCE(submitted_at, created_at) AS waiting_since,
+                   priority::text AS detail
+            FROM procurement.purchase_requisitions
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'submitted'
+        """,
+    },
+    {
+        "type": "supplier_invoice_payment",
+        "module": "Procurement",
+        "source": "procurement.supplier_invoices",
+        # Only three-way-matched invoices can be approved for payment; the
+        # unmatched ones are waiting on matching, not on a decision.
+        "reason": "Matched supplier invoice awaiting payment approval.",
+        "action_url": "/dashboard/procurement?tab=invoices",
+        "decide_via": "POST /api/v1/procurement/invoices/{id}/payment-decision",
+        "sql": """
+            SELECT id, invoice_number AS reference, total_amount AS amount,
+                   created_at AS waiting_since, NULL::text AS detail
+            FROM procurement.supplier_invoices
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND match_status = 'matched'
+              AND status NOT IN ('approved', 'paid', 'rejected', 'cancelled', 'disputed')
+        """,
+    },
+    {
+        "type": "supplier_payment_batch",
+        "module": "Finance",
+        "source": "finance.supplier_payment_batches",
+        "reason": "Draft supplier payment batch awaiting release.",
+        "action_url": "/dashboard/finance/supplier-payments",
+        "decide_via": "POST /api/v1/payments/{id}/decision",
+        "sql": """
+            SELECT id, COALESCE(batch_number, reference) AS reference, total_amount AS amount,
+                   created_at AS waiting_since, NULL::text AS detail
+            FROM finance.supplier_payment_batches
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+        """,
+    },
+    {
+        "type": "payroll_run",
+        "module": "Finance",
+        "source": "finance.payroll_runs",
+        "reason": "Draft payroll run awaiting approval before it can be posted.",
+        "action_url": "/dashboard/finance/payroll",
+        "decide_via": "POST /api/v1/payroll-runs/{id}/decision",
+        "sql": """
+            SELECT id, run_number AS reference, net_pay AS amount,
+                   created_at AS waiting_since,
+                   to_char(period_start, 'Mon YYYY') AS detail
+            FROM finance.payroll_runs
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
+        """,
+    },
+    {
+        "type": "company_budget",
+        "module": "Finance",
+        "source": "finance.company_budgets",
+        "reason": "Company budget submitted for review and approval as the fiscal-year baseline.",
+        "action_url": "/dashboard/finance/budgets",
+        "decide_via": "POST /api/v1/finance/company-budgets/{id}/approve",
+        "sql": """
+            SELECT id, COALESCE(label, 'FY ' || fiscal_year::text) AS reference, NULL::numeric AS amount,
+                   COALESCE(submitted_at, created_at) AS waiting_since, status::text AS detail
+            FROM finance.company_budgets
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND status IN ('submitted', 'under_review')
+        """,
+    },
+    {
+        "type": "management_accounts_pack",
+        "module": "Finance",
+        "source": "finance.management_accounts_packs",
+        "reason": "Reviewed management accounts pack awaiting approval.",
+        "action_url": "/dashboard/finance/management-accounts",
+        "decide_via": "POST /api/v1/finance/management-accounts/packs/{id}/approve",
+        "sql": """
+            SELECT id, to_char(period_start, 'Mon YYYY') AS reference, NULL::numeric AS amount,
+                   COALESCE(reviewed_at, created_at) AS waiting_since, NULL::text AS detail
+            FROM finance.management_accounts_packs
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'reviewed'
+        """,
+    },
+    {
+        "type": "journal_proposal",
+        "module": "Finance",
+        "source": "finance.journal_entries",
+        "reason": "System-proposed journal awaiting review before it posts to the general ledger.",
+        "action_url": "/dashboard/finance/general-ledger",
+        "decide_via": "POST /api/v1/finance/gl/bridge/proposals/{id}/approve",
+        "sql": """
+            SELECT id, journal_number AS reference, total_debit AS amount,
+                   created_at AS waiting_since, description AS detail
+            FROM finance.journal_entries
+            WHERE organization_id = :org_id AND proposal_status = 'pending_review'
+        """,
+    },
+    {
+        "type": "variation",
+        "module": "Finance",
+        "source": "finance.variations",
+        "reason": "Variation awaiting approval before its cost and time impact apply to the project.",
+        "action_url": "/dashboard/finance/variations",
+        "decide_via": "POST /api/v1/financial-performance/variations/{id}/decision",
+        "sql": """
+            SELECT v.id, COALESCE(v.variation_number, v.title) AS reference, v.cost_impact AS amount,
+                   COALESCE(v.submitted_at, v.created_at) AS waiting_since,
+                   concat_ws(' - ', p.name, v.title) AS detail
+            FROM finance.variations v
+            LEFT JOIN projects.projects p ON p.id = v.project_id AND p.organization_id = v.organization_id
+            WHERE v.organization_id = :org_id AND v.is_deleted = false AND v.status IN ('pending', 'submitted')
+        """,
+    },
+    {
+        "type": "plant_request",
+        "module": "Fleet",
+        "source": "fleet.plant_requests",
+        "reason": "Plant request awaiting approval before plant can be reserved and dispatched.",
+        "action_url": "/dashboard/fleet",
+        "decide_via": "PATCH /api/v1/fleet/plant/requests/{id}/status",
+        "sql": """
+            SELECT id, request_number AS reference, estimated_cost AS amount,
+                   updated_at AS waiting_since,
+                   concat_ws(' - ', required_asset_type, COALESCE(client_name, work_location)) AS detail
+            FROM fleet.plant_requests
+            WHERE organization_id = :org_id AND is_deleted = false AND status = 'awaiting_approval'
+        """,
+    },
+    {
+        "type": "work_order",
+        "module": "Fleet",
+        "source": "fleet.maintenance_work_orders",
+        "reason": "Maintenance work order awaiting repair approval before work can be scheduled.",
+        "action_url": "/dashboard/fleet",
+        "decide_via": "POST /api/v1/fleet/work-orders/{id}/approval",
+        "sql": """
+            SELECT wo.id, wo.work_order_number AS reference, wo.estimated_cost AS amount,
+                   wo.updated_at AS waiting_since,
+                   concat_ws(' - ', COALESCE(f.asset_code, f.vehicle_registration), wo.priority || ' priority') AS detail
+            FROM fleet.maintenance_work_orders wo
+            LEFT JOIN fleet.fleet f ON f.id = wo.fleet_id AND f.organization_id = wo.organization_id
+            WHERE wo.organization_id = :org_id AND wo.is_deleted = false AND wo.status = 'awaiting_approval'
+        """,
+    },
+    {
+        "type": "leave_request",
+        "module": "HR",
+        "source": "hr.leave_requests",
+        "reason": "Leave request awaiting approval.",
+        "action_url": "/dashboard/hr/leave",
+        "decide_via": "POST /api/v1/hr-records/leave/{id}/decision",
+        "sql": """
+            SELECT lr.id, COALESCE(e.employee_name, 'Employee') AS reference, NULL::numeric AS amount,
+                   lr.created_at AS waiting_since,
+                   lr.leave_type || ', ' || COALESCE(lr.days_requested::text, '?') || ' days from '
+                       || to_char(lr.start_date, 'DD Mon') AS detail
+            FROM hr.leave_requests lr
+            LEFT JOIN hr.employees e ON e.id = lr.employee_id AND e.organization_id = lr.organization_id
+            WHERE lr.organization_id = :org_id AND lr.is_deleted = false AND lr.status = 'pending'
+        """,
+    },
+    {
+        "type": "vendor_verification",
+        "module": "HR",
+        "source": "crm.subcontractors",
+        "reason": "System-verified vendor profile awaiting HR approval.",
+        "action_url": "/dashboard/hr/vendor-verification",
+        "decide_via": "POST /api/v1/hr/vendor-verification/{id}/decision",
+        "sql": """
+            SELECT id, name AS reference, NULL::numeric AS amount,
+                   COALESCE(system_verified_at, updated_at, created_at) AS waiting_since,
+                   NULL::text AS detail
+            FROM crm.subcontractors
+            WHERE organization_id = :org_id AND is_deleted = false
+              AND verification_stage = 'system_verified'
+        """,
+    },
+    {
+        "type": "project_registration",
+        "module": "Projects",
+        "source": "core.approval_instances",
+        "reason": "New project registration awaiting approval before it moves to planning.",
+        "action_url": "/dashboard/projects",
+        "decide_via": "POST /api/v1/projects/{id}/registration-decision",
+        "sql": """
+            SELECT ai.target_id AS id, COALESCE(p.name, 'Project') AS reference, NULL::numeric AS amount,
+                   COALESCE(ai.submitted_at, ai.created_at) AS waiting_since, NULL::text AS detail
+            FROM core.approval_instances ai
+            LEFT JOIN projects.projects p ON p.id = ai.target_id AND p.organization_id = ai.organization_id
+            WHERE ai.organization_id = :org_id AND ai.is_deleted = false AND ai.status = 'pending'
+              AND ai.workflow_key = 'project_field_intake_registration'
+        """,
+    },
+]
+
+
+def _pending_approval_item(source: Dict[str, Any], row: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    waiting_since = row.get("waiting_since")
+    waiting_days = None
+    if isinstance(waiting_since, datetime):
+        stamp = waiting_since if waiting_since.tzinfo else waiting_since.replace(tzinfo=now.tzinfo)
+        waiting_days = max((now - stamp).days, 0)
+    amount = row.get("amount")
+    return {
+        "id": str(row["id"]),
+        "type": source["type"],
+        "module": source["module"],
+        "reference": row.get("reference"),
+        "detail": row.get("detail"),
+        "amount": float(amount) if amount is not None else None,
+        "created_at": str(waiting_since) if waiting_since is not None else None,
+        "waiting_days": waiting_days,
+        "reason": source["reason"],
+        "action_url": source["action_url"],
+        "decide_via": source["decide_via"],
+    }
+
+
 @router.get("/approvals/pending")
 async def get_pending_approvals(
     user: dict = Depends(require_permission("executive.view_dashboard")),
     db: AsyncSession = Depends(get_db)
 ):
     """Aggregates items genuinely awaiting a decision in their own
-    authoritative module - purchase_orders.status='draft' is the real
-    pending-approval state procurement.py's own decision endpoint checks
-    (see decide_purchase_order in routers/procurement.py), not a value
-    invented here. This endpoint is a read-only aggregation layer: it does
-    NOT expose a decide action of its own (see removal note below) - the
-    decision must be made via the module that owns the approval rule
-    (self-approval / independent-approval checks live there, not here),
-    so action_url always points at the real place to act.
+    authoritative module, across Procurement, Finance, Fleet, HR and Projects -
+    each source's filter is the state that module's own decision endpoint
+    requires (purchase_orders.status = 'draft' for decide_purchase_order in
+    routers/procurement.py, and so on - see _PENDING_APPROVAL_SOURCES), not
+    a value invented here. This endpoint is a read-only aggregation layer: it
+    does NOT expose a decide action of its own - the decision must be made
+    via the module that owns the approval rule (self-approval /
+    independent-approval checks live there, not here), so action_url always
+    points at the real place to act. Longest-waiting items come first.
 
     Two categories that used to appear here were removed rather than kept
     as fake data (AEGIS truth rule: no dummy data): quotations have no
@@ -1855,41 +2105,37 @@ async def get_pending_approvals(
     renewal) - that data is already surfaced honestly, as an exception
     rather than a fabricated decision, by GET /executive/exceptions.
     """
-    org_id = user["org_id"]
+    params = {"org_id": user["org_id"]}
     source_errors: List[Dict[str, Any]] = []
 
-    pos_res = await _rows(
-        db,
-        """
-            SELECT id, po_number, total_amount, created_at, created_by
-            FROM procurement.purchase_orders
-            WHERE organization_id = :org_id AND is_deleted = false AND status = 'draft'
-            ORDER BY total_amount DESC, created_at ASC
-        """,
-        {"org_id": org_id},
-        source="procurement.purchase_orders",
-        source_errors=source_errors
-    )
-    pending_pos = [
-        {
-            "id": str(r["id"]),
-            "type": "purchase_order",
-            "reference": r["po_number"],
-            "amount": float(r["total_amount"]),
-            "created_at": str(r["created_at"]),
-            "reason": "Draft purchase order awaiting independent approval before it can be issued.",
-            "action_url": "/dashboard/procurement?tab=purchase-orders",
-            "decide_via": "POST /api/v1/procurement/purchase-orders/{id}/decision",
-        }
-        for r in pos_res
+    def read(source: Dict[str, Any]):
+        return lambda session: _rows(
+            session, source["sql"], params, source=source["source"], source_errors=source_errors
+        )
+
+    results = await gather_reads(db, *(read(source) for source in _PENDING_APPROVAL_SOURCES))
+    now = datetime.now().astimezone()
+    items = [
+        _pending_approval_item(source, row, now)
+        for source, rows in zip(_PENDING_APPROVAL_SOURCES, results)
+        for row in rows
     ]
+    items.sort(key=lambda item: (item["waiting_days"] is None, -(item["waiting_days"] or 0)))
+
+    by_module: Dict[str, int] = {}
+    for item in items:
+        by_module[item["module"]] = by_module.get(item["module"], 0) + 1
 
     return {
         "success": True,
-        "data": pending_pos,
+        "data": items,
         "message": "Pending executive approval queue retrieved."
-            if pending_pos else "No items currently awaiting executive-visible approval.",
-        "meta": {"source_errors": source_errors}
+            if items else "No items currently awaiting executive-visible approval.",
+        "meta": {
+            "source_errors": source_errors,
+            "by_module": by_module,
+            "sources": [source["source"] for source in _PENDING_APPROVAL_SOURCES],
+        },
     }
 
 
@@ -2040,6 +2286,177 @@ async def get_executive_statutory_liabilities(
             "due_soon_days": _STATUTORY_DUE_SOON_DAYS,
         },
         "message": "Statutory liabilities retrieved.",
+        "meta": {"source_errors": source_errors},
+    }
+
+
+_BUDGET_AT_RISK_PERCENT = 90.0
+
+# Per-project approved budget against cost. actual_cost_to_date and
+# committed_cost use the same definitions as the Finance project summary
+# (routers/financial_performance.py): posted cost transactions not superseded
+# by an internal-transfer charge, plus internal-transfer charge legs; and
+# active commitment balances (outstanding PO obligations).
+_EXECUTIVE_PROJECT_BUDGET_SQL = """
+    SELECT p.id AS project_id, p.name AS project_name, p.status AS project_status,
+           pb.total_amount AS approved_budget, pb.budget_version,
+           COALESCE((
+               SELECT SUM(ct.amount)
+               FROM finance.cost_transactions ct
+               WHERE ct.project_id = p.id AND ct.organization_id = :org_id
+                 AND NOT EXISTS (
+                     SELECT 1 FROM finance.department_transfers dt
+                     WHERE dt.organization_id = ct.organization_id
+                       AND dt.source_type = ct.source_type AND dt.source_id = ct.source_id
+                       AND dt.status = 'posted'
+                 )
+           ), 0)
+           + COALESCE((
+               SELECT SUM(l.amount) FROM finance.department_transfer_legs l
+               JOIN finance.department_transfers dt ON dt.id = l.transfer_id AND dt.status = 'posted'
+               WHERE l.project_id = p.id AND l.organization_id = :org_id AND l.leg_type = 'charge'
+           ), 0) AS actual_cost,
+           COALESCE((
+               SELECT SUM(c.outstanding_amount)
+               FROM finance.commitments c
+               WHERE c.project_id = p.id AND c.organization_id = :org_id
+                 AND c.status = 'active' AND c.is_deleted = false
+           ), 0) AS committed_cost
+    FROM projects.projects p
+    JOIN LATERAL (
+        SELECT total_amount, budget_version
+        FROM finance.project_budgets
+        WHERE project_id = p.id AND organization_id = :org_id
+          AND status = 'approved' AND is_deleted = false
+        ORDER BY budget_version DESC
+        LIMIT 1
+    ) pb ON true
+    WHERE p.organization_id = :org_id AND p.is_deleted = false
+      AND p.status NOT IN ('completed', 'closed', 'cancelled')
+"""
+
+
+def _project_budget_line(row: Dict[str, Any]) -> Dict[str, Any]:
+    budget = float(row.get("approved_budget") or 0)
+    actual = float(row.get("actual_cost") or 0)
+    committed = float(row.get("committed_cost") or 0)
+    exposure = actual + committed
+    spent_percent = round(actual / budget * 100, 1) if budget > 0 else None
+    exposure_percent = round(exposure / budget * 100, 1) if budget > 0 else None
+    # Bands compare raw amounts - the rounded percentages are for display.
+    if budget <= 0:
+        status = "no_budget_value"
+    elif actual > budget:
+        status = "over_budget"
+    elif exposure >= budget * _BUDGET_AT_RISK_PERCENT / 100:
+        status = "at_risk"
+    else:
+        status = "on_track"
+    return {
+        "project_id": str(row["project_id"]),
+        "project_name": row.get("project_name"),
+        "project_status": row.get("project_status"),
+        "budget_version": row.get("budget_version"),
+        "approved_budget": budget,
+        "actual_cost": actual,
+        "committed_cost": committed,
+        "remaining": budget - exposure,
+        "spent_percent": spent_percent,
+        "exposure_percent": exposure_percent,
+        "status": status,
+    }
+
+
+def _company_budget_ytd(variance: Dict[str, Any], through_month: date) -> Dict[str, Any]:
+    """Sum the company variance months up to and including through_month."""
+    months = [
+        month for month in variance.get("months", [])
+        if date.fromisoformat(str(month["month"])[:10]) <= through_month
+    ]
+    has_budget = not variance.get("no_baseline_budget")
+
+    def total(key: str):
+        if not has_budget and key.startswith("budget"):
+            return None
+        return sum(float(month.get(key) or 0) for month in months)
+
+    ytd = {
+        key: total(key)
+        for key in ("budget_revenue", "actual_revenue", "budget_cost", "actual_cost", "budget_net", "actual_net")
+    }
+    for kind in ("revenue", "cost", "net"):
+        budget = ytd[f"budget_{kind}"]
+        ytd[f"{kind}_variance"] = None if budget is None else ytd[f"actual_{kind}"] - budget
+    return {
+        "fiscal_year": variance.get("fiscal_year"),
+        "has_approved_budget": has_budget,
+        "budget_label": variance.get("budget_label"),
+        "through_month": str(through_month),
+        "ytd": ytd,
+        "months": variance.get("months", []),
+    }
+
+
+@router.get("/budget-vs-actual")
+async def get_executive_budget_vs_actual(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Budget against actual, two ways, gated by the dashboard permission so
+    an executive doesn't also need finance.company_budget.read:
+
+    - company: this calendar year's approved company budget baseline
+      (finance.company_budgets status 'approved_baseline') against actual
+      revenue and cost, year to date - the same variance the Finance budgets
+      page shows (company_budget.get_company_variance). With no approved
+      baseline, has_approved_budget is false and budget figures are None,
+      never zero.
+    - projects: each open project's current approved budget against actual
+      and committed cost, highest exposure first.
+    """
+    org_id = user["org_id"]
+    source_errors: List[Dict[str, Any]] = []
+    today = datetime.now().date()
+
+    async def company(session: AsyncSession):
+        try:
+            return await budgets.get_company_variance(session, org_id=org_id, fiscal_year=today.year)
+        except Exception as exc:
+            logger.warning("executive_budget_vs_actual_company_failed", error=str(exc))
+            source_errors.append(
+                {"source": "finance.company_budgets", "status": "unavailable", "reason": exc.__class__.__name__}
+            )
+            return None
+
+    variance, project_rows = await gather_reads(
+        db,
+        company,
+        lambda session: _rows(
+            session, _EXECUTIVE_PROJECT_BUDGET_SQL, {"org_id": org_id},
+            source="finance.project_budgets", source_errors=source_errors,
+        ),
+    )
+
+    projects = [_project_budget_line(row) for row in project_rows]
+    projects.sort(key=lambda line: -(line["exposure_percent"] or 0))
+    totals = {
+        "approved_budget": sum(line["approved_budget"] for line in projects),
+        "actual_cost": sum(line["actual_cost"] for line in projects),
+        "committed_cost": sum(line["committed_cost"] for line in projects),
+    }
+    totals["remaining"] = totals["approved_budget"] - totals["actual_cost"] - totals["committed_cost"]
+
+    return {
+        "success": True,
+        "data": {
+            "company": _company_budget_ytd(variance, today.replace(day=1)) if variance is not None else None,
+            "projects": projects,
+            "project_totals": totals,
+            "over_budget_count": sum(1 for line in projects if line["status"] == "over_budget"),
+            "at_risk_count": sum(1 for line in projects if line["status"] == "at_risk"),
+            "at_risk_percent": _BUDGET_AT_RISK_PERCENT,
+        },
+        "message": "Budget vs actual retrieved.",
         "meta": {"source_errors": source_errors},
     }
 
@@ -2399,4 +2816,41 @@ async def get_executive_today(
         },
         "message": "Executive today panel fetched.",
         "meta": {"source_errors": source_errors},
+    }
+
+
+@router.get("/overview-bundle")
+async def get_executive_overview_bundle(
+    user: dict = Depends(require_permission("executive.view_dashboard")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batches the top 6 executive dashboard reads into a single network payload,
+    eliminating the 6-request waterfall fan-out on initial dashboard mount."""
+    kpis_res = await get_executive_kpis(user, db)
+    stats_res = await get_executive_stats(user, db)
+    regions_res = await get_regional_footprint(user, db)
+    projects_res = await get_active_projects(user, db)
+    health_res = await get_executive_data_health(user, db)
+    exceptions_res = await get_executive_exceptions(user, db)
+
+    all_source_errors = []
+    for res in (kpis_res, stats_res, regions_res, projects_res, health_res, exceptions_res):
+        if isinstance(res, dict) and "meta" in res and "source_errors" in res["meta"]:
+            all_source_errors.extend(res["meta"]["source_errors"])
+
+    return {
+        "success": True,
+        "data": {
+            "kpis": kpis_res.get("data") or {},
+            "stats": stats_res.get("data") or {},
+            "regions": regions_res.get("data") or [],
+            "active_projects": projects_res.get("data") or [],
+            "data_health": health_res.get("data") or [],
+            "exceptions": exceptions_res.get("data") or [],
+        },
+        "message": "Executive overview bundle fetched.",
+        "meta": {
+            "source_errors": all_source_errors,
+            "bundle": True,
+        },
     }

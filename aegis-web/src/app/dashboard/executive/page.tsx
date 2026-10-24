@@ -2,14 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { AlertTriangle, DatabaseZap, Loader2, MapPin, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, Check, DatabaseZap, Loader2, MapPin, RefreshCw, X, Award, Sliders } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { TodayPanel } from "./TodayPanel";
+import { LeadershipAccountabilityModal } from "@/components/projects/LeadershipAccountabilityModal";
+import { ManpowerScenarioCalculator } from "@/components/projects/ManpowerScenarioCalculator";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
+  getExecutiveOverviewBundle,
   getActiveExecutiveProjects,
   getExecutiveKPIs,
   getExecutiveDataHealth,
@@ -24,6 +27,8 @@ import {
   getFinancialRunway,
   getSafetyIndex,
   getPendingApprovals,
+  approveHRLeaveRequest,
+  updatePlantRequestStatus,
   getProjectScheduleRisk,
   getMaterialsForecastAlerts,
   getArAging,
@@ -31,6 +36,7 @@ import {
   summarizeAging,
   getFinanceDepartmentPnl,
   getExecutiveStatutoryLiabilities,
+  getExecutiveBudgetVsActual,
   ApiError,
 } from "@/lib/api";
 
@@ -215,7 +221,7 @@ function GreetingHeading({ displayName, userRole }: { displayName: string; userR
 
 export default function ExecutiveCommandCentre() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)"]}>
+    <RBACGuard>
       <ExecutiveCommandCentreWorkspace />
     </RBACGuard>
   );
@@ -246,6 +252,32 @@ function ExecutiveCommandCentreWorkspace() {
   const loadDashboard = useCallback(async () => {
     setRefreshing(true);
     const accessToken = session?.access_token;
+
+    try {
+      const bundleResult = await getExecutiveOverviewBundle(accessToken);
+      if (bundleResult?.data) {
+        const bundle = bundleResult.data;
+        if (bundle.kpis) setKpis(bundle.kpis as ApiData);
+        if (bundle.stats) setStats(bundle.stats as ApiData);
+        if (Array.isArray(bundle.regions)) setRegions(bundle.regions as ApiData[]);
+        if (Array.isArray(bundle.active_projects)) setActiveProjects(bundle.active_projects as ApiData[]);
+        if (Array.isArray(bundle.data_health)) setDataHealth(bundle.data_health as ApiData[]);
+        if (Array.isArray(bundle.exceptions)) setExceptions(bundle.exceptions as ApiData[]);
+
+        const errors = sourceErrorsFromMeta(bundleResult.meta);
+        const warnings = errors
+          .filter((error) => !["current", "no_data"].includes(String(error.status)))
+          .map((error) => `${displayValue(error.source)} is ${displayValue(error.status)}.`);
+        setLoadWarnings(warnings);
+        setLastUpdated(new Date());
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+    } catch {
+      // Degrade to individual parallel reads if bundle is temporarily unavailable
+    }
+
     const [kpiResult, statsResult] = await Promise.allSettled([
       getExecutiveKPIs(accessToken),
       getExecutiveStats(accessToken),
@@ -350,6 +382,8 @@ function ExecutiveCommandCentreWorkspace() {
       <PipelineCompositionPanel kpis={kpis} />
     </section>
 
+    <BudgetVsActualPanel />
+
     <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <CashRunwayPanel />
       <StatutoryLiabilitiesPanel />
@@ -381,7 +415,83 @@ function Modal({ title, onClose, children, wide = false }: { title: string; onCl
 function MetricDetailGrid({ rows }: { rows: Array<{ label: string; value: string; source: string }> }) { if (!rows.length) return <p className="mt-5 text-sm text-slate-light">No drill-down fields are configured for this metric.</p>; return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{rows.map((row) => <div key={`${row.label}-${row.source}`} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{row.label}</p><p className="font-mono text-sm text-paper mt-1">{row.value}</p><p className="mt-2 font-mono text-[10px] uppercase text-slate">Source: {row.source}</p></div>)}</div>; }
 function MetricFields({ data }: { data: ApiData }) { return <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2">{Object.entries(data).map(([key, value]) => <div key={key} className="border border-ink-mid p-3"><p className="text-xs text-slate-light">{titleCase(key)}</p><p className="font-mono text-sm text-paper mt-1">{displayValue(value)}</p></div>)}</div>; }
 function ProjectList({ projects, onSelect }: { projects: ApiData[]; onSelect: (project: ApiData) => void }) { if (!projects.length) return <p className="text-slate-light mt-6">No active project records were found.</p>; return <div className="mt-5 space-y-2">{projects.map((project) => <button key={String(project.id)} onClick={() => void onSelect(project)} className="w-full flex justify-between gap-3 text-left border border-ink-mid p-3 hover:border-signal"><span className="text-paper">{displayValue(project.name)}</span><span className="font-mono text-xs text-slate-light">{displayValue(project.status)}</span></button>)}</div>; }
-function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; accessToken?: string }) { if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>; const project = (detail.project || {}) as ApiData; const related = Object.entries(detail).filter(([key]) => key !== "project"); const projectId = project.id ? String(project.id) : null; return <div className="space-y-5"><section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3><MetricFields data={project} /></section>{projectId && <section><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Schedule Risk (Monte Carlo)</h3><ScheduleRiskPanel projectId={projectId} accessToken={accessToken} /></section>}{related.map(([key, value]) => <section key={key}><h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>{Array.isArray(value) && value.length ? <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div> : <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>}</section>)}</div>; }
+function ProjectDetail({ detail, accessToken }: { detail: ApiData | null; accessToken?: string }) {
+  const [showDossier, setShowDossier] = useState(false);
+  const [showManpowerSim, setShowManpowerSim] = useState(false);
+
+  if (!detail) return <p className="text-slate-light">Project detail is unavailable.</p>;
+  const project = (detail.project || {}) as ApiData;
+  const related = Object.entries(detail).filter(([key]) => key !== "project");
+  const projectId = project.id ? String(project.id) : null;
+
+  return (
+    <div className="space-y-5">
+      {projectId && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-mid/80 bg-ink-light/20 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setShowDossier(true)}
+              className="inline-flex items-center gap-1.5 rounded border border-emerald-500/50 bg-emerald-500/10 px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+            >
+              <Award className="h-4 w-4" /> Month-End Leadership Dossier
+            </button>
+            <button
+              onClick={() => setShowManpowerSim(true)}
+              className="inline-flex items-center gap-1.5 rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 font-mono text-xs font-semibold uppercase tracking-wider text-sky-300 hover:bg-sky-500/20 transition-colors"
+            >
+              <Sliders className="h-4 w-4" /> Manpower & Hours Simulator
+            </button>
+          </div>
+          <Link
+            href={`/dashboard/projects/${projectId}`}
+            className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-signal hover:underline"
+          >
+            Open Mission Control →
+          </Link>
+        </div>
+      )}
+      <section>
+        <h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Project viability and delivery record</h3>
+        <MetricFields data={project} />
+      </section>
+      {projectId && (
+        <section>
+          <h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">Schedule Risk (Monte Carlo)</h3>
+          <ScheduleRiskPanel projectId={projectId} accessToken={accessToken} />
+        </section>
+      )}
+      {related.map(([key, value]) => (
+        <section key={key}>
+          <h3 className="font-mono text-xs tracking-widest text-signal uppercase mb-2">{titleCase(key)}</h3>
+          {Array.isArray(value) && value.length ? (
+            <div className="space-y-2">{value.map((item, index) => <MetricFields key={index} data={item as ApiData} />)}</div>
+          ) : (
+            <p className="text-sm text-slate-light">No linked {titleCase(key).toLowerCase()} recorded for this project.</p>
+          )}
+        </section>
+      ))}
+
+      {showDossier && projectId && (
+        <LeadershipAccountabilityModal
+          projectId={projectId}
+          projectName={String(project.name || "Project")}
+          onClose={() => setShowDossier(false)}
+        />
+      )}
+
+      {showManpowerSim && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-4xl max-h-[92vh] overflow-y-auto">
+            <ManpowerScenarioCalculator
+              projectName={String(project.name || "Project")}
+              onClose={() => setShowManpowerSim(false)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function DataConfidence({ sources }: { sources: ApiData[] }) { const issues = sources.filter(isExecutiveAttentionIssue); const current = sources.filter((source) => String(source.status) === "current").length; const empty = sources.filter((source) => String(source.status) === "no_data").length; const summary = sources.length ? `${sources.length} executive data sources checked. ${current} current, ${empty} empty, ${issues.length} need attention.` : "Data sources are connected. Empty sources are shown as no data, not zero."; const iconClass = issues.length ? "text-amber-400" : "text-green-500"; return <div className="flex items-center gap-2 text-xs text-slate-light"><DatabaseZap className={`w-4 h-4 ${iconClass}`}/>{summary}</div>; }
 function SourceWarnings({ warnings }: { warnings: string[] }) { if (!warnings.length) return null; return <div className="border border-amber-500/40 bg-amber-500/10 p-3 flex gap-3"><AlertTriangle className="w-5 h-5 text-amber-400 shrink-0"/><div><p className="text-sm text-paper">Executive view is degraded</p><div className="mt-1 space-y-1">{warnings.map((warning) => <p key={warning} className="text-xs text-slate-light">{warning}</p>)}</div></div></div>; }
 function ExecutiveExceptions({ exceptions, onProject }: { exceptions: ApiData[]; onProject: (project: ApiData) => void }) {
@@ -1153,66 +1263,189 @@ function SafetyIndexPanel() {
 }
 
 // Decision Queue: read-only aggregation of items genuinely awaiting a
-// decision in their own authoritative module (procurement.purchase_orders
-// today - see GET /executive/approvals/pending). Deliberately has no
-// approve/reject button of its own: the real approval rule (segregation of
-// duties, self-approval blocked) lives in routers/procurement.py, so this
-// panel links out to where the decision is actually made rather than
-// duplicating that logic a second, drifting time.
+// decision in their own authoritative module - Procurement, Finance, Fleet,
+// HR and Projects (see GET /executive/approvals/pending). Deliberately has no
+// approve/reject button of its own: each module's approval rule
+// (segregation of duties, self-approval blocked) lives in that module's
+// router, so this panel links out to where the decision is actually made
+// rather than duplicating that logic a second, drifting time.
+const APPROVALS_VISIBLE = 8;
+
+function waitingLabel(days: unknown): string | null {
+  if (days === null || days === undefined) return null;
+  const value = Number(days);
+  if (!Number.isFinite(value)) return null;
+  return value === 0 ? "Today" : `${value}d waiting`;
+}
+
 function PendingApprovalsPanel() {
   const [items, setItems] = useState<ApiData[]>([]);
+  const [byModule, setByModule] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
   const [message, setMessage] = useState<string>("");
+  const [moduleFilter, setModuleFilter] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ text: string; error?: boolean } | null>(null);
+
+  const fetchApprovals = useCallback(async () => {
+    try {
+      const res = await getPendingApprovals();
+      setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
+      const meta = (res.meta || {}) as ApiData;
+      setByModule((meta.by_module as Record<string, number>) || {});
+      setMessage(String(res.message || ""));
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await getPendingApprovals();
-        if (!cancelled) {
-          setItems(Array.isArray(res.data) ? (res.data as ApiData[]) : []);
-          setMessage(String(res.message || ""));
-        }
-      } catch {
-        if (!cancelled) setItems([]);
-      } finally {
-        if (!cancelled) setLoading(false);
+    fetchApprovals();
+  }, [fetchApprovals]);
+
+  const handleDecision = async (e: React.MouseEvent, item: ApiData, decision: "approved" | "rejected") => {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = String(item.id || "");
+    const itemType = String(item.type || "");
+    if (!id || actingId) return;
+
+    setActingId(id);
+    setActionNotice(null);
+    try {
+      if (itemType === "leave_request") {
+        await approveHRLeaveRequest(id, decision, "Processed from Executive Dashboard.");
+      } else if (itemType === "plant_request") {
+        await updatePlantRequestStatus(id, { status: decision });
+      } else {
+        setActionNotice({ text: `Direct action not configured for ${itemType}. Please review in the respective module.`, error: true });
+        return;
       }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+      setActionNotice({ text: `${titleCase(itemType)} "${String(item.reference || id)}" ${decision} successfully.` });
+      await fetchApprovals();
+    } catch (err: any) {
+      setActionNotice({
+        text: err?.response?.data?.detail || err?.message || `Failed to record decision for ${itemType}.`,
+        error: true,
+      });
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const filtered = moduleFilter ? items.filter((item) => item.module === moduleFilter) : items;
+  const visible = showAll ? filtered : filtered.slice(0, APPROVALS_VISIBLE);
 
   return (
     <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
       <div className="flex justify-between items-center border-b border-ink-mid pb-3">
         <div>
           <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Decisions Awaiting Approval</h2>
-          <p className="text-xs text-slate-light mt-1">Only items genuinely in a pending state in their own module - decide them there, not here.</p>
+          <p className="text-xs text-slate-light mt-1">Items genuinely pending in Procurement, Finance, Fleet, HR and Projects. Approve or reject eligible items directly or view full details in their module.</p>
         </div>
-        <span className="font-mono text-[10px] text-slate">{items.length} PENDING</span>
+        <span className="font-mono text-[10px] text-slate shrink-0">{items.length} PENDING</span>
       </div>
-      <div className="mt-4 space-y-2">
+
+      {actionNotice && (
+        <div className={`mt-3 p-2.5 rounded border text-xs font-mono flex items-center justify-between ${actionNotice.error ? "bg-rose-950/30 border-rose-800/40 text-rose-300" : "bg-emerald-950/30 border-emerald-800/40 text-emerald-300"}`}>
+          <span>{actionNotice.text}</span>
+          <button onClick={() => setActionNotice(null)} className="ml-2 hover:opacity-75">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {Object.keys(byModule).length > 1 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <button onClick={() => setModuleFilter(null)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === null ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>All {items.length}</button>
+          {Object.entries(byModule).map(([module, count]) => (
+            <button key={module} onClick={() => setModuleFilter(module)} className={`font-mono text-[10px] uppercase px-2 py-0.5 border rounded ${moduleFilter === module ? "border-signal text-signal" : "border-ink-mid text-slate-light hover:text-paper"}`}>{module} {count}</button>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 space-y-2">
         {loading ? (
           <div className="flex items-center gap-2 text-xs text-slate py-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading pending approvals...</div>
+        ) : failed ? (
+          <p className="text-xs text-slate py-4">Pending approvals could not be loaded.</p>
         ) : items.length === 0 ? (
           <p className="text-xs text-slate py-4">{message || "No items currently awaiting executive-visible approval."}</p>
         ) : (
-          items.map((item) => (
-            <Link
-              key={String(item.id)}
-              href={String(item.action_url || "/dashboard/procurement")}
-              className="block border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal transition-colors"
-            >
-              <div className="flex flex-wrap justify-between items-start gap-3">
-                <div className="min-w-0">
-                  <span className="font-mono text-[10px] uppercase text-signal">{titleCase(String(item.type || "item"))}</span>
-                  <p className="font-semibold text-paper text-sm mt-1.5">{displayValue(item.reference)}</p>
-                  <p className="text-slate-light text-xs mt-1">{displayValue(item.reason)}</p>
+          <>
+            {visible.map((item) => {
+              const waiting = waitingLabel(item.waiting_days);
+              const stale = Number(item.waiting_days) >= 7;
+              const itemId = String(item.id || "");
+              const itemType = String(item.type || "");
+              const isDirectActionable = itemType === "leave_request" || itemType === "plant_request";
+              const isProcessing = actingId === itemId;
+
+              return (
+                <div
+                  key={`${itemType}-${itemId}`}
+                  className="border border-ink-mid bg-ink-light p-3 rounded-md hover:border-signal/70 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <Link
+                    href={String(item.action_url || "/dashboard")}
+                    className="min-w-0 flex-1 block group"
+                  >
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-[10px] uppercase text-signal group-hover:underline">{displayValue(item.module)} · {titleCase(itemType || "item")}</span>
+                      {waiting && <span className={`font-mono text-[9px] uppercase px-1.5 border rounded ${stale ? "border-amber-500/40 text-amber-300" : "border-ink-mid text-slate-light"}`}>{waiting}</span>}
+                    </div>
+                    <p className="font-semibold text-paper text-sm mt-1.5 truncate group-hover:text-amber-200 transition-colors">{displayValue(item.reference)}</p>
+                    {item.detail !== null && item.detail !== undefined && item.detail !== "" && <p className="text-slate-light text-xs mt-0.5 truncate">{String(item.detail)}</p>}
+                    <p className="text-slate text-xs mt-1">{displayValue(item.reason)}</p>
+                  </Link>
+
+                  <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
+                    {item.amount !== null && item.amount !== undefined && <p className="font-mono text-sm text-paper">{currencyValue(item.amount)}</p>}
+                    {isDirectActionable ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={Boolean(actingId)}
+                          onClick={(e) => handleDecision(e, item, "approved")}
+                          className="px-2.5 py-1 text-xs font-mono font-medium rounded border border-emerald-600/50 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/60 transition disabled:opacity-50 flex items-center gap-1"
+                          title="Approve immediately"
+                        >
+                          {isProcessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(actingId)}
+                          onClick={(e) => handleDecision(e, item, "rejected")}
+                          className="px-2.5 py-1 text-xs font-mono font-medium rounded border border-rose-600/50 bg-rose-950/40 text-rose-300 hover:bg-rose-900/60 transition disabled:opacity-50 flex items-center gap-1"
+                          title="Reject"
+                        >
+                          <X className="h-3 w-3" />
+                          Reject
+                        </button>
+                      </div>
+                    ) : (
+                      <Link
+                        href={String(item.action_url || "/dashboard")}
+                        className="px-2.5 py-1 text-xs font-mono rounded border border-ink-mid bg-ink text-slate-light hover:text-paper hover:border-signal transition"
+                      >
+                        Review →
+                      </Link>
+                    )}
+                  </div>
                 </div>
-                <p className="font-mono text-sm text-paper shrink-0">{currencyValue(item.amount)}</p>
-              </div>
-            </Link>
-          ))
+              );
+            })}
+            {filtered.length > APPROVALS_VISIBLE && (
+              <button onClick={() => setShowAll((value) => !value)} className="w-full font-mono text-[10px] uppercase text-signal hover:underline py-1">
+                {showAll ? "Show fewer" : `Show all ${filtered.length}`}
+              </button>
+            )}
+          </>
         )}
       </div>
     </section>
@@ -1490,6 +1723,148 @@ function StatutoryLiabilitiesPanel() {
               );
             })}
           </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const BUDGET_STATUS_STYLE: Record<string, { label: string; tone: string }> = {
+  over_budget: { label: "Over budget", tone: "border-red-500/40 text-red-300 bg-red-950/20" },
+  at_risk: { label: "At risk", tone: "border-amber-500/40 text-amber-300 bg-amber-950/20" },
+  on_track: { label: "On track", tone: "border-emerald-500/40 text-emerald-300 bg-emerald-950/20" },
+  no_budget_value: { label: "No budget value", tone: "border-ink-mid text-slate-light" },
+};
+
+function signedCurrency(value: unknown): string {
+  const amount = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(amount)) return "Not recorded";
+  return `${amount > 0 ? "+" : amount < 0 ? "−" : ""}${currencyValue(Math.abs(amount))}`;
+}
+
+// Budget vs actual - GET /executive/budget-vs-actual. Company figures are
+// this year's approved company budget baseline against actual revenue and
+// cost to date (the Finance budgets page's variance); project figures are
+// each open project's current approved budget against actual and
+// committed cost. With no approved company budget the panel says so rather
+// than comparing against zero.
+function BudgetVsActualPanel() {
+  const [data, setData] = useState<ApiData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getExecutiveBudgetVsActual();
+        if (!cancelled) setData((res.data as ApiData) || {});
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const company = (data?.company as ApiData | null) || null;
+  const ytd = (company?.ytd as ApiData | undefined) || {};
+  const hasCompanyBudget = Boolean(company?.has_approved_budget);
+  const projects = Array.isArray(data?.projects) ? (data.projects as ApiData[]) : [];
+  const totals = (data?.project_totals as ApiData | undefined) || {};
+  const throughMonth = company?.through_month ? new Date(String(company.through_month)).toLocaleDateString([], { month: "short", year: "numeric" }) : "";
+
+  const companyRows: Array<{ label: string; budget: unknown; actual: unknown; variance: unknown; costLike: boolean }> = [
+    { label: "Revenue", budget: ytd.budget_revenue, actual: ytd.actual_revenue, variance: ytd.revenue_variance, costLike: false },
+    { label: "Cost", budget: ytd.budget_cost, actual: ytd.actual_cost, variance: ytd.cost_variance, costLike: true },
+    { label: "Net", budget: ytd.budget_net, actual: ytd.actual_net, variance: ytd.net_variance, costLike: false },
+  ];
+
+  return (
+    <section className="bg-ink border border-ink-mid rounded-lg shadow-[0_1px_2px_rgba(0,0,0,0.35),0_14px_28px_-18px_rgba(0,0,0,0.55)] p-4">
+      <div className="flex justify-between items-start border-b border-ink-mid pb-3">
+        <div>
+          <h2 className="font-mono text-xs tracking-widest text-paper uppercase">Budget vs Actual</h2>
+          <p className="text-xs text-slate-light mt-1">Company year to date against the approved budget, and each open project against its approved budget.</p>
+        </div>
+        <Link href="/dashboard/finance/budgets" className="font-mono text-[10px] text-signal hover:underline shrink-0">Open budgets →</Link>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-xs text-slate py-6"><Loader2 className="h-4 w-4 animate-spin" /> Loading budget vs actual...</div>
+      ) : failed || !data ? (
+        <p className="text-xs text-slate py-6">Budget vs actual could not be loaded.</p>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 pt-3">
+          <div>
+            <h3 className="font-mono text-[10px] uppercase text-signal">Company · {displayValue(company?.fiscal_year)} to {throughMonth || "date"}</h3>
+            {!company ? (
+              <p className="text-xs text-slate py-3">Company figures could not be loaded.</p>
+            ) : (
+              <>
+                {!hasCompanyBudget && <p className="text-xs text-amber-300/80 mt-2">No approved company budget for {displayValue(company.fiscal_year)} yet, so there is nothing to compare against. Actuals are shown alone.</p>}
+                <table className="w-full text-left text-xs mt-2">
+                  <thead className="font-mono text-[9px] text-slate uppercase border-b border-ink-mid">
+                    <tr><th className="py-1.5 font-normal" /><th className="py-1.5 font-normal text-right">Budget</th><th className="py-1.5 font-normal text-right">Actual</th><th className="py-1.5 font-normal text-right">Variance</th></tr>
+                  </thead>
+                  <tbody>
+                    {companyRows.map((row) => {
+                      const variance = Number(row.variance);
+                      const bad = hasCompanyBudget && Number.isFinite(variance) && (row.costLike ? variance > 0 : variance < 0);
+                      return (
+                        <tr key={row.label} className="border-b border-ink-mid/40">
+                          <td className="py-2 text-paper">{row.label}</td>
+                          <td className="py-2 text-right font-mono text-slate-light">{hasCompanyBudget ? currencyValue(row.budget) : "—"}</td>
+                          <td className="py-2 text-right font-mono text-paper">{currencyValue(row.actual)}</td>
+                          <td className={`py-2 text-right font-mono ${bad ? "text-red-300" : hasCompanyBudget ? "text-emerald-300" : "text-slate"}`}>{hasCompanyBudget ? signedCurrency(row.variance) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {hasCompanyBudget && company.budget_label ? <p className="font-mono text-[10px] text-slate mt-2 uppercase">Baseline: {String(company.budget_label)}</p> : null}
+              </>
+            )}
+          </div>
+          <div>
+            <div className="flex justify-between items-baseline">
+              <h3 className="font-mono text-[10px] uppercase text-signal">Projects · {projects.length} with an approved budget</h3>
+              {(Number(data.over_budget_count) > 0 || Number(data.at_risk_count) > 0) && (
+                <span className="font-mono text-[10px] text-amber-300">{Number(data.over_budget_count)} over · {Number(data.at_risk_count)} at risk</span>
+              )}
+            </div>
+            {!projects.length ? (
+              <p className="text-xs text-slate-light py-3">No open project has an approved budget yet.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-3 gap-2 text-xs mt-2">
+                  <div><p className="text-slate">Budget</p><p className="font-mono text-paper mt-0.5">{currencyValue(totals.approved_budget)}</p></div>
+                  <div><p className="text-slate">Spent + committed</p><p className="font-mono text-paper mt-0.5">{currencyValue(Number(totals.actual_cost || 0) + Number(totals.committed_cost || 0))}</p></div>
+                  <div><p className="text-slate">Remaining</p><p className={`font-mono mt-0.5 ${Number(totals.remaining) < 0 ? "text-red-300" : "text-paper"}`}>{currencyValue(totals.remaining)}</p></div>
+                </div>
+                <ul className="mt-3 space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                  {projects.map((line) => {
+                    const style = BUDGET_STATUS_STYLE[String(line.status)] || BUDGET_STATUS_STYLE.no_budget_value;
+                    const spent = Math.min(Number(line.spent_percent) || 0, 100);
+                    const committed = Math.max(Math.min((Number(line.exposure_percent) || 0) - (Number(line.spent_percent) || 0), 100 - spent), 0);
+                    return (
+                      <li key={String(line.project_id)} className="text-xs">
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-paper truncate" title={String(line.project_name)}>{displayValue(line.project_name)}</span>
+                          <span className={`font-mono text-[9px] uppercase px-1.5 border rounded shrink-0 ${style.tone}`}>{style.label}</span>
+                        </div>
+                        <div className="mt-1 h-1.5 rounded-full bg-ink-light overflow-hidden flex" role="img" aria-label={`${metricWithUnit(line.spent_percent, "%")} spent, ${metricWithUnit(line.exposure_percent, "%")} including commitments`}>
+                          <div className={line.status === "over_budget" ? "bg-red-400" : "bg-signal"} style={{ width: `${spent}%` }} />
+                          <div className="bg-amber-400/60" style={{ width: `${committed}%` }} />
+                        </div>
+                        <p className="font-mono text-[10px] text-slate mt-1">{currencyValue(line.actual_cost)} spent{Number(line.committed_cost) > 0 ? ` + ${currencyValue(line.committed_cost)} committed` : ""} of {currencyValue(line.approved_budget)} · {metricWithUnit(line.spent_percent, "%")}</p>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+          </div>
         </div>
       )}
     </section>

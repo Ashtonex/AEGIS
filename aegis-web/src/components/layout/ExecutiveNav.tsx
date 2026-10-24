@@ -76,6 +76,21 @@ export function ExecutiveNav() {
     setPortalMenuOpen(false);
   }, [pathname]);
 
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      if (mobileMenuOpen) {
+        document.body.style.overflow = "hidden";
+      } else {
+        document.body.style.overflow = "";
+      }
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.body.style.overflow = "";
+      }
+    };
+  }, [mobileMenuOpen]);
+
   const handleMouseEnter = (label: string, hasPanel: boolean) => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     if (!hasPanel) {
@@ -102,7 +117,7 @@ export function ExecutiveNav() {
       <motion.header
         className={cn(
           "fixed top-0 inset-x-0 z-50 transition-[padding,background-color,border-color] ease-dxl",
-          scrolled
+          scrolled || mobileMenuOpen
             ? "bg-ink/95 backdrop-blur-md border-b border-ink-mid py-4"
             : "bg-transparent border-b-0 py-6"
         )}

@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_notification
+from routers.bank_transactions import _next_cashbook_transaction_number
 from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, is_self_certification, require_permission
@@ -230,6 +231,35 @@ async def create_payment_batch(
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
 
+@router.get("/vendor-requests", summary="List self-service vendor payment requests")
+async def list_vendor_payment_requests(
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    user: dict = Depends(require_permission("finance.vendor_payment.clear")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org(user)
+    filters = ["vpr.organization_id = :org_id", "vpr.is_deleted = false"]
+    params: dict = {"org_id": org_id}
+    if status_filter:
+        filters.append("vpr.status = :status")
+        params["status"] = status_filter
+
+    rows = await db.execute(
+        text(f"""
+            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type,
+                   COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS vendor_onboarding_bypass_enabled,
+                   s.submission_data->'onboarding_bypass'->>'message' AS vendor_onboarding_bypass_message,
+                   s.submission_data->'onboarding_bypass'->'missing_items' AS vendor_onboarding_missing_items
+            FROM finance.vendor_payment_requests vpr
+            JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
+            WHERE {' AND '.join(filters)}
+            ORDER BY vpr.submitted_at DESC
+        """),
+        params,
+    )
+    return ok([dict(r._mapping) for r in rows], "Vendor payment requests listed.")
+
+
 @router.get("/{batch_id}", summary="Get a payment batch with its items")
 async def get_payment_batch(
     batch_id: UUID,
@@ -253,7 +283,7 @@ async def get_payment_batch(
     items = await db.execute(
         text("""
             SELECT spi.*, si.invoice_number, si.total_amount AS invoice_total,
-                   s.name AS supplier_name
+                   s.supplier_name AS supplier_name
             FROM finance.supplier_payment_items spi
             JOIN procurement.supplier_invoices si ON si.id = spi.supplier_invoice_id
             JOIN procurement.suppliers s ON s.id = spi.supplier_id
@@ -321,10 +351,11 @@ async def decide_payment_batch(
             )
             total_amount = float(items_rows.scalar() or 0)
             if total_amount <= 0:
-                raise HTTPException(status_code=422, detail="Payment batch has no payable items.")
+                raise HTTPException(status_code=409, detail="This payment batch has no payable amount to post.")
 
             # 1. One cashbook outflow for the batch. The balance trigger on
             # finance.cashbook_transactions updates the cash account.
+            # transaction_number and direction are NOT NULL.
             txn = await db.execute(
                 text("""
                     INSERT INTO finance.cashbook_transactions (
@@ -344,8 +375,8 @@ async def decide_payment_batch(
                 """),
                 {
                     "org_id": org_id,
+                    "transaction_number": await _next_cashbook_transaction_number(db, org_id),
                     "cash_account_id": str(batch_row.cash_account_id),
-                    "transaction_number": f"PMT-{batch_row.batch_number}",
                     "payment_date": batch_row.payment_date,
                     "batch_id": str(batch_id),
                     "amount": total_amount,
@@ -435,35 +466,6 @@ async def _pick_cash_account_for_finance(db: AsyncSession, org_id: str, currency
     if not account_id:
         raise HTTPException(status_code=422, detail="No active cash account is configured.")
     return str(account_id)
-
-
-@router.get("/vendor-requests", summary="List self-service vendor payment requests")
-async def list_vendor_payment_requests(
-    status_filter: Optional[str] = Query(default=None, alias="status"),
-    user: dict = Depends(require_permission("finance.vendor_payment.clear")),
-    db: AsyncSession = Depends(get_db),
-):
-    org_id = _require_org(user)
-    filters = ["vpr.organization_id = :org_id", "vpr.is_deleted = false"]
-    params: dict = {"org_id": org_id}
-    if status_filter:
-        filters.append("vpr.status = :status")
-        params["status"] = status_filter
-
-    rows = await db.execute(
-        text(f"""
-            SELECT vpr.*, s.name AS vendor_name, s.submission_data->>'account_type' AS account_type,
-                   COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS vendor_onboarding_bypass_enabled,
-                   s.submission_data->'onboarding_bypass'->>'message' AS vendor_onboarding_bypass_message,
-                   s.submission_data->'onboarding_bypass'->'missing_items' AS vendor_onboarding_missing_items
-            FROM finance.vendor_payment_requests vpr
-            JOIN crm.subcontractors s ON s.id = vpr.subcontractor_id AND s.organization_id = vpr.organization_id
-            WHERE {' AND '.join(filters)}
-            ORDER BY vpr.submitted_at DESC
-        """),
-        params,
-    )
-    return ok([dict(r._mapping) for r in rows], "Vendor payment requests listed.")
 
 
 @router.post("/vendor-requests/{request_id}/clear", summary="Clear a vendor payment request as Finance")

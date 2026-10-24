@@ -9,19 +9,23 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from "@/lib/api";
-import { useLiveNotification } from "@/lib/live/LiveDataProvider";
+import { useLiveConnected, useLiveNotification } from "@/lib/live/LiveDataProvider";
 
-// The 15s poll below is now a fallback for the rare window where the
-// shared live connection (see LiveDataProvider, mounted once in
-// app/dashboard/layout.tsx) is reconnecting, not the primary update path -
-// new notifications normally arrive the instant they're created.
+// New notifications normally arrive the instant they're created over the
+// shared live connection (LiveDataProvider, mounted once in
+// app/dashboard/layout.tsx). Polling is the fallback: every 15s while that
+// connection is down, and only a slow safety-net poll while it's up -
+// previously this polled every 15s regardless, 4 requests a minute per open
+// tab even with live push working.
 const POLL_MS = 15000;
+const POLL_WHILE_LIVE_MS = 120000;
 
 export function useNotifications(limit = 20) {
   const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const liveConnected = useLiveConnected();
 
   const refresh = useCallback(async () => {
     try {
@@ -40,22 +44,23 @@ export function useNotifications(limit = 20) {
     }
   }, [limit]);
 
+  // Initial load, plus catching up when the tab comes back into view.
   useEffect(() => {
     void refresh();
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, POLL_MS);
-
     const onVisibility = () => {
       if (document.visibilityState === "visible") void refresh();
     };
     document.addEventListener("visibilitychange", onVisibility);
-
-    return () => {
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
+    return () => document.removeEventListener("visibilitychange", onVisibility);
   }, [refresh]);
+
+  // Fallback poll: fast while live push is down, slow while it's up.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, liveConnected ? POLL_WHILE_LIVE_MS : POLL_MS);
+    return () => window.clearInterval(interval);
+  }, [refresh, liveConnected]);
 
   // Live push: a new notification lands in local state the instant it's
   // created, no poll interval to wait out.

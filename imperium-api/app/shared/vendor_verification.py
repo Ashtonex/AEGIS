@@ -24,17 +24,94 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_role_notification
 
+# The key vendor requirements are the registered company name, the company
+# registration number, tax clearance and VAT (a VAT number, or an explicit
+# "not VAT registered" declaration). NSSA and PRAZ are still captured and
+# shown but don't block verification.
 REQUIRED_VENDOR_PROFILE_FIELDS = (
-    "registration_number", "tax_clearance_number", "nssa_number",
+    "name", "registration_number", "tax_clearance_number",
     "contact_name", "contact_email", "contact_phone", "address",
 )
 REQUIRED_COMPLIANCE_CATEGORIES = (
     "tax_clearance",
+    "company_registration",
+    "vat",
+)
+OPTIONAL_COMPLIANCE_CATEGORIES = (
     "nssa",
     "praz",
-    "vat",
-    "company_registration",
 )
+VAT_STATUSES = ("registered", "not_registered")
+COMPLIANCE_DOCUMENT_LABELS = {
+    "tax_clearance": "Tax clearance certificate",
+    "company_registration": "Company registration certificate",
+    "vat": "VAT certificate",
+    "nssa": "NSSA",
+    "praz": "PRAZ",
+}
+
+VENDOR_FIELD_LABELS = {
+    "name": "Registered company name",
+    "registration_number": "Company registration number",
+    "tax_clearance_number": "Tax clearance number",
+    "vat_number": "VAT number",
+    "contact_name": "Primary contact",
+    "contact_email": "Primary contact email",
+    "contact_phone": "Primary contact phone",
+    "address": "Address",
+}
+
+# One definition of where each vendor profile value comes from, for every
+# reader: the subcontractor row first, then its linked procurement.suppliers
+# row, then the raw registration submission. Needs "crm.subcontractors s"
+# LEFT JOINed to "procurement.suppliers ps".
+_VAT_NUMBER_SQL = (
+    "COALESCE(NULLIF(s.vat_number, ''), NULLIF(ps.vat_registration_number, ''), "
+    "NULLIF(s.submission_data->>'vat_number', ''), NULLIF(s.submission_data->>'vatNumber', ''))"
+)
+VENDOR_PROFILE_SQL = {
+    "name": "COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, ''))",
+    "registration_number": "COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', ''))",
+    "tax_clearance_number": "COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', ''))",
+    "vat_number": _VAT_NUMBER_SQL,
+    "vat_status": (
+        "COALESCE(s.vat_status, ps.vat_status, NULLIF(s.submission_data->>'vat_status', ''), "
+        f"CASE WHEN {_VAT_NUMBER_SQL} IS NOT NULL THEN 'registered' END)"
+    ),
+    "nssa_number": "COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, ''), NULLIF(s.submission_data->>'nssa_number', ''))",
+    "praz_number": "COALESCE(NULLIF(s.praz_number, ''), NULLIF(ps.praz_number, ''), NULLIF(s.submission_data->>'praz_number', ''))",
+    "contact_name": "COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', ''))",
+    "contact_email": "COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', ''))",
+    "contact_phone": "COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', ''))",
+    "address": "COALESCE(NULLIF(s.address, ''), NULLIF(ps.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', ''))",
+}
+
+
+def vendor_profile_columns(*keys: str) -> str:
+    """SELECT-list fragment "<expr> AS <key>, ..." for the given profile keys
+    (all of them when none are given)."""
+    return ",\n".join(f"{VENDOR_PROFILE_SQL[key]} AS {key}" for key in (keys or VENDOR_PROFILE_SQL))
+
+
+def required_compliance_categories(vat_status: str | None) -> tuple[str, ...]:
+    """A vendor that has declared it isn't VAT registered has no VAT
+    certificate to provide."""
+    if vat_status == "not_registered":
+        return tuple(c for c in REQUIRED_COMPLIANCE_CATEGORIES if c != "vat")
+    return REQUIRED_COMPLIANCE_CATEGORIES
+
+
+def missing_profile_fields(profile: Any) -> list[str]:
+    """Required profile keys that are blank, including VAT: a VAT number is
+    required unless the vendor has declared it isn't VAT registered."""
+    def value(key: str) -> str:
+        raw = profile.get(key) if isinstance(profile, dict) else getattr(profile, key, None)
+        return str(raw or "").strip()
+
+    missing = [f for f in REQUIRED_VENDOR_PROFILE_FIELDS if not value(f)]
+    if value("vat_status") != "not_registered" and not value("vat_number"):
+        missing.append("vat_number")
+    return missing
 COMPLIANCE_CATEGORY_ALIASES = {
     "tax": "tax_clearance",
     "tax_clearance_certificate": "tax_clearance",
@@ -78,16 +155,9 @@ async def run_system_verification_check(
     callers can render it without a second query."""
     profile_row = (
         await db.execute(
-            text("""
+            text(f"""
             SELECT
-                COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
-                COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
-                COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
-                COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, ''), NULLIF(s.submission_data->>'nssa_number', '')) AS nssa_number,
-                COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
-                COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
-                COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
-                COALESCE(NULLIF(s.address, ''), NULLIF(ps.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address
+                {vendor_profile_columns()}
             FROM crm.subcontractors s
             LEFT JOIN procurement.suppliers ps
               ON ps.id = s.linked_supplier_id
@@ -101,10 +171,8 @@ async def run_system_verification_check(
     if not profile_row:
         raise ValueError("Subcontractor not found.")
 
-    missing = [
-        f for f in REQUIRED_VENDOR_PROFILE_FIELDS
-        if not str(getattr(profile_row, f, "") or "").strip()
-    ]
+    missing = [VENDOR_FIELD_LABELS[f] for f in missing_profile_fields(profile_row)]
+    vat_status = getattr(profile_row, "vat_status", None)
 
     if await _supplier_compliance_documents_available(db):
         doc_sql = """
@@ -175,20 +243,23 @@ async def run_system_verification_check(
     present_categories = {
         category for category in (normalize_compliance_category(d["category"]) for d in docs) if category
     }
-    missing_categories = [c for c in REQUIRED_COMPLIANCE_CATEGORIES if c not in present_categories]
-    expired = [
-        normalize_compliance_category(d["category"]) or d["category"]
+    required_categories = required_compliance_categories(vat_status)
+    missing_categories = [c for c in required_categories if c not in present_categories]
+    # An expired NSSA/PRAZ certificate doesn't block, same as a missing one.
+    expired = sorted({
+        normalize_compliance_category(d["category"])
         for d in docs
         if d["expiry_date"] and d["expiry_date"] < date.today()
-    ]
+        and normalize_compliance_category(d["category"]) in required_categories
+    })
 
     problems: list[str] = []
     if missing:
         problems.append("Missing profile fields: " + ", ".join(missing))
     if missing_categories:
-        problems.append("Missing compliance documents: " + ", ".join(missing_categories))
+        problems.append("Missing compliance documents: " + ", ".join(COMPLIANCE_DOCUMENT_LABELS[c] for c in missing_categories))
     if expired:
-        problems.append("Expired compliance documents: " + ", ".join(expired))
+        problems.append("Expired compliance documents: " + ", ".join(COMPLIANCE_DOCUMENT_LABELS[c] for c in expired))
 
     if problems:
         await db.execute(

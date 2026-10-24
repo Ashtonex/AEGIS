@@ -529,7 +529,6 @@ def build_pdf(desktop_path):
         ("Aegis Admin", "admin@sixnineconstruction.com", "Executive (Admin)", "No", "2026-08-08 22:43 UTC", "0"),
         ("Simulation Sales Rep 1", "simulation.sales1.aegis@example.com", "Sales Executive", "No", "2026-08-08 06:47 UTC", "0"),
         ("Simulation Sales Rep 2", "simulation.sales2.aegis@example.com", "User", "No", "2026-08-08 06:47 UTC", "0"),
-        ("Phoebe Lifa (Alias)", "phoebe@sixnineconstruction.com", "Sales Executive", "No", "Never", "0"),
         ("Test Invite User", "ashytana+aegis-invite-test@gmail.com", "User", "No", "Never", "0"),
         ("Prod Invite Test", "ashytana+aegis-prod-invite-test@gmail.com", "User", "No", "Never", "0"),
         ("Redirect Fix Test", "ashytana+aegis-redirect-test@gmail.com", "User", "No", "Never", "0"),

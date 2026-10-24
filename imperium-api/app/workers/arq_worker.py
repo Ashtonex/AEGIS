@@ -2,6 +2,7 @@ import asyncio
 import time
 import os
 import json
+from datetime import timedelta
 from urllib.parse import urlparse
 from uuid import UUID
 import httpx
@@ -34,10 +35,25 @@ from app.services.finance.ccb_monitor import (
     run_stock_consumption_variance_check,
 )
 from app.services.finance.tax_calendar import list_deadline_candidates, notify_deadline
+from app.services.finance import draft_budget_reminders
+from app.services.hr import expiry_alerts as hr_expiry_alerts
+from app.services.hr import time_tracking as hr_time_tracking
+from app.services.hr import performance as hr_performance
+from app.services.hr import performance_delivery as hr_performance_delivery
+from app.services.hr.weekly_report import (
+    build_weekly_hr_report,
+    is_send_time,
+    refresh_pending_vendor_checks,
+    render_weekly_hr_report_html,
+    render_weekly_hr_report_text,
+    report_subject,
+    report_week,
+)
 from app.services.workforce_events import dispatch_workforce_events
 from app.events.bus import EventBus
-from app.shared.events import emit_notification
+from app.shared.events import emit_notification, emit_role_notification
 from app.shared.task_stacks import generate_task_stack
+from app.shared import task_routing
 from app.services.microsoft.tender_calendar import cancel_all_for_tender
 from routers.tender_bids import _record_tender_closeout
 
@@ -549,6 +565,33 @@ async def notify_stale_pipeline_items_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def auto_distribute_tasks_job(ctx):
+    """Every 10 minutes: for each org that switched auto-distribution on,
+    routes newly generated (unowned) tasks to people and dates them - see
+    app/shared/task_routing.py. One org failing doesn't stop the others,
+    and a Teams outage never rolls back an assignment."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    assigned_total = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            org_ids = (
+                await db.execute(
+                    text("SELECT organization_id::text FROM crm.task_routing_settings WHERE auto_distribute = true")
+                )
+            ).scalars().all()
+        for org_id in org_ids:
+            try:
+                assigned_total += await task_routing.run_auto_distribution(org_id)
+            except Exception:
+                logger.exception(f"Task auto-distribution failed for org {org_id}")
+        if assigned_total:
+            logger.info(f"Auto-distributed {assigned_total} task(s).")
+        return {"assigned": assigned_total}
+    finally:
+        worker_job_id_ctx.set("")
+
+
 async def run_ccb_budget_overrun_check_job(ctx):
     """Daily cron (CCB automation Phase 2): sweeps every organization for
     projects whose estimate-at-completion has drifted past their approved
@@ -739,6 +782,151 @@ async def check_tax_deadline_alerts_job(ctx):
         worker_job_id_ctx.set("")
 
 
+async def weekly_hr_report_job(ctx):
+    """Hourly cron: emails the weekly HR report (app/services/hr/weekly_report.py)
+    to HR_WEEKLY_REPORT_RECIPIENTS from Friday 16:00 Harare time. It runs every
+    hour and checks the time itself rather than trusting the container's
+    timezone for arq's cron fields. A per-recipient, per-week Redis key stops
+    repeats, so a failed send is retried by the next hourly run that Friday.
+
+    Each recipient is resolved to their AEGIS user's organization and only
+    gets that organization's report; an address with no user is skipped.
+    """
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        now = time_now()
+        if not is_send_time(now):
+            return {"skipped": "not Friday 16:00+ Harare time"}
+        week_start, week_end = report_week(now)
+        recipients = sorted({
+            email.strip().lower()
+            for email in settings.HR_WEEKLY_REPORT_RECIPIENTS.split(",")
+            if email.strip()
+        })
+        if not recipients:
+            return {"skipped": "no recipients configured"}
+
+        redis_pool = ctx["redis"]
+        app_url = settings.cors_origins[0] if settings.cors_origins else None
+        sent: list[str] = []
+        failed: list[str] = []
+        async with AsyncSessionLocal() as db:
+            rows = await db.execute(
+                text("""
+                    SELECT DISTINCT lower(email) AS email, organization_id
+                    FROM core.users
+                    WHERE lower(email) = ANY(:emails) AND is_deleted = false AND organization_id IS NOT NULL
+                """),
+                {"emails": recipients},
+            )
+            by_org: dict[str, list[str]] = {}
+            for row in rows.mappings():
+                by_org.setdefault(str(row["organization_id"]), []).append(row["email"])
+            unknown = set(recipients) - {email for emails in by_org.values() for email in emails}
+            if unknown:
+                logger.warning(f"Weekly HR report: no AEGIS user for {sorted(unknown)}; not sent to them.")
+
+            for org_id, emails in by_org.items():
+                dedupe = {email: f"aegis:hr_weekly_report:{org_id}:{week_end.isoformat()}:{email}" for email in emails}
+                pending = [email for email in emails if not await redis_pool.get(dedupe[email])]
+                if not pending:
+                    continue
+                await refresh_pending_vendor_checks(db, org_id=org_id)
+                await db.commit()
+                report = await build_weekly_hr_report(db, org_id=org_id, week_start=week_start, week_end=week_end)
+                subject = report_subject(report)
+                html = render_weekly_hr_report_html(report, app_url=app_url)
+                body_text = render_weekly_hr_report_text(report)
+                for email in pending:
+                    if await send_email(to=email, subject=subject, html=html, text=body_text):
+                        await redis_pool.setex(dedupe[email], 14 * 86400, "sent")
+                        sent.append(email)
+                    else:
+                        failed.append(email)
+        if sent:
+            logger.info(f"Weekly HR report for week ending {week_end} sent to {sent}.")
+        if failed:
+            logger.warning(f"Weekly HR report for week ending {week_end} failed for {failed}; next hourly run retries.")
+        return {"week_end": week_end.isoformat(), "sent": sent, "failed": failed}
+    except Exception as exc:
+        logger.exception(f"Weekly HR report failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def weekly_performance_job(ctx):
+    """Hourly cron: from Friday 07:00 Harare time, scores every organisation's
+    staff on the Friday-Thursday week that just ended
+    (app/services/hr/performance.py) and sends the scorecards. A week is
+    computed once; employee emails are tracked on the scorecard rows, team
+    summaries and the digest on per-week Redis keys, so a failed send is
+    retried by the next hourly run that Friday."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        now = time_now()
+        if not hr_performance.is_send_time(now):
+            return {"skipped": "not Friday 07:00+ Harare time"}
+        _, week_end = hr_performance.scoring_week(now)
+        redis_pool = ctx["redis"]
+        results = {}
+        async with AsyncSessionLocal() as db:
+            org_ids = [str(r[0]) for r in await db.execute(text("""
+                SELECT DISTINCT e.organization_id FROM hr.employees e
+                JOIN core.organizations o ON o.id = e.organization_id AND o.is_deleted = false
+                WHERE e.is_deleted = false AND e.employment_status = 'active' AND e.linked_user_id IS NOT NULL
+            """))]
+            for org_id in org_ids:
+                computed = (await db.execute(text(
+                    "SELECT 1 FROM hr.weekly_scorecards WHERE organization_id = :org AND week_end = :we LIMIT 1"),
+                    {"org": org_id, "we": week_end})).scalar()
+                if not computed:
+                    summary = await hr_performance.compute_week(db, org_id, week_end)
+                    await notify_performance_flags(db, org_id, week_end, summary)
+                    await db.commit()
+
+                async def sent_before(key: str, org_id=org_id) -> bool:
+                    return bool(await redis_pool.get(f"aegis:performance:{org_id}:{week_end.isoformat()}:{key}"))
+
+                async def mark_sent(key: str, org_id=org_id) -> None:
+                    await redis_pool.setex(f"aegis:performance:{org_id}:{week_end.isoformat()}:{key}", 14 * 86400, "sent")
+
+                results[org_id] = await hr_performance_delivery.deliver_week(
+                    db, org_id, week_end, sent_before=sent_before, mark_sent=mark_sent)
+        return {"week_end": week_end.isoformat(), "results": results}
+    except Exception as exc:
+        logger.exception(f"Weekly performance scorecards failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def notify_performance_flags(db, org_id: str, week_end, summary: dict) -> None:
+    """In-app notices when a live week opens an assisted working period or
+    escalates one: to the supervising line manager and to HR."""
+    if summary.get("mode") != "live":
+        return
+    flagged = [("assisted_opened", "Assisted working period opened"), ("escalated", "Escalated to HR")]
+    rows = await db.execute(text("""
+        SELECT s.standing, e.employee_name, m.linked_user_id AS manager_user_id
+        FROM hr.weekly_scorecards s JOIN hr.employees e ON e.id = s.employee_id
+        LEFT JOIN hr.employees m ON m.id = s.line_manager_employee_id
+        WHERE s.organization_id = :org AND s.week_end = :we AND s.standing IN ('assisted_opened', 'escalated')
+    """), {"org": org_id, "we": week_end})
+    for row in rows.mappings():
+        title = f"{dict(flagged)[row['standing']]}: {row['employee_name']}"
+        message = f"Weekly performance, week ending {week_end:%d %b}."
+        if row["manager_user_id"]:
+            await emit_notification(db, org_id=org_id, user_id=str(row["manager_user_id"]), title=title, message=message,
+                                    notification_type="hr_performance", priority="high",
+                                    action_url="/dashboard/hr/performance")
+        await emit_role_notification(db, org_id=org_id, role_names=["HR Manager", "HR Officer", "Executive (Admin)"],
+                                     title=title, message=message, notification_type="hr_performance", priority="high",
+                                     action_url="/dashboard/hr/performance")
+
+
 def time_now():
     from datetime import datetime, timezone
 
@@ -793,6 +981,84 @@ async def publish_bank_workbooks_nightly_job(ctx):
             row = await bank_workbook.publish(db, org_id=org_id)
             results[org_id] = (row or {}).get("last_status")
     return results
+
+
+async def draft_budget_reminder_job(ctx):
+    """Hourly cron: from 07:00 Harare time on weekdays, emails each QS, PM,
+    the MD and Finance oversight one digest of the project budgets still in
+    draft (app/services/finance/draft_budget_reminders.py). A per-person,
+    per-day Redis key means each person gets at most one reminder a day and
+    a failed send is retried by the next hourly run."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        now = time_now()
+        if not draft_budget_reminders.is_send_time(now):
+            return {"skipped": "not a weekday after 07:00 Harare time"}
+        day = now.astimezone(draft_budget_reminders.HARARE).date().isoformat()
+        redis_pool = ctx["redis"]
+        sent: list[str] = []
+        failed: list[str] = []
+        async with AsyncSessionLocal() as db:
+            plan = await draft_budget_reminders.plan_reminders(db)
+        for email, entry in sorted(plan.items()):
+            key = f"aegis:draft_budget_reminder:{day}:{email}"
+            if await redis_pool.get(key):
+                continue
+            if await draft_budget_reminders.send_digest(email, entry):
+                await redis_pool.setex(key, 3 * 86400, "sent")
+                sent.append(email)
+            else:
+                failed.append(email)
+        if failed:
+            logger.warning(f"Draft budget reminders failed for {failed}")
+        return {"sent": sent, "failed": failed}
+    except Exception as exc:
+        logger.exception(f"Draft budget reminder job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def hr_expiry_alerts_job(ctx):
+    """Hourly cron: from 07:00 Harare time, warns HR (nyasha@) and the
+    employee about contracts, credentials and assets that are ending, and books
+    the contract review meeting (app/services/hr/expiry_alerts.py).
+    hr.expiry_alerts makes every warning go out once, so the hourly runs are
+    safe and a failed send is retried next hour."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        if not hr_expiry_alerts.is_send_time(time_now()):
+            return {"skipped": "before 07:00 Harare time"}
+        async with AsyncSessionLocal() as db:
+            result = await hr_expiry_alerts.run(db)
+        return {"sent": len(result["sent"])}
+    except Exception as exc:
+        logger.exception(f"HR expiry alert job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
+
+
+async def close_attendance_day_job(ctx):
+    """Daily 16:35 Harare: stops the clock at 16:30 for everyone checked in by
+    signing in to AEGIS (app/services/hr/time_tracking.py). Also closes
+    yesterday, in case the worker was down at 16:35."""
+    job_id = ctx.get("job_id", "unknown")
+    worker_job_id_ctx.set(job_id)
+    try:
+        today = hr_time_tracking.local_now().date()
+        closed = 0
+        async with AsyncSessionLocal() as db:
+            for day in (today - timedelta(days=1), today):
+                closed += await hr_time_tracking.close_day(db, day)
+        return {"closed": closed}
+    except Exception as exc:
+        logger.exception(f"Close attendance day job failed: {exc}")
+        raise Retry(defer=exponential_backoff_retry(ctx)) from exc
+    finally:
+        worker_job_id_ctx.set("")
 
 
 async def on_job_failure(ctx, exp: Exception):
@@ -854,11 +1120,14 @@ class WorkerSettings:
         poll_ticket_sla_triggers_job,
         auto_close_overdue_tenders_job,
         notify_stale_pipeline_items_job,
+        auto_distribute_tasks_job,
         run_ccb_budget_overrun_check_job,
         run_ccb_requisition_breach_check_job,
         run_ccb_variance_staleness_check_job,
         run_ccb_weekly_boq_pace_variance_check_job,
         check_tax_deadline_alerts_job,
+        weekly_hr_report_job,
+        weekly_performance_job,
         run_ccb_gl_proposal_stale_review_check_job,
         run_ccb_labour_headcount_mismatch_check_job,
         run_ccb_fuel_hours_variance_check_job,
@@ -866,6 +1135,9 @@ class WorkerSettings:
         publish_bank_workbook_job,
         publish_bank_workbooks_nightly_job,
         sync_bank_workbooks_job,
+        draft_budget_reminder_job,
+        hr_expiry_alerts_job,
+        close_attendance_day_job,
     ]
     cron_jobs = [
         cron(dispatch_compliance_events_job, second=35, run_at_startup=False),
@@ -877,6 +1149,9 @@ class WorkerSettings:
             auto_close_overdue_tenders_job, minute={0, 15, 30, 45}, run_at_startup=False
         ),
         cron(notify_stale_pipeline_items_job, hour=6, minute=0, run_at_startup=False),
+        cron(
+            auto_distribute_tasks_job, minute={3, 13, 23, 33, 43, 53}, run_at_startup=False
+        ),
         cron(run_ccb_budget_overrun_check_job, hour=3, minute=0, run_at_startup=False),
         cron(
             run_ccb_requisition_breach_check_job,
@@ -897,6 +1172,10 @@ class WorkerSettings:
             run_at_startup=False,
         ),
         cron(check_tax_deadline_alerts_job, hour=4, minute=0, run_at_startup=False),
+        # Hourly; the job itself only sends from Friday 16:00 Harare time.
+        cron(weekly_hr_report_job, minute=5, run_at_startup=False),
+        # Hourly; the job itself only runs from Friday 07:00 Harare time.
+        cron(weekly_performance_job, minute=10, run_at_startup=False),
         cron(
             run_ccb_gl_proposal_stale_review_check_job,
             hour=3,
@@ -923,6 +1202,12 @@ class WorkerSettings:
         ),
         cron(publish_bank_workbooks_nightly_job, hour=2, minute=30, run_at_startup=False),
         cron(sync_bank_workbooks_job, minute=set(range(1, 60, 2)), run_at_startup=False),
+        # Hourly; the job itself only sends weekdays from 07:00 Harare time.
+        cron(draft_budget_reminder_job, minute=20, run_at_startup=False),
+        # Hourly; acts from 07:00 Harare time, each warning sent once (hr.expiry_alerts).
+        cron(hr_expiry_alerts_job, minute=25, run_at_startup=False),
+        # 14:35 UTC = 16:35 Harare: the attendance clock stops at 16:30.
+        cron(close_attendance_day_job, hour=14, minute=35, run_at_startup=False),
     ]
     redis_settings = redis_settings
     on_startup = startup

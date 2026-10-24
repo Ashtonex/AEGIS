@@ -19,6 +19,7 @@ from app.services.documents.renderers import (
 )
 from app.services.quotations.boq_ai_analysis import analyze_boq, compute_input_hash
 from app.services.quotations.boq_importer import BOQImporter
+from app.services.quotations.boq_knowledge import find_similar_lines, parse_metadata, snapshot_approved_boq
 from app.services.quotations.calculator import (
     BOQItem,
     QuotationCalculator,
@@ -40,7 +41,8 @@ from app.services.quotations.intelligence_engine import (
     DEFAULT_ASSEMBLIES,
     RATE_BENCHMARKS,
 )
-from app.shared.events import emit_event, emit_role_notification
+from app.shared.events import emit_event, emit_notification, emit_role_notification
+from app.shared.project_setup import ensure_project_operational_setup
 from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
     refresh_project_forecast,
@@ -262,6 +264,13 @@ async def _upsert_source_quotation_from_boq(
             "warnings": import_result.warnings,
         },
         "status": "uploaded_boq_draft",
+        # A fresh upload always goes back for review before AEGIS treats it
+        # as production data (POST /{id}/boq-approval).
+        "boq_approval": {
+            "status": "pending_review",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "requested_by": user_id,
+        },
     }
     calculation = QuotationCalculator.calculate({
         "quotation_id": reference_number,
@@ -587,6 +596,185 @@ async def import_boq(
         "data": jsonable_encoder({**result.to_dict(), "linked": linked}),
         "message": "BOQ import completed.",
         "meta": {"user_id": user["user_id"], "filename": file.filename},
+    }
+
+
+class BoqApprovalDecision(BaseModel):
+    decision: Literal["approved", "changes_requested", "rejected"]
+    notes: Optional[str] = Field(default=None, max_length=4000)
+
+
+_BOQ_DECISION_LABEL = {
+    "approved": "green-lit for production",
+    "changes_requested": "sent back for changes",
+    "rejected": "rejected",
+}
+
+
+@router.post("/{item_id}/boq-approval")
+async def decide_boq_approval(
+    item_id: str,
+    payload: BoqApprovalDecision,
+    user: dict = Depends(require_permission("quotations.decide")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The green light for an uploaded/edited BOQ. Approving it:
+      - stamps metadata.boq_approval (who/when/notes, with history),
+      - snapshots every line into finance.boq_knowledge_lines so future
+        estimates can pull this project's items and rates,
+      - logs the decision on the linked opportunity / tender.
+    Sending it back or rejecting it withdraws its lines from the knowledge
+    base - only approved BOQs teach AEGIS."""
+    row = (
+        await db.execute(
+            text("""
+                SELECT id, metadata, client_name, created_by, opportunity_id, tender_id, project_id
+                FROM finance.quotations
+                WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false
+            """),
+            {"item_id": item_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+
+    metadata = parse_metadata(row["metadata"])
+    items = [i for i in (metadata.get("items") or []) if isinstance(i, dict) and str(i.get("description") or "").strip()]
+    notes = (payload.notes or "").strip()
+    if payload.decision == "approved":
+        if not items:
+            raise HTTPException(status_code=409, detail="This quotation has no BOQ lines to approve.")
+        if user.get("role") != SUPERADMIN_ROLE and is_self_certification(user["sub"], row["created_by"]):
+            raise HTTPException(
+                status_code=403,
+                detail="You built this BOQ and cannot also green-light it - get an independent sign-off.",
+            )
+    elif not notes:
+        raise HTTPException(status_code=422, detail="Say what needs to change (notes are required when not approving).")
+
+    now = datetime.now(timezone.utc).isoformat()
+    previous = metadata.get("boq_approval") or {}
+    history = list(previous.get("history") or [])
+    history.append({"status": payload.decision, "by": user["sub"], "at": now, "notes": notes or None})
+    metadata["boq_approval"] = {
+        **previous,
+        "status": payload.decision,
+        "decided_by": user["sub"],
+        "decided_by_name": user.get("full_name") or user.get("email"),
+        "decided_at": now,
+        "notes": notes or None,
+        "history": history[-50:],
+    }
+
+    source_type, source_id = None, None
+    for column, kind in (("opportunity_id", "opportunity"), ("tender_id", "tender"), ("project_id", "project")):
+        if row[column]:
+            source_type, source_id = kind, str(row[column])
+            break
+
+    if payload.decision == "approved":
+        lines = await snapshot_approved_boq(
+            db,
+            org_id=user["org_id"],
+            quotation_id=item_id,
+            approved_by=user["sub"],
+            metadata=metadata,
+            source_type=source_type,
+            source_id=source_id,
+            client_name=row["client_name"],
+        )
+        metadata["boq_approval"]["knowledge_lines"] = lines
+    else:
+        lines = 0
+        await db.execute(
+            text("DELETE FROM finance.boq_knowledge_lines WHERE organization_id = :org_id AND quotation_id = :qid"),
+            {"org_id": user["org_id"], "qid": item_id},
+        )
+
+    await db.execute(
+        text("""
+            UPDATE finance.quotations
+            SET metadata = CAST(:metadata AS jsonb), updated_at = NOW()
+            WHERE id = :item_id AND organization_id = :org_id
+        """),
+        {"metadata": json.dumps(metadata, default=str), "item_id": item_id, "org_id": user["org_id"]},
+    )
+
+    activity_column = {"opportunity": "opportunity_id", "tender": "tender_id"}.get(source_type or "")
+    if activity_column:
+        await db.execute(
+            text(f"""
+                INSERT INTO crm.activities (
+                    organization_id, created_by, owner_user_id, {activity_column},
+                    type, subject, description, activity_date, status, priority
+                ) VALUES (
+                    :org_id, CAST(:user_id AS uuid), CAST(:user_id AS uuid), CAST(:source_id AS uuid),
+                    'BOQ Review', :subject, :description, NOW(), 'Completed', 'normal'
+                )
+            """),  # nosec B608 - column from a fixed two-value map
+            {
+                "org_id": user["org_id"],
+                "user_id": user["sub"],
+                "source_id": source_id,
+                "subject": f"BOQ {_BOQ_DECISION_LABEL[payload.decision]}",
+                "description": notes or f"{len(items)} BOQ lines approved and added to the AEGIS rate library.",
+            },
+        )
+    if row["created_by"] and str(row["created_by"]) != str(user["sub"]):
+        await emit_notification(
+            db,
+            org_id=user["org_id"],
+            user_id=str(row["created_by"]),
+            title=f"BOQ {_BOQ_DECISION_LABEL[payload.decision]}",
+            message=notes or f"{metadata.get('project_title') or 'Your BOQ'} was approved for production.",
+            notification_type="quotation",
+            priority="high" if payload.decision != "approved" else "normal",
+            action_url=f"/dashboard/quotations/builder?edit={item_id}",
+        )
+    await db.commit()
+    return {
+        "success": True,
+        "data": {"id": item_id, "boq_approval": metadata["boq_approval"], "knowledge_lines": lines},
+        "message": f"BOQ {_BOQ_DECISION_LABEL[payload.decision]}.",
+        "meta": {},
+    }
+
+
+class BoqKnowledgeQuery(BaseModel):
+    items: List[Dict[str, Any]] = Field(default_factory=list, max_length=500)
+    exclude_quotation_id: Optional[str] = None
+    per_item: int = Field(default=5, ge=1, le=20)
+
+
+@router.post("/knowledge/similar")
+async def similar_past_boq_lines(
+    payload: BoqKnowledgeQuery,
+    user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Past approved BOQ lines that look like each requested {description,
+    unit} - the "what did we price this at before" lookup."""
+    results = await find_similar_lines(
+        db,
+        org_id=user["org_id"],
+        queries=payload.items,
+        exclude_quotation_id=payload.exclude_quotation_id,
+        per_item=payload.per_item,
+    )
+    total = (
+        await db.execute(
+            text("""
+                SELECT count(*) AS lines, count(DISTINCT quotation_id) AS boqs
+                FROM finance.boq_knowledge_lines WHERE organization_id = :org_id AND is_deleted = false
+            """),
+            {"org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    return {
+        "success": True,
+        "data": {"results": results, "library": {"lines": int(total["lines"]), "boqs": int(total["boqs"])}},
+        "message": "Similar past BOQ lines.",
+        "meta": {},
     }
 
 
@@ -2337,6 +2525,54 @@ async def get_quotation_history(
     }
 
 
+# Written only by their own endpoints (/boq-approval, the CRM client-quotation
+# upload, /boq/import) - a builder save must neither drop nor forge them.
+_SERVER_OWNED_METADATA_KEYS = ("boq_approval", "client_copy", "uploaded_boq")
+
+
+def _items_fingerprint(items: Any) -> str:
+    rows = [
+        (str(i.get("description") or "").strip(), str(i.get("unit") or ""), str(i.get("quantity", i.get("qty")) or 0), str(i.get("rate") or 0))
+        for i in (items or []) if isinstance(i, dict)
+    ]
+    return hashlib.sha1(json.dumps(rows).encode("utf-8")).hexdigest()
+
+
+async def _preserve_server_owned_metadata(
+    db: AsyncSession, org_id: str, item_id: str, incoming: Dict[str, Any]
+) -> Dict[str, Any]:
+    current_row = (
+        await db.execute(
+            text("SELECT metadata FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": item_id, "org_id": org_id},
+        )
+    ).first()
+    current = parse_metadata(current_row.metadata) if current_row else {}
+    merged = dict(incoming)
+    for key in _SERVER_OWNED_METADATA_KEYS:
+        if key in current:
+            merged[key] = current[key]
+        else:
+            merged.pop(key, None)
+    approval = merged.get("boq_approval")
+    if (
+        isinstance(approval, dict)
+        and approval.get("status") == "approved"
+        and "items" in incoming
+        and _items_fingerprint(incoming.get("items")) != _items_fingerprint(current.get("items"))
+    ):
+        # Lines changed after the green light: it needs signing off again.
+        # The previously approved lines stay in the knowledge base until a
+        # new approval replaces them.
+        merged["boq_approval"] = {
+            **approval,
+            "status": "pending_review",
+            "notes": "BOQ edited after approval - needs re-approval.",
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return merged
+
+
 @router.put("/{item_id}")
 async def update_item(
     item_id: str,
@@ -2348,6 +2584,18 @@ async def update_item(
     task_id = payload.pop("task_id", None)
     safe_keys = safe_payload_columns(payload.keys())
 
+    current_status_row = (
+        await db.execute(
+            text("SELECT status FROM finance.quotations WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+            {"id": item_id, "org_id": user["org_id"]},
+        )
+    ).first()
+    if current_status_row and current_status_row.status in ("won", "lost") and user.get("role") != SUPERADMIN_ROLE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Quotation cannot be edited because it has already been decided as '{current_status_row.status}'. Reopen or revision required.",
+        )
+
     if not safe_keys:
         if task_id:
             await _link_task_to_quotation(db, org_id=user["org_id"], task_id=task_id, quotation_id=item_id)
@@ -2357,6 +2605,9 @@ async def update_item(
             "data": {"id": item_id},
             "message": "No fields to update.",
         }
+
+    if isinstance(payload.get("metadata"), dict):
+        payload["metadata"] = await _preserve_server_owned_metadata(db, user["org_id"], item_id, payload["metadata"])
 
     json_columns = [k for k in safe_keys if isinstance(payload[k], (dict, list))]
     params = {
@@ -2500,21 +2751,58 @@ async def decide_quotation(
             },
         )
 
-        if decision == "won" and quotation.get("project_id"):
+        target_project_id = quotation.get("project_id")
+        if decision == "won" and not target_project_id:
+            # Fallback matching: attempt to find an existing project linked by quotation_id, opportunity_id, tender_id, client_org_id, or client_name
+            cand = (await db.execute(
+                text("""
+                    SELECT id FROM projects.projects
+                    WHERE organization_id = :org_id AND is_deleted = false
+                      AND (
+                        quotation_id = :item_id
+                        OR (opportunity_id IS NOT NULL AND opportunity_id = :opp_id)
+                        OR (tender_id IS NOT NULL AND tender_id = :tender_id)
+                        OR (client_org_id IS NOT NULL AND client_org_id = :client_org_id)
+                        OR (client_name IS NOT NULL AND lower(trim(client_name)) = lower(trim(:client_name)))
+                      )
+                    ORDER BY (quotation_id = :item_id) DESC, created_at DESC
+                    LIMIT 1
+                """),
+                {
+                    "item_id": item_id,
+                    "org_id": user["org_id"],
+                    "opp_id": quotation.get("opportunity_id"),
+                    "tender_id": quotation.get("tender_id"),
+                    "client_org_id": quotation.get("client_org_id"),
+                    "client_name": quotation.get("client_name") or "",
+                }
+            )).first()
+            if cand:
+                target_project_id = cand.id
+                await db.execute(
+                    text("UPDATE finance.quotations SET project_id = :pid, updated_at = NOW() WHERE id = :item_id AND organization_id = :org_id"),
+                    {"pid": target_project_id, "item_id": item_id, "org_id": user["org_id"]}
+                )
+                await db.execute(
+                    text("UPDATE projects.projects SET quotation_id = :item_id, updated_at = NOW() WHERE id = :pid AND organization_id = :org_id"),
+                    {"pid": target_project_id, "item_id": item_id, "org_id": user["org_id"]}
+                )
+
+        if decision == "won" and target_project_id:
             calc_input = build_calc_input_from_metadata(item_id, metadata)
             calculation = QuotationCalculator.calculate(calc_input)
             budget_id = await seed_project_budget_from_quotation(
-                db, user["org_id"], str(quotation["project_id"]), item_id, calculation, created_by=user["sub"],
+                db, user["org_id"], str(target_project_id), item_id, calculation, created_by=user["sub"],
             )
             await seed_boq_line_items_from_quotation(
-                db, user["org_id"], str(quotation["project_id"]), item_id, metadata, created_by=user["sub"],
+                db, user["org_id"], str(target_project_id), item_id, metadata, created_by=user["sub"],
             )
             forecast_metrics = await refresh_project_forecast(
-                db, user["org_id"], str(quotation["project_id"]), computed_by=user["sub"],
+                db, user["org_id"], str(target_project_id), computed_by=user["sub"],
             )
             if forecast_metrics:
                 alert_raised = await check_and_alert_margin_threat(
-                    db, user["org_id"], str(quotation["project_id"]), forecast_metrics,
+                    db, user["org_id"], str(target_project_id), forecast_metrics,
                 )
             await db.execute(
                 text("""
@@ -2530,8 +2818,23 @@ async def decide_quotation(
                         END,
                         updated_at = NOW()
                 """),
-                {"project_id": quotation["project_id"], "org_id": user["org_id"]},
+                {"project_id": target_project_id, "org_id": user["org_id"]},
             )
+        await emit_event(
+            db,
+            user=user,
+            event_type="finance.quotation.decided.v1",
+            aggregate_type="quotation",
+            aggregate_id=item_id,
+            project_id=target_project_id,
+            event_data={
+                "quotation_id": item_id,
+                "status": decision,
+                "notes": payload.get("notes"),
+                "budget_id": str(budget_id) if budget_id else None,
+                "project_id": str(target_project_id) if target_project_id else None,
+            },
+        )
 
         await db.commit()
     except HTTPException:
@@ -2551,6 +2854,8 @@ async def decide_quotation(
         "data": {
             "id": item_id,
             "status": decision,
+            "project_id": str(target_project_id) if target_project_id else None,
+            "project_linked": bool(target_project_id),
             "budget_id": budget_id,
             "forecast": forecast_metrics,
             "margin_alert_raised": alert_raised,
@@ -2566,12 +2871,253 @@ async def decide_quotation(
             db, org_id=user["org_id"], key=idempotency_key, endpoint=endpoint,
             response_status=200, response_body=response,
         )
-    if decision == "won" and quotation.get("project_id"):
+    if decision == "won" and target_project_id:
         await generate_task_stack(
             db,
             org_id=user["org_id"],
             entity_type="commercial_readiness",
-            entity_id=quotation["project_id"],
+            entity_id=target_project_id,
             created_by=user["sub"],
         )
     return response
+
+
+class QuotationConvertToProjectPayload(BaseModel):
+    name: Optional[str] = None
+    project_code: Optional[str] = None
+    project_type: Optional[str] = "commercial"
+    department_id: Optional[str] = None
+    start_date: Optional[str] = None
+    planned_completion_date: Optional[str] = None
+
+
+@router.post("/{item_id}/convert-to-project")
+async def convert_quotation_to_project(
+    item_id: str,
+    payload: QuotationConvertToProjectPayload,
+    user: dict = Depends(require_permission("projects.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Converts an approved or won quotation directly into an operational AEGIS Project,
+    establishing bidirectional links and seeding the target budget and BOQ items."""
+    q_row = (await db.execute(
+        text("SELECT * FROM finance.quotations WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false"),
+        {"item_id": item_id, "org_id": user["org_id"]},
+    )).mappings().first()
+
+    if not q_row:
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+
+    if q_row.get("project_id"):
+        existing_proj = (await db.execute(
+            text("SELECT id, name, project_code FROM projects.projects WHERE id = :pid AND organization_id = :org_id AND is_deleted = false"),
+            {"pid": q_row["project_id"], "org_id": user["org_id"]},
+        )).mappings().first()
+        if existing_proj:
+            return {
+                "success": True,
+                "data": {
+                    "project_id": str(existing_proj["id"]),
+                    "project_code": existing_proj["project_code"],
+                    "project_name": existing_proj["name"],
+                    "already_exists": True,
+                },
+                "message": "Quotation is already linked to project.",
+            }
+
+    meta = q_row["metadata"] or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+
+    import uuid
+    project_name = (
+        payload.name
+        or meta.get("project_title")
+        or f"{q_row.get('client_name') or 'Commercial'} Project"
+    )
+    project_code = payload.project_code or f"PRJ-{uuid.uuid4().hex[:6].upper()}"
+
+    proj_insert = await db.execute(
+        text("""
+            INSERT INTO projects.projects (
+                organization_id, name, project_code, project_type,
+                client_name, client_org_id, opportunity_id, tender_id,
+                quotation_id, contract_value, status, department_id,
+                start_date, planned_completion_date, created_by
+            ) VALUES (
+                :org_id, :name, :project_code, :project_type,
+                :client_name, :client_org_id, :opportunity_id, :tender_id,
+                :quotation_id, :contract_value, 'pre_mobilisation', :department_id,
+                :start_date, :planned_completion_date, :user_id
+            ) RETURNING id
+        """),
+        {
+            "org_id": user["org_id"],
+            "name": project_name,
+            "project_code": project_code,
+            "project_type": payload.project_type or "commercial",
+            "client_name": q_row.get("client_name"),
+            "client_org_id": q_row.get("client_org_id"),
+            "opportunity_id": q_row.get("opportunity_id"),
+            "tender_id": q_row.get("tender_id"),
+            "quotation_id": item_id,
+            "contract_value": float(q_row.get("quote_amount") or 0.0),
+            "department_id": payload.department_id,
+            "start_date": payload.start_date,
+            "planned_completion_date": payload.planned_completion_date,
+            "user_id": user["user_id"],
+        },
+    )
+    new_project_id = proj_insert.scalar()
+
+    # Link back quotation and set status won
+    await db.execute(
+        text("""
+            UPDATE finance.quotations
+            SET project_id = :project_id, status = 'won', updated_at = NOW()
+            WHERE id = :item_id AND organization_id = :org_id
+        """),
+        {"project_id": new_project_id, "item_id": item_id, "org_id": user["org_id"]},
+    )
+
+    # Initialize operational setup
+    await ensure_project_operational_setup(
+        db, org_id=user["org_id"], project_id=new_project_id, created_by=user["user_id"]
+    )
+
+    # Commercial readiness
+    await db.execute(
+        text("""
+            INSERT INTO projects.project_profiles (
+                project_id, organization_id, commercial_readiness_status
+            ) VALUES (:project_id, :org_id, 'in_progress')
+            ON CONFLICT (project_id) DO UPDATE SET
+                commercial_readiness_status = 'in_progress',
+                updated_at = NOW()
+        """),
+        {"project_id": new_project_id, "org_id": user["org_id"]},
+    )
+
+    # Seed execution budget & BOQ lines
+    budget_id = None
+    try:
+        calc_input = build_calc_input_from_metadata(item_id, meta)
+        calculation = QuotationCalculator.calculate(calc_input)
+        budget_id = await seed_project_budget_from_quotation(
+            db, user["org_id"], str(new_project_id), item_id, calculation, created_by=user["sub"],
+        )
+        await seed_boq_line_items_from_quotation(
+            db, user["org_id"], str(new_project_id), item_id, meta, created_by=user["sub"],
+        )
+        await refresh_project_forecast(
+            db, user["org_id"], str(new_project_id), computed_by=user["sub"],
+        )
+    except Exception as exc:
+        logger.warning("Could not auto-seed budget during conversion of quotation %s: %s", item_id, exc)
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "project_id": str(new_project_id),
+            "project_code": project_code,
+            "project_name": project_name,
+            "budget_id": str(budget_id) if budget_id else None,
+        },
+        "message": f"Quotation successfully converted to Project '{project_name}' ({project_code}).",
+    }
+
+
+class QuotationLinkProjectPayload(BaseModel):
+    project_id: str
+    seed_budget: bool = True
+
+
+@router.post("/{item_id}/link-project")
+async def link_quotation_to_project(
+    item_id: str,
+    payload: QuotationLinkProjectPayload,
+    user: dict = Depends(require_permission("projects.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicitly links a quotation to an existing project bidirectionally,
+    and optionally seeds or syncs the execution budget."""
+    q_row = (await db.execute(
+        text("SELECT * FROM finance.quotations WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false"),
+        {"item_id": item_id, "org_id": user["org_id"]},
+    )).mappings().first()
+    if not q_row:
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+
+    proj_row = (await db.execute(
+        text("SELECT id, name, project_code FROM projects.projects WHERE id = :pid AND organization_id = :org_id AND is_deleted = false"),
+        {"pid": payload.project_id, "org_id": user["org_id"]},
+    )).mappings().first()
+    if not proj_row:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    await db.execute(
+        text("UPDATE finance.quotations SET project_id = :pid, updated_at = NOW() WHERE id = :item_id AND organization_id = :org_id"),
+        {"pid": proj_row["id"], "item_id": item_id, "org_id": user["org_id"]},
+    )
+    await db.execute(
+        text("UPDATE projects.projects SET quotation_id = :item_id, updated_at = NOW() WHERE id = :pid AND organization_id = :org_id"),
+        {"pid": proj_row["id"], "item_id": item_id, "org_id": user["org_id"]},
+    )
+
+    budget_id = None
+    if payload.seed_budget:
+        meta = q_row["metadata"] or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        try:
+            calc_input = build_calc_input_from_metadata(item_id, meta)
+            calculation = QuotationCalculator.calculate(calc_input)
+            budget_id = await seed_project_budget_from_quotation(
+                db, user["org_id"], str(proj_row["id"]), item_id, calculation, created_by=user["sub"],
+            )
+            await seed_boq_line_items_from_quotation(
+                db, user["org_id"], str(proj_row["id"]), item_id, meta, created_by=user["sub"],
+            )
+            await refresh_project_forecast(
+                db, user["org_id"], str(proj_row["id"]), computed_by=user["sub"],
+            )
+        except Exception as exc:
+            logger.warning("Could not auto-seed budget during linking of quote %s: %s", item_id, exc)
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "data": {
+            "project_id": str(proj_row["id"]),
+            "project_name": proj_row["name"],
+            "project_code": proj_row["project_code"],
+            "quotation_id": item_id,
+            "budget_id": str(budget_id) if budget_id else None,
+        },
+        "message": f"Quotation successfully linked to Project '{proj_row['name']}'.",
+    }
+
+
+
+from core.security import require_any_permission
+from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, invoice_pdf_response
+
+
+@router.post("/invoices/generate-pdf")
+async def generate_quotation_invoice_pdf(
+    payload: Dict[str, Any],
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+):
+    """
+    Generates an official SNC Proforma / Tax invoice from Quotation data.
+    """
+    return await invoice_pdf_response(payload, "SNC_Invoice")

@@ -36,9 +36,13 @@ export const JobApplicationSchema = z.object({
 });
 
 export const SupplierRegistrationSchema = z.object({
-  companyName: z.string().min(2, "Company name is required"),
-  registrationNumber: z.string().min(2, "Registration number is required"),
-  taxClearanceNumber: z.string().min(2, "Tax clearance is required"),
+  companyName: z.string().min(2, "Registered company name is required"),
+  registrationNumber: z.string().min(2, "Company registration number is required"),
+  taxClearanceNumber: z.string().min(2, "Tax clearance number is required"),
+  vatStatus: z.enum(["registered", "not_registered"], {
+    errorMap: () => ({ message: "Tell us whether the company is VAT registered" }),
+  }),
+  vatNumber: z.string().optional(),
   prazNumber: z.string().optional(),
   yearEstablished: z.number().min(1900).max(new Date().getFullYear()),
   employees: z.number().min(1),
@@ -51,4 +55,8 @@ export const SupplierRegistrationSchema = z.object({
   description: z.string().min(10, "Provide a description of services"),
   provinces: z.array(z.string()).min(1, "Select at least one province"),
   references: z.string().min(10, "Provide at least one client reference"),
+}).superRefine((data, ctx) => {
+  if (data.vatStatus === "registered" && (data.vatNumber ?? "").trim().length < 2) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["vatNumber"], message: "VAT number is required for a VAT-registered company" });
+  }
 });

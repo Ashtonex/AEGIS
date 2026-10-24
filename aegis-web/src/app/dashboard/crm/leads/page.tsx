@@ -37,7 +37,7 @@ import { OperationalTable, TableHeader, TableRow, TableHead, TableCell } from '@
 import { SkeletonTableRows } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useAuth } from '@/lib/auth/AuthContext';
-import { matchesRole } from '@/lib/rbacMatch';
+import { matchesAnyRole } from '@/lib/rbacMatch';
 import { useLiveTable } from '@/lib/live/LiveDataProvider';
 
 // Roles allowed to change the status of a lead that's already been decided
@@ -52,9 +52,9 @@ interface Lead {
   contact_email?: string;
   contact_phone?: string;
   sector: string;
-  estimated_budget: number;
-  ai_score: number;
-  ai_rationale: string;
+  estimated_budget?: number | null;
+  ai_score?: number | null;
+  ai_rationale?: string | null;
   lead_source: string;
   status: string;
   created_at: string;
@@ -109,8 +109,8 @@ interface ExternalLinkedInProfile {
 }
 
 export default function CRMLeadsApp() {
-  const { role } = useAuth();
-  const canOverrideLeadStatus = role ? matchesRole(role, PRIVILEGED_LEAD_STATUS_ROLES) : false;
+  const { roles } = useAuth();
+  const canOverrideLeadStatus = matchesAnyRole(roles, PRIVILEGED_LEAD_STATUS_ROLES);
   const [activeTab, setActiveTab] = useState<'inbox' | 'web_forms' | 'signal_bot' | 'prospector' | 'tender_scraping' | 'linkedin'>('inbox');
   const [viewMode, setViewMode] = useState<'list' | 'kanban'>('kanban');
 
@@ -157,6 +157,7 @@ export default function CRMLeadsApp() {
   const [isDuplicateChecking, setIsDuplicateChecking] = useState(false);
   const [duplicateLeads, setDuplicateLeads] = useState<Lead[]>([]);
   const [isDupModalOpen, setIsDupModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [externalTenderSignals, setExternalTenderSignals] = useState<any[]>([]);
   const externalProspects: ExternalProspectSignal[] = [];
   const externalLinkedInProfiles: ExternalLinkedInProfile[] = [];
@@ -340,9 +341,9 @@ export default function CRMLeadsApp() {
     }));
   };
 
-  const openActivityPanel = async (lead: Lead) => {
+  const openActivityPanel = async (lead: Lead, channel: string = 'phone_call') => {
     setActivityLead(lead);
-    setActivityForm({ channel: 'phone_call', body: '', outcome: '' });
+    setActivityForm({ channel, body: '', outcome: '' });
     setActivityLoading(true);
     try {
       const res = await getCrmCommunications({ lead_id: lead.id, limit: 50 });
@@ -600,14 +601,24 @@ export default function CRMLeadsApp() {
     }
   };
 
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5';
-    if (score >= 50) return 'text-amber-400 border-amber-500/30 bg-amber-500/5';
+  const getScoreColor = (score?: number | null) => {
+    const s = Number(score) || 0;
+    if (s >= 80) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5';
+    if (s >= 50) return 'text-amber-400 border-amber-500/30 bg-amber-500/5';
     return 'text-rose-400 border-rose-500/30 bg-rose-500/5';
   };
 
   // Filtered lists
-  const activeLeads = leads.filter(l => !dismissedLeadIds.includes(l.id));
+  const activeLeads = leads.filter(l => {
+    if (dismissedLeadIds.includes(l.id)) return false;
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    const company = (l.company_name || '').toLowerCase();
+    const contact = (l.contact_name || '').toLowerCase();
+    const sector = (l.sector || '').toLowerCase();
+    const source = (l.lead_source || '').toLowerCase();
+    return company.includes(q) || contact.includes(q) || sector.includes(q) || source.includes(q);
+  });
 
   // The backend's default status for a newly-created lead is the lowercase
   // string 'new' (a DB column default), not 'New' - compare case-
@@ -647,6 +658,25 @@ export default function CRMLeadsApp() {
         subtitle="Qualify automatic signals, discover duplicates, and route telemetry sources."
         actions={
           <>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search leads, contacts, sectors..."
+                className="pl-8 pr-7 py-2 text-xs bg-[#111827] border border-[#1E293B] rounded-lg text-white placeholder:text-slate-500 focus:outline-none focus:border-[#3B82F6] w-48 sm:w-60"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
             <select
               value={departmentFilter}
               onChange={(e) => setDepartmentFilter(e.target.value)}
@@ -679,6 +709,32 @@ export default function CRMLeadsApp() {
           </>
         }
       />
+
+      {/* LEAD PIPELINE KPI METRICS STRIP */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <div className="bg-[#111827]/60 border border-[#1E293B] p-3.5 rounded-xl">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Total Pipeline Leads</span>
+          <span className="text-xl font-bold font-mono text-white mt-1 block">{activeLeads.length}</span>
+        </div>
+        <div className="bg-[#111827]/60 border border-[#1E293B] p-3.5 rounded-xl">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Active Pipeline Value</span>
+          <span className="text-xl font-bold font-mono text-emerald-400 mt-1 block">
+            ${activeLeads.reduce((acc, l) => acc + (Number(l.estimated_budget) || 0), 0).toLocaleString()}
+          </span>
+        </div>
+        <div className="bg-[#111827]/60 border border-[#1E293B] p-3.5 rounded-xl">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">High Propensity (≥70%)</span>
+          <span className="text-xl font-bold font-mono text-[#3B82F6] mt-1 block">
+            {activeLeads.filter(l => (l.ai_score || 0) >= 70).length}
+          </span>
+        </div>
+        <div className="bg-[#111827]/60 border border-[#1E293B] p-3.5 rounded-xl">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 block">Qualified Conversion</span>
+          <span className="text-xl font-bold font-mono text-[#D4AF37] mt-1 block">
+            {activeLeads.length > 0 ? Math.round((columns.Qualified.length / activeLeads.length) * 100) : 0}%
+          </span>
+        </div>
+      </div>
 
       {/* Tabs */}
       <div className="flex border-b border-[#1E293B] overflow-x-auto no-scrollbar gap-2 mb-6">
@@ -733,7 +789,7 @@ export default function CRMLeadsApp() {
                   <TableRow key={lead.id}>
                     <TableCell className="font-semibold text-paper">
                       {leadPrimaryName(lead)}
-                      {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
+                      {Array.isArray(lead.missing_compliance_labels) && lead.missing_compliance_labels.length > 0 && (
                         <span
                           title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
                           className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-amber-500/10 text-amber-400 border border-amber-500/30"
@@ -745,13 +801,13 @@ export default function CRMLeadsApp() {
                     <TableCell>{leadContactName(lead)}</TableCell>
                     <TableCell>{lead.sector}</TableCell>
                     <TableCell className="font-semibold text-emerald-400">
-                      ${lead.estimated_budget.toLocaleString()}
+                      ${(Number(lead.estimated_budget) || 0).toLocaleString()}
                       {!lead.budget_confirmed && (
                         <span title="Estimated - not yet confirmed by the client" className="ml-1.5 text-[9px] font-semibold text-amber-400 align-middle">Est.</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}</span>
+                      <span className={`px-2 py-0.5 rounded font-mono ${getScoreColor(lead.ai_score)}`}>{lead.ai_score ?? 0}</span>
                     </TableCell>
                     <TableCell>
                       <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">{lead.status || 'Inquiry'}</span>
@@ -847,7 +903,7 @@ export default function CRMLeadsApp() {
                           <h4 className="text-sm font-bold text-white line-clamp-1">{leadPrimaryName(lead)}</h4>
                           <span className="text-[9px] font-mono text-slate-400">{lead.sector} | {lead.lead_source}</span>
                         </div>
-                        {lead.missing_compliance_labels && lead.missing_compliance_labels.length > 0 && (
+                        {Array.isArray(lead.missing_compliance_labels) && lead.missing_compliance_labels.length > 0 && (
                           <div
                             title={`Missing: ${lead.missing_compliance_labels.join(', ')}`}
                             className="flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-semibold rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 w-fit"
@@ -857,62 +913,83 @@ export default function CRMLeadsApp() {
                         )}
                         <div className="flex justify-between items-center text-xs">
                           <span className="font-semibold text-emerald-400">
-                            ${lead.estimated_budget.toLocaleString()}
+                            ${(Number(lead.estimated_budget) || 0).toLocaleString()}
                             {!lead.budget_confirmed && <span title="Estimated - not yet confirmed by the client" className="ml-1 text-[9px] font-semibold text-amber-400">Est.</span>}
                           </span>
-                          <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score}%</span>
+                          <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${getScoreColor(lead.ai_score)}`}>{lead.ai_score ?? 0}%</span>
                         </div>
-                        <div draggable={false} className="border-t border-[#1E293B] pt-2 flex gap-2 justify-between items-center flex-wrap">
-                          <div draggable={false} className="flex gap-1.5 items-center">
+                        <div draggable={false} className="border-t border-[#1E293B] pt-2 space-y-2">
+                          <div draggable={false} className="flex gap-1 items-center flex-wrap">
                             <button
                               draggable={false}
-                              onClick={() => openActivityPanel(lead)}
-                              className="text-[10px] text-slate-400 hover:text-white hover:underline flex items-center gap-1"
+                              onClick={() => openActivityPanel(lead, 'phone_call')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white flex items-center gap-1 border border-white/5"
+                              title="Quick Log Call"
                             >
-                              <MessageCircle className="h-2.5 w-2.5" /> Activity
+                              <PhoneCall className="h-2.5 w-2.5 text-[#3B82F6]" /> Call
                             </button>
                             <button
                               draggable={false}
-                              onClick={() => openEditLeadModal(lead)}
-                              className="text-[10px] text-slate-400 hover:text-white hover:underline flex items-center gap-1"
+                              onClick={() => openActivityPanel(lead, 'email')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white flex items-center gap-1 border border-white/5"
+                              title="Quick Log Email"
                             >
-                              <Pencil className="h-2.5 w-2.5" /> Edit
+                              <Mail className="h-2.5 w-2.5 text-amber-400" /> Email
                             </button>
                             <button
                               draggable={false}
-                              onClick={() => handleCheckDuplicates(lead)}
-                              className="text-[10px] text-[#3B82F6] hover:underline"
+                              onClick={() => openActivityPanel(lead, 'meeting')}
+                              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white flex items-center gap-1 border border-white/5"
+                              title="Quick Log Meeting"
                             >
-                              Merge Check
+                              <Users2 className="h-2.5 w-2.5 text-emerald-400" /> Meet
                             </button>
                           </div>
-                          <div draggable={false} className="flex gap-1.5 items-center">
-                            {canChangeStatus && (
-                              <>
-                                <button
-                                  draggable={false}
-                                  onClick={() => handleQualifyLead(lead)}
-                                  disabled={!!qualifyingId}
-                                  className="text-[10px] text-emerald-400 hover:underline disabled:opacity-40 disabled:pointer-events-none"
-                                >
-                                  {qualifyingId === lead.id ? 'Qualifying...' : 'Qualify'}
-                                </button>
-                                <button
-                                  draggable={false}
-                                  onClick={() => handleDisqualifyClick(lead)}
-                                  className="text-[10px] text-rose-400 hover:underline"
-                                >
-                                  Disqualify
-                                </button>
-                              </>
-                            )}
-                            <button
-                              draggable={false}
-                              onClick={() => handleDeleteLead(lead)}
-                              className="text-[10px] text-slate-500 hover:text-rose-400 hover:underline"
-                            >
-                              Delete
-                            </button>
+                          <div draggable={false} className="flex gap-2 justify-between items-center flex-wrap pt-1 border-t border-white/5">
+                            <div draggable={false} className="flex gap-1.5 items-center">
+                              <button
+                                draggable={false}
+                                onClick={() => openEditLeadModal(lead)}
+                                className="text-[10px] text-slate-400 hover:text-white hover:underline flex items-center gap-1"
+                              >
+                                <Pencil className="h-2.5 w-2.5" /> Edit
+                              </button>
+                              <button
+                                draggable={false}
+                                onClick={() => handleCheckDuplicates(lead)}
+                                className="text-[10px] text-[#3B82F6] hover:underline"
+                              >
+                                Merge
+                              </button>
+                            </div>
+                            <div draggable={false} className="flex gap-1.5 items-center">
+                              {canChangeStatus && (
+                                <>
+                                  <button
+                                    draggable={false}
+                                    onClick={() => handleQualifyLead(lead)}
+                                    disabled={!!qualifyingId}
+                                    className="text-[10px] text-emerald-400 hover:underline disabled:opacity-40 disabled:pointer-events-none"
+                                  >
+                                    {qualifyingId === lead.id ? 'Qualifying...' : 'Qualify'}
+                                  </button>
+                                  <button
+                                    draggable={false}
+                                    onClick={() => handleDisqualifyClick(lead)}
+                                    className="text-[10px] text-rose-400 hover:underline"
+                                  >
+                                    Disqualify
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                draggable={false}
+                                onClick={() => handleDeleteLead(lead)}
+                                className="text-[10px] text-slate-500 hover:text-rose-400 hover:underline"
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>

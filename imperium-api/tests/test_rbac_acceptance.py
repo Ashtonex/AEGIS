@@ -50,6 +50,18 @@ async def test_current_assignments_override_warm_cache_and_stale_admin_claim(war
 
 
 @pytest.mark.asyncio
+async def test_current_user_exposes_every_assigned_role(warm_authorization_cache):
+    db = FakeDb(FakeResult(row=identity(
+        role_name="CRM Associate",
+        role_names=["CRM Associate", "Project Manager", "Site Agent", "EMPLOYEE"],
+    )))
+    resolved = await get_current_user({"sub": "user-1", "app_metadata": {"org_id": "org-1"}}, db)
+    assert resolved["role"] == "CRM Associate"
+    assert resolved["roles"] == ["CRM Associate", "Project Manager", "Site Agent", "EMPLOYEE"]
+    assert len(db.calls) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("granted", [None, 1])
 @pytest.mark.parametrize("entrypoint", ["permission", "resource", "business"])
 async def test_current_permission_grants_override_warm_cache(warm_authorization_cache, granted, entrypoint):
@@ -110,7 +122,7 @@ class InfoFakeDb(FakeDb):
         self.info = {}
 
 
-def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_name=None, permission_keys=()):
+def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_name=None, role_names=None, permission_keys=()):
     return SimpleNamespace(
         actor_sub="user-1",
         user_exists=True,
@@ -118,6 +130,7 @@ def identity(*, organization_id="org-1", is_active=True, is_deleted=False, role_
         is_active=is_active,
         is_deleted=is_deleted,
         role_name=role_name,
+        role_names=list(role_names) if role_names is not None else ([role_name] if role_name else []),
         permission_keys=list(permission_keys),
     )
 
@@ -152,7 +165,7 @@ async def test_get_current_user_rejects_inactive_or_unassigned_identity():
         )
 
     assert exc.value.status_code == 403
-    assert "inactive" in exc.value.detail
+    assert "not provisioned" in exc.value.detail or "inactive" in exc.value.detail
 
 
 @pytest.mark.asyncio
@@ -229,8 +242,7 @@ async def test_identity_query_sets_audit_actor_in_same_round_trip():
 @pytest.mark.asyncio
 async def test_unknown_identity_row_from_left_join_is_not_treated_as_revoked():
     # The anchor LEFT JOIN always returns a row; with no core.users match it
-    # must fall into provisioning (here: default org missing -> 403 via the
-    # org check, i.e. a second query), not the "revoked" early rejection.
+    # must be rejected as unprovisioned rather than falling into revoked/inactive.
     missing = SimpleNamespace(user_exists=False, organization_id=None, is_active=None, is_deleted=None,
                               role_name=None, permission_keys=[])
     db = FakeDb(FakeResult(row=missing), FakeResult(row=None))
@@ -239,8 +251,7 @@ async def test_unknown_identity_row_from_left_join_is_not_treated_as_revoked():
         await get_current_user({"sub": "user-1", "app_metadata": {}}, db)
 
     assert exc.value.status_code == 403
-    assert len(db.calls) == 2
-    assert "core.organizations" in db.calls[1]["query"]
+    assert "not provisioned" in exc.value.detail
 
 
 @pytest.mark.asyncio

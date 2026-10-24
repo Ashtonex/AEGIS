@@ -1,7 +1,7 @@
 """Tenant-scoped fleet asset, dispatch, compliance and cost controls."""
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
 from typing import Any, Literal, Mapping, Optional
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import AsyncSessionLocal, gather_reads, get_db
 from core.compliance import validate_employee_deployment
 from core.security import get_current_user, require_permission
+from core.truncation import capped
 from app.shared.sql import (
     safe_payload_columns,
     tenant_child_reference_sql,
@@ -24,6 +25,7 @@ from app.shared.sql import (
     update_tenant_row_sql,
 )
 from app.services.finance.department_transfers import post_department_transfer
+from app.services import inventory_service
 from app.shared.task_stacks import generate_task_stack
 
 router = APIRouter()
@@ -269,11 +271,17 @@ class WorkOrderPayload(Payload):
     work_order_number: str = Field(min_length=1, max_length=100)
     maintenance_type: Literal["preventive", "corrective", "inspection", "compliance"]
     priority: Literal["low", "medium", "high", "critical"] = "medium"
+    status: Literal["reported", "scheduled", "in_progress", "completed", "closed"] = "scheduled"
     vendor_name: Optional[str] = Field(default=None, max_length=255)
     scheduled_for: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     estimated_cost: Optional[Decimal] = Field(
         default=None, ge=0, max_digits=15, decimal_places=2
     )
+    actual_cost: Optional[Decimal] = Field(
+        default=None, ge=0, max_digits=15, decimal_places=2
+    )
+    completion_notes: Optional[str] = None
     description: str = Field(min_length=1)
 
 
@@ -295,6 +303,11 @@ class WorkOrderDecision(Payload):
         default=None, ge=0, max_digits=15, decimal_places=2
     )
     completion_notes: Optional[str] = None
+
+
+class WorkOrderApproval(Payload):
+    decision: Literal["approve", "reject"]
+    reason: Optional[str] = Field(default=None, max_length=1000)
 
 
 class FuelPayload(Payload):
@@ -358,12 +371,28 @@ class UtilizationPayload(Payload):
     work_performed: Optional[str] = None
     supervisor_approval: Optional[str] = Field(default=None, max_length=255)
     notes: Optional[str] = None
+    start_engine_hours: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    end_engine_hours: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    weather_downtime_hours: Optional[Decimal] = Field(default=Decimal("0"), ge=0, le=24, max_digits=10, decimal_places=2)
+    breakdown_downtime_hours: Optional[Decimal] = Field(default=Decimal("0"), ge=0, le=24, max_digits=10, decimal_places=2)
+    standing_downtime_hours: Optional[Decimal] = Field(default=Decimal("0"), ge=0, le=24, max_digits=10, decimal_places=2)
+    output_quantity: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    output_unit: Optional[str] = Field(default=None, max_length=30)
+    client_signoff_name: Optional[str] = Field(default=None, max_length=160)
+    client_signoff_title: Optional[str] = Field(default=None, max_length=120)
 
     @model_validator(mode="after")
-    def idle_not_more_than_operating(self):
+    def validate_hours_logic(self):
         if self.idle_hours > self.operating_hours:
             raise ValueError("idle_hours cannot exceed operating_hours")
+        if (
+            self.start_engine_hours is not None
+            and self.end_engine_hours is not None
+            and self.end_engine_hours < self.start_engine_hours
+        ):
+            raise ValueError("end_engine_hours cannot be less than start_engine_hours")
         return self
+
 
 
 class MeterReadingPayload(Payload):
@@ -467,6 +496,23 @@ class PlantRequestPayload(Payload):
     )
     risk_level: Literal["low", "normal", "high", "critical"] = "normal"
 
+    @model_validator(mode="before")
+    @classmethod
+    def clean_empty_values(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            cleaned = {}
+            for k, v in data.items():
+                if isinstance(v, str) and not v.strip() and k in (
+                    "end_date", "project_id", "client_id", "requesting_department_id",
+                    "requested_by_user_id", "approver_user_id", "cost_centre",
+                    "specification", "attachments_required", "client_name"
+                ):
+                    cleaned[k] = None
+                else:
+                    cleaned[k] = v
+            return cleaned
+        return data
+
     @model_validator(mode="after")
     def valid_request_dates(self):
         if self.end_date and self.end_date < self.start_date:
@@ -500,28 +546,42 @@ class PlantRequestStatusPayload(Payload):
 
 class PlantReservationPayload(Payload):
     fleet_id: UUID
-    reserved_from: datetime
+    reserved_from: Optional[datetime] = None
     reserved_until: Optional[datetime] = None
     conditions: Optional[str] = None
+    notes: Optional[str] = None
 
     @model_validator(mode="after")
     def valid_reservation_range(self):
+        if self.reserved_from is None:
+            self.reserved_from = datetime.now(timezone.utc)
+        if self.notes and not self.conditions:
+            self.conditions = self.notes
         if self.reserved_until and self.reserved_until < self.reserved_from:
             raise ValueError("reserved_until cannot precede reserved_from")
         return self
 
 
+class SwitchPlantMachinePayload(Payload):
+    new_fleet_id: UUID
+    reason: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class PlantDispatchPayload(Payload):
-    fleet_id: UUID
+    fleet_id: Optional[UUID] = None
     reservation_id: Optional[UUID] = None
     project_id: Optional[UUID] = None
     assigned_to_user_id: Optional[UUID] = None
     operator_employee_id: Optional[UUID] = None
     dispatch_at: Optional[datetime] = None
-    destination_location: str = Field(min_length=1, max_length=255)
+    destination_location: Optional[str] = None
     origin_location: Optional[str] = Field(default=None, max_length=255)
     transport_instructions: Optional[str] = None
     receiving_party: Optional[str] = Field(default=None, max_length=255)
+    transporter_name: Optional[str] = None
+    driver_name: Optional[str] = None
+    dispatch_notes: Optional[str] = None
     handover_signatures: dict = Field(default_factory=dict)
     dispatch_pack: dict = Field(default_factory=dict)
     odometer_out: Optional[Decimal] = Field(
@@ -708,6 +768,104 @@ class ExternalHireAgreementPayload(Payload):
     invoice_instruction: Optional[str] = None
     debtor_follow_up_status: Literal["not_started", "pending", "contacted", "disputed", "paid", "escalated", "closed"] = "not_started"
     debtor_follow_up_notes: Optional[str] = None
+    min_guaranteed_hours_day: Optional[Decimal] = Field(default=Decimal("0"), ge=0, max_digits=5, decimal_places=2)
+    sunday_premium_multiplier: Optional[Decimal] = Field(default=Decimal("1.0"), ge=1, max_digits=4, decimal_places=2)
+    fulfillment_type: Literal["owned_fleet", "cross_hire", "sub_lease"] = "owned_fleet"
+    supplier_id: Optional[UUID] = None
+    supplier_name: Optional[str] = Field(default=None, max_length=255)
+    supplier_contact: Optional[str] = Field(default=None, max_length=255)
+    supplier_agreement_number: Optional[str] = Field(default=None, max_length=120)
+    sourcing_rate: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=4)
+    sourcing_rate_unit: Literal["hourly", "daily", "weekly", "monthly", "output_based", "flat"] = "hourly"
+    supplier_terms: Literal["dry_hire", "wet_hire", "dry_with_maintenance", "other"] = "dry_hire"
+    supplier_fuel_responsibility: Literal["supplier", "snc", "client"] = "snc"
+    supplier_deposit_paid: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_mobilisation_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_demobilisation_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_standing_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    supplier_payable_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_payment_status: Literal["not_invoiced", "invoice_received", "approved", "paid", "disputed"] = "not_invoiced"
+    supplier_invoice_reference: Optional[str] = Field(default=None, max_length=120)
+    sourced_asset_category: Optional[str] = Field(default=None, max_length=80)
+    sourced_asset_make_model: Optional[str] = Field(default=None, max_length=160)
+    sourced_asset_reg_serial: Optional[str] = Field(default=None, max_length=120)
+    sourced_meter_start: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+    sourced_meter_end: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    unit_spread: Decimal = Field(default=Decimal("0"), max_digits=15, decimal_places=4)
+    unit_spread_percentage: Decimal = Field(default=Decimal("0"), max_digits=6, decimal_places=2)
+    projected_hours_or_units: Decimal = Field(default=Decimal("0"), ge=0, max_digits=10, decimal_places=2)
+    projected_revenue: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    projected_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    projected_gross_profit: Decimal = Field(default=Decimal("0"), max_digits=15, decimal_places=2)
+    realized_gross_profit: Decimal = Field(default=Decimal("0"), max_digits=15, decimal_places=2)
+
+
+class ExternalHireAgreementUpdate(Payload):
+    status: Optional[Literal[
+        "enquiry", "quoted", "approved", "agreement_signed", "deposit_pending",
+        "dispatched", "active", "off_hire_requested", "returned",
+        "invoice_instruction", "debtor_follow_up", "closed", "cancelled"
+    ]] = None
+    hire_type: Optional[Literal["dry_hire", "wet_hire", "hourly", "daily", "weekly_monthly", "output_based"]] = None
+    rate_card: Optional[dict[str, Any]] = None
+    deposit_required: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    fuel_responsibility: Optional[Literal["snc", "project", "client"]] = None
+    mobilisation_charge: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    demobilisation_charge: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    standing_time_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    overtime_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    damage_recovery_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    invoice_instruction: Optional[str] = None
+    debtor_follow_up_status: Optional[Literal["not_started", "pending", "contacted", "disputed", "paid", "escalated", "closed"]] = None
+    debtor_follow_up_notes: Optional[str] = None
+    min_guaranteed_hours_day: Optional[Decimal] = Field(default=None, ge=0, max_digits=5, decimal_places=2)
+    sunday_premium_multiplier: Optional[Decimal] = Field(default=None, ge=1, max_digits=4, decimal_places=2)
+    fulfillment_type: Optional[Literal["owned_fleet", "cross_hire", "sub_lease"]] = None
+    supplier_id: Optional[UUID] = None
+    supplier_name: Optional[str] = Field(default=None, max_length=255)
+    supplier_contact: Optional[str] = Field(default=None, max_length=255)
+    supplier_agreement_number: Optional[str] = Field(default=None, max_length=120)
+    sourcing_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    sourcing_rate_unit: Optional[Literal["hourly", "daily", "weekly", "monthly", "output_based", "flat"]] = None
+    supplier_terms: Optional[Literal["dry_hire", "wet_hire", "dry_with_maintenance", "other"]] = None
+    supplier_fuel_responsibility: Optional[Literal["supplier", "snc", "client"]] = None
+    supplier_deposit_paid: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_mobilisation_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_demobilisation_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_standing_rate: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    supplier_payable_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    supplier_payment_status: Optional[Literal["not_invoiced", "invoice_received", "approved", "paid", "disputed"]] = None
+    supplier_invoice_reference: Optional[str] = Field(default=None, max_length=120)
+    sourced_asset_category: Optional[str] = Field(default=None, max_length=80)
+    sourced_asset_make_model: Optional[str] = Field(default=None, max_length=160)
+    sourced_asset_reg_serial: Optional[str] = Field(default=None, max_length=120)
+    sourced_meter_start: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    sourced_meter_end: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    unit_spread: Optional[Decimal] = Field(default=None, max_digits=15, decimal_places=4)
+    unit_spread_percentage: Optional[Decimal] = Field(default=None, max_digits=6, decimal_places=2)
+    projected_hours_or_units: Optional[Decimal] = Field(default=None, ge=0, max_digits=10, decimal_places=2)
+    projected_revenue: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    projected_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    projected_gross_profit: Optional[Decimal] = Field(default=None, max_digits=15, decimal_places=2)
+    realized_gross_profit: Optional[Decimal] = Field(default=None, max_digits=15, decimal_places=2)
+
+
+class ExternalHireSupplierInvoicePayload(Payload):
+    supplier_invoice_reference: str = Field(..., max_length=120)
+    supplier_payable_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=2)
+    supplier_payment_status: Literal["invoice_received", "approved", "paid", "disputed"] = "invoice_received"
+    notes: Optional[str] = None
+
+
+class ExternalHireInvoicePayload(Payload):
+    billable_hours: Decimal = Field(default=Decimal("0"), ge=0, max_digits=10, decimal_places=2)
+    standing_hours: Decimal = Field(default=Decimal("0"), ge=0, max_digits=10, decimal_places=2)
+    invoice_reference: Optional[str] = Field(default=None, max_length=120)
+
+
+class UtilizationStatusPayload(Payload):
+    status: Literal["draft", "submitted", "approved", "rejected", "invoiced"]
+    rejection_reason: Optional[str] = None
 
 
 def result(data, message: str, total: Optional[int] = None):
@@ -792,7 +950,7 @@ async def emit_event(
     event_type: str,
     aggregate_type: str,
     aggregate_id: UUID,
-    project_id: Optional[UUID],
+    project_id: Optional[UUID] = None,
     event_payload: Mapping[str, Any],
 ) -> None:
     await db.execute(
@@ -985,10 +1143,10 @@ async def list_assets(user: dict = Depends(require_permission("fleet.read")), db
           WHERE wo.fleet_id=f.id AND wo.organization_id=f.organization_id AND wo.is_deleted=false
             AND wo.status IN ('completed','returned_to_service','closed') AND wo.completed_at >= date_trunc('month', CURRENT_DATE)
         ) maint ON true
-        WHERE f.organization_id=:org_id AND f.is_deleted=false ORDER BY f.asset_code NULLS LAST, f.vehicle_registration LIMIT 500"""),
+        WHERE f.organization_id=:org_id AND f.is_deleted=false ORDER BY f.asset_code NULLS LAST, f.vehicle_registration LIMIT 501"""),
         {"org_id": user["org_id"]},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return result(data, "Fleet assets listed.", len(data))
 
 
@@ -1352,11 +1510,11 @@ async def update_asset(
 async def list_assignments(user: dict = Depends(require_permission("fleet.read")), db: AsyncSession = Depends(get_db)):  # fmt: skip
     rows = await db.execute(
         text(
-            "SELECT * FROM fleet.fleet_assignments WHERE organization_id=:org_id AND is_deleted=false ORDER BY starts_at DESC LIMIT 500"
+            "SELECT * FROM fleet.fleet_assignments WHERE organization_id=:org_id AND is_deleted=false ORDER BY starts_at DESC LIMIT 501"
         ),
         {"org_id": user["org_id"]},
     )
-    return result([dict(r._mapping) for r in rows], "Assignments listed.")
+    return result([dict(r._mapping) for r in capped(rows, 500)], "Assignments listed.")
 
 
 @router.get("/operator-profiles")
@@ -1371,11 +1529,11 @@ async def list_operator_profiles(
             LEFT JOIN hr.employees e ON e.id=op.employee_id AND e.organization_id=op.organization_id
             WHERE op.organization_id=:org_id AND op.is_deleted=false
             ORDER BY op.suspended ASC, op.competency_status, COALESCE(e.employee_name, op.contractor_name)
-            LIMIT 500
+            LIMIT 501
         """),
         {"org_id": user["org_id"]},
     )
-    return result([dict(row._mapping) for row in rows], "Operator profiles listed.")
+    return result([dict(row._mapping) for row in capped(rows, 500)], "Operator profiles listed.")
 
 
 @router.post("/operator-profiles", status_code=status.HTTP_201_CREATED)
@@ -1472,11 +1630,11 @@ async def list_external_hire_agreements(
             LEFT JOIN fleet.plant_requests pr ON pr.id=eha.plant_request_id AND pr.organization_id=eha.organization_id
             WHERE eha.organization_id=:org_id AND eha.is_deleted=false
             ORDER BY eha.updated_at DESC
-            LIMIT 500
+            LIMIT 501
         """),
         {"org_id": user["org_id"]},
     )
-    return result([dict(row._mapping) for row in rows], "External hire agreements listed.")
+    return result([dict(row._mapping) for row in capped(rows, 500)], "External hire agreements listed.")
 
 
 @router.post("/external-hire-agreements", status_code=status.HTTP_201_CREATED)
@@ -1487,29 +1645,218 @@ async def create_external_hire_agreement(
 ):
     await tenant_reference(db, "fleet.plant_requests", payload.plant_request_id, user["org_id"], "Plant request")
     await tenant_reference(db, "crm.contacts", payload.customer_id, user["org_id"], "Customer")
+
+    client_rate = Decimal(str(payload.rate_card.get("hourly_rate") or payload.rate_card.get("rate") or 0))
+    sourcing_rate = payload.sourcing_rate or Decimal("0")
+    unit_spread = client_rate - sourcing_rate
+    unit_spread_pct = (unit_spread / client_rate * Decimal("100")) if client_rate > 0 else Decimal("0")
+    proj_units = payload.projected_hours_or_units or Decimal("0")
+    proj_rev = (client_rate * proj_units) + payload.mobilisation_charge + payload.demobilisation_charge
+    proj_cost = (sourcing_rate * proj_units) + payload.supplier_mobilisation_cost + payload.supplier_demobilisation_cost
+    proj_profit = proj_rev - proj_cost
+
     row = await db.execute(
         text("""
             INSERT INTO fleet.external_hire_agreements (
                 organization_id, plant_request_id, customer_id, customer_name, hire_agreement_number, status, hire_type, rate_card,
                 deposit_required, fuel_responsibility, mobilisation_charge, demobilisation_charge,
                 standing_time_rate, overtime_rate, damage_recovery_amount, invoice_instruction,
-                debtor_follow_up_status, debtor_follow_up_notes, created_by
+                debtor_follow_up_status, debtor_follow_up_notes, min_guaranteed_hours_day, sunday_premium_multiplier,
+                fulfillment_type, supplier_id, supplier_name, supplier_contact, supplier_agreement_number,
+                sourcing_rate, sourcing_rate_unit, supplier_terms, supplier_fuel_responsibility,
+                supplier_deposit_paid, supplier_mobilisation_cost, supplier_demobilisation_cost,
+                supplier_standing_rate, supplier_payable_amount, supplier_payment_status, supplier_invoice_reference,
+                sourced_asset_category, sourced_asset_make_model, sourced_asset_reg_serial, sourced_meter_start, sourced_meter_end,
+                unit_spread, unit_spread_percentage, projected_hours_or_units, projected_revenue, projected_cost, projected_gross_profit,
+                created_by
             ) VALUES (
                 :org_id, :plant_request_id, :customer_id, :customer_name, :hire_agreement_number, :status, :hire_type, CAST(:rate_card AS jsonb),
                 :deposit_required, :fuel_responsibility, :mobilisation_charge, :demobilisation_charge,
                 :standing_time_rate, :overtime_rate, :damage_recovery_amount, :invoice_instruction,
-                :debtor_follow_up_status, :debtor_follow_up_notes, :user_id
+                :debtor_follow_up_status, :debtor_follow_up_notes, :min_guaranteed_hours_day, :sunday_premium_multiplier,
+                :fulfillment_type, :supplier_id, :supplier_name, :supplier_contact, :supplier_agreement_number,
+                :sourcing_rate, :sourcing_rate_unit, :supplier_terms, :supplier_fuel_responsibility,
+                :supplier_deposit_paid, :supplier_mobilisation_cost, :supplier_demobilisation_cost,
+                :supplier_standing_rate, :supplier_payable_amount, :supplier_payment_status, :supplier_invoice_reference,
+                :sourced_asset_category, :sourced_asset_make_model, :sourced_asset_reg_serial, :sourced_meter_start, :sourced_meter_end,
+                :unit_spread, :unit_spread_percentage, :projected_hours_or_units, :projected_revenue, :projected_cost, :projected_gross_profit,
+                :user_id
             ) RETURNING id
         """),
         {
             **payload.model_dump(),
             "rate_card": json.dumps(payload.rate_card),
+            "unit_spread": unit_spread,
+            "unit_spread_percentage": unit_spread_pct,
+            "projected_revenue": proj_rev,
+            "projected_cost": proj_cost,
+            "projected_gross_profit": proj_profit,
             "org_id": user["org_id"],
             "user_id": user["sub"],
         },
     )
     await db.commit()
     return result({"id": str(row.scalar())}, "External hire agreement created.")
+
+
+@router.patch("/external-hire-agreements/{agreement_id}")
+async def update_external_hire_agreement(
+    agreement_id: UUID,
+    payload: ExternalHireAgreementUpdate,
+    user: dict = Depends(require_permission("fleet.external_hire.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    update_data = payload.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No editable fields provided.")
+    set_clauses = []
+    params: dict[str, Any] = {"org_id": user["org_id"], "agreement_id": agreement_id}
+    for k, v in update_data.items():
+        if k == "rate_card":
+            set_clauses.append(f"{k} = CAST(:{k} AS jsonb)")
+            params[k] = json.dumps(v)
+        else:
+            set_clauses.append(f"{k} = :{k}")
+            params[k] = v
+    query = text(f"""
+        UPDATE fleet.external_hire_agreements
+        SET {", ".join(set_clauses)}, updated_at = NOW()
+        WHERE id = :agreement_id AND organization_id = :org_id AND is_deleted = false
+        RETURNING id
+    """)
+    res = await db.execute(query, params)
+    if not res.scalar():
+        raise HTTPException(status_code=404, detail="External hire agreement not found.")
+    await db.commit()
+    return result({"id": str(agreement_id)}, "External hire agreement updated.")
+
+
+@router.post("/external-hire-agreements/{agreement_id}/invoice")
+async def generate_external_hire_invoice(
+    agreement_id: UUID,
+    payload: ExternalHireInvoicePayload,
+    user: dict = Depends(require_permission("fleet.external_hire.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.execute(
+        text("""
+            SELECT * FROM fleet.external_hire_agreements
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"id": agreement_id, "org_id": user["org_id"]}
+    )
+    agreement = row.first()
+    if not agreement:
+        raise HTTPException(status_code=404, detail="External hire agreement not found.")
+
+    curr_dict = dict(agreement._mapping)
+    if curr_dict.get("status") in ("closed", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Cannot invoice agreement in {curr_dict.get('status')} state.")
+
+    # Calculate or retrieve billable amounts
+    billable_hours = payload.billable_hours
+    standing_hours = payload.standing_hours
+    hourly_rate = Decimal(str(curr_dict.get("rate_card", {}).get("hourly_rate", curr_dict.get("rate_card", {}).get("rate", 0))))
+    standing_rate = Decimal(str(curr_dict.get("standing_time_rate") or (hourly_rate * Decimal("0.5"))))
+    mob_charge = Decimal(str(curr_dict.get("mobilisation_charge") or 0))
+    demob_charge = Decimal(str(curr_dict.get("demobilisation_charge") or 0))
+    deposit = Decimal(str(curr_dict.get("deposit_required") or 0))
+
+    gross_amount = (billable_hours * hourly_rate) + (standing_hours * standing_rate) + mob_charge + demob_charge
+    net_payable = max(Decimal("0"), gross_amount - deposit)
+    invoice_ref = payload.invoice_reference or f"INV-HIRE-{curr_dict.get('hire_agreement_number', str(agreement_id)[:8])}"
+
+    # For cross-hire / sub-lease, calculate supplier payable & realized profit
+    sourcing_rate = Decimal(str(curr_dict.get("sourcing_rate") or 0))
+    supplier_standing_rate = Decimal(str(curr_dict.get("supplier_standing_rate") or (sourcing_rate * Decimal("0.5"))))
+    supplier_mob = Decimal(str(curr_dict.get("supplier_mobilisation_cost") or 0))
+    supplier_demob = Decimal(str(curr_dict.get("supplier_demobilisation_cost") or 0))
+    supplier_payable = (billable_hours * sourcing_rate) + (standing_hours * supplier_standing_rate) + supplier_mob + supplier_demob
+    realized_profit = gross_amount - supplier_payable
+
+    await db.execute(
+        text("""
+            UPDATE fleet.external_hire_agreements
+            SET status = 'debtor_follow_up',
+                debtor_follow_up_status = 'pending',
+                invoice_instruction = :invoice_ref,
+                invoiced_amount = CAST(:gross_amount AS NUMERIC(15,2)),
+                invoice_reference = :inv_number,
+                invoice_generated_at = NOW(),
+                supplier_payable_amount = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN CAST(:supplier_payable AS NUMERIC(15,2)) ELSE supplier_payable_amount END,
+                realized_gross_profit = CASE WHEN fulfillment_type IN ('cross_hire', 'sub_lease') THEN CAST(:realized_profit AS NUMERIC(15,2)) ELSE CAST(:default_profit AS NUMERIC(15,2)) END,
+                updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {
+            "id": agreement_id,
+            "org_id": user["org_id"],
+            "invoice_ref": f"{invoice_ref} | Gross: USD {gross_amount:.2f} | Deposit Applied: USD {deposit:.2f} | Net Due: USD {net_payable:.2f}",
+            "gross_amount": gross_amount,
+            "inv_number": invoice_ref,
+            "supplier_payable": supplier_payable,
+            "realized_profit": realized_profit,
+            "default_profit": gross_amount,
+        }
+    )
+    await db.commit()
+    return result(
+        {
+            "id": str(agreement_id),
+            "invoice_reference": invoice_ref,
+            "gross_amount": float(gross_amount),
+            "deposit_deducted": float(deposit),
+            "net_payable": float(net_payable),
+            "supplier_payable_amount": float(supplier_payable),
+            "realized_gross_profit": float(realized_profit),
+            "status": "debtor_follow_up"
+        },
+        "Draft invoice instruction generated and debtor follow-up staged."
+    )
+
+
+@router.post("/external-hire-agreements/{agreement_id}/supplier-invoice")
+async def record_external_hire_supplier_invoice(
+    agreement_id: UUID,
+    payload: ExternalHireSupplierInvoicePayload,
+    user: dict = Depends(require_permission("fleet.external_hire.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.execute(
+        text("""
+            SELECT * FROM fleet.external_hire_agreements
+            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+        """),
+        {"id": agreement_id, "org_id": user["org_id"]}
+    )
+    agreement = row.first()
+    if not agreement:
+        raise HTTPException(status_code=404, detail="External hire agreement not found.")
+
+    await db.execute(
+        text("""
+            UPDATE fleet.external_hire_agreements
+            SET supplier_invoice_reference = :supplier_ref,
+                supplier_payable_amount = :supplier_payable,
+                supplier_payment_status = :supplier_status,
+                debtor_follow_up_notes = CASE
+                    WHEN :notes IS NOT NULL THEN COALESCE(debtor_follow_up_notes || E'\n', '') || :notes
+                    ELSE debtor_follow_up_notes
+                END,
+                updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {
+            "id": agreement_id,
+            "org_id": user["org_id"],
+            "supplier_ref": payload.supplier_invoice_reference,
+            "supplier_payable": payload.supplier_payable_amount,
+            "supplier_status": payload.supplier_payment_status,
+            "notes": payload.notes,
+        }
+    )
+    await db.commit()
+    return result({"id": str(agreement_id)}, "Supplier invoice record updated.")
 
 
 @router.post("/assignments", status_code=status.HTTP_201_CREATED)
@@ -1767,8 +2114,15 @@ async def create_work_order(
     )
     try:
         row = await db.execute(
-            text("""INSERT INTO fleet.maintenance_work_orders (organization_id,fleet_id,defect_id,work_order_number,maintenance_type,priority,vendor_name,scheduled_for,estimated_cost,description,created_by)
-            VALUES (:org_id,:fleet_id,:defect_id,:work_order_number,:maintenance_type,:priority,:vendor_name,:scheduled_for,:estimated_cost,:description,:user_id) RETURNING id"""),
+            text("""INSERT INTO fleet.maintenance_work_orders (
+                organization_id, fleet_id, defect_id, work_order_number, maintenance_type,
+                priority, status, vendor_name, scheduled_for, completed_at, estimated_cost,
+                actual_cost, completion_notes, description, created_by
+            ) VALUES (
+                :org_id, :fleet_id, :defect_id, :work_order_number, :maintenance_type,
+                :priority, :status, :vendor_name, :scheduled_for, :completed_at, :estimated_cost,
+                :actual_cost, :completion_notes, :description, :user_id
+            ) RETURNING id"""),
             {**payload.model_dump(), "org_id": user["org_id"], "user_id": user["sub"]},
         )
         await db.commit()
@@ -1778,6 +2132,124 @@ async def create_work_order(
             status_code=409, detail="Work order number already exists"
         ) from exc
     return result({"id": str(row.scalar())}, "Maintenance work order created.")
+
+
+@router.get("/work-orders")
+async def list_work_orders(
+    status_filter: Optional[str] = None,
+    include_closed: bool = False,
+    user: dict = Depends(require_permission("fleet.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Maintenance work orders, open ones by default, awaiting_approval first
+    then newest. created_by comes back so the UI can hide Approve from the
+    person who raised the work order (the approval endpoint blocks it too)."""
+    rows = await db.execute(
+        text("""
+        SELECT wo.id, wo.fleet_id, wo.work_order_number, wo.maintenance_type, wo.priority, wo.status,
+               wo.vendor_name, wo.scheduled_for, wo.estimated_cost, wo.actual_cost, wo.description,
+               wo.diagnosis, wo.parts_request_reference, wo.estimated_downtime_hours,
+               wo.created_by, wo.created_at, wo.updated_at,
+               wo.repair_approved_by, wo.repair_approved_at, wo.rejection_reason,
+               COALESCE(f.asset_code, f.vehicle_registration) AS asset_reference,
+               concat_ws(' ', f.make, f.model) AS asset_description,
+               u.full_name AS created_by_name
+        FROM fleet.maintenance_work_orders wo
+        LEFT JOIN fleet.fleet f ON f.id=wo.fleet_id AND f.organization_id=wo.organization_id
+        LEFT JOIN core.users u ON u.id=wo.created_by
+        WHERE wo.organization_id=:org_id AND wo.is_deleted=false
+          AND (CAST(:include_closed AS boolean) OR wo.status NOT IN ('completed','returned_to_service','closed','cancelled'))
+          AND (CAST(:status_filter AS VARCHAR) IS NULL OR wo.status=CAST(:status_filter AS VARCHAR))
+        ORDER BY (wo.status='awaiting_approval') DESC, wo.created_at DESC
+        LIMIT 501
+    """),
+        {"org_id": user["org_id"], "status_filter": status_filter, "include_closed": include_closed},
+    )
+    return result([dict(r._mapping) for r in capped(rows, 500)], "Maintenance work orders listed.")
+
+
+@router.post("/work-orders/{work_order_id}/approval")
+async def approve_work_order(
+    work_order_id: UUID,
+    payload: WorkOrderApproval,
+    user: dict = Depends(require_permission("fleet.work_order.approve")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The only way out of 'awaiting_approval' other than cancelling.
+    Approving moves the work order on to 'awaiting_parts' when a parts
+    request is recorded, otherwise to 'scheduled'. The person who raised the
+    work order can't decide it, and a rejection needs a reason."""
+    work_order = (
+        (
+            await db.execute(
+                text("""
+        SELECT id, work_order_number, status, created_by, parts_request_reference, project_id
+        FROM fleet.maintenance_work_orders
+        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+    """),
+                {"id": work_order_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not work_order:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if work_order["status"] != "awaiting_approval":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only work orders awaiting approval can be decided. This one is '{work_order['status']}'.",
+        )
+    if work_order["created_by"] and str(work_order["created_by"]) == str(user["sub"]):
+        raise HTTPException(status_code=403, detail="You raised this work order, so someone else must approve it.")
+    reason = (payload.reason or "").strip() or None
+    if payload.decision == "reject" and not reason:
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
+
+    approved = payload.decision == "approve"
+    new_status = (
+        ("awaiting_parts" if work_order["parts_request_reference"] else "scheduled")
+        if approved
+        else "cancelled"
+    )
+    row = await db.execute(
+        text("""
+        UPDATE fleet.maintenance_work_orders
+        SET status=CAST(:status AS varchar),
+            repair_approved_by=CASE WHEN :approved THEN CAST(:user_id AS uuid) ELSE repair_approved_by END,
+            repair_approved_at=CASE WHEN :approved THEN NOW() ELSE repair_approved_at END,
+            repair_rejected_by=CASE WHEN :approved THEN repair_rejected_by ELSE CAST(:user_id AS uuid) END,
+            repair_rejected_at=CASE WHEN :approved THEN repair_rejected_at ELSE NOW() END,
+            rejection_reason=CASE WHEN :approved THEN rejection_reason ELSE :reason END,
+            updated_at=NOW()
+        WHERE id=:id AND organization_id=:org_id AND is_deleted=false AND status='awaiting_approval'
+        RETURNING id
+    """),
+        {
+            "status": new_status,
+            "approved": approved,
+            "user_id": user["sub"],
+            "reason": reason,
+            "id": work_order_id,
+            "org_id": user["org_id"],
+        },
+    )
+    if not row.scalar():
+        raise HTTPException(status_code=409, detail="Work order was decided by someone else first.")
+    await emit_event(
+        db,
+        user=user,
+        event_type=f"fleet.work_order_{'approved' if approved else 'rejected'}.v1",
+        aggregate_type="maintenance_work_order",
+        aggregate_id=work_order_id,
+        project_id=work_order["project_id"],
+        event_payload={"status": new_status, "reason": reason},
+    )
+    await db.commit()
+    return result(
+        {"id": str(work_order_id), "status": new_status},
+        f"Work order {work_order['work_order_number']} {'approved' if approved else 'rejected'}.",
+    )
 
 
 @router.patch("/work-orders/{work_order_id}/decision")
@@ -1805,6 +2277,11 @@ async def decide_work_order(
     )
     if not work_order:
         raise HTTPException(status_code=404, detail="Work order not found")
+    if work_order["status"] == "awaiting_approval" and payload.status not in ("awaiting_approval", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail="This work order is awaiting approval. Approve or reject it via POST /fleet/work-orders/{id}/approval.",
+        )
     project_id = work_order["project_id"] or work_order["assignment_project_id"]
     row = await db.execute(
         text("""UPDATE fleet.maintenance_work_orders SET status=CAST(:status AS varchar),actual_cost=COALESCE(:actual_cost,actual_cost),completion_notes=COALESCE(:completion_notes,completion_notes),
@@ -1871,6 +2348,35 @@ async def decide_work_order(
     )
     await db.commit()
     return result({"id": str(work_order_id)}, "Work order updated.")
+
+
+@router.get("/fuel")
+async def list_fuel_transactions(
+    fleet_id: Optional[UUID] = Query(default=None),
+    project_id: Optional[UUID] = Query(default=None),
+    limit: int = Query(default=100, le=500),
+    user: dict = Depends(require_permission("fleet.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    query = text("""
+        SELECT ft.*, f.asset_code, f.vehicle_registration, f.asset_category, p.name AS project_name
+        FROM fleet.fuel_transactions ft
+        JOIN fleet.fleet f ON f.id = ft.fleet_id AND f.organization_id = ft.organization_id
+        LEFT JOIN projects.projects p ON p.id = ft.project_id AND p.organization_id = ft.organization_id
+        WHERE ft.organization_id = :org_id
+          AND ft.is_deleted = false
+          AND (CAST(:fleet_id AS uuid) IS NULL OR ft.fleet_id = :fleet_id)
+          AND (CAST(:project_id AS uuid) IS NULL OR ft.project_id = :project_id)
+        ORDER BY ft.transaction_at DESC
+        LIMIT :limit
+    """)
+    rows = await db.execute(query, {
+        "org_id": user["org_id"],
+        "fleet_id": fleet_id,
+        "project_id": project_id,
+        "limit": limit + 1
+    })
+    return result([dict(row._mapping) for row in capped(rows, limit)], "Fuel transactions listed.")
 
 
 @router.post("/fuel", status_code=status.HTTP_201_CREATED)
@@ -1964,6 +2470,49 @@ async def record_fuel(
             "org_id": user["org_id"],
         },
     )
+
+    # If storage_tank matches an active store and fuel item exists in inventory, deduct from store stock
+    if payload.storage_tank:
+        tank_store = await db.execute(
+            text("""
+            SELECT id FROM procurement.stores
+            WHERE organization_id=:org_id AND is_deleted=false
+              AND (name ILIKE :tank OR store_code ILIKE :tank OR location_label ILIKE :tank)
+            LIMIT 1
+            """),
+            {"org_id": user["org_id"], "tank": f"%{payload.storage_tank}%"},
+        )
+        tank_store_id = tank_store.scalar()
+        if tank_store_id:
+            fuel_item = await db.execute(
+                text("""
+                SELECT id, standard_cost FROM procurement.inventory_items
+                WHERE organization_id=:org_id AND is_deleted=false
+                  AND (item_name ILIKE :fuel_type OR item_code ILIKE :fuel_type OR category ILIKE '%fuel%')
+                LIMIT 1
+                """),
+                {"org_id": user["org_id"], "fuel_type": f"%{payload.fuel_type}%"},
+            )
+            fuel_item_row = fuel_item.mappings().first()
+            if fuel_item_row:
+                try:
+                    await inventory_service.issue_stock(
+                        db,
+                        user,
+                        item_id=fuel_item_row["id"],
+                        store_id=tank_store_id,
+                        project_id=project_id,
+                        quantity=payload.quantity_litres,
+                        unit_cost=unit_cost or Decimal(str(fuel_item_row["standard_cost"] or "0")),
+                        source_type="fleet_fuel_transaction",
+                        source_id=fuel_id,
+                        reference=f"FUEL-{payload.receipt_reference or str(fuel_id)[:8]}",
+                        cost_category="equipment",
+                        cost_description=f"Equipment fuel from {payload.storage_tank}: {payload.quantity_litres}L {payload.fuel_type}",
+                    )
+                except Exception:
+                    pass
+
     cost_id = await post_equipment_cost(
         db,
         user=user,
@@ -1992,7 +2541,7 @@ async def record_fuel(
                 source, priority, created_by
             ) VALUES (
                 :org_id, 'Investigate fuel variance',
-                :description, 'plant_request', COALESCE(:plant_request_id, :fuel_id),
+                :description, 'plant_request', COALESCE(CAST(:plant_request_id AS uuid), CAST(:fuel_id AS uuid)),
                 'manual', 'high', :user_id
             ) RETURNING id
         """),
@@ -2195,6 +2744,110 @@ async def record_utilization(
     )
 
 
+@router.get("/utilization")
+async def list_utilization_logs(
+    fleet_id: Optional[UUID] = Query(default=None),
+    project_id: Optional[UUID] = Query(default=None),
+    date_from: Optional[date] = Query(default=None),
+    date_to: Optional[date] = Query(default=None),
+    approval_status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, le=500),
+    user: dict = Depends(require_permission("fleet.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    query = text("""
+        SELECT ul.*, f.asset_code, f.vehicle_registration, f.asset_category, p.name AS project_name, pr.request_number
+        FROM fleet.utilization_logs ul
+        JOIN fleet.fleet f ON f.id = ul.fleet_id AND f.organization_id = ul.organization_id
+        LEFT JOIN projects.projects p ON p.id = ul.project_id AND p.organization_id = ul.organization_id
+        LEFT JOIN fleet.plant_requests pr ON pr.id = ul.plant_request_id AND pr.organization_id = ul.organization_id
+        WHERE ul.organization_id = :org_id
+          AND ul.is_deleted = false
+          AND (CAST(:fleet_id AS uuid) IS NULL OR ul.fleet_id = :fleet_id)
+          AND (CAST(:project_id AS uuid) IS NULL OR ul.project_id = :project_id)
+          AND (CAST(:date_from AS date) IS NULL OR ul.occurred_on >= :date_from)
+          AND (CAST(:date_to AS date) IS NULL OR ul.occurred_on <= :date_to)
+          AND (:approval_status IS NULL OR COALESCE(ul.approval_status, 'submitted') = :approval_status)
+        ORDER BY ul.occurred_on DESC, ul.created_at DESC
+        LIMIT :limit
+    """)
+    rows = await db.execute(query, {
+        "org_id": user["org_id"],
+        "fleet_id": fleet_id,
+        "project_id": project_id,
+        "date_from": date_from,
+        "date_to": date_to,
+        "approval_status": approval_status,
+        "limit": limit + 1
+    })
+    return result([dict(row._mapping) for row in capped(rows, limit)], "Utilization shift logs listed.")
+
+
+@router.patch("/utilization/{log_id}/status")
+async def update_utilization_status(
+    log_id: UUID,
+    payload: UtilizationStatusPayload,
+    user: dict = Depends(require_permission("fleet.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    new_status = payload.status
+    rejection_reason = payload.rejection_reason
+    if new_status == "rejected" and not rejection_reason:
+        raise HTTPException(status_code=400, detail="rejection_reason is required when rejecting a shift log.")
+
+    params: dict[str, Any] = {
+        "log_id": log_id,
+        "org_id": user["org_id"],
+        "status": new_status,
+        "reason": rejection_reason,
+        "user_id": user["sub"],
+    }
+
+    if new_status == "approved":
+        query = text("""
+            UPDATE fleet.utilization_logs
+            SET approval_status = :status,
+                approved_by = :user_id,
+                approved_at = NOW(),
+                rejection_reason = NULL,
+                updated_at = NOW()
+            WHERE id = :log_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """)
+    elif new_status == "rejected":
+        query = text("""
+            UPDATE fleet.utilization_logs
+            SET approval_status = :status,
+                rejection_reason = :reason,
+                updated_at = NOW()
+            WHERE id = :log_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """)
+    else:
+        query = text("""
+            UPDATE fleet.utilization_logs
+            SET approval_status = :status,
+                updated_at = NOW()
+            WHERE id = :log_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """)
+
+    res = await db.execute(query, params)
+    if not res.scalar():
+        raise HTTPException(status_code=404, detail="Utilization shift log not found.")
+
+    await emit_event(
+        db,
+        user=user,
+        event_type=f"equipment.shift_log_{new_status}.v1",
+        aggregate_type="fleet_utilization_log",
+        aggregate_id=log_id,
+        event_payload={"approval_status": new_status, "rejection_reason": rejection_reason},
+    )
+    await db.commit()
+    return result({"id": str(log_id), "approval_status": new_status}, f"Shift log status updated to {new_status}.")
+
+
 @router.get("/{fleet_id}/inspections")
 async def list_asset_inspections(fleet_id: UUID, user: dict = Depends(require_permission("fleet.read")), db: AsyncSession = Depends(get_db)):  # fmt: skip
     await asset_or_404(db, fleet_id, user["org_id"])
@@ -2378,11 +3031,11 @@ async def list_plant_requests(
         WHERE pr.organization_id=:org_id AND pr.is_deleted=false
           AND (CAST(:status_filter AS VARCHAR) IS NULL OR pr.status=CAST(:status_filter AS VARCHAR))
         ORDER BY pr.created_at DESC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status_filter": status_filter},
     )
-    return result([dict(r._mapping) for r in rows], "Plant requests listed.")
+    return result([dict(r._mapping) for r in capped(rows, 500)], "Plant requests listed.")
 
 
 @router.post("/plant/requests", status_code=status.HTTP_201_CREATED)
@@ -2572,23 +3225,49 @@ async def update_plant_request_status(
     update = await db.execute(
         text("""
         UPDATE fleet.plant_requests
-        SET status=:status,
-            validation_notes=CASE WHEN :status IN ('under_validation','availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval') THEN COALESCE(:notes, validation_notes) ELSE validation_notes END,
-            correction_notes=CASE WHEN :status='returned_for_correction' THEN :notes ELSE correction_notes END,
-            rejection_reason=CASE WHEN :status='rejected' THEN :notes ELSE rejection_reason END,
-            expected_revenue=COALESCE(:expected_revenue, expected_revenue),
-            estimated_cost=COALESCE(:estimated_cost, estimated_cost),
-            contribution_margin=COALESCE(:expected_revenue, expected_revenue) - COALESCE(:estimated_cost, estimated_cost),
-            risk_level=COALESCE(:risk_level, risk_level),
-            approved_at=CASE WHEN :status='approved' THEN NOW() ELSE approved_at END,
-            approved_by=CASE WHEN :status='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
-            readiness_pack=CAST(:readiness_pack AS jsonb),
-            readiness_blockers=CAST(:readiness_blockers AS jsonb),
-            readiness_status=:readiness_status,
-            plant_manager_ready_at=CASE WHEN :readiness_status='ready' THEN COALESCE(plant_manager_ready_at, NOW()) ELSE NULL END,
-            plant_manager_ready_by=CASE WHEN :readiness_status='ready' THEN COALESCE(plant_manager_ready_by, CAST(:user_id AS uuid)) ELSE NULL END,
-            updated_at=NOW()
-        WHERE id=:id AND organization_id=:org_id AND is_deleted=false
+        SET status = CAST(:status AS varchar),
+            validation_notes = CASE
+                WHEN CAST(:status AS varchar) IN ('under_validation','availability_check','awaiting_cost_review','awaiting_risk_review','awaiting_approval')
+                THEN COALESCE(CAST(:notes AS text), validation_notes)
+                ELSE validation_notes
+            END,
+            correction_notes = CASE
+                WHEN CAST(:status AS varchar) = 'returned_for_correction'
+                THEN CAST(:notes AS text)
+                ELSE correction_notes
+            END,
+            rejection_reason = CASE
+                WHEN CAST(:status AS varchar) = 'rejected'
+                THEN CAST(:notes AS text)
+                ELSE rejection_reason
+            END,
+            expected_revenue = COALESCE(CAST(:expected_revenue AS numeric(15,2)), expected_revenue),
+            estimated_cost = COALESCE(CAST(:estimated_cost AS numeric(15,2)), estimated_cost),
+            contribution_margin = COALESCE(CAST(:expected_revenue AS numeric(15,2)), expected_revenue) - COALESCE(CAST(:estimated_cost AS numeric(15,2)), estimated_cost),
+            risk_level = COALESCE(CAST(:risk_level AS varchar), risk_level),
+            approved_at = CASE
+                WHEN CAST(:status AS varchar) = 'approved' THEN NOW()
+                ELSE approved_at
+            END,
+            approved_by = CASE
+                WHEN CAST(:status AS varchar) = 'approved' THEN CAST(:user_id AS uuid)
+                ELSE approved_by
+            END,
+            readiness_pack = CAST(:readiness_pack AS jsonb),
+            readiness_blockers = CAST(:readiness_blockers AS jsonb),
+            readiness_status = CAST(:readiness_status AS varchar),
+            plant_manager_ready_at = CASE
+                WHEN CAST(:readiness_status AS varchar) = 'ready'
+                THEN COALESCE(plant_manager_ready_at, NOW())
+                ELSE NULL
+            END,
+            plant_manager_ready_by = CASE
+                WHEN CAST(:readiness_status AS varchar) = 'ready'
+                THEN COALESCE(plant_manager_ready_by, CAST(:user_id AS uuid))
+                ELSE NULL
+            END,
+            updated_at = NOW()
+        WHERE id = :id AND organization_id = :org_id AND is_deleted = false
           AND status NOT IN ('closed','cancelled','rejected')
         RETURNING id, project_id
     """),
@@ -2745,6 +3424,196 @@ async def _count_critical_defects(org_id: str, fleet_id) -> int:
         return int(res.scalar() or 0)
 
 
+
+def _check_plant_management_authority(user: dict):
+    roles = [r.lower().replace("_", " ").strip() for r in (user.get("role_names") or [user.get("role") or ""])]
+    user_role = (user.get("role") or "").lower().replace("_", " ").strip()
+    authorized_keywords = {
+        "superadmin", "admin", "executive", "executive (admin)", 
+        "plant manager", "equipment manager", "fleet manager", 
+        "managing director", "director"
+    }
+    is_auth = (
+        user.get("is_superadmin")
+        or any(keyword in r for r in roles for keyword in authorized_keywords)
+        or any(keyword in user_role for keyword in authorized_keywords)
+    )
+    if not is_auth:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Machine switching is restricted to Executives, Plant Manager, Admin, and Superadmin.",
+        )
+
+
+@router.post("/plant/requests/{plant_request_id}/switch-machine", status_code=status.HTTP_200_OK)
+async def switch_plant_machine(
+    plant_request_id: UUID,
+    payload: SwitchPlantMachinePayload,
+    user: dict = Depends(require_permission("fleet.plant_requests.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Allows Executives, Plant Managers, Admin, and Superadmin to switch or substitute
+    the allocated machine on a plant request or dispatch.
+    """
+    _check_plant_management_authority(user)
+    new_asset = await asset_or_404(db, payload.new_fleet_id, user["org_id"])
+    
+    plant_request = (
+        (
+            await db.execute(
+                text("""
+                    SELECT * FROM fleet.plant_requests
+                    WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+                """),
+                {"id": plant_request_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if not plant_request:
+        raise HTTPException(status_code=404, detail="Plant request not found.")
+
+    # 1. Look up existing active reservation
+    curr_res = (
+        (
+            await db.execute(
+                text("""
+                    SELECT id, fleet_id, status FROM fleet.plant_reservations
+                    WHERE plant_request_id = :id AND organization_id = :org_id
+                      AND status IN ('provisional', 'confirmed') AND is_deleted = false
+                    ORDER BY created_at DESC LIMIT 1
+                """),
+                {"id": plant_request_id, "org_id": user["org_id"]},
+            )
+        )
+        .mappings()
+        .first()
+    )
+
+    old_fleet_id = curr_res["fleet_id"] if curr_res else None
+
+    # 2. Release/update reservation to new asset
+    if curr_res:
+        await db.execute(
+            text("""
+                UPDATE fleet.plant_reservations
+                SET fleet_id = :new_fleet_id,
+                    conditions = COALESCE(conditions, '') || ' | Switched from ' || CAST(:old_fleet_id AS text) || ' (Reason: ' || :reason || ')',
+                    updated_at = NOW()
+                WHERE id = :res_id AND organization_id = :org_id
+            """),
+            {
+                "new_fleet_id": payload.new_fleet_id,
+                "old_fleet_id": old_fleet_id,
+                "reason": payload.reason or payload.notes or "Operational substitution",
+                "res_id": curr_res["id"],
+                "org_id": user["org_id"],
+            },
+        )
+    else:
+        # Create a new reservation if none existed
+        await db.execute(
+            text("""
+                INSERT INTO fleet.plant_reservations (
+                    organization_id, plant_request_id, fleet_id, reservation_number,
+                    status, reserved_from, conditions, created_by
+                ) VALUES (
+                    :org_id, :plant_request_id, :new_fleet_id,
+                    'PA-' || LPAD(nextval('fleet.plant_allocation_seq')::text, 6, '0'),
+                    'confirmed', NOW(), :reason, :user_id
+                )
+            """),
+            {
+                "org_id": user["org_id"],
+                "plant_request_id": plant_request_id,
+                "new_fleet_id": payload.new_fleet_id,
+                "reason": payload.reason or payload.notes or "Allocated via machine switch",
+                "user_id": user["sub"],
+            },
+        )
+
+    # 3. Restore old asset to available
+    if old_fleet_id and old_fleet_id != payload.new_fleet_id:
+        await db.execute(
+            text("""
+                UPDATE fleet.fleet
+                SET operational_status = 'available', updated_at = NOW()
+                WHERE id = :old_id AND organization_id = :org_id
+            """),
+            {"old_id": old_fleet_id, "org_id": user["org_id"]},
+        )
+
+    # 4. Set new asset status
+    target_status = 'deployed' if plant_request["status"] in ('dispatched', 'active') else 'assigned'
+    await db.execute(
+        text("""
+            UPDATE fleet.fleet
+            SET operational_status = :st, updated_at = NOW()
+            WHERE id = :new_id AND organization_id = :org_id
+        """),
+        {"st": target_status, "new_id": payload.new_fleet_id, "org_id": user["org_id"]},
+    )
+
+    # 5. Update active fleet assignments if already dispatched
+    if old_fleet_id:
+        await db.execute(
+            text("""
+                UPDATE fleet.fleet_assignments
+                SET fleet_id = :new_fleet_id,
+                    purpose = COALESCE(purpose, '') || ' [Switched from ' || CAST(:old_fleet_id AS text) || ']',
+                    updated_at = NOW()
+                WHERE organization_id = :org_id AND fleet_id = :old_fleet_id AND status IN ('planned', 'dispatched', 'active')
+            """),
+            {
+                "new_fleet_id": payload.new_fleet_id,
+                "old_fleet_id": old_fleet_id,
+                "org_id": user["org_id"],
+            },
+        )
+
+    # 6. Append audit note to plant request
+    switch_note = f"\n[Machine Switched by {user.get('email', 'Authorized User')} at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}: {new_asset.get('asset_code', '')} ({new_asset.get('name', '')}). Reason: {payload.reason or payload.notes or 'Operational requirement'}]"
+    await db.execute(
+        text("""
+            UPDATE fleet.plant_requests
+            SET work_description = COALESCE(work_description, '') || :switch_note,
+                status = CASE WHEN status = 'approved' THEN 'reserved' ELSE status END,
+                updated_at = NOW()
+            WHERE id = :id AND organization_id = :org_id
+        """),
+        {"switch_note": switch_note, "id": plant_request_id, "org_id": user["org_id"]},
+    )
+
+    await emit_event(
+        db,
+        user=user,
+        event_type="plant.machine_switched.v1",
+        aggregate_type="plant_request",
+        aggregate_id=plant_request_id,
+        project_id=plant_request["project_id"],
+        event_payload={
+            "old_fleet_id": str(old_fleet_id) if old_fleet_id else None,
+            "new_fleet_id": str(payload.new_fleet_id),
+            "reason": payload.reason or payload.notes,
+            "switched_by": user.get("email"),
+        },
+    )
+    await db.commit()
+    return result(
+        {
+            "id": str(plant_request_id),
+            "old_fleet_id": str(old_fleet_id) if old_fleet_id else None,
+            "new_fleet_id": str(payload.new_fleet_id),
+            "new_asset_code": new_asset.get("asset_code"),
+            "new_asset_name": new_asset.get("name"),
+            "status": "switched",
+        },
+        f"Machine successfully switched to {new_asset.get('asset_code')}.",
+    )
+
+
 @router.post("/plant/requests/{plant_request_id}/dispatch", status_code=status.HTTP_201_CREATED)
 async def dispatch_plant_asset(
     plant_request_id: UUID,
@@ -2752,7 +3621,6 @@ async def dispatch_plant_asset(
     user: dict = Depends(require_permission("fleet.plant_requests.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    asset = await asset_or_404(db, payload.fleet_id, user["org_id"])
     request = (
         (
             await db.execute(
@@ -2766,6 +3634,27 @@ async def dispatch_plant_asset(
         .mappings()
         .first()
     )
+    if not request:
+        raise HTTPException(status_code=404, detail="Plant request not found")
+
+    fleet_id = payload.fleet_id
+    if not fleet_id:
+        res = await db.execute(
+            text("""
+                SELECT fleet_id FROM fleet.plant_reservations
+                WHERE plant_request_id = :id AND organization_id = :org_id
+                  AND status IN ('provisional', 'confirmed') AND is_deleted = false
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"id": plant_request_id, "org_id": user["org_id"]},
+        )
+        row = res.first()
+        if row and row.fleet_id:
+            fleet_id = row.fleet_id
+        else:
+            raise HTTPException(status_code=400, detail="No machine specified or reserved for this plant request.")
+
+    asset = await asset_or_404(db, fleet_id, user["org_id"])
     if not request:
         raise HTTPException(status_code=404, detail="Plant request not found")
     if request["status"] not in ("approved", "reserved", "ready_for_dispatch"):
@@ -2784,7 +3673,7 @@ async def dispatch_plant_asset(
     _, _, critical_defects_count = await asyncio.gather(
         _check_project_reference(payload.project_id or request["project_id"], user["org_id"]),
         _check_reservation_reference(payload.reservation_id, user["org_id"]),
-        _count_critical_defects(user["org_id"], payload.fleet_id),
+        _count_critical_defects(user["org_id"], fleet_id),
     )
 
     readiness_blockers = plant_readiness_blockers(
@@ -2820,8 +3709,18 @@ async def dispatch_plant_asset(
         )
     starts_at = payload.dispatch_at or datetime.utcnow()
     ends_at = datetime.combine(request["end_date"], datetime.min.time()) if request["end_date"] else None
+    destination_location = payload.destination_location or request["work_location"] or "Project Site"
+    transport_instr = payload.transport_instructions or ""
+    if payload.transporter_name:
+        transport_instr += f" Transporter: {payload.transporter_name}."
+    if payload.driver_name:
+        transport_instr += f" Driver: {payload.driver_name}."
+    if payload.dispatch_notes:
+        transport_instr += f" Notes: {payload.dispatch_notes}."
+    transport_instr = transport_instr.strip() or None
+
     assignment = AssignmentPayload(
-        fleet_id=payload.fleet_id,
+        fleet_id=fleet_id,
         project_id=payload.project_id or request["project_id"],
         assigned_to_user_id=payload.assigned_to_user_id,
         operator_employee_id=payload.operator_employee_id,
@@ -2830,7 +3729,7 @@ async def dispatch_plant_asset(
         ends_at=ends_at,
         status="dispatched",
         origin_location=payload.origin_location,
-        destination_location=payload.destination_location,
+        destination_location=destination_location,
         purpose=request["work_description"],
         odometer_out=payload.odometer_out,
     )
@@ -2898,6 +3797,7 @@ async def dispatch_plant_asset(
     """),
         {
             **payload.model_dump(),
+            "transport_instructions": transport_instr,
             "plant_request_id": plant_request_id,
             "assignment_id": assignment_id,
             "inspection_id": inspection_id,
@@ -3359,8 +4259,8 @@ async def close_plant_financials(
         UPDATE fleet.plant_requests
         SET status=CASE WHEN :status='closed' THEN 'closed' ELSE 'under_reconciliation' END,
             closed_at=CASE WHEN :status='closed' THEN NOW() ELSE closed_at END,
-            expected_revenue=GREATEST(expected_revenue, :internal_charge_amount + :external_invoice_amount + :damage_charge_amount),
-            estimated_cost=GREATEST(estimated_cost, :operator_cost_amount + :fuel_cost_amount + :transport_cost_amount + :maintenance_cost_amount),
+            expected_revenue=GREATEST(expected_revenue, CAST(:internal_charge_amount AS numeric) + CAST(:external_invoice_amount AS numeric) + CAST(:damage_charge_amount AS numeric)),
+            estimated_cost=GREATEST(estimated_cost, CAST(:operator_cost_amount AS numeric) + CAST(:fuel_cost_amount AS numeric) + CAST(:transport_cost_amount AS numeric) + CAST(:maintenance_cost_amount AS numeric)),
             contribution_margin=:contribution_margin,
             updated_at=NOW()
         WHERE id=:id AND organization_id=:org_id
@@ -3448,3 +4348,19 @@ async def retire_asset(
         raise HTTPException(status_code=404, detail="Fleet asset not found")
     await db.commit()
     return result(None, "Fleet asset retired.")
+
+from typing import Any, Dict
+from core.security import require_any_permission
+from app.services.documents.invoice_renderer import INVOICE_ISSUER_PERMISSIONS, invoice_pdf_response
+
+
+@router.post("/invoices/generate-pdf")
+async def generate_fleet_invoice_pdf(
+    payload: Dict[str, Any],
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+):
+    """
+    Renders official Six Nine Construction Plant & Equipment commercial invoice PDF
+    with watermark, duty hours, standing hours, logistics breakdown, and storytelling notes.
+    """
+    return await invoice_pdf_response(payload, "SNC_Plant_Invoice")

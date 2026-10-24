@@ -12,7 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import require_permission, require_any_permission
+from core.truncation import capped
 from app.services import inventory_service
 from app.shared.events import emit_event
 from app.shared.sql import tenant_reference_sql
@@ -29,6 +30,9 @@ class StockMovementPayload(Payload):
     store_id: Optional[UUID] = None
     project_id: Optional[UUID] = None
     supplier_id: Optional[UUID] = None
+    fleet_id: Optional[UUID] = None
+    work_order_id: Optional[UUID] = None
+    cost_category: Optional[Literal["materials", "equipment"]] = "materials"
     quantity: Decimal = Field(gt=0, max_digits=14, decimal_places=3)
     unit_cost: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=15, decimal_places=4
@@ -179,13 +183,35 @@ async def require_site_for_project(
         raise HTTPException(status_code=404, detail="Site not found for this project")
 
 
+def _is_enterprise_store_viewer(user: dict) -> bool:
+    user_roles = set(user.get("roles") or [user.get("role")])
+    if user.get("role") == "SUPERADMIN":
+        return True
+    enterprise_roles = {
+        "SUPERADMIN",
+        "Managing Director",
+        "Executive (Admin)",
+        "Procurement Officer",
+        "Procurement Manager",
+        "Commercial Director",
+        "Finance Manager",
+        "Financial Controller",
+        "CFO",
+        "Auditor",
+    }
+    return bool(user_roles.intersection(enterprise_roles))
+
+
 @router.get("/stock-levels")
 async def stock_levels(
     store_id: Optional[UUID] = None,
+    item_id: Optional[UUID] = None,
+    search: Optional[str] = None,
     below_reorder: bool = False,
     user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    is_central = _is_enterprise_store_viewer(user)
     rows = await db.execute(
         text("""
         WITH balances AS (
@@ -194,6 +220,7 @@ async def stock_levels(
           FROM procurement.stock_ledger
           WHERE organization_id=:org_id
             AND (CAST(:store_id AS uuid) IS NULL OR store_id=CAST(:store_id AS uuid))
+            AND (CAST(:item_id AS uuid) IS NULL OR item_id=CAST(:item_id AS uuid))
           GROUP BY item_id, store_id
         )
         SELECT i.id, i.item_name, i.item_code, i.category, i.item_type, i.unit_of_measure,
@@ -213,17 +240,35 @@ async def stock_levels(
         LEFT JOIN procurement.stores st ON st.id=b.store_id AND st.organization_id=:org_id
         LEFT JOIN projects.projects p ON p.id=st.project_id AND p.organization_id=:org_id
         WHERE i.organization_id=:org_id AND i.is_deleted=false
+          AND (CAST(:item_id AS uuid) IS NULL OR i.id=CAST(:item_id AS uuid))
+          AND (CAST(:search AS varchar) IS NULL OR (i.item_name ILIKE '%' || CAST(:search AS varchar) || '%' OR i.item_code ILIKE '%' || CAST(:search AS varchar) || '%'))
           AND (:below_reorder = false OR COALESCE(b.available_qty, 0) <= COALESCE(i.reorder_level, 0))
+          AND (
+            :is_central = true
+            OR st.id IS NULL
+            OR st.store_manager_id = CAST(:user_id AS uuid)
+            OR st.engineer_id = CAST(:user_id AS uuid)
+            OR st.foreman_id = CAST(:user_id AS uuid)
+            OR st.project_id IN (
+                SELECT sra.project_id FROM projects.site_role_assignments sra
+                WHERE sra.user_id = CAST(:user_id AS uuid)
+                  AND sra.is_active = true AND sra.is_deleted = false
+            )
+          )
         ORDER BY i.item_name NULLS LAST, st.name NULLS LAST
-        LIMIT 1000
+        LIMIT 1001
     """),
         {
             "org_id": user["org_id"],
             "store_id": store_id,
+            "item_id": item_id,
+            "search": search,
             "below_reorder": below_reorder,
+            "user_id": user["user_id"],
+            "is_central": is_central,
         },
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 1000)]
     return ok(data, "Stock levels listed.", len(data))
 
 
@@ -265,6 +310,7 @@ async def list_stores(
     user: dict = Depends(require_permission("inventory_items.read")),
     db: AsyncSession = Depends(get_db),
 ):
+    is_central = _is_enterprise_store_viewer(user)
     rows = await db.execute(
         text("""
         SELECT st.*, p.name AS project_name, p.client_name, s.name AS site_name,
@@ -279,12 +325,23 @@ async def list_stores(
         LEFT JOIN core.users foreman ON foreman.id=st.foreman_id AND foreman.organization_id=st.organization_id
         WHERE st.organization_id=:org_id AND st.is_deleted=false
           AND (CAST(:project_id AS uuid) IS NULL OR st.project_id=CAST(:project_id AS uuid))
+          AND (
+            :is_central = true
+            OR st.store_manager_id = CAST(:user_id AS uuid)
+            OR st.engineer_id = CAST(:user_id AS uuid)
+            OR st.foreman_id = CAST(:user_id AS uuid)
+            OR st.project_id IN (
+                SELECT sra.project_id FROM projects.site_role_assignments sra
+                WHERE sra.user_id = CAST(:user_id AS uuid)
+                  AND sra.is_active = true AND sra.is_deleted = false
+            )
+          )
         ORDER BY st.store_type, st.name
-        LIMIT 500
+        LIMIT 501
     """),
-        {"org_id": user["org_id"], "project_id": project_id},
+        {"org_id": user["org_id"], "project_id": project_id, "user_id": user["user_id"], "is_central": is_central},
     )
-    data = [dict(r._mapping) for r in rows]
+    data = [dict(r._mapping) for r in capped(rows, 500)]
     return ok(data, "Stores listed.", len(data))
 
 
@@ -559,23 +616,70 @@ async def issue_stock(
     await require_ref(
         db, "procurement.stores", payload.store_id, user["org_id"], "Store"
     )
-    await require_ref(
-        db, "projects.projects", payload.project_id, user["org_id"], "Project"
-    )
+
+    target_project_id = payload.project_id
+    target_source_type = "manual_issue"
+    target_source_id = uuid4()
+    target_cost_category = payload.cost_category or "materials"
+    target_cost_description = payload.reference or "Manual stock issue"
+
+    if payload.work_order_id:
+        await require_ref(
+            db, "fleet.maintenance_work_orders", payload.work_order_id, user["org_id"], "Work order"
+        )
+        target_source_type = "fleet_maintenance_work_order"
+        target_source_id = payload.work_order_id
+        target_cost_category = "equipment"
+        target_cost_description = f"Workshop maintenance parts issue: {payload.reference or str(payload.work_order_id)[:8]}"
+        if not target_project_id:
+            wo_proj = await db.execute(
+                text("SELECT project_id FROM fleet.maintenance_work_orders WHERE id=:id AND organization_id=:org_id"),
+                {"id": payload.work_order_id, "org_id": user["org_id"]}
+            )
+            target_project_id = wo_proj.scalar()
+    elif payload.fleet_id:
+        await require_ref(
+            db, "fleet.fleet", payload.fleet_id, user["org_id"], "Fleet asset"
+        )
+        target_source_type = "fleet_asset"
+        target_source_id = payload.fleet_id
+        target_cost_category = "equipment"
+        target_cost_description = f"Fleet asset consumable issue: {payload.reference or str(payload.fleet_id)[:8]}"
+        if not target_project_id:
+            fa_proj = await db.execute(
+                text("SELECT current_project_id FROM fleet.fleet WHERE id=:id AND organization_id=:org_id"),
+                {"id": payload.fleet_id, "org_id": user["org_id"]}
+            )
+            target_project_id = fa_proj.scalar()
+
+    # If project not explicitly provided, auto-resolve from the site store's linked project
+    if not target_project_id:
+        st_proj = (await db.execute(
+            text("SELECT project_id FROM procurement.stores WHERE id = :id AND organization_id = :org_id"),
+            {"id": payload.store_id, "org_id": user["org_id"]}
+        )).scalar()
+        if st_proj:
+            target_project_id = st_proj
+
+    if target_project_id:
+        await require_ref(
+            db, "projects.projects", target_project_id, user["org_id"], "Project"
+        )
     outcome = await inventory_service.issue_stock(
         db,
         user,
         item_id=payload.item_id,
         store_id=payload.store_id,
-        project_id=payload.project_id,
+        project_id=target_project_id,
         quantity=payload.quantity,
         unit_cost=payload.unit_cost,
-        source_type="manual_issue",
-        source_id=uuid4(),
+        source_type=target_source_type,
+        source_id=target_source_id,
         reference=payload.reference
         or f"ISSUE-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         notes=payload.notes,
-        cost_description=payload.reference or "Manual stock issue",
+        cost_category=target_cost_category,
+        cost_description=target_cost_description,
         override_reason=payload.override_reason,
     )
     await db.commit()

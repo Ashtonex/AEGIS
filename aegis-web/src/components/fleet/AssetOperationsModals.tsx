@@ -75,6 +75,9 @@ export const ASSET_CATEGORY_OPTIONS = [
   "Small plant and tools",
   "Attachments",
   "Hired-in equipment",
+  "Office assets",
+  "IT & Computers",
+  "Office furniture",
 ] as const;
 
 // ─── Register asset ──────────────────────────────────────────────────────────
@@ -496,11 +499,12 @@ export function AssignmentModal({
             <input type="text" value={form.origin_location} onChange={(e) => patch("origin_location", e.target.value)} className={inputClass} placeholder="Depot / origin" />
           } />
         </div>
-        <Field label="Dispatch Status" input={
+        <Field label="Dispatch Status" hint="Select 'Completed' to backlog a past hire or assignment" input={
           <select value={form.status} onChange={(e) => patch("status", e.target.value)} className={inputClass}>
             <option value="planned">Planned</option>
             <option value="dispatched">Dispatched</option>
             <option value="active">Active</option>
+            <option value="completed">Completed (Historical / Backlog)</option>
           </select>
         } />
         <Field label="Purpose" input={
@@ -535,9 +539,12 @@ export function WorkOrderModal({
     work_order_number: `WO-${Date.now().toString(36).toUpperCase()}`,
     maintenance_type: "preventive",
     priority: "medium",
+    status: "scheduled",
     vendor_name: "",
     scheduled_for: "",
     estimated_cost: "",
+    actual_cost: "",
+    completion_notes: "",
     description: "",
   });
   const [saving, setSaving] = useState(false);
@@ -560,9 +567,13 @@ export function WorkOrderModal({
         work_order_number: form.work_order_number.trim(),
         maintenance_type: form.maintenance_type,
         priority: form.priority,
+        status: form.status,
         vendor_name: form.vendor_name.trim() || undefined,
         scheduled_for: form.scheduled_for ? new Date(form.scheduled_for).toISOString() : undefined,
+        completed_at: form.status === "completed" && form.scheduled_for ? new Date(form.scheduled_for).toISOString() : undefined,
         estimated_cost: form.estimated_cost || undefined,
+        actual_cost: form.actual_cost || undefined,
+        completion_notes: form.completion_notes.trim() || undefined,
         description: form.description.trim(),
       });
       onSuccess();
@@ -574,18 +585,25 @@ export function WorkOrderModal({
   }
 
   return (
-    <Modal title={`Create Work Order — ${assetLabel}`} onClose={onClose}>
+    <Modal title={`Record Service / Work Order — ${assetLabel}`} onClose={onClose}>
       <div className="space-y-4 px-5 py-4">
         {err && <p className="border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">{err}</p>}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Work Order Number" input={
             <input type="text" value={form.work_order_number} onChange={(e) => patch("work_order_number", e.target.value)} className={inputClass} />
           } />
+          <Field label="Status" hint="Select 'Completed' for historical backlogs" input={
+            <select value={form.status} onChange={(e) => patch("status", e.target.value)} className={inputClass}>
+              <option value="scheduled">Scheduled / Pending</option>
+              <option value="in_progress">In Progress</option>
+              <option value="completed">Completed (Historical / Backlog)</option>
+            </select>
+          } />
           <Field label="Type" input={
             <select value={form.maintenance_type} onChange={(e) => patch("maintenance_type", e.target.value)} className={inputClass}>
-              <option value="preventive">Preventive</option>
-              <option value="corrective">Corrective</option>
-              <option value="inspection">Inspection</option>
+              <option value="preventive">Preventive Service</option>
+              <option value="corrective">Corrective Repair</option>
+              <option value="inspection">Statutory Inspection</option>
               <option value="compliance">Compliance</option>
             </select>
           } />
@@ -597,25 +615,33 @@ export function WorkOrderModal({
               <option value="critical">Critical</option>
             </select>
           } />
-          <Field label="Vendor" input={
-            <input type="text" value={form.vendor_name} onChange={(e) => patch("vendor_name", e.target.value)} className={inputClass} />
+          <Field label="Vendor / Service Provider" input={
+            <input type="text" value={form.vendor_name} onChange={(e) => patch("vendor_name", e.target.value)} className={inputClass} placeholder="e.g. Barloworld, Zimoco, In-house" />
           } />
-          <Field label="Scheduled For" input={
+          <Field label="Service Date / Scheduled For" hint="Select previous date for past service backlogs" input={
             <input type="date" value={form.scheduled_for} onChange={(e) => patch("scheduled_for", e.target.value)} className={inputClass} />
           } />
-          <Field label="Estimated Cost" input={
+          <Field label="Estimated Cost ($)" input={
             <input type="number" min="0" step="0.01" value={form.estimated_cost} onChange={(e) => patch("estimated_cost", e.target.value)} className={inputClass} />
+          } />
+          <Field label="Actual Cost ($)" hint="For completed / backlogged services" input={
+            <input type="number" min="0" step="0.01" value={form.actual_cost} onChange={(e) => patch("actual_cost", e.target.value)} className={inputClass} />
           } />
         </div>
         <Field label="Description *" input={
-          <textarea rows={3} value={form.description} onChange={(e) => patch("description", e.target.value)} className={`${inputClass} resize-none`} />
+          <textarea rows={2} value={form.description} onChange={(e) => patch("description", e.target.value)} className={`${inputClass} resize-none`} placeholder="Details of service or work undertaken..." />
         } />
+        {form.status === "completed" && (
+          <Field label="Completion Notes" input={
+            <textarea rows={2} value={form.completion_notes} onChange={(e) => patch("completion_notes", e.target.value)} className={`${inputClass} resize-none`} placeholder="Notes on work completed, parts fitted, warranty..." />
+          } />
+        )}
       </div>
       <div className="flex justify-end gap-3 border-t border-ink-mid px-5 py-4">
         <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-slate-light hover:text-paper">Cancel</button>
         <button type="button" onClick={() => void submit()} disabled={saving} className="inline-flex items-center gap-2 bg-signal px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">
           {saving && <Loader2 size={14} className="animate-spin" />}
-          Create Work Order
+          {form.status === "completed" ? "Save Service Record" : "Create Work Order"}
         </button>
       </div>
     </Modal>

@@ -10,13 +10,25 @@ class Input(BaseModel):
 
 
 class PersonCreate(Input):
+    """Worker numbers are issued by the server (hr.next_worker_number); a
+    client-supplied number is ignored rather than rejected so older clients
+    keep working."""
+
     employee_name: str = Field(min_length=1, max_length=255)
-    employee_number: str = Field(min_length=1, max_length=80)
+    employee_number: str | None = Field(default=None, max_length=80, exclude=True)
     job_title: str | None = Field(default=None, max_length=100)
-    category_id: UUID
+    category_id: UUID | None = None
     position_id: UUID | None = None
     department_id: UUID | None = None
     work_location: str | None = Field(default=None, max_length=255)
+    employment_type: Literal["permanent", "fixed_term", "casual", "intern", "consultant"] | None = None
+    start_date: date | None = None
+
+    @model_validator(mode="after")
+    def has_discipline(self):
+        if not self.category_id and not self.position_id:
+            raise ValueError("Choose a discipline or a role")
+        return self
 
 
 class PersonUpdate(Input):
@@ -36,9 +48,13 @@ class VersionReason(Input):
 
 
 class CatalogueCreate(Input):
-    code: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    """Code is generated from the name when omitted (Quantity Surveyor -> QS)."""
+
+    code: str | None = Field(default=None, min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(min_length=1, max_length=160)
     payroll_eligible: bool = False
+    category_id: UUID | None = None
+    description: str | None = Field(default=None, max_length=1000)
     department_id: UUID | None = None
     trade: str | None = Field(default=None, max_length=160)
     grade: str | None = Field(default=None, max_length=80)

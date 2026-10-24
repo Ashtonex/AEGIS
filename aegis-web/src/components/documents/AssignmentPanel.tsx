@@ -8,6 +8,9 @@ import type { DocumentEntityType } from "./EntityDocumentsPanel";
 function normalizeError(reason: unknown, fallback: string) {
   const message = reason instanceof Error ? reason.message : String(reason ?? "");
   if (!message) return fallback;
+  if (message.toLowerCase().includes("not found")) {
+    return null;
+  }
   if (message.toLowerCase().includes("authentication service temporarily unavailable")) {
     return "Assignment service is reconnecting. Retry in a few seconds.";
   }
@@ -48,13 +51,15 @@ export function AssignmentPanel({ entityType, entityId }: { entityType: Document
     if (usersResult.status === "fulfilled" && usersResult.value.success && Array.isArray(usersResult.value.data)) {
       setUsers(usersResult.value.data);
     } else if (usersResult.status === "rejected") {
-      warnings.push(normalizeError(usersResult.reason, "People list did not load."));
+      const err = normalizeError(usersResult.reason, "People list did not load.");
+      if (err) warnings.push(err);
     }
 
     if (teamsResult.status === "fulfilled" && teamsResult.value.success && Array.isArray(teamsResult.value.data)) {
       setTeams(teamsResult.value.data);
     } else if (teamsResult.status === "rejected") {
-      warnings.push(normalizeError(teamsResult.reason, "Team list did not load."));
+      const err = normalizeError(teamsResult.reason, "Team list did not load.");
+      if (err) warnings.push(err);
     }
 
     if (assignmentResult.status === "fulfilled" && assignmentResult.value.success && assignmentResult.value.data) {
@@ -67,7 +72,8 @@ export function AssignmentPanel({ entityType, entityId }: { entityType: Document
         setSelectedId(assignmentResult.value.data.assigned_to_user_id);
       }
     } else if (assignmentResult.status === "rejected") {
-      setError(normalizeError(assignmentResult.reason, "Current assignment did not load."));
+      const err = normalizeError(assignmentResult.reason, "Current assignment did not load.");
+      if (err) setError(err);
     }
 
     if (warnings.length > 0) {

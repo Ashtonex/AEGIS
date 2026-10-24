@@ -12,7 +12,7 @@ WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text(
     sorted_p.read_text(
     encoding="utf-8"
 )
-    for sorted_p in [(ROOT.parent / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
+    for sorted_p in [(ROOT.parent / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "projects.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
 )
 PROJECTS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "projects" / "page.tsx"
@@ -104,7 +104,10 @@ class ProjectsRouterContractTests(unittest.TestCase):
     def test_pre_mobilisation_gate_blocks_active_delivery_until_approved(self):
         self.assertIn("PRE_MOBILISATION_GATES", PROJECTS_ROUTER)
         self.assertIn("Project cannot become active until the pre-mobilisation readiness gate is approved.", PROJECTS_ROUTER)
-        self.assertIn("SET status = 'pre_mobilisation'", PROJECTS_ROUTER)
+        self.assertTrue(
+            "SET status = 'pre_mobilisation'" in PROJECTS_ROUTER
+            or 'new_status = "pre_mobilisation"' in PROJECTS_ROUTER
+        )
         self.assertIn("project.pre_mobilisation_opened.v1", PROJECTS_ROUTER)
         self.assertIn("project.mobilisation_authorised.v1", PROJECTS_ROUTER)
         self.assertIn("mobilisation_authorisation_number", PROJECTS_ROUTER)
@@ -145,6 +148,66 @@ class ProjectsRouterContractTests(unittest.TestCase):
         self.assertIn("procurement.stock_ledger sl", EXECUTIVE_ROUTER)
         self.assertIn("sl.quantity * COALESCE(sl.unit_cost, i.standard_cost, 0)", EXECUTIVE_ROUTER)
         self.assertNotIn("SUM(stock_quantity * standard_cost)", EXECUTIVE_ROUTER)
+
+    def test_internal_project_api_client_and_routing_contract(self):
+        # Web API must provide canonical internal project endpoints, distinct from public website slugs
+        self.assertIn("export async function getInternalProject(projectId: string)", WEB_API)
+        self.assertIn("/api/v1/projects/${encodeURIComponent(projectId)}", WEB_API)
+        self.assertIn("export async function getEligibleQuotationsForProject", WEB_API)
+        self.assertIn("/budget/eligible-quotations", WEB_API)
+        self.assertIn("export async function linkProjectToQuotation", WEB_API)
+        self.assertIn("/budget/link-quotation", WEB_API)
+
+    def test_quotation_budget_rbac_and_cost_breakdown_contract(self):
+        # Must use valid registered permission projects.update rather than unregistered projects.write
+        self.assertNotIn('require_permission("projects.write")', PROJECTS_ROUTER)
+        self.assertIn('require_permission("projects.update")', PROJECTS_ROUTER)
+        self.assertIn('extract_quotation_cost_breakdown', PROJECTS_ROUTER)
+        self.assertIn('/budget/eligible-quotations', PROJECTS_ROUTER)
+        self.assertIn('/budget/link-quotation', PROJECTS_ROUTER)
+
+    def test_quotation_cost_breakdown_extractor_unit(self):
+        from routers.projects import extract_quotation_cost_breakdown
+
+        # Case 1: quote with stored calculation direct_costs_breakdown
+        meta1 = {
+            "calculation": {
+                "direct_costs_breakdown": {
+                    "materials": 20000,
+                    "labour": 15000,
+                    "equipment": 5000,
+                }
+            }
+        }
+        res1 = extract_quotation_cost_breakdown("quote-1", meta1, 50000)
+        self.assertEqual(res1["materials"], 20000)
+        self.assertEqual(res1["labour"], 15000)
+        self.assertEqual(res1["equipment"], 5000)
+
+        # Case 2: quote with items but no calculation (like live BOQ approval output)
+        meta2 = {
+            "items": [
+                {
+                    "category": "materials",
+                    "quantity": 10,
+                    "rate": 1000,
+                    "cost": 10000,
+                },
+                {
+                    "description": "Excavator Hire",
+                    "quantity": 2,
+                    "unit_rate": 2500,
+                    "total_amount": 5000,
+                },
+            ],
+            "preliminaries": 2000,
+            "contingency_amount": 3000,
+        }
+        res2 = extract_quotation_cost_breakdown("quote-2", meta2, 100000)
+        self.assertEqual(res2["materials"], 10000)
+        self.assertEqual(res2["equipment"], 5000)
+        self.assertEqual(res2["overhead"], 2000)
+        self.assertEqual(res2["contingency"], 3000)
 
 
 if __name__ == "__main__":

@@ -142,6 +142,9 @@ async def list_items(
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    opportunity_id: Optional[UUID] = Query(default=None),
+    contact_id: Optional[UUID] = Query(default=None),
+    lead_id: Optional[UUID] = Query(default=None),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -158,6 +161,15 @@ async def list_items(
     if end_date is not None:
         conditions.append("a.activity_date <= :end_date")
         params["end_date"] = end_date
+    if opportunity_id is not None:
+        conditions.append("a.opportunity_id = :opportunity_id")
+        params["opportunity_id"] = opportunity_id
+    if contact_id is not None:
+        conditions.append("a.contact_id = :contact_id")
+        params["contact_id"] = contact_id
+    if lead_id is not None:
+        conditions.append("a.lead_id = :lead_id")
+        params["lead_id"] = lead_id
 
     where_sql = " AND ".join(conditions)
     query = text(f"""

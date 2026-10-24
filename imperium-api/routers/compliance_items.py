@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.database import get_db
 from core.logging import logger
 from core.security import require_permission, get_current_user
+from core.truncation import capped
 from app.shared.pagination import ok
 from app.shared.sql import safe_payload_columns, update_tenant_row_sql
 from app.shared.events import emit_notification, emit_role_notification
@@ -228,11 +229,11 @@ async def list_equipment_credentials(
          AND f.is_deleted = false
         WHERE ec.organization_id = :org_id AND ec.is_deleted = false
         ORDER BY ec.expires_on ASC NULLS LAST
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"]},
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 500)]
     return ok(data, "Equipment credentials listed.")
 
 
@@ -302,11 +303,11 @@ async def list_corrective_actions(
         ORDER BY
           CASE status WHEN 'open' THEN 0 WHEN 'overdue' THEN 1 WHEN 'in_progress' THEN 2 ELSE 3 END,
           due_date ASC
-        LIMIT 500
+        LIMIT 501
     """),
         {"org_id": user["org_id"], "status": status_filter},
     )
-    data = [dict(row._mapping) for row in rows]
+    data = [dict(row._mapping) for row in capped(rows, 500)]
     return ok(data, "Corrective actions listed.")
 
 
@@ -403,7 +404,7 @@ async def list_deployment_requirements(
           AND (CAST(:scope AS varchar) IS NULL OR r.requirement_scope = CAST(:scope AS varchar))
           AND (CAST(:active AS boolean) IS NULL OR r.is_active = CAST(:active AS boolean))
         ORDER BY r.is_active DESC, r.requirement_scope, r.certification_name
-        LIMIT 500
+        LIMIT 501
     """
     rows = (
         (
@@ -419,6 +420,7 @@ async def list_deployment_requirements(
         .mappings()
         .all()
     )
+    rows = capped(rows, 500)
     return ok(
         [dict(row) for row in rows],
         "Deployment compliance requirements listed.",

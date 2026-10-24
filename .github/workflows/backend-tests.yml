@@ -9,6 +9,12 @@ name: Backend Tests
 # `skipped` count in local runs), so this still exercises the ~930
 # non-DB unit/contract tests without provisioning a CI database.
 
+#
+# On main this suite runs as the first job of deploy-backend.yml (via
+# workflow_call), and the deploy job waits for it to pass, so a push that
+# breaks the tests never reaches the droplet. The push trigger below only
+# covers edits to this file, so main pushes don't run the suite twice.
+
 on:
   pull_request:
     paths:
@@ -17,8 +23,8 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "imperium-api/**"
       - ".github/workflows/backend-tests.yml"
+  workflow_call: {}
 
 jobs:
   test:

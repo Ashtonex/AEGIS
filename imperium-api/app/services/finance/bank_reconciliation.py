@@ -467,9 +467,19 @@ async def list_imports(db: AsyncSession, *, org_id: str) -> list[dict]:
     return [dict(r._mapping) for r in rows]
 
 
-async def list_lines(db: AsyncSession, *, org_id: str, import_id: UUID, match_status: Optional[str] = None) -> list[dict]:
+async def list_lines(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    import_id: UUID,
+    match_status: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
+    """One page of an import's lines, each carrying ``_total`` (matching
+    rows before LIMIT/OFFSET) for app.shared.pagination.limited()."""
     filters = ["bsl.import_id = :import_id", "bsl.organization_id = :org_id"]
-    params: dict = {"import_id": import_id, "org_id": org_id}
+    params: dict = {"import_id": import_id, "org_id": org_id, "limit": limit, "offset": offset}
     if match_status:
         filters.append("bsl.match_status = :match_status")
         params["match_status"] = match_status
@@ -477,11 +487,13 @@ async def list_lines(db: AsyncSession, *, org_id: str, import_id: UUID, match_st
     rows = await db.execute(
         text(f"""
             SELECT bsl.*, ct.transaction_number AS matched_transaction_number,
-                   ct.description AS matched_description, ct.transaction_date AS matched_transaction_date
+                   ct.description AS matched_description, ct.transaction_date AS matched_transaction_date,
+                   COUNT(*) OVER () AS _total
             FROM finance.bank_statement_lines bsl
             LEFT JOIN finance.cashbook_transactions ct ON ct.id = bsl.matched_cashbook_transaction_id
             WHERE {where}
             ORDER BY bsl.line_number
+            LIMIT :limit OFFSET :offset
         """),
         params,
     )

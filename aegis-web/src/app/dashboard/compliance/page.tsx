@@ -102,11 +102,14 @@ function loadFailureMessage(reason: unknown) {
 }
 
 function normalizeActionError(reason: unknown, fallback: string) {
+  // Say why it failed (permission, validation, server error) instead of only the generic fallback.
   const rawMessage = reason instanceof Error ? reason.message : String(reason ?? "");
-  if (/aborted|cancelled|timed out|network error|fetch failed|not found/i.test(rawMessage)) {
+  if (!rawMessage || /aborted|cancelled|timed out|network error|fetch failed/i.test(rawMessage)) {
     return fallback;
   }
-  return fallback;
+  const status = (reason as { status?: number } | null)?.status;
+  if (status === 403) return `${fallback} Your current role does not have permission to do this.`;
+  return `${fallback} ${rawMessage}`;
 }
 
 export default function ComplianceDashboard() {
@@ -121,7 +124,7 @@ export default function ComplianceDashboard() {
 export function CompliancePage({ initialTab }: { initialTab: ComplianceTab }) {
   if (initialTab === "obligations") return <ComplianceFoundation />;
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Compliance Officer", "Internal Auditor", "Project Manager", "Contracts Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard>
       <ComplianceWorkspace initialTab={initialTab} />
     </RBACGuard>
   );

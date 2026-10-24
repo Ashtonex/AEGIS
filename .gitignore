@@ -74,3 +74,4 @@ aegis-web/.next-workforce-test/
 # Runtime-generated secrets (e.g. VAPID keypair for web push) - never commit
 imperium-api/.aegis-runtime/
 *.pem
+imperium-api/generated/quotations/full_quote_test/

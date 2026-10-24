@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
+import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
+import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
 import {
@@ -195,6 +197,57 @@ function normalizeActionError(reason: unknown, fallback: string) {
   return rawMessage;
 }
 
+const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
+  command: { title: "Procurement Overview", subtitle: "What is in store, what moved, what is on the way, and what needs a decision." },
+  requisitions: { title: "Requisitions", subtitle: "Site and office requests for materials, from draft through approval to RFQ or PO." },
+  pricing: { title: "Pending Pricing", subtitle: "Site material requests issued without a known price. Confirm the real unit cost here." },
+  rfqs: { title: "Requests for Quotation", subtitle: "Quotes out to suppliers. Compare the responses, select one, then raise the PO." },
+  orders: { title: "Purchase Orders", subtitle: "Approved orders: issue them, track delivery, receive goods and register invoices." },
+  invoices: { title: "Supplier Invoices", subtitle: "Three-way match each invoice against its PO and goods receipt before payment." },
+  suppliers: { title: "Suppliers", subtitle: "Supplier register with compliance, delivery performance and open balances." },
+};
+
+function isPoOverdue(po: Rec) {
+  if (!["issued", "partially_received"].includes(tx(po.status).toLowerCase())) return false;
+  const raw = po.expected_delivery_date ?? po.required_by_date ?? po.required_by;
+  if (!raw) return false;
+  const date = new Date(String(raw));
+  return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+}
+
+function StatusChips({ value, onChange, rows, statusOf, amountOf, options, extra }: {
+  value: string;
+  onChange: (value: string) => void;
+  rows: Rec[];
+  statusOf: (row: Rec) => string;
+  amountOf?: (row: Rec) => number;
+  options: [string, string][];
+  extra?: { key: string; label: string; count: number };
+}) {
+  const chip = (key: string, label: string, count: number, amount?: number, warn = false) => (
+    <button
+      key={key}
+      type="button"
+      onClick={() => onChange(value === key && key !== "all" ? "all" : key)}
+      className={`inline-flex h-9 shrink-0 items-center gap-2 border px-3 font-mono text-[10px] uppercase ${value === key ? "border-signal bg-signal/15 text-signal" : "border-ink-mid bg-ink text-slate-light hover:border-signal/50 hover:text-paper"}`}
+    >
+      {label}
+      <span className={`font-semibold ${value === key ? "" : warn && count ? "text-amber-300" : "text-paper"}`}>{count}</span>
+      {amount !== undefined && amount > 0 && <span className="normal-case text-slate">{money(amount)}</span>}
+    </button>
+  );
+  return (
+    <div className="flex min-w-0 gap-1.5 overflow-x-auto">
+      {chip("all", "All", rows.length)}
+      {options.map(([key, label]) => {
+        const matching = rows.filter((r) => statusOf(r) === key);
+        return chip(key, label, matching.length, amountOf ? matching.reduce((sum, r) => sum + amountOf(r), 0) : undefined, key === "submitted" || key === "unmatched");
+      })}
+      {extra && chip(extra.key, extra.label, extra.count, undefined, true)}
+    </div>
+  );
+}
+
 // ─── Page export ──────────────────────────────────────────────────────────────
 
 export default function ProcurementPage() {
@@ -206,7 +259,7 @@ export default function ProcurementPage() {
       : "command";
 
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Procurement Manager", "Stores and Procurement Manager", "Stores & Procurement Manager", "Procurement Associate", "Project Manager", "Finance Manager", "Site Agent", "Tender / Bid Manager", "Commercial Manager", "Authorising Officer", "Executive Read Only", "External Auditor"]}>
+    <RBACGuard>
       <ProcurementWorkspace initialTab={initialTab} />
     </RBACGuard>
   );
@@ -231,6 +284,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [rfqStatus, setRfqStatus] = useState("all");
   const [poStatus, setPoStatus] = useState("all");
   const [invMatchStatus, setInvMatchStatus] = useState("all");
+  const [supplierCompliance, setSupplierCompliance] = useState("all");
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -247,6 +301,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const [receivingPO, setReceivingPO] = useState<Rec | null>(null);
   const [invoicingPO, setInvoicingPO] = useState<Rec | null>(null);
   const [paymentEvidenceInvoice, setPaymentEvidenceInvoice] = useState<Rec | null>(null);
+  const [inspectingMatchInvoice, setInspectingMatchInvoice] = useState<Rec | null>(null);
 
   useEffect(() => {
     setTab(initialTab);
@@ -260,11 +315,11 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     refetch: load,
   } = useApiQueries(
     {
-      requisitions: () => getProcurementRequisitions({ status: prStatus }),
-      rfqs: () => getProcurementRfqs({ status: rfqStatus }),
-      orders: () => getProcurementOrders({ status: poStatus }),
+      requisitions: () => getProcurementRequisitions({ status: "all" }),
+      rfqs: () => getProcurementRfqs({ status: "all" }),
+      orders: () => getProcurementOrders({ status: "all" }),
       suppliers: () => getProcurementSuppliers(),
-      invoices: () => getProcurementInvoices({ match_status: invMatchStatus }),
+      invoices: () => getProcurementInvoices({ match_status: "all" }),
       projects: () => getInternalProjects(),
       stores: () => getInventoryStores(),
       stockLevels: () => getInventoryStockLevels(),
@@ -272,7 +327,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       ccbFindings: () => getCcbFindings({ status: "open" }),
       pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
     },
-    [prStatus, rfqStatus, poStatus, invMatchStatus],
+    [],
     {
       criticalKeys: ["requisitions"],
       labels: {
@@ -589,8 +644,8 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
   const filteredPRs = useMemo(() => {
     const q = query.toLowerCase();
-    return requisitions.filter((r) => `${r.pr_number ?? r.reference_number ?? r.id} ${r.project_name ?? ""} ${r.requested_by ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
-  }, [requisitions, query]);
+    return requisitions.filter((r) => prStatus === "all" || tx(r.status, "draft").toLowerCase() === prStatus).filter((r) => `${r.pr_number ?? r.reference_number ?? r.id} ${r.project_name ?? ""} ${r.requested_by ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
+  }, [requisitions, query, prStatus]);
 
   const filteredPricing = useMemo(() => {
     const q = query.toLowerCase();
@@ -599,23 +654,23 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
   const filteredPOs = useMemo(() => {
     const q = query.toLowerCase();
-    return orders.filter((r) => `${r.po_number ?? r.reference_number ?? r.id} ${r.supplier_name ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
-  }, [orders, query]);
+    return orders.filter((r) => poStatus === "all" || (poStatus === "overdue" ? isPoOverdue(r) : tx(r.status, "draft").toLowerCase() === poStatus)).filter((r) => `${r.po_number ?? r.reference_number ?? r.id} ${r.supplier_name ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
+  }, [orders, query, poStatus]);
 
   const filteredRfqs = useMemo(() => {
     const q = query.toLowerCase();
-    return rfqs.filter((r) => `${r.rfq_number ?? r.id} ${r.requisition_number ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
-  }, [rfqs, query]);
+    return rfqs.filter((r) => rfqStatus === "all" || tx(r.status, "draft").toLowerCase() === rfqStatus).filter((r) => `${r.rfq_number ?? r.id} ${r.requisition_number ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
+  }, [rfqs, query, rfqStatus]);
 
   const filteredSuppliers = useMemo(() => {
     const q = query.toLowerCase();
-    return suppliers.filter((r) => `${r.name ?? r.supplier_name ?? ""} ${r.code ?? r.supplier_code ?? ""} ${r.praz_number ?? ""}`.toLowerCase().includes(q));
-  }, [suppliers, query]);
+    return suppliers.filter((r) => supplierCompliance === "all" || tx(r.compliance_status, "pending").toLowerCase() === supplierCompliance).filter((r) => `${r.name ?? r.supplier_name ?? ""} ${r.code ?? r.supplier_code ?? ""} ${r.praz_number ?? ""}`.toLowerCase().includes(q));
+  }, [suppliers, query, supplierCompliance]);
 
   const filteredInvoices = useMemo(() => {
     const q = query.toLowerCase();
-    return invoices.filter((r) => `${r.invoice_number ?? r.id} ${r.supplier_name ?? ""} ${r.po_number ?? ""} ${r.match_status ?? ""}`.toLowerCase().includes(q));
-  }, [invoices, query]);
+    return invoices.filter((r) => invMatchStatus === "all" || tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase() === invMatchStatus).filter((r) => `${r.invoice_number ?? r.id} ${r.supplier_name ?? ""} ${r.po_number ?? ""} ${r.match_status ?? ""}`.toLowerCase().includes(q));
+  }, [invoices, query, invMatchStatus]);
 
   const unmatchedCount = useMemo(
     () => filteredInvoices.filter((r) => ["unmatched", "disputed"].includes(tx(r.match_status ?? r.matching_status).toLowerCase())).length,
@@ -625,87 +680,93 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   return (
     <main className="min-h-full bg-ink p-4 text-paper sm:p-6">
       <DashboardPageHeader
-        eyebrow={{ label: "Procurement Control Tower", icon: ClipboardList }}
-        title="Procurement Pipeline"
-        subtitle="Procurement and inventory command view — what is in store, what moved, what is coming, and what needs action."
+        eyebrow={{ label: "Procurement", icon: ClipboardList }}
+        title={PROCUREMENT_TAB_META[tab].title}
+        subtitle={PROCUREMENT_TAB_META[tab].subtitle}
+        className="mb-4 pb-4"
         actions={
           <>
             {tab === "suppliers" ? (
-              <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+              <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
                 <Plus className="h-4 w-4" />New Supplier
               </button>
-            ) : (
-              <button onClick={() => setShowCreatePR(true)} className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+            ) : tab === "command" || tab === "requisitions" ? (
+              <button onClick={() => setShowCreatePR(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
                 <Plus className="h-4 w-4" />New Requisition
               </button>
-            )}
-            <button onClick={() => void load()} disabled={loading} className="inline-flex h-10 items-center gap-2 border border-ink-mid bg-ink-light px-3 font-mono text-xs uppercase tracking-wider text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />Refresh
+            ) : null}
+            <button onClick={() => void load()} disabled={loading} title="Refresh" className="inline-flex h-9 w-9 items-center justify-center border border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </button>
           </>
         }
       />
 
-      {/* KPI Strip */}
-      <section className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
-        <KpiCard icon={<FileText />} label="Open PRs" value={loading ? "…" : String(kpis.openPRs)} />
-        <KpiCard icon={<Send />} label="Awaiting Approval" value={String(kpis.awaitingApproval)} tone={kpis.awaitingApproval ? "text-blue-300" : undefined} />
-        <KpiCard icon={<Search />} label="Active RFQs" value={String(kpis.activeRFQs)} />
-        <KpiCard icon={<Package />} label="Open POs" value={String(kpis.activePOs)} tone="text-purple-300" />
-        <KpiCard icon={<PackageCheck />} label="GRNs Pending" value={String(kpis.grnsPending)} tone={kpis.grnsPending ? "text-amber-300" : undefined} />
-        <KpiCard icon={<AlertTriangle />} label="Invoices Pending" value={String(kpis.invPending)} tone={kpis.invPending ? "text-amber-300" : undefined} />
-        <KpiCard icon={<DollarSign />} label="Total Committed" value={loading ? "…" : money(kpis.committed)} tone="text-signal" large />
-      </section>
+      <SupplyControlTower currentModule="procurement" />
+
+      {/* Where this page sits in the requisition-to-payment flow, with what is
+          waiting at each stage - the same strip on every tab, but the active
+          stage and its counts are what change as work moves through. */}
+      <nav className="mb-4 grid grid-cols-2 gap-px border border-ink-mid bg-ink-mid sm:grid-cols-3 lg:grid-cols-6">
+        {[
+          { key: "requisitions" as Tab, label: "Requisitions", value: kpis.awaitingApproval, sub: `${kpis.openPRs} open`, hot: kpis.awaitingApproval > 0, verb: "to approve" },
+          { key: "pricing" as Tab, label: "Pricing", value: pendingPricing.length, sub: "site requests", hot: pendingPricing.length > 0, verb: "to price" },
+          { key: "rfqs" as Tab, label: "RFQs", value: kpis.activeRFQs, sub: "out to suppliers", hot: false, verb: "open" },
+          { key: "orders" as Tab, label: "Purchase orders", value: kpis.activePOs, sub: `${command.overduePOs.length} overdue`, hot: command.overduePOs.length > 0, verb: "in flight" },
+          { key: "invoices" as Tab, label: "Invoices", value: kpis.invPending, sub: "to match", hot: kpis.invPending > 0, verb: "pending" },
+          { key: "suppliers" as Tab, label: "Suppliers", value: suppliers.length, sub: `${suppliers.filter((r) => tx(r.compliance_status, "pending").toLowerCase() !== "compliant").length} not compliant`, hot: false, verb: "registered" },
+        ].map((stage) => {
+          const active = tab === stage.key;
+          return (
+            <button
+              key={stage.key}
+              type="button"
+              onClick={() => router.push(TAB_ROUTES[stage.key])}
+              className={`relative px-3 py-2.5 text-left transition-colors ${active ? "bg-signal/15" : "bg-ink hover:bg-ink-light"}`}
+            >
+              {active && <span className="absolute inset-x-0 top-0 h-0.5 bg-signal" />}
+              <p className={`font-mono text-[10px] uppercase tracking-wider ${active ? "text-signal" : "text-slate"}`}>{stage.label}</p>
+              <p className="mt-0.5 flex items-baseline gap-1.5">
+                <span className={`font-mono text-lg font-semibold ${stage.hot ? "text-amber-300" : "text-paper"}`}>{loading ? "…" : stage.value}</span>
+                <span className="text-[11px] text-slate-light">{stage.verb}</span>
+              </p>
+              <p className="truncate text-[11px] text-slate">{stage.sub}</p>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Alerts */}
       {error && <Banner tone="error" message={error} />}
-      {sourceWarnings.length > 0 && <div className="mb-6 space-y-2">{sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}</div>}
+      {sourceWarnings.length > 0 && <div className="mb-4 space-y-2">{sourceWarnings.map((warning) => <Banner key={warning} tone="info" message={warning} />)}</div>}
       {notice && <Banner tone="info" message={notice} onClose={() => setNotice(null)} />}
 
-      {/* Filter bar */}
-      {tab !== "command" && <div className="flex flex-col gap-2 border-b border-ink-mid bg-ink-light/30 p-3 sm:flex-row sm:items-center">
-        <label className="flex flex-1 h-9 items-center gap-2 border border-ink-mid bg-ink px-3">
+      {/* Filter bar: search plus status chips that carry live counts */}
+      {tab !== "command" && <div className="flex flex-col gap-2 border border-b-0 border-ink-mid bg-ink-light/30 p-3 lg:flex-row lg:items-center">
+        <label className="flex h-9 items-center gap-2 border border-ink-mid bg-ink px-3 lg:w-72">
           <Search className="h-3.5 w-3.5 text-slate" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${tab}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${PROCUREMENT_TAB_META[tab].title.toLowerCase()}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
         </label>
         {tab === "requisitions" && (
-          <select value={prStatus} onChange={(e) => setPrStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="submitted">Submitted</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-            <option value="ordered">Ordered</option>
-          </select>
+          <StatusChips value={prStatus} onChange={setPrStatus} rows={requisitions} statusOf={(r) => tx(r.status, "draft").toLowerCase()} amountOf={(r) => num(r.total_estimated ?? r.estimated_total)}
+            options={[["draft", "Draft"], ["submitted", "Awaiting approval"], ["approved", "Approved"], ["ordered", "Ordered"], ["rejected", "Rejected"]]} />
         )}
         {tab === "rfqs" && (
-          <select value={rfqStatus} onChange={(e) => setRfqStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All RFQ statuses</option>
-            <option value="draft">Draft</option>
-            <option value="issued">Issued</option>
-            <option value="closed">Closed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <StatusChips value={rfqStatus} onChange={setRfqStatus} rows={rfqs} statusOf={(r) => tx(r.status, "draft").toLowerCase()}
+            options={[["draft", "Draft"], ["issued", "Issued"], ["closed", "Closed"], ["cancelled", "Cancelled"]]} />
         )}
         {tab === "orders" && (
-          <select value={poStatus} onChange={(e) => setPoStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All statuses</option>
-            <option value="draft">Draft</option>
-            <option value="approved">Approved</option>
-            <option value="issued">Issued</option>
-            <option value="partially_received">Partially Received</option>
-            <option value="received">Received</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
+          <StatusChips value={poStatus} onChange={setPoStatus} rows={orders} statusOf={(r) => tx(r.status, "draft").toLowerCase()} amountOf={(r) => num(r.total_amount ?? r.amount)}
+            extra={{ key: "overdue", label: "Overdue", count: orders.filter(isPoOverdue).length }}
+            options={[["draft", "Draft"], ["approved", "Approved"], ["issued", "Issued"], ["partially_received", "Part received"], ["received", "Received"], ["cancelled", "Cancelled"]]} />
         )}
         {tab === "invoices" && (
-          <select value={invMatchStatus} onChange={(e) => setInvMatchStatus(e.target.value)} className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper">
-            <option value="all">All match statuses</option>
-            <option value="matched">Matched</option>
-            <option value="partial">Partial</option>
-            <option value="unmatched">Unmatched</option>
-            <option value="disputed">Disputed</option>
-          </select>
+          <StatusChips value={invMatchStatus} onChange={setInvMatchStatus} rows={invoices} statusOf={(r) => tx(r.match_status ?? r.matching_status, "unmatched").toLowerCase()} amountOf={(r) => num(r.total_amount ?? r.amount)}
+            options={[["unmatched", "Unmatched"], ["partial", "Partial"], ["matched", "Matched"], ["disputed", "Disputed"]]} />
+        )}
+        {tab === "suppliers" && (
+          <StatusChips value={supplierCompliance} onChange={setSupplierCompliance} rows={suppliers} statusOf={(r) => tx(r.compliance_status, "pending").toLowerCase()}
+            options={[["compliant", "Compliant"], ["pending", "Pending"], ["non_compliant", "Non-compliant"], ["exempt", "Exempt"]]} />
         )}
       </div>}
 
@@ -718,12 +779,43 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
           tab === "suppliers" ? <SuppliersTable rows={filteredSuppliers} onView={setViewingSupplier} /> :
           tab === "pricing" ? <PendingPricingTable rows={filteredPricing} saving={saving} onConfirm={confirmPricing} /> :
-          <InvoicesTab rows={filteredInvoices} unmatchedCount={unmatchedCount} saving={saving} onMatch={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} />
+          <InvoicesTab
+            rows={filteredInvoices}
+            unmatchedCount={unmatchedCount}
+            saving={saving}
+            onMatch={matchInvoice}
+            onInspect={(inv) => setInspectingMatchInvoice(inv)}
+            onApprovePayment={setPaymentEvidenceInvoice}
+          />
         }
       </section>
 
       {/* Modals */}
-      {showCreatePR && <CreatePRModal projects={projects} onClose={() => setShowCreatePR(false)} onCreated={() => { setShowCreatePR(false); setNotice("Purchase requisition created."); void load(); }} />}
+      {inspectingMatchInvoice && (
+        <ThreeWayMatchInspectorModal
+          invoice={inspectingMatchInvoice}
+          onClose={() => setInspectingMatchInvoice(null)}
+          onMatch={matchInvoice}
+          onApprovePayment={(inv) => {
+            setInspectingMatchInvoice(null);
+            setPaymentEvidenceInvoice(inv);
+          }}
+          saving={saving}
+        />
+      )}
+      {showCreatePR && (
+        <CreatePRModal
+          projects={projects}
+          stores={stores}
+          stockLevels={stockLevels}
+          onClose={() => setShowCreatePR(false)}
+          onCreated={() => {
+            setShowCreatePR(false);
+            setNotice("Purchase requisition created.");
+            void load();
+          }}
+        />
+      )}
       {showAddSupplier && (
         <AddSupplierModal
           onClose={() => setShowAddSupplier(false)}
@@ -1157,7 +1249,7 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
                 <td className="px-4 py-3 font-mono text-paper">{money(row.total_amount ?? row.amount ?? 0)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${poStatusClass(row.status)}`}>{tx(row.status, "draft")}</span></td>
                 <td className="px-4 py-3 text-slate-light">{dt(row.issued_date ?? row.created_at)}</td>
-                <td className="px-4 py-3 text-slate-light">{dt(row.expected_delivery_date ?? row.expected_delivery)}</td>
+                <td className={`px-4 py-3 ${isPoOverdue(row) ? "text-red-300" : "text-slate-light"}`}>{dt(row.expected_delivery_date ?? row.expected_delivery)}{isPoOverdue(row) && <span className="ml-2 border border-red-500/40 px-1 font-mono text-[9px] uppercase">Late</span>}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 w-16 overflow-hidden rounded-full bg-ink-mid">
@@ -1232,13 +1324,36 @@ const SUPPLIER_STATUSES = ["active", "pending_approval", "suspended", "blacklist
 const SUPPLIER_COMPLIANCE_STATUSES = ["pending", "compliant", "non_compliant", "exempt"] as const;
 type SupplierModalTab = "overview" | "documents" | "dealings";
 
-const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string }> = [
+// Tax clearance, company registration and VAT (unless not VAT registered)
+// are required for verification; NSSA and PRAZ are optional.
+const SUPPLIER_REQUIRED_DOCUMENTS: Array<{ key: SupplierComplianceDocumentType; label: string; optional?: boolean }> = [
   { key: "tax_clearance", label: "Tax Clearance" },
-  { key: "nssa", label: "NSSA" },
-  { key: "praz", label: "PRAZ" },
-  { key: "vat", label: "VAT" },
   { key: "company_registration", label: "Company Registration" },
+  { key: "vat", label: "VAT" },
+  { key: "nssa", label: "NSSA", optional: true },
+  { key: "praz", label: "PRAZ", optional: true },
 ];
+
+const VAT_STATUS_OPTIONS = [
+  { value: "", label: "Not answered" },
+  { value: "registered", label: "VAT registered" },
+  { value: "not_registered", label: "Not VAT registered" },
+] as const;
+
+function VatStatusSelect({ value, onChange, className }: { value: string; onChange: (value: string) => void; className: string }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className}>
+      {VAT_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+    </select>
+  );
+}
+
+function vatPayload(vatStatus: string, vatNumber: string) {
+  return {
+    vat_status: vatStatus || null,
+    vat_registration_number: vatStatus === "registered" ? vatNumber.trim() || null : null,
+  };
+}
 
 function supplierEditDraft(supplier: Rec) {
   return {
@@ -1247,6 +1362,8 @@ function supplierEditDraft(supplier: Rec) {
     trading_name: tx(supplier.trading_name, ""),
     registration_number: tx(supplier.registration_number, ""),
     tax_number: tx(supplier.tax_number, ""),
+    vat_status: tx(supplier.vat_status, ""),
+    vat_registration_number: tx(supplier.vat_registration_number, ""),
     praz_number: tx(supplier.praz_number, ""),
     nssa_number: tx(supplier.nssa_number, ""),
     address: tx(supplier.address, ""),
@@ -1346,7 +1463,11 @@ function Supplier360Modal({
   };
 
   const save = async () => {
-    if (!form.supplier_name.trim()) { setError("Supplier name is required."); return; }
+    if (!form.supplier_name.trim()) { setError("Registered company name is required."); return; }
+    const score = form.performance_score === "" ? null : Number(form.performance_score);
+    if (score != null && !(score >= 0 && score <= 5)) { setError("Performance score is a 0-5 rating (shown as stars). Enter a value between 0 and 5."); return; }
+    const otd = form.on_time_delivery_pct === "" ? null : Number(form.on_time_delivery_pct);
+    if (otd != null && !(otd >= 0 && otd <= 100)) { setError("On-time delivery % must be between 0 and 100."); return; }
     setSaving(true);
     setError(null);
     try {
@@ -1356,6 +1477,7 @@ function Supplier360Modal({
         trading_name: form.trading_name.trim() || null,
         registration_number: form.registration_number.trim() || null,
         tax_number: form.tax_number.trim() || null,
+        ...vatPayload(form.vat_status, form.vat_registration_number),
         praz_number: form.praz_number.trim() || null,
         nssa_number: form.nssa_number.trim() || null,
         address: form.address.trim() || null,
@@ -1448,20 +1570,27 @@ function Supplier360Modal({
                   <span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${supplierStatusClass(form.status)}`}>{form.status}</span>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
-                  <SupplierField label="Supplier name" value={form.supplier_name} onChange={(v) => updateField("supplier_name", v)} required />
+                  <SupplierField label="Registered company name" value={form.supplier_name} onChange={(v) => updateField("supplier_name", v)} required />
+                  <SupplierField label="Company registration number" value={form.registration_number} onChange={(v) => updateField("registration_number", v)} required />
+                  <SupplierField label="Tax clearance number" value={form.tax_number} onChange={(v) => updateField("tax_number", v)} required />
+                  <label className="block">
+                    <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">VAT registration *</span>
+                    <VatStatusSelect value={form.vat_status} onChange={(v) => updateField("vat_status", v)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
+                  </label>
+                  {form.vat_status === "registered" && (
+                    <SupplierField label="VAT number" value={form.vat_registration_number} onChange={(v) => updateField("vat_registration_number", v)} required />
+                  )}
                   <SupplierField label="Supplier code" value={form.supplier_code} onChange={(v) => updateField("supplier_code", v)} />
                   <SupplierField label="Trading name" value={form.trading_name} onChange={(v) => updateField("trading_name", v)} />
-                  <SupplierField label="Registration number" value={form.registration_number} onChange={(v) => updateField("registration_number", v)} />
-                  <SupplierField label="Tax clearance number" value={form.tax_number} onChange={(v) => updateField("tax_number", v)} />
-                  <SupplierField label="PRAZ number" value={form.praz_number} onChange={(v) => updateField("praz_number", v)} />
-                  <SupplierField label="NSSA number" value={form.nssa_number} onChange={(v) => updateField("nssa_number", v)} />
+                  <SupplierField label="PRAZ number (optional)" value={form.praz_number} onChange={(v) => updateField("praz_number", v)} />
+                  <SupplierField label="NSSA number (optional)" value={form.nssa_number} onChange={(v) => updateField("nssa_number", v)} />
                   <SupplierField label="Address" value={form.address} onChange={(v) => updateField("address", v)} />
                   <SupplierField label="Currency" value={form.currency} onChange={(v) => updateField("currency", v.toUpperCase().slice(0, 3))} />
                   <SupplierSelect label="Supplier status" value={form.status} options={SUPPLIER_STATUSES} onChange={(v) => updateField("status", v)} />
                   <SupplierSelect label="Compliance status" value={form.compliance_status} options={SUPPLIER_COMPLIANCE_STATUSES} onChange={(v) => updateField("compliance_status", v)} />
                   <SupplierField label="Payment terms days" type="number" value={form.payment_terms_days} onChange={(v) => updateField("payment_terms_days", v)} />
-                  <SupplierField label="Performance score" type="number" value={form.performance_score} onChange={(v) => updateField("performance_score", v)} />
-                  <SupplierField label="On-time delivery %" type="number" value={form.on_time_delivery_pct} onChange={(v) => updateField("on_time_delivery_pct", v)} />
+                  <SupplierField label="Performance score (0-5)" type="number" min={0} max={5} step="0.1" value={form.performance_score} onChange={(v) => updateField("performance_score", v)} />
+                  <SupplierField label="On-time delivery % (0-100)" type="number" min={0} max={100} step="0.1" value={form.on_time_delivery_pct} onChange={(v) => updateField("on_time_delivery_pct", v)} />
                 </div>
               </div>
 
@@ -1643,7 +1772,9 @@ function SupplierComplianceDocumentsPanel({ supplier }: { supplier: Rec }) {
             <div key={required.key} className="grid gap-4 p-4 lg:grid-cols-[220px_minmax(0,1fr)_auto] lg:items-center">
               <div>
                 <p className="font-semibold text-paper">{required.label}</p>
-                <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">Required supplier document</p>
+                <p className="mt-1 font-mono text-[10px] uppercase text-slate-light">
+                  {required.optional || (required.key === "vat" && supplier.vat_status === "not_registered") ? "Optional supplier document" : "Required supplier document"}
+                </p>
               </div>
               <div className="min-w-0">
                 {doc ? (
@@ -1822,11 +1953,11 @@ function SupplierDealTable({ title, empty, headers, rows }: { title: string; emp
   );
 }
 
-function SupplierField({ label, value, onChange, type = "text", required = false }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; }) {
+function SupplierField({ label, value, onChange, type = "text", required = false, min, max, step }: { label: string; value: string; onChange: (value: string) => void; type?: string; required?: boolean; min?: number; max?: number; step?: string; }) {
   return (
     <label className="block">
       <span className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">{label}{required ? " *" : ""}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
+      <input type={type} value={value} min={min} max={max} step={step} onChange={(e) => onChange(e.target.value)} className="h-10 w-full border border-ink-mid bg-ink px-3 text-sm text-paper outline-none focus:border-signal" />
     </label>
   );
 }
@@ -1848,6 +1979,8 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
     trading_name: "",
     registration_number: "",
     tax_number: "",
+    vat_status: "",
+    vat_registration_number: "",
     praz_number: "",
     nssa_number: "",
     address: "",
@@ -1860,7 +1993,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!form.supplier_name.trim()) { setError("Supplier name is required."); return; }
+    if (!form.supplier_name.trim()) { setError("Registered company name is required."); return; }
     if (issuePortalLogin && !form.primary_contact_email.trim()) { setError("A contact email is required to issue a portal login."); return; }
     setSaving(true); setError(null);
     try {
@@ -1869,6 +2002,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
         trading_name: form.trading_name.trim() || undefined,
         registration_number: form.registration_number.trim() || undefined,
         tax_number: form.tax_number.trim() || undefined,
+        ...vatPayload(form.vat_status, form.vat_registration_number),
         praz_number: form.praz_number.trim() || undefined,
         nssa_number: form.nssa_number.trim() || undefined,
         address: form.address.trim() || undefined,
@@ -1902,7 +2036,7 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
         <div className="space-y-3.5 py-4">
           {error && <Banner tone="error" message={error} />}
           <div>
-            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Supplier Name *</label>
+            <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Registered Company Name *</label>
             <input value={form.supplier_name} onChange={(e) => setForm({ ...form, supplier_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1911,19 +2045,29 @@ function AddSupplierModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <input value={form.trading_name} onChange={(e) => setForm({ ...form, trading_name: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Registration Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Company Registration Number *</label>
               <input value={form.registration_number} onChange={(e) => setForm({ ...form, registration_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Tax Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">Tax Clearance Number *</label>
               <input value={form.tax_number} onChange={(e) => setForm({ ...form, tax_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">PRAZ Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">VAT Registration *</label>
+              <VatStatusSelect value={form.vat_status} onChange={(v) => setForm({ ...form, vat_status: v })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+            </div>
+            {form.vat_status === "registered" && (
+              <div>
+                <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">VAT Number *</label>
+                <input value={form.vat_registration_number} onChange={(e) => setForm({ ...form, vat_registration_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
+              </div>
+            )}
+            <div>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">PRAZ Number (optional)</label>
               <input value={form.praz_number} onChange={(e) => setForm({ ...form, praz_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div>
-              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">NSSA Number</label>
+              <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wider text-slate">NSSA Number (optional)</label>
               <input value={form.nssa_number} onChange={(e) => setForm({ ...form, nssa_number: e.target.value })} className="h-10 w-full border border-ink-mid bg-ink-light px-3 text-sm text-paper" />
             </div>
             <div className="sm:col-span-2">
@@ -2011,7 +2155,21 @@ function CredentialsIssuedModal({ credentials, onClose }: { credentials: { email
 
 // ─── Invoices Tab ─────────────────────────────────────────────────────────────
 
-function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }: { rows: Rec[]; unmatchedCount: number; saving: string | null; onMatch: (row: Rec) => void; onApprovePayment: (row: Rec) => void; }) {
+function InvoicesTab({
+  rows,
+  unmatchedCount,
+  saving,
+  onMatch,
+  onInspect,
+  onApprovePayment,
+}: {
+  rows: Rec[];
+  unmatchedCount: number;
+  saving: string | null;
+  onMatch: (row: Rec) => void;
+  onInspect: (row: Rec) => void;
+  onApprovePayment: (row: Rec) => void;
+}) {
   return (
     <>
       {unmatchedCount > 0 && (
@@ -2054,6 +2212,13 @@ function InvoicesTab({ rows, unmatchedCount, saving, onMatch, onApprovePayment }
                     <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${prStatusClass(row.status)}`}>{tx(row.status, "pending")}</span></td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onInspect(row)}
+                          className="inline-flex items-center gap-1 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-paper hover:border-signal transition"
+                          title="View 3-way match matrix"
+                        >
+                          <Search className="h-3 w-3" />Inspect
+                        </button>
                         {!isMatched && canMatch && (
                           <button onClick={() => onMatch(row)} disabled={saving === `match-invoice-${row.id}`}
                             className="inline-flex items-center gap-1 border border-blue-500/40 px-2 py-1 font-mono text-[10px] uppercase text-blue-300 hover:bg-blue-950/30 disabled:opacity-40">
@@ -2215,7 +2380,19 @@ function DocumentPicker({ label, value, onChange, entityId, projectId, searchHin
 
 // ─── Create PR Modal ──────────────────────────────────────────────────────────
 
-function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onClose: () => void; onCreated: () => void; }) {
+function CreatePRModal({
+  projects,
+  stores = [],
+  stockLevels = [],
+  onClose,
+  onCreated,
+}: {
+  projects: Rec[];
+  stores?: Rec[];
+  stockLevels?: Rec[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const [form, setForm] = useState({ project_id: "", priority: "normal", required_by_date: "", justification: "" });
   const [lines, setLines] = useState<LineItem[]>([{ description: "", qty: "1", uom: "ea", unit_cost: "" }]);
   const [saving, setSaving] = useState(false);
@@ -2225,6 +2402,20 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
   const removeLine = (i: number) => setLines((prev) => prev.filter((_, idx) => idx !== i));
   const setLine = (i: number, field: keyof LineItem, val: string) => setLines((prev) => prev.map((l, idx) => idx === i ? { ...l, [field]: val } : l));
   const estimatedTotal = lines.reduce((s, l) => s + num(l.qty) * num(l.unit_cost), 0);
+
+  // Store-First Availability matching: looks across stockLevels for any store with on-hand quantity
+  const lineStoreMatches = useMemo(() => {
+    return lines.map((l) => {
+      const desc = l.description.trim().toLowerCase();
+      if (!desc || desc.length < 2) return [];
+      return stockLevels.filter((stock) => {
+        const name = tx(stock.item_name ?? stock.description, "").toLowerCase();
+        const code = tx(stock.item_code, "").toLowerCase();
+        const avail = num(stock.available_qty ?? stock.quantity);
+        return avail > 0 && (name.includes(desc) || desc.includes(name) || code === desc);
+      });
+    });
+  }, [lines, stockLevels]);
 
   const submit = async () => {
     if (!form.required_by_date) { setError("Required-by date is mandatory."); return; }
@@ -2290,18 +2481,43 @@ function CreatePRModal({ projects, onClose, onCreated }: { projects: Rec[]; onCl
                 <Plus className="h-3 w-3" />Add Row
               </button>
             </div>
-            <div className="space-y-2">
-              {lines.map((line, i) => (
-                <div key={i} className="grid gap-2 border border-ink-mid p-3 sm:grid-cols-[1fr_60px_60px_90px_auto]">
-                  <input value={line.description} onChange={(e) => setLine(i, "description", e.target.value)} placeholder="Item description" className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper" />
-                  <input value={line.qty} onChange={(e) => setLine(i, "qty", e.target.value)} placeholder="Qty" type="number" min="1" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
-                  <input value={line.uom} onChange={(e) => setLine(i, "uom", e.target.value)} placeholder="UOM" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
-                  <input value={line.unit_cost} onChange={(e) => setLine(i, "unit_cost", e.target.value)} placeholder="Unit cost" type="number" min="0" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
-                  <button onClick={() => removeLine(i)} disabled={lines.length === 1} className="flex items-center justify-center border border-ink-mid p-2 text-slate hover:border-red-500/40 hover:text-red-400 disabled:opacity-30">
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
+            <div className="space-y-3">
+              {lines.map((line, i) => {
+                const availableMatches = lineStoreMatches[i] || [];
+                return (
+                  <div key={i} className="border border-ink-mid bg-ink-light/20 p-3 rounded">
+                    <div className="grid gap-2 sm:grid-cols-[1fr_70px_70px_100px_auto]">
+                      <input value={line.description} onChange={(e) => setLine(i, "description", e.target.value)} placeholder="Item description (e.g. 50kg Cement, 12mm Rebar)" className="h-9 border border-ink-mid bg-ink px-3 text-sm text-paper" />
+                      <input value={line.qty} onChange={(e) => setLine(i, "qty", e.target.value)} placeholder="Qty" type="number" min="1" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
+                      <input value={line.uom} onChange={(e) => setLine(i, "uom", e.target.value)} placeholder="UOM" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
+                      <input value={line.unit_cost} onChange={(e) => setLine(i, "unit_cost", e.target.value)} placeholder="Est. Unit cost" type="number" min="0" className="h-9 border border-ink-mid bg-ink px-2 text-sm text-paper" />
+                      <button onClick={() => removeLine(i)} disabled={lines.length === 1} className="flex items-center justify-center border border-ink-mid p-2 text-slate hover:border-red-500/40 hover:text-red-400 disabled:opacity-30">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Store-First Recommendation Box */}
+                    {availableMatches.length > 0 && (
+                      <div className="mt-2.5 p-2 rounded bg-signal/10 border border-signal/30 text-xs">
+                        <div className="flex items-center gap-1.5 font-mono text-[11px] text-signal font-semibold">
+                          <Warehouse className="h-3.5 w-3.5" />
+                          <span>Store-First Stock Available:</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-2 text-[11px]">
+                          {availableMatches.slice(0, 3).map((match, idx) => (
+                            <div key={idx} className="bg-ink px-2 py-0.5 border border-ink-mid rounded font-mono text-paper">
+                              <span className="font-semibold text-emerald-300">{num(match.available_qty)} {tx(match.unit_of_measure, "ea")}</span> in <span className="text-slate-light">{tx(match.store_name, "Store")}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="mt-1 text-[10px] text-slate-light">
+                          Tip: Internal store transfers avoid external purchasing costs and supplier lead time.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <div className="mt-2 flex justify-end">
               <p className="font-mono text-sm text-paper">Est. Total: <span className="text-signal">{money(estimatedTotal)}</span></p>
@@ -2638,6 +2854,61 @@ function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onInvoice, 
             <InfoCard label="Issued Date" value={dt(po.issued_date ?? po.created_at)} />
             <InfoCard label="Expected Delivery" value={dt(po.expected_delivery_date ?? po.expected_delivery)} />
           </div>
+
+          {/* Delivery & Logistics Milestone Stepper */}
+          <section className="border border-ink-mid bg-ink/70 p-4">
+            <div className="flex items-center justify-between pb-3 border-b border-ink-mid">
+              <div className="flex items-center gap-2">
+                <Truck className="h-4 w-4 text-signal" />
+                <h4 className="font-mono text-xs font-semibold uppercase tracking-wider text-paper">
+                  Delivery Milestones & ETA Tracking
+                </h4>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase text-slate">ETA:</span>
+                <span className={`font-mono text-xs font-semibold ${isPoOverdue(po) ? "text-red-300" : "text-signal"}`}>
+                  {dt(po.expected_delivery_date ?? po.expected_delivery)}
+                </span>
+                {isPoOverdue(po) && (
+                  <span className="border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 font-mono text-[9px] uppercase text-red-300">
+                    Overdue
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {[
+                { key: "sent", label: "1. Sent", detail: "PO issued to vendor", done: hasIssued },
+                { key: "confirmed", label: "2. Confirmed", detail: "Vendor acknowledged", done: hasIssued && (po.delivery_milestone === "confirmed" || po.delivery_milestone === "dispatched" || po.delivery_milestone === "gate_arrival" || hasGrn) },
+                { key: "dispatched", label: "3. Dispatched", detail: "In transit / dispatch ref", done: hasIssued && (po.delivery_milestone === "dispatched" || po.delivery_milestone === "gate_arrival" || hasGrn) },
+                { key: "gate_arrival", label: "4. At Gate", detail: "Site delivery arrived", done: hasIssued && (po.delivery_milestone === "gate_arrival" || hasGrn) },
+                { key: "stocked", label: "5. Stocked", detail: "GRN inspected & booked", done: hasGrn },
+              ].map((step) => (
+                <div
+                  key={step.key}
+                  className={`border p-2.5 flex flex-col justify-between ${
+                    step.done
+                      ? "border-emerald-500/40 bg-emerald-950/15"
+                      : "border-ink-mid bg-ink-light/20"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`font-mono text-[11px] font-bold uppercase ${step.done ? "text-emerald-300" : "text-slate"}`}>
+                      {step.label}
+                    </span>
+                    {step.done ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <div className="h-2 w-2 rounded-full bg-slate/40" />
+                    )}
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-light leading-tight">{step.detail}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
           {/* PO Lines */}
           <section className="border border-ink-mid">
             <div className="border-b border-ink-mid bg-ink-light/40 px-4 py-3">

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import gather_reads, get_db
 from core.security import require_permission
+from core.truncation import capped
 from app.services.crm.automation_engine import fire_trigger
 
 router = APIRouter()
@@ -122,10 +123,11 @@ async def list_support_tickets(
         ORDER BY
           CASE t.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
           t.created_at DESC
-        LIMIT 200
+        LIMIT 201
         """,
         {"org_id": _org_id(user), "status_filter": status_filter},
     )
+    rows = capped(rows, 200)
     return {"success": True, "data": rows, "message": "CRM support tickets listed.", "meta": {"total": len(rows)}}
 
 
@@ -175,9 +177,9 @@ async def create_support_ticket(
               :org_id, :user_id,
               'TCK-' || to_char(NOW(), 'YYYYMMDD') || '-' || upper(substr(gen_random_uuid()::text, 1, 6)),
               :subject, :issue_description, :status, :priority, :category,
-              COALESCE(:contact_id, :client_id), :organization_account_id, :organization_account_id, :opportunity_id,
+              COALESCE(CAST(:contact_id AS uuid), CAST(:client_id AS uuid)), :organization_account_id, :organization_account_id, :opportunity_id,
               :project_id, :assigned_to,
-              NOW() + (:response_hours || ' hours')::interval, NOW() + (:resolution_hours || ' hours')::interval
+              NOW() + make_interval(hours => CAST(:response_hours AS integer)), NOW() + make_interval(hours => CAST(:resolution_hours AS integer))
             )
             RETURNING id
         """),

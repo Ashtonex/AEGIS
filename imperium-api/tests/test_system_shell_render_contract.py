@@ -47,11 +47,9 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn('subItems: [{ name: "Workspace", href: portalHome.href, icon: portalHome.icon }]', DASHBOARD_SHELL)
 
     def test_superadmin_sidebar_is_not_collapsed_by_field_role_filter(self):
-        self.assertIn("function isExactRole(userRole: string, roles: string[]): boolean", DASHBOARD_SHELL)
-        self.assertIn("function isSuperAdminRole(userRole: string): boolean", DASHBOARD_SHELL)
-        self.assertIn("const isSiteFieldRole = isExactRole(userRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
-        self.assertNotIn("const isSiteFieldRole = matchesRole(userRole, SITE_FIELD_ROLES);", DASHBOARD_SHELL)
-        self.assertIn("isSuperAdminRole(userRole) || !requiredPermission", DASHBOARD_SHELL)
+        # No role-based collapse remains; SUPERADMIN bypasses permission checks.
+        self.assertNotIn("SITE_FIELD_ROLES", DASHBOARD_SHELL)
+        self.assertIn("visibleModuleGroups(permissions, isSuperAdmin)", DASHBOARD_SHELL)
 
     def test_top_nav_and_mobile_drawer_have_non_overlapping_layout(self):
         self.assertIn('className="fixed top-0 inset-x-0 h-14', DASHBOARD_SHELL)
@@ -60,7 +58,7 @@ class SystemShellRenderContractTests(unittest.TestCase):
         self.assertIn('w-[min(20rem,88vw)]', DASHBOARD_SHELL)
         self.assertIn('hidden min-w-0 text-right sm:block', DASHBOARD_SHELL)
         self.assertIn('hidden sm:block', DASHBOARD_SHELL)
-        self.assertIn('w-[min(360px,calc(100vw-1rem))]', NOTIFICATION_BELL)
+        self.assertIn('w-[min(380px,calc(100vw-1.5rem))]', NOTIFICATION_BELL)
 
     def test_single_destination_groups_render_as_direct_links(self):
         self.assertIn("directLink?: boolean", DASHBOARD_SHELL)

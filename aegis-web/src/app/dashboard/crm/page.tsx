@@ -306,9 +306,20 @@ export default function CRMCommercialEngine() {
       setRegionAssigning(null);
     }
   };
+
+  const isClosedDeal = (deal: any) => {
+    const status = (deal.win_loss_status || '').toLowerCase();
+    const stage = (deal.stage || '').toLowerCase();
+    return status === 'won' || status === 'lost' || stage === 'contract' || stage === 'lost';
+  };
+
   const calculateTotalPipeline = () => {
-    const oppValue = opportunities.reduce((acc, opp) => acc + (Number(opp.budget) || 0), 0);
-    const tenderValue = tenders.reduce((acc, t) => acc + (Number(t.bid_amount) || 0), 0);
+    const oppValue = opportunities
+      .filter((opp) => !isClosedDeal(opp))
+      .reduce((acc, opp) => acc + (Number(opp.budget || opp.deal_value) || 0), 0);
+    const tenderValue = tenders
+      .filter((t) => !['awarded', 'lost', 'awarded/lost'].includes((t.stage || '').toLowerCase()))
+      .reduce((acc, t) => acc + (Number(t.bid_amount) || 0), 0);
     return oppValue + tenderValue;
   };
 
@@ -335,20 +346,75 @@ export default function CRMCommercialEngine() {
 
   const calculateWeightedPipeline = () => {
     let missingProbabilityCount = 0;
-    const oppValue = opportunities.reduce((acc, opp) => {
-      const budget = Number(opp.budget) || 0;
-      const probability = parseProbability(opp.probability ?? opp.win_probability);
-      if (budget > 0 && probability === null) missingProbabilityCount += 1;
-      return probability === null ? acc : acc + (budget * probability / 100);
-    }, 0);
-    const tenderValue = tenders.reduce((acc, tender) => {
-      const amount = Number(tender.bid_amount) || 0;
-      const probability = parseProbability(tender.probability ?? tender.win_probability);
-      if (amount > 0 && probability === null) missingProbabilityCount += 1;
-      return probability === null ? acc : acc + (amount * probability / 100);
-    }, 0);
+    const oppValue = opportunities
+      .filter((opp) => !isClosedDeal(opp))
+      .reduce((acc, opp) => {
+        const budget = Number(opp.budget || opp.deal_value) || 0;
+        const probability = parseProbability(opp.probability ?? opp.win_probability);
+        if (budget > 0 && probability === null) missingProbabilityCount += 1;
+        return probability === null ? acc : acc + (budget * probability / 100);
+      }, 0);
+    const tenderValue = tenders
+      .filter((t) => !['awarded', 'lost', 'awarded/lost'].includes((t.stage || '').toLowerCase()))
+      .reduce((acc, tender) => {
+        const amount = Number(tender.bid_amount) || 0;
+        const probability = parseProbability(tender.probability ?? tender.win_probability);
+        if (amount > 0 && probability === null) missingProbabilityCount += 1;
+        return probability === null ? acc : acc + (amount * probability / 100);
+      }, 0);
 
     return { value: oppValue + tenderValue, missingProbabilityCount };
+  };
+
+  const calculateExpectedMargin = () => {
+    const activeOpps = opportunities.filter((o) => !isClosedDeal(o));
+    const oppsWithMargin = activeOpps.filter(
+      (o) => typeof o.expected_margin === "number" && !isNaN(o.expected_margin) && o.expected_margin > 0
+    );
+    if (oppsWithMargin.length === 0) {
+      return null;
+    }
+    const totalWeight = oppsWithMargin.reduce((sum, o) => sum + (Number(o.budget || o.deal_value) || 0), 0);
+    if (totalWeight <= 0) return null;
+    const weightedMarginSum = oppsWithMargin.reduce(
+      (sum, o) => sum + (Number(o.expected_margin) * (Number(o.budget || o.deal_value) || 0)),
+      0
+    );
+    return {
+      margin: (weightedMarginSum / totalWeight).toFixed(1),
+      count: oppsWithMargin.length,
+      total: activeOpps.length,
+    };
+  };
+
+  const calculateRecentVelocity = () => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const recent = opportunities.filter(
+      (o) => o.created_at && new Date(o.created_at) >= thirtyDaysAgo
+    );
+    return {
+      count: recent.length,
+      total: opportunities.length,
+    };
+  };
+
+  const CANONICAL_STAGE_MAP: Record<string, string> = {
+    INQUIRY: 'Qualification',
+    SITE_VISIT: 'Qualification',
+    QUALIFICATION: 'Qualification',
+    QUOTATION: 'Proposal',
+    PROPOSAL: 'Proposal',
+    NEGOTIATION: 'Negotiation',
+    CONTRACT: 'Won',
+    WON: 'Won',
+    LOST: 'Lost',
+  };
+
+  const getCanonicalStage = (stage?: string) => {
+    if (!stage) return 'Qualification';
+    const key = stage.toUpperCase().replace(/\s+/g, '_');
+    return CANONICAL_STAGE_MAP[key] || stage;
   };
 
   const briefingItems = useMemo(() => {
@@ -420,47 +486,67 @@ export default function CRMCommercialEngine() {
     return 'border-blue-500/30 bg-blue-500/10 text-blue-200';
   };
   // UI Row 1: KPI Cards
-  const renderKpiCards = () => (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 shrink-0 mb-2" data-tour="crm-kpis">
-      <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
-        <div className="flex items-center space-x-2 mb-0.5">
-          <Target className="w-3.5 h-3.5 text-slate-light" />
-          <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Total Pipeline</h3>
-        </div>
-        <span className="font-display text-lg text-paper tracking-tight">${calculateTotalPipeline().toLocaleString()}</span>
-      </div>
+  const renderKpiCards = () => {
+    const expectedMargin = calculateExpectedMargin();
+    const recentVelocity = calculateRecentVelocity();
 
-      <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
-        <div className="flex items-center space-x-2 mb-0.5">
-          <Activity className="w-3.5 h-3.5 text-slate-light" />
-          <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Weighted Forecast</h3>
+    return (
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 shrink-0 mb-2" data-tour="crm-kpis">
+        <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
+          <div className="flex items-center space-x-2 mb-0.5">
+            <Target className="w-3.5 h-3.5 text-slate-light" />
+            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Active Pipeline</h3>
+          </div>
+          <span className="font-display text-lg text-paper tracking-tight">${calculateTotalPipeline().toLocaleString()}</span>
         </div>
-        <span className="font-display text-lg text-signal tracking-tight">${calculateWeightedPipeline().value.toLocaleString()}</span>
-      </div>
 
-      <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
-        <div className="flex items-center space-x-2 mb-0.5">
-          <ShieldCheck className="w-3.5 h-3.5 text-slate-light" />
-          <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Expected Margin</h3>
+        <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
+          <div className="flex items-center space-x-2 mb-0.5">
+            <Activity className="w-3.5 h-3.5 text-slate-light" />
+            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Weighted Forecast</h3>
+          </div>
+          <span className="font-display text-lg text-signal tracking-tight">${calculateWeightedPipeline().value.toLocaleString()}</span>
         </div>
-        <div className="flex items-end space-x-2">
-          <span className="font-display text-lg text-slate-light tracking-tight">Not recorded</span>
-        </div>
-      </div>
 
-      <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
-        <div className="flex items-center space-x-2 mb-0.5">
-          <TrendingUp className="w-3.5 h-3.5 text-slate-light" />
-          <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Lead Velocity</h3>
+        <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
+          <div className="flex items-center space-x-2 mb-0.5">
+            <ShieldCheck className="w-3.5 h-3.5 text-slate-light" />
+            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">Expected Margin</h3>
+          </div>
+          <div className="flex items-end space-x-2">
+            {expectedMargin !== null ? (
+              <div className="flex flex-col">
+                <span className="font-display text-lg text-paper tracking-tight">
+                  {expectedMargin.margin}% <span className="text-[10px] text-slate-light font-mono">WEIGHTED</span>
+                </span>
+                <span className="font-mono text-[9px] text-slate-dark">
+                  ({expectedMargin.count}/{expectedMargin.total} active deals)
+                </span>
+              </div>
+            ) : (
+              <span className="font-mono text-xs text-slate-light tracking-tight">Unlinked estimate</span>
+            )}
+          </div>
         </div>
-        <span className="font-display text-lg text-paper tracking-tight">{opportunities.length} <span className="text-xs text-slate-light">NEW / MO</span></span>
+
+        <div className="group relative overflow-hidden bg-ink/40 backdrop-blur-xl border border-white/5 p-2.5 rounded-sm shadow-lg transition-all duration-300 hover:border-white/10 flex flex-col justify-between">
+          <div className="flex items-center space-x-2 mb-0.5">
+            <TrendingUp className="w-3.5 h-3.5 text-slate-light" />
+            <h3 className="font-mono text-[9px] text-slate-light tracking-widest uppercase">New opportunities — past 30 days</h3>
+          </div>
+          <div className="flex items-baseline space-x-1.5">
+            <span className="font-display text-lg text-paper tracking-tight">{recentVelocity.count}</span>
+            <span className="font-mono text-[9px] text-slate-light uppercase">Past 30d</span>
+            <span className="font-mono text-[9px] text-slate-dark">({recentVelocity.total} total)</span>
+          </div>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // Col 1: Opportunity and Tender funnels side-by-side or stacked
   const renderCol1Funnels = () => {
-    const oppStages = ['Inquiry', 'Qualification', 'Quotation', 'Negotiation'];
+    const oppStages = ['Qualification', 'Proposal', 'Negotiation', 'Won', 'Lost'];
     const tenderStages = ['Tender Identified', 'Bid Prep', 'Submitted', 'Adjudication'];
     
     return (
@@ -484,20 +570,32 @@ export default function CRMCommercialEngine() {
           
           <div className="flex space-x-2 overflow-x-auto custom-scrollbar pb-1.5 flex-1 min-h-0">
             {oppStages.map(stage => {
-              const items = opportunities.filter((o) => o.stage === stage.toUpperCase().replace(' ', '_') || o.stage === stage);
+              const items = opportunities.filter((o) => getCanonicalStage(o.stage) === stage);
               return (
                 <div key={stage} className="min-w-[115px] flex-1 bg-ink/40 border border-white/5 rounded-sm p-1.5 flex flex-col min-h-0">
                   <h3 className="font-sans text-[10px] font-semibold text-slate-light mb-1 shrink-0">{stage} <span className="float-right text-slate font-mono">{items.length}</span></h3>
                   <div className="space-y-1 flex-1 overflow-y-auto custom-scrollbar min-h-0">
                     {items.slice(0, 5).map(opp => (
-                      <div key={opp.id} className="bg-ink/80 border border-white/10 p-1.5 rounded-sm hover:border-signal/40 transition-colors group">
+                      <Link
+                        key={opp.id}
+                        href={`/dashboard/crm/opportunities?open=${opp.id}`}
+                        className="block bg-ink/80 border border-white/10 p-1.5 rounded-sm hover:border-signal/40 transition-colors group cursor-pointer"
+                      >
                         <p className="text-[11px] font-medium text-paper truncate group-hover:text-signal">{opp.name}</p>
-                        <p className="text-[9px] font-mono text-slate-light mt-0.5">${Number(opp.budget).toLocaleString()}</p>
+                        <div className="flex items-center justify-between mt-0.5">
+                          <p className="text-[9px] font-mono text-slate-light">${Number(opp.deal_value || opp.budget || 0).toLocaleString()}</p>
+                          {opp.expected_margin ? (
+                            <span className="text-[8px] font-mono text-emerald-400/80">{opp.expected_margin}% mg</span>
+                          ) : null}
+                        </div>
                         <select
                           value={opp.region || ''}
                           onChange={(e) => handleAssignRegion('opportunity', opp.id, e.target.value)}
                           disabled={regionAssigning === opp.id}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
                           className="mt-1 w-full bg-black/40 border border-white/10 rounded-sm px-1 py-0.5 text-[8px] font-mono text-slate-light disabled:opacity-50"
                         >
                           <option value="">Unassigned region</option>
@@ -505,7 +603,7 @@ export default function CRMCommercialEngine() {
                             <option key={province} value={province}>{province}</option>
                           ))}
                         </select>
-                      </div>
+                      </Link>
                     ))}
                     {items.length === 0 && <div className="text-center py-2 text-[9px] font-mono text-slate-dark">No deals</div>}
                   </div>

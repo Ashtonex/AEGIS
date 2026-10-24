@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "7c98e29c-57c1-4f3d-bbd3-a70a17528dd3",
+  "developer": {
+    "name": "Six Nine Construction",
+    "websiteUrl": "https://sixnineconstruction.com",
+    "privacyUrl": "https://sixnineconstruction.com/privacy",
+    "termsOfUseUrl": "https://sixnineconstruction.com/terms"
+  },
+  "name": {
+    "short": "AEGIS",
+    "full": "AEGIS - Six Nine Construction"
+  },
+  "description": {
+    "short": "Your AEGIS tasks, inside Teams.",
+    "full": "See the AEGIS tasks assigned to you - deadlines, priorities and the tender, opportunity or project each belongs to - and start work or submit proof without leaving Teams. New assignments arrive as a Teams message with a link straight back here."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#0B1F3A",
+  "staticTabs": [
+    {
+      "entityId": "aegis-my-tasks",
+      "name": "My Tasks",
+      "contentUrl": "https://sixnineconstruction.com/teams/tasks",
+      "websiteUrl": "https://sixnineconstruction.com/dashboard/crm/tasks",
+      "scopes": ["personal"]
+    }
+  ],
+  "permissions": [],
+  "validDomains": ["sixnineconstruction.com"]
+}

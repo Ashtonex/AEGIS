@@ -12,7 +12,7 @@ from core.config import settings
 from core.database import get_db, supabase
 from core.logging import logger
 from core.security import require_permission
-from app.shared.pagination import ok
+from app.shared.pagination import apply_safety_cap, LIST_SAFETY_CAP, ok
 from app.services.microsoft.document_service import (
     MicrosoftIntegrationNotReady,
     get_document_access,
@@ -147,6 +147,7 @@ async def list_documents(
     search: Optional[str] = None,
     project_id: Optional[UUID] = None,
     tender_id: Optional[UUID] = None,
+    opportunity_id: Optional[UUID] = None,
     user: dict = Depends(require_permission("documents.read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -170,20 +171,52 @@ async def list_documents(
         query_str += " AND d.classification = :classification"
         params["classification"] = classification
     if project_id:
-        query_str += " AND d.project_id = :project_id"
+        query_str += """ AND EXISTS (
+            SELECT 1 FROM core.document_links dl
+            WHERE dl.document_id = d.id
+              AND dl.organization_id = :org_id
+              AND dl.is_deleted = false
+              AND (dl.project_id = :project_id OR (dl.entity_type = 'project' AND dl.entity_id = :project_id))
+        )"""
         params["project_id"] = project_id
     if tender_id:
-        query_str += " AND d.tender_id = :tender_id"
+        query_str += """ AND (
+            d.tender_id = :tender_id OR EXISTS (
+                SELECT 1 FROM core.document_links dl
+                WHERE dl.document_id = d.id
+                  AND dl.organization_id = :org_id
+                  AND dl.is_deleted = false
+                  AND dl.entity_type = 'tender'
+                  AND dl.entity_id = :tender_id
+            )
+        )"""
         params["tender_id"] = tender_id
+    if opportunity_id:
+        query_str += """ AND (
+            d.opportunity_id = :opportunity_id OR EXISTS (
+                SELECT 1 FROM core.document_links dl
+                WHERE dl.document_id = d.id
+                  AND dl.organization_id = :org_id
+                  AND dl.is_deleted = false
+                  AND dl.entity_type = 'opportunity'
+                  AND dl.entity_id = :opportunity_id
+            )
+        )"""
+        params["opportunity_id"] = opportunity_id
     if search:
         query_str += " AND (d.title ILIKE :search OR d.file_name ILIKE :search OR d.doc_number ILIKE :search)"
         params["search"] = f"%{search}%"
 
-    query_str += " ORDER BY d.created_at DESC"
+    # The Documents page computes category counts, total size and search
+    # over the whole list, so this is capped rather than paged.
+    query_str += " ORDER BY d.created_at DESC LIMIT :safety_limit"
+    params["safety_limit"] = LIST_SAFETY_CAP + 1
 
     result = await db.execute(text(query_str), params)
-    items = [dict(row._mapping) for row in result]
-    return ok(items, "Documents listed.")
+    items, truncated = apply_safety_cap([dict(row._mapping) for row in result])
+    response = ok(items, "Documents listed.", total=len(items))
+    response["meta"].update({"truncated": truncated, "cap": LIST_SAFETY_CAP})
+    return response
 
 
 @router.get("/for-entity")
@@ -203,16 +236,38 @@ async def list_documents_for_entity(
             detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
         )
 
+    entity_table = _DOCUMENT_LINK_ENTITY_TABLES[entity_key]
+    entity_check = await db.execute(
+        text(f"SELECT 1 FROM {entity_table} WHERE id = :id AND organization_id = :org_id AND is_deleted = false"),
+        {"id": entity_id, "org_id": user["org_id"]},
+    )
+    if not entity_check.first():
+        raise HTTPException(status_code=404, detail=f"{entity_type} not found.")
+
     result = await db.execute(
         text("""
-            SELECT d.*, fa.mime_type, fa.storage_path, dl.link_role,
+            SELECT d.*, fa.mime_type, fa.storage_path,
+                   COALESCE(dl.link_role, 'attachment') AS link_role,
                    u.full_name AS uploaded_by_name, u.email AS uploaded_by_email
-            FROM core.document_links dl
-            JOIN core.documents d ON d.id = dl.document_id AND d.is_deleted = false
+            FROM core.documents d
+            LEFT JOIN LATERAL (
+                SELECT link_role
+                FROM core.document_links dl
+                WHERE dl.document_id = d.id
+                  AND dl.organization_id = :org_id
+                  AND dl.is_deleted = false
+                  AND dl.entity_type = :entity_type
+                  AND dl.entity_id = :entity_id
+                LIMIT 1
+            ) dl ON true
             LEFT JOIN core.file_attachments fa ON fa.id = d.file_attachment_id AND fa.is_deleted = false
             LEFT JOIN core.users u ON u.id = d.created_by AND u.organization_id = d.organization_id
-            WHERE dl.organization_id = :org_id AND dl.is_deleted = false
-              AND dl.entity_type = :entity_type AND dl.entity_id = :entity_id
+            WHERE d.organization_id = :org_id AND d.is_deleted = false
+              AND (
+                  dl.link_role IS NOT NULL
+                  OR (:entity_type = 'opportunity' AND d.opportunity_id = :entity_id)
+                  OR (:entity_type = 'tender' AND d.tender_id = :entity_id)
+              )
             ORDER BY d.created_at DESC
         """),
         {"org_id": user["org_id"], "entity_type": entity_key, "entity_id": entity_id},
@@ -346,7 +401,38 @@ async def create_document(
                 },
             )
         ).scalar()
+        if payload.opportunity_id:
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :doc_id, 'opportunity', :entity_id, 'attachment', :user_id
+                    )
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "doc_id": doc_id,
+                    "entity_id": payload.opportunity_id,
+                    "user_id": user["user_id"],
+                },
+            )
         if payload.tender_id:
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :doc_id, 'tender', :entity_id, 'attachment', :user_id
+                    )
+                """),
+                {
+                    "org_id": user["org_id"],
+                    "doc_id": doc_id,
+                    "entity_id": payload.tender_id,
+                    "user_id": user["user_id"],
+                },
+            )
             await _auto_match_tender_requirements(
                 db,
                 org_id=user["org_id"],
@@ -482,8 +568,8 @@ async def upload_to_sharepoint(
                         file_name, file_size_bytes, file_attachment_id, created_by
                     ) VALUES (
                         :org_id, :title, :category,
-                        CASE WHEN :entity_type = 'opportunity' THEN :entity_id END,
-                        CASE WHEN :entity_type = 'tender' THEN :entity_id END,
+                        CASE WHEN :entity_type = 'opportunity' THEN CAST(:entity_id AS uuid) END,
+                        CASE WHEN :entity_type = 'tender' THEN CAST(:entity_id AS uuid) END,
                         :file_name, :file_size_bytes, :file_attachment_id, :user_id
                     ) RETURNING id
                 """),
@@ -920,6 +1006,98 @@ async def create_link(
         await db.commit()
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
     return ok({"id": str(link_id) if link_id else None}, "Document link recorded.")
+ 
+ 
+@router.delete("/{document_id}/links/{entity_type}/{entity_id}")
+async def unlink_document_from_entity(
+    document_id: UUID,
+    entity_type: str,
+    entity_id: UUID,
+    user: dict = Depends(require_permission("documents.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unlinks a document from a specific entity without deleting the underlying
+    source document from the organization's document vault."""
+    entity_key = entity_type.strip().lower()
+    if entity_key not in _DOCUMENT_LINK_ENTITY_TABLES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"entity_type must be one of: {', '.join(_DOCUMENT_LINK_ENTITY_TABLES)}.",
+        )
+
+    result = await db.execute(
+        text("""
+            UPDATE core.document_links
+            SET is_deleted = true
+            WHERE document_id = :document_id
+              AND entity_type = :entity_type
+              AND entity_id = :entity_id
+              AND organization_id = :org_id
+              AND is_deleted = false
+            RETURNING id
+        """),
+        {
+            "document_id": document_id,
+            "entity_type": entity_key,
+            "entity_id": entity_id,
+            "org_id": user["org_id"],
+        },
+    )
+    unlinked_id = result.scalar()
+
+    if entity_key == "opportunity":
+        await db.execute(
+            text("""
+                UPDATE core.documents
+                SET opportunity_id = NULL, updated_at = NOW()
+                WHERE id = :document_id
+                  AND opportunity_id = :entity_id
+                  AND organization_id = :org_id
+            """),
+            {"document_id": document_id, "entity_id": entity_id, "org_id": user["org_id"]},
+        )
+    elif entity_key == "tender":
+        await db.execute(
+            text("""
+                UPDATE core.documents
+                SET tender_id = NULL, updated_at = NOW()
+                WHERE id = :document_id
+                  AND tender_id = :entity_id
+                  AND organization_id = :org_id
+            """),
+            {"document_id": document_id, "entity_id": entity_id, "org_id": user["org_id"]},
+        )
+
+    await db.commit()
+    return ok({"unlinked": bool(unlinked_id)}, "Document unlinked from entity.")
+
+
+from typing import Dict, Any
+from core.security import require_any_permission
+from app.services.documents.invoice_renderer import (
+    INVOICE_ISSUER_PERMISSIONS,
+    allocate_invoice_number,
+    invoice_pdf_response,
+)
+
+
+@router.post("/invoices/next-number")
+async def reserve_invoice_number(
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reserve the next sequential SNC invoice number (e.g. ``USD214``)."""
+    return ok({"invoice_number": await allocate_invoice_number(db, user["org_id"])})
+
+
+@router.post("/invoices/generate-pdf")
+async def generate_invoice_pdf(
+    payload: Dict[str, Any],
+    user: dict = Depends(require_any_permission(*INVOICE_ISSUER_PERMISSIONS)),
+):
+    """
+    Renders official Six Nine Construction Proforma or Tax Invoice PDF
+    with watermark, corporate layout, and accurate financial alignment.
+    """
+    return await invoice_pdf_response(payload, "SNC_Invoice")

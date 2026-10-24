@@ -86,8 +86,9 @@ async def list_payslips(
                 pi.id AS payslip_id,
                 pi.employee_id,
                 ep.employee_number,
-                ep.first_name,
-                ep.last_name,
+                -- hr.employees stores one employee_name, split here for the API shape.
+                split_part(ep.employee_name, ' ', 1) AS first_name,
+                NULLIF(regexp_replace(ep.employee_name, '^[^ ]+ *', ''), '') AS last_name,
                 ep.job_title,
                 pr.id AS payroll_run_id,
                 pr.run_number,
@@ -114,7 +115,7 @@ async def list_payslips(
             LEFT JOIN finance.employee_pay_profiles pp ON pp.employee_id = pi.employee_id AND pp.organization_id = pi.organization_id
             LEFT JOIN projects.projects p ON p.id = pi.project_id
             WHERE {where}
-            ORDER BY pr.payment_date DESC, ep.last_name ASC, ep.first_name ASC
+            ORDER BY pr.payment_date DESC, ep.employee_name ASC
             LIMIT :limit OFFSET :offset
         """),
         params,
@@ -137,8 +138,9 @@ async def get_payslip(
                 pi.id AS payslip_id,
                 pi.employee_id,
                 ep.employee_number,
-                ep.first_name,
-                ep.last_name,
+                -- hr.employees stores one employee_name, split here for the API shape.
+                split_part(ep.employee_name, ' ', 1) AS first_name,
+                NULLIF(regexp_replace(ep.employee_name, '^[^ ]+ *', ''), '') AS last_name,
                 ep.job_title,
                 ep.department,
                 pr.id AS payroll_run_id,

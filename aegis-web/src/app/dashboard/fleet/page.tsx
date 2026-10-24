@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
-import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests } from "@/lib/api";
+import { ApiError, createExternalPlantHireAgreement, createFleetOperatorProfile, createPlantRequest, getComplianceDeploymentGateChecks, getExternalPlantHireAgreements, getFleet, getFleetOperatorProfiles, getHREmployees, getPlantLifecycleSummary, getPlantRequests, updatePlantRequestStatus, getFleetWorkOrders, decideFleetWorkOrder, decideFleetWorkOrderApproval } from "@/lib/api";
+import { useAuth } from "@/lib/auth/AuthContext";
 import { EntityDocumentsPanel } from "@/components/documents/EntityDocumentsPanel";
 import { AssignmentPanel } from "@/components/documents/AssignmentPanel";
 import { useApiQueries } from "@/hooks/useApiQueries";
@@ -28,6 +29,7 @@ import {
   ShieldAlert,
   Truck,
   Wrench,
+  X,
   XCircle,
 } from "lucide-react";
 
@@ -173,7 +175,7 @@ function StatusPill({ record }: { record: FleetRecord }) {
 }
 
 export default function FleetTrackerPage() {
-  return <RBACGuard allowedRoles={["Executive (Admin)", "Fleet Supervisor", "Fleet Clerk", "Maintenance Planner", "Executive Read Only"]}><FleetTrackerDashboard /></RBACGuard>;
+  return <RBACGuard><FleetTrackerDashboard /></RBACGuard>;
 }
 
 type FleetModalKind = "register" | "edit" | "deploy" | "work-order" | "plant-request" | "operator-profile" | "external-hire" | null;
@@ -192,11 +194,12 @@ function FleetTrackerDashboard() {
       gates: () => getComplianceDeploymentGateChecks({ limit: 50 }),
       plantSummary: () => getPlantLifecycleSummary(),
       plantRequests: () => getPlantRequests(),
+      workOrders: () => getFleetWorkOrders(),
       operatorProfiles: () => getFleetOperatorProfiles(),
       externalHire: () => getExternalPlantHireAgreements(),
     },
     [],
-    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests", operatorProfiles: "Operator profiles", externalHire: "External hire agreements" } }
+    { criticalKeys: ["fleet"], labels: { gates: "Deployment gate checks", plantSummary: "Plant lifecycle summary", plantRequests: "Plant requests", workOrders: "Maintenance work orders", operatorProfiles: "Operator profiles", externalHire: "External hire agreements" } }
   );
 
   const assets = useMemo(
@@ -204,13 +207,80 @@ function FleetTrackerDashboard() {
     [data.fleet]
   );
   const deploymentGateChecks = useMemo(
-    () => (Array.isArray(data.gates?.data) ? data.gates.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    () => (Array.isArray(data.gates?.data)
+      ? data.gates.data.filter((item): item is FleetRecord =>
+          Boolean(item && typeof item === "object" && item.id && (Boolean(item.fleet_id) || item.gate_type === "equipment_assignment"))
+        )
+      : []),
     [data.gates]
   );
   const plantRequests = useMemo(
     () => (Array.isArray(data.plantRequests?.data) ? data.plantRequests.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.plantRequests]
   );
+  const { user } = useAuth();
+  const currentUserId = user?.id ?? null;
+  // The API already returns awaiting_approval first.
+  const workOrders = useMemo(
+    () => (Array.isArray(data.workOrders?.data) ? data.workOrders.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
+    [data.workOrders]
+  );
+
+  const submitWorkOrderForApproval = async (wo: FleetRecord) => {
+    const reference = text(wo, "work_order_number") || "this work order";
+    try {
+      await decideFleetWorkOrder(wo.id, { status: "awaiting_approval" });
+      setNotice(`Work order ${reference} submitted for approval.`);
+      void loadFleet();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : `Failed to submit ${reference}.`);
+    }
+  };
+
+  const decideWorkOrder = async (wo: FleetRecord, decision: "approve" | "reject") => {
+    const reference = text(wo, "work_order_number") || "this work order";
+    let reason: string | undefined;
+    if (decision === "reject") {
+      reason = window.prompt(`Reason for rejecting ${reference} (required):`)?.trim() || undefined;
+      if (!reason) return;
+    } else if (!window.confirm(`Approve the repair on ${reference}?`)) {
+      return;
+    }
+    try {
+      await decideFleetWorkOrderApproval(wo.id, decision, reason);
+      setNotice(`Work order ${reference} ${decision === "approve" ? "approved" : "rejected"}.`);
+      void loadFleet();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : `Failed to ${decision} ${reference}.`);
+    }
+  };
+
+  // Requests awaiting approval go first so they are never cut off by the
+  // eight-row limit on the table below.
+  const plantRequestsForTable = useMemo(
+    () => [...plantRequests].sort((a, b) => Number(text(b, "status") === "awaiting_approval") - Number(text(a, "status") === "awaiting_approval")),
+    [plantRequests]
+  );
+
+  // Approving needs fleet.plant_requests.approve on top of the update
+  // permission - the backend enforces it, and its message is shown as-is.
+  const decidePlantRequest = async (request: FleetRecord, decision: "approved" | "rejected") => {
+    const reference = text(request, "request_number") || "this plant request";
+    let notes: string | undefined;
+    if (decision === "rejected") {
+      notes = window.prompt(`Reason for rejecting ${reference} (required):`)?.trim() || undefined;
+      if (!notes) return;
+    } else if (!window.confirm(`Approve ${reference}?`)) {
+      return;
+    }
+    try {
+      await updatePlantRequestStatus(request.id, { status: decision, notes });
+      setNotice(`Plant request ${reference} ${decision}.`);
+      void loadFleet();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : `Failed to update ${reference}.`);
+    }
+  };
   const operatorProfiles = useMemo(
     () => (Array.isArray(data.operatorProfiles?.data) ? data.operatorProfiles.data.filter((item): item is FleetRecord => Boolean(item && typeof item === "object" && item.id)) : []),
     [data.operatorProfiles]
@@ -231,19 +301,47 @@ function FleetTrackerDashboard() {
   useLiveTable("fleet.fleet", () => void loadFleet());
   useLiveTable("fleet.plant_requests", () => void loadFleet());
 
+  const [categoryTab, setCategoryTab] = useState<"all" | "plant_equipment" | "office" | "vehicles">("all");
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+
   useEffect(() => {
-    setSelectedId(current => assets.some(asset => asset.id === current) ? current : (assets[0]?.id ?? null));
+    setSelectedId(current => assets.some(asset => asset.id === current) ? current : null);
   }, [assets]);
 
   useEffect(() => {
     if (!loading && !error) setLastUpdated(new Date());
   }, [loading, error]);
 
+  const isOfficeAsset = (asset: FleetRecord) => {
+    const cat = text(asset, "asset_category", "category").toLowerCase();
+    const type = text(asset, "type", "asset_type", "vehicle_type").toLowerCase();
+    return cat.includes("office") || cat.includes("computer") || cat.includes("it") || cat.includes("furniture") ||
+      type.includes("printer") || type.includes("laptop") || type.includes("computer") || type.includes("desk");
+  };
+
+  const isVehicleAsset = (asset: FleetRecord) => {
+    const cat = text(asset, "asset_category", "category").toLowerCase();
+    const vt = text(asset, "vehicle_type", "type", "asset_type").toLowerCase();
+    return cat.includes("truck") || cat.includes("light vehicle") || cat.includes("commercial vehicle") ||
+      ["truck", "trailer", "pickup", "sedan", "hatchback", "car", "bakkie", "horse"].includes(vt);
+  };
+
+  const isPlantEquipmentAsset = (asset: FleetRecord) => {
+    return !isOfficeAsset(asset) && !isVehicleAsset(asset);
+  };
+
+  const officeCount = useMemo(() => assets.filter(isOfficeAsset).length, [assets]);
+  const vehicleCount = useMemo(() => assets.filter(isVehicleAsset).length, [assets]);
+  const plantEquipmentCount = useMemo(() => assets.filter(isPlantEquipmentAsset).length, [assets]);
+
   const statuses = useMemo(() => Array.from(new Set(assets.map(normalizedStatus).filter(Boolean))).sort(), [assets]);
   const filteredAssets = useMemo(() => assets.filter(asset => {
+    if (categoryTab === "office" && !isOfficeAsset(asset)) return false;
+    if (categoryTab === "vehicles" && !isVehicleAsset(asset)) return false;
+    if (categoryTab === "plant_equipment" && !isPlantEquipmentAsset(asset)) return false;
     const searchable = [assetName(asset), assetReference(asset), text(asset, "type", "asset_type", "make", "model", "location", "site")].join(" ").toLowerCase();
     return (statusFilter === "all" || normalizedStatus(asset) === statusFilter) && searchable.includes(query.trim().toLowerCase());
-  }), [assets, query, statusFilter]);
+  }), [assets, query, statusFilter, categoryTab]);
   const selected = assets.find(asset => asset.id === selectedId) ?? null;
   const selectedGateChecks = useMemo(() => selected ? deploymentGateChecks.filter(gate => String(gate.fleet_id ?? "") === selected.id) : [], [deploymentGateChecks, selected]);
 
@@ -327,7 +425,7 @@ function FleetTrackerDashboard() {
             {plantRequests.length === 0 ? (
               <div className="p-5 text-sm text-slate-light">No controlled Plant Requests have been raised yet.</div>
             ) : (
-              <OperationalTable className="min-w-[980px]">
+              <OperationalTable className="min-w-[1100px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Request</TableHead>
@@ -338,10 +436,11 @@ function FleetTrackerDashboard() {
                     <TableHead>Pre-mobilisation</TableHead>
                     <TableHead>Risk</TableHead>
                     <TableHead>Closure</TableHead>
+                    <TableHead>Decision</TableHead>
                   </TableRow>
                 </TableHeader>
                 <tbody>
-                  {plantRequests.slice(0, 8).map((request) => {
+                  {plantRequestsForTable.slice(0, 8).map((request) => {
                     const risk = text(request, "risk_level") || "normal";
                     const blockers = plantBlockers(request);
                     const readinessStatus = text(request, "readiness_status") || "not_started";
@@ -349,18 +448,85 @@ function FleetTrackerDashboard() {
                     return (
                       <TableRow key={request.id}>
                         <TableCell><p className="font-medium text-paper">{text(request, "request_number") || request.id.slice(0, 8)}</p><p className="mt-1 text-[11px] text-slate-light">{text(request, "project_name", "client_display_name") || "No project/client linked"}</p></TableCell>
-                        <TableCell>{text(request, "request_type").replaceAll("_", " ") || "Not recorded"}</TableCell>
+                        <TableCell>{text(request, "request_type").replace(/_/g, " ") || "Not recorded"}</TableCell>
                         <TableCell>{text(request, "required_asset_type")} x {String(request.quantity ?? 1)}</TableCell>
                         <TableCell>{text(request, "work_location") || "Not recorded"}</TableCell>
-                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{text(request, "status").replaceAll("_", " ")}</span></TableCell>
+                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{text(request, "status").replace(/_/g, " ")}</span></TableCell>
                         <TableCell>
                           <span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${readinessStatus === "ready" ? "border-green-500/30 bg-green-500/10 text-green-200" : blockers.length ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-amber-500/40 bg-amber-500/10 text-amber-200"}`}>
-                            {readinessStatus.replaceAll("_", " ")} {readinessCount}/{PLANT_READINESS_CONTROLS.length}
+                            {readinessStatus.replace(/_/g, " ")} {readinessCount}/{PLANT_READINESS_CONTROLS.length}
                           </span>
                           {blockers.length > 0 && <p className="mt-1 max-w-56 truncate text-[11px] text-slate-light">{blockers[0]}</p>}
                         </TableCell>
                         <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${risk === "critical" || risk === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-green-500/30 bg-green-500/10 text-green-200"}`}>{risk}</span></TableCell>
-                        <TableCell>{text(request, "closure_status").replaceAll("_", " ") || "not started"}</TableCell>
+                        <TableCell>{text(request, "closure_status").replace(/_/g, " ") || "not started"}</TableCell>
+                        <TableCell>
+                          {text(request, "status") === "awaiting_approval" ? (
+                            <div className="flex gap-1.5">
+                              <button onClick={() => void decidePlantRequest(request, "approved")} className="border border-green-500/40 px-2 py-1 text-[11px] text-green-200 hover:bg-green-500/10">Approve</button>
+                              <button onClick={() => void decidePlantRequest(request, "rejected")} className="border border-red-500/40 px-2 py-1 text-[11px] text-red-200 hover:bg-red-500/10">Reject</button>
+                            </div>
+                          ) : <span className="text-[11px] text-slate">—</span>}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </tbody>
+              </OperationalTable>
+            )}
+          </section>
+
+          <section className="mb-6 border border-ink-mid bg-ink">
+            <div className="flex items-start justify-between gap-4 border-b border-ink-mid p-4">
+              <div>
+                <h2 className="text-sm font-semibold">Maintenance Work Orders</h2>
+                <p className="mt-1 text-xs text-slate-light">Open work orders. Repairs awaiting approval need someone other than the person who raised them.</p>
+              </div>
+              <span className="font-mono text-[10px] uppercase text-slate">{workOrders.filter((wo) => text(wo, "status") === "awaiting_approval").length} awaiting approval</span>
+            </div>
+            {workOrders.length === 0 ? (
+              <div className="p-5 text-sm text-slate-light">No open maintenance work orders.</div>
+            ) : (
+              <OperationalTable className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Work Order</TableHead>
+                    <TableHead>Asset</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Priority</TableHead>
+                    <TableHead>Est. Cost</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <tbody>
+                  {workOrders.slice(0, 12).map((wo) => {
+                    const status = text(wo, "status");
+                    const priority = text(wo, "priority") || "medium";
+                    const raisedByMe = Boolean(currentUserId) && text(wo, "created_by") === currentUserId;
+                    const cost = Number(wo.estimated_cost);
+                    return (
+                      <TableRow key={wo.id}>
+                        <TableCell><p className="font-medium text-paper">{text(wo, "work_order_number") || wo.id.slice(0, 8)}</p><p className="mt-1 max-w-64 truncate text-[11px] text-slate-light" title={text(wo, "description")}>{text(wo, "description")}</p></TableCell>
+                        <TableCell><p className="text-paper">{text(wo, "asset_reference") || "Not recorded"}</p><p className="mt-1 text-[11px] text-slate-light">{text(wo, "asset_description")}</p></TableCell>
+                        <TableCell>{text(wo, "maintenance_type")}</TableCell>
+                        <TableCell><span className={`inline-flex border px-2 py-1 font-mono text-[10px] uppercase ${priority === "critical" || priority === "high" ? "border-red-500/40 bg-red-500/10 text-red-200" : "border-slate/40 bg-ink-light text-slate-light"}`}>{priority}</span></TableCell>
+                        <TableCell className="font-mono">{wo.estimated_cost === null || wo.estimated_cost === undefined || !Number.isFinite(cost) ? "Not recorded" : `$${cost.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</TableCell>
+                        <TableCell><span className="inline-flex border border-slate/40 bg-ink-light px-2 py-1 font-mono text-[10px] uppercase text-slate-light">{status.replace(/_/g, " ")}</span></TableCell>
+                        <TableCell>
+                          {status === "awaiting_approval" ? (
+                            raisedByMe ? (
+                              <span className="text-[11px] text-amber-200">Needs another approver</span>
+                            ) : (
+                              <div className="flex gap-1.5">
+                                <button onClick={() => void decideWorkOrder(wo, "approve")} className="border border-green-500/40 px-2 py-1 text-[11px] text-green-200 hover:bg-green-500/10">Approve</button>
+                                <button onClick={() => void decideWorkOrder(wo, "reject")} className="border border-red-500/40 px-2 py-1 text-[11px] text-red-200 hover:bg-red-500/10">Reject</button>
+                              </div>
+                            )
+                          ) : status === "reported" || status === "assessed" ? (
+                            <button onClick={() => void submitWorkOrderForApproval(wo)} className="border border-slate/40 px-2 py-1 text-[11px] text-slate-light hover:text-paper hover:border-signal">Submit for approval</button>
+                          ) : <span className="text-[11px] text-slate">—</span>}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
@@ -432,8 +598,8 @@ function FleetTrackerDashboard() {
                       <TableRow key={hire.id}>
                         <TableCell className="text-paper">{text(hire, "customer_name") || "Customer not recorded"}</TableCell>
                         <TableCell>{text(hire, "request_number", "required_asset_type") || "No linked request"}</TableCell>
-                        <TableCell>{text(hire, "hire_type").replaceAll("_", " ") || "wet hire"}</TableCell>
-                        <TableCell>{text(hire, "status").replaceAll("_", " ") || "enquiry"}</TableCell>
+                        <TableCell>{text(hire, "hire_type").replace(/_/g, " ") || "wet hire"}</TableCell>
+                        <TableCell>{text(hire, "status").replace(/_/g, " ") || "enquiry"}</TableCell>
                         <TableCell>{formatMoney(number(hire, "deposit_required"))}</TableCell>
                         <TableCell>{formatMoney((number(hire, "mobilisation_charge") ?? 0) + (number(hire, "demobilisation_charge") ?? 0) + (number(hire, "damage_recovery_amount") ?? 0))}</TableCell>
                       </TableRow>
@@ -447,7 +613,39 @@ function FleetTrackerDashboard() {
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,0.9fr)]">
             <section className="border border-ink-mid bg-ink">
               <div className="flex flex-col gap-3 border-b border-ink-mid p-4 lg:flex-row lg:items-center lg:justify-between">
-                <div><h2 className="text-sm font-semibold">Asset register</h2><p className="mt-1 text-xs text-slate-light">Select an asset to inspect persisted operational records.</p></div>
+                <div>
+                  <h2 className="text-sm font-semibold">Asset register</h2>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("all")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "all" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      All ({assets.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("plant_equipment")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "plant_equipment" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Plant & Equipment ({plantEquipmentCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("office")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "office" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Office Assets ({officeCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCategoryTab("vehicles")}
+                      className={`px-2.5 py-1 text-xs font-mono transition-colors ${categoryTab === "vehicles" ? "bg-signal text-ink font-semibold" : "bg-ink-light text-slate-light hover:text-paper"}`}
+                    >
+                      Vehicles ({vehicleCount})
+                    </button>
+                  </div>
+                </div>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2"><Search size={14} className="text-slate" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search assets" className="w-full bg-transparent text-xs text-paper outline-none placeholder:text-slate sm:w-36" /></label>
                   <label className="flex items-center gap-2 border border-ink-mid bg-ink-light px-3 py-2"><Filter size={14} className="text-slate" /><select value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="bg-transparent text-xs text-paper outline-none"><option value="all">All states</option>{statuses.map(status => <option key={status} value={status}>{status}</option>)}</select></label>
@@ -467,7 +665,7 @@ function FleetTrackerDashboard() {
                   </TableHeader>
                   <tbody>
                     {filteredAssets.map(asset => (
-                      <TableRow key={asset.id} onClick={() => setSelectedId(asset.id)} className={`cursor-pointer ${asset.id === selectedId ? "bg-ink" : ""}`}>
+                      <TableRow key={asset.id} onClick={() => { setSelectedId(asset.id); setDetailModalOpen(true); }} className={`cursor-pointer ${asset.id === selectedId ? "bg-ink-light border-l-2 border-l-signal" : ""}`}>
                         <TableCell><p className="font-medium text-paper">{assetName(asset)}</p><p className="mt-1 font-mono text-[10px] text-slate">{assetReference(asset)}</p></TableCell>
                         <TableCell>{text(asset, "type", "asset_type", "category") || "Not recorded"}</TableCell>
                         <TableCell><StatusPill record={asset} /></TableCell>
@@ -527,14 +725,34 @@ function FleetTrackerDashboard() {
             )}
           </section>
 
-          {selected && (
-            <AssetDetail
-              selected={selected}
-              gateChecks={selectedGateChecks}
-              onDeploy={() => setModal("deploy")}
-              onWorkOrder={() => setModal("work-order")}
-              onEdit={() => setModal("edit")}
-            />
+          {detailModalOpen && selected && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/80 backdrop-blur-sm p-4">
+              <div className="relative max-h-[92vh] w-full max-w-4xl overflow-y-auto border border-ink-mid bg-ink shadow-2xl">
+                <div className="sticky top-0 z-20 flex items-center justify-between border-b border-ink-mid bg-ink px-5 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-signal uppercase tracking-wider">{assetReference(selected)}</span>
+                    <h2 className="text-sm font-semibold text-paper">{assetName(selected)}</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDetailModalOpen(false)}
+                    className="rounded p-1 text-slate hover:bg-ink-light hover:text-paper"
+                    title="Close"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="p-4">
+                  <AssetDetail
+                    selected={selected}
+                    gateChecks={selectedGateChecks}
+                    onDeploy={() => setModal("deploy")}
+                    onWorkOrder={() => setModal("work-order")}
+                    onEdit={() => setModal("edit")}
+                  />
+                </div>
+              </div>
+            </div>
           )}
         </>}
       </div>

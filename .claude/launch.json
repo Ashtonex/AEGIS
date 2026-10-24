@@ -28,6 +28,63 @@
       ],
       "port": 3010,
       "autoPort": true
+    },
+    {
+      "name": "aegis-backend-8001",
+      "runtimeExecutable": "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api/.venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8001",
+        "--app-dir",
+        "G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api"
+      ],
+      "port": 8001
+    },
+    {
+      "name": "aegis-backend-prodlike",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:DB_POOL_SIZE='5'; $env:DB_MAX_OVERFLOW='5'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8002 --workers 4"
+      ],
+      "port": 8002
+    },
+    {
+      "name": "aegis-frontend-api8001",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:NEXT_PUBLIC_API_URL='http://localhost:8001'; $env:INTERNAL_API_URL='http://localhost:8001'; npm run dev --prefix G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/aegis-web"
+      ],
+      "port": 3012,
+      "autoPort": true
+    },
+    {
+      "name": "aegis-backend-loadtest-1proc",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:RATE_LIMIT_ENABLED='false'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8003"
+      ],
+      "port": 8003
+    },
+    {
+      "name": "aegis-backend-loadtest-4w",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:RATE_LIMIT_ENABLED='false'; $env:DB_POOL_SIZE='5'; $env:DB_MAX_OVERFLOW='5'; Set-Location G:/work/ATMCAPPROJECTS/Mudekwa/AEGIS/imperium-api; .venv/Scripts/python.exe -m uvicorn main:app --host 127.0.0.1 --port 8004 --workers 4"
+      ],
+      "port": 8004
     }
   ]
 }

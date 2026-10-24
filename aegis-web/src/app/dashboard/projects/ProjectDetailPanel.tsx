@@ -1,4 +1,5 @@
 "use client";
+import { GenerateInvoiceModal } from "@/components/invoices/GenerateInvoiceModal";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
@@ -35,7 +36,7 @@ import {
 import {
   updateInternalProject,
   submitProjectRegistration, decideProjectRegistration, setProjectBudget, confirmProjectDeposit,
-  deleteInternalProject, getProjectDeleteImpact, updateProjectIntake, commitProjectIntake, getProjectLifecycle, addProjectMilestone,
+  deleteInternalProject, getProjectDeleteImpact, type ProjectMoneyAttached, updateProjectIntake, commitProjectIntake, getProjectLifecycle, addProjectMilestone,
   updateProjectMilestone, getAssignableUsers, getAssignment, getProductionExpenses, addProductionExpense,
   getProductionRevenue, addProductionRevenue,
   updateProjectPreMobilisationCheck, approveProjectPreMobilisation,
@@ -431,6 +432,7 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
   const [budgetAmount, setBudgetAmount] = useState("");
   const [depositReference, setDepositReference] = useState("");
   const [depositReceivedAmount, setDepositReceivedAmount] = useState("");
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
@@ -551,6 +553,17 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
 
       {isPendingDeposit && (
         <div className="border-t border-ink-mid/50 pt-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[11px] font-mono uppercase text-slate">Deposit Settlement</span>
+            <button
+              type="button"
+              onClick={() => setShowInvoiceModal(true)}
+              className="inline-flex items-center gap-1.5 border border-signal bg-signal/15 px-2.5 py-1 font-mono text-xs font-semibold text-signal hover:bg-signal hover:text-ink transition-colors"
+            >
+              <FileText size={13} />
+              <span>Generate Proforma Deposit Invoice (PDF)</span>
+            </button>
+          </div>
           <p className="mb-2 text-xs text-slate-light">
             This project was created from a won deal and is pending deposit confirmation. Once Finance confirms receipt, it moves into the pre-mobilisation readiness gate before active delivery.
           </p>
@@ -587,6 +600,25 @@ function FieldIntakePanel({ project, isFinance, onRefresh }: { project: Record<s
       )}
 
       {msg && <p className="text-xs text-slate-light">{msg}</p>}
+
+      <GenerateInvoiceModal
+        isOpen={showInvoiceModal}
+        onClose={() => setShowInvoiceModal(false)}
+        initialData={{
+          invoiceType: "PROFORMA INVOICE",
+          subject: `40% deposit — ${String(project.name || "Commercial Project")}`,
+          clientName: String(project.client_name || ""),
+          quotationRef: String(project.project_code || project.code || ""),
+          depositPercentage: 40,
+          items: [
+            {
+              item_no: "1",
+              description: `Initial mobilisation & works deposit for ${String(project.name || "works")}`,
+              amount_excl_vat: Number(project.contract_value || 0),
+            }
+          ]
+        }}
+      />
     </div>
   );
 }
@@ -2277,45 +2309,51 @@ export function ProjectDetail({
   const { role } = useAuth();
   const source = detail?.project ?? project;
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteImpact, setDeleteImpact] = useState<{
+    money: ProjectMoneyAttached;
+    blocked_by: { table: string; count: number }[];
+    would_wipe: boolean;
+  } | null>(null);
+  const [checkingImpact, setCheckingImpact] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleDelete = useCallback(async () => {
     setDeleteError(null);
-    let acknowledgeMoney = false;
+    setCheckingImpact(true);
     try {
       const impact = await getProjectDeleteImpact(project.id);
-      const money = impact.data?.money;
-      if (money?.has_money) {
-        const usd = (n: number) => new Intl.NumberFormat("en-ZW", { style: "currency", currency: "USD" }).format(n || 0);
-        const lines = [
-          money.bank_lines ? `- ${money.bank_lines} bank statement line(s): ${usd(money.bank_in)} in, ${usd(money.bank_out)} out` : "",
-          money.split_parts ? `- ${money.split_parts} split / cash-use part(s): ${usd(money.split_amount)}` : "",
-          money.claims ? `- ${money.claims} claim(s), ${usd(money.collected)} collected` : "",
-          money.cost_entries ? `- ${money.cost_entries} cost entr${money.cost_entries === 1 ? "y" : "ies"}: ${usd(money.actual_cost)}` : "",
-          money.ledger_lines ? `- ${money.ledger_lines} general ledger line(s)` : "",
-          money.petty_cash ? `- ${usd(money.petty_cash)} in its petty cash float` : "",
-        ].filter(Boolean).join("\n");
-        const ok = window.confirm(
-          `WARNING: "${title(project)}" has money attached:\n\n${lines}\n\n` +
-          "Deleting archives the project: all of this disappears from the Finance dashboard, project lists and pickers " +
-          "(it stays in the bank records and the ledger, attached to a hidden project).\n\n" +
-          "If you meant to move this money, cancel and re-tag its bank lines to another project first " +
-          "(Finance > Bank Statement Review).\n\nArchive it anyway?",
-        );
-        if (!ok) return;
-        acknowledgeMoney = true;
-      } else if (!window.confirm(`Delete "${title(project)}"? If it has no linked activity anywhere it will be permanently wiped; otherwise it will be archived instead.`)) {
-        return;
+      if (impact.success && impact.data) {
+        setDeleteImpact(impact.data);
+        setDeleteModalOpen(true);
+      } else {
+        const msg = impact.error ? (typeof impact.error === "string" ? impact.error : impact.error.message) : "Could not check project impact.";
+        throw new Error(msg);
       }
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : "Could not check what this project is linked to.");
-      return;
+    } finally {
+      setCheckingImpact(false);
     }
+  }, [project.id]);
+
+  const confirmDelete = useCallback(async (purgeAll: boolean) => {
     setDeleting(true);
+    setDeleteError(null);
+    let acknowledgeMoney = false;
+    if (deleteImpact?.money?.has_money) {
+      acknowledgeMoney = true;
+    }
     try {
-      const res = await deleteInternalProject(project.id, acknowledgeMoney);
-      if (!res.success) throw new Error("Project could not be deleted.");
+      const res = purgeAll
+        ? await deleteInternalProject(project.id, true, true)
+        : await deleteInternalProject(project.id, acknowledgeMoney);
+      if (!res.success) {
+        const msg = res.error ? (typeof res.error === "string" ? res.error : res.error.message) : "Project could not be deleted.";
+        throw new Error(msg);
+      }
+      setDeleteModalOpen(false);
       if (res.data?.wiped) {
         window.alert(`"${title(project)}" was permanently deleted.`);
       } else {
@@ -2328,7 +2366,7 @@ export function ProjectDetail({
     } finally {
       setDeleting(false);
     }
-  }, [project, onDeleted]);
+  }, [project, deleteImpact, onDeleted]);
 
   const [departmentSaving, setDepartmentSaving] = useState(false);
   const [departmentError, setDepartmentError] = useState<string | null>(null);
@@ -3113,12 +3151,12 @@ export function ProjectDetail({
           </div>
           <button
             onClick={() => void handleDelete()}
-            disabled={deleting}
+            disabled={checkingImpact || deleting}
             className="border border-red-500/30 bg-red-950/20 p-2 text-red-300 hover:border-red-400 hover:bg-red-950/40 disabled:opacity-40"
             aria-label="Delete project"
             title="Delete project"
           >
-            {deleting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Trash2 className="h-5 w-5" />}
+            {checkingImpact || deleting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Trash2 className="h-5 w-5" />}
           </button>
           <button
             onClick={onClose}
@@ -3128,7 +3166,140 @@ export function ProjectDetail({
             <X className="h-5 w-5" />
           </button>
         </div>
-        {deleteError && <p className="mt-2 text-xs text-red-300">{deleteError}</p>}
+        {deleteError && !deleteModalOpen && <p className="mt-2 text-xs text-red-300">{deleteError}</p>}
+
+        {deleteModalOpen && deleteImpact && (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete project confirmation"
+          >
+            <div className="w-full max-w-lg border border-red-500/40 bg-ink p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-start justify-between border-b border-ink-mid pb-3">
+                <div className="flex items-center gap-2 text-red-400">
+                  <AlertTriangle className="h-5 w-5" />
+                  <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-paper">
+                    Delete Project: {title(project)}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDeleteModalOpen(false)}
+                  disabled={deleting}
+                  className="text-slate hover:text-paper"
+                  aria-label="Close dialog"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {deleteImpact.money?.has_money ? (
+                <div className="border border-red-500/40 bg-red-950/30 p-3 space-y-2 text-xs text-red-200">
+                  <p className="font-semibold text-red-300">
+                    WARNING: &quot;{title(project)}&quot; has money attached:
+                  </p>
+                  <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                    {deleteImpact.money.bank_lines > 0 && (
+                      <li>
+                        {deleteImpact.money.bank_lines} bank statement line(s):{" "}
+                        {formatCurrency(deleteImpact.money.bank_in)} in, {formatCurrency(deleteImpact.money.bank_out)} out
+                      </li>
+                    )}
+                    {deleteImpact.money.split_parts > 0 && (
+                      <li>
+                        {deleteImpact.money.split_parts} split / cash-use part(s):{" "}
+                        {formatCurrency(deleteImpact.money.split_amount)}
+                      </li>
+                    )}
+                    {deleteImpact.money.claims > 0 && (
+                      <li>
+                        {deleteImpact.money.claims} claim(s), {formatCurrency(deleteImpact.money.collected)} collected
+                      </li>
+                    )}
+                    {deleteImpact.money.cost_entries > 0 && (
+                      <li>
+                        {deleteImpact.money.cost_entries} cost entry/entries:{" "}
+                        {formatCurrency(deleteImpact.money.actual_cost)}
+                      </li>
+                    )}
+                    {deleteImpact.money.ledger_lines > 0 && (
+                      <li>{deleteImpact.money.ledger_lines} general ledger line(s)</li>
+                    )}
+                    {deleteImpact.money.petty_cash > 0 && (
+                      <li>{formatCurrency(deleteImpact.money.petty_cash)} in petty cash float</li>
+                    )}
+                  </ul>
+                </div>
+              ) : null}
+
+              {deleteImpact.blocked_by && deleteImpact.blocked_by.length > 0 && (
+                <div className="border border-amber-500/30 bg-amber-950/20 p-3 text-xs text-amber-200 space-y-1">
+                  <span className="font-semibold text-amber-400">Linked Activity Records:</span>
+                  <p className="text-slate-300">
+                    {deleteImpact.blocked_by.map((b) => `${b.table} (${b.count})`).join(", ")}
+                  </p>
+                </div>
+              )}
+
+              {deleteError && (
+                <div className="p-2 border border-red-500 bg-red-950/40 text-xs text-red-300">
+                  {deleteError}
+                </div>
+              )}
+
+              <div className="space-y-3 pt-2">
+                <div className="border border-red-500/40 bg-ink-light p-3 space-y-2">
+                  <div className="font-mono text-xs font-bold uppercase tracking-wider text-red-400">
+                    Option 1: Delete in Entirety (Permanent Cascade Purge)
+                  </div>
+                  <p className="text-xs text-slate-light">
+                    Permanently wipe this project and completely remove all its financial movements, journal lines,
+                    cost entries, progress claims, budgets, site reports, workforce allocations, tasks, and documents from the database.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void confirmDelete(true)}
+                    disabled={deleting}
+                    className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-mono text-xs uppercase tracking-wider py-2 px-3 font-semibold disabled:opacity-50"
+                  >
+                    {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                    Permanently Delete in Entirety
+                  </button>
+                </div>
+
+                <div className="border border-ink-mid bg-ink-light p-3 space-y-2">
+                  <div className="font-mono text-xs font-bold uppercase tracking-wider text-paper">
+                    Option 2: Archive Project (Soft Delete)
+                  </div>
+                  <p className="text-xs text-slate-light">
+                    Hides the project from dashboards, project lists, and pickers while keeping historical financial records in the ledger and bank records.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void confirmDelete(false)}
+                    disabled={deleting}
+                    className="w-full flex items-center justify-center gap-2 border border-ink-mid hover:border-signal text-paper font-mono text-xs uppercase tracking-wider py-2 px-3 disabled:opacity-50"
+                  >
+                    {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    Archive Project
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setDeleteModalOpen(false)}
+                  disabled={deleting}
+                  className="px-4 py-1.5 border border-ink-mid font-mono text-xs text-slate-light hover:text-paper"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tab Navigation */}
         <nav className="my-4 flex overflow-x-auto border-b border-ink-mid">

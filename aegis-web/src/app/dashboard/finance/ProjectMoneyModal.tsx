@@ -17,6 +17,7 @@ import {
   type BankStatementLineFilter,
 } from "@/lib/api";
 import { CATEGORIES, categoryLabel } from "./BankStatementReviewPanel";
+import { RecordedEntries } from "./ProjectMoneyEntries";
 
 type RecordData = Record<string, any>;
 type Tab = "overview" | "in" | "out" | "cash" | "attribute" | "claims" | "ledger";
@@ -73,6 +74,9 @@ export function ProjectMoneyModal({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editLine, setEditLine] = useState<RecordData | null>(null);
+  const [recordOpen, setRecordOpen] = useState<"in" | "out" | null>(null);
+  const startRecording = (direction: "in" | "out") => { setTab(direction); setRecordOpen(direction); };
+  const clearRecordOpen = useCallback(() => setRecordOpen(null), []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,6 +106,8 @@ export function ProjectMoneyModal({
 
   const project = data?.project;
   const summary = data?.summary || {};
+  const entries: RecordData[] = data?.entries || [];
+  const entryCount = (direction: "in" | "out") => entries.filter((e) => e.direction === direction).length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch justify-center bg-ink/85 backdrop-blur-sm p-0 md:p-6" role="dialog" aria-modal="true">
@@ -133,8 +139,10 @@ export function ProjectMoneyModal({
               className={`flex items-center gap-2 px-3 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px ${tab === key ? "border-signal text-paper" : "border-transparent text-slate hover:text-paper"}`}
             >
               <Icon className="h-4 w-4" />{label}
-              {key === "in" && data ? <Count n={data.money_in.length} /> : null}
-              {key === "out" && data ? <Count n={data.money_out.length} /> : null}
+              {key === "in" && data ? <Count n={data.money_in.length + entryCount("in")} /> : null}
+              {key === "out" && data ? <Count n={data.money_out.length + entryCount("out")} /> : null}
+              {(key === "in" || key === "out") && entries.some((e) => e.direction === key && e.match_status === "suggested" && (e.suggestions || []).length > 0)
+                ? <AlertTriangle className="h-3.5 w-3.5 text-amber-300" aria-label="Needs a decision" /> : null}
               {key === "cash" && data ? <Count n={data.cash_uses.length} /> : null}
             </button>
           ))}
@@ -154,9 +162,30 @@ export function ProjectMoneyModal({
             <div className="border border-red-500/30 bg-red-950/20 text-red-200 px-4 py-3 text-sm">{error}</div>
           ) : data ? (
             <>
-              {tab === "overview" && <Overview data={data} onChanged={changed} />}
-              {tab === "in" && <LineTable rows={data.money_in} direction="in" onEdit={setEditLine} empty="No money in has been attributed to this project yet." />}
-              {tab === "out" && <MoneyOut rows={data.money_out} onEdit={setEditLine} />}
+              {tab === "overview" && <Overview data={data} onChanged={changed} onRecord={startRecording} />}
+              {(tab === "in" || tab === "out") && (
+                <div className="space-y-8">
+                  <RecordedEntries
+                    key={tab}
+                    direction={tab}
+                    entries={entries}
+                    payableClaims={data.payable_claims || []}
+                    projectId={projectId}
+                    autoOpen={recordOpen === tab}
+                    onAutoOpened={clearRecordOpen}
+                    onChanged={changed}
+                  />
+                  <section className="space-y-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-paper">From the bank statement</h3>
+                      <p className="text-xs text-slate">Bank lines attributed to this project that weren&apos;t recorded here first.</p>
+                    </div>
+                    {tab === "in"
+                      ? <LineTable rows={data.money_in} direction="in" onEdit={setEditLine} empty="No other money in from the bank statement." />
+                      : <MoneyOut rows={data.money_out} onEdit={setEditLine} />}
+                  </section>
+                </div>
+              )}
               {tab === "cash" && <CashUsed rows={data.cash_uses} onEdit={setEditLine} />}
               {tab === "attribute" && <Attribute projectId={projectId} onEdit={setEditLine} onChanged={changed} />}
               {tab === "claims" && <ClaimsAndBudget data={data} extra={claimsAndBudget} />}
@@ -169,6 +198,8 @@ export function ProjectMoneyModal({
           <span>Bank in {money(summary.bank_in)}</span>
           <span>Bank out {money(summary.bank_out)}</span>
           <span>Cash used {money(summary.cash_used)}</span>
+          <span>Recorded here: in {money(summary.recorded_in)} · out {money(summary.recorded_out)}</span>
+          {num(summary.awaiting_bank) > 0 && <span className="text-amber-300">{summary.awaiting_bank} awaiting bank ({money(summary.awaiting_bank_amount)})</span>}
           <span className="ml-auto">Changes here update claims, costs, petty cash and the general ledger together.</span>
         </footer>
       </div>
@@ -203,7 +234,7 @@ function Stat({ label, value, tone, sub }: { label: string; value: string; tone?
 
 // ---------------------------------------------------------------------------
 
-function Overview({ data, onChanged }: { data: RecordData; onChanged: (msg?: string) => Promise<void> }) {
+function Overview({ data, onChanged, onRecord }: { data: RecordData; onChanged: (msg?: string) => Promise<void>; onRecord: (direction: "in" | "out") => void }) {
   const s = data.summary;
   const project = data.project;
   const [editing, setEditing] = useState(false);
@@ -235,8 +266,24 @@ function Overview({ data, onChanged }: { data: RecordData; onChanged: (msg?: str
     }
   };
 
+  const needsDecision = num(s.needs_decision);
+  const awaiting = num(s.awaiting_bank);
+
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <button className={buttonClass} onClick={() => onRecord("in")}><ArrowDownLeft className="h-4 w-4" />Record money in</button>
+        <button className={ghostClass} onClick={() => onRecord("out")}><ArrowUpRight className="h-4 w-4" />Record a cost</button>
+        <span className="text-xs text-slate">Goes into claims, costs and the ledger now; matched to the bank when the statement is uploaded.</span>
+      </div>
+
+      {(needsDecision > 0 || awaiting > 0) && (
+        <div className={`border px-4 py-3 text-sm ${needsDecision > 0 ? "border-amber-500/30 bg-amber-950/20 text-amber-100" : "border-ink-mid bg-ink-light text-slate-light"}`}>
+          {needsDecision > 0 && <p className="font-medium flex items-center gap-2"><AlertTriangle className="h-4 w-4" />{needsDecision} recorded {needsDecision === 1 ? "entry has" : "entries have"} more than one possible bank line - open Money in / Money out to confirm.</p>}
+          {awaiting > 0 && <p className={needsDecision > 0 ? "text-amber-200/80 mt-1" : ""}>{awaiting} recorded {awaiting === 1 ? "entry" : "entries"} ({money(s.awaiting_bank_amount)}) not on a bank statement yet. They&apos;ll be matched when the statement is uploaded.</p>}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className={`${cardClass} p-4 lg:col-span-1`}>
           <p className="text-[10px] uppercase font-mono tracking-widest text-slate">Contract value</p>

@@ -8,9 +8,15 @@ CRM_PAGE = Path("../aegis-web/src/app/dashboard/crm/page.tsx").read_text()
 
 
 def _list_opportunities_sql() -> str:
+    # The opportunity card columns live in _OPPORTUNITY_CARD_SELECT, shared by
+    # GET /opportunities and GET /opportunities/board; the route must use it.
     start = CRM_ROUTER.index('@router.get("/opportunities")')
     end = CRM_ROUTER.index('@router.get("/tenders")')
-    return CRM_ROUTER[start:end]
+    route = CRM_ROUTER[start:end]
+    assert "_OPPORTUNITY_CARD_SELECT" in route
+    card_start = CRM_ROUTER.index("_OPPORTUNITY_CARD_SELECT = ")
+    card_end = CRM_ROUTER.index('"""', CRM_ROUTER.index('"""', card_start) + 3)
+    return CRM_ROUTER[card_start:card_end] + route
 
 
 def _list_tenders_sql() -> str:

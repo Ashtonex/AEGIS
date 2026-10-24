@@ -180,6 +180,8 @@ export default function TeamsPage() {
       }
       if (tasksRes.status === "rejected" || (tasksRes.status === "fulfilled" && !tasksRes.value.success)) {
         loadWarnings.push("CRM tasks did not load; workload and overdue counts may be incomplete.");
+      } else if (tasksRes.status === "fulfilled" && tasksRes.value.meta?.truncated) {
+        loadWarnings.push(`Workload and overdue counts cover only the first ${Number(tasksRes.value.meta.cap).toLocaleString()} tasks.`);
       }
       const today = new Date(new Date().toDateString());
       const byUser: Record<string, WorkloadEntry> = {};

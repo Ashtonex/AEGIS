@@ -5,6 +5,7 @@ import { User, Session } from '@supabase/supabase-js';
 import { supabase, setCachedAccessToken } from '../supabase';
 import { useRouter, usePathname } from 'next/navigation';
 import { getAuthMe, resolvePortalAccess } from '../api';
+import { effectiveRoles } from '../rbacMatch';
 
 interface AuthContextType {
   user: User | null;
@@ -13,6 +14,16 @@ interface AuthContextType {
    * backend - not session.user.app_metadata.role, which nothing keeps in
    * sync once an admin assigns a functional role via Settings. */
   role: string | null;
+  /** Every role the user holds (EMPLOYEE dropped when they have anything
+   * more specific). Access checks should pass if ANY of these qualifies, so
+   * one extra role never hides what another role grants. */
+  roles: string[];
+  /** Every permission key the user holds across all roles - the single
+   * source of truth for what pages and sidebar items they can see. Null
+   * until /auth/me resolves. */
+  permissions: ReadonlySet<string> | null;
+  /** SUPERADMIN bypasses every permission check. */
+  isSuperAdmin: boolean;
   isLoading: boolean;
   /** True until the initial Supabase session check resolves - does NOT wait
    * on the follow-up /auth/me role round trip the way isLoading does. Use
@@ -29,6 +40,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [role, setRole] = useState<string | null>(null);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [permissions, setPermissions] = useState<ReadonlySet<string> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [sessionLoading, setSessionLoading] = useState(true);
   const router = useRouter();
@@ -43,18 +56,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (!accessToken) {
       if (sequence === roleResolveSeqRef.current) {
         setRole(null);
+        setRoles([]);
+        setPermissions(null);
       }
       return;
     }
     try {
       const response = await getAuthMe(accessToken);
       if (sequence === roleResolveSeqRef.current && accessToken === lastAppliedTokenRef.current) {
-        setRole(response.data?.role ?? null);
+        const primary = response.data?.role ?? null;
+        setRole(primary);
+        setRoles(effectiveRoles(response.data?.roles, primary));
+        setPermissions(new Set(response.data?.permissions ?? []));
       }
     } catch (error) {
       console.error("Error fetching resolved role:", error);
       if (sequence === roleResolveSeqRef.current && accessToken === lastAppliedTokenRef.current) {
         setRole(null);
+        setRoles([]);
+        setPermissions(null);
       }
     }
   }, []);
@@ -190,6 +210,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCachedAccessToken(null);
     await supabase.auth.signOut();
     setRole(null);
+    setRoles([]);
+    setPermissions(null);
     router.push('/login');
   }, [router]);
 
@@ -198,6 +220,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       user,
       session,
       role,
+      roles,
+      permissions,
+      isSuperAdmin: (role ?? "").trim().toUpperCase() === "SUPERADMIN",
       isLoading,
       sessionLoading,
       signOut

@@ -1,8 +1,8 @@
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -24,7 +24,8 @@ from app.services.finance.project_forecast import (
     check_and_alert_margin_threat,
 )
 from app.shared.sql import update_tenant_row_sql
-from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks
+from app.shared.task_stacks import generate_task_stack, cascade_delete_entity_tasks, supersede_entity_tasks, should_supersede_on_stage_change
+from app.shared.stage_moves import close_quote_preparation, complete_open_stage_tasks, log_stage_move, require_stage_note
 from app.shared.pursuits import get_or_create_pursuit
 from app.shared.project_setup import ensure_project_operational_setup
 from app.shared.vendor_verification import run_system_verification_check
@@ -208,6 +209,9 @@ class OpportunityUpdate(CrmPayload):
     margin_approval_required: Optional[bool] = None
     risk_approval_required: Optional[bool] = None
     approval_status: Optional[str] = Field(default=None, max_length=40)
+    # Mandatory activity-log note when `stage` actually changes; never a
+    # column on crm.opportunities (see app/shared/stage_moves.py).
+    stage_note: Optional[str] = Field(default=None, max_length=4000)
 
     @field_validator("stage", mode="before")
     @classmethod
@@ -315,6 +319,21 @@ class CreateQuotationPayload(CrmPayload):
     quote_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=2)
     status: str = Field(default="draft", max_length=50)
     notes: Optional[str] = None
+    # Required when creating the quote moves the deal into Quotation (from
+    # Inquiry/Qualification/Site Visit) - same rule as any stage move.
+    stage_note: Optional[str] = Field(default=None, max_length=4000)
+
+
+# Deal stages before a quote exists; creating/sending a quote moves these to Quotation.
+_PRE_QUOTATION_STAGES = {"Inquiry", "Qualification", "Site Visit"}
+
+
+class ClientQuotationPayload(CrmPayload):
+    document_id: UUID
+    quote_amount: Optional[Decimal] = Field(default=None, gt=0, max_digits=15, decimal_places=2)
+    valid_until: Optional[date] = None
+    follow_up_date: Optional[date] = None
+    notes: Optional[str] = Field(default=None, max_length=4000)
 
 
 class MarkWonPayload(CrmPayload):
@@ -364,10 +383,27 @@ class TenderCreate(CrmPayload):
         return _normalize_stage(value, TENDER_STAGE_ALIASES)
 
 
+SUBCONTRACTOR_COMPLIANCE_STATUSES = {"compliant", "non_compliant", "pending", "exempt"}
+
+
+def _normalize_compliance_status(value: Any) -> Any:
+    """Map UI labels like 'Non-Compliant' onto the values the DB CHECK allows."""
+    if value is None:
+        return None
+    key = "_".join(str(value).strip().lower().replace("-", " ").split())
+    if key not in SUBCONTRACTOR_COMPLIANCE_STATUSES:
+        raise ValueError(f"compliance_status must be one of {sorted(SUBCONTRACTOR_COMPLIANCE_STATUSES)}")
+    return key
+
+
 class SubcontractorCreate(CrmPayload):
     name: str = Field(..., min_length=1, max_length=255)
     capability_tags: Optional[List[str]] = None
     compliance_status: Optional[str] = Field(default=None, max_length=50)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_clearance_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     reliability_score: int = Field(default=0, ge=0, le=100)
@@ -391,11 +427,20 @@ class SubcontractorCreate(CrmPayload):
     # how Managed Accounts already gates this.
     issue_portal_login: bool = False
 
+    @field_validator("compliance_status", mode="before")
+    @classmethod
+    def normalize_compliance_status(cls, value: Any) -> Any:
+        return _normalize_compliance_status(value)
+
 
 class SubcontractorUpdate(CrmPayload):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     capability_tags: Optional[List[str]] = None
     compliance_status: Optional[str] = Field(default=None, max_length=50)
+    registration_number: Optional[str] = Field(default=None, max_length=100)
+    tax_clearance_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     reliability_score: Optional[int] = Field(default=None, ge=0, le=100)
@@ -412,11 +457,20 @@ class SubcontractorUpdate(CrmPayload):
     accounts_contact_phone: Optional[str] = Field(default=None, max_length=50)
     capability_matrix: Optional[List[Dict[str, Any]]] = None
 
+    @field_validator("compliance_status", mode="before")
+    @classmethod
+    def normalize_compliance_status(cls, value: Any) -> Any:
+        return _normalize_compliance_status(value)
+
 
 SUBCONTRACTOR_COLUMNS = (
     "name",
     "capability_tags",
     "compliance_status",
+    "registration_number",
+    "tax_clearance_number",
+    "vat_status",
+    "vat_number",
     "nssa_number",
     "praz_number",
     "reliability_score",
@@ -432,6 +486,8 @@ SUBCONTRACTOR_COLUMNS = (
 def _subcontractor_db_values(values: Dict[str, Any]) -> Dict[str, Any]:
     db_values = dict(values)
     db_values.pop("issue_portal_login", None)
+    if db_values.get("vat_status") == "not_registered":
+        db_values["vat_number"] = None
     if "physical_address" in db_values:
         db_values["address"] = db_values.pop("physical_address")
     metadata_fields = (
@@ -939,7 +995,17 @@ async def send_campaign(
         sent_count += 1
 
     await db.commit()
-    return {"success": True, "data": {"sent_count": sent_count}, "message": f"Campaign sent to {sent_count} member(s).", "meta": {}}
+    meta = {
+        "queued_count": sent_count,
+        "selected_recipients": len(members),
+        "delivery_status": "queued_for_dispatch",
+    }
+    return {
+        "success": True,
+        "data": {"sent_count": sent_count},
+        "message": f"{sent_count} message(s) queued for outbound dispatch.",
+        "meta": meta,
+    }
 
 
 @router.get("/segments")
@@ -1666,6 +1732,38 @@ async def commercial_morning_briefing(
     }
 
 
+# One opportunity card's fields - shared by the flat list and the Kanban
+# board so they can never drift apart. originating_department_id is
+# included: without it the board's department filter matched nothing and
+# the edit form pre-filled a blank department, so saving an edit wiped it.
+_OPPORTUNITY_CARD_SELECT = """
+    SELECT
+        o.id, o.name, o.stage, o.budget, o.probability, o.expected_margin, o.risk_level,
+        o.client_org_id, o.client_id, o.contact_id, o.sales_owner_id, o.expected_close_date,
+        o.deal_value, COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS weighted_value,
+        o.next_activity_due_at, o.quote_id, o.project_id, o.win_loss_status, o.win_loss_reason,
+        o.competitor, o.margin_approval_required, o.risk_approval_required, o.approval_status,
+        o.originating_department_id,
+        o.region, o.latitude::float AS latitude, o.longitude::float AS longitude,
+        o.created_at, o.updated_at,
+        c.contact_name as client_name,
+        co.name as organization_name,
+        q.status AS quote_status,
+        p.name AS project_name,
+        CASE
+            WHEN o.win_loss_status IS NULL
+             AND o.next_activity_due_at IS NULL
+             AND o.updated_at < NOW() - INTERVAL '14 days'
+            THEN true ELSE false
+        END AS is_stale
+    FROM crm.opportunities o
+    LEFT JOIN crm.contacts c ON o.client_id = c.id
+    LEFT JOIN crm.organizations co ON co.id = o.client_org_id AND co.organization_id = o.organization_id
+    LEFT JOIN finance.quotations q ON q.id = o.quote_id AND q.organization_id = o.organization_id AND q.is_deleted = false
+    LEFT JOIN projects.projects p ON p.id = o.project_id AND p.organization_id = o.organization_id AND p.is_deleted = false
+"""
+
+
 @router.get("/opportunities")
 async def list_opportunities(
     limit: Optional[int] = Query(default=None, ge=1, le=500),
@@ -1675,33 +1773,14 @@ async def list_opportunities(
 ):
     org_id = _require_org_id(user)
     pagination_params = _pagination_params(limit, offset)
-    query = text("""
-        SELECT
-            o.id, o.name, o.stage, o.budget, o.probability, o.expected_margin, o.risk_level,
-            o.client_org_id, o.client_id, o.contact_id, o.sales_owner_id, o.expected_close_date,
-            o.deal_value, COALESCE(o.weighted_value, COALESCE(o.deal_value, o.budget) * COALESCE(o.probability, 0) / 100.0) AS weighted_value,
-            o.next_activity_due_at, o.quote_id, o.project_id, o.win_loss_status, o.win_loss_reason,
-            o.competitor, o.margin_approval_required, o.risk_approval_required, o.approval_status,
-            o.region, o.latitude::float AS latitude, o.longitude::float AS longitude,
-            c.contact_name as client_name,
-            co.name as organization_name,
-            q.status AS quote_status,
-            p.name AS project_name,
-            CASE
-                WHEN o.win_loss_status IS NULL
-                 AND o.next_activity_due_at IS NULL
-                 AND o.updated_at < NOW() - INTERVAL '14 days'
-                THEN true ELSE false
-            END AS is_stale
-        FROM crm.opportunities o
-        LEFT JOIN crm.contacts c ON o.client_id = c.id
-        LEFT JOIN crm.organizations co ON co.id = o.client_org_id AND co.organization_id = o.organization_id
-        LEFT JOIN finance.quotations q ON q.id = o.quote_id AND q.organization_id = o.organization_id AND q.is_deleted = false
-        LEFT JOIN projects.projects p ON p.id = o.project_id AND p.organization_id = o.organization_id AND p.is_deleted = false
+    query = text(
+        _OPPORTUNITY_CARD_SELECT
+        + """
         WHERE o.organization_id = :org_id AND o.is_deleted = false
         ORDER BY o.created_at DESC
         LIMIT :limit OFFSET :offset
-    """)
+    """
+    )
     result = await db.execute(query, {"org_id": org_id, **pagination_params})
     opportunities = [dict(row._mapping) for row in result]
     meta = await _list_meta(
@@ -1723,6 +1802,175 @@ async def list_opportunities(
         "message": "Opportunities fetched.",
         "meta": meta,
     }
+
+
+
+# The Kanban's columns and how database stages map onto them - the same
+# mapping the board page uses (BACKEND_TO_FRONTEND_STAGE): Quotation shows as
+# Proposal, Contract as Won, and anything unrecognised as Qualification.
+OPPORTUNITY_BOARD_COLUMNS = ("Qualification", "Proposal", "Negotiation", "Won", "Lost")
+_OPPORTUNITY_BOARD_COLUMN_SQL = """
+    CASE o.stage
+        WHEN 'Quotation' THEN 'Proposal'
+        WHEN 'Negotiation' THEN 'Negotiation'
+        WHEN 'Contract' THEN 'Won'
+        WHEN 'Lost' THEN 'Lost'
+        ELSE 'Qualification'
+    END
+"""
+_OPPORTUNITY_BOARD_VALUE_RANGES = {
+    "Under 50k": "COALESCE(o.budget, 0) < 50000",
+    "50k-250k": "COALESCE(o.budget, 0) BETWEEN 50000 AND 250000",
+    "Over 250k": "COALESCE(o.budget, 0) > 250000",
+}
+# Open = not in a Won/Lost column and no recorded win/loss (the page's
+# isOpenOpportunity). "Overdue" compares calendar dates in Harare time, like
+# the page's isPastDueDate (due before the start of today, local time).
+_OPPORTUNITY_OPEN_SQL = f"(({_OPPORTUNITY_BOARD_COLUMN_SQL}) NOT IN ('Won', 'Lost') AND o.win_loss_status IS NULL)"
+_OPPORTUNITY_BOARD_SUMMARY_SQL = f"""
+    SELECT
+        COALESCE(SUM(COALESCE(o.budget, 0)), 0) AS pipeline_total,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0), 0) AS weighted_total,
+        COALESCE(SUM(COALESCE(o.expected_margin, 0)), 0)
+            / GREATEST(COUNT(*) FILTER (WHERE COALESCE(o.expected_margin, 0) <> 0), 1) AS average_margin,
+        COUNT(*) FILTER (WHERE {_OPPORTUNITY_OPEN_SQL} AND o.next_activity_due_at IS NULL) AS missing_next_action,
+        COUNT(*) FILTER (
+            WHERE {_OPPORTUNITY_OPEN_SQL}
+              AND (o.next_activity_due_at AT TIME ZONE 'Africa/Harare')::date
+                  < (NOW() AT TIME ZONE 'Africa/Harare')::date
+        ) AS overdue_next_action,
+        COUNT(*) FILTER (
+            WHERE {_OPPORTUNITY_OPEN_SQL}
+              AND o.win_loss_status IS NULL AND o.next_activity_due_at IS NULL
+              AND o.updated_at < NOW() - INTERVAL '14 days'
+        ) AS stale,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0)
+            FILTER (WHERE o.risk_level = 'High'), 0) AS weighted_high_risk,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0)
+            FILTER (WHERE o.risk_level = 'Medium' OR o.risk_level IS NULL OR o.risk_level = ''), 0) AS weighted_medium_risk,
+        COALESCE(SUM(COALESCE(o.budget, 0) * COALESCE(o.probability, 0) / 100.0)
+            FILTER (WHERE o.risk_level = 'Low'), 0) AS weighted_low_risk
+    FROM crm.opportunities o
+    WHERE o.organization_id = :org_id AND o.is_deleted = false
+"""
+OPPORTUNITY_BOARD_PAGE = 50
+
+
+@router.get("/opportunities/board")
+async def opportunity_board(
+    search: Optional[str] = Query(default=None, max_length=200),
+    min_budget: Optional[float] = Query(default=None, ge=0),
+    value_range: Optional[str] = Query(default=None),
+    risk_level: Optional[str] = Query(default=None),
+    department_id: Optional[UUID] = Query(default=None),
+    column: Optional[str] = Query(default=None),
+    per_column: int = Query(default=OPPORTUNITY_BOARD_PAGE, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The opportunities Kanban, bounded per column.
+
+    Each column returns its first ``per_column`` cards (newest first) plus
+    its exact card count and budget total, so column headers stay right
+    however many cards are loaded. ``column`` + ``offset`` fetch the next
+    cards of one column ("Show more"). Filters apply to the cards and column
+    counts; ``summary`` (the stats banner and forecast) always covers the
+    whole unfiltered pipeline, as the page always did."""
+    org_id = _require_org_id(user)
+    if column is not None and column not in OPPORTUNITY_BOARD_COLUMNS:
+        raise HTTPException(status_code=422, detail=f"column must be one of: {', '.join(OPPORTUNITY_BOARD_COLUMNS)}.")
+    if value_range is not None and value_range not in _OPPORTUNITY_BOARD_VALUE_RANGES:
+        raise HTTPException(status_code=422, detail=f"value_range must be one of: {', '.join(_OPPORTUNITY_BOARD_VALUE_RANGES)}.")
+
+    filters = ["o.organization_id = :org_id", "o.is_deleted = false"]
+    params: Dict[str, Any] = {"org_id": org_id, "per_column": per_column, "offset": offset}
+    if search and search.strip():
+        filters.append("(o.name ILIKE :search OR c.contact_name ILIKE :search)")
+        params["search"] = f"%{search.strip()}%"
+    if min_budget is not None:
+        filters.append("COALESCE(o.budget, 0) >= :min_budget")
+        params["min_budget"] = min_budget
+    if value_range:
+        filters.append(_OPPORTUNITY_BOARD_VALUE_RANGES[value_range])
+    if risk_level:
+        filters.append("o.risk_level = :risk_level")
+        params["risk_level"] = risk_level
+    if department_id:
+        filters.append("o.originating_department_id = :department_id")
+        params["department_id"] = department_id
+    column_filter = ""
+    if column:
+        column_filter = "AND board_column = :column"
+        params["column"] = column
+
+    cards_sql = f"""
+        WITH filtered AS (
+            SELECT card.*, {_OPPORTUNITY_BOARD_COLUMN_SQL} AS board_column, o.created_at AS board_created_at
+            FROM ({_OPPORTUNITY_CARD_SELECT} WHERE {" AND ".join(filters)}) card
+            JOIN crm.opportunities o ON o.id = card.id
+        ),
+        ranked AS (
+            SELECT filtered.*,
+                   ROW_NUMBER() OVER (PARTITION BY board_column ORDER BY board_created_at DESC, id) AS board_rank,
+                   COUNT(*) OVER (PARTITION BY board_column) AS board_column_count,
+                   SUM(COALESCE(budget, 0)) OVER (PARTITION BY board_column) AS board_column_budget
+            FROM filtered
+        )
+        SELECT * FROM ranked
+        WHERE board_rank > :offset AND board_rank <= :offset + :per_column {column_filter}
+        ORDER BY board_column, board_rank
+    """
+
+    async def read_cards(session: AsyncSession):
+        return [dict(row._mapping) for row in await session.execute(text(cards_sql), params)]
+
+    async def read_summary(session: AsyncSession):
+        return dict((await session.execute(text(_OPPORTUNITY_BOARD_SUMMARY_SQL), {"org_id": org_id})).one()._mapping)
+
+    async def read_column_totals(session: AsyncSession):
+        # Counts/totals for every column (a column can have no card on this
+        # page - e.g. when paging past its end - and still needs its totals).
+        rows = await session.execute(
+            text(f"""
+                SELECT {_OPPORTUNITY_BOARD_COLUMN_SQL} AS board_column,
+                       COUNT(*) AS count, COALESCE(SUM(COALESCE(o.budget, 0)), 0) AS total_budget
+                FROM crm.opportunities o
+                LEFT JOIN crm.contacts c ON o.client_id = c.id
+                WHERE {" AND ".join(filters)}
+                GROUP BY 1
+            """),
+            {k: v for k, v in params.items() if k not in ("per_column", "offset", "column")},
+        )
+        return {row.board_column: row for row in rows}
+
+    reads = [read_cards, read_column_totals] + ([] if column else [read_summary])
+    results = await gather_reads(db, *reads)
+    cards, totals = results[0], results[1]
+    summary = results[2] if not column else None
+
+    columns = []
+    for key in OPPORTUNITY_BOARD_COLUMNS if not column else (column,):
+        column_cards = [
+            {k: v for k, v in card.items() if not k.startswith("board_")}
+            for card in cards
+            if card["board_column"] == key
+        ]
+        total_row = totals.get(key)
+        count = int(total_row.count) if total_row else 0
+        columns.append({
+            "key": key,
+            "count": count,
+            "total_budget": float(total_row.total_budget) if total_row else 0.0,
+            "cards": column_cards,
+            "offset": offset,
+            "has_more": offset + len(column_cards) < count,
+        })
+
+    data: Dict[str, Any] = {"columns": columns}
+    if summary is not None:
+        data["summary"] = {key: float(value or 0) if key.startswith(("pipeline", "weighted", "average")) else int(value or 0) for key, value in summary.items()}
+    return {"success": True, "data": data, "message": "Opportunity board fetched.", "meta": {"per_column": per_column}}
 
 
 @router.get("/tenders")
@@ -1776,6 +2024,45 @@ async def list_tenders(
         "message": "Tenders fetched.",
         "meta": meta,
     }
+
+
+@router.get("/tenders/{tender_id}")
+async def get_tender_by_id(
+    tender_id: str,
+    user: dict = Depends(require_permission("crm.view_tenders")),
+    db: AsyncSession = Depends(get_db),
+):
+    org_id = _require_org_id(user)
+    query = text("""
+        SELECT t.id, t.tender_name, t.bid_number, t.category, t.bid_amount, t.stage,
+               (to_jsonb(t)->>'site_visit_at')::timestamptz AS site_visit_at,
+               COALESCE((to_jsonb(t)->>'site_visit_mandatory')::boolean, false) AS site_visit_mandatory,
+               t.submission_deadline,
+               t.bid_bond_secured, t.jv_partners, t.bond_amount,
+               t.technical_proposal, t.financial_proposal, t.nssa_clearance,
+               t.praz_registration, t.tax_clearance, t.project_id,
+               to_jsonb(t)->>'closeout_status' AS closeout_status,
+               to_jsonb(t)->>'closeout_reason' AS closeout_reason,
+               COALESCE(to_jsonb(t)->'closeout_next_steps', '[]'::jsonb) AS closeout_next_steps,
+               (to_jsonb(t)->>'closeout_recorded_at')::timestamptz AS closeout_recorded_at,
+               to_jsonb(t)->>'winning_contractor' AS winning_contractor,
+               COALESCE(to_jsonb(t)->>'recycling_status', 'not_started') AS recycling_status,
+               t.region,
+               t.latitude::float AS latitude, t.longitude::float AS longitude
+        FROM crm.tenders t
+        WHERE t.id = :tender_id AND t.organization_id = :org_id AND t.is_deleted = false
+    """)
+    result = await db.execute(query, {"tender_id": tender_id, "org_id": org_id})
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tender not found.")
+
+    return {
+        "success": True,
+        "data": dict(row._mapping),
+        "message": "Tender fetched.",
+    }
+
 
 
 @router.get("/tender-signals")
@@ -1908,6 +2195,8 @@ async def update_opportunity(
     params = {k: values[k] for k in safe_keys}
     stage_changed = False
     next_stage: Optional[str] = None
+    previous_stage: Optional[str] = None
+    stage_note: Optional[str] = None
     if "stage" in params and params["stage"] is not None:
         params["stage"] = params["stage"].value
         next_stage = params["stage"]
@@ -1923,6 +2212,8 @@ async def update_opportunity(
             raise HTTPException(status_code=404, detail="Opportunity not found")
         if params["stage"] != current_stage_row.get("stage"):
             await _ensure_opportunity_stage_unlocked(db, user, current_stage_row.get("stage"))
+            stage_note = require_stage_note(values.get("stage_note"))
+            previous_stage = current_stage_row.get("stage")
             # Entering Proposal (Quotation) is the point a deal stops being a
             # hunch and starts being a forecast number Sales/Exec rely on -
             # block the move rather than let a $0 opportunity silently ride
@@ -1977,13 +2268,42 @@ async def update_opportunity(
         if not result.first():
             raise HTTPException(status_code=404, detail="Opportunity not found")
         if stage_changed:
-            await supersede_entity_tasks(
+            mover_id = user.get("sub") or user.get("user_id")
+            tasks_completed = 0
+            if await should_supersede_on_stage_change(
+                db, org_id=org_id, entity_type="opportunity", next_stage=next_stage,
+            ):
+                # The move closes the stage being left: its open work is
+                # done, with the mover's note as the outcome. Anything still
+                # open afterwards (gate-linked tasks) is superseded as before.
+                tasks_completed = await complete_open_stage_tasks(
+                    db,
+                    org_id=org_id,
+                    entity_type="opportunity",
+                    entity_id=opportunity_id,
+                    from_stage=previous_stage,
+                    to_stage=next_stage,
+                    note=stage_note,
+                    user_id=mover_id,
+                )
+                await supersede_entity_tasks(
+                    db,
+                    org_id=org_id,
+                    entity_type="opportunity",
+                    entity_id=opportunity_id,
+                    authorized_by=mover_id,
+                    reason=f"Opportunity moved to {next_stage}; prior-stage work superseded.",
+                )
+            await log_stage_move(
                 db,
                 org_id=org_id,
                 entity_type="opportunity",
                 entity_id=opportunity_id,
-                authorized_by=user.get("sub") or user.get("user_id"),
-                reason=f"Opportunity moved to {next_stage}; prior-stage work superseded.",
+                from_stage=previous_stage,
+                to_stage=next_stage,
+                note=stage_note,
+                user_id=mover_id,
+                tasks_completed=tasks_completed,
             )
         await db.commit()
         if "stage" in safe_keys:
@@ -2043,6 +2363,33 @@ async def find_duplicate_opportunities(
         {"org_id": org_id, "name": name, "client_org_id": client_org_id, "client_id": client_id},
     )
     return {"success": True, "data": items, "message": "Duplicate opportunity candidates fetched.", "meta": {"total": len(items)}}
+
+
+@router.get("/opportunities/{opportunity_id}")
+async def get_opportunity_by_id(
+    opportunity_id: UUID,
+    user: dict = Depends(require_permission("crm.view_opportunities")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch a single opportunity record by ID with full joins for quotation, project, and client."""
+    org_id = _require_org_id(user)
+    query = text(
+        _OPPORTUNITY_CARD_SELECT
+        + """
+        WHERE o.id = :opportunity_id AND o.organization_id = :org_id AND o.is_deleted = false
+        LIMIT 1
+    """
+    )
+    result = await db.execute(query, {"opportunity_id": opportunity_id, "org_id": org_id})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Opportunity not found.")
+    return {
+        "success": True,
+        "data": dict(row),
+        "message": "Opportunity retrieved successfully.",
+        "meta": {},
+    }
 
 
 @router.delete("/opportunities/{opportunity_id}")
@@ -2119,6 +2466,7 @@ async def create_opportunity_quotation(
         LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
         LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
         WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        FOR UPDATE OF o
         """,
         {"opportunity_id": opportunity_id, "org_id": org_id},
     )
@@ -2153,6 +2501,14 @@ async def create_opportunity_quotation(
             "message": "An estimate already exists for this opportunity - resuming it.",
             "meta": {},
         }
+
+    # Creating the first quote is a stage move into Quotation for an early
+    # deal, so it needs the activity-log note like any other move. A deal
+    # already at Quotation or beyond keeps its stage (this used to drag a
+    # Negotiation deal back to Quotation).
+    previous_stage = opportunity.get("stage")
+    moves_stage = previous_stage in _PRE_QUOTATION_STAGES
+    stage_note = require_stage_note(payload.stage_note) if moves_stage else None
 
     quote_amount = payload.quote_amount
     if quote_amount is None:
@@ -2203,13 +2559,27 @@ async def create_opportunity_quotation(
             text("""
                 UPDATE crm.opportunities
                 SET quote_id=:quote_id,
-                    stage='Quotation',
+                    stage=CASE WHEN :move THEN 'Quotation' ELSE stage END,
                     weighted_value=COALESCE(deal_value, budget) * COALESCE(probability, 0) / 100.0,
                     updated_at=NOW()
                 WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
             """),
-            {"quote_id": quote_id, "opportunity_id": opportunity_id, "org_id": org_id},
+            {"quote_id": quote_id, "move": moves_stage, "opportunity_id": opportunity_id, "org_id": org_id},
         )
+        if moves_stage:
+            tasks_completed = await complete_open_stage_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+            )
+            await supersede_entity_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id,
+                authorized_by=user_id, reason="Opportunity moved to Quotation; prior-stage work superseded.",
+            )
+            await log_stage_move(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+                tasks_completed=tasks_completed,
+            )
         await db.execute(
             text("""
                 INSERT INTO crm.activities (
@@ -2235,12 +2605,261 @@ async def create_opportunity_quotation(
         await db.rollback()
         raise HTTPException(status_code=400, detail="Quotation handoff payload violates CRM constraints.") from exc
 
+    if moves_stage:
+        await generate_task_stack(
+            db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id, created_by=user_id,
+            source_event="opportunity_stage_changed", generation_reason="Quotation created; opportunity moved to Quotation.",
+            stage="Quotation",
+        )
     await fire_trigger(db, org_id, user_id, "quote_sent", {"opportunity_id": str(opportunity_id), "id": str(quote_id), "quote_id": str(quote_id)})
 
     return {
         "success": True,
-        "data": {"id": str(quote_id), "opportunity_id": str(opportunity_id)},
+        "data": {"id": str(quote_id), "opportunity_id": str(opportunity_id), "moved_to_quotation": moves_stage},
         "message": "Quotation created from opportunity.",
+        "meta": {},
+    }
+
+
+@router.post("/opportunities/{opportunity_id}/client-quotation")
+async def record_client_quotation(
+    opportunity_id: UUID,
+    payload: ClientQuotationPayload,
+    user: dict = Depends(require_permission("crm.opportunities.quote")),
+    db: AsyncSession = Depends(get_db),
+):
+    """The client copy of the quotation has gone out. The uploaded document
+    (already stored via /documents) is filed as the client quotation and
+    everything that follows a sent quote happens in one go:
+      1. the opportunity's quotation is created or marked 'sent' with the
+         amount, validity and the client-copy document,
+      2. the document is linked to the opportunity and quotation as
+         'client_quotation',
+      3. a deal still in Inquiry/Qualification/Site Visit moves to Quotation
+         (logged, prior-stage tasks completed, Quotation pack issued),
+      4. the quotation-preparation tasks are completed with the document as
+         evidence,
+      5. a 'Quotation sent' activity and a planned client follow-up are
+         logged, and the next action date is set to that follow-up,
+      6. the deal owner is notified and the 'quote_sent' automations fire."""
+    org_id = _require_org_id(user)
+    user_id = _require_user_id(user)
+    opportunity = await _single_row(
+        db,
+        """
+        SELECT o.*, c.contact_name, co.name AS organization_name
+        FROM crm.opportunities o
+        LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
+        LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
+        WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        FOR UPDATE OF o
+        """,
+        {"opportunity_id": opportunity_id, "org_id": org_id},
+    )
+    if not opportunity:
+        raise HTTPException(status_code=404, detail="Opportunity not found.")
+    if opportunity.get("stage") in ("Contract", "Lost"):
+        raise HTTPException(status_code=409, detail="This deal is already closed - a client quotation can't be sent from it.")
+    document = await _single_row(
+        db,
+        """
+        SELECT id, title, file_name FROM core.documents
+        WHERE id=:document_id AND organization_id=:org_id AND COALESCE(is_deleted, false)=false
+        """,
+        {"document_id": payload.document_id, "org_id": org_id},
+    )
+    if not document:
+        raise HTTPException(status_code=404, detail="Uploaded quotation document not found.")
+
+    effective_value = payload.quote_amount or opportunity.get("deal_value") or opportunity.get("budget")
+    follow_up = payload.follow_up_date or (datetime.now(timezone.utc).date() + timedelta(days=3))
+    doc_label = document.get("title") or document.get("file_name") or "client quotation"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    client_copy = {
+        "document_id": str(payload.document_id),
+        "file_name": document.get("file_name"),
+        "sent_at": now_iso,
+        "sent_by": user_id,
+        "quote_amount": str(payload.quote_amount) if payload.quote_amount else None,
+        "valid_until": payload.valid_until.isoformat() if payload.valid_until else None,
+        "follow_up_date": follow_up.isoformat(),
+        "notes": payload.notes,
+    }
+    client_name = opportunity.get("organization_name") or opportunity.get("contact_name") or opportunity.get("name")
+    previous_stage = opportunity.get("stage")
+    moved_to_quotation = previous_stage in _PRE_QUOTATION_STAGES and bool(effective_value and effective_value > 0)
+
+    try:
+        existing = await _single_row(
+            db,
+            """
+            SELECT id, metadata FROM finance.quotations
+            WHERE opportunity_id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+            ORDER BY created_at LIMIT 1
+            """,
+            {"opportunity_id": opportunity_id, "org_id": org_id},
+        )
+        if existing:
+            quote_id = existing["id"]
+            metadata = existing.get("metadata") or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            history = list(metadata.get("client_copy_history") or [])
+            if metadata.get("client_copy"):
+                history.append(metadata["client_copy"])
+            metadata["client_copy"] = client_copy
+            metadata["client_copy_history"] = history[-20:]
+            await db.execute(
+                text("""
+                    UPDATE finance.quotations
+                    SET status = CASE WHEN status IN ('won', 'lost', 'accepted') THEN status ELSE 'sent' END,
+                        quote_amount = COALESCE(:quote_amount, quote_amount),
+                        metadata = CAST(:metadata AS jsonb),
+                        updated_at = NOW()
+                    WHERE id=:quote_id AND organization_id=:org_id
+                """),
+                {"quote_amount": payload.quote_amount, "metadata": _json(metadata), "quote_id": quote_id, "org_id": org_id},
+            )
+        else:
+            quote_id = (
+                await db.execute(
+                    text("""
+                        INSERT INTO finance.quotations (
+                            organization_id, created_by, client_name, quote_amount, project_id,
+                            metadata, status, opportunity_id, contact_id, client_org_id
+                        ) VALUES (
+                            :org_id, :user_id, :client_name, :quote_amount, :project_id,
+                            CAST(:metadata AS jsonb), 'sent', :opportunity_id, :contact_id, :client_org_id
+                        )
+                        RETURNING id
+                    """),
+                    {
+                        "org_id": org_id,
+                        "user_id": user_id,
+                        "client_name": client_name,
+                        "quote_amount": effective_value or Decimal("0"),
+                        "project_id": opportunity.get("project_id"),
+                        "metadata": _json({"source": "client_quotation_upload", "opportunity_id": str(opportunity_id), "client_copy": client_copy}),
+                        "opportunity_id": opportunity_id,
+                        "contact_id": opportunity.get("client_id"),
+                        "client_org_id": opportunity.get("client_org_id"),
+                    },
+                )
+            ).scalar()
+
+        for entity_type, entity_id in (("opportunity", opportunity_id), ("quotation", quote_id)):
+            await db.execute(
+                text("""
+                    INSERT INTO core.document_links (
+                        organization_id, document_id, entity_type, entity_id, link_role, linked_by
+                    ) VALUES (
+                        :org_id, :document_id, :entity_type, :entity_id, 'client_quotation', :user_id
+                    ) ON CONFLICT (organization_id, document_id, entity_type, entity_id, link_role)
+                      DO UPDATE SET is_deleted=false, linked_at=NOW(), linked_by=EXCLUDED.linked_by
+                """),
+                {"org_id": org_id, "document_id": payload.document_id, "entity_type": entity_type, "entity_id": entity_id, "user_id": user_id},
+            )
+
+        await db.execute(
+            text("""
+                UPDATE crm.opportunities
+                SET quote_id = :quote_id,
+                    deal_value = COALESCE(:quote_amount, deal_value),
+                    stage = CASE WHEN :move THEN 'Quotation' ELSE stage END,
+                    next_activity_due_at = :follow_up_at,
+                    weighted_value = COALESCE(:quote_amount, deal_value, budget) * COALESCE(probability, 0) / 100.0,
+                    updated_at = NOW()
+                WHERE id=:opportunity_id AND organization_id=:org_id AND is_deleted=false
+            """),
+            {
+                "quote_id": quote_id,
+                "quote_amount": payload.quote_amount,
+                "move": moved_to_quotation,
+                "follow_up_at": datetime.combine(follow_up, datetime.min.time(), tzinfo=timezone.utc).replace(hour=9),
+                "opportunity_id": opportunity_id,
+                "org_id": org_id,
+            },
+        )
+
+        if moved_to_quotation:
+            stage_note = f"Client quotation '{doc_label}' sent to the client." + (f" {payload.notes}" if payload.notes else "")
+            tasks_completed = await complete_open_stage_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+            )
+            await supersede_entity_tasks(
+                db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id,
+                authorized_by=user_id, reason="Opportunity moved to Quotation; prior-stage work superseded.",
+            )
+            await log_stage_move(
+                db, org_id=org_id, entity_type="opportunity", entity_id=str(opportunity_id),
+                from_stage=previous_stage, to_stage="Quotation", note=stage_note, user_id=user_id,
+                tasks_completed=tasks_completed,
+            )
+
+        amount_text = f" for {effective_value:,.2f}" if effective_value else ""
+        description = f"Client quotation '{doc_label}'{amount_text} sent to {client_name}."
+        if payload.valid_until:
+            description += f" Valid until {payload.valid_until.isoformat()}."
+        if payload.notes:
+            description += f"\n\n{payload.notes}"
+        await db.execute(
+            text("""
+                INSERT INTO crm.activities (
+                    organization_id, created_by, owner_user_id, client_org_id, contact_id, opportunity_id,
+                    type, subject, description, activity_date, status, priority
+                ) VALUES
+                (:org_id, :user_id, :user_id, :client_org_id, :contact_id, :opportunity_id,
+                 'Quotation', 'Quotation sent to client', :description, NOW(), 'Completed', 'normal'),
+                (:org_id, :user_id, :user_id, :client_org_id, :contact_id, :opportunity_id,
+                 'Follow-up', 'Follow up on the quotation with the client', :follow_up_description, :follow_up_at, 'Planned', 'high')
+            """),
+            {
+                "org_id": org_id,
+                "user_id": user_id,
+                "client_org_id": opportunity.get("client_org_id"),
+                "contact_id": opportunity.get("client_id"),
+                "opportunity_id": opportunity_id,
+                "description": description,
+                "follow_up_description": f"Confirm {client_name} received '{doc_label}', answer questions and agree next steps.",
+                "follow_up_at": datetime.combine(follow_up, datetime.min.time(), tzinfo=timezone.utc).replace(hour=9),
+            },
+        )
+        await db.commit()
+    except (DataError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Client quotation could not be recorded against this deal.") from exc
+
+    # Issue the Quotation pack (if the move just happened), then close the
+    # quote-preparation work the sent document evidences.
+    if moved_to_quotation:
+        await generate_task_stack(
+            db, org_id=org_id, entity_type="opportunity", entity_id=opportunity_id, created_by=user_id,
+            source_event="client_quotation_sent", generation_reason="Client quotation sent.", stage="Quotation",
+        )
+    owner_id = opportunity.get("sales_owner_id")
+    tasks_closed = await close_quote_preparation(
+        db,
+        org_id=org_id,
+        opportunity_id=str(opportunity_id),
+        evidence_ref=f"Client quotation: {doc_label}",
+        user_id=user_id,
+        notify_user_id=str(owner_id) if owner_id and str(owner_id) != str(user_id) else None,
+        notify_message=f"{opportunity.get('name')}: '{doc_label}' went to {client_name}. Follow-up due {follow_up.isoformat()}.",
+    )
+
+    await fire_trigger(db, org_id, user_id, "quote_sent", {"opportunity_id": str(opportunity_id), "id": str(quote_id), "quote_id": str(quote_id)})
+
+    return {
+        "success": True,
+        "data": {
+            "quotation_id": str(quote_id),
+            "opportunity_id": str(opportunity_id),
+            "moved_to_quotation": moved_to_quotation,
+            "tasks_completed": tasks_closed,
+            "follow_up_date": follow_up.isoformat(),
+        },
+        "message": "Client quotation recorded and follow-up scheduled.",
         "meta": {},
     }
 
@@ -2274,6 +2893,7 @@ async def mark_opportunity_won(
         LEFT JOIN crm.organizations co ON co.id=o.client_org_id AND co.organization_id=o.organization_id
         LEFT JOIN crm.contacts c ON c.id=o.client_id AND c.organization_id=o.organization_id
         WHERE o.id=:opportunity_id AND o.organization_id=:org_id AND o.is_deleted=false
+        FOR UPDATE OF o
         """,
         {"opportunity_id": opportunity_id, "org_id": org_id},
     )
@@ -2282,6 +2902,15 @@ async def mark_opportunity_won(
     await _ensure_opportunity_stage_unlocked(db, user, opportunity.get("stage"))
 
     project_id = payload.project_id or opportunity.get("project_id")
+    if not project_id:
+        existing_proj = await _single_row(
+            db,
+            "SELECT id FROM projects.projects WHERE opportunity_id = :opp_id AND organization_id = :org_id AND is_deleted = false LIMIT 1",
+            {"opp_id": opportunity_id, "org_id": org_id},
+        )
+        if existing_proj:
+            project_id = existing_proj["id"]
+
     budget_id = None
     forecast_metrics = None
     margin_alert_raised = False
@@ -2545,6 +3174,28 @@ async def mark_opportunity_won(
 
     await fire_trigger(db, org_id, user_id, "quote_accepted", {"opportunity_id": str(opportunity_id), "id": str(opportunity_id)})
     await generate_task_stack(db, org_id=org_id, entity_type="award", entity_id=pursuit_id, created_by=user_id)
+    if project_id:
+        # A project born waiting on its deposit gets the invoice / chase /
+        # confirm pack; Confirm Deposit closes it and opens the project and
+        # commercial-readiness packs (routers/projects.py). No-ops if the
+        # project isn't pending a deposit - there are no templates to match.
+        project_status = (
+            await db.execute(
+                text("SELECT status FROM projects.projects WHERE id = :id AND organization_id = :org_id"),
+                {"id": project_id, "org_id": org_id},
+            )
+        ).scalar()
+        if project_status == "pending_deposit":
+            await generate_task_stack(
+                db,
+                org_id=org_id,
+                entity_type="project",
+                entity_id=project_id,
+                created_by=user_id,
+                source_event="opportunity_won_project_created",
+                generation_reason="Won - project awaiting deposit.",
+                stage="pending_deposit",
+            )
 
     return {
         "success": True,
@@ -2772,6 +3423,10 @@ async def create_subcontractor(
             name,
             capability_tags,
             compliance_status,
+            registration_number,
+            tax_clearance_number,
+            vat_status,
+            vat_number,
             nssa_number,
             praz_number,
             reliability_score,
@@ -2788,6 +3443,10 @@ async def create_subcontractor(
             :name,
             CAST(:capability_tags AS text[]),
             :compliance_status,
+            :registration_number,
+            :tax_clearance_number,
+            :vat_status,
+            :vat_number,
             :nssa_number,
             :praz_number,
             :reliability_score,
@@ -2824,11 +3483,13 @@ async def create_subcontractor(
             text("""
                 INSERT INTO procurement.suppliers (
                     organization_id, created_by, supplier_name, primary_contact_name,
-                    primary_contact_email, primary_contact_phone, currency, status, compliance_status
+                    primary_contact_email, primary_contact_phone, currency, status, compliance_status,
+                    registration_number, tax_number, vat_status, vat_registration_number, is_vat_registered
                 )
                 VALUES (
                     :org_id, :user_id, :supplier_name, :primary_contact_name,
-                    :primary_contact_email, :primary_contact_phone, 'USD', 'pending_approval', :compliance_status
+                    :primary_contact_email, :primary_contact_phone, 'USD', 'pending_approval', :compliance_status,
+                    :registration_number, :tax_number, :vat_status, :vat_number, :is_vat_registered
                 )
                 RETURNING id
             """),
@@ -2840,6 +3501,11 @@ async def create_subcontractor(
                 "primary_contact_email": values.get("contact_email"),
                 "primary_contact_phone": values.get("contact_phone"),
                 "compliance_status": values.get("compliance_status"),
+                "registration_number": values.get("registration_number"),
+                "tax_number": values.get("tax_clearance_number"),
+                "vat_status": values.get("vat_status"),
+                "vat_number": values.get("vat_number"),
+                "is_vat_registered": values.get("vat_status") == "registered",
             },
         )
         supplier_id = supplier_row.scalar()
@@ -2965,6 +3631,18 @@ async def update_subcontractor(
         )
         if not result.first():
             raise HTTPException(status_code=404, detail="Subcontractor not found")
+        # Re-check against the key requirements now that they may be filled in.
+        try:
+            await run_system_verification_check(
+                db, org_id=org_id, subcontractor_id=subcontractor_id
+            )
+        except Exception:
+            await db.rollback()
+            logger.exception("System verification check failed after subcontractor update", subcontractor_id=subcontractor_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Subcontractor verification could not be completed.",
+            )
         await db.commit()
     except HTTPException:
         raise
@@ -2998,6 +3676,11 @@ async def list_subcontractors(
             name,
             capability_tags,
             compliance_status,
+            registration_number,
+            tax_clearance_number,
+            vat_status,
+            vat_number,
+            verification_stage,
             nssa_number,
             praz_number,
             reliability_score,

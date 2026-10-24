@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -9,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from core.database import get_db
 from core.security import get_current_user, require_permission
 from app.shared.pagination import ok
-from app.shared.events import emit_notification, emit_role_notification
+from app.shared.events import emit_event, emit_notification, emit_role_notification
 
 router = APIRouter()
 
@@ -26,7 +27,8 @@ class Payload(BaseModel):
 
 
 class HseIncidentCreate(Payload):
-    incident_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    # A real date: asyncpg rejects a str for the CAST(... AS date) parameter.
+    incident_date: date
     severity: Literal["low", "medium", "high", "critical"]
     title: str = Field(min_length=1, max_length=255)
     description: Optional[str] = None
@@ -99,7 +101,19 @@ async def create_item(
             notification_type="hse_incident_reported",
             priority="urgent" if payload.severity in ("critical", "high") else "normal",
             action_url="/dashboard/compliance/incidents",
-            metadata={"incident_id": str(new_id)},
+        )
+        await emit_event(
+            db,
+            user=user,
+            event_type="hse.incident.reported.v1",
+            aggregate_type="hse_incident",
+            aggregate_id=str(new_id),
+            project_id=payload.project_id,
+            event_data={
+                "incident_id": str(new_id),
+                "title": payload.title,
+                "severity": payload.severity,
+            },
         )
 
         await db.commit()
@@ -141,6 +155,20 @@ async def update_item(
         return ok({"id": item_id}, "No fields to update.")
 
     resolving = values.get("status") == "resolved"
+    if resolving:
+        desc = values.get("description")
+        if not desc or len(desc.strip()) < 10:
+            existing_desc = (
+                await db.execute(
+                    text("SELECT description FROM projects.hse_incidents WHERE id = :item_id AND organization_id = :org_id AND is_deleted = false"),
+                    {"item_id": item_id, "org_id": user["org_id"]},
+                )
+            ).scalar()
+            if not existing_desc or len(existing_desc.strip()) < 10:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Cannot resolve an HSE incident without documented investigation and corrective action details.",
+                )
     set_clauses = [f"{key} = :{key}" for key in values]
     if resolving:
         set_clauses += ["resolved_at = NOW()", "resolved_by = :actor_id"]
@@ -166,17 +194,27 @@ async def update_item(
         await db.rollback()
         raise HTTPException(status_code=404, detail="Item not found")
 
-    if resolving and result.reported_by:
-        await emit_notification(
+    if resolving:
+        await emit_event(
             db,
-            org_id=user["org_id"],
-            user_id=str(result.reported_by),
-            title="HSE incident resolved",
-            message=f"The incident you reported ({result.title}) has been marked resolved.",
-            notification_type="hse_incident_resolved",
-            action_url="/dashboard/compliance/incidents",
-            metadata={"incident_id": item_id},
+            user=user,
+            event_type="hse.incident.resolved.v1",
+            aggregate_type="hse_incident",
+            aggregate_id=str(item_id),
+            project_id=None,
+            event_data={"incident_id": str(item_id), "status": "resolved", "resolved_by": user["user_id"]},
         )
+        if result.reported_by:
+            await emit_notification(
+                db,
+                org_id=user["org_id"],
+                user_id=str(result.reported_by),
+                title="HSE incident resolved",
+                message=f"The incident you reported ({result.title}) has been marked resolved.",
+                notification_type="hse_incident_resolved",
+                action_url="/dashboard/compliance/incidents",
+                metadata={"incident_id": item_id},
+            )
 
     await db.commit()
     return ok({"id": item_id}, "hse_incidents updated.")

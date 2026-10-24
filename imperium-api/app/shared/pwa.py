@@ -7,36 +7,65 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+    PrivateFormat,
+    NoEncryption,
+    load_pem_private_key,
+)
+from cryptography.hazmat.primitives.asymmetric import ec
 
 try:
     from py_vapid import Vapid
-    from pywebpush import WebPushException, webpush
 except ImportError:
-    class Vapid:
+    class Vapid:  # type: ignore[no-redef]
+        def __init__(self, key: ec.EllipticCurvePrivateKey | None = None):
+            self._key = key or ec.generate_private_key(ec.SECP256R1())
+
         @classmethod
-        def from_string(cls, *args, **kwargs):
-            return cls()
+        def from_string(cls, pem_str: str) -> "Vapid":
+            data = pem_str.encode("utf-8") if isinstance(pem_str, str) else pem_str
+            key = load_pem_private_key(data, password=None)
+            if not isinstance(key, ec.EllipticCurvePrivateKey):
+                raise ValueError("VAPID key must be an elliptic curve private key")
+            return cls(key)
+
         @classmethod
-        def from_file(cls, *args, **kwargs):
-            return cls()
-        def generate_keys(self):
-            pass
-        def private_pem(self):
-            return b""
-        def public_pem(self):
-            return b""
+        def from_file(cls, path: str) -> "Vapid":
+            data = Path(path).read_bytes()
+            key = load_pem_private_key(data, password=None)
+            if not isinstance(key, ec.EllipticCurvePrivateKey):
+                raise ValueError("VAPID key must be an elliptic curve private key")
+            return cls(key)
+
+        def generate_keys(self) -> None:
+            self._key = ec.generate_private_key(ec.SECP256R1())
+
+        def private_pem(self) -> bytes:
+            return self._key.private_bytes(
+                Encoding.PEM,
+                PrivateFormat.PKCS8,
+                NoEncryption(),
+            )
+
+        def public_pem(self) -> bytes:
+            return self._key.public_key().public_bytes(
+                Encoding.PEM,
+                PublicFormat.SubjectPublicKeyInfo,
+            )
+
         @property
         def public_key(self):
-            class PK:
-                def public_bytes(self, *args, **kwargs):
-                    return b"mock_public_bytes"
-            return PK()
+            return self._key.public_key()
 
-    class WebPushException(Exception):
+try:
+    from pywebpush import WebPushException, webpush
+except ImportError:
+    class WebPushException(Exception):  # type: ignore[no-redef]
         pass
 
-    def webpush(*args, **kwargs):
+    def webpush(*args, **kwargs):  # type: ignore[no-redef]
         pass
 
 from sqlalchemy import text
@@ -53,7 +82,10 @@ def _load_vapid() -> Vapid:
 
     private_path = Path(settings.PWA_VAPID_PRIVATE_KEY_PATH)
     if private_path.exists():
-        return Vapid.from_file(str(private_path))
+        try:
+            return Vapid.from_file(str(private_path))
+        except Exception as exc:
+            logger.warning("Existing VAPID private key could not be loaded (%s); regenerating.", exc)
 
     private_path.parent.mkdir(parents=True, exist_ok=True)
     vapid = Vapid()
@@ -88,22 +120,31 @@ def _normalize_subscription(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def send_web_push(subscription: dict[str, Any], payload: dict[str, Any]) -> bool:
+async def send_web_push(subscription: dict[str, Any], payload: dict[str, Any]) -> bool | str:
     if not pwa_push_enabled():
         return False
 
-    def _send() -> bool:
+    priority = payload.get("priority", "normal")
+    urgency_map = {"urgent": "high", "high": "high", "normal": "normal", "low": "low"}
+    urgency = urgency_map.get(priority, "normal")
+    ttl = 86400 if priority in ("urgent", "high") else 43200
+
+    def _send() -> bool | str:
         try:
             webpush(
                 subscription_info=subscription,
                 data=json.dumps(payload, default=str),
                 vapid_private_key=_load_vapid(),
                 vapid_claims={"sub": settings.PWA_VAPID_SUBJECT},
-                ttl=3600,
+                ttl=ttl,
+                headers={"Urgency": urgency},
             )
             return True
         except WebPushException as exc:
             logger.warning("Web push delivery failed: %s", exc)
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in (404, 410):
+                return "expired"
             return False
 
     return await asyncio.to_thread(_send)
@@ -131,8 +172,24 @@ async def dispatch_user_pushes(
     ).mappings().all()
 
     sent = 0
+    expired_endpoints: list[str] = []
     for row in rows:
-        if await send_web_push(_normalize_subscription(dict(row)), payload):
+        outcome = await send_web_push(_normalize_subscription(dict(row)), payload)
+        if outcome is True:
             sent += 1
+        elif outcome == "expired":
+            expired_endpoints.append(row["endpoint"])
+
+    if expired_endpoints:
+        await db.execute(
+            text("""
+            UPDATE core.pwa_push_subscriptions
+            SET is_active = false, updated_at = NOW()
+            WHERE endpoint = ANY(:endpoints)
+        """),
+            {"endpoints": expired_endpoints},
+        )
+        await db.commit()
+
     return sent
 

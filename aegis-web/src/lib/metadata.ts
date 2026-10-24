@@ -34,8 +34,9 @@ export function constructMetadata({
       images: [image],
       creator: "@sixnineconstructions",
     },
+    // public/ has no favicon.ico - pointing at it 404'd on every page load.
     icons: {
-      icon: "/favicon.ico",
+      icon: "/logo.png",
     },
     metadataBase: new URL(SITE_CONFIG.url),
     ...(noIndex && {

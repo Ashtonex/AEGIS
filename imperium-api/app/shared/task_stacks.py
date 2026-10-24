@@ -83,6 +83,62 @@ def _normalize_stage(stage: Optional[str]) -> Optional[str]:
     return " ".join(str(stage).strip().split())
 
 
+# Stages that end a record's life: moving into one closes out the previous
+# stage's open work even when the stage has no pack of its own.
+TERMINAL_STAGES: dict[str, set[str]] = {
+    "tender": {"lost", "awarded", "awarded/lost", "cancelled", "withdrawn"},
+    "opportunity": {"lost"},
+}
+
+
+async def stage_has_pack(db: AsyncSession, *, org_id: str, entity_type: str, stage: Optional[str]) -> bool:
+    """Whether this exact stage has templates of its own (no generic fallback)."""
+    normalized = _normalize_stage(stage)
+    if not normalized:
+        return False
+    row = (
+        await db.execute(
+            text("""
+                SELECT 1 FROM crm.task_templates
+                WHERE organization_id = :org_id AND entity_type = :entity_type
+                  AND lower(stage) = lower(:stage)
+                  AND is_active = true AND is_deleted = false
+                LIMIT 1
+            """),
+            {"org_id": org_id, "entity_type": entity_type, "stage": normalized},
+        )
+    ).first()
+    return row is not None
+
+
+async def should_supersede_on_stage_change(
+    db: AsyncSession, *, org_id: str, entity_type: str, next_stage: Optional[str]
+) -> bool:
+    """A stage move replaces the in-flight work only when the new stage
+    brings its own pack, or ends the record. Moving into a stage with no
+    pack (e.g. tender Identified -> Bid Prep) keeps people's work, instead
+    of superseding it and re-creating the same generic pack from scratch."""
+    normalized = (_normalize_stage(next_stage) or "").lower()
+    if normalized in TERMINAL_STAGES.get(entity_type, set()):
+        return True
+    return await stage_has_pack(db, org_id=org_id, entity_type=entity_type, stage=next_stage)
+
+
+async def _entity_has_pack(db: AsyncSession, *, org_id: str, entity_type: str, entity_id: UUID | str) -> bool:
+    row = (
+        await db.execute(
+            text("""
+                SELECT 1 FROM crm.tasks
+                WHERE organization_id = :org_id AND entity_type = :entity_type
+                  AND entity_id = CAST(:entity_id AS uuid) AND source = 'template'
+                LIMIT 1
+            """),
+            {"org_id": org_id, "entity_type": entity_type, "entity_id": str(entity_id)},
+        )
+    ).first()
+    return row is not None
+
+
 async def _load_templates(db: AsyncSession, *, org_id: str, entity_type: str, stage: Optional[str]):
     base_sql = """
         SELECT id, title, description, template_key, template_version,
@@ -132,6 +188,14 @@ async def generate_task_stack(
     created (0 if none, including the no-op case)."""
     try:
         normalized_stage = _normalize_stage(stage)
+        # The generic (stage-less) pack is a record's FIRST pack. A later
+        # move into a stage with no pack of its own keeps the work in flight
+        # rather than re-issuing the generic pack (which is how lost tenders
+        # ended up with a fresh BOQ/rates/bid-bond stack).
+        if normalized_stage and not await stage_has_pack(
+            db, org_id=org_id, entity_type=entity_type, stage=normalized_stage
+        ) and await _entity_has_pack(db, org_id=org_id, entity_type=entity_type, entity_id=entity_id):
+            return 0
         templates = await _load_templates(db, org_id=org_id, entity_type=entity_type, stage=normalized_stage)
         if not templates:
             return 0
@@ -179,14 +243,24 @@ async def generate_task_stack(
                 text("""
                     SELECT id FROM crm.tasks
                     WHERE organization_id = :org_id
-                      AND deduplication_key = :deduplication_key
                       AND is_deleted = false
                       AND status NOT IN ('cancelled','superseded')
+                      AND (
+                            deduplication_key = :deduplication_key
+                            -- Older stacks predate these keys: the same
+                            -- title on the same record is the same task.
+                            OR (entity_type = :dedupe_entity_type
+                                AND entity_id = CAST(:dedupe_entity_id AS uuid)
+                                AND title = :dedupe_title)
+                      )
                     LIMIT 1
                 """),
                 {
                     "org_id": org_id,
                     "deduplication_key": dedupe_key,
+                    "dedupe_entity_type": entity_type,
+                    "dedupe_entity_id": str(entity_id),
+                    "dedupe_title": template["title"],
                 },
             )
             existing_task = existing.mappings().first()
@@ -276,7 +350,10 @@ async def generate_task_stack(
                     "completion_criteria": _json_dumps(template["completion_criteria"], {}),
                     "required_evidence": _json_dumps(template["required_evidence"], []),
                     "contribution_target_type": _json_value(template["contribution_target"], {}).get("entity_type"),
-                    "contribution_target_id": _json_value(template["contribution_target"], {}).get("entity_id"),
+                    # A gate target with no fixed id lives on this record
+                    # (e.g. a project's own pre-mobilisation checks).
+                    "contribution_target_id": _json_value(template["contribution_target"], {}).get("entity_id")
+                    or (entity_id if _json_value(template["contribution_target"], {}).get("entity_type") else None),
                     "contribution_target_field": _json_value(template["contribution_target"], {}).get("field"),
                     "reuse_scope": template["reuse_scope"] or "entity_specific",
                     "generation_rule": template["template_key"] or requirement_code,
@@ -286,6 +363,13 @@ async def generate_task_stack(
             )
             created += 1
         await db.commit()
+        if created:
+            # Route + date + announce the new pack now rather than waiting
+            # for the 10-minute sweep. Runs detached on its own session;
+            # no-ops unless the org switched auto-distribution on.
+            from app.shared.task_routing import schedule_entity_distribution
+
+            schedule_entity_distribution(org_id=org_id, entity_type=entity_type, entity_id=str(entity_id))
         return created
     except Exception:
         logger.exception(

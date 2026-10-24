@@ -4,7 +4,7 @@ import type React from "react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck, CheckCircle2, Clock, ChevronDown, ChevronRight, FolderKanban,
-  Loader2, Pencil, Plus, RefreshCw, Search, Send, UserPlus, UserX, Users, Wallet, X, XCircle,
+  Loader2, Pencil, Plus, RefreshCw, Search, Send, UserPlus, UserX, Users, Wallet, X, XCircle, HardHat,
 } from "lucide-react";
 import {
   createPayrollRun,
@@ -19,6 +19,7 @@ import {
   upsertFinancePayrollProfile,
 } from "@/lib/api";
 import { Skeleton, SkeletonTableRows } from "@/components/ui/Skeleton";
+import { SitePayrollPanel } from "./SitePayrollPanel";
 
 type RecordData = Record<string, any>;
 
@@ -118,7 +119,33 @@ function emptyProfileForm() {
   return { employee_id: "", pay_type: "monthly_salary", base_rate: "", overtime_rate: "0", currency: "USD", bank_name: "", bank_account_number: "", tax_number: "", nssa_number: "" };
 }
 
+/** Payroll has two populations: Staff (HR employees with pay profiles, run
+ * monthly with PAYE/NSSA) and Site (hourly project labour that isn't on
+ * AEGIS, paid per project from timesheets). */
 export function PayrollPanel({ projects, departmentId = "" }: { projects: RecordData[]; departmentId?: string }) {
+  const [view, setView] = useState<"staff" | "site">("staff");
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-1 border-b border-ink-mid">
+        {([["staff", "Staff payroll", Users], ["site", "Site payroll", HardHat]] as const).map(([key, label, Icon]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`inline-flex items-center gap-2 px-4 py-2 font-mono text-xs uppercase tracking-wider border-b-2 -mb-px transition-colors ${view === key ? "border-signal text-signal font-semibold" : "border-transparent text-slate hover:text-paper"}`}
+          >
+            <Icon className="h-3.5 w-3.5" />{label}
+          </button>
+        ))}
+        <span className="ml-auto pb-2 text-[11px] text-slate-light hidden md:block">
+          {view === "staff" ? "Registered employees with pay profiles, statutory deductions applied." : "Hourly project labour not registered on AEGIS, paid per project."}
+        </span>
+      </div>
+      {view === "staff" ? <StaffPayrollPanel projects={projects} departmentId={departmentId} /> : <SitePayrollPanel projects={projects} />}
+    </div>
+  );
+}
+
+function StaffPayrollPanel({ projects, departmentId = "" }: { projects: RecordData[]; departmentId?: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "error" } | null>(null);

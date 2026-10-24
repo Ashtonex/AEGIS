@@ -17,6 +17,13 @@ from routers import general_ledger
 from routers import gl_bridge
 from routers import company_budgets
 from routers import cash_forecast
+from routers import cash_curves
+from routers import finance_ops
+from routers import hr_people
+from routers import hr_files
+from routers import hr_time
+from routers import hr_performance
+from routers import site_day
 from routers import corporate_credentials
 from routers import tender_requirement_templates
 from routers import finance_assistant
@@ -57,8 +64,66 @@ def create_app() -> FastAPI:
     from core.rate_limit import limiter, rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
     from slowapi.middleware import SlowAPIMiddleware
+    from sqlalchemy.exc import TimeoutError as SATimeoutError, SQLAlchemyError
+    from core.logging import correlation_id_ctx
+
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+    @app.exception_handler(SATimeoutError)
+    async def sa_timeout_handler(request, exc: SATimeoutError):
+        correlation_id = correlation_id_ctx.get() or "unknown"
+        logger.error(f"Database connection timeout on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": {
+                    "code": "DATABASE_BUSY",
+                    "message": "Database connection pool is busy. Please retry in a few moments.",
+                    "correlation_id": correlation_id,
+                },
+                "message": "Database connection pool is busy. Please retry in a few moments.",
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
+    @app.exception_handler(SQLAlchemyError)
+    async def sqlalchemy_error_handler(request, exc: SQLAlchemyError):
+        correlation_id = correlation_id_ctx.get() or "unknown"
+        logger.exception(f"Database error on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "DATABASE_ERROR",
+                    "message": "A database operation failed. The team has been notified.",
+                    "correlation_id": correlation_id,
+                },
+                "message": "A database operation failed. Please retry or contact support.",
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
+    @app.exception_handler(Exception)
+    async def generic_exception_handler(request, exc: Exception):
+        correlation_id = getattr(request.state, "correlation_id", None) or correlation_id_ctx.get() or request.headers.get("X-Correlation-ID") or "unknown"
+        logger.exception(f"Unhandled exception on {request.method} {request.url.path}: {exc} (correlation_id={correlation_id})")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "message": "An unexpected error occurred. Please contact support with the reference ID.",
+                    "correlation_id": correlation_id,
+                },
+                "message": f"Server error occurred (Ref: {correlation_id[:8]}). Please retry.",
+            },
+            headers={"X-Correlation-ID": correlation_id},
+        )
+
     app.add_middleware(SlowAPIMiddleware)
 
     app.add_middleware(StructuredLoggingMiddleware)
@@ -69,6 +134,8 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Readable by the browser on cross-origin calls (Vercel -> API):
+        expose_headers=["X-Results-Truncated", "X-Correlation-ID"],
     )
 
     from fastapi.responses import RedirectResponse
@@ -79,6 +146,27 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["System"])
     async def health_check():
+        """Liveness: answers without touching the database, so the container
+        healthcheck and status page stay fast and don't take a pool slot
+        (each DB round trip held a connection ~1s in the stress test). Use
+        /health/deep for the database probe."""
+        from core.realtime import get_listener_status
+
+        return {
+            "success": True,
+            "data": {
+                "status": "operational",
+                "environment": settings.ENVIRONMENT,
+                "deploy_marker": "modules-diag-2026-08-05a",
+                "realtime_listener": get_listener_status(),
+                "db_pool": pool_status(),
+            },
+            "message": "Project Imperium is online.",
+            "meta": {},
+        }
+
+    @app.get("/health/deep", tags=["System"])
+    async def health_check_deep():
         try:
             database_health = await check_database_health()
         except Exception:
@@ -117,6 +205,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix="/api/v1/users", tags=["Users"])
     app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"], dependencies=[Depends(require_resource_permission("projects"))])  # fmt: skip
     app.include_router(site_reports.router, prefix="/api/v1/site-operations", tags=["Site Operations"])  # fmt: skip
+    app.include_router(site_day.router, prefix="/api/v1/site-operations", tags=["Site Day"])  # fmt: skip
     app.include_router(site_operations.router, prefix="/api/v1/site-operations", tags=["Site Operations"], dependencies=[Depends(require_resource_permission("site_operations"))])  # fmt: skip
     app.include_router(workforce_foundation.router, prefix="/api/v1/workforce/foundation", tags=["Workforce Foundation"])
     # Workforce actions carry explicit dependencies; POST decisions need update,
@@ -136,6 +225,11 @@ def create_app() -> FastAPI:
     app.include_router(sop_compliance.router, prefix="/api/v1/sop-compliance", tags=["SOP Compliance"], dependencies=[Depends(require_resource_permission("sop_compliance"))])  # fmt: skip
     app.include_router(hr_records.router, prefix="/api/v1/hr-records", tags=["Hr Records"])  # fmt: skip
     app.include_router(hr_operations.router, prefix="/api/v1/hr/operations", tags=["Hr Operations"])
+    app.include_router(hr_people.router, prefix="/api/v1/hr/people", tags=["Hr People"])
+    app.include_router(hr_files.router, prefix="/api/v1/hr/files", tags=["Hr Files"])
+    app.include_router(hr_time.router, prefix="/api/v1/hr/time", tags=["Hr Time"])
+    app.include_router(hr_performance.router, prefix="/api/v1/hr/performance", tags=["Hr Performance"])
+    app.include_router(site_day.hr_router, prefix="/api/v1/hr/project-hires", tags=["Hr Project Hires"])
     app.include_router(hr_verification.router, prefix="/api/v1/hr/vendor-verification", tags=["Hr Vendor Verification"])
     from routers import compliance_foundation
     app.include_router(compliance_foundation.router, prefix="/api/v1/compliance/foundation", tags=["Compliance foundation"])
@@ -197,6 +291,8 @@ def create_app() -> FastAPI:
     app.include_router(gl_bridge.router, prefix="/api/v1/finance/gl/bridge", tags=["Finance GL Bridge"])
     app.include_router(company_budgets.router, prefix="/api/v1/finance/company-budgets", tags=["Finance Company Budgets"])
     app.include_router(cash_forecast.router, prefix="/api/v1/finance/cash-forecast", tags=["Finance Cash Forecast"])
+    app.include_router(cash_curves.router, prefix="/api/v1/finance/cash-curves", tags=["Finance Cash Curves"])
+    app.include_router(finance_ops.router, prefix="/api/v1/finance/ops", tags=["Finance Operations"])
     app.include_router(finance_assistant.router, prefix="/api/v1/finance/assistant", tags=["Finance AI Assistant"])
     app.include_router(financial_statements.router, prefix="/api/v1/finance/financial-statements", tags=["Finance Financial Statements"])
     app.include_router(audit_controls.router, prefix="/api/v1/finance/audit", tags=["Finance Audit Controls"])

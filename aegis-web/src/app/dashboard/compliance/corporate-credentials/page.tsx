@@ -155,7 +155,7 @@ const EMPTY_FORM = {
 
 export default function CorporateCredentialsVaultPage() {
   return (
-    <RBACGuard allowedRoles={["Executive (Admin)", "Managing Director", "Compliance Officer", "Tender / Bid Manager", "Commercial Manager"]}>
+    <RBACGuard>
       <CorporateCredentialsVault />
     </RBACGuard>
   );

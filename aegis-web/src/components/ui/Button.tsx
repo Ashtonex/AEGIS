@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 import { Loader2 } from "lucide-react"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center font-sans font-semibold text-[13px] uppercase tracking-[0.08em] rounded-sm transition-all duration-150 ease-out whitespace-nowrap min-w-[160px] disabled:opacity-40 disabled:pointer-events-none active:translate-y-0",
+  "inline-flex items-center justify-center font-sans font-semibold text-[13px] uppercase tracking-[0.08em] rounded-sm transition-all duration-150 ease-out whitespace-nowrap min-w-[160px] min-h-[44px] disabled:opacity-40 disabled:pointer-events-none active:translate-y-0",
   {
     variants: {
       variant: {
@@ -17,10 +17,10 @@ const buttonVariants = cva(
         ghost: "bg-transparent border border-transparent text-paper hover:bg-[rgba(245,245,240,0.04)] hover:-translate-y-[1px]",
       },
       size: {
-        default: "px-8 py-4", // 16px 32px roughly matches this in Tailwind
-        sm: "px-4 py-2 min-w-0", // smaller variant for nav
-        lg: "px-10 py-5", // larger variant
-        full: "w-full px-8 py-4",
+        default: "px-8 py-3.5 min-h-[48px]", // Standard 48px touch target
+        sm: "px-4 py-2 min-w-0 min-h-[40px]", // smaller variant for nav/compact
+        lg: "px-10 py-5 min-h-[54px]", // larger variant
+        full: "w-full px-8 py-4 min-h-[48px]",
       },
     },
     defaultVariants: {

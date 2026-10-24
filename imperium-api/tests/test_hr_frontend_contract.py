@@ -3,9 +3,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-HR_PAGE = (
-    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "hr" / "page.tsx"
-).read_text(encoding="utf-8")
+HR_PAGE_DIR = ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "hr"
+HR_PAGE = (HR_PAGE_DIR / "page.tsx").read_text(encoding="utf-8")
 
 
 class HRFrontendContractTests(unittest.TestCase):
@@ -20,7 +19,9 @@ class HRFrontendContractTests(unittest.TestCase):
         )
         self.assertIn("Promise.allSettled", HR_PAGE)
         self.assertIn("Employee register could not be loaded.", HR_PAGE)
-        self.assertIn("Attendance register could not be loaded.", HR_PAGE)
+        # Attendance moved to its own page; it must surface failures too.
+        attendance_page = (HR_PAGE_DIR / "HRAttendancePage.tsx").read_text(encoding="utf-8")
+        self.assertIn("Attendance register could not be loaded.", attendance_page)
         self.assertIn("Leave register could not be loaded.", HR_PAGE)
 
     def test_hr_operational_sources_are_not_silently_masked_as_empty(self):

@@ -21,7 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_event, emit_notification, emit_role_notification
 from app.shared.pagination import ok
-from app.shared.vendor_verification import normalize_compliance_category, run_system_verification_check
+from app.shared.vendor_verification import (
+    VENDOR_FIELD_LABELS,
+    missing_profile_fields,
+    normalize_compliance_category,
+    required_compliance_categories,
+    run_system_verification_check,
+    vendor_profile_columns,
+)
 from core.database import get_db, supabase
 from core.security import SUPERADMIN_ROLE, get_current_user, require_permission
 
@@ -38,9 +45,10 @@ SUPPLIER_COMPLIANCE_DOCUMENT_TYPES = {
 }
 
 VENDOR_PROFILE_FIELD_LABELS = {
-    "name": "Company name",
-    "registration_number": "Registration number",
-    "tax_clearance_number": "Tax / clearance number",
+    "name": "Registered company name",
+    "registration_number": "Company registration number",
+    "tax_clearance_number": "Tax clearance number",
+    "vat_number": "VAT number",
     "nssa_number": "NSSA number",
     "praz_number": "PRAZ number",
     "contact_name": "Primary contact",
@@ -96,19 +104,14 @@ def _value_missing(value: Any) -> bool:
 async def _vendor_missing_onboarding_items(
     db: AsyncSession, *, org_id: str, subcontractor_id: str, linked_supplier_id: Optional[str]
 ) -> list[str]:
+    """The key requirements (see app.shared.vendor_verification) that are
+    still missing: blank profile fields and required documents not yet
+    verified by HR."""
     profile_row = (
         await db.execute(
-            text("""
+            text(f"""
                 SELECT
-                    COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
-                    COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
-                    COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
-                    COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, ''), NULLIF(s.submission_data->>'nssa_number', '')) AS nssa_number,
-                    COALESCE(NULLIF(s.praz_number, ''), NULLIF(ps.praz_number, ''), NULLIF(s.submission_data->>'praz_number', '')) AS praz_number,
-                    COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
-                    COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
-                    COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
-                    COALESCE(NULLIF(s.address, ''), NULLIF(ps.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address
+                    {vendor_profile_columns()}
                 FROM crm.subcontractors s
                 LEFT JOIN procurement.suppliers ps
                   ON ps.id = s.linked_supplier_id
@@ -122,11 +125,7 @@ async def _vendor_missing_onboarding_items(
     if not profile_row:
         raise HTTPException(status_code=404, detail="Vendor profile not found.")
 
-    missing_items = [
-        label
-        for key, label in VENDOR_PROFILE_FIELD_LABELS.items()
-        if key in profile_row and _value_missing(profile_row[key])
-    ]
+    missing_items = [VENDOR_FIELD_LABELS[key] for key in missing_profile_fields(profile_row)]
     documents = await _vendor_document_rows(
         db,
         org_id=org_id,
@@ -139,8 +138,8 @@ async def _vendor_missing_onboarding_items(
         if category
     }
     missing_items.extend(
-        f"{label} document"
-        for key, label in SUPPLIER_COMPLIANCE_DOCUMENT_TYPES.items()
+        f"{SUPPLIER_COMPLIANCE_DOCUMENT_TYPES[key]} document"
+        for key in required_compliance_categories(profile_row["vat_status"])
         if key not in verified_types
     )
     return missing_items
@@ -197,12 +196,7 @@ async def list_vendor_verification_queue(
         text(f"""
         SELECT
             s.id,
-            COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
-            COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
-            COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
-            COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
-            COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
-            COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
+            {vendor_profile_columns("name", "registration_number", "tax_clearance_number", "vat_number", "vat_status", "contact_name", "contact_email", "contact_phone")},
             s.compliance_status, s.verification_stage,
             s.system_verified_at, s.system_verification_notes,
             s.hr_verified_by, s.hr_verified_at, s.hr_verification_notes,
@@ -236,7 +230,7 @@ async def get_vendor_verification_detail(
     org_id = user["org_id"]
     row = (
         await db.execute(
-            text("""
+            text(f"""
                 SELECT
                     s.id,
                     s.linked_supplier_id,
@@ -250,15 +244,7 @@ async def get_vendor_verification_detail(
                     s.submission_data->'onboarding_bypass' AS onboarding_bypass,
                     COALESCE((s.submission_data->'onboarding_bypass'->>'enabled')::boolean, false) AS onboarding_bypass_enabled,
                     s.submission_data->'onboarding_bypass'->>'message' AS onboarding_bypass_message,
-                    COALESCE(NULLIF(s.name, ''), NULLIF(ps.supplier_name, ''), NULLIF(ps.trading_name, '')) AS name,
-                    COALESCE(NULLIF(s.registration_number, ''), NULLIF(ps.registration_number, ''), NULLIF(s.submission_data->>'registration_number', ''), NULLIF(s.submission_data->>'company_registration_number', '')) AS registration_number,
-                    COALESCE(NULLIF(s.tax_clearance_number, ''), NULLIF(ps.tax_number, ''), NULLIF(s.submission_data->>'tax_clearance_number', ''), NULLIF(s.submission_data->>'tax_number', ''), NULLIF(s.submission_data->>'zimra_number', '')) AS tax_clearance_number,
-                    COALESCE(NULLIF(s.nssa_number, ''), NULLIF(ps.nssa_number, ''), NULLIF(s.submission_data->>'nssa_number', '')) AS nssa_number,
-                    COALESCE(NULLIF(s.praz_number, ''), NULLIF(ps.praz_number, ''), NULLIF(s.submission_data->>'praz_number', '')) AS praz_number,
-                    COALESCE(NULLIF(s.contact_name, ''), NULLIF(ps.primary_contact_name, ''), NULLIF(s.submission_data->>'contact_name', ''), NULLIF(s.submission_data->>'primary_contact_name', '')) AS contact_name,
-                    COALESCE(NULLIF(s.contact_email, ''), NULLIF(ps.primary_contact_email, ''), NULLIF(s.submission_data->>'contact_email', ''), NULLIF(s.submission_data->>'primary_contact_email', ''), NULLIF(s.submission_data->>'alternate_contact_email', ''), NULLIF(s.submission_data->>'accounts_contact_email', '')) AS contact_email,
-                    COALESCE(NULLIF(s.contact_phone, ''), NULLIF(ps.primary_contact_phone, ''), NULLIF(s.submission_data->>'contact_phone', ''), NULLIF(s.submission_data->>'primary_contact_phone', ''), NULLIF(s.submission_data->>'alternate_contact_phone', ''), NULLIF(s.submission_data->>'accounts_contact_phone', '')) AS contact_phone,
-                    COALESCE(NULLIF(s.address, ''), NULLIF(ps.address, ''), NULLIF(s.submission_data->>'address', ''), NULLIF(s.submission_data->>'company_address', '')) AS address,
+                    {vendor_profile_columns()},
                     s.coverage_provinces,
                     s.submission_data->>'preferred_contact_method' AS preferred_contact_method,
                     s.submission_data->>'alternate_contact_name' AS alternate_contact_name,
@@ -531,9 +517,14 @@ async def decide_vendor_verification(
     org_id = user["org_id"]
     row = (
         await db.execute(
-            text("""
-            SELECT id, name, verification_stage FROM crm.subcontractors
-            WHERE id = :id AND organization_id = :org_id AND is_deleted = false
+            text(f"""
+            SELECT s.id, s.name, s.verification_stage, {vendor_profile_columns("vat_status")}
+            FROM crm.subcontractors s
+            LEFT JOIN procurement.suppliers ps
+              ON ps.id = s.linked_supplier_id
+             AND ps.organization_id = s.organization_id
+             AND ps.is_deleted = false
+            WHERE s.id = :id AND s.organization_id = :org_id AND s.is_deleted = false
         """),
             {"id": str(subcontractor_id), "org_id": org_id},
         )
@@ -569,8 +560,8 @@ async def decide_vendor_verification(
             if category
         }
         missing_verified = [
-            label
-            for key, label in SUPPLIER_COMPLIANCE_DOCUMENT_TYPES.items()
+            SUPPLIER_COMPLIANCE_DOCUMENT_TYPES[key]
+            for key in required_compliance_categories(row.vat_status)
             if key not in verified_types
         ]
         if missing_verified:

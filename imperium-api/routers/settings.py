@@ -156,6 +156,8 @@ class ManagedAccountPayload(Payload):
     trading_name: Optional[str] = Field(default=None, max_length=255)
     registration_number: Optional[str] = Field(default=None, max_length=100)
     tax_number: Optional[str] = Field(default=None, max_length=100)
+    vat_status: Optional[Literal["registered", "not_registered"]] = None
+    vat_number: Optional[str] = Field(default=None, max_length=100)
     praz_number: Optional[str] = Field(default=None, max_length=100)
     nssa_number: Optional[str] = Field(default=None, max_length=100)
     industry: Optional[str] = Field(default=None, max_length=100)
@@ -176,183 +178,10 @@ class ManagedAccountPayload(Payload):
             raise ValueError("Capability tags must be 80 characters or fewer.")
         return normalized
 
+    @property
+    def vat_number_if_registered(self) -> Optional[str]:
+        return None if self.vat_status == "not_registered" else self.vat_number
 
-PAGE_ACCESS = [
-    {
-        "page": "Executive dashboard",
-        "route": "/dashboard/executive",
-        "permission": "executive.view_dashboard",
-        "module": "Executive",
-    },
-    {
-        "page": "Projects",
-        "route": "/dashboard/projects",
-        "permission": "projects.read",
-        "module": "Delivery",
-    },
-    {
-        "page": "Workforce",
-        "route": "/dashboard/workforce",
-        "permission": "workforce.read",
-        "module": "People",
-    },
-    {
-        "page": "Fleet",
-        "route": "/dashboard/fleet",
-        "permission": "fleet.read",
-        "module": "Operations",
-    },
-    {
-        # Commercial Command (the CRM hub/landing page) loads opportunities
-        # as its primary dataset, matching how other hub pages (Workforce,
-        # Fleet, Finance, Procurement) are gated by their primary resource.
-        "page": "CRM",
-        "route": "/dashboard/crm",
-        "permission": "crm.view_opportunities",
-        "module": "Commercial",
-    },
-    {
-        # "crm.opportunities.read" exists in core.permissions but is never
-        # checked by any endpoint - GET /api/v1/crm/opportunities (the real
-        # handler behind this page) requires crm.view_opportunities. Both
-        # rows share that permission intentionally; a role that can see the
-        # opportunities pipeline can see it from either entry point.
-        "page": "CRM opportunities",
-        "route": "/dashboard/crm/opportunities",
-        "permission": "crm.view_opportunities",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM leads",
-        "route": "/dashboard/crm/leads",
-        "permission": "crm_leads.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM contacts",
-        "route": "/dashboard/crm/contacts",
-        "permission": "crm_contacts.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM organizations",
-        "route": "/dashboard/crm/organizations",
-        "permission": "crm_organizations.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM activities",
-        "route": "/dashboard/crm/activities",
-        "permission": "crm_activities.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM communications",
-        "route": "/dashboard/crm/inbox",
-        "permission": "crm_communications.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM automations",
-        "route": "/dashboard/crm/automations",
-        "permission": "crm_automations.read",
-        "module": "Commercial",
-    },
-    {
-        # "crm.campaigns.read" exists in core.permissions but is never
-        # checked - GET /api/v1/crm/campaigns requires crm.marketing.read.
-        "page": "CRM campaigns",
-        "route": "/dashboard/crm/campaigns",
-        "permission": "crm.marketing.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM reports",
-        "route": "/dashboard/crm/reports",
-        "permission": "crm.reports.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM support",
-        "route": "/dashboard/crm/support",
-        "permission": "crm.support.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "CRM import/export",
-        "route": "/dashboard/crm/import",
-        "permission": "crm.import",
-        "module": "Commercial",
-    },
-    {
-        # Baseline crm_tasks.read/teams.read are granted org-wide to EMPLOYEE
-        # (115_crm_tasks_visibility_and_completion.sql) - list_tasks/
-        # list_teams scope results to "assigned to me or my team" unless the
-        # caller also holds crm_tasks.read_all/teams.read_all.
-        "page": "Tasks",
-        "route": "/dashboard/crm/tasks",
-        "permission": "crm_tasks.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "Teams",
-        "route": "/dashboard/crm/teams",
-        "permission": "teams.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "Documents",
-        "route": "/dashboard/crm/documents",
-        "permission": "documents.read",
-        "module": "Controls",
-    },
-    {
-        "page": "Site operations",
-        "route": "/dashboard/site-operations",
-        "permission": "site_operations.read",
-        "module": "Operations",
-    },
-    {
-        "page": "Equipment",
-        "route": "/dashboard/equipment",
-        "permission": "equipment_assets.read",
-        "module": "Operations",
-    },
-    {
-        "page": "Procurement",
-        "route": "/dashboard/procurement",
-        "permission": "procurement.requisition.read",
-        "module": "Commercial",
-    },
-    {
-        "page": "Inventory",
-        "route": "/dashboard/inventory",
-        "permission": "inventory_items.read",
-        "module": "Operations",
-    },
-    {
-        # "finance.cash.read" only gates the cash-accounts sub-resource.
-        # The Finance dashboard's primary data load - GET
-        # /api/v1/financial-performance/projects - requires
-        # finance.cost.read instead.
-        "page": "Finance",
-        "route": "/dashboard/finance",
-        "permission": "finance.cost.read",
-        "module": "Finance",
-    },
-    {
-        "page": "Settings",
-        "route": "/dashboard/settings",
-        "permission": "settings.read",
-        "module": "Administration",
-    },
-    {
-        "page": "Website content",
-        "route": "/dashboard/settings?tab=website",
-        "permission": "website_content.update",
-        "module": "Public website",
-    },
-]
 
 SOLE_SUPERADMIN_EMAIL = "ashton@admin.com"
 PORTAL_ROLE_BY_ACCOUNT_TYPE = {
@@ -1041,11 +870,13 @@ async def _create_supplier_account(
         text("""
         INSERT INTO procurement.suppliers (
             organization_id, created_by, supplier_name, trading_name, registration_number, tax_number,
+            vat_status, vat_registration_number, is_vat_registered,
             praz_number, nssa_number, primary_contact_name, primary_contact_email, primary_contact_phone,
             currency, status, compliance_status
         )
         VALUES (
             :org_id, :user_id, :supplier_name, :trading_name, :registration_number, :tax_number,
+            :vat_status, :vat_number, :is_vat_registered,
             :praz_number, :nssa_number, :primary_contact_name, :primary_contact_email, :primary_contact_phone,
             'USD', 'pending_approval', :compliance_status
         )
@@ -1058,6 +889,9 @@ async def _create_supplier_account(
             "trading_name": payload.trading_name,
             "registration_number": payload.registration_number,
             "tax_number": payload.tax_number,
+            "vat_status": payload.vat_status,
+            "vat_number": payload.vat_number_if_registered,
+            "is_vat_registered": payload.vat_status == "registered",
             "praz_number": payload.praz_number,
             "nssa_number": payload.nssa_number,
             "primary_contact_name": payload.employees[0].full_name,
@@ -1075,12 +909,14 @@ async def _create_subcontractor_profile(
     row = await db.execute(
         text("""
         INSERT INTO crm.subcontractors (
-            organization_id, name, capability_tags, compliance_status, nssa_number, praz_number,
+            organization_id, name, capability_tags, compliance_status,
+            registration_number, tax_clearance_number, vat_status, vat_number, nssa_number, praz_number,
             reliability_score, authorization_tier, contact_name, contact_email, contact_phone,
             address, submission_data, created_by
         )
         VALUES (
-            :org_id, :name, CAST(:capability_tags AS text[]), :compliance_status, :nssa_number, :praz_number,
+            :org_id, :name, CAST(:capability_tags AS text[]), :compliance_status,
+            :registration_number, :tax_clearance_number, :vat_status, :vat_number, :nssa_number, :praz_number,
             0, :authorization_tier, :contact_name, :contact_email, :contact_phone,
             :address, CAST(:submission_data AS jsonb), :user_id
         )
@@ -1091,6 +927,10 @@ async def _create_subcontractor_profile(
             "name": payload.company_name,
             "capability_tags": payload.capability_tags,
             "compliance_status": payload.compliance_status,
+            "registration_number": payload.registration_number,
+            "tax_clearance_number": payload.tax_number,
+            "vat_status": payload.vat_status,
+            "vat_number": payload.vat_number_if_registered,
             "nssa_number": payload.nssa_number,
             "praz_number": payload.praz_number,
             "authorization_tier": payload.authorization_tier,
@@ -1154,8 +994,12 @@ async def _create_employee_record(
     (e.g. if invite_user retries)."""
     row = await db.execute(
         text("""
-        INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, linked_user_id, employment_status)
-        VALUES (:org_id, :user_id, :employee_name, :job_title, :linked_user_id, 'active')
+        INSERT INTO hr.employees (organization_id, created_by, employee_name, job_title, linked_user_id, employment_status, employee_number, position_id, category_id, department_id)
+        SELECT CAST(:org_id AS uuid), CAST(:user_id AS uuid), CAST(:employee_name AS text), CAST(:job_title AS text), CAST(:linked_user_id AS uuid), 'active',
+               hr.next_worker_number(CAST(:org_id AS uuid)), p.id, p.category_id, p.department_id
+        FROM (SELECT 1) one
+        LEFT JOIN hr.positions p ON p.organization_id = CAST(:org_id AS uuid) AND p.is_deleted = false
+             AND lower(p.name) = lower(trim(CAST(:job_title AS text)))
         ON CONFLICT DO NOTHING
         RETURNING id
     """),
@@ -1371,7 +1215,6 @@ async def overview(
             "users": [dict(item) for item in users],
             "roles": [dict(item) for item in roles],
             "permissions": [dict(item) for item in permissions],
-            "page_access": PAGE_ACCESS,
             "website_content": website_content,
             "audit_events": audits,
             "source_warnings": source_warnings,
