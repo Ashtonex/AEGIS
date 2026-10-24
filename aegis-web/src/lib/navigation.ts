@@ -226,8 +226,8 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     requiredPermission: "procurement.requisition.read",
     subItems: [
       { name: "Procurement Pipeline", href: "/dashboard/procurement", icon: LayoutDashboard },
-      { name: "Requisitions", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
-      { name: "RFQs", href: "/dashboard/procurement/rfqs", icon: Search, requiredPermission: "procurement.rfq.read" },
+      { name: "Purchase Requests", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
+      { name: "Quotes", href: "/dashboard/procurement/rfqs", icon: Search, requiredPermission: "procurement.rfq.read" },
       { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart, requiredPermission: "procurement.po.read" },
       { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package, requiredPermission: "procurement.supplier.read" },
       { name: "Pricing", href: "/dashboard/procurement/pricing", icon: DollarSign, requiredPermission: "procurement.vendor_rate.read" },
