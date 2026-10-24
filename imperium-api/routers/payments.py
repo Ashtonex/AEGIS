@@ -18,7 +18,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_notification
-from routers.bank_transactions import _next_cashbook_transaction_number
 from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, is_self_certification, require_permission
@@ -351,7 +350,7 @@ async def decide_payment_batch(
             )
             total_amount = float(items_rows.scalar() or 0)
             if total_amount <= 0:
-                raise HTTPException(status_code=409, detail="This payment batch has no payable amount to post.")
+                raise HTTPException(status_code=422, detail="Payment batch has no payable items.")
 
             # 1. One cashbook outflow for the batch. The balance trigger on
             # finance.cashbook_transactions updates the cash account.
@@ -375,8 +374,8 @@ async def decide_payment_batch(
                 """),
                 {
                     "org_id": org_id,
-                    "transaction_number": await _next_cashbook_transaction_number(db, org_id),
                     "cash_account_id": str(batch_row.cash_account_id),
+                    "transaction_number": f"PMT-{batch_row.batch_number}",
                     "payment_date": batch_row.payment_date,
                     "batch_id": str(batch_id),
                     "amount": total_amount,
