@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ClipboardList, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
+import { ArrowLeft, Boxes, ClipboardList, FileUp, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -16,6 +16,7 @@ import { OrdersTable, PODetailDrawer, ReceiveGoodsModal, SupplierInvoiceModal } 
 import { buildPurchases, buildTasks, type TaskAction } from "@/components/procurement/journey";
 import { PURCHASE_FILTERS, PurchasesView, matchesPurchaseFilter } from "@/components/procurement/purchases";
 import { MyTasks } from "@/components/procurement/tasks";
+import { ImportListModal, ProjectMaterialsModal } from "@/components/procurement/import";
 import { ApproveModal, CreatePOModal, CreatePRModal, CreateRfqModal, PendingPricingTable, RequisitionsTable, RfqResponseModal, RfqsTab } from "@/components/procurement/requests";
 import { Banner, LoadingState, type PaymentEvidencePayload, type Rec, StatusChips, type Tab, isPoOverdue, loadFailureMessage, normalizeActionError, num, tx } from "@/components/procurement/shared";
 import { AddSupplierModal, CredentialsIssuedModal, Supplier360Modal, SuppliersTable } from "@/components/procurement/suppliers";
@@ -69,6 +70,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const { user, permissions, isSuperAdmin } = useAuth();
   const [purchaseFilter, setPurchaseFilter] = useState("all");
   const [expandedPurchase, setExpandedPurchase] = useState<string | null>(null);
+  const [showImportList, setShowImportList] = useState(false);
+  const [showMaterials, setShowMaterials] = useState(false);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [prStatus, setPrStatus] = useState("all");
   const [rfqStatus, setRfqStatus] = useState("all");
@@ -441,9 +444,21 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
                 <Plus className="h-4 w-4" />New Supplier
               </button>
             ) : tab === "tasks" || tab === "purchases" || tab === "requisitions" ? (
-              <button onClick={() => setShowCreatePR(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
-                <Plus className="h-4 w-4" />New request
-              </button>
+              <>
+                {tab === "purchases" && (
+                  <button onClick={() => setShowMaterials(true)} title="Requested vs ordered vs delivered, per material, for a project"
+                    className="inline-flex h-9 items-center gap-2 border border-ink-mid px-3 font-mono text-xs uppercase text-slate-light hover:border-signal hover:text-paper">
+                    <Boxes className="h-4 w-4" />Materials by project
+                  </button>
+                )}
+                <button onClick={() => setShowImportList(true)} title="Paste or upload a materials list and turn it into a purchase request"
+                  className="inline-flex h-9 items-center gap-2 border border-signal/60 px-3 font-mono text-xs uppercase text-signal hover:bg-signal/10">
+                  <FileUp className="h-4 w-4" />Import list
+                </button>
+                <button onClick={() => setShowCreatePR(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
+                  <Plus className="h-4 w-4" />New request
+                </button>
+              </>
             ) : null}
             <button onClick={() => void load()} disabled={loading} title="Refresh" className="inline-flex h-9 w-9 items-center justify-center border border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
@@ -580,6 +595,19 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
           }}
         />
       )}
+      {showImportList && (
+        <ImportListModal
+          projects={projects}
+          onClose={() => setShowImportList(false)}
+          onCreated={(id, number) => {
+            setShowImportList(false);
+            setNotice(`Purchase request ${number || ""} created as a draft - check it, then submit it for approval.`.replace("  ", " "));
+            void load();
+            if (id) openPurchase(`req-${id}`);
+          }}
+        />
+      )}
+      {showMaterials && <ProjectMaterialsModal projects={projects} onClose={() => setShowMaterials(false)} />}
       {showAddSupplier && (
         <AddSupplierModal
           onClose={() => setShowAddSupplier(false)}

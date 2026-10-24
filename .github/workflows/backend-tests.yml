@@ -19,11 +19,15 @@ on:
   pull_request:
     paths:
       - "imperium-api/**"
+      - "aegis-web/src/**"
       - ".github/workflows/backend-tests.yml"
   push:
     branches: ["main"]
     paths:
       - ".github/workflows/backend-tests.yml"
+      # Several contract tests read the web app's source (e.g. the procurement
+      # page); run them on frontend-only pushes too, which deploy no backend.
+      - "aegis-web/src/**"
   workflow_call: {}
 
 jobs:

@@ -7,7 +7,7 @@ import logging
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -1674,6 +1674,112 @@ async def download_purchase_order_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="SNC_Purchase_Order_{filename}.pdf"'},
     )
+
+
+MATERIALS_LIST_MAX_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/materials-list/extract-text")
+async def extract_materials_list_text(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+):
+    """Text of an uploaded materials list (PDF, TXT or CSV) for the browser to parse.
+
+    Nothing is stored: the user reviews the parsed lines before a purchase
+    request is created through the normal requisition endpoint.
+    """
+    content = await file.read(MATERIALS_LIST_MAX_BYTES + 1)
+    if len(content) > MATERIALS_LIST_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="The list is larger than 5 MB.")
+    name = (file.filename or "").lower()
+    if content[:5] == b"%PDF-" or name.endswith(".pdf"):
+        import io
+
+        from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
+
+        try:
+            reader = PdfReader(io.BytesIO(content))
+            pages = []
+            for page in reader.pages[:20]:
+                # Layout mode keeps one line per list row; the default mode can
+                # run a whole list together on one line.
+                try:
+                    pages.append(page.extract_text(extraction_mode="layout") or "")
+                except Exception:  # noqa: BLE001 - fall back to plain extraction for odd PDFs
+                    pages.append(page.extract_text() or "")
+            text_out = "\n".join(pages)
+        except (PdfReadError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Could not read that PDF: {exc}") from exc
+        if not text_out.strip():
+            raise HTTPException(status_code=422, detail="That PDF has no text layer (it may be a scan). Paste the list instead.")
+    elif name.endswith((".txt", ".csv")) or not name:
+        text_out = content.decode("utf-8", errors="replace")
+    else:
+        raise HTTPException(status_code=415, detail="Upload a PDF, TXT or CSV file, or paste the list.")
+    return ok({"text": text_out, "filename": file.filename}, "Materials list text extracted.")
+
+
+@router.get("/projects/{project_id}/materials")
+async def project_materials_status(
+    project_id: UUID,
+    user: dict = Depends(require_permission("procurement.requisition.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per material on a project: requested vs ordered vs delivered.
+
+    Request lines and PO lines are matched on their description, normalised
+    (lower case, punctuation and spacing ignored) - the same key the web app
+    uses - so a PO raised from a request lines up with it.
+    """
+    await project_exists(db, project_id, user["org_id"])
+    rows = await db.execute(
+        text("""
+        WITH requested AS (
+            SELECT trim(regexp_replace(lower(rl.description), '[^a-z0-9]+', ' ', 'g')) AS item_key,
+                   max(rl.description) AS description, max(rl.unit_of_measure) AS uom,
+                   sum(rl.quantity) AS requested_qty,
+                   array_agg(DISTINCT pr.requisition_number) AS requests
+            FROM procurement.requisition_lines rl
+            JOIN procurement.purchase_requisitions pr ON pr.id = rl.requisition_id AND pr.organization_id = rl.organization_id
+            WHERE pr.organization_id = :org_id AND pr.project_id = :project_id
+              AND pr.is_deleted = false AND rl.is_deleted = false
+              AND pr.status NOT IN ('rejected', 'cancelled')
+            GROUP BY 1
+        ), ordered AS (
+            SELECT trim(regexp_replace(lower(pol.description), '[^a-z0-9]+', ' ', 'g')) AS item_key,
+                   max(pol.description) AS description, max(pol.unit_of_measure) AS uom,
+                   sum(pol.quantity) AS ordered_qty, sum(pol.quantity_received) AS received_qty,
+                   array_agg(DISTINCT po.po_number) AS orders
+            FROM procurement.purchase_order_lines pol
+            JOIN procurement.purchase_orders po ON po.id = pol.po_id AND po.organization_id = pol.organization_id
+            WHERE po.organization_id = :org_id AND po.project_id = :project_id
+              AND po.is_deleted = false AND pol.is_deleted = false AND po.status <> 'cancelled'
+            GROUP BY 1
+        )
+        SELECT COALESCE(r.description, o.description) AS description,
+               COALESCE(r.uom, o.uom) AS uom,
+               COALESCE(r.requested_qty, 0) AS requested_qty,
+               COALESCE(o.ordered_qty, 0) AS ordered_qty,
+               COALESCE(o.received_qty, 0) AS received_qty,
+               COALESCE(r.requests, ARRAY[]::varchar[]) AS requests,
+               COALESCE(o.orders, ARRAY[]::varchar[]) AS orders
+        FROM requested r
+        FULL OUTER JOIN ordered o ON o.item_key = r.item_key
+        ORDER BY 1
+        LIMIT 1001
+    """),
+        {"org_id": user["org_id"], "project_id": project_id},
+    )
+    data = []
+    for row in capped(rows, 1000):
+        item = dict(row._mapping)
+        requested, ordered, received = (Decimal(str(item[k] or 0)) for k in ("requested_qty", "ordered_qty", "received_qty"))
+        item["to_order_qty"] = max(requested - ordered, Decimal("0"))
+        item["to_deliver_qty"] = max(ordered - received, Decimal("0"))
+        data.append(item)
+    return ok(data, "Project materials status.", len(data))
 
 
 @router.post("/documents/link", status_code=status.HTTP_201_CREATED)

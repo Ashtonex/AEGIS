@@ -45,7 +45,7 @@ jobs:
         run: npm run lint
 
       - name: Unit tests
-        run: node --experimental-strip-types --test src/components/procurement/journey.test.ts
+        run: node --experimental-strip-types --test src/components/procurement/journey.test.ts src/components/procurement/materials.test.ts
 
       - name: Build
         run: npm run build

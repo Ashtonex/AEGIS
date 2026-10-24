@@ -17,9 +17,14 @@ INVENTORY_PAGE = (
 SETTINGS_PAGE = (
     ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "settings" / "page.tsx"
 ).read_text(encoding="utf-8")
-PROCUREMENT_PAGE = (
-    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx"
-).read_text()
+# The procurement page is split across page.tsx and src/components/procurement/.
+PROCUREMENT_PAGE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in [
+        ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx",
+        *sorted((ROOT.parent / "aegis-web" / "src" / "components" / "procurement").glob("*.ts*")),
+    ]
+)
 SUPPLIER_RECORDS = (ROOT / "routers" / "supplier_records.py").read_text()
 SUPPLIER_EDIT_PERMISSION_REPAIR = (
     ROOT / "migrations" / "166_supplier_edit_permission_repair.sql"
@@ -127,15 +132,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "Direct purchase order creation requires a supplier selection rationale.",
             PROC,
         )
-        page = (
-            ROOT.parent
-            / "aegis-web"
-            / "src"
-            / "app"
-            / "dashboard"
-            / "procurement"
-            / "page.tsx"
-        ).read_text(encoding="utf-8")
+        page = PROCUREMENT_PAGE
         self.assertIn("supplierSelectionReason", page)
         self.assertIn("Supplier selection rationale", page)
         self.assertIn("notes: supplierSelectionReason", page)
@@ -150,17 +147,9 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "createPurchaseOrderFromRfq",
         ]:
             self.assertIn(api, WEB_API)
-        page = (
-            ROOT.parent
-            / "aegis-web"
-            / "src"
-            / "app"
-            / "dashboard"
-            / "procurement"
-            / "page.tsx"
-        ).read_text(encoding="utf-8")
+        page = PROCUREMENT_PAGE
         self.assertIn(
-            'type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices";',
+            'export type Tab = "tasks" | "purchases" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";',
             page,
         )
         self.assertIn("function RfqsTab", page)
@@ -168,22 +157,17 @@ class ProcurementInventoryContractTests(unittest.TestCase):
         self.assertIn("function RfqResponseModal", page)
 
     def test_po_drawer_guides_scenario_a_to_payment_gate(self):
-        page = (
-            ROOT.parent
-            / "aegis-web"
-            / "src"
-            / "app"
-            / "dashboard"
-            / "procurement"
-            / "page.tsx"
-        ).read_text(encoding="utf-8")
+        page = PROCUREMENT_PAGE
         for marker in [
-            "Scenario A completion rail",
-            "Finance commitment",
-            "Goods received",
-            "Supplier invoice",
-            "Three-way match",
-            "Payment evidence gate",
+            # Phase 1 plain-language progress strip + single next step
+            "Progress",
+            "Sent to supplier",
+            "Delivered",
+            "Invoice received",
+            "Invoice checked",
+            "Ready to pay",
+            "Next step",
+            "More actions",
             "Approve with evidence",
             "Payment gate cleared",
             "onMatchInvoice",
@@ -342,7 +326,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             PROCUREMENT_PAGE,
         )
         self.assertIn('criticalKeys: ["requisitions"]', PROCUREMENT_PAGE)
-        self.assertIn('rfqs: "RFQs"', PROCUREMENT_PAGE)
+        self.assertIn('rfqs: "Quotes"', PROCUREMENT_PAGE)
         self.assertIn('orders: "Purchase orders"', PROCUREMENT_PAGE)
         self.assertIn('suppliers: "Suppliers"', PROCUREMENT_PAGE)
 
@@ -358,7 +342,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "Copy login",
             "Purchase orders",
             "Supplier invoices",
-            "RFQ quotations",
+            "Quotes",
             "Received materials and tools",
         ]:
             self.assertIn(marker, PROCUREMENT_PAGE + WEB_API)

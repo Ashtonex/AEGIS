@@ -1923,3 +1923,35 @@ export async function downloadPurchaseOrderPdf(poId: string): Promise<Blob> {
   }
   return response.blob();
 }
+
+/** Plain text of an uploaded materials list (PDF/TXT/CSV); nothing is stored server-side. */
+export async function extractMaterialsListText(file: File): Promise<string> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const url = resolveApiUrl("/api/v1/procurement/materials-list/extract-text");
+  const headers = await getApiHeaders();
+  headers.delete("Content-Type"); // let the browser set the multipart boundary
+  const response = await fetch(url, { method: "POST", headers, body: formData });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(response.status, body?.detail || body?.error?.message || "Could not read that file.");
+  return String(body?.data?.text ?? "");
+}
+
+export interface ProjectMaterialStatus {
+  description: string;
+  uom: string;
+  requested_qty: number | string;
+  ordered_qty: number | string;
+  received_qty: number | string;
+  to_order_qty: number | string;
+  to_deliver_qty: number | string;
+  requests: string[];
+  orders: string[];
+}
+
+/** Per material on a project: requested vs ordered vs delivered. */
+export async function getProjectMaterialsStatus(projectId: string): Promise<ApiResponse<ProjectMaterialStatus[]>> {
+  return fetchApi<ApiResponse<ProjectMaterialStatus[]>>(`/api/v1/procurement/projects/${encodeURIComponent(projectId)}/materials`, {
+    allowFallback: false,
+  });
+}

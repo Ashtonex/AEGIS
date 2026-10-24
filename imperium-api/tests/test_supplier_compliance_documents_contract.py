@@ -15,9 +15,14 @@ WEB_API = (ROOT.parent / "aegis-web" / "src" / "lib" / "api.ts").read_text() + "
     sorted_p.read_text()
     for sorted_p in [(ROOT.parent / "aegis-web" / "src" / "lib" / "api") / n for n in ("core.ts", "website.ts", "crm.ts", "procurement.ts", "fleet.ts", "finance.ts", "inventory.ts", "hr.ts", "compliance.ts", "documents.ts", "reports.ts", "quotations.ts", "banking.ts", "data-room.ts")]
 )
-PROCUREMENT_PAGE = (
-    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx"
-).read_text(encoding="utf-8")
+# The procurement page is split across page.tsx and src/components/procurement/.
+PROCUREMENT_PAGE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in [
+        ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx",
+        *sorted((ROOT.parent / "aegis-web" / "src" / "components" / "procurement").glob("*.ts*")),
+    ]
+)
 SUPPLIER_PORTAL = (
     ROOT.parent / "aegis-web" / "src" / "components" / "auth" / "SupplierPortalHome.tsx"
 ).read_text(encoding="utf-8")

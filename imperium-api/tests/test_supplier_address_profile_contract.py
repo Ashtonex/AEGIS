@@ -4,9 +4,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPLIER_RECORDS = (ROOT / "routers" / "supplier_records.py").read_text(encoding="utf-8")
-PROCUREMENT_PAGE = (
-    ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx"
-).read_text(encoding="utf-8")
+# The procurement page is split across page.tsx and src/components/procurement/.
+PROCUREMENT_PAGE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in [
+        ROOT.parent / "aegis-web" / "src" / "app" / "dashboard" / "procurement" / "page.tsx",
+        *sorted((ROOT.parent / "aegis-web" / "src" / "components" / "procurement").glob("*.ts*")),
+    ]
+)
 MIGRATION = (ROOT / "migrations" / "169_supplier_address_profile.sql").read_text(encoding="utf-8")
 
 
