@@ -1628,6 +1628,54 @@ async def list_purchase_orders(
     return ok(data, "Purchase orders listed.", len(data))
 
 
+@router.get("/purchase-orders/{po_id}/pdf")
+async def download_purchase_order_pdf(
+    po_id: UUID,
+    user: dict = Depends(require_permission("procurement.po.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Six Nine branded purchase order PDF (logo, watermark; unissued POs are stamped)."""
+    row = (
+        await db.execute(
+            text("""
+            SELECT po.*, p.name AS project_name, pr.requisition_number,
+                   to_jsonb(s) - 'bank_account_number' - 'bank_branch_code' AS supplier,
+                   creator.full_name AS created_by_name,
+                   approver.full_name AS approved_by_name,
+                   issuer.full_name AS issued_by_name,
+                   COALESCE((
+                     SELECT jsonb_agg(to_jsonb(pol) ORDER BY pol.created_at)
+                     FROM procurement.purchase_order_lines pol
+                     WHERE pol.po_id=po.id AND pol.organization_id=po.organization_id AND pol.is_deleted=false
+                   ), '[]'::jsonb) AS lines
+            FROM procurement.purchase_orders po
+            JOIN procurement.suppliers s ON s.id=po.supplier_id AND s.organization_id=po.organization_id
+            LEFT JOIN projects.projects p ON p.id=po.project_id AND p.organization_id=po.organization_id
+            LEFT JOIN procurement.purchase_requisitions pr ON pr.id=po.requisition_id AND pr.organization_id=po.organization_id
+            LEFT JOIN core.users creator ON creator.id=po.created_by
+            LEFT JOIN core.users approver ON approver.id=po.approved_by
+            LEFT JOIN core.users issuer ON issuer.id=po.issued_by
+            WHERE po.id=:po_id AND po.organization_id=:org_id AND po.is_deleted=false
+        """),
+            {"po_id": po_id, "org_id": user["org_id"]},
+        )
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+
+    from fastapi.concurrency import run_in_threadpool
+    from fastapi.responses import Response
+    from app.services.documents.po_renderer import render_purchase_order_pdf
+
+    pdf = await run_in_threadpool(render_purchase_order_pdf, dict(row))
+    filename = "".join(c for c in str(row["po_number"] or "purchase-order") if c.isalnum() or c in "-_") or "purchase-order"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="SNC_Purchase_Order_{filename}.pdf"'},
+    )
+
+
 @router.post("/documents/link", status_code=status.HTTP_201_CREATED)
 async def link_document(
     payload: ProcurementDocumentLinkPayload,

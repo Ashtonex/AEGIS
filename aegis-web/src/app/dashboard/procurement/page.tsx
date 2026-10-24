@@ -32,6 +32,7 @@ import {
   Warehouse,
   X,
   XCircle,
+  Download,
 } from "lucide-react";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -77,6 +78,7 @@ import {
   registerSupplierInvoice,
   submitProcurementRequisition,
   updateSupplierRecord,
+  downloadPurchaseOrderPdf,
   type SupplierComplianceDocumentStatus,
   type SupplierComplianceDocumentType,
   type VendorDocument,
@@ -1248,8 +1250,8 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
                 <td className="px-4 py-3 text-slate-light">{tx(row.project_name ?? row.project)}</td>
                 <td className="px-4 py-3 font-mono text-paper">{money(row.total_amount ?? row.amount ?? 0)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${poStatusClass(row.status)}`}>{tx(row.status, "draft")}</span></td>
-                <td className="px-4 py-3 text-slate-light">{dt(row.issued_date ?? row.created_at)}</td>
-                <td className={`px-4 py-3 ${isPoOverdue(row) ? "text-red-300" : "text-slate-light"}`}>{dt(row.expected_delivery_date ?? row.expected_delivery)}{isPoOverdue(row) && <span className="ml-2 border border-red-500/40 px-1 font-mono text-[9px] uppercase">Late</span>}</td>
+                <td className="px-4 py-3 text-slate-light">{dt(row.issued_at ?? row.issued_date ?? row.created_at)}</td>
+                <td className={`px-4 py-3 ${isPoOverdue(row) ? "text-red-300" : "text-slate-light"}`}>{dt(row.required_by_date ?? row.expected_delivery_date ?? row.expected_delivery)}{isPoOverdue(row) && <span className="ml-2 border border-red-500/40 px-1 font-mono text-[9px] uppercase">Late</span>}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 w-16 overflow-hidden rounded-full bg-ink-mid">
@@ -1259,9 +1261,12 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <button onClick={() => onView(row)} className="inline-flex items-center gap-1 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper">
-                    <ArrowRight className="h-3 w-3" />View
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => onView(row)} className="inline-flex items-center gap-1 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper">
+                      <ArrowRight className="h-3 w-3" />View
+                    </button>
+                    <PoPdfButton po={row} compact />
+                  </div>
                 </td>
               </tr>
             );
@@ -1269,6 +1274,48 @@ function OrdersTable({ rows, onView }: { rows: Rec[]; onView: (row: Rec) => void
         </tbody>
       </table>
     </div>
+  );
+}
+
+// ─── Purchase Order PDF ───────────────────────────────────────────────────────
+
+function PoPdfButton({ po, compact = false }: { po: Rec; compact?: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const download = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const blob = await downloadPurchaseOrderPdf(po.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `SNC_Purchase_Order_${tx(po.po_number, po.id.slice(0, 8))}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not generate the purchase order PDF.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="inline-flex flex-col">
+      <button
+        onClick={download}
+        disabled={busy}
+        title="Download Six Nine branded purchase order PDF"
+        className={compact
+          ? "inline-flex items-center gap-1 border border-ink-mid px-2 py-1 font-mono text-[10px] uppercase text-slate-light hover:border-signal hover:text-paper disabled:opacity-40"
+          : "inline-flex h-9 items-center gap-2 border border-signal/50 px-3 font-mono text-xs uppercase text-signal hover:bg-signal/10 disabled:opacity-40"}
+      >
+        {busy ? <Loader2 className={compact ? "h-3 w-3 animate-spin" : "h-4 w-4 animate-spin"} /> : <Download className={compact ? "h-3 w-3" : "h-4 w-4"} />}
+        {compact ? "PDF" : "Download PO (PDF)"}
+      </button>
+      {error && <span className="mt-1 max-w-[220px] text-[10px] text-red-300">{error}</span>}
+    </span>
   );
 }
 
@@ -2826,6 +2873,7 @@ function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onInvoice, 
             </div>
           </section>
           <div className="flex flex-wrap gap-2 border border-ink-mid bg-ink-light/30 p-3">
+            <PoPdfButton po={po} />
             {status === "draft" && (
               <button onClick={() => onApprove(po)} disabled={saving === `approve-po-${po.id}`}
                 className="inline-flex h-9 items-center gap-2 border border-emerald-500/40 px-3 font-mono text-xs uppercase text-emerald-300 hover:bg-emerald-950/30 disabled:opacity-40">
@@ -2851,8 +2899,8 @@ function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onInvoice, 
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <InfoCard label="Total Amount" value={money(po.total_amount ?? po.amount ?? 0)} tone="text-signal" />
-            <InfoCard label="Issued Date" value={dt(po.issued_date ?? po.created_at)} />
-            <InfoCard label="Expected Delivery" value={dt(po.expected_delivery_date ?? po.expected_delivery)} />
+            <InfoCard label="Issued Date" value={dt(po.issued_at ?? po.issued_date ?? po.created_at)} />
+            <InfoCard label="Expected Delivery" value={dt(po.required_by_date ?? po.expected_delivery_date ?? po.expected_delivery)} />
           </div>
 
           {/* Delivery & Logistics Milestone Stepper */}

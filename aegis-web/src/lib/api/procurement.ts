@@ -1911,3 +1911,15 @@ export async function updateWebsiteContent(payload: Record<string, unknown>): Pr
     allowFallback: false,
   });
 }
+
+/** Six Nine branded purchase order PDF (unissued POs carry a DRAFT/APPROVED stamp). */
+export async function downloadPurchaseOrderPdf(poId: string): Promise<Blob> {
+  const url = resolveApiUrl(`/api/v1/procurement/purchase-orders/${encodeURIComponent(poId)}/pdf`);
+  const headers = await getApiHeaders();
+  const response = await fetch(url, { method: "GET", headers });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, body?.detail || body?.error?.message || "Could not generate the purchase order PDF.");
+  }
+  return response.blob();
+}

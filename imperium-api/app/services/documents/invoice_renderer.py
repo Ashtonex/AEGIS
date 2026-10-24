@@ -118,6 +118,22 @@ class NumberedCanvas(canvas.Canvas):
             # Draw large 300x300 watermark logo centered on the page
             self.drawImage(logo_path, x=(w - 280) / 2, y=(h - 280) / 2, width=280, height=280, preserveAspectRatio=True, mask="auto")
 
+        # 2. STATUS STAMP: e.g. "DRAFT - NOT A VALID ORDER" across unissued documents
+        stamp = getattr(self, "status_stamp", None)
+        if stamp:
+            self.saveState()
+            # Colour first: setFillColor resets the fill alpha.
+            self.setFillColor(colors.HexColor("#B91C1C"))
+            try:
+                self.setFillAlpha(0.16)
+            except AttributeError:
+                pass
+            self.setFont("Helvetica-Bold", 40)
+            self.translate(w / 2, h / 2)
+            self.rotate(35)
+            self.drawCentredString(0, 0, stamp)
+            self.restoreState()
+
         # Reset alpha for headers and footers
         try:
             self.setFillAlpha(1.0)
@@ -129,9 +145,10 @@ class NumberedCanvas(canvas.Canvas):
             self.setFont("Helvetica", 7.5)
             self.setFillColor(colors.HexColor("#64748B"))
             doc_ref = getattr(self, "invoice_ref", "DRAFT")
+            doc_label = getattr(self, "doc_label", "Invoice")
             client_name = getattr(self, "client_name", "Client")
             project_title = getattr(self, "project_title", "Project")
-            header_text = f"Six Nine Construction (Pvt) Ltd · Invoice {doc_ref} · {client_name} · {project_title}    Page {self._pageNumber} of {total_pages}"
+            header_text = f"Six Nine Construction (Pvt) Ltd · {doc_label} {doc_ref} · {client_name} · {project_title}    Page {self._pageNumber} of {total_pages}"
             self.drawString(36, h - 28, header_text)
             self.setStrokeColor(colors.HexColor("#CBD5E1"))
             self.setLineWidth(0.5)
