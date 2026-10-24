@@ -86,7 +86,7 @@ async def list_payslips(
                 pi.id AS payslip_id,
                 pi.employee_id,
                 ep.employee_number,
-                -- hr.employees stores one employee_name; split it for the API shape.
+                -- hr.employees stores one employee_name, split here for the API shape.
                 split_part(ep.employee_name, ' ', 1) AS first_name,
                 NULLIF(regexp_replace(ep.employee_name, '^[^ ]+ *', ''), '') AS last_name,
                 ep.job_title,
@@ -138,7 +138,7 @@ async def get_payslip(
                 pi.id AS payslip_id,
                 pi.employee_id,
                 ep.employee_number,
-                -- hr.employees stores one employee_name; split it for the API shape.
+                -- hr.employees stores one employee_name, split here for the API shape.
                 split_part(ep.employee_name, ' ', 1) AS first_name,
                 NULLIF(regexp_replace(ep.employee_name, '^[^ ]+ *', ''), '') AS last_name,
                 ep.job_title,
