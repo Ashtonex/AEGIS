@@ -568,8 +568,8 @@ async def upload_to_sharepoint(
                         file_name, file_size_bytes, file_attachment_id, created_by
                     ) VALUES (
                         :org_id, :title, :category,
-                        CASE WHEN :entity_type = 'opportunity' THEN :entity_id END,
-                        CASE WHEN :entity_type = 'tender' THEN :entity_id END,
+                        CASE WHEN :entity_type = 'opportunity' THEN CAST(:entity_id AS uuid) END,
+                        CASE WHEN :entity_type = 'tender' THEN CAST(:entity_id AS uuid) END,
                         :file_name, :file_size_bytes, :file_attachment_id, :user_id
                     ) RETURNING id
                 """),

@@ -28,12 +28,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 # SQLSTATEs that can only come from the NULL substitution, not the real query.
+# 42804 (datatype mismatch) and 42725 (ambiguous operator) are NOT listed: a bare
+# NULL is typed exactly like an untyped bind parameter at prepare time, so e.g.
+# COALESCE(:a, :b) into a uuid column or :x + :y fails the same way at runtime.
 PARAM_ARTEFACT_STATES = {
-    "42P18",  # could not determine data type of parameter
-    "42804",  # datatype mismatch (e.g. CASE NULL ... THEN)
     "22004",  # null value not allowed
     "2201W", "2201X",  # invalid LIMIT/OFFSET
-    "42725",  # ambiguous function (NULL argument)
 }
 DYNAMIC_REAL_STATES = {"42703", "42883"}  # undefined column / undefined function
 

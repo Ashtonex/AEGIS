@@ -3951,8 +3951,8 @@ async def get_project_supply_chain(
                 po.currency,
                 po.total_amount,
                 po.created_at,
-                po.expected_delivery_date,
-                po.payment_terms
+                po.required_by_date AS expected_delivery_date,
+                po.payment_terms_days AS payment_terms
             FROM procurement.purchase_orders po
             LEFT JOIN procurement.suppliers s ON s.id = po.supplier_id
             WHERE po.organization_id = CAST(:org_id AS uuid)

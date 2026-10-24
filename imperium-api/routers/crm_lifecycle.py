@@ -177,9 +177,9 @@ async def create_support_ticket(
               :org_id, :user_id,
               'TCK-' || to_char(NOW(), 'YYYYMMDD') || '-' || upper(substr(gen_random_uuid()::text, 1, 6)),
               :subject, :issue_description, :status, :priority, :category,
-              COALESCE(:contact_id, :client_id), :organization_account_id, :organization_account_id, :opportunity_id,
+              COALESCE(CAST(:contact_id AS uuid), CAST(:client_id AS uuid)), :organization_account_id, :organization_account_id, :opportunity_id,
               :project_id, :assigned_to,
-              NOW() + (:response_hours || ' hours')::interval, NOW() + (:resolution_hours || ' hours')::interval
+              NOW() + make_interval(hours => CAST(:response_hours AS integer)), NOW() + make_interval(hours => CAST(:resolution_hours AS integer))
             )
             RETURNING id
         """),

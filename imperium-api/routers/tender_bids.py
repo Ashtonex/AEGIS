@@ -259,7 +259,10 @@ async def _record_tender_closeout(
                         'not_started', 'high', :user_id, 'tender', :tender_id,
                         'tender_closeout_next_step', :expected_outcome, :deduplication_key
                     )
-                    -- Must repeat the partial unique index predicate (idx_crm_tasks_dedupe_active).                    ON CONFLICT (organization_id, deduplication_key)                        WHERE is_deleted = false AND status NOT IN ('cancelled', 'superseded')                    DO UPDATE SET
+                    -- Must repeat the partial unique index predicate (idx_crm_tasks_dedupe_active).
+                    ON CONFLICT (organization_id, deduplication_key)
+                        WHERE is_deleted = false AND status NOT IN ('cancelled', 'superseded')
+                    DO UPDATE SET
                         title = EXCLUDED.title,
                         description = EXCLUDED.description,
                         status = CASE

@@ -2541,7 +2541,7 @@ async def record_fuel(
                 source, priority, created_by
             ) VALUES (
                 :org_id, 'Investigate fuel variance',
-                :description, 'plant_request', COALESCE(:plant_request_id, :fuel_id),
+                :description, 'plant_request', COALESCE(CAST(:plant_request_id AS uuid), CAST(:fuel_id AS uuid)),
                 'manual', 'high', :user_id
             ) RETURNING id
         """),
@@ -4259,8 +4259,8 @@ async def close_plant_financials(
         UPDATE fleet.plant_requests
         SET status=CASE WHEN :status='closed' THEN 'closed' ELSE 'under_reconciliation' END,
             closed_at=CASE WHEN :status='closed' THEN NOW() ELSE closed_at END,
-            expected_revenue=GREATEST(expected_revenue, :internal_charge_amount + :external_invoice_amount + :damage_charge_amount),
-            estimated_cost=GREATEST(estimated_cost, :operator_cost_amount + :fuel_cost_amount + :transport_cost_amount + :maintenance_cost_amount),
+            expected_revenue=GREATEST(expected_revenue, CAST(:internal_charge_amount AS numeric) + CAST(:external_invoice_amount AS numeric) + CAST(:damage_charge_amount AS numeric)),
+            estimated_cost=GREATEST(estimated_cost, CAST(:operator_cost_amount AS numeric) + CAST(:fuel_cost_amount AS numeric) + CAST(:transport_cost_amount AS numeric) + CAST(:maintenance_cost_amount AS numeric)),
             contribution_margin=:contribution_margin,
             updated_at=NOW()
         WHERE id=:id AND organization_id=:org_id
