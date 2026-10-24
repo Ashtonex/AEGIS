@@ -8,8 +8,9 @@ import { AlertTriangle, ClipboardList, Loader2, X } from "lucide-react";
 
 export type Rec = Record<string, any> & { id: string };
 
-// Legacy RFQ contract covered: type Tab = "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices";
-export type Tab = "command" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
+// Main views are tasks / purchases / suppliers; the rest are the detailed lists
+// (still reachable at their old URLs).
+export type Tab = "tasks" | "purchases" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
 
 export interface LineItem { description: string; qty: string; uom: string; unit_cost: string; }
 

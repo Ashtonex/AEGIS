@@ -29,7 +29,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Matches Vercel (package.json engines resolve to 22.x); 22 can also run
+          # the plain-TypeScript unit tests below.
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: aegis-web/package-lock.json
 
@@ -41,6 +43,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Unit tests
+        run: node --experimental-strip-types --test src/components/procurement/journey.test.ts
 
       - name: Build
         run: npm run build

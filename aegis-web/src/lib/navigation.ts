@@ -225,13 +225,11 @@ export const MODULE_GROUPS: ModuleGroup[] = [
     domain: "supply",
     requiredPermission: "procurement.requisition.read",
     subItems: [
-      { name: "Procurement Pipeline", href: "/dashboard/procurement", icon: LayoutDashboard },
-      { name: "Purchase Requests", href: "/dashboard/procurement/requisitions", icon: ClipboardCheck },
-      { name: "Quotes", href: "/dashboard/procurement/rfqs", icon: Search, requiredPermission: "procurement.rfq.read" },
-      { name: "Purchase Orders", href: "/dashboard/procurement/purchase-orders", icon: ShoppingCart, requiredPermission: "procurement.po.read" },
+      // Three views; the detailed lists (requests, quotes, orders, invoices,
+      // pricing) are linked from Purchases and keep their URLs.
+      { name: "My Tasks", href: "/dashboard/procurement", icon: LayoutDashboard },
+      { name: "Purchases", href: "/dashboard/procurement/purchases", icon: ShoppingCart },
       { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package, requiredPermission: "procurement.supplier.read" },
-      { name: "Pricing", href: "/dashboard/procurement/pricing", icon: DollarSign, requiredPermission: "procurement.vendor_rate.read" },
-      { name: "Invoices", href: "/dashboard/procurement/invoices", icon: DollarSign, requiredPermission: "procurement.invoice.read" },
     ],
   },
   {

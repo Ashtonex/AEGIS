@@ -215,7 +215,7 @@ export function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onIn
   const hasGrn = grns.length > 0 || ["partially_received", "received", "closed"].includes(status);
   const hasInvoice = invLines.length > 0;
   const hasMatchedInvoice = invLines.some((inv) => tx(inv.match_status ?? inv.matching_status).toLowerCase() === "matched");
-  const hasPaymentApproval = invLines.some((inv) => ["payment_approved", "approved_for_payment", "paid"].includes(tx(inv.status).toLowerCase()) || ["approved", "paid"].includes(tx(inv.payment_status).toLowerCase()));
+  const hasPaymentApproval = invLines.some((inv) => ["approved", "payment_approved", "approved_for_payment", "paid"].includes(tx(inv.status).toLowerCase()) || ["approved", "paid"].includes(tx(inv.payment_status).toLowerCase()));
   const progressSteps = [
     { label: "Ordered", detail: "Supplier and approved request captured", complete: true },
     { label: "Sent to supplier", detail: "PO issued; budget reserved for the project", complete: hasIssued },
@@ -229,7 +229,7 @@ export function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onIn
   const unpaidMatchedInvoice = invLines.find(
     (inv) =>
       tx(inv.match_status ?? inv.matching_status).toLowerCase() === "matched" &&
-      !["payment_approved", "approved_for_payment", "paid"].includes(tx(inv.status).toLowerCase()) &&
+      !["approved", "payment_approved", "approved_for_payment", "paid"].includes(tx(inv.status).toLowerCase()) &&
       !["approved", "paid"].includes(tx(inv.payment_status).toLowerCase()),
   );
 

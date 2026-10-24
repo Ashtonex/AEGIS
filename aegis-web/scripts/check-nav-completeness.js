@@ -26,6 +26,12 @@ const ALLOWLIST = new Set([
   "/dashboard/assets", // legacy and canonical assets stub -> /dashboard/fleet
   "/dashboard/finance/cash-accounts", // legacy stub
   "/dashboard/invoices", // alias that renders /dashboard/finance/invoices (linked under Finance)
+  // Procurement detailed lists: linked from the Purchases view ("Full lists").
+  "/dashboard/procurement/requisitions",
+  "/dashboard/procurement/rfqs",
+  "/dashboard/procurement/purchase-orders",
+  "/dashboard/procurement/invoices",
+  "/dashboard/procurement/pricing",
   "/dashboard/projects/assign", // replaced by dedicated /dashboard/projects/[id]/team
   "/dashboard/projects/controls", // replaced by dedicated /dashboard/projects/[id]/controls
   "/dashboard/projects/dashboard", // replaced by dedicated /dashboard/projects/[id]

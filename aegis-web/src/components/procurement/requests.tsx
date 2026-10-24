@@ -28,7 +28,7 @@ export function RequisitionsTable({ rows, saving, onSubmit, onApprove, onCreateR
             const isApproved = status === "approved";
             return (
               <tr key={row.id} className="hover:bg-ink-light/40">
-                <td className="px-4 py-3 font-mono text-xs text-signal">{tx(row.pr_number ?? row.reference_number, row.id.slice(0, 8).toUpperCase())}</td>
+                <td className="px-4 py-3 font-mono text-xs text-signal">{tx(row.requisition_number ?? row.pr_number ?? row.reference_number, row.id.slice(0, 8).toUpperCase())}</td>
                 <td className="px-4 py-3 text-paper">{tx(row.project_name ?? row.project)}</td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${priorityClass(row.priority)}`}>{tx(row.priority, "normal")}</span></td>
                 <td className="px-4 py-3"><span className={`border px-2 py-0.5 font-mono text-[10px] uppercase ${prStatusClass(row.status)}`}>{tx(row.status, "draft")}</span></td>

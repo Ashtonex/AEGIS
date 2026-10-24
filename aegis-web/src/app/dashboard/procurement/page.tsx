@@ -2,24 +2,28 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ClipboardList, Loader2, Plus, RefreshCw, Search, ShieldAlert, X } from "lucide-react";
+import { ArrowLeft, ClipboardList, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
+import { useAuth } from "@/lib/auth/AuthContext";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
 import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
-import { approvePurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getStockMovements, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
+import { approvePurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
 import { InvoicesTab, PaymentEvidenceModal } from "@/components/procurement/invoices";
 import { OrdersTable, PODetailDrawer, ReceiveGoodsModal, SupplierInvoiceModal } from "@/components/procurement/orders";
-import { ProcurementCommandDashboard } from "@/components/procurement/overview";
+import { buildPurchases, buildTasks, type TaskAction } from "@/components/procurement/journey";
+import { PURCHASE_FILTERS, PurchasesView, matchesPurchaseFilter } from "@/components/procurement/purchases";
+import { MyTasks } from "@/components/procurement/tasks";
 import { ApproveModal, CreatePOModal, CreatePRModal, CreateRfqModal, PendingPricingTable, RequisitionsTable, RfqResponseModal, RfqsTab } from "@/components/procurement/requests";
-import { Banner, LoadingState, type PaymentEvidencePayload, type Rec, StatusChips, type Tab, dt, isPoOverdue, itemType, loadFailureMessage, money, movementDate, normalizeActionError, num, stockValue, tx } from "@/components/procurement/shared";
+import { Banner, LoadingState, type PaymentEvidencePayload, type Rec, StatusChips, type Tab, isPoOverdue, loadFailureMessage, normalizeActionError, num, tx } from "@/components/procurement/shared";
 import { AddSupplierModal, CredentialsIssuedModal, Supplier360Modal, SuppliersTable } from "@/components/procurement/suppliers";
 
 
 const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
-  command: { title: "Procurement Overview", subtitle: "What is in store, what moved, what is on the way, and what needs a decision." },
+  tasks: { title: "My Tasks", subtitle: "Everything in procurement that is waiting on you - urgent first. Each task opens the right form." },
+  purchases: { title: "Purchases", subtitle: "Every purchase from request to payment on one line: where it is and what it is waiting on." },
   requisitions: { title: "Purchase Requests", subtitle: "Requests for materials from site and office: submit, approve, then raise a PO (quotes optional)." },
   pricing: { title: "Pending Pricing", subtitle: "Site material requests issued without a known price. Confirm the real unit cost here." },
   rfqs: { title: "Quotes", subtitle: "Optional: ask suppliers to quote, compare the answers, pick one, then raise the PO." },
@@ -34,10 +38,9 @@ const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
 export default function ProcurementPage() {
   const searchParams = useSearchParams();
   const requestedTab = searchParams?.get("tab");
-  const initialTab: Tab =
-    requestedTab === "command" || requestedTab === "requisitions" || requestedTab === "rfqs" || requestedTab === "orders" || requestedTab === "suppliers" || requestedTab === "invoices" || requestedTab === "pricing"
-      ? (requestedTab === "orders" ? "orders" : requestedTab)
-      : "command";
+  const known: Tab[] = ["tasks", "purchases", "requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"];
+  // "command" was the old overview tab; its stock panels now live in Inventory.
+  const initialTab: Tab = known.includes(requestedTab as Tab) ? (requestedTab as Tab) : "tasks";
 
   return (
     <RBACGuard>
@@ -50,7 +53,8 @@ export default function ProcurementPage() {
 // ─── Workspace ────────────────────────────────────────────────────────────────
 
 const TAB_ROUTES: Record<Tab, string> = {
-  command: "/dashboard/procurement",
+  tasks: "/dashboard/procurement",
+  purchases: "/dashboard/procurement/purchases",
   requisitions: "/dashboard/procurement/requisitions",
   rfqs: "/dashboard/procurement/rfqs",
   orders: "/dashboard/procurement/purchase-orders",
@@ -60,8 +64,11 @@ const TAB_ROUTES: Record<Tab, string> = {
 };
 
 
-function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Tab }) {
+function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const router = useRouter();
+  const { user, permissions, isSuperAdmin } = useAuth();
+  const [purchaseFilter, setPurchaseFilter] = useState("all");
+  const [expandedPurchase, setExpandedPurchase] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [prStatus, setPrStatus] = useState("all");
   const [rfqStatus, setRfqStatus] = useState("all");
@@ -106,7 +113,6 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       projects: () => getInternalProjects(),
       stores: () => getInventoryStores(),
       stockLevels: () => getInventoryStockLevels(),
-      movements: () => getStockMovements({ limit: 300 }),
       ccbFindings: () => getCcbFindings({ status: "open" }),
       pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
     },
@@ -122,7 +128,6 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
         projects: "Project register",
         stores: "Store register",
         stockLevels: "Stock levels",
-        movements: "Stock movements",
         ccbFindings: "Budget warnings",
         pendingPricing: "Pending pricing",
       },
@@ -135,7 +140,6 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   useLiveTable("procurement.rfqs", () => void load());
   useLiveTable("procurement.goods_received_notes", () => void load());
   useLiveTable("procurement.supplier_invoices", () => void load());
-  useLiveTable("procurement.stock_ledger", () => void load());
   useLiveTable("procurement.inventory_items", () => void load());
   useLiveTable("procurement.stores", () => void load());
   useLiveTable("procurement.suppliers", () => void load());
@@ -149,84 +153,38 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
   const projects = useMemo(() => (Array.isArray(procurementData.projects?.data) ? procurementData.projects.data : []), [procurementData.projects]);
   const stores = useMemo(() => (Array.isArray(procurementData.stores?.data) ? procurementData.stores.data : []), [procurementData.stores]);
   const stockLevels = useMemo(() => (Array.isArray(procurementData.stockLevels?.data) ? procurementData.stockLevels.data : []), [procurementData.stockLevels]);
-  const movements = useMemo(() => (Array.isArray(procurementData.movements?.data) ? procurementData.movements.data : []), [procurementData.movements]);
   const ccbFindings = useMemo(() => (Array.isArray(procurementData.ccbFindings?.data) ? procurementData.ccbFindings.data : []), [procurementData.ccbFindings]);
   const pendingPricing = useMemo(() => (Array.isArray(procurementData.pendingPricing?.data) ? procurementData.pendingPricing.data : []), [procurementData.pendingPricing]);
   const error = loadError ? loadFailureMessage(loadError) : null;
 
-  const kpis = useMemo(() => {
-    const openPRs = requisitions.filter((r) => ["draft", "submitted"].includes(tx(r.status).toLowerCase())).length;
-    const awaitingApproval = requisitions.filter((r) => tx(r.status).toLowerCase() === "submitted").length;
-    const activeRFQs = rfqs.filter((r) => ["draft", "issued"].includes(tx(r.status).toLowerCase())).length;
-    const activePOs = orders.filter((r) => ["approved", "issued", "partially_received"].includes(tx(r.status).toLowerCase())).length;
-    const grnsPending = orders.filter((r) => tx(r.status).toLowerCase() === "partially_received").length;
-    const invPending = invoices.filter((r) => ["unmatched", "partial"].includes(tx(r.match_status ?? r.matching_status).toLowerCase())).length;
-    const committed = orders.filter((r) => tx(r.status).toLowerCase() !== "cancelled").reduce((s, r) => s + num(r.total_amount ?? r.amount), 0);
-    return { openPRs, awaitingApproval, activePOs, grnsPending, invPending, committed, activeRFQs };
-  }, [requisitions, rfqs, orders, invoices]);
+  const purchases = useMemo(() => buildPurchases(requisitions, rfqs, orders, invoices), [requisitions, rfqs, orders, invoices]);
+  const can = useMemo(() => (key: string) => isSuperAdmin || Boolean(permissions?.has(key)), [isSuperAdmin, permissions]);
+  const tasks = useMemo(() => buildTasks(purchases, can, user?.id ?? null), [purchases, can, user?.id]);
+  const canPrice = can("procurement.requisition.approve");
+  const taskCount = tasks.length + (canPrice ? pendingPricing.length : 0);
+  const activePurchases = purchases.filter((p) => p.stage !== "done" && p.stage !== "stopped").length;
+  const overduePurchases = purchases.filter((p) => p.overdue).length;
 
-  const command = useMemo(() => {
-    const stockValueTotal = stockLevels.reduce((sum, row) => sum + stockValue(row), 0);
-    const materialsValue = stockLevels
-      .filter((row) => itemType(row.item_type) !== "tool")
-      .reduce((sum, row) => sum + stockValue(row), 0);
-    const toolsValue = stockLevels
-      .filter((row) => itemType(row.item_type) === "tool")
-      .reduce((sum, row) => sum + stockValue(row), 0);
-    const lowStock = stockLevels.filter((row) => {
-      const available = num(row.available_qty ?? row.quantity ?? row.stock_quantity);
-      const reorder = num(row.reorder_level ?? row.reorder_point);
-      return reorder > 0 && available > 0 && available <= reorder;
-    });
-    const outOfStock = stockLevels.filter((row) => num(row.available_qty ?? row.quantity ?? row.stock_quantity) <= 0);
-    const incomingPOs = orders.filter((po) => ["issued", "partially_received"].includes(tx(po.status).toLowerCase()));
-    const incomingValue = incomingPOs.reduce((sum, po) => {
-      const percentReceived = Math.min(100, Math.max(0, num(po.percent_received ?? 0)));
-      return sum + (num(po.total_amount ?? po.amount) * (1 - percentReceived / 100));
-    }, 0);
-    const overduePOs = incomingPOs.filter((po) => {
-      const raw = po.expected_delivery_date ?? po.required_by_date ?? po.required_by;
-      if (!raw) return false;
-      const date = new Date(String(raw));
-      return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
-    });
-    const additions = movements.filter((m) => num(m.quantity) > 0);
-    const subtractions = movements.filter((m) => num(m.quantity) < 0);
-    const transfers = movements.filter((m) => tx(m.movement_type).toLowerCase().includes("transfer"));
-    const adjustments = movements.filter((m) => tx(m.movement_type).toLowerCase() === "adjustment");
-    const storeSummaries = stores.map((store) => {
-      const rows = stockLevels.filter((stock) => tx(stock.store_id, "") === String(store.id) || tx(stock.store_name, "") === tx(store.name ?? store.store_name, ""));
-      return {
-        ...store,
-        itemCount: rows.filter((row) => num(row.available_qty ?? row.quantity ?? row.stock_quantity) !== 0).length,
-        value: rows.reduce((sum, row) => sum + stockValue(row), 0),
-      };
-    }).sort((a, b) => num(b.value) - num(a.value));
-    const actionQueue = [
-      ...pendingPricing.slice(0, 8).map((row) => ({ id: `price-${row.id}`, tone: "amber" as const, label: "Confirm price", title: tx(row.request_number, row.id), meta: `${tx(row.project_name)} · ${tx(row.item_name ?? row.item_code)}` })),
-      ...requisitions.filter((row) => tx(row.status).toLowerCase() === "submitted").slice(0, 8).map((row) => ({ id: `pr-${row.id}`, tone: "blue" as const, label: "Approve request", title: tx(row.requisition_number ?? row.pr_number, row.id), meta: `${tx(row.project_name)} · ${money(row.total_estimated)}` })),
-      ...rfqs.filter((row) => ["issued", "draft"].includes(tx(row.status).toLowerCase())).slice(0, 8).map((row) => ({ id: `rfq-${row.id}`, tone: "slate" as const, label: "Quotes open", title: tx(row.rfq_number, row.id), meta: tx(row.project_name) })),
-      ...overduePOs.slice(0, 8).map((row) => ({ id: `po-${row.id}`, tone: "red" as const, label: "PO overdue", title: tx(row.po_number, row.id), meta: `${tx(row.supplier_name)} · ${dt(row.expected_delivery_date ?? row.required_by_date)}` })),
-      ...ccbFindings.slice(0, 8).map((row) => ({ id: `ccb-${row.id}`, tone: "red" as const, label: "Budget warning", title: tx(row.title ?? row.check_type, row.id), meta: tx(row.project_name ?? row.status) })),
-    ].slice(0, 12);
-    return {
-      stockValueTotal,
-      materialsValue,
-      toolsValue,
-      lowStock,
-      outOfStock,
-      incomingPOs,
-      incomingValue,
-      overduePOs,
-      additions,
-      subtractions,
-      transfers,
-      adjustments,
-      storeSummaries,
-      actionQueue,
-      recentMovements: [...movements].sort((a, b) => movementDate(b) - movementDate(a)).slice(0, 12),
-    };
-  }, [stockLevels, movements, stores, orders, pendingPricing, requisitions, rfqs, ccbFindings]);
+  const openPurchase = (purchaseId: string) => {
+    setExpandedPurchase(purchaseId);
+    setPurchaseFilter("all");
+    setQuery("");
+    if (tab !== "purchases") router.push(TAB_ROUTES.purchases);
+  };
+
+  const runTask = (action: TaskAction) => {
+    switch (action.type) {
+      case "submitRequest": void submitPR(action.row.id); break;
+      case "approveRequest": setApprovingPR(action.row); break;
+      case "createPO": setCreatingPOFromPR(action.row); break;
+      case "openPurchase": openPurchase(action.purchaseId); break;
+      case "openPO": setSelectedPO(action.row); break;
+      case "receivePO": setReceivingPO(action.row); break;
+      case "invoicePO": setInvoicingPO(action.row); break;
+      case "checkInvoice": setInspectingMatchInvoice(action.row); break;
+      case "approvePayment": setPaymentEvidenceInvoice(action.row); break;
+    }
+  };
 
   const submitPR = async (id: string, overrideReason?: string) => {
     setSaving(`submit-${id}`);
@@ -272,7 +230,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       await createPurchaseOrderFromRequisition({ requisition_id: pr.id, supplier_id: supplierId, notes: supplierSelectionReason });
       setNotice("Purchase order created from the approved request.");
       setCreatingPOFromPR(null);
-      router.push(TAB_ROUTES.orders);
+      openPurchase(`req-${pr.id}`);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Purchase order creation failed.")); }
     finally { setSaving(null); }
@@ -284,7 +242,7 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       await createProcurementRfq({ requisition_id: pr.id, ...payload });
       setNotice("Quote request sent to suppliers.");
       setCreatingRfqFromPR(null);
-      router.push(TAB_ROUTES.rfqs);
+      openPurchase(`req-${pr.id}`);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Could not send the quote request.")); }
     finally { setSaving(null); }
@@ -315,8 +273,11 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     setSaving(`po-rfq-${response.id}`);
     try {
       await createPurchaseOrderFromRfq({ rfq_response_id: response.id });
-      setNotice("Purchase order created from selected supplier quotation.");
-      router.push(TAB_ROUTES.orders);
+      setNotice("Purchase order created from the selected supplier quote.");
+      if (response.rfq_id) {
+        const rfq = rfqs.find((r) => String(r.id) === String(response.rfq_id));
+        if (rfq?.requisition_id) openPurchase(`req-${rfq.requisition_id}`);
+      }
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Purchase order creation from quotation failed.")); }
     finally { setSaving(null); }
@@ -363,7 +324,6 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       setNotice("Supplier invoice registered.");
       setInvoicingPO(null);
       setSelectedPO(null);
-      router.push(TAB_ROUTES.invoices);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Invoice registration failed.")); }
     finally { setSaving(null); }
@@ -445,6 +405,13 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
     return rfqs.filter((r) => rfqStatus === "all" || tx(r.status, "draft").toLowerCase() === rfqStatus).filter((r) => `${r.rfq_number ?? r.id} ${r.requisition_number ?? ""} ${r.project_name ?? ""} ${r.status ?? ""}`.toLowerCase().includes(q));
   }, [rfqs, query, rfqStatus]);
 
+  const filteredPurchases = useMemo(() => {
+    const q = query.toLowerCase();
+    return purchases
+      .filter((p) => matchesPurchaseFilter(p, purchaseFilter))
+      .filter((p) => !q || [p.number, p.project, p.title, ...p.orders.map((o) => `${o.po_number ?? ""} ${o.supplier_name ?? ""}`), ...p.invoices.map((i) => String(i.invoice_number ?? ""))].join(" ").toLowerCase().includes(q));
+  }, [purchases, purchaseFilter, query]);
+
   const filteredSuppliers = useMemo(() => {
     const q = query.toLowerCase();
     return suppliers.filter((r) => supplierCompliance === "all" || tx(r.compliance_status, "pending").toLowerCase() === supplierCompliance).filter((r) => `${r.name ?? r.supplier_name ?? ""} ${r.code ?? r.supplier_code ?? ""} ${r.praz_number ?? ""}`.toLowerCase().includes(q));
@@ -473,9 +440,9 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
               <button onClick={() => setShowAddSupplier(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
                 <Plus className="h-4 w-4" />New Supplier
               </button>
-            ) : tab === "command" || tab === "requisitions" ? (
+            ) : tab === "tasks" || tab === "purchases" || tab === "requisitions" ? (
               <button onClick={() => setShowCreatePR(true)} className="inline-flex h-9 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase tracking-wider text-ink hover:bg-signal/90">
-                <Plus className="h-4 w-4" />New Requisition
+                <Plus className="h-4 w-4" />New request
               </button>
             ) : null}
             <button onClick={() => void load()} disabled={loading} title="Refresh" className="inline-flex h-9 w-9 items-center justify-center border border-ink-mid bg-ink-light text-slate-light hover:border-signal hover:text-paper disabled:opacity-50">
@@ -487,37 +454,34 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
 
       <SupplyControlTower currentModule="procurement" />
 
-      {/* Where this page sits in the requisition-to-payment flow, with what is
-          waiting at each stage - the same strip on every tab, but the active
-          stage and its counts are what change as work moves through. */}
-      <nav className="mb-4 grid grid-cols-2 gap-px border border-ink-mid bg-ink-mid sm:grid-cols-3 lg:grid-cols-6">
+      {/* Three main views. The detailed lists (requests, quotes, orders,
+          invoices, pricing) stay reachable from Purchases and their old URLs. */}
+      <nav className="mb-4 grid grid-cols-3 gap-px border border-ink-mid bg-ink-mid">
         {[
-          { key: "requisitions" as Tab, label: "Purchase requests", value: kpis.awaitingApproval, sub: `${kpis.openPRs} open`, hot: kpis.awaitingApproval > 0, verb: "to approve" },
-          { key: "pricing" as Tab, label: "Pricing", value: pendingPricing.length, sub: "site requests", hot: pendingPricing.length > 0, verb: "to price" },
-          { key: "rfqs" as Tab, label: "Quotes", value: kpis.activeRFQs, sub: "out to suppliers", hot: false, verb: "open" },
-          { key: "orders" as Tab, label: "Purchase orders", value: kpis.activePOs, sub: `${command.overduePOs.length} overdue`, hot: command.overduePOs.length > 0, verb: "in flight" },
-          { key: "invoices" as Tab, label: "Invoices", value: kpis.invPending, sub: "to check", hot: kpis.invPending > 0, verb: "pending" },
-          { key: "suppliers" as Tab, label: "Suppliers", value: suppliers.length, sub: `${suppliers.filter((r) => tx(r.compliance_status, "pending").toLowerCase() !== "compliant").length} not compliant`, hot: false, verb: "registered" },
-        ].map((stage) => {
-          const active = tab === stage.key;
+          { key: "tasks" as Tab, label: "My Tasks", icon: ListChecks, value: taskCount, sub: taskCount ? "waiting on you" : "all caught up", hot: taskCount > 0 },
+          { key: "purchases" as Tab, label: "Purchases", icon: ShoppingCart, value: activePurchases, sub: overduePurchases ? `in progress · ${overduePurchases} late` : "in progress", hot: overduePurchases > 0 },
+          { key: "suppliers" as Tab, label: "Suppliers", icon: Package, value: suppliers.length, sub: `${suppliers.filter((r) => tx(r.compliance_status, "pending").toLowerCase() !== "compliant").length} not compliant`, hot: false },
+        ].map((view) => {
+          const active = tab === view.key || (view.key === "purchases" && ["requisitions", "rfqs", "orders", "invoices", "pricing"].includes(tab));
+          const Icon = view.icon;
           return (
-            <button
-              key={stage.key}
-              type="button"
-              onClick={() => router.push(TAB_ROUTES[stage.key])}
-              className={`relative px-3 py-2.5 text-left transition-colors ${active ? "bg-signal/15" : "bg-ink hover:bg-ink-light"}`}
-            >
+            <button key={view.key} type="button" onClick={() => router.push(TAB_ROUTES[view.key])}
+              className={`relative px-4 py-3 text-left transition-colors ${active ? "bg-signal/15" : "bg-ink hover:bg-ink-light"}`}>
               {active && <span className="absolute inset-x-0 top-0 h-0.5 bg-signal" />}
-              <p className={`font-mono text-[10px] uppercase tracking-wider ${active ? "text-signal" : "text-slate"}`}>{stage.label}</p>
+              <p className={`flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider ${active ? "text-signal" : "text-slate-light"}`}><Icon className="h-3.5 w-3.5" />{view.label}</p>
               <p className="mt-0.5 flex items-baseline gap-1.5">
-                <span className={`font-mono text-lg font-semibold ${stage.hot ? "text-amber-300" : "text-paper"}`}>{loading ? "…" : stage.value}</span>
-                <span className="text-[11px] text-slate-light">{stage.verb}</span>
+                <span className={`font-mono text-xl font-semibold ${view.hot ? "text-amber-300" : "text-paper"}`}>{loading ? "…" : view.value}</span>
+                <span className="truncate text-[11px] text-slate">{view.sub}</span>
               </p>
-              <p className="truncate text-[11px] text-slate">{stage.sub}</p>
             </button>
           );
         })}
       </nav>
+      {["requisitions", "rfqs", "orders", "invoices", "pricing"].includes(tab) && (
+        <button onClick={() => router.push(TAB_ROUTES.purchases)} className="mb-3 inline-flex items-center gap-1.5 font-mono text-[11px] uppercase text-slate-light hover:text-paper">
+          <ArrowLeft className="h-3.5 w-3.5" />Back to Purchases
+        </button>
+      )}
 
       {/* Alerts */}
       {error && <Banner tone="error" message={error} />}
@@ -525,11 +489,16 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {notice && <Banner tone="info" message={notice} onClose={() => setNotice(null)} />}
 
       {/* Filter bar: search plus status chips that carry live counts */}
-      {tab !== "command" && <div className="flex flex-col gap-2 border border-b-0 border-ink-mid bg-ink-light/30 p-3 lg:flex-row lg:items-center">
+      {tab !== "tasks" && <div className="flex flex-col gap-2 border border-b-0 border-ink-mid bg-ink-light/30 p-3 lg:flex-row lg:items-center">
         <label className="flex h-9 items-center gap-2 border border-ink-mid bg-ink px-3 lg:w-72">
           <Search className="h-3.5 w-3.5 text-slate" />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${PROCUREMENT_TAB_META[tab].title.toLowerCase()}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
         </label>
+        {tab === "purchases" && (
+          <StatusChips value={purchaseFilter} onChange={setPurchaseFilter} rows={purchases as unknown as Rec[]} statusOf={(r) => String(r.stage)} amountOf={(r) => num(r.amount)}
+            extra={{ key: "overdue", label: "Late", count: overduePurchases }}
+            options={PURCHASE_FILTERS.filter(([key]) => key !== "active")} />
+        )}
         {tab === "requisitions" && (
           <StatusChips value={prStatus} onChange={setPrStatus} rows={requisitions} statusOf={(r) => tx(r.status, "draft").toLowerCase()} amountOf={(r) => num(r.total_estimated ?? r.estimated_total)}
             options={[["draft", "Draft"], ["submitted", "Awaiting approval"], ["approved", "Approved"], ["ordered", "Ordered"], ["rejected", "Rejected"]]} />
@@ -556,7 +525,19 @@ function ProcurementWorkspace({ initialTab = "requisitions" }: { initialTab?: Ta
       {/* Tab content */}
       <section className="border border-t-0 border-ink-mid bg-ink">
         {loading && !procurementData.requisitions ? <LoadingState label={`Loading ${tab}…`} /> :
-          tab === "command" ? <ProcurementCommandDashboard command={command} loading={loading} /> :
+          tab === "tasks" ? <MyTasks tasks={tasks} pricing={filteredPricing} canPrice={canPrice} saving={saving} onAct={runTask} onConfirmPrice={confirmPricing} /> :
+          tab === "purchases" ? (
+            <PurchasesView
+              purchases={filteredPurchases}
+              expandedId={expandedPurchase}
+              onToggle={setExpandedPurchase}
+              saving={saving}
+              requestHandlers={{ onSubmit: submitPR, onApprove: setApprovingPR, onCreateRFQ: setCreatingRfqFromPR, onCreatePO: setCreatingPOFromPR }}
+              rfqHandlers={{ onQuote: setQuotingRfq, onDecideQuote: decideQuote, onCreatePO: createPOFromQuote }}
+              onViewOrder={setSelectedPO}
+              invoiceHandlers={{ onMatch: matchInvoice, onInspect: (inv) => setInspectingMatchInvoice(inv), onApprovePayment: setPaymentEvidenceInvoice }}
+            />
+          ) :
           tab === "requisitions" ? <RequisitionsTable rows={filteredPRs} saving={saving} onSubmit={submitPR} onApprove={setApprovingPR} onCreateRFQ={setCreatingRfqFromPR} onCreatePO={setCreatingPOFromPR} /> :
           tab === "rfqs" ? <RfqsTab rows={filteredRfqs} saving={saving} onQuote={setQuotingRfq} onDecideQuote={decideQuote} onCreatePO={createPOFromQuote} /> :
           tab === "orders" ? <OrdersTable rows={filteredPOs} onView={setSelectedPO} /> :
