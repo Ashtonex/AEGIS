@@ -65,14 +65,51 @@ jobs:
             cd /opt/aegis
             git fetch origin main
             git reset --hard origin/main
-            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env build
-            # No "down" first: that stopped Caddy too, so for the whole restart the site's
-            # API proxy got ECONNREFUSED on :443 (Vercel runtime errors, 2026-10-24).
-            # "up -d" recreates only containers whose image/config changed and keeps
-            # Caddy serving; the web proxy retries across the API's own restart.
-            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --no-build --remove-orphans
+            COMPOSE="docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env"
+            $COMPOSE build
+            # Blue/green on one droplet: the API takes ~1-2 min to boot, longer than
+            # Caddy's 45s hold, so restarting it in place still dropped requests.
+            # Start the new container beside the old one, switch only once it
+            # answers /health, then drain the old one. Caddy resolves imperium-api
+            # to every running replica and retries dial failures, so traffic
+            # follows whichever container is up.
+            OLD=$($COMPOSE ps -q imperium-api || true)
+            echo "--- memory before rollout ---"; free -m
+            if [ -z "$OLD" ]; then
+              $COMPOSE up -d --no-build imperium-api
+              NEW=$($COMPOSE ps -q imperium-api)
+            else
+              REPLICAS=$(( $(echo "$OLD" | wc -l) + 1 ))
+              $COMPOSE up -d --no-build --no-recreate --scale imperium-api=$REPLICAS imperium-api
+              NEW=$($COMPOSE ps -q imperium-api | grep -v -x -F "$OLD" | head -1)
+            fi
+            echo "--- waiting for new API container ${NEW:0:12} to answer /health ---"
+            HEALTHY=""
+            for i in $(seq 1 90); do
+              if docker exec "$NEW" python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)" >/dev/null 2>&1; then
+                HEALTHY=1; echo "healthy after ~$((i * 5))s"; break
+              fi
+              sleep 5
+            done
+            if [ -z "$HEALTHY" ]; then
+              echo "::error::New API container never became healthy - removing it; the previous release keeps serving."
+              docker logs --tail 150 "$NEW" || true
+              docker rm -f "$NEW" || true
+              exit 1
+            fi
             echo "--- applying database migrations ---"
-            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env exec -T imperium-api python migrations/run_aegis_migrations.py
+            docker exec "$NEW" python migrations/run_aegis_migrations.py
+            if [ -n "$OLD" ]; then
+              echo "--- draining previous API container(s) ---"
+              # SIGTERM: uvicorn stops accepting and finishes in-flight requests.
+              docker stop -t 30 $OLD
+              docker rm $OLD
+            fi
+            echo "--- memory after rollout ---"; free -m
+            # Background worker and Caddy: recreate only if their image/config changed.
+            # (Never "down": that stopped Caddy, and the site's API proxy got
+            # ECONNREFUSED on :443 for the whole restart.)
+            $COMPOSE up -d --no-build --no-deps --remove-orphans imperium-worker caddy
             docker image prune -f
             echo "--- disk usage after build ---"
             df -h /
