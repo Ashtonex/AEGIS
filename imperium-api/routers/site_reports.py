@@ -1409,10 +1409,10 @@ async def promote_material_candidate(
             text("""
             INSERT INTO procurement.inventory_items (
                 organization_id, item_name, item_code, category, unit_of_measure,
-                standard_cost, status, created_by
+                standard_cost, created_by
             ) VALUES (
                 :org_id, :name, :code, :category, :uom,
-                :cost, 'active', :user_id
+                :cost, :user_id
             ) RETURNING id
         """),
             {
@@ -1666,7 +1666,7 @@ async def create_weekly_budget(
                   AND organization_id = CAST(:org_id AS uuid)
                   AND is_deleted = false AND status != 'superseded'
                   AND (
-                    (NULLIF(:wp, '') IS NOT NULL AND LOWER(work_package) = LOWER(:wp))
+                    (NULLIF(:wp, '') IS NOT NULL AND LOWER(item_no) = LOWER(:wp))
                     OR (NULLIF(:desc, '') IS NOT NULL AND LOWER(description) = LOWER(:desc))
                   )
                 ORDER BY (contract_qty - qty_measured_to_date) DESC
@@ -2007,7 +2007,7 @@ async def list_site_grns(
         filters.append("g.engineer_review_status=:engineer_status")
     rows = await db.execute(
         text(f"""
-        SELECT g.*, p.name AS project_name, s.name AS supplier_name, st.name AS store_name,
+        SELECT g.*, p.name AS project_name, s.supplier_name AS supplier_name, st.name AS store_name,
                receiver.full_name AS received_by_name
         FROM procurement.goods_received_notes g
         LEFT JOIN projects.projects p ON p.id=g.project_id AND p.organization_id=g.organization_id
@@ -2516,7 +2516,7 @@ async def get_daily_report(
     receipts_rows = await db.execute(
         text("""
         SELECT grn.id, grn.grn_number, grn.delivery_note_ref, grn.delivery_date, grn.status,
-               s.name AS supplier_name,
+               s.supplier_name AS supplier_name,
                gl.id AS line_id, gl.item_id, gl.description, gl.quantity_received, gl.unit_price,
                i.item_code, i.unit_of_measure
         FROM procurement.goods_received_notes grn
@@ -2574,11 +2574,13 @@ async def get_daily_report(
         safety_row = (
             await db.execute(
                 text("""
-                SELECT id, briefing_date, shift, status, weather_condition, temperature_c,
-                       toolbox_topic, toolbox_conductor, attendees_count, ppe_compliant,
-                       hazards_identified, high_risk_work, permit_to_work_required, opened_at, closed_at
-                FROM projects.site_day_briefings
-                WHERE id=:briefing_id AND organization_id=:org_id
+                SELECT b.id, b.briefing_date, b.shift, b.status, b.toolbox_topic, b.toolbox_notes,
+                       u.full_name AS toolbox_conductor, b.ppe_check_completed AS ppe_compliant,
+                       b.toolbox_talk_completed, b.labour_count_completed, b.safety_concern_raised,
+                       b.safety_concerns, b.safety_actions, b.started_at AS opened_at, b.closed_at
+                FROM projects.site_day_briefings b
+                LEFT JOIN core.users u ON u.id = b.started_by
+                WHERE b.id=:briefing_id AND b.organization_id=:org_id
             """),
                 {"briefing_id": report["briefing_id"], "org_id": user["org_id"]},
             )

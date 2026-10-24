@@ -432,7 +432,7 @@ async def _client_contact_name_or_404(db: AsyncSession, client_id: UUID, org_id:
     name = (
         await db.execute(
             text("""
-                SELECT COALESCE(NULLIF(contact_name, ''), NULLIF(first_name || ' ' || last_name, ' '), email, phone)
+                SELECT COALESCE(NULLIF(contact_name, ''), email, phone)
                 FROM crm.contacts
                 WHERE id = :client_id
                   AND organization_id = :org_id
@@ -2816,16 +2816,16 @@ async def assign_project_role(
             },
         )).scalar()
 
-    # If assigning Project Manager, update projects.projects.project_manager
+    # If assigning Project Manager, make them the project's assigned user
     if payload.role_name.strip().lower() in {"project manager", "lead project manager", "pm"}:
         await db.execute(
             text("""
                 UPDATE projects.projects
-                SET project_manager = :manager_name, updated_at = NOW()
+                SET assigned_to_user_id = :manager_user_id, updated_at = NOW()
                 WHERE id = :project_id AND organization_id = :org_id
             """),
             {
-                "manager_name": user_check.full_name,
+                "manager_user_id": payload.user_id,
                 "project_id": resolved_project_id,
                 "org_id": user["org_id"],
             },
@@ -3891,7 +3891,7 @@ async def get_project_supply_chain(
                 SELECT
                     sl.item_id,
                     COALESCE(i.item_code, 'UNLISTED') AS item_code,
-                    COALESCE(i.name, 'Uncatalogued Item') AS item_name,
+                    COALESCE(i.item_name, 'Uncatalogued Item') AS item_name,
                     COALESCE(i.unit_of_measure, 'units') AS unit_of_measure,
                     COALESCE(i.category, 'General') AS category,
                     sl.store_id,
@@ -3904,7 +3904,7 @@ async def get_project_supply_chain(
                 LEFT JOIN procurement.stores s ON s.id = sl.store_id
                 WHERE sl.organization_id = :org_id
                   AND sl.project_id = :project_id
-                GROUP BY sl.item_id, i.item_code, i.name, i.unit_of_measure, i.category, sl.store_id, s.name
+                GROUP BY sl.item_id, i.item_code, i.item_name, i.unit_of_measure, i.category, sl.store_id, s.name
                 HAVING SUM(sl.quantity) > 0
                 ORDER BY total_value DESC
             """),
@@ -3947,7 +3947,7 @@ async def get_project_supply_chain(
                 po.po_number,
                 po.status,
                 po.supplier_id,
-                s.name AS supplier_name,
+                s.supplier_name AS supplier_name,
                 po.currency,
                 po.total_amount,
                 po.created_at,
@@ -4023,7 +4023,7 @@ async def get_project_supply_chain(
                 drm.report_id,
                 dr.report_date,
                 drm.item_id,
-                COALESCE(i.name, 'Site Material') AS item_name,
+                COALESCE(i.item_name, 'Site Material') AS item_name,
                 COALESCE(i.item_code, 'MAT') AS item_code,
                 COALESCE(drm.work_package, 'General Works') AS description,
                 drm.quantity_used,
@@ -4047,9 +4047,9 @@ async def get_project_supply_chain(
     wastage_res = await db.execute(
         text("""
             SELECT
-                COALESCE(i.item_code, drm.item_code, 'MAT') AS item_code,
-                COALESCE(i.item_name, drm.item_name, 'Site Material') AS item_name,
-                COALESCE(i.unit_of_measure, drm.unit_of_measure, 'units') AS unit_of_measure,
+                COALESCE(i.item_code, 'MAT') AS item_code,
+                COALESCE(i.item_name, 'Site Material') AS item_name,
+                COALESCE(i.unit_of_measure, 'units') AS unit_of_measure,
                 COALESCE(iss.issued_qty, 0) AS quantity_issued,
                 COALESCE(con.consumed_qty, 0) AS quantity_consumed,
                 COALESCE(iss.avg_cost, i.standard_cost, 0) AS avg_unit_cost
@@ -4067,16 +4067,13 @@ async def get_project_supply_chain(
             FULL OUTER JOIN (
                 SELECT
                     drm.item_id,
-                    drm.item_code,
-                    drm.item_name,
-                    drm.unit_of_measure,
                     SUM(drm.quantity_used) AS consumed_qty
                 FROM projects.daily_report_materials drm
                 JOIN projects.daily_site_reports dr ON dr.id = drm.report_id
                 WHERE dr.organization_id = CAST(:org_id AS uuid)
                   AND dr.project_id = CAST(:project_id AS uuid)
                   AND drm.is_deleted = false
-                GROUP BY drm.item_id, drm.item_code, drm.item_name, drm.unit_of_measure
+                GROUP BY drm.item_id
             ) con ON con.item_id = iss.item_id
             LEFT JOIN procurement.inventory_items i ON i.id = COALESCE(iss.item_id, con.item_id)
             WHERE COALESCE(iss.issued_qty, 0) > 0 OR COALESCE(con.consumed_qty, 0) > 0
@@ -4119,13 +4116,12 @@ async def get_project_supply_chain(
     fin_res = await db.execute(
         text("""
             SELECT
-                COALESCE(contract_value, budget, 0) AS contract_value,
-                COALESCE(budget_amount, budget, 0) AS budget_amount,
-                COALESCE(deposit_received_amount, 0) AS deposit_received_amount,
-                COALESCE(actual_cost, 0) AS actual_cost,
-                COALESCE(committed_cost, 0) AS committed_cost
-            FROM projects.projects
-            WHERE id = CAST(:project_id AS uuid) AND organization_id = CAST(:org_id AS uuid)
+                COALESCE(p.contract_value, 0) AS contract_value,
+                COALESCE(pp.budget_amount, 0) AS budget_amount,
+                COALESCE(p.deposit_received_amount, 0) AS deposit_received_amount
+            FROM projects.projects p
+            LEFT JOIN projects.project_profiles pp ON pp.project_id = p.id AND pp.organization_id = p.organization_id
+            WHERE p.id = CAST(:project_id AS uuid) AND p.organization_id = CAST(:org_id AS uuid)
         """),
         {"org_id": org_id, "project_id": project_id},
     )

@@ -501,7 +501,7 @@ async def get_project_financial_detail(
                       AND grn.status = 'accepted' AND grn.is_deleted = false
                 ), 0) AS grn_delivered_value,
                 COALESCE((
-                    SELECT SUM(drm.quantity * COALESCE(drm.unit_cost, 0))
+                    SELECT SUM(drm.quantity_used * COALESCE(drm.unit_cost, 0))
                     FROM projects.daily_report_materials drm
                     JOIN projects.daily_site_reports dsr ON dsr.id = drm.report_id
                     WHERE dsr.project_id = :project_id AND dsr.organization_id = :org_id
@@ -539,7 +539,7 @@ async def get_project_financial_detail(
                 vpr.status,
                 vpr.submitted_at,
                 vpr.cleared_at,
-                s.name AS subcontractor_name
+                s.supplier_name AS subcontractor_name
             FROM finance.vendor_payment_requests vpr
             LEFT JOIN procurement.suppliers s ON s.id = COALESCE(vpr.subcontractor_id, vpr.supplier_id)
             WHERE vpr.project_id = :project_id AND vpr.organization_id = :org_id
@@ -571,8 +571,8 @@ async def get_project_financial_detail(
     daily_labour_rows = await db.execute(
         text("""
             SELECT
-                COALESCE(SUM(drl.hours_worked), 0) AS daily_hours,
-                COALESCE(SUM(drl.hours_worked * COALESCE(drl.hourly_rate, 0)), 0) AS daily_labour_cost
+                COALESCE(SUM(COALESCE(drl.regular_hours, 0) + COALESCE(drl.overtime_hours, 0)), 0) AS daily_hours,
+                COALESCE(SUM((COALESCE(drl.regular_hours, 0) + COALESCE(drl.overtime_hours, 0)) * COALESCE(drl.cost_rate, 0)), 0) AS daily_labour_cost
             FROM projects.daily_report_labour drl
             JOIN projects.daily_site_reports dsr ON dsr.id = drl.report_id
             WHERE dsr.project_id = :project_id AND dsr.organization_id = :org_id AND dsr.is_deleted = false

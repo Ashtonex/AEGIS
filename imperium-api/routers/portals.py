@@ -1469,8 +1469,8 @@ async def list_supplier_rfqs(
                   jsonb_build_object(
                     'id', rl.id,
                     'description', rl.description,
-                    'qty', rl.qty,
-                    'uom', rl.uom,
+                    'qty', rl.quantity,
+                    'uom', rl.unit_of_measure,
                     'work_package', rl.work_package,
                     'notes', rl.notes
                   )

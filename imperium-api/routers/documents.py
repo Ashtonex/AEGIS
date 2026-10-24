@@ -1029,7 +1029,7 @@ async def unlink_document_from_entity(
     result = await db.execute(
         text("""
             UPDATE core.document_links
-            SET is_deleted = true, updated_at = NOW()
+            SET is_deleted = true
             WHERE document_id = :document_id
               AND entity_type = :entity_type
               AND entity_id = :entity_id

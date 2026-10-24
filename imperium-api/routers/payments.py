@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.shared.events import emit_notification
+from routers.bank_transactions import _next_cashbook_transaction_number
 from app.shared.pagination import ok, page_offset, paginated
 from core.database import get_db
 from core.security import get_current_user, is_self_certification, require_permission
@@ -281,7 +282,7 @@ async def get_payment_batch(
     items = await db.execute(
         text("""
             SELECT spi.*, si.invoice_number, si.total_amount AS invoice_total,
-                   s.name AS supplier_name
+                   s.supplier_name AS supplier_name
             FROM finance.supplier_payment_items spi
             JOIN procurement.supplier_invoices si ON si.id = spi.supplier_invoice_id
             JOIN procurement.suppliers s ON s.id = spi.supplier_id
@@ -344,22 +345,28 @@ async def decide_payment_batch(
                 {"batch_id": str(batch_id)},
             )
             total_amount = float(items_rows.scalar() or 0)
+            if total_amount <= 0:
+                raise HTTPException(status_code=409, detail="This payment batch has no payable amount to post.")
 
+            # transaction_number and direction are NOT NULL; the old insert also
+            # named a non-existent created_by column, so posting always failed.
             txn = await db.execute(
                 text("""
                     INSERT INTO finance.cashbook_transactions (
-                        organization_id, cash_account_id, transaction_date,
-                        transaction_type, amount, currency, payment_method,
-                        description, is_posted, posted_at, posted_by, created_by
+                        organization_id, cash_account_id, transaction_number, transaction_date,
+                        transaction_type, direction, source_type, source_id, amount, currency,
+                        payment_method, description, is_posted, posted_at, posted_by
                     ) VALUES (
-                        :org_id, :cash_account_id, :payment_date,
-                        'payment', :amount, 'USD', :payment_method,
-                        'Supplier payment batch posting', true, NOW(), :user_id, :user_id
+                        :org_id, :cash_account_id, :transaction_number, :payment_date,
+                        'payment', 'outflow', 'supplier_payment_batch', :batch_id, :amount, 'USD',
+                        :payment_method, 'Supplier payment batch posting', true, NOW(), :user_id
                     )
                     RETURNING id
                 """),
                 {
                     "org_id": org_id,
+                    "transaction_number": await _next_cashbook_transaction_number(db, org_id),
+                    "batch_id": str(batch_id),
                     "cash_account_id": str(batch_row.cash_account_id),
                     "payment_date": batch_row.payment_date,
                     "amount": total_amount,

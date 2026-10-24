@@ -396,7 +396,7 @@ async def determine_project_eot_claim(
         await db.execute(
             text("""
                 UPDATE projects.project_milestones SET
-                    target_date = target_date + CAST(:days AS integer),
+                    forecast_date = COALESCE(forecast_date, baseline_date) + CAST(:days AS integer),
                     updated_at = NOW()
                 WHERE id = CAST(:m_id AS uuid)
             """),

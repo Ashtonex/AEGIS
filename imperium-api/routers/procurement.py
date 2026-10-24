@@ -932,7 +932,7 @@ async def generate_replenishment_drafts(
 
     items_query = text("""
         WITH balances AS (
-            SELECT item_id, COALESCE(SUM(quantity_delta), 0) AS available_qty
+            SELECT item_id, COALESCE(SUM(quantity), 0) AS available_qty
             FROM procurement.stock_ledger
             WHERE organization_id = :org_id
               AND (CAST(:store_id AS uuid) IS NULL OR store_id = CAST(:store_id AS uuid))
@@ -2428,7 +2428,7 @@ async def get_invoice_match_inspection(
         po_rows = await db.execute(
             text("""
             SELECT pol.id, pol.description, pol.quantity AS po_qty, pol.unit_price AS po_unit_price,
-                   pol.line_total AS po_line_total, pol.quantity_received AS po_qty_received, pol.uom
+                   pol.line_total AS po_line_total, pol.quantity_received AS po_qty_received, pol.unit_of_measure AS uom
             FROM procurement.purchase_order_lines pol
             WHERE pol.po_id = CAST(:po_id AS uuid) AND pol.organization_id = CAST(:org_id AS uuid) AND pol.is_deleted = false
             ORDER BY pol.created_at ASC
@@ -2643,7 +2643,7 @@ async def receive_goods(
                     ) VALUES (
                         :org_id, :code, :name, :description, 'Direct Project Material',
                         COALESCE(:uom, 'each'), :cost, 'material', true, 'once_off', :user_id
-                    ) ON CONFLICT (organization_id, item_code) DO UPDATE
+                    ) ON CONFLICT (organization_id, item_code) WHERE item_code IS NOT NULL AND is_deleted = false DO UPDATE
                     SET updated_at = NOW()
                     RETURNING id
                     """),

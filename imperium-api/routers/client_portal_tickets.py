@@ -94,9 +94,9 @@ async def create_item(
         await db.execute(
             text("""
                 INSERT INTO crm.ticket_sla_events (
-                    organization_id, ticket_id, event_type, deadline, status, created_by
+                    organization_id, ticket_id, event_type, due_at, details, created_by
                 ) VALUES (
-                    :org_id, :ticket_id, 'ResponseDeadline', NOW() + :resp_hours * INTERVAL '1 hour', 'Active', :user_id
+                    :org_id, :ticket_id, 'ResponseDeadline', NOW() + :resp_hours * INTERVAL '1 hour', '{"status": "active"}'::jsonb, :user_id
                 )
             """),
             {"org_id": user["org_id"], "ticket_id": new_id, "resp_hours": resp_hours, "user_id": user["sub"]}
@@ -104,9 +104,9 @@ async def create_item(
         await db.execute(
             text("""
                 INSERT INTO crm.ticket_sla_events (
-                    organization_id, ticket_id, event_type, deadline, status, created_by
+                    organization_id, ticket_id, event_type, due_at, details, created_by
                 ) VALUES (
-                    :org_id, :ticket_id, 'ResolutionDeadline', NOW() + :resol_hours * INTERVAL '1 hour', 'Active', :user_id
+                    :org_id, :ticket_id, 'ResolutionDeadline', NOW() + :resol_hours * INTERVAL '1 hour', '{"status": "active"}'::jsonb, :user_id
                 )
             """),
             {"org_id": user["org_id"], "ticket_id": new_id, "resol_hours": resol_hours, "user_id": user["sub"]}
