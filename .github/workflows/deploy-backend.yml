@@ -66,8 +66,11 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env build
-            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env down --remove-orphans || true
-            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --no-build
+            # No "down" first: that stopped Caddy too, so for the whole restart the site's
+            # API proxy got ECONNREFUSED on :443 (Vercel runtime errors, 2026-10-24).
+            # "up -d" recreates only containers whose image/config changed and keeps
+            # Caddy serving; the web proxy retries across the API's own restart.
+            docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env up -d --no-build --remove-orphans
             echo "--- applying database migrations ---"
             docker compose -f deploy/digitalocean/docker-compose.yml --env-file deploy/digitalocean/.env exec -T imperium-api python migrations/run_aegis_migrations.py
             docker image prune -f
