@@ -166,6 +166,7 @@ const DEPARTMENT_TABS: { value: string; label: string }[] = [
   { value: "commercial", label: "Commercial" },
   { value: "construction", label: "Construction" },
   { value: "plant_equipment", label: "Plant & Equipment" },
+  { value: "procurement", label: "Procurement" },
 ];
 
 const ENTITY_STAGE_GUIDANCE: Record<string, string> = {

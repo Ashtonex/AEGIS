@@ -10,7 +10,7 @@ export type Rec = Record<string, any> & { id: string };
 
 // Main views are tasks / purchases / suppliers; the rest are the detailed lists
 // (still reachable at their old URLs).
-export type Tab = "tasks" | "purchases" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
+export type Tab = "tasks" | "plans" | "purchases" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";
 
 export interface LineItem { description: string; qty: string; uom: string; unit_cost: string; }
 

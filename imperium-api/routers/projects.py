@@ -1859,6 +1859,11 @@ async def confirm_project_deposit(
         entity_id=project_id,
         created_by=user["user_id"],
     )
+    # Deposit in: pre-mobilisation. Procurement issues the signed-off POs so
+    # materials arrive for mobilisation (plan stage "executing").
+    from app.services.procurement_plans import sync_procurement_plan
+
+    await sync_procurement_plan(db, org_id=user["org_id"], user_id=user["user_id"], project_id=str(project_id), create=False)
     response = {
         "id": str(project_id),
         "status": "pre_mobilisation",
@@ -2457,6 +2462,12 @@ async def update_project(
         raise HTTPException(
             status_code=409, detail="Project code already exists for this organization."
         ) from exc
+    if str(values.get("status") or "").lower() in ("pending_deposit", "pre_mobilisation", "active", "completed"):
+        # Status moves drive the procurement plan's stage (ordering, executing,
+        # reconciling) and its next task pack - only for jobs that have a plan.
+        from app.services.procurement_plans import sync_procurement_plan
+
+        await sync_procurement_plan(db, org_id=user["org_id"], user_id=user["user_id"], project_id=str(project_id), create=False)
     updated_project = await _project_ref_or_404(db, str(project_id), user["org_id"])
     return _result(updated_project, "Project updated.")
 

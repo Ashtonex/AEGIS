@@ -48,6 +48,15 @@ PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
 # project delivery's "handover" before follow-ups' catch-alls.
 DEFAULT_RULES: list[dict[str, Any]] = [
     {
+        # Procurement plan packs title their tasks "Procurement: ..." (see
+        # migration 273); sorted first so those titles are claimed here.
+        "category_key": "procurement",
+        "label": "Procurement",
+        "sort_order": 5,
+        "keywords": ["procurement:"],
+        "entity_types": ["procurement_plan"],
+    },
+    {
         "category_key": "finance",
         "label": "Finance",
         "sort_order": 10,

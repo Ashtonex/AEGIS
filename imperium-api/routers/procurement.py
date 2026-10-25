@@ -801,12 +801,28 @@ async def confirm_material_request_price(
     )
 
 
-@router.post("/requisitions", status_code=status.HTTP_201_CREATED)
-async def create_requisition(
-    payload: RequisitionCreate,
-    user: dict = Depends(require_permission("procurement.requisition.create")),
-    db: AsyncSession = Depends(get_db),
-):
+async def insert_requisition(
+    db: AsyncSession,
+    *,
+    user: dict,
+    project_id: Optional[UUID],
+    site_id: Optional[UUID],
+    cost_code_id: Optional[UUID],
+    required_by_date: date,
+    priority: str,
+    justification: Optional[str],
+    line_items: list[RequisitionLinePayload],
+) -> tuple[UUID, str]:
+    """Create a draft purchase requisition with its lines (no commit).
+
+    Shared by POST /requisitions and procurement plans, so a plan's seeded
+    request gets the same numbering, weekly budget, budget check and event.
+    """
+    payload = RequisitionCreate.model_construct(
+        project_id=project_id, site_id=site_id, cost_code_id=cost_code_id,
+        required_by_date=required_by_date, priority=priority,
+        justification=justification, line_items=line_items,
+    )
     await project_exists(db, payload.project_id, user["org_id"])
     weekly_budget_id = await ensure_current_weekly_budget(
         db, org_id=user["org_id"], project_id=payload.project_id, site_id=payload.site_id
@@ -884,6 +900,26 @@ async def create_requisition(
             "total_estimated": total,
             "budget_available": available,
         },
+    )
+    return req_id, req_no
+
+
+@router.post("/requisitions", status_code=status.HTTP_201_CREATED)
+async def create_requisition(
+    payload: RequisitionCreate,
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    req_id, req_no = await insert_requisition(
+        db,
+        user=user,
+        project_id=payload.project_id,
+        site_id=payload.site_id,
+        cost_code_id=payload.cost_code_id,
+        required_by_date=payload.required_by_date,
+        priority=payload.priority,
+        justification=payload.justification,
+        line_items=payload.line_items,
     )
     await db.commit()
     return ok(
@@ -1674,6 +1710,216 @@ async def download_purchase_order_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="SNC_Purchase_Order_{filename}.pdf"'},
     )
+
+
+# ─── Procurement plans ───────────────────────────────────────────────────────
+
+
+class PlanSyncPayload(Payload):
+    project_id: Optional[UUID] = None
+    opportunity_id: Optional[UUID] = None
+
+
+class PlanItemPayload(Payload):
+    description: str = Field(min_length=1, max_length=500)
+    quantity: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=3)
+    unit_of_measure: str = Field(default="each", max_length=40)
+    budget_unit_cost: Decimal = Field(default=Decimal("0"), ge=0, max_digits=15, decimal_places=4)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    source: Literal["manual", "import", "boq"] = "manual"
+
+
+class PlanItemsPayload(Payload):
+    items: list[PlanItemPayload] = Field(min_length=1, max_length=500)
+
+
+class PlanItemUpdate(Payload):
+    description: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    quantity: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=3)
+    unit_of_measure: Optional[str] = Field(default=None, max_length=40)
+    budget_unit_cost: Optional[Decimal] = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+PLAN_LIST_SQL = """
+    SELECT pl.id, pl.title, pl.stage, pl.project_id, pl.opportunity_id, pl.quotation_id, pl.requisition_id,
+           pl.created_at, pl.updated_at,
+           p.name AS project_name, p.status AS project_status, o.name AS opportunity_name,
+           pr.requisition_number,
+           COALESCE(items.item_count, 0) AS item_count,
+           COALESCE(items.budget_total, 0) AS budget_total,
+           COALESCE(tasks.open_tasks, 0) AS open_tasks
+    FROM procurement.procurement_plans pl
+    LEFT JOIN projects.projects p ON p.id = pl.project_id AND p.organization_id = pl.organization_id
+    LEFT JOIN crm.opportunities o ON o.id = pl.opportunity_id AND o.organization_id = pl.organization_id
+    LEFT JOIN procurement.purchase_requisitions pr ON pr.id = pl.requisition_id
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS item_count, sum(i.quantity * i.budget_unit_cost) AS budget_total
+        FROM procurement.procurement_plan_items i
+        WHERE i.plan_id = pl.id AND i.is_deleted = false
+    ) items ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS open_tasks FROM crm.tasks t
+        WHERE t.organization_id = pl.organization_id AND t.entity_type = 'procurement_plan' AND t.entity_id = pl.id
+          AND t.is_deleted = false AND t.status NOT IN ('completed', 'cancelled', 'superseded', 'not_applicable')
+    ) tasks ON true
+    WHERE pl.organization_id = :org_id AND pl.is_deleted = false
+"""
+
+
+async def _plan_or_404(db: AsyncSession, plan_id: UUID, org_id: str) -> dict:
+    row = (
+        await db.execute(text(PLAN_LIST_SQL + " AND pl.id = :plan_id"), {"org_id": org_id, "plan_id": plan_id})
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Procurement plan not found.")
+    return dict(row)
+
+
+@router.get("/plans")
+async def list_procurement_plans(
+    project_id: Optional[UUID] = None,
+    opportunity_id: Optional[UUID] = None,
+    user: dict = Depends(require_permission("procurement.requisition.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await db.execute(
+        text(PLAN_LIST_SQL + """
+            AND (CAST(:project_id AS uuid) IS NULL OR pl.project_id = CAST(:project_id AS uuid))
+            AND (CAST(:opportunity_id AS uuid) IS NULL OR pl.opportunity_id = CAST(:opportunity_id AS uuid))
+            ORDER BY pl.updated_at DESC
+            LIMIT 501
+        """),
+        {"org_id": user["org_id"], "project_id": project_id, "opportunity_id": opportunity_id},
+    )
+    data = [dict(r._mapping) for r in capped(rows, 500)]
+    return ok(data, "Procurement plans listed.", len(data))
+
+
+@router.get("/plans/{plan_id}")
+async def get_procurement_plan(
+    plan_id: UUID,
+    user: dict = Depends(require_permission("procurement.requisition.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    plan = await _plan_or_404(db, plan_id, user["org_id"])
+    items = await db.execute(
+        text("""
+            SELECT id, description, quantity, unit_of_measure, budget_unit_cost,
+                   quantity * budget_unit_cost AS budget_amount, source, source_ref, notes, sort_order
+            FROM procurement.procurement_plan_items
+            WHERE plan_id = :plan_id AND organization_id = :org_id AND is_deleted = false
+            ORDER BY sort_order, created_at
+        """),
+        {"plan_id": plan_id, "org_id": user["org_id"]},
+    )
+    plan["items"] = [dict(r._mapping) for r in items]
+    return ok(plan, "Procurement plan.")
+
+
+@router.post("/plans/sync")
+async def sync_procurement_plan_endpoint(
+    payload: PlanSyncPayload,
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start (or bring up to date) the plan for a project or opportunity and
+    issue its lifecycle task packs."""
+    if not payload.project_id and not payload.opportunity_id:
+        raise HTTPException(status_code=422, detail="Choose a project or an opportunity.")
+    if payload.project_id:
+        await project_exists(db, payload.project_id, user["org_id"])
+    from app.services.procurement_plans import sync_procurement_plan
+
+    plan_id = await sync_procurement_plan(
+        db, org_id=user["org_id"], user_id=user["user_id"],
+        opportunity_id=payload.opportunity_id, project_id=payload.project_id, create=True,
+    )
+    if not plan_id:
+        raise HTTPException(status_code=500, detail="The procurement plan could not be started - try again.")
+    return ok(await _plan_or_404(db, UUID(plan_id), user["org_id"]), "Procurement plan is up to date.")
+
+
+@router.post("/plans/{plan_id}/items", status_code=status.HTTP_201_CREATED)
+async def add_procurement_plan_items(
+    plan_id: UUID,
+    payload: PlanItemsPayload,
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    await _plan_or_404(db, plan_id, user["org_id"])
+    start = (
+        await db.execute(
+            text("SELECT COALESCE(MAX(sort_order), 0) FROM procurement.procurement_plan_items WHERE plan_id = :plan_id"),
+            {"plan_id": plan_id},
+        )
+    ).scalar() or 0
+    for index, item in enumerate(payload.items, start=1):
+        await db.execute(
+            text("""
+                INSERT INTO procurement.procurement_plan_items (
+                    organization_id, plan_id, description, quantity, unit_of_measure,
+                    budget_unit_cost, notes, source, sort_order, created_by
+                ) VALUES (:org_id, :plan_id, :description, :quantity, :uom, :cost, :notes, :source, :sort_order, :user_id)
+            """),
+            {
+                "org_id": user["org_id"], "plan_id": plan_id, "description": item.description.strip(),
+                "quantity": item.quantity, "uom": item.unit_of_measure or "each", "cost": item.budget_unit_cost,
+                "notes": item.notes, "source": item.source, "sort_order": start + index * 10, "user_id": user["user_id"],
+            },
+        )
+    await db.execute(text("UPDATE procurement.procurement_plans SET updated_at = NOW() WHERE id = :id"), {"id": plan_id})
+    await db.commit()
+    return ok({"added": len(payload.items)}, f"{len(payload.items)} item(s) added to the plan.")
+
+
+@router.patch("/plans/{plan_id}/items/{item_id}")
+async def update_procurement_plan_item(
+    plan_id: UUID,
+    item_id: UUID,
+    payload: PlanItemUpdate,
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        return ok({"id": str(item_id)}, "Nothing to change.")
+    assignments = ", ".join(f"{key} = :{key}" for key in values)  # keys are the model's fixed field names
+    row = await db.execute(
+        text(f"""
+            UPDATE procurement.procurement_plan_items
+            SET {assignments}, updated_at = NOW()
+            WHERE id = :item_id AND plan_id = :plan_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """),  # nosec B608 - assignments only contain PlanItemUpdate field names
+        {**values, "item_id": item_id, "plan_id": plan_id, "org_id": user["org_id"]},
+    )
+    if not row.first():
+        raise HTTPException(status_code=404, detail="Plan item not found.")
+    await db.execute(text("UPDATE procurement.procurement_plans SET updated_at = NOW() WHERE id = :id"), {"id": plan_id})
+    await db.commit()
+    return ok({"id": str(item_id)}, "Plan item updated.")
+
+
+@router.delete("/plans/{plan_id}/items/{item_id}")
+async def delete_procurement_plan_item(
+    plan_id: UUID,
+    item_id: UUID,
+    user: dict = Depends(require_permission("procurement.requisition.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await db.execute(
+        text("""
+            UPDATE procurement.procurement_plan_items SET is_deleted = true, updated_at = NOW()
+            WHERE id = :item_id AND plan_id = :plan_id AND organization_id = :org_id AND is_deleted = false
+            RETURNING id
+        """),
+        {"item_id": item_id, "plan_id": plan_id, "org_id": user["org_id"]},
+    )
+    if not row.first():
+        raise HTTPException(status_code=404, detail="Plan item not found.")
+    await db.commit()
+    return ok({"id": str(item_id)}, "Plan item removed.")
 
 
 MATERIALS_LIST_MAX_BYTES = 5 * 1024 * 1024

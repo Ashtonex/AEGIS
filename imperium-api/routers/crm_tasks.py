@@ -377,7 +377,7 @@ async def list_tasks(
                ) AS contributors,
                COALESCE(
                    lead.company_name, lead.contact_name, opp.name, tender.tender_name, proj.name,
-                   veh.vehicle_registration, veh.asset_code, eq.asset_name
+                   veh.vehicle_registration, veh.asset_code, eq.asset_name, pplan.title
                ) AS entity_name,
                proj_dept.name AS project_department_name
         FROM crm.tasks t
@@ -393,6 +393,7 @@ async def list_tasks(
         LEFT JOIN finance.departments proj_dept ON proj_dept.id = proj.department_id
         LEFT JOIN fleet.fleet veh ON t.entity_type = 'fleet' AND veh.id = t.entity_id AND veh.organization_id = t.organization_id
         LEFT JOIN fleet.equipment_assets eq ON t.entity_type = 'machinery' AND eq.id = t.entity_id AND eq.organization_id = t.organization_id
+        LEFT JOIN procurement.procurement_plans pplan ON t.entity_type = 'procurement_plan' AND pplan.id = t.entity_id AND pplan.organization_id = t.organization_id
         WHERE t.organization_id = :org_id AND t.is_deleted = false
     """
     params = {"org_id": user["org_id"]}

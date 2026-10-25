@@ -228,6 +228,7 @@ export const MODULE_GROUPS: ModuleGroup[] = [
       // Three views; the detailed lists (requests, quotes, orders, invoices,
       // pricing) are linked from Purchases and keep their URLs.
       { name: "My Tasks", href: "/dashboard/procurement", icon: LayoutDashboard },
+      { name: "Plans", href: "/dashboard/procurement/plans", icon: ClipboardCheck },
       { name: "Purchases", href: "/dashboard/procurement/purchases", icon: ShoppingCart },
       { name: "Suppliers", href: "/dashboard/procurement/suppliers", icon: Package, requiredPermission: "procurement.supplier.read" },
     ],

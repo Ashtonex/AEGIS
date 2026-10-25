@@ -42,6 +42,9 @@ ENTITY_DEPARTMENT_CODE: dict[str, str] = {
     "loss": "commercial",
     "clarification": "commercial",
     "commercial_readiness": "commercial",
+    # Procurement plans (procurement.procurement_plans.id as entity_id): the
+    # lifecycle packs for planning, quotes, POs, issue and reconciliation.
+    "procurement_plan": "procurement",
 }
 
 

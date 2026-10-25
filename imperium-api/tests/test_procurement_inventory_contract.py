@@ -149,7 +149,7 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             self.assertIn(api, WEB_API)
         page = PROCUREMENT_PAGE
         self.assertIn(
-            'export type Tab = "tasks" | "purchases" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";',
+            'export type Tab = "tasks" | "plans" | "purchases" | "requisitions" | "rfqs" | "orders" | "suppliers" | "invoices" | "pricing";',
             page,
         )
         self.assertIn("function RfqsTab", page)

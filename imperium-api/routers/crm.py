@@ -3196,6 +3196,12 @@ async def mark_opportunity_won(
                 generation_reason="Won - project awaiting deposit.",
                 stage="pending_deposit",
             )
+        # Won: the opportunity's procurement plan moves to the project as
+        # active procurement, with the quote (and, while the deposit is
+        # pending, PO-preparation) tasks for the procurement team.
+        from app.services.procurement_plans import sync_procurement_plan
+
+        await sync_procurement_plan(db, org_id=org_id, user_id=user_id, opportunity_id=str(opportunity_id), project_id=str(project_id))
 
     return {
         "success": True,

@@ -1955,3 +1955,85 @@ export async function getProjectMaterialsStatus(projectId: string): Promise<ApiR
     allowFallback: false,
   });
 }
+
+// ─── Procurement plans ───────────────────────────────────────────────────────
+
+export type ProcurementPlanStage = "planning" | "sourcing" | "ordering" | "executing" | "reconciling" | "closed";
+
+export interface ProcurementPlanItem {
+  id: string;
+  description: string;
+  quantity: number | string;
+  unit_of_measure: string;
+  budget_unit_cost: number | string;
+  budget_amount: number | string;
+  source: "boq" | "manual" | "import";
+  source_ref?: string | null;
+  notes?: string | null;
+}
+
+export interface ProcurementPlan {
+  id: string;
+  title: string;
+  stage: ProcurementPlanStage;
+  project_id: string | null;
+  opportunity_id: string | null;
+  requisition_id: string | null;
+  requisition_number: string | null;
+  project_name: string | null;
+  project_status: string | null;
+  opportunity_name: string | null;
+  item_count: number | string;
+  budget_total: number | string;
+  open_tasks: number | string;
+  updated_at: string;
+  items?: ProcurementPlanItem[];
+}
+
+export async function getProcurementPlans(params?: { project_id?: string; opportunity_id?: string }): Promise<ApiResponse<ProcurementPlan[]>> {
+  const qs = new URLSearchParams(Object.entries(params ?? {}).filter(([, v]) => Boolean(v)) as [string, string][]).toString();
+  return fetchApi<ApiResponse<ProcurementPlan[]>>(`/api/v1/procurement/plans${qs ? `?${qs}` : ""}`, { allowFallback: false });
+}
+
+export async function getProcurementPlan(planId: string): Promise<ApiResponse<ProcurementPlan>> {
+  return fetchApi<ApiResponse<ProcurementPlan>>(`/api/v1/procurement/plans/${encodeURIComponent(planId)}`, { allowFallback: false });
+}
+
+/** Start (or bring up to date) a project's or opportunity's plan and its lifecycle tasks. */
+export async function syncProcurementPlan(payload: { project_id?: string; opportunity_id?: string }): Promise<ApiResponse<ProcurementPlan>> {
+  return fetchApi<ApiResponse<ProcurementPlan>>("/api/v1/procurement/plans/sync", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowFallback: false,
+  });
+}
+
+export async function addProcurementPlanItems(
+  planId: string,
+  items: { description: string; quantity: number; unit_of_measure: string; budget_unit_cost?: number; notes?: string; source?: "manual" | "import" }[],
+): Promise<ApiResponse<{ added: number }>> {
+  return fetchApi<ApiResponse<{ added: number }>>(`/api/v1/procurement/plans/${encodeURIComponent(planId)}/items`, {
+    method: "POST",
+    body: JSON.stringify({ items }),
+    allowFallback: false,
+  });
+}
+
+export async function updateProcurementPlanItem(
+  planId: string,
+  itemId: string,
+  patch: Partial<{ description: string; quantity: number; unit_of_measure: string; budget_unit_cost: number; notes: string }>,
+): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/procurement/plans/${encodeURIComponent(planId)}/items/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    allowFallback: false,
+  });
+}
+
+export async function deleteProcurementPlanItem(planId: string, itemId: string): Promise<ApiResponse<{ id: string }>> {
+  return fetchApi<ApiResponse<{ id: string }>>(`/api/v1/procurement/plans/${encodeURIComponent(planId)}/items/${encodeURIComponent(itemId)}`, {
+    method: "DELETE",
+    allowFallback: false,
+  });
+}

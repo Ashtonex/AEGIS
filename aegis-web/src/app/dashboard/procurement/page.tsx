@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Boxes, ClipboardList, FileUp, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
+import { ArrowLeft, Boxes, ClipboardList, ClipboardPen, FileUp, ListChecks, Loader2, Package, Plus, RefreshCw, Search, ShieldAlert, ShoppingCart, X } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { RBACGuard } from "@/components/auth/RBACGuard";
 import { DashboardPageHeader } from "@/components/dashboard/DashboardPageHeader";
@@ -10,19 +10,21 @@ import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
-import { approvePurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
+import { approvePurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
 import { InvoicesTab, PaymentEvidenceModal } from "@/components/procurement/invoices";
 import { OrdersTable, PODetailDrawer, ReceiveGoodsModal, SupplierInvoiceModal } from "@/components/procurement/orders";
 import { buildPurchases, buildTasks, type TaskAction } from "@/components/procurement/journey";
 import { PURCHASE_FILTERS, PurchasesView, matchesPurchaseFilter } from "@/components/procurement/purchases";
 import { MyTasks } from "@/components/procurement/tasks";
 import { ImportListModal, ProjectMaterialsModal } from "@/components/procurement/import";
+import { PlanDrawer, PlansView } from "@/components/procurement/plans";
 import { ApproveModal, CreatePOModal, CreatePRModal, CreateRfqModal, PendingPricingTable, RequisitionsTable, RfqResponseModal, RfqsTab } from "@/components/procurement/requests";
 import { Banner, LoadingState, type PaymentEvidencePayload, type Rec, StatusChips, type Tab, isPoOverdue, loadFailureMessage, normalizeActionError, num, tx } from "@/components/procurement/shared";
 import { AddSupplierModal, CredentialsIssuedModal, Supplier360Modal, SuppliersTable } from "@/components/procurement/suppliers";
 
 
 const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
+  plans: { title: "Procurement Plans", subtitle: "What each job needs to buy, from BOQ to won, deposit, mobilisation and completion - with the procurement tasks for each stage." },
   tasks: { title: "My Tasks", subtitle: "Everything in procurement that is waiting on you - urgent first. Each task opens the right form." },
   purchases: { title: "Purchases", subtitle: "Every purchase from request to payment on one line: where it is and what it is waiting on." },
   requisitions: { title: "Purchase Requests", subtitle: "Requests for materials from site and office: submit, approve, then raise a PO (quotes optional)." },
@@ -39,7 +41,7 @@ const PROCUREMENT_TAB_META: Record<Tab, { title: string; subtitle: string }> = {
 export default function ProcurementPage() {
   const searchParams = useSearchParams();
   const requestedTab = searchParams?.get("tab");
-  const known: Tab[] = ["tasks", "purchases", "requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"];
+  const known: Tab[] = ["tasks", "plans", "purchases", "requisitions", "rfqs", "orders", "suppliers", "invoices", "pricing"];
   // "command" was the old overview tab; its stock panels now live in Inventory.
   const initialTab: Tab = known.includes(requestedTab as Tab) ? (requestedTab as Tab) : "tasks";
 
@@ -55,6 +57,7 @@ export default function ProcurementPage() {
 
 const TAB_ROUTES: Record<Tab, string> = {
   tasks: "/dashboard/procurement",
+  plans: "/dashboard/procurement/plans",
   purchases: "/dashboard/procurement/purchases",
   requisitions: "/dashboard/procurement/requisitions",
   rfqs: "/dashboard/procurement/rfqs",
@@ -72,6 +75,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const [expandedPurchase, setExpandedPurchase] = useState<string | null>(null);
   const [showImportList, setShowImportList] = useState(false);
   const [showMaterials, setShowMaterials] = useState(false);
+  const [openPlanId, setOpenPlanId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [prStatus, setPrStatus] = useState("all");
   const [rfqStatus, setRfqStatus] = useState("all");
@@ -118,6 +122,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       stockLevels: () => getInventoryStockLevels(),
       ccbFindings: () => getCcbFindings({ status: "open" }),
       pendingPricing: () => getMaterialRequests({ is_price_confirmed: false }),
+      plans: () => getProcurementPlans(),
+      lifecycleTasks: () => getCrmTasks({ entity_type: "procurement_plan" }),
     },
     [],
     {
@@ -133,6 +139,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
         stockLevels: "Stock levels",
         ccbFindings: "Budget warnings",
         pendingPricing: "Pending pricing",
+        plans: "Procurement plans",
+        lifecycleTasks: "Lifecycle tasks",
       },
     }
   );
@@ -158,13 +166,21 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const stockLevels = useMemo(() => (Array.isArray(procurementData.stockLevels?.data) ? procurementData.stockLevels.data : []), [procurementData.stockLevels]);
   const ccbFindings = useMemo(() => (Array.isArray(procurementData.ccbFindings?.data) ? procurementData.ccbFindings.data : []), [procurementData.ccbFindings]);
   const pendingPricing = useMemo(() => (Array.isArray(procurementData.pendingPricing?.data) ? procurementData.pendingPricing.data : []), [procurementData.pendingPricing]);
+  const plans = useMemo(() => (Array.isArray(procurementData.plans?.data) ? procurementData.plans.data : []), [procurementData.plans]);
+  const lifecycleTasks = useMemo(() => {
+    const rows: Rec[] = Array.isArray(procurementData.lifecycleTasks?.data) ? procurementData.lifecycleTasks.data : [];
+    const closed = new Set(["completed", "cancelled", "superseded", "not_applicable"]);
+    // Mine; superadmins also see the ones nobody has been given yet.
+    return rows.filter((t) => !closed.has(String(t.status ?? "").toLowerCase())
+      && (String(t.assigned_to_user_id ?? "") === String(user?.id ?? "") || (isSuperAdmin && !t.assigned_to_user_id)));
+  }, [procurementData.lifecycleTasks, user?.id, isSuperAdmin]);
   const error = loadError ? loadFailureMessage(loadError) : null;
 
   const purchases = useMemo(() => buildPurchases(requisitions, rfqs, orders, invoices), [requisitions, rfqs, orders, invoices]);
   const can = useMemo(() => (key: string) => isSuperAdmin || Boolean(permissions?.has(key)), [isSuperAdmin, permissions]);
   const tasks = useMemo(() => buildTasks(purchases, can, user?.id ?? null), [purchases, can, user?.id]);
   const canPrice = can("procurement.requisition.approve");
-  const taskCount = tasks.length + (canPrice ? pendingPricing.length : 0);
+  const taskCount = tasks.length + (canPrice ? pendingPricing.length : 0) + lifecycleTasks.length;
   const activePurchases = purchases.filter((p) => p.stage !== "done" && p.stage !== "stopped").length;
   const overduePurchases = purchases.filter((p) => p.overdue).length;
 
@@ -471,9 +487,10 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
 
       {/* Three main views. The detailed lists (requests, quotes, orders,
           invoices, pricing) stay reachable from Purchases and their old URLs. */}
-      <nav className="mb-4 grid grid-cols-3 gap-px border border-ink-mid bg-ink-mid">
+      <nav className="mb-4 grid grid-cols-2 gap-px border border-ink-mid bg-ink-mid sm:grid-cols-4">
         {[
           { key: "tasks" as Tab, label: "My Tasks", icon: ListChecks, value: taskCount, sub: taskCount ? "waiting on you" : "all caught up", hot: taskCount > 0 },
+          { key: "plans" as Tab, label: "Plans", icon: ClipboardPen, value: plans.filter((p) => p.stage !== "closed").length, sub: "jobs being planned", hot: false },
           { key: "purchases" as Tab, label: "Purchases", icon: ShoppingCart, value: activePurchases, sub: overduePurchases ? `in progress · ${overduePurchases} late` : "in progress", hot: overduePurchases > 0 },
           { key: "suppliers" as Tab, label: "Suppliers", icon: Package, value: suppliers.length, sub: `${suppliers.filter((r) => tx(r.compliance_status, "pending").toLowerCase() !== "compliant").length} not compliant`, hot: false },
         ].map((view) => {
@@ -504,7 +521,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       {notice && <Banner tone="info" message={notice} onClose={() => setNotice(null)} />}
 
       {/* Filter bar: search plus status chips that carry live counts */}
-      {tab !== "tasks" && <div className="flex flex-col gap-2 border border-b-0 border-ink-mid bg-ink-light/30 p-3 lg:flex-row lg:items-center">
+      {tab !== "tasks" && tab !== "plans" && <div className="flex flex-col gap-2 border border-b-0 border-ink-mid bg-ink-light/30 p-3 lg:flex-row lg:items-center">
         <label className="flex h-9 items-center gap-2 border border-ink-mid bg-ink px-3 lg:w-72">
           <Search className="h-3.5 w-3.5 text-slate" />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${PROCUREMENT_TAB_META[tab].title.toLowerCase()}…`} className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate" />
@@ -540,7 +557,8 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
       {/* Tab content */}
       <section className="border border-t-0 border-ink-mid bg-ink">
         {loading && !procurementData.requisitions ? <LoadingState label={`Loading ${tab}…`} /> :
-          tab === "tasks" ? <MyTasks tasks={tasks} pricing={filteredPricing} canPrice={canPrice} saving={saving} onAct={runTask} onConfirmPrice={confirmPricing} /> :
+          tab === "tasks" ? <MyTasks tasks={tasks} pricing={filteredPricing} canPrice={canPrice} saving={saving} onAct={runTask} onConfirmPrice={confirmPricing} lifecycleTasks={lifecycleTasks} onOpenPlan={setOpenPlanId} /> :
+          tab === "plans" ? <PlansView plans={plans} projects={projects} onOpen={setOpenPlanId} onStarted={(plan) => { setNotice(`Procurement plan started for ${plan.title}.`); void load(); setOpenPlanId(plan.id); }} /> :
           tab === "purchases" ? (
             <PurchasesView
               purchases={filteredPurchases}
@@ -607,6 +625,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
           }}
         />
       )}
+      {openPlanId && <PlanDrawer planId={openPlanId} onClose={() => setOpenPlanId(null)} onChanged={() => void load()} />}
       {showMaterials && <ProjectMaterialsModal projects={projects} onClose={() => setShowMaterials(false)} />}
       {showAddSupplier && (
         <AddSupplierModal

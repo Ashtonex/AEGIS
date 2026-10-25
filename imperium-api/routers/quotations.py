@@ -590,6 +590,20 @@ async def import_boq(
             )
             linked["task_id"] = task_id
         await db.commit()
+        if result.items and normalized_source_type in {"opportunity", "project"}:
+            # A BOQ on a pursuit starts its procurement plan ("what do we need
+            # to buy?") and the planning tasks for the procurement team.
+            from app.services.procurement_plans import sync_procurement_plan
+
+            plan_id = await sync_procurement_plan(
+                db,
+                org_id=user["org_id"],
+                user_id=user["user_id"],
+                opportunity_id=source_id if normalized_source_type == "opportunity" else None,
+                project_id=source_id if normalized_source_type == "project" else None,
+            )
+            if plan_id:
+                linked["procurement_plan_id"] = plan_id
 
     return {
         "success": bool(result.items),
@@ -2879,6 +2893,11 @@ async def decide_quotation(
             entity_id=target_project_id,
             created_by=user["sub"],
         )
+        # Won: the pursuit's procurement plan becomes the project's active
+        # procurement (draft purchase request) and the sourcing tasks begin.
+        from app.services.procurement_plans import sync_procurement_plan
+
+        await sync_procurement_plan(db, org_id=user["org_id"], user_id=user["sub"], project_id=target_project_id)
     return response
 
 
