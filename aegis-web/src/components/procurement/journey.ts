@@ -67,6 +67,20 @@ function time(...values: unknown[]): number {
   return Math.max(0, ...values.map((v) => (v ? new Date(String(v)).getTime() : 0)).filter(Number.isFinite));
 }
 
+/**
+ * Which sign-off a PO that has not been issued is waiting on. Every PO is
+ * signed off by Finance, then a director, before it can go to the supplier.
+ */
+export type PoSignoff = "finance" | "director" | "done";
+export function poSignoffStep(po: Row): PoSignoff {
+  if (!po.finance_signed_off_at && !po.director_signed_off_at) return "finance";
+  if (!po.director_signed_off_at) return "director";
+  return "done";
+}
+export function poReadyToIssue(po: Row): boolean {
+  return s(po.status) === "approved" && poSignoffStep(po) === "done";
+}
+
 /** Where a purchase is, and who it is waiting on. */
 export function purchaseStage(p: Pick<Purchase, "request" | "rfqs" | "orders" | "invoices">): { stage: StageKey; waitingOn: string } {
   const req = p.request ? s(p.request.status) : "";
@@ -82,8 +96,10 @@ export function purchaseStage(p: Pick<Purchase, "request" | "rfqs" | "orders" | 
     return { stage: "order", waitingOn: openRfq ? "Supplier quotes" : "Create the purchase order" };
   }
   const statuses = orders.map((o) => s(o.status));
-  if (statuses.some((st) => st === "draft")) return { stage: "order", waitingOn: "Approve the PO" };
-  if (statuses.some((st) => st === "approved")) return { stage: "order", waitingOn: "Send the PO to the supplier" };
+  const unissued = orders.filter((o) => ["draft", "approved"].includes(s(o.status)));
+  if (unissued.some((o) => poSignoffStep(o) === "finance")) return { stage: "order", waitingOn: "Finance sign-off" };
+  if (unissued.some((o) => poSignoffStep(o) === "director")) return { stage: "order", waitingOn: "Director sign-off" };
+  if (unissued.length) return { stage: "order", waitingOn: "Send the PO to the supplier" };
   if (statuses.some((st) => ["issued", "partially_received"].includes(st))) return { stage: "delivery", waitingOn: "Delivery" };
   // Everything ordered has arrived.
   const invoices = p.invoices.filter((i) => s(i.status) !== "rejected" && s(i.status) !== "cancelled");
@@ -209,10 +225,12 @@ export function buildTasks(
       const st = s(po.status);
       const poLabel = `${po.po_number ?? p.number} · ${po.supplier_name ?? "supplier"}`;
       const amount = n(po.total_amount ?? po.amount);
-      if (st === "draft" && can("procurement.po.approve")) {
-        tasks.push({ id: `po-approve-${po.id}`, group: "approvals", verb: "Approve purchase order", title: poLabel, meta: label(p), amount, urgent: false, action: { type: "openPO", row: po } });
+      const step = poSignoffStep(po);
+      const raisedByMe = Boolean(userId) && String(po.created_by ?? "") === userId;
+      if (["draft", "approved"].includes(st) && step !== "done" && !raisedByMe && can(`procurement.po.${step}_signoff`)) {
+        tasks.push({ id: `po-signoff-${po.id}`, group: "approvals", verb: step === "finance" ? "Finance sign-off on purchase order" : "Director sign-off on purchase order", title: poLabel, meta: label(p), amount, urgent: false, action: { type: "openPO", row: po } });
       }
-      if (st === "approved" && can("procurement.po.issue")) {
+      if (poReadyToIssue(po) && can("procurement.po.issue")) {
         tasks.push({ id: `po-issue-${po.id}`, group: "ordering", verb: "Send PO to supplier", title: poLabel, meta: label(p), amount, urgent: false, action: { type: "openPO", row: po } });
       }
       if (["issued", "partially_received"].includes(st) && can("procurement.grn.create")) {

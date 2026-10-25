@@ -173,7 +173,10 @@ class ProcurementInventoryContractTests(unittest.TestCase):
             "onMatchInvoice",
             "onApprovePayment",
             "onApprove={approvePO}",
-            "Approve PO",
+            "onReject={rejectPO}",
+            "Finance sign-off",
+            "Director sign-off",
+            "Override sign-offs and send",
         ]:
             self.assertIn(marker, page)
 

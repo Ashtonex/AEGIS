@@ -9,6 +9,7 @@ const req = (id: string, status: string, extra: Partial<Row> = {}): Row => ({ id
 const po = (id: string, reqId: string | null, status: string, extra: Partial<Row> = {}): Row => ({ id, requisition_id: reqId, status, po_number: `PO-${id}`, supplier_name: "Halsteds", total_amount: 100, ...extra });
 const inv = (id: string, poId: string, extra: Partial<Row> = {}): Row => ({ id, po_id: poId, grn_id: "g1", status: "received", match_status: "unmatched", total_amount: 100, ...extra });
 const all = () => true;
+const SIGNED = { finance_signed_off_at: "2026-10-24", director_signed_off_at: "2026-10-24" };
 
 test("stage follows the purchase from draft to done", () => {
   const cases: Array<[Parameters<typeof purchaseStage>[0], string, string]> = [
@@ -16,8 +17,9 @@ test("stage follows the purchase from draft to done", () => {
     [{ request: req("1", "submitted"), rfqs: [], orders: [], invoices: [] }, "approval", "Approval"],
     [{ request: req("1", "approved"), rfqs: [], orders: [], invoices: [] }, "order", "Create the purchase order"],
     [{ request: req("1", "approved"), rfqs: [{ id: "r", status: "issued" }], orders: [], invoices: [] }, "order", "Supplier quotes"],
-    [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "draft")], invoices: [] }, "order", "Approve the PO"],
-    [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "approved")], invoices: [] }, "order", "Send the PO to the supplier"],
+    [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "draft")], invoices: [] }, "order", "Finance sign-off"],
+    [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "draft", { finance_signed_off_at: "2026-10-24" })], invoices: [] }, "order", "Director sign-off"],
+    [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "approved", SIGNED)], invoices: [] }, "order", "Send the PO to the supplier"],
     [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "issued")], invoices: [] }, "delivery", "Delivery"],
     [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "received")], invoices: [] }, "invoice", "Supplier invoice"],
     [{ request: req("1", "ordered"), rfqs: [], orders: [po("p", "1", "received")], invoices: [inv("i", "p")] }, "invoice", "Check the invoice"],
@@ -96,4 +98,28 @@ test("invoice tasks: check first, then pay; approved invoices drop off", () => {
   assert.deepEqual(base(inv("i", "p")), ["checkInvoice"]);
   assert.deepEqual(base(inv("i", "p", { match_status: "matched", status: "matched" })), ["approvePayment"]);
   assert.deepEqual(base(inv("i", "p", { match_status: "matched", status: "approved" })), []);
+});
+
+test("PO sign-off: Finance first, then a director, then it can be sent", () => {
+  const purchasesFor = (order: Row) => buildPurchases([req("1", "ordered")], [], [order], [], NOW);
+  const only = (perm: string) => (key: string) => key === perm;
+  const verbs = (order: Row, can: (key: string) => boolean, userId: string | null = "someone") =>
+    buildTasks(purchasesFor(order), can, userId, NOW).map((t) => t.verb);
+
+  const draft = po("p", "1", "draft", { created_by: "buyer" });
+  assert.deepEqual(verbs(draft, only("procurement.po.finance_signoff")), ["Finance sign-off on purchase order"]);
+  assert.deepEqual(verbs(draft, only("procurement.po.director_signoff")), []);
+  assert.deepEqual(verbs(draft, only("procurement.po.issue")), []);
+
+  const financeDone = po("p", "1", "draft", { created_by: "buyer", finance_signed_off_at: "2026-10-24" });
+  assert.deepEqual(verbs(financeDone, only("procurement.po.finance_signoff")), []);
+  assert.deepEqual(verbs(financeDone, only("procurement.po.director_signoff")), ["Director sign-off on purchase order"]);
+  assert.deepEqual(verbs(financeDone, only("procurement.po.issue")), []);
+
+  const signed = po("p", "1", "approved", { created_by: "buyer", ...SIGNED });
+  assert.deepEqual(verbs(signed, only("procurement.po.issue")), ["Send PO to supplier"]);
+  assert.deepEqual(verbs(signed, only("procurement.po.director_signoff")), []);
+
+  // Nobody is asked to sign off a PO they raised.
+  assert.deepEqual(verbs(draft, only("procurement.po.finance_signoff"), "buyer"), []);
 });

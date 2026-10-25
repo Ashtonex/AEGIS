@@ -168,10 +168,25 @@ export async function getProcurementOrders(params?: { status?: string; supplier_
   return fetchApi<ApiResponse<any[]>>(`/api/v1/procurement/purchase-orders${query}`, { cache: "no-store", allowFallback: false });
 }
 
-export async function issuePurchaseOrder(id: string): Promise<ApiResponse<any>> {
+/** overrideReason: SUPERADMIN only - issue without the Finance / director sign-offs. */
+export async function issuePurchaseOrder(id: string, overrideReason?: string): Promise<ApiResponse<any>> {
   return fetchApi<ApiResponse<any>>(`/api/v1/procurement/purchase-orders/${id}/issue`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(overrideReason ? { override_reason: overrideReason } : {}),
+    allowFallback: false,
+  });
+}
+
+/** Give the next sign-off due on a PO (Finance, then director), or send it back. */
+export async function signOffPurchaseOrder(
+  id: string,
+  decision: "approved" | "rejected",
+  reason?: string,
+  stage?: "finance" | "director",
+): Promise<ApiResponse<any>> {
+  return fetchApi<ApiResponse<any>>(`/api/v1/procurement/purchase-orders/${id}/signoff`, {
+    method: "POST",
+    body: JSON.stringify({ decision, reason, stage }),
     allowFallback: false,
   });
 }

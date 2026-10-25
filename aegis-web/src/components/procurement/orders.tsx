@@ -3,6 +3,7 @@
 import { type ReactNode, useState } from "react";
 import { ArrowRight, CheckCircle2, FileText, Loader2, PackageCheck, Send, ShieldAlert, Truck, X, Download } from "lucide-react";
 import { downloadPurchaseOrderPdf } from "@/lib/api";
+import { poReadyToIssue, poSignoffStep } from "@/components/procurement/journey";
 import { EmptyState, InfoCard, type Rec, dt, isPoOverdue, matchStatusClass, money, num, pct, poStatusClass, prStatusClass, tx } from "@/components/procurement/shared";
 
 
@@ -206,7 +207,7 @@ export function SupplierInvoiceModal({ po, saving, onSubmit, onClose }: { po: Re
 
 // ─── PO Detail Drawer ─────────────────────────────────────────────────────────
 
-export function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onInvoice, onMatchInvoice, onApprovePayment, onClose }: { po: Rec; saving: string | null; onApprove: (po: Rec) => void; onIssue: (po: Rec) => void; onReceive: (po: Rec) => void; onInvoice: (po: Rec) => void; onMatchInvoice: (invoice: Rec) => void; onApprovePayment: (invoice: Rec) => void; onClose: () => void; }) {
+export function PODetailDrawer({ po, saving, can = () => false, isSuperAdmin = false, userId = null, onApprove, onReject, onIssue, onReceive, onInvoice, onMatchInvoice, onApprovePayment, onClose }: { po: Rec; saving: string | null; can?: (permission: string) => boolean; isSuperAdmin?: boolean; userId?: string | null; onApprove: (po: Rec) => void; onReject?: (po: Rec) => void; onIssue: (po: Rec, override?: boolean) => void; onReceive: (po: Rec) => void; onInvoice: (po: Rec) => void; onMatchInvoice: (invoice: Rec) => void; onApprovePayment: (invoice: Rec) => void; onClose: () => void; }) {
   const lines: Rec[] = Array.isArray(po.lines) ? po.lines : Array.isArray(po.line_items) ? po.line_items : [];
   const grns: Rec[] = Array.isArray(po.grns) ? po.grns : Array.isArray(po.goods_receipts) ? po.goods_receipts : [];
   const invLines: Rec[] = Array.isArray(po.invoices) ? po.invoices : [];
@@ -216,8 +217,12 @@ export function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onIn
   const hasInvoice = invLines.length > 0;
   const hasMatchedInvoice = invLines.some((inv) => tx(inv.match_status ?? inv.matching_status).toLowerCase() === "matched");
   const hasPaymentApproval = invLines.some((inv) => ["approved", "payment_approved", "approved_for_payment", "paid"].includes(tx(inv.status).toLowerCase()) || ["approved", "paid"].includes(tx(inv.payment_status).toLowerCase()));
+  const signoff = poSignoffStep(po);
+  const signedBy = (name: unknown, at: unknown, fallback: string) => (at ? `${tx(name, "Signed")} · ${dt(at)}` : fallback);
   const progressSteps = [
     { label: "Ordered", detail: "Supplier and approved request captured", complete: true },
+    { label: "Finance sign-off", detail: signedBy(po.finance_signed_off_by_name, po.finance_signed_off_at, hasIssued && po.signoff_override_reason ? "Skipped - superadmin override" : "Finance checks the order against the budget"), complete: Boolean(po.finance_signed_off_at) || hasIssued },
+    { label: "Director sign-off", detail: signedBy(po.director_signed_off_by_name, po.director_signed_off_at, hasIssued && po.signoff_override_reason ? "Skipped - superadmin override" : "A director approves the order for issue"), complete: Boolean(po.director_signed_off_at) || hasIssued },
     { label: "Sent to supplier", detail: "PO issued; budget reserved for the project", complete: hasIssued },
     { label: "Delivered", detail: "Goods received on site and booked into stock", complete: hasGrn },
     { label: "Invoice received", detail: "Supplier invoice registered against this PO", complete: hasInvoice },
@@ -237,11 +242,17 @@ export function PODetailDrawer({ po, saving, onApprove, onIssue, onReceive, onIn
   // sit under "More actions" so the drawer never shows a wall of buttons.
   type DrawerAction = { key: string; label: string; hint: string; icon: ReactNode; onClick: () => void; busy?: boolean };
   const actions: DrawerAction[] = [];
-  if (status === "draft") {
-    actions.push({ key: "approve", label: "Approve PO", hint: "Confirm the order before it goes to the supplier.", icon: <CheckCircle2 className="h-4 w-4" />, onClick: () => onApprove(po), busy: saving === `approve-po-${po.id}` });
+  const unissued = ["draft", "approved"].includes(status);
+  const raisedByMe = !isSuperAdmin && Boolean(userId) && String(po.created_by ?? "") === userId;
+  if (unissued && signoff !== "done" && !raisedByMe && can(`procurement.po.${signoff}_signoff`)) {
+    const finance = signoff === "finance";
+    actions.push({ key: "approve", label: finance ? "Finance sign-off" : "Director sign-off", hint: finance ? "Approve this order against the budget. A director signs off next." : "Final approval. Procurement can then send it to the supplier.", icon: <CheckCircle2 className="h-4 w-4" />, onClick: () => onApprove(po), busy: saving === `approve-po-${po.id}` });
+    if (onReject) actions.push({ key: "reject", label: "Send back to procurement", hint: "Reject with a reason. The order returns to draft and both sign-offs restart.", icon: <X className="h-4 w-4" />, onClick: () => onReject(po), busy: saving === `reject-po-${po.id}` });
   }
-  if (["draft", "approved"].includes(status)) {
+  if (poReadyToIssue(po) && can("procurement.po.issue")) {
     actions.push({ key: "issue", label: "Send to supplier (issue PO)", hint: "Issues the order and reserves the budget for this project.", icon: <Send className="h-4 w-4" />, onClick: () => onIssue(po), busy: saving === `issue-po-${po.id}` });
+  } else if (unissued && isSuperAdmin) {
+    actions.push({ key: "override", label: "Override sign-offs and send", hint: "Superadmin: issue now without the missing sign-offs. You'll be asked for a reason, which is recorded on the PO.", icon: <ShieldAlert className="h-4 w-4" />, onClick: () => onIssue(po, true), busy: saving === `issue-po-${po.id}` });
   }
   if (["issued", "partially_received"].includes(status)) {
     actions.push({ key: "receive", label: "Record delivery", hint: "Log what arrived on site and book it into stock.", icon: <PackageCheck className="h-4 w-4" />, onClick: () => onReceive(po) });

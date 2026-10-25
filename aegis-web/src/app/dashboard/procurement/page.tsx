@@ -10,7 +10,7 @@ import { SupplyControlTower } from "@/components/supply/SupplyControlTower";
 import { ThreeWayMatchInspectorModal } from "@/components/supply/ThreeWayMatchInspectorModal";
 import { useApiQueries } from "@/hooks/useApiQueries";
 import { useLiveTable } from "@/lib/live/LiveDataProvider";
-import { approvePurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
+import { signOffPurchaseOrder, approveProcurementRequisition, createProcurementRfq, createPurchaseOrderFromRequisition, createPurchaseOrderFromRfq, decideProcurementRfqResponse, decideSupplierInvoicePayment, confirmMaterialRequestPrice, getCcbFindings, getInternalProjects, getInventoryStores, getInventoryStockLevels, getMaterialRequests, getProcurementInvoices, getProcurementOrders, getProcurementRequisitions, getProcurementRfqs, getProcurementSuppliers, getProcurementPlans, getCrmTasks, issuePurchaseOrder, linkProcurementDocument, matchSupplierInvoice, recordProcurementRfqResponse, recordGoodsReceived, registerSupplierInvoice, submitProcurementRequisition } from "@/lib/api";
 import { InvoicesTab, PaymentEvidenceModal } from "@/components/procurement/invoices";
 import { OrdersTable, PODetailDrawer, ReceiveGoodsModal, SupplierInvoiceModal } from "@/components/procurement/orders";
 import { buildPurchases, buildTasks, type TaskAction } from "@/components/procurement/journey";
@@ -302,11 +302,16 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
     finally { setSaving(null); }
   };
 
-  const issuePO = async (po: Rec) => {
+  const issuePO = async (po: Rec, override = false) => {
+    let reason: string | undefined;
+    if (override) {
+      reason = window.prompt("Superadmin override: why is this purchase order being issued without its Finance / director sign-off?")?.trim();
+      if (!reason) return;
+    }
     setSaving(`issue-po-${po.id}`);
     try {
-      await issuePurchaseOrder(po.id);
-      setNotice("Purchase order sent to the supplier and budget reserved.");
+      await issuePurchaseOrder(po.id, reason);
+      setNotice(override ? "Purchase order issued by superadmin override; the reason is recorded on the PO." : "Purchase order sent to the supplier and budget reserved.");
       setSelectedPO(null);
       await load();
     } catch (e) { setNotice(normalizeActionError(e, "Purchase order issue failed.")); }
@@ -316,11 +321,24 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
   const approvePO = async (po: Rec) => {
     setSaving(`approve-po-${po.id}`);
     try {
-      await approvePurchaseOrder(po.id, "approved");
-      setNotice("Purchase order approved for issue.");
+      const res = await signOffPurchaseOrder(po.id, "approved");
+      setNotice(res?.message || "Purchase order signed off.");
       setSelectedPO(null);
       await load();
-    } catch (e) { setNotice(normalizeActionError(e, "Purchase order approval failed.")); }
+    } catch (e) { setNotice(normalizeActionError(e, "Purchase order sign-off failed.")); }
+    finally { setSaving(null); }
+  };
+
+  const rejectPO = async (po: Rec) => {
+    const reason = window.prompt("Why is this purchase order being sent back to procurement?")?.trim();
+    if (!reason) return;
+    setSaving(`reject-po-${po.id}`);
+    try {
+      await signOffPurchaseOrder(po.id, "rejected", reason);
+      setNotice("Purchase order sent back to procurement; both sign-offs restart once it is fixed.");
+      setSelectedPO(null);
+      await load();
+    } catch (e) { setNotice(normalizeActionError(e, "Sending the purchase order back failed.")); }
     finally { setSaving(null); }
   };
 
@@ -653,7 +671,7 @@ function ProcurementWorkspace({ initialTab = "tasks" }: { initialTab?: Tab }) {
           onCredentials={(credentials) => setIssuedSupplierCredentials(credentials)}
         />
       )}
-      {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} onApprove={approvePO} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
+      {selectedPO && <PODetailDrawer po={selectedPO} saving={saving} can={can} isSuperAdmin={isSuperAdmin} userId={user?.id ? String(user.id) : null} onApprove={approvePO} onReject={rejectPO} onIssue={issuePO} onReceive={setReceivingPO} onInvoice={setInvoicingPO} onMatchInvoice={matchInvoice} onApprovePayment={setPaymentEvidenceInvoice} onClose={() => setSelectedPO(null)} />}
       {approvingPR && <ApproveModal pr={approvingPR} saving={saving?.startsWith("decide-") ?? false} onDecide={(d, r) => void decidePR(approvingPR.id, d, r)} onClose={() => setApprovingPR(null)} />}
       {overridePromptFor && (
         <OverrideReasonModal

@@ -53,3 +53,20 @@ def test_pdf_route_requires_po_read_permission():
     route = next(r for r in procurement.router.routes if isinstance(r, APIRoute) and r.path == "/purchase-orders/{po_id}/pdf")
     assert "GET" in route.methods
     assert any("require_permission" in d.call.__qualname__ for d in route.dependant.dependencies)
+
+
+def test_signature_block_shows_finance_and_director_signers():
+    text = _text(render_purchase_order_pdf({
+        **PO,
+        "finance_signed_off_by_name": "Tendai Finance",
+        "finance_signed_off_at": "2026-10-24T09:00:00Z",
+        "director_signed_off_by_name": "Rudo Director",
+        "director_signed_off_at": "2026-10-24T11:00:00Z",
+    }))
+    assert "Finance sign-off" in text and "Tendai Finance" in text
+    assert "Director sign-off" in text and "Rudo Director" in text
+
+
+def test_superadmin_override_is_printed_on_the_po():
+    text = _text(render_purchase_order_pdf({**PO, "signoff_override_reason": "Client emergency order"}))
+    assert "superadmin override" in text and "Client emergency order" in text

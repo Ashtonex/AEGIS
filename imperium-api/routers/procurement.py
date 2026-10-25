@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from core.security import require_permission
+from core.security import SUPERADMIN_ROLE, require_any_permission, require_permission, user_has_permission
 from core.project_scope import project_scope_sql, visible_project_ids
 from core.truncation import capped
 from app.services import inventory_service
@@ -133,6 +133,9 @@ class PurchaseOrderFromRequisition(Payload):
 
 class IssuePoPayload(Payload):
     notes: Optional[str] = None
+    # SUPERADMIN only: issue without the Finance / director sign-offs. The
+    # reason is recorded on the PO and in its event trail.
+    override_reason: Optional[str] = Field(default=None, max_length=2000)
 
 
 class GoodsReceivedPayload(Payload):
@@ -171,6 +174,14 @@ class PaymentDecisionPayload(Payload):
 class PurchaseOrderDecisionPayload(Payload):
     decision: Literal["approved", "rejected"]
     reason: Optional[str] = Field(default=None, max_length=2000)
+
+
+class PurchaseOrderSignoffPayload(Payload):
+    decision: Literal["approved", "rejected"] = "approved"
+    reason: Optional[str] = Field(default=None, max_length=2000)
+    # Which sign-off to give. Defaults to the next one due; only SUPERADMIN
+    # may sign out of order.
+    stage: Optional[Literal["finance", "director"]] = None
 
 
 class PurchaseOrderAmendmentPayload(Payload):
@@ -1629,6 +1640,8 @@ async def list_purchase_orders(
     rows = await db.execute(
         text("""
         SELECT po.*, s.supplier_name, p.name AS project_name,
+               (SELECT u.full_name FROM core.users u WHERE u.id=po.finance_signed_off_by) AS finance_signed_off_by_name,
+               (SELECT u.full_name FROM core.users u WHERE u.id=po.director_signed_off_by) AS director_signed_off_by_name,
                COALESCE((
                  SELECT jsonb_agg(to_jsonb(pol) ORDER BY pol.created_at)
                  FROM procurement.purchase_order_lines pol
@@ -1679,6 +1692,8 @@ async def download_purchase_order_pdf(
                    creator.full_name AS created_by_name,
                    approver.full_name AS approved_by_name,
                    issuer.full_name AS issued_by_name,
+                   fin.full_name AS finance_signed_off_by_name,
+                   dir.full_name AS director_signed_off_by_name,
                    COALESCE((
                      SELECT jsonb_agg(to_jsonb(pol) ORDER BY pol.created_at)
                      FROM procurement.purchase_order_lines pol
@@ -1691,6 +1706,8 @@ async def download_purchase_order_pdf(
             LEFT JOIN core.users creator ON creator.id=po.created_by
             LEFT JOIN core.users approver ON approver.id=po.approved_by
             LEFT JOIN core.users issuer ON issuer.id=po.issued_by
+            LEFT JOIN core.users fin ON fin.id=po.finance_signed_off_by
+            LEFT JOIN core.users dir ON dir.id=po.director_signed_off_by
             WHERE po.id=:po_id AND po.organization_id=:org_id AND po.is_deleted=false
         """),
             {"po_id": po_id, "org_id": user["org_id"]},
@@ -2428,22 +2445,40 @@ async def issue_purchase_order(
             status_code=409,
             detail="Only draft or approved purchase orders can be issued.",
         )
-    if is_procurement_manager(user):
-        if po["status"] != "approved":
+    signed_off = (
+        po["status"] == "approved"
+        and po["finance_signed_off_at"] is not None
+        and po["director_signed_off_at"] is not None
+    )
+    override = False
+    if not signed_off:
+        if not is_superadmin(user):
+            missing = "Finance sign-off" if po["finance_signed_off_at"] is None else "director sign-off"
             raise HTTPException(
                 status_code=409,
-                detail="Procurement Manager can prepare purchase orders, but independent approval is required before issue.",
+                detail=f"This purchase order needs Finance and director sign-off before it can be issued (waiting on {missing}).",
             )
-        if po["approved_by"] and str(po["approved_by"]) == user["user_id"]:
+        if not (payload.override_reason or "").strip():
             raise HTTPException(
-                status_code=409,
-                detail="Self-approved purchase orders cannot be issued.",
+                status_code=422,
+                detail="Give a reason to issue this purchase order without its sign-offs.",
             )
+        override = True
     await db.execute(
-        text(
-            "UPDATE procurement.purchase_orders SET status='issued', issued_by=:user_id, issued_at=NOW(), updated_at=NOW() WHERE id=:id"
-        ),
-        {"id": po_id, "user_id": user["user_id"]},
+        text("""
+        UPDATE procurement.purchase_orders
+        SET status='issued', issued_by=:user_id, issued_at=NOW(), updated_at=NOW(),
+            signoff_override_by=CASE WHEN CAST(:override AS boolean) THEN CAST(:user_id AS uuid) ELSE signoff_override_by END,
+            signoff_override_at=CASE WHEN CAST(:override AS boolean) THEN NOW() ELSE signoff_override_at END,
+            signoff_override_reason=CASE WHEN CAST(:override AS boolean) THEN CAST(:override_reason AS text) ELSE signoff_override_reason END
+        WHERE id=:id
+    """),
+        {
+            "id": po_id,
+            "user_id": user["user_id"],
+            "override": override,
+            "override_reason": (payload.override_reason or "").strip() or None,
+        },
     )
     await db.execute(
         text("""
@@ -2468,8 +2503,23 @@ async def issue_purchase_order(
         aggregate_type="purchase_order",
         aggregate_id=po_id,
         project_id=po["project_id"],
-        payload={"po_number": po["po_number"]},
+        payload={"po_number": po["po_number"], "signoff_override": override},
     )
+    if override:
+        await emit_event(
+            db,
+            user=user,
+            event_type="procurement.purchase_order.signoff_overridden.v1",
+            aggregate_type="purchase_order",
+            aggregate_id=po_id,
+            project_id=po["project_id"],
+            payload={
+                "po_number": po["po_number"],
+                "reason": (payload.override_reason or "").strip(),
+                "finance_signed_off": po["finance_signed_off_at"] is not None,
+                "director_signed_off": po["director_signed_off_at"] is not None,
+            },
+        )
     await emit_event(
         db,
         user=user,
@@ -2486,18 +2536,29 @@ async def issue_purchase_order(
     )
 
 
-@router.post("/purchase-orders/{po_id}/decision")
-async def decide_purchase_order(
-    po_id: UUID,
-    payload: PurchaseOrderDecisionPayload,
-    user: dict = Depends(require_permission("procurement.po.approve")),
-    db: AsyncSession = Depends(get_db),
+SIGNOFF_PERMISSIONS = {
+    "finance": "procurement.po.finance_signoff",
+    "director": "procurement.po.director_signoff",
+}
+SIGNOFF_LABELS = {"finance": "Finance sign-off", "director": "Director sign-off"}
+
+
+def is_superadmin(user: dict) -> bool:
+    return user.get("role") == SUPERADMIN_ROLE
+
+
+async def sign_off_purchase_order(
+    db: AsyncSession, *, po_id: UUID, user: dict, payload: PurchaseOrderSignoffPayload
 ):
+    """Two-step PO sign-off: Finance first, then a director. The director
+    sign-off approves the PO for issue. Rejecting at either step sends it back
+    to procurement as a draft with both sign-offs cleared. SUPERADMIN can sign
+    either step, in any order, including on POs they raised."""
     po = (
         (
             await db.execute(
                 text(
-                    "SELECT * FROM procurement.purchase_orders WHERE id=:id AND organization_id=:org_id AND is_deleted=false"
+                    "SELECT * FROM procurement.purchase_orders WHERE id=:id AND organization_id=:org_id AND is_deleted=false FOR UPDATE"
                 ),
                 {"id": po_id, "org_id": user["org_id"]},
             )
@@ -2507,58 +2568,155 @@ async def decide_purchase_order(
     )
     if not po:
         raise HTTPException(status_code=404, detail="Purchase order not found")
-    if po["status"] != "draft":
+    if po["status"] not in {"draft", "approved"}:
         raise HTTPException(
             status_code=409,
-            detail="Only draft purchase orders can be approved or rejected.",
+            detail="Only purchase orders that have not been issued can be signed off.",
         )
-    if str(po["created_by"]) == user["user_id"]:
-        raise HTTPException(status_code=409, detail="Self-approval is not permitted.")
-    if payload.decision == "approved" and is_procurement_manager(user):
+    superadmin = is_superadmin(user)
+    if payload.stage and payload.stage != ("finance" if po["finance_signed_off_at"] is None else "director") and not superadmin:
+        if payload.decision == "approved":
+            raise HTTPException(status_code=409, detail="Finance must sign off before the director.")
+    stage = payload.stage or ("finance" if po["finance_signed_off_at"] is None else "director")
+    if payload.decision == "approved":
+        if stage == "director" and po["director_signed_off_at"] is not None:
+            raise HTTPException(status_code=409, detail="This purchase order is already fully signed off.")
+        if stage == "finance" and po["finance_signed_off_at"] is not None:
+            raise HTTPException(status_code=409, detail="Finance has already signed off this purchase order.")
+    if not await user_has_permission(db, user, SIGNOFF_PERMISSIONS[stage]):
         raise HTTPException(
             status_code=403,
-            detail="Procurement Manager can prepare purchase orders, but approval must be independent.",
+            detail=f"{SIGNOFF_LABELS[stage]} is needed next, and you can't give it.",
         )
+    if not superadmin:
+        if payload.decision == "approved" and is_procurement_manager(user):
+            raise HTTPException(
+                status_code=403,
+                detail="Procurement Manager can prepare purchase orders, but approval must be independent.",
+            )
+        if str(po["created_by"]) == user["user_id"]:
+            raise HTTPException(status_code=409, detail="You can't sign off a purchase order you raised.")
+        if (
+            payload.decision == "approved"
+            and stage == "director"
+            and po["finance_signed_off_by"]
+            and str(po["finance_signed_off_by"]) == user["user_id"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="The director sign-off must come from someone other than the Finance signer.",
+            )
 
-    await db.execute(
-        text("""
-        UPDATE procurement.purchase_orders
-        SET status=CAST(:status_value AS varchar),
-            approved_by=CASE WHEN CAST(:status_value AS varchar)='approved' THEN CAST(:user_id AS uuid) ELSE approved_by END,
-            approved_at=CASE WHEN CAST(:status_value AS varchar)='approved' THEN NOW() ELSE approved_at END,
-            notes=CASE
-              WHEN CAST(:status_value AS varchar)='rejected' AND :reason IS NOT NULL
-              THEN CONCAT(COALESCE(notes, ''), CASE WHEN notes IS NULL OR notes='' THEN '' ELSE E'\n' END, 'Rejection reason: ', :reason)
-              ELSE notes
-            END,
-            updated_at=NOW()
-        WHERE id=:id AND organization_id=:org_id
-    """),
-        {
-            "id": po_id,
-            "org_id": user["org_id"],
-            "status_value": payload.decision,
-            "reason": payload.reason,
-            "user_id": user["user_id"],
-        },
-    )
+    if payload.decision == "rejected":
+        reason = (payload.reason or "").strip()
+        if not reason:
+            raise HTTPException(status_code=422, detail="Say why the purchase order is being sent back.")
+        await db.execute(
+            text("""
+            UPDATE procurement.purchase_orders
+            SET status='draft',
+                finance_signed_off_by=NULL, finance_signed_off_at=NULL,
+                director_signed_off_by=NULL, director_signed_off_at=NULL,
+                approved_by=NULL, approved_at=NULL,
+                notes=CONCAT(COALESCE(notes, ''), CASE WHEN notes IS NULL OR notes='' THEN '' ELSE E'\n' END,
+                             CAST(:label AS text), ' - sent back: ', CAST(:reason AS text)),
+                updated_at=NOW()
+            WHERE id=:id AND organization_id=:org_id
+        """),
+            {"id": po_id, "org_id": user["org_id"], "label": SIGNOFF_LABELS[stage], "reason": reason},
+        )
+        message = f"{po['po_number']} sent back to procurement."
+        new_status = "draft"
+    elif stage == "finance":
+        await db.execute(
+            text("""
+            UPDATE procurement.purchase_orders
+            SET finance_signed_off_by=CAST(:user_id AS uuid), finance_signed_off_at=NOW(), updated_at=NOW()
+            WHERE id=:id AND organization_id=:org_id
+        """),
+            {"id": po_id, "org_id": user["org_id"], "user_id": user["user_id"]},
+        )
+        message = f"Finance signed off {po['po_number']}. It now needs a director's sign-off."
+        new_status = po["status"]
+    else:
+        await db.execute(
+            text("""
+            UPDATE procurement.purchase_orders
+            SET director_signed_off_by=CAST(:user_id AS uuid), director_signed_off_at=NOW(),
+                status='approved', approved_by=CAST(:user_id AS uuid), approved_at=NOW(), updated_at=NOW()
+            WHERE id=:id AND organization_id=:org_id
+        """),
+            {"id": po_id, "org_id": user["org_id"], "user_id": user["user_id"]},
+        )
+        message = (
+            f"Director signed off {po['po_number']}. It can now be sent to the supplier."
+            if po["finance_signed_off_at"] is not None
+            else f"Director signed off {po['po_number']} without a Finance sign-off (superadmin)."
+        )
+        new_status = "approved"
+
     await emit_event(
         db,
         user=user,
         event_type=(
-            "procurement.purchase_order.approved.v1"
-            if payload.decision == "approved"
-            else "procurement.purchase_order.rejected.v1"
+            "procurement.purchase_order.rejected.v1"
+            if payload.decision == "rejected"
+            # The director sign-off is what approves the PO for issue.
+            else "procurement.purchase_order.approved.v1"
+            if stage == "director"
+            else "procurement.purchase_order.finance_signed_off.v1"
         ),
         aggregate_type="purchase_order",
         aggregate_id=po_id,
         project_id=po["project_id"],
-        payload=payload.model_dump(mode="json"),
+        payload={
+            "po_number": po["po_number"],
+            "stage": stage,
+            "decision": payload.decision,
+            "reason": payload.reason,
+            "out_of_order": stage == "director" and po["finance_signed_off_at"] is None,
+        },
     )
+    if payload.decision == "approved":
+        await emit_role_notification(
+            db,
+            org_id=user["org_id"],
+            role_names=["Executive (Admin)"] if stage == "finance" else ["Procurement Manager"],
+            title=f"{po['po_number']}: "
+            + ("director sign-off needed" if stage == "finance" else "ready to send to the supplier"),
+            message=message,
+            notification_type="procurement",
+            action_url="/dashboard/procurement",
+        )
     await db.commit()
-    return ok(
-        {"id": str(po_id), "status": payload.decision},
-        f"Purchase order {payload.decision}.",
+    return ok({"id": str(po_id), "status": new_status, "stage": stage}, message)
+
+
+@router.post("/purchase-orders/{po_id}/signoff")
+async def signoff_purchase_order(
+    po_id: UUID,
+    payload: PurchaseOrderSignoffPayload,
+    user: dict = Depends(require_any_permission(*SIGNOFF_PERMISSIONS.values())),
+    db: AsyncSession = Depends(get_db),
+):
+    return await sign_off_purchase_order(db, po_id=po_id, user=user, payload=payload)
+
+
+@router.post("/purchase-orders/{po_id}/decision")
+async def decide_purchase_order(
+    po_id: UUID,
+    payload: PurchaseOrderDecisionPayload,
+    user: dict = Depends(
+        require_any_permission("procurement.po.approve", *SIGNOFF_PERMISSIONS.values())
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Older single-step approve/reject; now gives the next sign-off due."""
+    return await sign_off_purchase_order(
+        db,
+        po_id=po_id,
+        user=user,
+        payload=PurchaseOrderSignoffPayload(decision=payload.decision, reason=payload.reason),
     )
 
 

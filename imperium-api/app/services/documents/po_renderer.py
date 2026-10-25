@@ -256,18 +256,23 @@ def render_purchase_order_pdf(po: Dict[str, Any], organization: Optional[Dict[st
     def signer(label: str, name: Any, when: Any) -> List[Any]:
         return [
             Spacer(1, 18),
-            Paragraph("_" * 34, st["sig"]),
+            Paragraph("_" * 26, st["sig"]),
             Paragraph(f"<b>{label}</b>", st["sig"]),
             Paragraph(f"{_text(name, '')}{(' · ' + _date(when)) if when else ''}", st["sig"]),
         ]
 
     sign = Table([[
         signer("Prepared by", po.get("created_by_name"), po.get("created_at")),
-        signer("Approved by", po.get("approved_by_name"), po.get("approved_at")),
+        signer("Finance sign-off", po.get("finance_signed_off_by_name"), po.get("finance_signed_off_at")),
+        signer("Director sign-off", po.get("director_signed_off_by_name") or po.get("approved_by_name"),
+               po.get("director_signed_off_at") or po.get("approved_at")),
         signer("Issued by", po.get("issued_by_name"), po.get("issued_at")),
-    ]], colWidths=[174, 174, 175])
+    ]], colWidths=[131, 131, 131, 130])
     sign.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
     story.append(KeepTogether(sign))
+    if po.get("signoff_override_reason"):
+        story += [Spacer(1, 8), Paragraph(
+            f"Issued by superadmin override of the sign-offs: {_text(po['signoff_override_reason'])}", st["note"])]
 
     def make_canvas(*args, **kwargs):
         canv = NumberedCanvas(*args, **kwargs)
