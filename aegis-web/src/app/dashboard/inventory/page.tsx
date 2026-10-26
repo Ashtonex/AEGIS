@@ -172,6 +172,17 @@ export function stockValue(row: Rec) {
 
 const UNASSIGNED_CLIENT_KEY = "__unassigned_client__";
 
+/** One id per stock submission: the API returns the movement it already
+ *  recorded when the same id comes back (double click, retry after a
+ *  timeout) instead of booking the stock twice. */
+function newRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 function keyFromName(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || UNASSIGNED_CLIENT_KEY;
 }
@@ -745,8 +756,10 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
               await receiveStock(payload);
               flash("Store stock added.");
               await load();
+              return true;
             } catch (e) {
               flash(normalizeActionError(e, "Failed to add stock."));
+              return false;
             } finally {
               setSaving(false);
             }
@@ -757,8 +770,10 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
               await issueStock(payload);
               flash("Store stock reduced.");
               await load();
+              return true;
             } catch (e) {
               flash(normalizeActionError(e, "Failed to reduce stock."));
+              return false;
             } finally {
               setSaving(false);
             }
@@ -769,8 +784,10 @@ function InventoryWorkspace({ initialTab }: { initialTab: ActiveTab }) {
               await adjustStock(payload);
               flash("Store adjustment recorded.");
               await load();
+              return true;
             } catch (e) {
               flash(normalizeActionError(e, "Failed to adjust stock."));
+              return false;
             } finally {
               setSaving(false);
             }
@@ -851,6 +868,7 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
   onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({ item_id: "", store_id: "", quantity: "", project_id: "", work_package: "", notes: "" });
+  const [requestId] = useState(newRequestId);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const handleStoreChange = (storeId: string) => {
@@ -907,7 +925,7 @@ function IssueStockModal({ catalogue, stores, projects, saving, onClose, onSubmi
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity), project_id: form.project_id || null })}
+          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity), project_id: form.project_id || null, request_id: requestId })}
           disabled={saving || !form.item_id || !form.store_id || !form.quantity}
           className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
         >
@@ -926,6 +944,7 @@ function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, o
   onSubmit: (p: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({ item_id: "", store_id: "", supplier_id: "", quantity: "", unit_cost: "", reference: "", notes: "" });
+  const [requestId] = useState(newRequestId);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const [showAddItem, setShowAddItem] = useState(false);
   const [showAddSupplier, setShowAddSupplier] = useState(false);
@@ -1041,7 +1060,7 @@ function ReceiveStockModal({ catalogue, categories, stores, suppliers, saving, o
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ ...form, supplier_id: form.supplier_id || undefined, quantity: Number(form.quantity), unit_cost: Number(form.unit_cost) })}
+          onClick={() => onSubmit({ ...form, supplier_id: form.supplier_id || undefined, quantity: Number(form.quantity), unit_cost: Number(form.unit_cost), request_id: requestId })}
           disabled={saving || !form.item_id || !form.store_id || !form.quantity}
           className="inline-flex h-10 items-center gap-2 border border-emerald-500/50 bg-emerald-950/30 px-4 font-mono text-xs font-bold uppercase text-emerald-300 disabled:opacity-50 hover:bg-emerald-950/50"
         >
@@ -1203,6 +1222,7 @@ function TransferStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
   onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({ item_id: "", from_store_id: "", to_store_id: "", quantity: "", notes: "" });
+  const [requestId] = useState(newRequestId);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const destinationOptions = stores.filter((s) => s.id !== form.from_store_id);
   return (
@@ -1238,7 +1258,7 @@ function TransferStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity) })}
+          onClick={() => onSubmit({ ...form, quantity: Number(form.quantity), request_id: requestId })}
           disabled={saving || !form.item_id || !form.from_store_id || !form.to_store_id || !form.quantity}
           className="inline-flex h-10 items-center gap-2 border border-purple-500/50 bg-purple-950/30 px-4 font-mono text-xs font-bold uppercase text-purple-300 disabled:opacity-50 hover:bg-purple-950/50"
         >
@@ -1255,6 +1275,7 @@ function AdjustStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
   onClose: () => void; onSubmit: (p: Record<string, unknown>) => void;
 }) {
   const [form, setForm] = useState({ item_id: "", store_id: "", direction: "increase" as "increase" | "decrease", quantity: "", reason: "" });
+  const [requestId] = useState(newRequestId);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
   const magnitude = Number(form.quantity) || 0;
   const signedDelta = form.direction === "decrease" ? -magnitude : magnitude;
@@ -1291,7 +1312,7 @@ function AdjustStockModal({ catalogue, stores, saving, onClose, onSubmit }: {
       <div className="mt-6 flex justify-end gap-3">
         <button onClick={onClose} className="h-10 border border-ink-mid px-4 font-mono text-xs uppercase text-slate-light hover:text-paper">Cancel</button>
         <button
-          onClick={() => onSubmit({ item_id: form.item_id, store_id: form.store_id, quantity_delta: signedDelta, reason: form.reason })}
+          onClick={() => onSubmit({ item_id: form.item_id, store_id: form.store_id, quantity_delta: signedDelta, reason: form.reason, request_id: requestId })}
           disabled={saving || !form.item_id || !form.store_id || !magnitude || form.reason.trim().length < 3}
           className="inline-flex h-10 items-center gap-2 bg-signal px-4 font-mono text-xs font-bold uppercase text-ink disabled:opacity-50"
         >
@@ -1734,9 +1755,9 @@ function StoreDetailModal({ store, stockLevels, movements, catalogue, projects, 
   projects: Rec[];
   saving: boolean;
   onClose: () => void;
-  onReceive: (payload: Record<string, unknown>) => Promise<void>;
-  onIssue: (payload: Record<string, unknown>) => Promise<void>;
-  onAdjust: (payload: Record<string, unknown>) => Promise<void>;
+  onReceive: (payload: Record<string, unknown>) => Promise<boolean>;
+  onIssue: (payload: Record<string, unknown>) => Promise<boolean>;
+  onAdjust: (payload: Record<string, unknown>) => Promise<boolean>;
   onUpdateItem: (itemId: string, payload: Record<string, unknown>) => Promise<void>;
   onDeleteItem: (itemId: string) => Promise<void>;
 }) {
@@ -1745,6 +1766,8 @@ function StoreDetailModal({ store, stockLevels, movements, catalogue, projects, 
   const [receiveForm, setReceiveForm] = useState({ item_id: firstItemId, quantity: "1", unit_cost: "0", reference: "", notes: "" });
   const [issueForm, setIssueForm] = useState({ item_id: firstItemId, project_id: defaultProjectId, quantity: "1", unit_cost: "0", reference: "", notes: "", override_reason: "" });
   const [adjustForm, setAdjustForm] = useState({ item_id: firstItemId, quantity_delta: "-1", unit_cost: "0", reason: "", reference: "" });
+  const [requestIds, setRequestIds] = useState(() => ({ receive: newRequestId(), issue: newRequestId(), adjust: newRequestId() }));
+  const rotate = (key: "receive" | "issue" | "adjust") => setRequestIds((ids) => ({ ...ids, [key]: newRequestId() }));
   const storeValue = stockLevels.reduce((sum, row) => sum + stockValue(row), 0);
   const materials = stockLevels.filter((row) => itemType(row.item_type) !== "tool");
   const tools = stockLevels.filter((row) => itemType(row.item_type) === "tool");
@@ -1752,7 +1775,8 @@ function StoreDetailModal({ store, stockLevels, movements, catalogue, projects, 
   const storeId = String(store.id);
 
   const submitReceive = async () => {
-    await onReceive({
+    const done = await onReceive({
+      request_id: requestIds.receive,
       ...receiveForm,
       item_id: receiveForm.item_id,
       store_id: storeId,
@@ -1762,9 +1786,11 @@ function StoreDetailModal({ store, stockLevels, movements, catalogue, projects, 
       reference: receiveForm.reference || undefined,
       notes: receiveForm.notes || undefined,
     });
+    if (done) rotate("receive");
   };
   const submitIssue = async () => {
-    await onIssue({
+    const done = await onIssue({
+      request_id: requestIds.issue,
       ...issueForm,
       store_id: storeId,
       project_id: issueForm.project_id || defaultProjectId || null,
@@ -1774,15 +1800,18 @@ function StoreDetailModal({ store, stockLevels, movements, catalogue, projects, 
       notes: issueForm.notes || undefined,
       override_reason: issueForm.override_reason || undefined,
     });
+    if (done) rotate("issue");
   };
   const submitAdjust = async () => {
-    await onAdjust({
+    const done = await onAdjust({
+      request_id: requestIds.adjust,
       ...adjustForm,
       store_id: storeId,
       quantity_delta: Number(adjustForm.quantity_delta),
       unit_cost: Number(adjustForm.unit_cost),
       reference: adjustForm.reference || undefined,
     });
+    if (done) rotate("adjust");
   };
 
   return (

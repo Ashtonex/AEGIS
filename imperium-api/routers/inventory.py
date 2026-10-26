@@ -41,6 +41,10 @@ class StockMovementPayload(Payload):
     work_package: Optional[str] = Field(default=None, max_length=160)
     notes: Optional[str] = None
     override_reason: Optional[str] = Field(default=None, max_length=2000)
+    # Generated once per form by the client. A retry (double click, timeout)
+    # with the same id returns the movement already recorded instead of
+    # booking the stock twice.
+    request_id: Optional[UUID] = None
 
 
 class TransferStockPayload(Payload):
@@ -54,6 +58,10 @@ class TransferStockPayload(Payload):
     reference: Optional[str] = Field(default=None, max_length=160)
     notes: Optional[str] = None
     override_reason: Optional[str] = Field(default=None, max_length=2000)
+    # Generated once per form by the client. A retry (double click, timeout)
+    # with the same id returns the movement already recorded instead of
+    # booking the stock twice.
+    request_id: Optional[UUID] = None
 
 
 class AdjustStockPayload(Payload):
@@ -65,6 +73,10 @@ class AdjustStockPayload(Payload):
     )
     reason: str = Field(min_length=3, max_length=500)
     reference: Optional[str] = Field(default=None, max_length=160)
+    # Generated once per form by the client. A retry (double click, timeout)
+    # with the same id returns the movement already recorded instead of
+    # booking the stock twice.
+    request_id: Optional[UUID] = None
 
 
 class StorePayload(Payload):
@@ -151,6 +163,10 @@ async def require_ref(
         "projects.projects",
         "procurement.suppliers",
         "core.users",
+        # issue_stock checks these for workshop parts and vehicle consumables;
+        # without them every such issue failed with a 500.
+        "fleet.maintenance_work_orders",
+        "fleet.fleet",
     }
     if table not in allowed:
         raise HTTPException(status_code=500, detail="Unsupported reference validation")
@@ -397,6 +413,22 @@ async def create_store(
     return ok({"id": str(store_id)}, "Store registered.")
 
 
+async def _already_recorded(db: AsyncSession, org_id: str, source_type: str, request_id: Optional[UUID]) -> Optional[UUID]:
+    """The ledger movement an earlier attempt of this request already wrote."""
+    if request_id is None:
+        return None
+    return (
+        await db.execute(
+            text("""
+            SELECT id FROM procurement.stock_ledger
+            WHERE organization_id = :org_id AND source_type = :source_type AND source_id = :source_id
+            ORDER BY created_at LIMIT 1
+        """),
+            {"org_id": org_id, "source_type": source_type, "source_id": request_id},
+        )
+    ).scalar()
+
+
 @router.post("/receive", status_code=status.HTTP_201_CREATED)
 async def receive_stock(
     payload: StockMovementPayload,
@@ -415,6 +447,9 @@ async def receive_stock(
     await require_ref(
         db, "procurement.suppliers", payload.supplier_id, user["org_id"], "Supplier"
     )
+    existing = await _already_recorded(db, user["org_id"], "manual_receipt", payload.request_id)
+    if existing:
+        return ok({"id": str(existing), "already_recorded": True}, "This stock receipt was already recorded.")
     movement_id = await inventory_service.receive_stock(
         db,
         user,
@@ -424,7 +459,7 @@ async def receive_stock(
         quantity=payload.quantity,
         unit_cost=payload.unit_cost,
         source_type="manual_receipt",
-        source_id=uuid4(),
+        source_id=payload.request_id or uuid4(),
         reference=payload.reference
         or f"RECEIPT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         notes=payload.notes,
@@ -619,17 +654,22 @@ async def issue_stock(
 
     target_project_id = payload.project_id
     target_source_type = "manual_issue"
-    target_source_id = uuid4()
+    # Every issue is its own source document. Work-order and fleet issues
+    # used the work order / vehicle id here, so a second issue of the same
+    # item to it hit the ledger's unique key and was silently dropped, and
+    # the parts cost shared its key with the work order's completion cost.
+    target_source_id = payload.request_id or uuid4()
     target_cost_category = payload.cost_category or "materials"
     target_cost_description = payload.reference or "Manual stock issue"
+    issue_notes = payload.notes
 
     if payload.work_order_id:
         await require_ref(
             db, "fleet.maintenance_work_orders", payload.work_order_id, user["org_id"], "Work order"
         )
-        target_source_type = "fleet_maintenance_work_order"
-        target_source_id = payload.work_order_id
+        target_source_type = "work_order_parts_issue"
         target_cost_category = "equipment"
+        issue_notes = f"Work order {payload.work_order_id}" + (f" - {payload.notes}" if payload.notes else "")
         target_cost_description = f"Workshop maintenance parts issue: {payload.reference or str(payload.work_order_id)[:8]}"
         if not target_project_id:
             wo_proj = await db.execute(
@@ -641,9 +681,9 @@ async def issue_stock(
         await require_ref(
             db, "fleet.fleet", payload.fleet_id, user["org_id"], "Fleet asset"
         )
-        target_source_type = "fleet_asset"
-        target_source_id = payload.fleet_id
+        target_source_type = "fleet_consumable_issue"
         target_cost_category = "equipment"
+        issue_notes = f"Fleet asset {payload.fleet_id}" + (f" - {payload.notes}" if payload.notes else "")
         target_cost_description = f"Fleet asset consumable issue: {payload.reference or str(payload.fleet_id)[:8]}"
         if not target_project_id:
             fa_proj = await db.execute(
@@ -665,6 +705,9 @@ async def issue_stock(
         await require_ref(
             db, "projects.projects", target_project_id, user["org_id"], "Project"
         )
+    existing = await _already_recorded(db, user["org_id"], target_source_type, payload.request_id)
+    if existing:
+        return ok({"id": str(existing), "already_recorded": True}, "This stock issue was already recorded.")
     outcome = await inventory_service.issue_stock(
         db,
         user,
@@ -677,7 +720,7 @@ async def issue_stock(
         source_id=target_source_id,
         reference=payload.reference
         or f"ISSUE-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
-        notes=payload.notes,
+        notes=issue_notes,
         cost_category=target_cost_category,
         cost_description=target_cost_description,
         override_reason=payload.override_reason,
@@ -701,6 +744,9 @@ async def transfer_stock(
     await require_ref(
         db, "procurement.stores", payload.to_store_id, user["org_id"], "Destination store"
     )
+    existing = await _already_recorded(db, user["org_id"], "inventory_transfer", payload.request_id)
+    if existing:
+        return ok({"transfer_id": str(payload.request_id), "already_recorded": True}, "This stock transfer was already recorded.")
     outcome = await inventory_service.transfer_stock(
         db,
         user,
@@ -713,6 +759,7 @@ async def transfer_stock(
         or f"TRANSFER-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
         notes=payload.notes,
         override_reason=payload.override_reason,
+        transfer_id=payload.request_id,
     )
     await db.commit()
     return ok(
@@ -737,6 +784,9 @@ async def record_adjustment(
     await require_ref(
         db, "procurement.stores", payload.store_id, user["org_id"], "Store"
     )
+    existing = await _already_recorded(db, user["org_id"], "inventory_adjustment", payload.request_id)
+    if existing:
+        return ok({"id": str(existing), "already_recorded": True}, "This stock adjustment was already recorded.")
     outcome = await inventory_service.adjust_stock(
         db,
         user,
@@ -747,6 +797,7 @@ async def record_adjustment(
         reason=payload.reason,
         reference=payload.reference
         or f"ADJUST-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+        adjustment_id=payload.request_id,
     )
     await db.commit()
     return ok({"id": str(outcome["movement_id"])}, "Stock adjustment recorded.")
